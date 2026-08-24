@@ -5,7 +5,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node __WORKFLOW_PLATFORM_ROOT__\\hooks\\user-prompt-submit.mjs",
+            "command": "node",
+            "args": [
+              "__WORKFLOW_PLATFORM_ROOT__\\hooks\\user-prompt-submit.mjs"
+            ],
             "timeout": 3600,
             "statusMessage": "Zodchi is processing the request"
           }
