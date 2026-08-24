@@ -7,7 +7,7 @@ import { openDb, now } from "../src/db.mjs";
 import { classificationCatalog, classifierPrompt, parseClassificationReceipt, validateClassificationDecision } from "../src/classifier.mjs";
 import { compactProjectSnapshot, conversationContext, readProjectContext, selectProjectContext } from "../src/document-context.mjs";
 import { processMessage } from "../src/workflow-app.mjs";
-import { onboardProject } from "../src/onboarding.mjs";
+import { onboardProject, registerProject } from "../src/onboarding.mjs";
 
 function temporaryRoot(prefix) {
   const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir();
@@ -258,5 +258,15 @@ test("onboarding registers workflow routes, documents and role permissions as da
   assert.equal(db.prepare("SELECT read_access FROM role_documents WHERE project_id='project' AND role_id='classifier'").get().read_access, 1);
   db.close();
   assert.throws(() => onboardProject(path.join(root, "invalid.sqlite"), { project: { id: "invalid", name: "Invalid", root_path: project }, workflow: { id: "workflow" }, documents: [{ id: "outside", path: "../outside.md" }] }), /document path must be/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("project registration is idempotent and rejects conflicting identity", () => {
+  const root = temporaryRoot("workflow-project-register-");
+  const project = path.join(root, "project"), dbFile = path.join(root, "workflow.sqlite");
+  fs.mkdirSync(project);
+  assert.equal(registerProject(dbFile, { id: "project", name: "Project", root_path: project }).status, "registered");
+  assert.equal(registerProject(dbFile, { id: "project", name: "Project", root_path: project }).status, "already_registered");
+  assert.throws(() => registerProject(dbFile, { id: "other", name: "Project", root_path: path.join(root, "other") }), /belongs to another project/);
   fs.rmSync(root, { recursive: true, force: true });
 });

@@ -1,4 +1,4 @@
-<document id="zodchi_architecture" status="accepted" authority="zodchi" version="0.3.0-beta.1" language="ru">
+<document id="zodchi_architecture" status="accepted" authority="zodchi" version="0.3.0-beta.2" language="ru">
   <title>Zodchi — устройство системы</title>
 
   <purpose status="accepted">

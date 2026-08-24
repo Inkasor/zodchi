@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "zodchi",
   "displayName": "Zodchi",
-  "version": "0.3.0-beta.1",
+  "version": "0.3.0-beta.2",
   "workingName": false,
   "releaseChannel": "beta",
   "components": ["WorkflowPlatform", "AgentGateway"],
@@ -11,5 +11,5 @@
   "exampleProject": false,
   "supportedHosts": ["Codex"],
   "workerHarnesses": ["Codex", "Claude Code", "Kimi", "OpenCode", "Cursor", "OpenAI-compatible API"],
-  "workflowPackages": ["indie-studio.project-m", "indie-studio.project-r", "shared-map-engine.core", "shared-lore.canon", "one-c.development"]
+  "workflowPackages": ["zodchi.product-development", "indie-studio.project-m", "indie-studio.project-r", "shared-map-engine.core", "shared-lore.canon", "one-c.development", "company-web.marketplaces-data", "company-web.dashboard", "company-web.photo-hub", "company-web.mapping-hub", "company-web.interior-hub", "company-operations.core"]
 }

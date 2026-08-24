@@ -1,12 +1,22 @@
-<document id="zodchi_onboarding" status="accepted" authority="zodchi" version="0.3.0-beta.1">
+<document id="zodchi_onboarding" status="accepted" authority="zodchi" version="0.3.0-beta.2">
   <title>Первичная настройка Zodchi</title>
   <purpose>Инструкция для LLM, которая устанавливает и настраивает Zodchi. Общайся с человеком простым русским языком и не заставляй его заполнять внутренние поля.</purpose>
 
-  <input id="user_request" status="accepted">Прочитай этот документ и запусти настройку Zodchi.</input>
+  <input id="user_request" status="accepted">Открой репозиторий Zodchi, прочитай этот документ, установи последнюю опубликованную версию и настрой её для моего проекта.</input>
+
+  <acquisition status="accepted">
+    <rule id="repository_link_is_enough">Если человек передал только ссылку на репозиторий, самостоятельно прочитай этот файл и продолжи настройку. Не требуй от него вручную скачивать архив или выполнять команды.</rule>
+    <step order="1" id="obtain_installer">Если локальной копии репозитория нет, клонируй https://github.com/Inkasor/zodchi во временную папку, прочитай документы и используй находящиеся в ней штатные инструменты.</step>
+    <step order="2" id="choose_mode">Определи, хочет человек пользоваться Zodchi или разрабатывать сам Zodchi. Если это неясно и влияет на пути, задай один простой вопрос.</step>
+    <step order="3" id="install_mode">Для обычного использования устанавливай последний опубликованный GitHub Release командой tools/install-latest.ps1. Не используй исходники ветки main как установленную программу.</step>
+    <step order="4" id="development_mode">Для разработки клонируй репозиторий в отдельную постоянную папку разработки, а рабочую поставку всё равно собирай и устанавливай в другую заменяемую папку.</step>
+    <step order="5" id="separate_data">Личные базы и настройки размещай в третьей постоянной папке вне репозитория и вне установленной программы.</step>
+    <rule id="development_project_layout">В проекте Codex разработки сделай исходный репозиторий основной папкой. Установленную копию и папку данных можно добавить вторичными для проверки фактической поставки и аналитики; изменения кода выполняй только в исходном репозитории, поставку обновляй сборкой, данные меняй штатными командами.</rule>
+  </acquisition>
 
   <preflight status="accepted">
-    <check id="workflow_platform_path">Найди фактическую папку Workflow Platform.</check>
-    <check id="agent_gateway_path">Найди фактическую папку Agent Gateway.</check>
+    <check id="workflow_platform_path">Найди WorkflowPlatform внутри установленной поставки Zodchi.</check>
+    <check id="agent_gateway_path">Найди AgentGateway внутри установленной поставки Zodchi.</check>
     <check id="model_provider_catalog">Прочитай AgentGateway/model-providers.json и предлагай только реализованные там сочетания исполнительной среды и поставщика модели.</check>
     <check id="node_runtime">Проверь Node.js и package.json.</check>
     <check id="codex_cli">Найди Codex CLI и выполни codex --version.</check>

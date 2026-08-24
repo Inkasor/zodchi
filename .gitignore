@@ -15,3 +15,4 @@ bundle-manifest.json
 SHA256SUMS.txt
 .DS_Store
 Thumbs.db
+.codex/

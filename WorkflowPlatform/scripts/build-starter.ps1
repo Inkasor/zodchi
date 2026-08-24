@@ -76,6 +76,7 @@ try {
     Copy-RequiredFile $repoSource 'scripts\build-release.ps1' $stage
     Copy-RequiredFile $repoSource 'scripts\validate-source.mjs' $stage
     Copy-RequiredFile $repoSource 'tools\install-or-update.ps1' $stage
+    Copy-RequiredFile $repoSource 'tools\install-latest.ps1' $stage
     Copy-FileAs (Join-Path $workflowSource 'scripts\release-lint.mjs') (Join-Path $stage 'tools\release-lint.mjs')
 
     $releaseLint = Join-Path $workflowSource 'scripts\release-lint.mjs'
