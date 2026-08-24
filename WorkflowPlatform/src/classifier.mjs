@@ -6,6 +6,8 @@ const REQUIRED_FIELDS = Object.freeze([
 const BOOLEAN_FIELDS = Object.freeze(["planning_required", "human_required", "needs_questions", "document_required"]);
 const RISKS = new Set(["low", "medium", "high"]);
 const REPLY_MODES = new Set(["conversation", "research", "clarification", "work"]);
+// Dialogue answers never enter a workflow, so they stay classifiable even when a project registers no routes for them.
+const DIALOGUE_WORK_TYPES = Object.freeze(["conversation", "clarification"]);
 
 function ids(db, table) { return db.prepare(`SELECT id FROM ${table} ORDER BY id`).all().map(row => row.id); }
 
@@ -20,7 +22,8 @@ export function classificationCatalog(db, projectId) {
   ].sort((a, b) => a.id.localeCompare(b.id, "en"));
   return Object.freeze({
     schema_version: 1,
-    work_types: ids(db, "work_types"), artifact_types: ids(db, "artifact_types"), domains: ids(db, "domains"),
+    work_types: [...new Set([...routes.map(route => route.work_type_id), ...DIALOGUE_WORK_TYPES])].sort(),
+    artifact_types: ids(db, "artifact_types"), domains: ids(db, "domains"),
     disciplines: ids(db, "disciplines"), quality_modes: ids(db, "quality_modes"), planning_levels: ids(db, "planning_levels"),
     routes, pending_interactions: pending
   });

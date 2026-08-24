@@ -2,6 +2,11 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+## Unreleased
+
+- The classifier is offered only the work types a project actually routes, plus conversation and clarification, so a narrow project can no longer be classified into a route it does not have.
+- Conversation, clarification and research answers no longer require a registered workflow route, because they never enter a workflow.
+
 ## 0.3.0-beta.5 — 2026-08-24
 
 - Claude Code events are recognized by identifiers the harness actually sends, so runs started from Claude Code are recorded under their own client instead of falling back to Codex.
