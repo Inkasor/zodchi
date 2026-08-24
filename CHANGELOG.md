@@ -2,6 +2,13 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+## Unreleased
+
+- The harness is identified by the only fields that differ between the two hook payloads: Codex names the turn and the model, Claude Code names the prompt. Both send the same session id, transcript path and permission mode, so a Codex turn is no longer recorded as Claude Code.
+- The hook records the field names of the event it received, so the sending harness stays identifiable from the run history alone.
+- The instruction returned to the harness states plainly that the turn is already complete and is repeated after the result, because hook output is advisory context in both harnesses and a chat that researches the answer again charges the user twice.
+- Classifier and researcher receipts carry the workflow run they belong to, which only the structured work steps recorded before.
+
 ## 0.3.0-beta.6 — 2026-08-24
 
 - The classifier is offered only the work types a project actually routes, plus conversation and clarification, so a narrow project can no longer be classified into a route it does not have.

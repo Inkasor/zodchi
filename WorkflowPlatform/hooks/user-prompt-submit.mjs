@@ -20,6 +20,7 @@ const result = await processMessage({
   workflow: settings.workflow,
   eventSource: entry.eventSource,
   eventKey: entry.eventKey,
+  eventFields: entry.eventFields,
   client: entry.client,
   preferredLanguage: entry.preferredLanguage,
   execute: true

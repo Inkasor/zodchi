@@ -51,7 +51,7 @@ export class Runtime {
       if (eventKey) this.db.prepare("INSERT INTO inbox_events(id,project_id,source,event_key,payload_hash,task_id,run_id,received_at) VALUES(?,?,?,?,?,?,?,?)")
         .run(id("inbox"), project.id, source, String(eventKey), payloadHash, taskId, runId, timestamp);
       appendEvent(this.db, { entityType: "task", entityId: taskId, kind: "created", payload: { source, event_key: eventKey } });
-      appendEvent(this.db, { entityType: "workflow_run", entityId: runId, kind: "created", payload: { source, event_key: eventKey } });
+      appendEvent(this.db, { entityType: "workflow_run", entityId: runId, kind: "created", payload: { source, event_key: eventKey, ...(context.event_fields?.length ? { event_fields: context.event_fields } : {}) } });
       this.db.prepare("UPDATE tasks SET state='discovering',updated_at=? WHERE id=?").run(timestamp, taskId);
       this.db.prepare("UPDATE workflow_runs SET state='discovering',updated_at=? WHERE id=?").run(timestamp, runId);
       appendEvent(this.db, { entityType: "task", entityId: taskId, kind: "state_transition", fromState: "received", toState: "discovering", payload: { reason: "runtime created" } });
