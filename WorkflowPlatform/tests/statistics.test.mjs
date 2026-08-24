@@ -22,7 +22,8 @@ test("run statistics expose route, receipts, tokens, attempts, gates and artifac
   const report = workflowRunStatistics(dbFile, runId);
   assert.equal(report.route.package_key, "package.demo"); assert.equal(report.classification.kind, "implementation");
   assert.deepEqual(report.tokens, { input: 100, cached: 40, output: 20, reasoning: 5 });
-  assert.equal(report.calls[0].model, "gpt-test"); assert.equal(report.calls[0].model_provider, "openai"); assert.equal(report.calls[0].harness, "codex"); assert.equal(report.calls[0].duration_ms, 1000);
+  assert.equal(report.calls[0].model, "gpt-test"); assert.equal(report.calls[0].model_provider, "openai"); assert.equal(report.calls[0].provider, "codex"); assert.equal(report.calls[0].duration_ms, 1000);
+  assert.equal(report.client, "codex"); assert.equal("harness" in report.calls[0], false);
   assert.equal(report.attempts.correction_cycles, 1); assert.equal(report.attempts.retries, 1);
   assert.equal(report.gates[0].checks[0].status, "passed"); assert.equal(report.artifacts[0].uri, "src/demo.mjs");
   assert.equal(report.final_state, "completed"); assert.equal(report.storage.raw_model_payloads_persisted, false);

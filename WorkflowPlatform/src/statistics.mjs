@@ -40,7 +40,7 @@ export function workflowRunStatistics(dbFile, runId) {
     const calls = db.prepare(`SELECT gc.*,a.ordinal AS attempt_no,s.step_key FROM gateway_calls gc
       LEFT JOIN attempts a ON a.id=gc.attempt_id LEFT JOIN workflow_steps s ON s.id=gc.step_id
       WHERE gc.run_id=? ORDER BY COALESCE(gc.started_at,''),gc.id`).all(runId).map(row => ({
-      step: row.step_key ?? row.role_id ?? "unscoped", role: row.role_id, harness: row.provider, provider: row.provider,
+      step: row.step_key ?? row.role_id ?? "unscoped", role: row.role_id, provider: row.provider,
       model_provider: row.model_provider,
       profile: row.profile_id, model: row.model, reasoning_effort: row.reasoning_effort,
       status: row.status, attempt_no: row.attempt_no, correction_cycles: row.correction_cycles,
@@ -72,7 +72,7 @@ export function workflowRunStatistics(dbFile, runId) {
     const retryCount = calls.reduce((sum, call) => sum + integer(call.retries), 0) + attempts.filter(item => item.attempt_no > 1).length;
     const storage = storageAudit(db);
     return {
-      schema_version: 1, run_id: run.id,
+      schema_version: 1, run_id: run.id, client: run.client ?? "codex",
       project: { id: run.project_id, name: run.project_name },
       route: { workflow_id: run.workflow_id, workflow_name: run.workflow_name, package_key: run.package_key, package_version: run.package_version },
       classification, calls, tokens: tokenTotals, stages: steps, attempts: { count: attempts.length, correction_cycles: correctionCycles, retries: retryCount, items: attempts },

@@ -2,6 +2,10 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+## Unreleased
+
+- Run statistics report the entry point the run came from. The per-call `harness` field repeated the gateway provider and read as the chat client, so a Claude Code run was reported as Codex; it is replaced by `client` on the run.
+
 ## 0.3.0-beta.7 — 2026-08-24
 
 - The harness is identified by the only fields that differ between the two hook payloads: Codex names the turn and the model, Claude Code names the prompt. Both send the same session id, transcript path and permission mode, so a Codex turn is no longer recorded as Claude Code.
