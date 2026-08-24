@@ -2,7 +2,7 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
-## Unreleased
+## 0.3.0-beta.9 — 2026-08-24
 
 - A workflow declares the quality it was built for, and that declaration is now a floor: the classifier may raise a routed run above it but never below, because a lower level drops the checks the workflow depends on.
 - The hook can deliver a prepared answer as the final word instead of advisory context. In `final` delivery mode it ends the turn and shows the answer directly, so the chat cannot repeat research the run already paid for; `advisory` stays the default.
