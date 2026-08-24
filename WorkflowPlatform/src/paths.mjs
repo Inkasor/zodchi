@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizeDeliveryMode } from "./hook-entry.mjs";
 import { normalizeLanguage } from "./language.mjs";
 
 export const workflowPlatformRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -39,6 +40,7 @@ export function resolveWorkflowSettings(env = process.env) {
     gatewayDatabasePath: configuredPath(env.AGENT_GATEWAY_DB || config.agentGatewayDatabase, path.join(gatewayRoot, "data", "gateway.sqlite")),
     project: env.WORKFLOW_PROJECT || config.projectRoot || null,
     workflow: env.WORKFLOW_ID || config.workflow || null,
-    responseLanguage: normalizeLanguage(env.ZODCHI_LANGUAGE || config.responseLanguage) ?? null
+    responseLanguage: normalizeLanguage(env.ZODCHI_LANGUAGE || config.responseLanguage) ?? null,
+    deliveryMode: normalizeDeliveryMode(env.ZODCHI_DELIVERY_MODE || config.deliveryMode)
   };
 }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { isClaudeCodeEvent, hookEventFields, parseHookEvent, formatHookOutput } from "../src/hook-entry.mjs";
+import { isClaudeCodeEvent, hookEventFields, parseHookEvent, formatHookOutput, normalizeDeliveryMode } from "../src/hook-entry.mjs";
 
 const projectRoot = path.join(os.tmpdir(), "zodchi-hook-entry-project");
 
@@ -139,4 +139,36 @@ test("the hook records the event field names so the sending harness stays identi
   assert.deepEqual(parseHookEvent(claudeEventWithPrompt, { env: {}, argv: [], settings: {} }).eventFields,
     ["cwd", "hook_event_name", "permission_mode", "prompt", "prompt_id", "session_id", "transcript_path"]);
   assert.deepEqual(hookEventFields({}), []);
+});
+
+test("final delivery mode ends the turn and hands the prepared answer straight to the user", () => {
+  const output = formatHookOutput({ response: "Какие старые документы проверить первыми?", route: "clarification" }, { deliveryMode: "final" });
+  assert.equal(output.decision, "block");
+  assert.equal(output.reason, "Какие старые документы проверить первыми?");
+  assert.equal(output.additionalContext, undefined);
+  assert.equal(output.hookSpecificOutput, undefined);
+});
+
+test("final delivery mode falls back to advisory when Zodchi prepared no answer", () => {
+  const output = formatHookOutput({ route: "product" }, { deliveryMode: "final" });
+  assert.equal(output.decision, undefined);
+  assert.match(output.additionalContext, /The workflow has finished/);
+});
+
+test("delivery mode defaults to advisory and rejects unknown values", () => {
+  assert.equal(normalizeDeliveryMode(undefined), "advisory");
+  assert.equal(normalizeDeliveryMode("block"), "advisory");
+  assert.equal(normalizeDeliveryMode("final"), "final");
+  assert.equal(formatHookOutput({ response: "ready" }).decision, undefined);
+  assert.equal(formatHookOutput({ response: "ready" }, { deliveryMode: "nonsense" }).decision, undefined);
+});
+
+test("the hook command carries the delivery mode, and flags never leak into the message", () => {
+  const argv = ["--delivery-mode=final"];
+  assert.equal(parseHookEvent(claudeEventWithPrompt, { env: {}, argv, settings: {} }).deliveryMode, "final");
+  assert.equal(parseHookEvent(claudeEventWithPrompt, { env: {}, argv: [], settings: { deliveryMode: "final" } }).deliveryMode, "final");
+  assert.equal(parseHookEvent(claudeEventWithPrompt, { env: {}, argv: [], settings: {} }).deliveryMode, "advisory");
+  assert.equal(parseHookEvent(claudeEventWithPrompt, { env: {}, argv: ["--delivery-mode=shout"], settings: {} }).deliveryMode, "advisory");
+  assert.equal(parseHookEvent({}, { env: {}, argv: ["--delivery-mode=final"], settings: {} }).message, null);
+  assert.equal(parseHookEvent({}, { env: {}, argv: ["--delivery-mode=final", "spoken", "words"], settings: {} }).message, "spoken words");
 });

@@ -26,4 +26,4 @@ const result = await processMessage({
   execute: true
 });
 
-console.log(JSON.stringify(formatHookOutput(result)));
+console.log(JSON.stringify(formatHookOutput(result, { deliveryMode: entry.deliveryMode })));

@@ -26,9 +26,15 @@ export function hookEventFields(event = {}) {
   return Object.keys(event).sort();
 }
 
+// Hooks are installed per project, so the delivery mode travels on the hook command itself. Nothing
+// else in either harness carries a per-project value into the hook.
+const DELIVERY_FLAG = "--delivery-mode=";
+
 export function parseHookEvent(event = {}, { env = process.env, argv = [], settings = {} } = {}) {
   const claude = isClaudeCodeEvent(event);
-  const message = (claude ? undefined : env.CODEX_USER_PROMPT) ?? event.prompt ?? event.user_input ?? event.user_input_raw ?? event.user_prompt ?? event.userPrompt ?? event.message ?? argv.join(" ");
+  const flagged = argv.find(item => typeof item === "string" && item.startsWith(DELIVERY_FLAG));
+  const words = argv.filter(item => typeof item === "string" && !item.startsWith("--"));
+  const message = (claude ? undefined : env.CODEX_USER_PROMPT) ?? event.prompt ?? event.user_input ?? event.user_input_raw ?? event.user_prompt ?? event.userPrompt ?? event.message ?? words.join(" ");
   const eventKey = (claude ? undefined : env.CODEX_EVENT_ID) ?? event.prompt_id ?? event.promptId ?? event.event_id ?? event.eventId ?? event.id ?? event.message_id ?? event.messageId ?? event.turn_id ?? event.turnId ?? null;
   return {
     client: claude ? "claude-code" : "codex",
@@ -37,12 +43,26 @@ export function parseHookEvent(event = {}, { env = process.env, argv = [], setti
     eventKey,
     project: settings.project ?? event.cwd ?? event.project ?? null,
     eventFields: hookEventFields(event),
+    deliveryMode: normalizeDeliveryMode(flagged ? flagged.slice(DELIVERY_FLAG.length) : settings.deliveryMode),
     preferredLanguage: event.language ?? event.locale ?? event.user_language ?? event.userLocale ?? settings.responseLanguage ?? null
   };
 }
 
-export function formatHookOutput(result = {}) {
-  const context = result.response ?? (result.route === "conversation"
+export const DELIVERY_MODES = Object.freeze(["advisory", "final"]);
+
+export function normalizeDeliveryMode(value) {
+  return DELIVERY_MODES.includes(value) ? value : "advisory";
+}
+
+// Advisory output is only developer context: the chat is free to ignore it, research the answer
+// again and charge the user a second time for work Zodchi already paid for. Both harnesses accept
+// the same blocking shape, which ends the turn and shows the reason to the user directly, so a
+// prepared answer can be delivered without a chat turn at all. It stays a per-project choice,
+// because blocking also removes the exchange from the chat's own history.
+export function formatHookOutput(result = {}, { deliveryMode = "advisory" } = {}) {
+  const prepared = typeof result.response === "string" && result.response.trim() ? result.response.trim() : null;
+  if (normalizeDeliveryMode(deliveryMode) === "final" && prepared) return { decision: "block", reason: prepared };
+  const context = prepared ?? (result.route === "conversation"
     ? "Continue the conversation naturally and directly."
     : "The workflow has finished. Explain the next step without exposing internal identifiers, roles, levels, prompts, or JSON.");
   const additionalContext = [

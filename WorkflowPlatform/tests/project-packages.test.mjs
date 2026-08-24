@@ -101,6 +101,17 @@ test("SharedMapEngine and Lore preserve consumer, canon and human acceptance bou
   assert.equal(engine.roles.find(item => item.key === "shared_engine_programmer").contract.allowed_skills.includes("game-production:shared-map-engine"), true);
   assert.equal(lore.workflows[0].steps.some(item => item.key === "owner_decision" && item.irreversible), true); assert.equal(lore.roles.find(item => item.key === "lore_researcher").contract.boundaries.invent_facts, false);
   assert.deepEqual(packageAcceptanceGates(lore), { continuity: "configured_or_unavailable", canon: "owner", consumer_updates: "separate" });
+  assert.equal(lore.version, "2.3.0");
+  // The change card is written before the owner decides, so a candidate that never becomes canon
+  // still leaves a record, and every level keeps the owner gate rather than only mvp.
+  const change = lore.workflows.find(item => item.key === "shared-lore.change");
+  assert.deepEqual(change.steps.map(item => item.key), ["research", "proposal", "continuity", "change_card", "owner_decision", "canon", "consumer_proposals"]);
+  assert.equal(change.steps.findIndex(item => item.key === "change_card") < change.steps.findIndex(item => item.key === "owner_decision"), true);
+  assert.deepEqual(change.questions.map(item => item.key), ["shared_fact", "source_sha", "candidate_scope", "project_impact"]);
+  assert.equal(change.questions.every(item => item.required), true);
+  assert.equal(lore.documents.some(item => item.path === "docs/decisions" && item.bindings.some(binding => binding.role_key === "lore_documentator" && binding.write)), true);
+  assert.equal(lore.operational_levels.every(item => item.escalation.owner_canon_decision_required === true), true);
+  assert.deepEqual(lore.operational_levels.map(item => item.level).sort(), ["mvp", "production", "prototype", "security-audit"]);
 });
 
 test("1C package uses the existing skill allowlist and requires an explicit local BSL binding", () => {

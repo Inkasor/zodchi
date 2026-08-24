@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { openDb } from "../src/db.mjs";
-import { DEFAULT_QUALITY_CONTRACTS, operationalPoliciesLint, parseQualityContracts, qualityContractsLint, qualityModesThrough, reviewerRequirement, serializeQualityContracts } from "../src/quality-contracts.mjs";
+import { DEFAULT_QUALITY_CONTRACTS, floorOperationalLevel, operationalPoliciesLint, parseQualityContracts, qualityContractsLint, qualityModesThrough, reviewerRequirement, serializeQualityContracts } from "../src/quality-contracts.mjs";
 import { applyWorkflowImport, proposeWorkflowImport } from "../src/workflow-package.mjs";
 
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -53,4 +53,17 @@ test("an imported software package has four normalized and checkable quality pol
   assert.equal(db.prepare("SELECT COUNT(*) count FROM operational_level_budget_limits WHERE project_id='project-r'").get().count, 12);
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("a workflow's declared quality is a floor the classifier cannot go below", () => {
+  assert.equal(floorOperationalLevel("prototype", "mvp"), "mvp");
+  assert.equal(floorOperationalLevel("prototype", "production"), "production");
+  assert.equal(floorOperationalLevel("mvp", "security"), "security-audit");
+});
+
+test("the floor never lowers a level the classifier raised, and is inert without a workflow quality", () => {
+  assert.equal(floorOperationalLevel("production", "mvp"), "production");
+  assert.equal(floorOperationalLevel("security-audit", "prototype"), "security-audit");
+  assert.equal(floorOperationalLevel("prototype", "prototype"), "prototype");
+  assert.equal(floorOperationalLevel("prototype", null), "prototype");
 });

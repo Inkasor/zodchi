@@ -82,6 +82,16 @@ export function operationalLevel(quality) {
   return quality;
 }
 
+// A workflow declares the quality it was built for, and that declaration carries its required
+// checks. The classifier may raise a routed run above that level, but lowering it below would drop
+// the very checks the workflow depends on, so the declared quality is a floor.
+export function floorOperationalLevel(level, workflowQuality) {
+  const requested = operationalLevel(level);
+  if (!workflowQuality) return requested;
+  const floor = operationalLevel(workflowQuality);
+  return QUALITY_LEVELS.indexOf(requested) >= QUALITY_LEVELS.indexOf(floor) ? requested : floor;
+}
+
 export function qualityModesThrough(level) {
   const normalized = operationalLevel(level);
   const index = QUALITY_LEVELS.indexOf(normalized);
@@ -206,7 +216,14 @@ function directBudgetRequest(runtime, runId, metric, amount, key, reason) {
 }
 
 export function initializeQualityRun(runtime, runId, classification, classifierReceipt = null) {
-  const run = runtime.get(runId), level = operationalLevel(classification.quality_mode ?? classification.quality);
+  const run = runtime.get(runId);
+  const requested = operationalLevel(classification.quality_mode ?? classification.quality);
+  // Only routed work runs the workflow's steps and checks; a direct reply keeps the level the
+  // classifier chose, because no step of the workflow is going to execute.
+  const workflowQuality = classification.reply_mode === "work"
+    ? runtime.db.prepare("SELECT default_quality FROM workflows WHERE id=?").get(run.workflow_id)?.default_quality
+    : null;
+  const level = floorOperationalLevel(requested, workflowQuality);
   const policy = loadOperationalPolicy(runtime.db, run.project_id, run.workflow_id, level);
   const manager = new BudgetManager(runtime.db), task = runtime.getTask(runId);
   for (const [metric, limit] of Object.entries(policy.limits)) {
