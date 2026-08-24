@@ -61,10 +61,12 @@
   <chat_entry_hook status="accepted">
     <rule id="one_shared_hook">Codex and Claude Code share hooks/user-prompt-submit.mjs. The hook detects the harness from the event and records client=codex or client=claude-code.</rule>
     <step order="1" id="select_entry">Ask which chat entry point the person uses. Configure only the selected ones.</step>
-    <step order="2" id="fill_template">Use configs/codex-hooks.template.json for Codex and configs/claude-settings.template.json for Claude Code. Insert the installed WorkflowPlatform path in place of the placeholder.</step>
-    <step order="3" id="write_config">Create or update the project's .codex/hooks.json for Codex and the project's .claude/settings.json for Claude Code. Never write the Claude Code hook into the user-wide settings file; it must stay scoped to the project.</step>
+    <step order="2" id="fill_template">Use configs/codex-hooks.template.json for Codex and configs/claude-settings-local.template.json for Claude Code. Insert the installed WorkflowPlatform path in place of the placeholder.</step>
+    <step order="3" id="write_config">Create or update the project's .codex/hooks.json for Codex and the project's .claude/settings.local.json for Claude Code. The hook command holds a machine-specific absolute path, so it belongs in the local settings file, never in the shared .claude/settings.json and never in the user-wide settings file, which would fire the hook in unrelated projects.</step>
     <step order="4" id="verify_command">Verify that the command starts hooks/user-prompt-submit.mjs in the installed release, not in the development repository.</step>
     <step order="5" id="verify_run">Use a test event to confirm a workflow_runs record with the expected client value.</step>
+    <rule id="ignore_local_hook_config">Add .claude/settings.local.json and .claude/worktrees/ to the project .gitignore so no local path reaches the project history.</rule>
+    <rule id="worktree_sessions">Claude Code desktop sessions run in a git worktree. A worktree is a fresh checkout, so add .claude/settings.local.json to a .worktreeinclude file in the project root; only gitignored files listed there are copied into new worktrees. Without it a worktree session silently starts without the hook.</rule>
     <rule id="stable_event_id">Pass the client's stable event identifier for duplicate-delivery protection: event_id for Codex, prompt_id for Claude Code. Never replace a missing ID with a message-text hash.</rule>
     <rule id="explicit_timeout">Keep an explicit hook timeout above the slowest registered quality mode. The Claude Code default for this event is 30 seconds and is too short for a workflow run.</rule>
     <human_gate>If Codex marks the hook untrusted, tell the person in their language to open the Codex project settings and trust the WorkflowPlatform hook. This is an authorization step, not a system failure.</human_gate>

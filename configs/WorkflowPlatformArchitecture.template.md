@@ -106,7 +106,7 @@
 
   <chat_entry_hook status="proposed">
     <path harness="codex">.codex/hooks.json</path>
-    <path harness="claude-code">.claude/settings.json</path>
+    <path harness="claude-code">.claude/settings.local.json</path>
     <command>node &lt;WORKFLOW_PLATFORM_ROOT&gt;\hooks\user-prompt-submit.mjs</command>
     <human_action>After the hook changes, the person must trust it in Codex and start a new session in each configured host.</human_action>
     <verification>Verify the host version, a test event, and the workflow_runs record with the expected client value.</verification>
