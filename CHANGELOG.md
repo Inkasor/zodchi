@@ -2,6 +2,11 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+## 0.3.0-beta.5 — 2026-08-24
+
+- Claude Code events are recognized by identifiers the harness actually sends, so runs started from Claude Code are recorded under their own client instead of falling back to Codex.
+- The shipped Claude Code settings template uses the exec command form, which keeps Windows paths intact when the hook starts.
+
 ## 0.3.0-beta.4 — 2026-08-24
 
 - Claude Code joins Codex as a supported chat entry point through one shared UserPromptSubmit hook.
