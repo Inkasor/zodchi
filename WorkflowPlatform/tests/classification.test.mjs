@@ -115,11 +115,11 @@ test("ordinary conversation invokes only the classifier and returns a plain huma
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("the classifier is offered only routed work types plus the dialogue answers that never enter a workflow", () => {
+test("the classifier is offered only routed work types plus the direct answers that never enter a workflow", () => {
   const { root, db } = fixture("workflow-classification-catalog-");
   db.prepare("DELETE FROM workflow_routes WHERE project_id='project' AND work_type_id NOT IN ('narrative','decision')").run();
   const catalog = classificationCatalog(db, "project");
-  assert.deepEqual(catalog.work_types, ["clarification", "conversation", "decision", "narrative"]);
+  assert.deepEqual(catalog.work_types, ["clarification", "conversation", "decision", "narrative", "research"]);
   assert.throws(() => validateClassificationDecision(decision({ work_type: "implementation" }), catalog), /CLASSIFICATION_VALUE_UNREGISTERED: work_type=implementation/);
   db.close();
   fs.rmSync(root, { recursive: true, force: true });

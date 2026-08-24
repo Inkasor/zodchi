@@ -5,7 +5,7 @@
 ## Unreleased
 
 - The classifier is offered only the work types a project actually routes, plus conversation and clarification, so a narrow project can no longer be classified into a route it does not have.
-- Conversation, clarification and research answers no longer require a registered workflow route, because they never enter a workflow.
+- Conversation, clarification and research answers no longer require a registered workflow route, because they are delivered directly and never enter a workflow.
 
 ## 0.3.0-beta.5 — 2026-08-24
 
