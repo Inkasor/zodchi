@@ -1,8 +1,11 @@
 const CLAUDE_INSTRUCTION = "This turn has already been processed by Zodchi. Use the prepared result below as the only result for this user message. Do not run commands, create or edit files, run tests or builds, invoke skills, or perform independent research. If the result asks for confirmation, ask only that question. Do not expose implementation details.";
 
+const marker = value => typeof value === "string" && value.length > 0;
+
 export function isClaudeCodeEvent(event = {}) {
-  const name = String(event.hook_event_name ?? event.hookEventName ?? "").toLowerCase();
-  return name === "userpromptsubmit" && (event.user_input !== undefined || event.user_input_raw !== undefined);
+  if (event.user_input !== undefined || event.user_input_raw !== undefined) return true;
+  if (marker(event.prompt_id) || marker(event.promptId) || marker(event.transcript_path) || marker(event.transcriptPath)) return true;
+  return String(event.hook_event_name ?? event.hookEventName ?? "").toLowerCase() === "userpromptsubmit" && marker(event.session_id);
 }
 
 export function parseHookEvent(event = {}, { env = process.env, argv = [], settings = {} } = {}) {
