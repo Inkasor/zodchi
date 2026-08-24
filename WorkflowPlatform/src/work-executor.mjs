@@ -33,22 +33,24 @@ function selectedWorkflowContract(db, projectId, workflowId) {
   };
 }
 
-function approvalQuestion(contract) {
-  return `Этот маршрут содержит отдельное действие владельца «${contract.approval.step_key}». Подтверждение нужно получить до продолжения.`;
+function approvalQuestion(contract, responseLanguage) {
+  return responseLanguage === "ru"
+    ? `Этот маршрут содержит отдельное действие владельца «${contract.approval.step_key}». Подтверждение нужно получить до продолжения.`
+    : `This workflow contains a separate owner action, "${contract.approval.step_key}". Confirmation is required before continuing.`;
 }
 
-function requireWorkflowApproval(runtime, runId, contract) {
+function requireWorkflowApproval(runtime, runId, contract, responseLanguage) {
   const taskId = runtime.get(runId).task_id;
-  const question = approvalQuestion(contract);
+  const question = approvalQuestion(contract, responseLanguage);
   runtime.db.prepare("INSERT INTO approvals(id,task_id,run_id,kind,question,status,created_at) VALUES(?,?,?,'workflow_approval',?,'pending',?)")
     .run(id("approval"), taskId, runId, question, now());
   runtime.setState(runId, "approval_required", { reason: `workflow approval required: ${contract.approval.step_key}` });
   return { status: "approval_required", questions: [question], workflow_approval: contract.approval.step_key };
 }
 
-function boundedContext(discovery, roleId, classification, limit) {
+function boundedContext(discovery, roleId, classification, limit, responseLanguage) {
   const selected = selectProjectContext(discovery, classification, [], null, discovery.project.id, roleId);
-  const context = { project: { id: discovery.project.id, name: discovery.project.name }, role_id: roleId, documents: [], decisions: discovery.decisions, pending_interactions: discovery.pending_interactions };
+  const context = { project: { id: discovery.project.id, name: discovery.project.name }, role_id: roleId, response_language: responseLanguage, documents: [], decisions: discovery.decisions, pending_interactions: discovery.pending_interactions };
   let used = Buffer.byteLength(JSON.stringify(context));
   for (const document of selected.documents) {
     const remaining = limit - used;
@@ -252,7 +254,7 @@ async function executeGateStep({ runtime, queue, runId, stepKey, projectRoot, le
   return gate;
 }
 
-export async function executeStructuredWork({ runtime, runId, classification, definition, discovery, message, taskRoot, gatewayCall, gateRunner = runProjectGate }) {
+export async function executeStructuredWork({ runtime, runId, classification, definition, discovery, message, responseLanguage = "en", taskRoot, gatewayCall, gateRunner = runProjectGate }) {
   const level = operationalLevel(classification.quality_mode);
   const projectId = runtime.get(runId).project_id;
   const projectRoot = discovery.project.root_path;
@@ -261,7 +263,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   const policy = loadOperationalPolicy(runtime.db, projectId, runtime.get(runId).workflow_id, level);
   if (routeContract?.approval?.before_productive_work) {
     runtime.plan(runId, { objective: message, authority: definition.authority ?? "registered project documents", steps: [] });
-    return requireWorkflowApproval(runtime, runId, routeContract);
+    return requireWorkflowApproval(runtime, runId, routeContract, responseLanguage);
   }
   const plannerRole = routeContract?.planner_role ?? "planner";
   const reviewerRole = routeContract?.reviewer_role ?? "reviewer";
@@ -277,7 +279,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   const registeredChecks = routeContract?.check_keys.length ? allRegisteredChecks.filter(check => routeContract.check_keys.includes(check)) : allRegisteredChecks;
   const registeredArtifactTypes = runtime.db.prepare("SELECT id FROM artifact_types ORDER BY id").all().map(row => row.id);
   const plannerPackage = { objective: message, classification: { work_type: classification.work_type, artifact_type: classification.artifact_type, risk: classification.risk, quality_mode: classification.quality_mode }, registered_checks: registeredChecks, registered_artifact_types: registeredArtifactTypes };
-  const planner = await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: plannerPackage, context: boundedContext(discovery, plannerRole, classification, plannerContract.context_limit_bytes), schemaKey: "planner.v1", parseOptions: { registeredRoles, registeredChecks, registeredArtifactTypes, maxStepAttempts: policy.limits.correction_cycles + 1 }, gatewayCall });
+  const planner = await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: plannerPackage, context: boundedContext(discovery, plannerRole, classification, plannerContract.context_limit_bytes, responseLanguage), schemaKey: "planner.v1", parseOptions: { registeredRoles, registeredChecks, registeredArtifactTypes, maxStepAttempts: policy.limits.correction_cycles + 1 }, gatewayCall });
   applyPlannerToDatabase(runtime, runId, planner.result);
   planner.complete({ outcome: planner.result.outcome });
   if (planner.result.outcome === "questions") {
@@ -296,7 +298,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     for (const plannedStep of planner.result.steps) {
     const contract = loadRoleContract(runtime.db, projectId, plannedStep.role, level);
     const packageContract = { objective: plannedStep.objective, allowed_paths: plannedStep.allowed_paths, artifact_keys: plannedStep.artifact_keys, check_ids: plannedStep.check_ids, plan_hash: structuredHash(planner.result), correction_cycle: cycle, gate_failures: priorGate?.checks?.filter(check => check.required && check.status !== "passed") ?? [] };
-    const worker = await invokeRole({ runtime, queue, runId, roleId: plannedStep.role, level, taskRoot, packageContract, context: boundedContext(discovery, plannedStep.role, classification, contract.context_limit_bytes), schemaKey: "worker.v1", parseOptions: { packageContract }, gatewayCall });
+    const worker = await invokeRole({ runtime, queue, runId, roleId: plannedStep.role, level, taskRoot, packageContract, context: boundedContext(discovery, plannedStep.role, classification, contract.context_limit_bytes, responseLanguage), schemaKey: "worker.v1", parseOptions: { packageContract }, gatewayCall });
     if (worker.result.status !== "completed") {
       worker.fail(`worker_${worker.result.status}`, worker.result.status === "failed");
       const targetState = worker.result.status === "blocked" ? "blocked" : "retry_scheduled";
@@ -340,7 +342,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     runtime.setState(runId, "review_required", { reason: reviewRequirement.reason });
     const reviewerContract = loadRoleContract(runtime.db, projectId, reviewerRole, level);
     const reviewerPackage = { quality_contract: { level: policy.contract.level, version: policy.contract.version }, review_reason: reviewRequirement.reason, plan: planner.result, worker_results: workerResults, correction_cycles: correctionCycles, gate: { status: gate.status, checks: gate.checks }, completion_criteria: planner.result.completion_criteria };
-    const reviewer = await invokeRole({ runtime, queue, runId, roleId: reviewerRole, level, taskRoot, packageContract: reviewerPackage, context: boundedContext(discovery, reviewerRole, classification, reviewerContract.context_limit_bytes), schemaKey: "reviewer.v1", parseOptions: {}, gatewayCall });
+    const reviewer = await invokeRole({ runtime, queue, runId, roleId: reviewerRole, level, taskRoot, packageContract: reviewerPackage, context: boundedContext(discovery, reviewerRole, classification, reviewerContract.context_limit_bytes, responseLanguage), schemaKey: "reviewer.v1", parseOptions: {}, gatewayCall });
     const decisionId = reviewerDecision(runtime, runId, reviewer.step.id, reviewer.result);
     runtime.db.prepare("UPDATE gateway_calls SET decision_ref=? WHERE run_id=? AND step_id=?").run(decisionId, runId, reviewer.step.id);
     reviewer.complete({ decision: reviewer.result.decision });
@@ -354,7 +356,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       return { status: "changes_requested", planner: planner.result, workers: workerResults, gate, reviewer: reviewer.result };
     }
   }
-  if (routeContract?.approval) return { ...requireWorkflowApproval(runtime, runId, routeContract), planner: planner.result, workers: workerResults, gate, reviewer: reviewerResult };
+  if (routeContract?.approval) return { ...requireWorkflowApproval(runtime, runId, routeContract, responseLanguage), planner: planner.result, workers: workerResults, gate, reviewer: reviewerResult };
   let documentation = null;
   if (classification.document_required) {
     const qualityOutcome = documentationOutcome(policy.contract, { gateStatus: gate.status, ownerAccepted: ownerAccepted(runtime, runId) });
@@ -364,7 +366,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     const target = writableDocument(runtime, projectId, planner.result, documentatorRole);
     const documentatorContract = loadRoleContract(runtime.db, projectId, documentatorRole, level);
     const documentPackage = { document_id: target.id, path: target.path, authority: target.authority, expected_version: documentVersion(path.resolve(projectRoot, target.path)), plan_hash: structuredHash(planner.result), reviewer_decision: reviewerResult?.decision ?? "NOT_REQUIRED", quality_outcome: qualityOutcome };
-    const documentator = await invokeRole({ runtime, queue, runId, roleId: documentatorRole, level, taskRoot, packageContract: documentPackage, context: boundedContext(discovery, documentatorRole, classification, documentatorContract.context_limit_bytes), schemaKey: "documentator.v1", parseOptions: { allowedDocumentIds: [target.id] }, gatewayCall });
+    const documentator = await invokeRole({ runtime, queue, runId, roleId: documentatorRole, level, taskRoot, packageContract: documentPackage, context: boundedContext(discovery, documentatorRole, classification, documentatorContract.context_limit_bytes, responseLanguage), schemaKey: "documentator.v1", parseOptions: { allowedDocumentIds: [target.id] }, gatewayCall });
     try { documentation = applyRegisteredPatch({ db: runtime.db, runId, projectId, projectRoot, roleId: documentatorRole, proposal: documentator.result, qualityOutcome }); }
     catch (error) {
       documentator.fail("document_patch_failed", false);

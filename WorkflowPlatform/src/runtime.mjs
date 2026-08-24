@@ -46,8 +46,8 @@ export class Runtime {
       }
       this.db.prepare("INSERT INTO tasks(id,project_id,goal_id,stage_id,title,state,idempotency_key,created_at,updated_at) VALUES(?,?,?,?,?,'received',?,?,?)")
         .run(taskId, project.id, context.goal_id ?? null, context.stage_id ?? null, String(message), taskIdempotencyKey, timestamp, timestamp);
-      this.db.prepare("INSERT INTO workflow_runs(id,task_id,project_id,workflow_id,state,operational_level,user_message,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
-        .run(runId, taskId, project.id, workflow.id, "received", context.operational_level ?? "mvp", String(message), timestamp, timestamp);
+      this.db.prepare("INSERT INTO workflow_runs(id,task_id,project_id,workflow_id,state,operational_level,client,user_message,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
+        .run(runId, taskId, project.id, workflow.id, "received", context.operational_level ?? "mvp", context.client ?? "codex", String(message), timestamp, timestamp);
       if (eventKey) this.db.prepare("INSERT INTO inbox_events(id,project_id,source,event_key,payload_hash,task_id,run_id,received_at) VALUES(?,?,?,?,?,?,?,?)")
         .run(id("inbox"), project.id, source, String(eventKey), payloadHash, taskId, runId, timestamp);
       appendEvent(this.db, { entityType: "task", entityId: taskId, kind: "created", payload: { source, event_key: eventKey } });

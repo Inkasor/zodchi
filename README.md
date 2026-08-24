@@ -22,21 +22,23 @@ The owner still approves important decisions, publication, access changes, deplo
 
 ## Start with one message
 
-Open a new chat in Codex and send it this repository link with the following request:
+Open a new chat in Codex or Claude Code and send it this repository link with the following request:
 
 > Open https://github.com/Inkasor/zodchi, read `ONBOARDING_PROMPT.md`, install the latest Zodchi release, and configure it for my project. Do the technical setup yourself and ask me only for decisions you cannot safely infer.
 
 Keep that setup chat. You can later use it to add projects, change models, create roles, and customize workflows.
 
-Zodchi is currently a Windows-first public beta with Codex as the supported chat entry point. Other model harnesses can already be used as workers when they are installed and configured locally.
+Zodchi is currently a Windows-first public beta. Codex and Claude Code are supported chat entry points. Other model harnesses can already be used as workers when they are installed and configured locally.
 
 ## For developers
 
-The repository contains the source for `WorkflowPlatform` and `AgentGateway`. Architecture, contribution, security, and update details are kept outside this human introduction:
+The repository contains the source for `WorkflowPlatform` and `AgentGateway`. Human documentation is available in English and Russian. Machine-operated setup, update, architecture, and configuration contracts use concise semantic English:
 
 - [Architecture](docs/ARCHITECTURE.md)
-- [Contributing](CONTRIBUTING.md)
-- [Security](SECURITY.md)
+- [Contributing](CONTRIBUTING.md) ([Russian](docs/ru/CONTRIBUTING.md))
+- [Security](SECURITY.md) ([Russian](docs/ru/SECURITY.md))
+- [Changelog](CHANGELOG.md) ([Russian](docs/ru/CHANGELOG.md))
+- [Third-party notices](THIRD_PARTY_NOTICES.md) ([Russian](docs/ru/THIRD_PARTY_NOTICES.md))
 - [Update contract](UPDATE.md)
 
 Zodchi is released under the [MIT License](LICENSE).

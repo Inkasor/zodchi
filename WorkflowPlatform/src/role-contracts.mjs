@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { escapeXml } from "./limited-xml.mjs";
 import { renderQualityContract, validateQualityContract } from "./quality-contracts.mjs";
+import { languageName, normalizeLanguage } from "./language.mjs";
 
 const RESULT_SCHEMAS = new Set(["planner.v1", "worker.v1", "reviewer.v1", "documentator.v1"]);
 
@@ -72,6 +73,7 @@ export function loadRoleContract(db, projectId, roleId, operationalLevel) {
 export function rolePrompt({ contract, qualityContract, packageContract, context, resultSchema }) {
   if (contract.result_schema_key !== resultSchema) throw new Error(`ROLE_RESULT_SCHEMA_MISMATCH: ${contract.result_schema_key} != ${resultSchema}`);
   validateQualityContract(qualityContract);
+  const responseLanguage = normalizeLanguage(context?.response_language) ?? "en";
   return `<workflow_role_prompt schema_version="2" prompt_template_version="${escapeXml(contract.prompt_template_version)}">\n`+
     `  <role_contract id="${escapeXml(contract.role_id)}" version="${escapeXml(contract.version)}">\n`+
     `    <purpose>${escapeXml(contract.purpose)}</purpose>\n`+
@@ -80,6 +82,7 @@ export function rolePrompt({ contract, qualityContract, packageContract, context
     `    <allowed_skills format="application/json">${escapeXml(stableJson(contract.allowed_skills))}</allowed_skills>\n`+
     `  </role_contract>\n`+
     `${renderQualityContract(qualityContract, "  ")}\n`+
+    `  <communication language="${responseLanguage}">Write summaries, questions and other human-facing values in ${languageName(responseLanguage)}. Keep JSON keys, enum values, paths and machine identifiers in English.</communication>\n`+
     `  <project_context format="application/json">${escapeXml(stableJson(context ?? {}))}</project_context>\n`+
     `  <result_contract schema="${escapeXml(resultSchema)}">Return exactly one JSON object matching this schema. Do not wrap it in Markdown and do not expose private reasoning.</result_contract>\n`+
     `  <task_package format="application/json">${escapeXml(stableJson(packageContract ?? {}))}</task_package>\n`+

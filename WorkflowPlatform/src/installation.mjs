@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { resolveWorkflowSettings } from "./paths.mjs";
+import { normalizeLanguage } from "./language.mjs";
 
 function assertNoSecretFields(value, trail = []) {
   if (!value || typeof value !== "object") return;
@@ -59,7 +60,8 @@ export function configureInstallation(spec, options = {}) {
     agentGatewayPolicy: path.relative(workflowRoot, localPolicyFile).replaceAll("\\", "/"),
     agentGatewayDatabase: path.relative(workflowRoot, path.join(gatewayDataRoot, "gateway.sqlite")).replaceAll("\\", "/"),
     projectRoot: shared ? null : path.resolve(spec.projectRoot),
-    workflow: shared ? null : spec.workflow
+    workflow: shared ? null : spec.workflow,
+    responseLanguage: normalizeLanguage(spec.responseLanguage) ?? null
   };
   atomicJson(localPolicyFile, localPolicy);
   atomicJson(runtimeFile, runtime);

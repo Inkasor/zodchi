@@ -1,83 +1,69 @@
-# Переносимые проектные пакеты 2.1.0
+<document id="zodchi_project_packages" status="accepted" authority="zodchi" version="2.1.1" language="en">
+  <title>Portable project packages</title>
+  <purpose>Define the portable workflow packages shipped with Zodchi and their verified boundaries.</purpose>
 
-Все одиннадцать пакетов лежат в `packages/generated`, перечислены в `packages/catalog.json`, проверяются через `npm run packages:check` и импортируются только через предложение изменений и подтверждённое применение. Они не содержат локальных путей, секретов, профилей пользователя или названий моделей. Общие контракты используют версию 2.1.0; пакет `one-c.development` версии 2.1.1 дополнительно поддерживает локальное подключение BSL Language Server с проверкой новых ошибок относительно подтверждённой базы. Бюджеты, проверки и правила эскалации хранятся в нормализованных таблицах Workflow Platform.
+  <package_contract status="accepted">
+    <rule id="generated_packages">All twelve project packages live in packages/generated, are listed in packages/catalog.json, pass npm run packages:check, and may be imported only through a proposed diff followed by confirmed apply.</rule>
+    <rule id="portable_content">Packages contain no local paths, secrets, user profiles, or model names. Shared contracts use version 2.1.0; one-c.development 2.1.1 adds local BSL Language Server integration with accepted baselines.</rule>
+    <rule id="normalized_policy">Budgets, checks, and escalation policies are stored in normalized WorkflowPlatform tables.</rule>
+  </package_contract>
 
-## Общие режимы качества
+  <quality_modes status="accepted">
+    <mode id="prototype">Test one risky assumption with static analysis or language diagnostics and no mandatory expensive independent reviewer.</mode>
+    <mode id="mvp">Run every deterministic check relevant to the change, add purpose-built tests, and review conditionally for risk or correction.</mode>
+    <mode id="production">Rerun MVP checks and add build, release, deployment, observability, rollback, and independent review.</mode>
+    <mode id="security-audit">Run a separate read-only security audit with a required reviewer and no remediation inside the audit.</mode>
+    <rule id="quality_cascade">Each stricter level reruns applicable lower-level checks for the changed result. A previous green result is not inherited after a change.</rule>
+    <rule id="unavailable_is_not_passed">A missing tool or unconfigured target environment is unavailable, never passed.</rule>
+    <rule id="gateway_boundary">AgentGateway performs one bounded model call; WorkflowPlatform owns total budget, one permitted correction cycle, and reviewer selection.</rule>
+  </quality_modes>
 
-Один и тот же контракт роли дополняется коротким контрактом выбранного качества:
+  <package_group id="indie_studio" status="accepted">
+    <packages>indie-studio.project-m, indie-studio.project-r</packages>
+    <roles>producer_assistant, game_designer, narrative_designer, game_programmer, visual_artist, technical_artist, sound_designer, game_tester, playtester, release_operator, classifier, researcher, planner, reviewer, documentator</roles>
+    <routes>strategy, game design, narrative design, game implementation, visual asset, audio asset, prototype, playtest, release</routes>
+    <rule id="separate_project_contracts">Project M and Project R reuse role semantics but keep separate workflow keys, documents, and checks.</rule>
+    <rule id="project_m_checks">Project M uses ESLint and registered monorepo typecheck, build, and map-render commands.</rule>
+    <rule id="project_r_checks">Project R uses ESLint, project tests, build, and map-engine compatibility checks.</rule>
+    <rule id="human_game_acceptance">Technical PASS never closes gameplay, visual, product, or publication acceptance; release requires separate publication authority.</rule>
+  </package_group>
 
-- `prototype` — проверка одной рисковой гипотезы, статический анализ или диагностика языка, без независимого дорогого ревью;
-- `mvp` — полный набор относящихся к изменению программных проверок, специальные тесты и условное ревью по риску или после исправления;
-- `production` — проверки MVP, сборка, выпуск, развёртывание, наблюдаемость и откат, обязательное независимое ревью;
-- `security-audit` — отдельный read-only аудит безопасности с обязательным проверяющим и без исправлений внутри аудита.
+  <package_group id="shared_map_engine" status="accepted">
+    <package>shared-map-engine.core</package>
+    <roles>architect, programmer, tester, reviewer, documentator</roles>
+    <rule id="presentation_neutral">The route goes from consumer contract to version documentation and remains presentation-neutral.</rule>
+    <rule id="consumer_checks">Compatibility checks resolve local Project M and Project R roots from the project registry. A missing consumer stays unavailable.</rule>
+    <known_limit id="project_m_renderer">Production-map integration with the Project M renderer remains unavailable while its test contains a non-portable relative import.</known_limit>
+  </package_group>
 
-Уровни наследуются каскадом: MVP повторно запускает статические проверки прототипа и добавляет тесты; production заново запускает проверки прототипа и MVP, а затем добавляет сборку и развёртывание; security-audit повторяет весь технический каскад и добавляет security-проверки. Старый зелёный результат не переносится на новые изменения. Отсутствующий инструмент или неподключённая рабочая среда имеют статус `unavailable`, а не `passed`.
+  <package_group id="shared_lore" status="accepted">
+    <package>shared-lore.canon</package>
+    <flow>exact source search → proposal → continuity review → owner decision → canon and index → separate Project M and Project R synchronization proposals</flow>
+    <rule id="owner_canon">The package cannot accept shared canon on behalf of the owner.</rule>
+    <rule id="registered_validators">Index, continuity, and source-hash checks remain unavailable until local validators are registered.</rule>
+  </package_group>
 
-AgentGateway выполняет один ограниченный вызов модели. Общий бюджет рабочего потока, один разрешённый цикл исправления и решение о ревью принадлежат Workflow Platform.
+  <package_group id="one_c_development" status="accepted">
+    <package>one-c.development</package>
+    <flow>task analysis → owner boundary confirmation → change → deterministic checks → conditional review → documentation → user acceptance</flow>
+    <roles>analyst, developer, tester, reviewer, documentator</roles>
+    <rule id="independent_acceptance">The analyst keeps business, source, local build, server runtime, and user acceptance as independent criteria.</rule>
+    <rule id="skill_allowlist">Role skills are an explicit project allowlist; importing the package installs no tools.</rule>
+    <check id="bsl_language_server">The BSL Language Server check is required by the workflow but configured locally with an executable path, 1C bin directory, and an owner-accepted Git-revision baseline.</check>
+    <rule id="normalized_bsl_baseline">Normalized check_baselines and check_baseline_diagnostics store the baseline. The generated 186-rule catalog keeps severity and tags separately from project policy.</rule>
+    <rule id="ordinary_bsl_policy">Ordinary work blocks only new critical correctness findings. Complexity, style, documentation, and maintainability findings remain visible but non-blocking.</rule>
+    <rule id="security_bsl_policy">Security audit also blocks new vulnerability and security-attention findings; ordinary style findings remain non-blocking.</rule>
+    <rule id="separate_build_runtime">Stejmins build and target-environment verification are separate project checks and may never be represented as green when unavailable.</rule>
+    <rule id="deterministic_bsl_gate">Interactive MCP/LSP may be offered to 1C roles separately. The deterministic workflow gate uses analyze and parses its JSON report.</rule>
+  </package_group>
 
-## Indie Studio — Project M и Project R
-
-`indie-studio.project-m` и `indie-studio.project-r` являются разными пакетами. Они переиспользуют общий смысл ролей, но имеют разные semantic workflow keys, документы и project checks.
-
-Роли: `producer_assistant`, `game_designer`, `narrative_designer`, `game_programmer`, `visual_artist`, `technical_artist`, `sound_designer`, `game_tester`, `playtester`, `release_operator`, а также служебные `classifier`, `researcher`, `planner`, `reviewer`, `documentator`.
-
-Маршруты: стратегия, game design, narrative design, game implementation, visual asset, audio asset, prototype, playtest и release. Release заканчивается запросом отдельной authority на публикацию; пакет сам ничего не публикует и не развёртывает.
-
-Project M использует ESLint и зарегистрированные команды monorepo typecheck/build/map-render. Project R использует ESLint, собственные tests/build/map-engine compatibility. Ни один technical PASS не закрывает gameplay, visual, product или publication acceptance владельца. В сценариях эти ворота остаются `pending`.
-
-## Shared Map Engine
-
-`shared-map-engine.core` хранит роли architect/programmer/tester/reviewer/documentator и presentation-neutral маршрут от consumer contract до документирования версии. Внутренние typecheck, network/package/core/blueprint/compose suites и production build исполняемы отдельно от потребителей. Проверки совместимости Project M и Project R используют переносимый `project_command`: пакет хранит смысловой ID потребителя и команду, а локальный корень берётся из реестра проектов текущей установки. Отсутствующий потребитель остаётся `unavailable`, не зелёным. Интеграция production-map с renderer Project M пока отдельно помечена `unavailable`, потому что существующий тест содержит непереносимый относительный импорт.
-
-## Shared Lore
-
-`shared-lore.canon` реализует LORE-CHANGE: точный поиск источников → предложение → continuity review → решение владельца → canon/index → отдельные предложения синхронизации M/R. Пакет не может принять общий факт за Петра. До регистрации локальных валидаторов index/continuity/source-hash соответствующие checks остаются `unavailable`.
-
-## Рабочий поток разработки 1С
-
-`one-c.development` задаёт последовательность: анализ задачи → подтверждение границ владельцем → изменение → программные проверки → условное ревью → документирование → пользовательская приёмка. Сам переносимый пакет не содержит путей конкретного компьютера и не меняет файлы проекта при импорте.
-
-Роли: analyst, developer, tester, reviewer и documentator. Аналитик отдельно собирает бизнес-результат, текущее поведение, данные/инварианты и пять независимых критериев: business, source, local build, server runtime и user acceptance.
-
-Предлагаемый skill allowlist использует только уже найденные навыки:
-
-- project: `advertising-project-context`, `advertising-workflow`;
-- EPF: `epf-build`, `epf-validate`;
-- managed forms: `form-info`, `form-edit`, `form-validate`;
-- CFE: `cfe-diff`, `cfe-patch-method`, `cfe-validate`.
-
-Роль получает только навыки, нужные её операции. Установка новых инструментов не выполняется.
-
-`bsl_language_server` поставляется как обязательная, но локально подключаемая проверка. После импорта пакета настройщик:
-
-1. указывает установленный `bsl-language-server.exe` и каталог `bin` платформы 1С;
-2. запускает `one-c-bsl-baseline` на явно принятой Git-ревизии;
-3. запускает `one-c-bsl-configure` для назначения команды проекту.
-
-Техническая исходная точка хранится в нормализованных таблицах `check_baselines` и `check_baseline_diagnostics`. Справочник 186 правил BSL хранит отдельно тип, важность, отображаемый уровень и теги; проектная политика определяет, какие новые срабатывания блокируют конкретный режим качества. Многомегабайтный исходный отчёт существует только во временной папке на время разбора и затем удаляется.
-
-В обычном цикле блокируются только новые критические ошибки корректности. Замечания о сложности, оформлении, документации и поддерживаемости сохраняются для анализа, но не делают рабочий результат красным. Аудит безопасности дополнительно блокирует новые уязвимости и точки внимания безопасности; обычные замечания о стиле не становятся блокирующими даже там.
-
-Сборка Stejmins и проверка целевой рабочей среды не маскируются зелёным: это отдельные проектные проверки и полномочия. Универсальная проверка `one_c_source_structure` удалена как не имеющая подтверждённого проектного контракта. В 1С-пакете нет подменяющих проверок JavaScript, TypeScript, npm или pnpm.
-
-Контрактные сценарии дают состояния:
-
-- green → `approval_required`: source gate зелёный, runtime и user acceptance ещё не выполнены;
-- red → `changes_requested`: доступен один ограниченный correction cycle;
-- timeout → `blocked`, не green;
-- unavailable → `blocked` с явной причиной отсутствующего локального подключения.
-
-Интерактивный MCP/LSP-режим BSL Language Server можно подключать 1С-ролям отдельно; детерминированный барьер рабочего потока использует команду `analyze` и самостоятельно разбирает её JSON-отчёт.
-
-## Корпоративные веб-проекты
-
-Шесть пакетов образуют переносимую настройку компании:
-
-- `company-web.marketplaces-data` — разработка, сбор данных, неисправности и контролируемый выпуск Marketplace Data;
-- `company-web.dashboard` — совместная разработка Dashboard без вмешательства в работу Артёма и без неявных действий с рабочими данными;
-- `company-web.photo-hub`, `company-web.mapping-hub`, `company-web.interior-hub` — человеческий рабочий процесс для коллег, которые ставят задачи обычным языком, включая код, контент и материалы;
-- `company-operations.core` — администрирование, доступы, создание проектов, развёртывание, неисправности и безопасность.
-
-Классификатор выбирает только зарегистрированный вид работы и не ищет управляющие слова в сообщении. Исследование не запускает разработчика. Изменение данных сначала готовится и проверяется на безопасной копии. Доступ, публикация и развёртывание содержат отдельный шаг подтверждения человеком. Проверка программы, проверка рабочей среды и приёмка владельцем не смешиваются.
-
-Эти пакеты можно хранить и передавать вместе с настройками компании, но каждая установка использует собственную базу. На первом этапе реально подключается только Marketplace Data. Dashboard и проекты коллег можно импортировать заранее, однако они ничего не запускают без отдельного проектного hook.
+  <package_group id="company_web" status="accepted">
+    <packages>company-web.marketplaces-data, company-web.dashboard, company-web.photo-hub, company-web.mapping-hub, company-web.interior-hub, company-operations.core</packages>
+    <rule id="ordinary_language">Colleagues describe work in ordinary language; the classifier selects only registered work types and routes.</rule>
+    <rule id="separate_research_execution">Research never starts a developer unless classification selects an execution route.</rule>
+    <rule id="safe_data_change">Data changes are prepared and verified on a safe copy first.</rule>
+    <rule id="owner_actions">Access, publication, and deployment require a separate human approval step.</rule>
+    <rule id="local_installations">Company settings may be shared as packages, but every installation uses its own databases and project hooks.</rule>
+    <rollout status="proposed">Marketplace Data is the first active rollout. Dashboard and colleague projects may be imported in advance but do not execute without their own trusted project hook.</rollout>
+  </package_group>
+</document>

@@ -21,7 +21,7 @@ test("onboarding writes local runtime and provider assignments without changing 
   fs.mkdirSync(projectRoot);
   const universal = { schemaVersion: 1, levels: { prototype: {} }, providers: { codex: { command: "codex", args: [], profiles: {} } } };
   fs.writeFileSync(path.join(gatewayRoot, "policy.json"), JSON.stringify(universal));
-  const result = configureInstallation({ projectRoot, workflow: "test-workflow", gatewayProfiles: { codex: { "local-worker": { model: "local-model", reasoningEffort: "low" } } } }, { workflowRoot, gatewayRoot });
+  const result = configureInstallation({ projectRoot, workflow: "test-workflow", responseLanguage: "ru-RU", gatewayProfiles: { codex: { "local-worker": { model: "local-model", reasoningEffort: "low" } } } }, { workflowRoot, gatewayRoot });
   assert.equal(result.status, "configured");
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(gatewayRoot, "policy.json"), "utf8")), universal);
   const localPolicy = JSON.parse(fs.readFileSync(result.localPolicyFile, "utf8"));
@@ -32,6 +32,7 @@ test("onboarding writes local runtime and provider assignments without changing 
   const runtime = JSON.parse(fs.readFileSync(result.runtimeFile, "utf8"));
   assert.equal(runtime.projectRoot, path.resolve(projectRoot));
   assert.equal(runtime.workflow, "test-workflow");
+  assert.equal(runtime.responseLanguage, "ru");
   fs.rmSync(root, { recursive: true, force: true });
 });
 

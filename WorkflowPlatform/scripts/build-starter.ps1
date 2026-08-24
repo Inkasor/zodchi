@@ -60,15 +60,15 @@ try {
     $gatewayTarget = Join-Path $stage 'AgentGateway'
     New-Item -ItemType Directory -Path $workflowTarget, $gatewayTarget | Out-Null
 
-    foreach ($file in @('package.json', 'LICENSE', 'CHANGELOG.md')) { Copy-RequiredFile $workflowSource $file $workflowTarget }
+    Copy-RequiredFile $workflowSource 'package.json' $workflowTarget
     foreach ($tree in @('catalogs', 'contracts', 'migrations', 'src', 'hooks', 'tests', 'packages')) { Copy-RequiredTree $workflowSource $tree $workflowTarget }
     foreach ($script in @('build-starter.ps1', 'generate-bsl-diagnostic-catalog.mjs', 'generate-packages.mjs', 'run-e2e-evidence.mjs', 'run-hook-evidence.mjs', 'run-owner-boundary-evidence.mjs', 'run-package-boundary-evidence.mjs')) { Copy-RequiredFile $workflowSource (Join-Path 'scripts' $script) $workflowTarget }
     Copy-RequiredFile $workflowSource 'config\runtime.example.json' $workflowTarget
     Copy-RequiredFile $workflowSource 'docs\WorkflowPlatform.md' $workflowTarget
     Copy-RequiredFile $workflowSource 'docs\ProjectPackages.md' $workflowTarget
 
-    foreach ($file in @('package.json', 'LICENSE', 'CHANGELOG.md', 'README.md', 'policy.json', 'model-providers.json')) { Copy-RequiredFile $gatewaySource $file $gatewayTarget }
-    foreach ($tree in @('migrations', 'src', 'tests')) { Copy-RequiredTree $gatewaySource $tree $gatewayTarget }
+    foreach ($file in @('package.json', 'policy.json', 'model-providers.json')) { Copy-RequiredFile $gatewaySource $file $gatewayTarget }
+    foreach ($tree in @('migrations', 'src', 'tests', 'docs')) { Copy-RequiredTree $gatewaySource $tree $gatewayTarget }
 
     Copy-RequiredTree $repoSource 'configs' $stage
     Copy-RequiredTree $repoSource 'docs' $stage

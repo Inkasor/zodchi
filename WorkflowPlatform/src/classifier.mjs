@@ -109,7 +109,7 @@ export function resolveWorkflowRoute(catalog, workType, requestedWorkflowId = nu
   return matches[0].workflow_id;
 }
 
-export function classifierPrompt({ message, catalog, projectSnapshot, acceptedDecisions = [], history = [] }) {
+export function classifierPrompt({ message, catalog, projectSnapshot, acceptedDecisions = [], history = [], responseLanguage = "en" }) {
   const stablePrefix = [
     "WORKFLOW CLASSIFICATION CONTRACT v3",
     "You classify the current user message. Do not plan work, edit files, invoke tools, or invent registry values.",
@@ -120,8 +120,9 @@ export function classifierPrompt({ message, catalog, projectSnapshot, acceptedDe
     `PENDING_INTERACTIONS:${JSON.stringify(catalog.pending_interactions)}`,
     `OUTPUT_FIELDS:${JSON.stringify(REQUIRED_FIELDS)}`,
     "FIXED_OUTPUT_VALUES:{\"schema_version\":1}",
+    `RESPONSE_LANGUAGE:${JSON.stringify(responseLanguage)}`,
     "The contract revision in the heading is not the output schema version. schema_version must be the integer 1.",
-    "Return exactly one JSON object and no Markdown. Use null for pending_interaction_id and human_response when absent. questions must contain 0-5 plain-language Russian questions. A short confirmation is classified from pending interactions and ordered history, never from a keyword rule. Ordinary conversation uses work_type=conversation, artifact_type=none, planning_required=false and reply_mode=conversation. Productive work uses a registered route and a concrete result."
+    "Return exactly one JSON object and no Markdown. Use null for pending_interaction_id and human_response when absent. Write reason, questions and human_response in RESPONSE_LANGUAGE; keep field names and registry values in English. questions must contain 0-5 plain-language questions. A short confirmation is classified from pending interactions and ordered history, never from a keyword rule. Ordinary conversation uses work_type=conversation, artifact_type=none, planning_required=false and reply_mode=conversation. Productive work uses a registered route and a concrete result."
   ].join("\n");
   return `${stablePrefix}\nORDERED_HISTORY:${JSON.stringify(history)}\nCURRENT_USER_MESSAGE:${JSON.stringify(String(message))}`;
 }

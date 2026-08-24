@@ -1,6 +1,7 @@
 {
   "scope": "shared",
   "localDataRoot": "<path-outside-release>/ZodchiData",
+  "responseLanguage": "en",
   "gatewayProfiles": {
     "codex": {
       "local-worker": {

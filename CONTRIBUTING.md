@@ -1,19 +1,21 @@
-# Как помочь проекту
+# Contributing to Zodchi
 
-Спасибо за интерес к Zodchi. Проект открыт для исправлений, новых рабочих потоков, проверок, исполнительных сред и улучшений документации.
+[English](CONTRIBUTING.md) · [Русский](docs/ru/CONTRIBUTING.md)
 
-## Изменения кода
+Thank you for helping Zodchi. Contributions may include fixes, new workflows, checks, model harnesses, and documentation improvements.
 
-1. Создайте короткую ветку от `main`.
-2. Не добавляйте базы, ключи, файлы авторизации, журналы запусков и данные частных проектов.
-3. Выполните `npm test` из корня репозитория.
-4. Для изменений поставки соберите её командой `npm run release:build` и проверьте результат.
-5. В запросе на изменение простыми словами опишите проблему, решение и выполненные проверки.
+## Code changes
 
-## Рабочие потоки
+1. Create a short-lived branch from `main`.
+2. Do not commit databases, credentials, authentication files, run logs, or private project data.
+3. Run `npm test` from the repository root.
+4. For release-layout changes, run `npm run release:build` and validate the result.
+5. In the pull request, explain the problem, the solution, and the checks you ran in plain language.
 
-Переносимые настройки экспортируются штатными командами WorkflowPlatform в семантический XML. Сначала проверьте пакет линтером, затем приложите обезличенные сценарии и ожидаемые маршруты. Локальные пути, профили, названия моделей и секреты в пакет не входят.
+## Workflow packages
 
-## Лицензия
+Portable configuration is exported by WorkflowPlatform as semantic XML. Lint the package first, then include anonymized scenarios and expected routes. Local paths, profile names, model identifiers, and secrets do not belong in a portable package.
 
-Отправляя изменение, вы соглашаетесь распространять его по лицензии MIT этого репозитория.
+## License
+
+By submitting a contribution, you agree that it may be distributed under this repository's MIT License.
