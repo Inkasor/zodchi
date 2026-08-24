@@ -83,7 +83,19 @@ export class Runtime {
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
     transitionRunAndTask(this.db, runId, "classified", { reason: "classification decision stored" });
+    this.settleClarifications(runId, value.pending_interaction_id ?? null);
     return value;
+  }
+
+  // A clarification is a question asked in chat, and the next message ends its life either way: the
+  // classifier names the interaction the user answered, and everything asked in an earlier run is
+  // superseded. Left pending they accumulate, and the next classifier reads questions the user has
+  // already answered as still open.
+  settleClarifications(runId, answeredId = null) {
+    const run = this.get(runId), timestamp = now();
+    if (answeredId) this.db.prepare("UPDATE approvals SET status='approved',resolved_at=? WHERE id=? AND kind='clarification' AND status='pending'").run(timestamp, answeredId);
+    this.db.prepare(`UPDATE approvals SET status='cancelled',resolved_at=? WHERE kind='clarification' AND status='pending' AND run_id<>?
+      AND task_id IN (SELECT id FROM tasks WHERE project_id=?)`).run(timestamp, runId, run.project_id);
   }
 
   plan(runId, plan) {

@@ -114,19 +114,46 @@ export function resolveWorkflowRoute(catalog, workType, requestedWorkflowId = nu
 }
 
 export function classifierPrompt({ message, catalog, projectSnapshot, acceptedDecisions = [], history = [], responseLanguage = "en" }) {
-  const stablePrefix = [
-    "WORKFLOW CLASSIFICATION CONTRACT v3",
+  // Everything above the run state is identical between runs of the same project, and providers only
+  // reuse a cached prompt prefix once it passes their minimum length, so the whole invariant contract
+  // is stated here and every field that carries run state is kept below it.
+  const invariant = [
+    "WORKFLOW CLASSIFICATION CONTRACT v4",
     "You classify the current user message. Do not plan work, edit files, invoke tools, or invent registry values.",
+    "Return exactly one JSON object and no Markdown.",
+    `OUTPUT_FIELDS:${JSON.stringify(REQUIRED_FIELDS)}`,
+    "FIXED_OUTPUT_VALUES:{\"schema_version\":1}",
+    "The contract revision in the heading is not the output schema version. schema_version must be the integer 1.",
+    "FIELD_SEMANTICS:",
+    "- work_type, artifact_type, domain, discipline, quality_mode, planning_level: one registry value each, taken from ALLOWED_VALUES and never invented.",
+    "- risk: low when the message cannot damage anything, medium when it changes registered material, high when it is irreversible or touches production.",
+    "- reply_mode: conversation for ordinary talk, research for a bounded question answered from registered sources, clarification when required information is missing, work when a registered route must run.",
+    "- work_type=conversation forces artifact_type=none, planning_required=false and reply_mode=conversation.",
+    "- reply_mode=work requires planning_required=true and a work_type that REGISTERED_ROUTES actually routes.",
+    "- planning_required: the answer needs ordered steps rather than a single response.",
+    "- human_required: a person must decide or approve before the result can stand.",
+    "- document_required: the result belongs in a registered document, not only in the reply.",
+    "- needs_questions must equal questions.length > 0, and must be true exactly when reply_mode is clarification.",
+    "- questions: 0 to 5 plain-language questions, each one a real choice only the user can make. Never ask what the registry or the project files already answer.",
+    "- pending_interaction_id: the id from PENDING_INTERACTIONS that this message answers, or null. A short confirmation is resolved from pending interactions and ordered history, never from a keyword rule.",
+    "- reason: why this classification, in RESPONSE_LANGUAGE.",
+    "- human_response: the reply text when reply_mode is conversation, otherwise null.",
+    "LEVEL_SELECTION:",
+    "- planning_level measures how much ordered work the answer needs, not how important it is. L0 one response with no steps. L1 one bounded step. L2 a few dependent steps inside one area. L3 work crossing areas, releases, or anything irreversible. L4 a full audit.",
+    "- clarification and conversation are always L0 unless the pending work already has a level.",
+    "- quality_mode measures how much verification the result must survive. prototype throwaway or exploratory, mvp the normal registered change, production irreversible or user-visible, security an audit of access or secrets.",
+    "- Choose the lowest level and mode the message honestly needs, and choose the same ones for the same message: identical input must produce identical values.",
+    "Write reason, questions and human_response in RESPONSE_LANGUAGE; keep field names and registry values in English.",
     `ALLOWED_VALUES:${JSON.stringify({ work_type: catalog.work_types, artifact_type: catalog.artifact_types, domain: catalog.domains, discipline: catalog.disciplines, quality_mode: catalog.quality_modes, planning_level: catalog.planning_levels, risk: [...RISKS], reply_mode: [...REPLY_MODES] })}`,
-    `REGISTERED_ROUTES:${JSON.stringify(catalog.routes)}`,
+    `REGISTERED_ROUTES:${JSON.stringify(catalog.routes)}`
+  ].join("\n");
+  const runState = [
+    `RESPONSE_LANGUAGE:${JSON.stringify(responseLanguage)}`,
     `PROJECT_SNAPSHOT:${JSON.stringify(projectSnapshot)}`,
     `ACCEPTED_DECISIONS:${JSON.stringify(acceptedDecisions)}`,
     `PENDING_INTERACTIONS:${JSON.stringify(catalog.pending_interactions)}`,
-    `OUTPUT_FIELDS:${JSON.stringify(REQUIRED_FIELDS)}`,
-    "FIXED_OUTPUT_VALUES:{\"schema_version\":1}",
-    `RESPONSE_LANGUAGE:${JSON.stringify(responseLanguage)}`,
-    "The contract revision in the heading is not the output schema version. schema_version must be the integer 1.",
-    "Return exactly one JSON object and no Markdown. Use null for pending_interaction_id and human_response when absent. Write reason, questions and human_response in RESPONSE_LANGUAGE; keep field names and registry values in English. questions must contain 0-5 plain-language questions. A short confirmation is classified from pending interactions and ordered history, never from a keyword rule. Ordinary conversation uses work_type=conversation, artifact_type=none, planning_required=false and reply_mode=conversation. Productive work uses a registered route and a concrete result."
+    `ORDERED_HISTORY:${JSON.stringify(history)}`,
+    `CURRENT_USER_MESSAGE:${JSON.stringify(String(message))}`
   ].join("\n");
-  return `${stablePrefix}\nORDERED_HISTORY:${JSON.stringify(history)}\nCURRENT_USER_MESSAGE:${JSON.stringify(String(message))}`;
+  return `${invariant}\n${runState}`;
 }

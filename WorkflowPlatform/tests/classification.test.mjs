@@ -303,3 +303,51 @@ test("project registration is idempotent and rejects conflicting identity", () =
   assert.throws(() => registerProject(dbFile, { id: "other", name: "Project", root_path: path.join(root, "other") }), /belongs to another project/);
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test("the classifier prompt keeps run state below an invariant head long enough for a provider to cache", () => {
+  const { root, db } = fixture("workflow-classification-prefix-");
+  const catalog = classificationCatalog(db, "project");
+  const build = (message, head) => classifierPrompt({ message, catalog, projectSnapshot: { git: { head } }, acceptedDecisions: [], history: [], responseLanguage: "ru" });
+  const first = build("first message", "aaa"), second = build("second message", "bbb");
+  let shared = 0;
+  while (shared < first.length && shared < second.length && first[shared] === second[shared]) shared += 1;
+  // Providers reuse a cached prefix only past a minimum length, so the invariant head has to clear it
+  // with room to spare on the narrowest project in the registry.
+  assert.equal(first.indexOf("PROJECT_SNAPSHOT") > 3800, true, `invariant head is only ${first.indexOf("PROJECT_SNAPSHOT")} bytes`);
+  assert.equal(shared >= first.indexOf("PROJECT_SNAPSHOT"), true, `two runs share only ${shared} bytes`);
+  for (const field of ["PROJECT_SNAPSHOT", "ACCEPTED_DECISIONS", "PENDING_INTERACTIONS", "ORDERED_HISTORY", "CURRENT_USER_MESSAGE"]) {
+    assert.equal(first.indexOf(field) > first.indexOf("REGISTERED_ROUTES"), true, `${field} must follow the invariant head`);
+  }
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("a clarification stops being pending once the next message answers or supersedes it", async () => {
+  const { root, project, dbFile, db } = fixture("workflow-clarification-settle-");
+  db.close();
+  const asking = decision({
+    work_type: "clarification", artifact_type: "none", discipline: "general", planning_level: "L0",
+    planning_required: false, reply_mode: "clarification", needs_questions: true,
+    questions: ["Какие документы проверить первыми?"], reason: "Не указаны исходные документы."
+  });
+  const first = await processMessage({
+    message: "Разберись со старыми материалами", project, dbFile, workflowDefinition: definition(), execute: true,
+    gatewayCall: async () => receipt(JSON.stringify(asking))
+  });
+  const opened = openDb(dbFile);
+  const pendingId = opened.prepare("SELECT id FROM approvals WHERE run_id=? AND status='pending'").get(first.run_id).id;
+  opened.close();
+
+  const answered = await processMessage({
+    message: "Начни с бестиария", project, dbFile, workflowDefinition: definition(), execute: true,
+    gatewayCall: async () => receipt(JSON.stringify({ ...asking, questions: ["Только классифицировать или готовить предложение?"], pending_interaction_id: pendingId }))
+  });
+  const verified = openDb(dbFile);
+  assert.equal(verified.prepare("SELECT status FROM approvals WHERE id=?").get(pendingId).status, "approved");
+  // Only the question asked by the newest run is still open; nothing older survives to be re-asked.
+  const open = verified.prepare("SELECT run_id FROM approvals WHERE status='pending'").all();
+  assert.equal(open.length, 1);
+  assert.equal(open[0].run_id, answered.run_id);
+  verified.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
