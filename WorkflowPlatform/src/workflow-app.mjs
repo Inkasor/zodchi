@@ -161,10 +161,12 @@ export async function processMessage({
       runtime.linkGateway(runId, classifierReceipt);
       classification = parseClassificationReceipt(classifierReceipt, catalog);
     }
-    const routedWorkflow = resolveWorkflowRoute(catalog, classification.work_type);
-    if (routedWorkflow !== workflow) {
-      runtime.db.prepare("UPDATE workflow_runs SET workflow_id=?,updated_at=? WHERE id=?").run(routedWorkflow, now(), runId);
-      workflow = routedWorkflow;
+    if (classification.reply_mode === "work") {
+      const routedWorkflow = resolveWorkflowRoute(catalog, classification.work_type);
+      if (routedWorkflow !== workflow) {
+        runtime.db.prepare("UPDATE workflow_runs SET workflow_id=?,updated_at=? WHERE id=?").run(routedWorkflow, now(), runId);
+        workflow = routedWorkflow;
+      }
     }
     runtime.classify(runId, classification);
     initializeQualityRun(runtime, runId, classification, classifierReceipt);

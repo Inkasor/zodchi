@@ -115,6 +115,36 @@ test("ordinary conversation invokes only the classifier and returns a plain huma
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("the classifier is offered only routed work types plus the direct answers that never enter a workflow", () => {
+  const { root, db } = fixture("workflow-classification-catalog-");
+  db.prepare("DELETE FROM workflow_routes WHERE project_id='project' AND work_type_id NOT IN ('narrative','decision')").run();
+  const catalog = classificationCatalog(db, "project");
+  assert.deepEqual(catalog.work_types, ["clarification", "conversation", "decision", "narrative", "research"]);
+  assert.throws(() => validateClassificationDecision(decision({ work_type: "implementation" }), catalog), /CLASSIFICATION_VALUE_UNREGISTERED: work_type=implementation/);
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("a project without a conversation route still answers a conversation instead of failing classification", async () => {
+  const { root, project, dbFile, db } = fixture("workflow-conversation-unrouted-");
+  db.prepare("DELETE FROM workflow_routes WHERE project_id='project' AND work_type_id NOT IN ('narrative','decision')").run();
+  db.close();
+  const conversation = decision({
+    work_type: "conversation", artifact_type: "none", discipline: "general", planning_level: "L0",
+    planning_required: false, reply_mode: "conversation", reason: "Пользователь спрашивает о проекте.", human_response: "Отвечаю по существу."
+  });
+  const result = await processMessage({
+    message: "Как дела с каноном?", project, dbFile, workflowDefinition: definition(), execute: true,
+    gatewayCall: async () => receipt(JSON.stringify(conversation))
+  });
+  assert.equal(result.route, "conversation");
+  assert.equal(result.response, "Отвечаю по существу.");
+  const verified = openDb(dbFile);
+  assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(result.run_id).state, "completed");
+  verified.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("research invokes classifier then researcher without planner, worker or reviewer", async () => {
   const { root, project, dbFile, db } = fixture("workflow-research-route-");
   db.close();
