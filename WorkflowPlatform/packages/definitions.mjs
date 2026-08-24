@@ -296,7 +296,18 @@ function companyWebPackages() {
     disabledCheck("company_ops_deploy_health", "Company deployment health", "requires_project_specific_binding", [checkBinding("production", "deployment_evidence")]),
     ...securityChecks("company_ops")
   ];
+  const zodchiChecks = completeSoftwareChecks([
+    commandCheck("zodchi_static", "Zodchi source and semantic validation", "node", ["scripts/validate-source.mjs"], [checkBinding("prototype", null)], 600),
+    commandCheck("zodchi_tests", "Zodchi complete test suite", "npm.cmd", ["test"], [checkBinding("mvp", "code")], 3600),
+    commandCheck("zodchi_release_build", "Zodchi verified release build", "powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/build-release.ps1", "-Output", "dist/Zodchi-gate", "-Replace"], [checkBinding("production", "release_package")], 3600)
+  ], "zodchi_static", "zodchi");
   return [
+    companyWebPackage({ key: "zodchi.product-development", version: "2.1.0", purpose: "Zodchi product development workflow with separate source, installed release and local data boundaries.", checks: zodchiChecks, codeChecks: ["zodchi_tests"], dataChecks: ["zodchi_tests"], releaseChecks: ["zodchi_tests", "zodchi_release_build"], documents: [
+      { key: "product_readme", path: "README.md", type: "authority", authority: "zodchi" },
+      { key: "architecture", path: "docs/ARCHITECTURE.md", type: "authority", authority: "zodchi" },
+      { key: "product_identity", path: "product.json", type: "reference", authority: "zodchi" },
+      { key: "changelog", path: "CHANGELOG.md", type: "plan", authority: "zodchi" }
+    ] }),
     companyWebPackage({ key: "company-web.marketplaces-data", version: "2.1.1", purpose: "Company workflow for MarketplacesData development, data collection, production incidents and controlled deployment.", checks: marketChecks, codeChecks: ["marketplaces_tests", "marketplaces_build"], dataChecks: ["marketplaces_tests", "marketplaces_build"], releaseChecks: marketChecks.map(item => item.key), documents: [
       { key: "repo_rules", path: "AGENTS.md", type: "authority", authority: "marketplaces-data" },
       { key: "current_change", path: "docs/CURRENT_CHANGE.md", type: "plan", authority: "petr" },

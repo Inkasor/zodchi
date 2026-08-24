@@ -26,7 +26,7 @@ $newHookHash = (Get-FileHash -LiteralPath $newHook -Algorithm SHA256).Hash
 
 $parent = Split-Path -Parent $destinationPath
 if (-not $parent) { throw 'Destination must have a parent folder.' }
-New-Item -ItemType Directory -Force -Path $parent | Out-Null
+if (-not (Test-Path -LiteralPath $parent -PathType Container)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
 $stage = Join-Path $parent ('.zodchi-install-' + [Guid]::NewGuid().ToString('N'))
 $rollback = $destinationPath + '.rollback-' + [Guid]::NewGuid().ToString('N')
 $parentPrefix = $parent.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar

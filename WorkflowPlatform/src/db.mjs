@@ -5,6 +5,9 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 const defaultMigrationsDirectory = fileURLToPath(new URL("../migrations", import.meta.url));
+const migrationChecksumAliases = new Map([
+  ["7:902b94730a8d048ab08ccd611a9b82f29226a3ef3c5df7d5b02b81b7dd82a380", new Set(["8080e01be11bc8882303b50e3d51dc00d1dffcd23c3f08691dee6d7452770c1c"])]
+]);
 
 function migrationFiles(directory) {
   const files = fs.readdirSync(directory).filter(name => /^\d{3}_[a-z0-9_]+\.sql$/i.test(name)).sort();
@@ -36,7 +39,8 @@ export function applyMigrations(db, directory = defaultMigrationsDirectory) {
   for (const row of applied) {
     const expected = migrations.find(item => item.version === row.version);
     if (!expected) throw new Error(`MIGRATION_UNKNOWN_APPLIED_VERSION: ${row.version}`);
-    if (expected.name !== row.name || expected.checksum !== row.checksum) throw new Error(`MIGRATION_CHECKSUM_MISMATCH: ${row.version}`);
+    const compatible = migrationChecksumAliases.get(`${expected.version}:${expected.checksum}`)?.has(row.checksum) === true;
+    if (expected.name !== row.name || (expected.checksum !== row.checksum && !compatible)) throw new Error(`MIGRATION_CHECKSUM_MISMATCH: ${row.version}`);
   }
   const insert = db.prepare("INSERT INTO schema_migrations(version,name,checksum,applied_at) VALUES(?,?,?,?)");
   for (const migration of migrations.filter(item => !applied.some(row => row.version === item.version))) {

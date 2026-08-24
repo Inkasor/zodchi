@@ -1,94 +1,42 @@
 # Zodchi
 
-Zodchi помогает одному человеку управлять командой цифровых специалистов из обычного чата.
+[English](README.md) · [Русский](docs/ru/README.md)
 
-Вы пишете задачу человеческим языком. Система сама определяет, что требуется, собирает только нужный контекст, выбирает рабочий процесс и модели, ведёт документы, запускает проверки и возвращает понятный результат. Внутри могут работать разные модели и агентские программы, но пользователю не нужно вручную переключаться между ними.
+Zodchi turns one ordinary AI chat into a coordinated team for real project work.
 
-Проект распространяется по лицензии MIT. Текущая версия — публичная бета.
+You describe the result in your own words. Zodchi decides what kind of work is needed, gives each specialist only the relevant context, runs the appropriate checks, records accepted decisions, and returns a clear answer in the same chat.
 
-## Что с ним можно делать
+## Why use it
 
-- Разрабатывать программу: уточнить задачу, составить план, написать код, проверить его и зафиксировать результат.
-- Вести игровой проект: прорабатывать механику, сюжет, визуальные и звуковые материалы, прототипы и выпуск.
-- Исследовать рынок и готовить маркетинг: собирать данные, сравнивать варианты, строить план и выпускать материалы.
-- Организовать производство видео и другого контента: от идеи и сценария до заданий исполнителям и проверки результата.
-- Помогать коллегам без опыта программирования: человек общается как обычно, а технические роли и проверки работают под капотом.
-- Настроить собственные рабочие потоки для аналитики, обучения, 1С, внутренних процессов компании или нового направления.
+- Better results: planning, execution, review, and documentation follow explicit workflows instead of one oversized prompt.
+- Lower model costs: routine work can use cheaper models, while stronger models are reserved for difficult decisions.
+- Less repeated context: project facts and documents are selected programmatically and reused efficiently.
+- Predictable quality: code, documents, releases, and other outputs pass checks configured for the project.
+- One familiar interface: people keep talking naturally in their AI coding assistant.
 
-Главная идея — не заменить человека автономной компанией, а дать ему управляемую команду. Важные решения, публикация, доступы и приёмка результата остаются у владельца.
+## What it can help with
 
-## Зачем это нужно
+Zodchi can coordinate software development, research, marketing and content production, game design, visual and audio work, data operations, releases, and incident response. Its workflows and roles are configurable, so the same installation can support very different projects.
 
-В обычном чате решения теряются, модели повторно читают одни и те же файлы, сильная модель тратится на простую работу, а качество зависит от длинного промпта. Zodchi выносит повторяемую часть в программу:
+The owner still approves important decisions, publication, access changes, deployment, and subjective product acceptance.
 
-- контекст собирается по зарегистрированным документам;
-- задача классифицируется до запуска дорогой работы;
-- роли получают ограниченные задания и права;
-- простую работу можно отдать доступной модели, сложное решение — сильной;
-- код и документы проходят настроенные для проекта проверки;
-- статистика времени, токенов и кэша сохраняется локально;
-- рабочие потоки можно экспортировать, проверить и передать другому человеку.
+## Start with one message
 
-## Как это выглядит для пользователя
+Open a new chat in Codex and send it this repository link with the following request:
 
-Вы создаёте обычный чат Codex и пишете, например:
+> Open https://github.com/Inkasor/zodchi, read `ONBOARDING_PROMPT.md`, install the latest Zodchi release, and configure it for my project. Do the technical setup yourself and ask me only for decisions you cannot safely infer.
 
-> Давай разберём, почему выгрузка иногда пропускает товары, и починим это.
+Keep that setup chat. You can later use it to add projects, change models, create roles, and customize workflows.
 
-Проектный hook передаёт сообщение в Zodchi. WorkflowPlatform определяет намерение и маршрут. Если сведений не хватает, вопрос задаётся в этом же чате. Когда задача понятна, AgentGateway запускает назначенные модели, WorkflowPlatform выполняет проверки и документирование, а в чат возвращается короткий человеческий итог.
+Zodchi is currently a Windows-first public beta with Codex as the supported chat entry point. Other model harnesses can already be used as workers when they are installed and configured locally.
 
-Никакие специальные команды для повседневной работы не нужны.
+## For developers
 
-## Что входит в репозиторий
+The repository contains the source for `WorkflowPlatform` and `AgentGateway`. Architecture, contribution, security, and update details are kept outside this human introduction:
 
-- `WorkflowPlatform` — классификация, сбор контекста, рабочие потоки, документы, проверки и состояние задач;
-- `AgentGateway` — ограниченные вызовы моделей, профили исполнителей и техническая статистика;
-- `ONBOARDING_PROMPT.md` — инструкция модели для первой настройки;
-- `configs` — начальные справочники и шаблоны;
-- `QUICKSTART.md` — короткая установка и проверка;
-- `UPDATE.md` — безопасное обновление без потери личных данных.
+- [Architecture](docs/ARCHITECTURE.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security](SECURITY.md)
+- [Update contract](UPDATE.md)
 
-В поставке есть начальные пакеты для небольшой игровой студии, общих игровых проектов, 1С-разработки и корпоративных веб-проектов. Это отправная точка: роли, маршруты, модели, документы и проверки можно менять под себя.
-
-## Начало работы
-
-Пока поддерживается основной пользовательский вход через Codex на Windows. Для работы нужен Node.js 24 или новее. Внутренними исполнителями уже могут быть Codex, Claude Code, Kimi, OpenCode, Cursor и совместимые с OpenAI API модели — если соответствующая программа или доступ настроены локально.
-
-1. Скачайте архив последней версии со страницы Releases, а не исходники ветки `main`.
-2. Распакуйте его в постоянную папку.
-3. Создайте новый чат Codex — внутри проекта или отдельно.
-4. Передайте в чат файл `ONBOARDING_PROMPT.md` и напишите:
-
-> Прочитай этот файл и запусти настройку.
-
-Модель проверит программы, предложит папку личных данных, зарегистрирует первый проект, покажет роли и попросит подтвердить только важные решения. Доверие к hook всегда включает человек в настройках Codex.
-
-Не закрывайте настроечный чат: в нём удобно добавлять проекты, менять модели, создавать роли и развивать собственные рабочие потоки.
-
-Подробные команды находятся в [QUICKSTART.md](QUICKSTART.md).
-
-## Данные и обновления
-
-Папка Zodchi заменяема. Личные базы, настройки, проекты, ключи и история запусков хранятся отдельно и не входят в релиз. Поэтому программу можно обновлять без переноса рабочих данных.
-
-Настройки рабочих потоков экспортируются в проверяемый семантический XML. В нём нет ключей, абсолютных путей, локальных идентификаторов профилей и названий моделей. Перед импортом система показывает изменения и ждёт подтверждения.
-
-## Разработка
-
-Репозиторий содержит исходники обоих модулей. Проверка выполняется из корня:
-
-```powershell
-npm test
-```
-
-Релизная папка собирается отдельно:
-
-```powershell
-npm run release:build -- -Output <папка-поставки>
-```
-
-Правила участия описаны в [CONTRIBUTING.md](CONTRIBUTING.md), сообщения об уязвимостях — в [SECURITY.md](SECURITY.md).
-
-## Лицензия
-
-Zodchi распространяется по лицензии [MIT](LICENSE). Сведения о сторонних компонентах находятся в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Zodchi is released under the [MIT License](LICENSE).

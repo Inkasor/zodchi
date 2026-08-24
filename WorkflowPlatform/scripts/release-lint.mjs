@@ -72,6 +72,7 @@ const required = [
   "WorkflowPlatform/scripts/run-package-boundary-evidence.mjs",
   "WorkflowPlatform/packages/catalog.json",
   "WorkflowPlatform/packages/definitions.mjs",
+  "WorkflowPlatform/packages/generated/zodchi.product-development.xml",
   "WorkflowPlatform/packages/generated/indie-studio.project-m.xml",
   "WorkflowPlatform/packages/generated/indie-studio.project-r.xml",
   "WorkflowPlatform/packages/generated/shared-map-engine.core.xml",
@@ -98,6 +99,7 @@ const required = [
   "scripts/build-release.ps1",
   "scripts/validate-source.mjs",
   "tools/install-or-update.ps1",
+  "tools/install-latest.ps1",
   "tools/release-lint.mjs"
 ];
 

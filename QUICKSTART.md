@@ -1,98 +1,28 @@
-# Быстрый старт Zodchi
+<document id="zodchi_quickstart" status="accepted" authority="zodchi" version="0.3.0-beta.2" language="ru">
+  <title>Быстрый запуск Zodchi моделью</title>
+  <purpose>Эта инструкция предназначена для LLM. Человек описывает желаемый результат, а модель выполняет технические команды и задаёт только необходимые смысловые вопросы.</purpose>
 
-## 1. Подготовьте систему
+  <entry status="accepted">
+    <user_message>Открой репозиторий Zodchi, прочитай ONBOARDING_PROMPT.md, установи последнюю версию и настрой её для моего проекта.</user_message>
+    <rule id="llm_operates_tools">Не перекладывай команды на человека, если можешь безопасно выполнить их своими инструментами.</rule>
+    <rule id="human_decisions_only">Спрашивай человека только о папке установки, подключаемом проекте, назначениях моделей, правах, публикации и других решениях владельца.</rule>
+  </entry>
 
-Нужны Windows, Node.js 24 или новее и работающий Codex CLI.
+  <installation status="accepted">
+    <step order="1">Прочитай ONBOARDING_PROMPT.md полностью.</step>
+    <step order="2">Если Zodchi ещё не установлен, запусти tools/install-latest.ps1 с подтверждённой папкой назначения.</step>
+    <step order="3">Проверь Node.js 24 или новее и Codex CLI.</step>
+    <step order="4">Создай отдельную папку личных данных вне папки программы.</step>
+    <step order="5">Зарегистрируй проект, импортируй подтверждённый пакет рабочего процесса и назначь локальные профили моделей.</step>
+    <step order="6">Создай проектный .codex/hooks.json из шаблона поставки.</step>
+    <step order="7">Попроси человека подтвердить доверие к hook в интерфейсе Codex и перезапустить Codex.</step>
+    <step order="8">После перезапуска проверь обычным сообщением, что запуск и квитанции появились в локальных базах.</step>
+  </installation>
 
-```powershell
-node --version
-codex --version
-```
-
-## 2. Запустите настройку
-
-Создайте новый чат Codex, передайте ему `ONBOARDING_PROMPT.md` и напишите:
-
-> Прочитай этот файл и запусти настройку.
-
-Модель проверит поставку и предложит:
-
-- отдельную папку для личных данных;
-- первый проект;
-- подходящий пакет рабочих процессов;
-- роли, документы и программные проверки;
-- локальные назначения агентских программ и моделей.
-
-Внутренние идентификаторы заполняются программно. Человек подтверждает только смысловые решения, доступы и доверие к hook.
-
-## 3. Подключите проектный hook
-
-Настройщик возьмёт `configs/codex-hooks.template.json`, подставит путь установки и создаст или обновит `.codex/hooks.json` выбранного проекта.
-
-Codex попросит доверять новому или изменённому hook. Это подтверждается вручную в настройках проекта. После подтверждения перезапустите Codex, создайте новый чат проекта и отправьте обычное сообщение.
-
-## 4. Проверьте установку
-
-Из корня поставки можно выполнить полную локальную проверку:
-
-```powershell
-npm test
-```
-
-Статистика конкретного запуска выводится без сохранения полного ответа модели:
-
-```powershell
-node WorkflowPlatform/src/cli.mjs run-statistics --db <workflow-db> --run <run-id>
-```
-
-В отчёте видны маршрут, роли, модели, входящие и исходящие токены, кэш, время, попытки и программные проверки.
-
-## 5. Перенесите рабочий поток
-
-Сначала создаётся предложение импорта:
-
-```powershell
-node WorkflowPlatform/src/cli.mjs workflow-import-propose --db <workflow-db> --package <package.xml> --proposal <proposal.json> --project <project-id>
-```
-
-После просмотра изменений и подтверждения владельца:
-
-```powershell
-node WorkflowPlatform/src/cli.mjs workflow-import-apply --db <workflow-db> --proposal <proposal.json> --project <project-id> --confirmed-by <name>
-```
-
-Локальные пути, секреты, профили и названия моделей не переносятся.
-
-## 6. Восстановите прерванный запуск
-
-```powershell
-node WorkflowPlatform/src/cli.mjs queue-recover --db <workflow-db>
-node WorkflowPlatform/src/cli.mjs run-resume --db <workflow-db> --run <run-id>
-```
-
-Необратимый шаг и повтор после исчерпания попыток требуют отдельного подтверждения. Не пройденная обязательная проверка не может считаться успешной.
-
-## 7. Сделайте снимок личных баз
-
-```powershell
-node WorkflowPlatform/src/cli.mjs backup --db <workflow-db> --gateway-db <gateway-db> --out <новая-папка-снимка>
-```
-
-Снимок содержит локальную историю и может быть чувствительным. Не публикуйте его и не помещайте в поставку.
-
-Восстановление выполняется только в новые пути:
-
-```powershell
-node WorkflowPlatform/src/cli.mjs restore --backup <папка-снимка> --db <новая-workflow-db> --gateway-db <новая-gateway-db>
-```
-
-## 8. Обновите программу
-
-Следуйте [UPDATE.md](UPDATE.md). Обновление заменяет только программу; папка личных данных остаётся на месте.
-
-## Важные границы
-
-- Полные запросы и ответы моделей в базах не сохраняются.
-- Недоступная проверка имеет статус «недоступна», а не «пройдена».
-- Игровую, визуальную, продуктовую, бизнес-приёмку и публикацию выполняет владелец.
-- Поставка не содержит чужих проектов, баз, ключей и файлов авторизации.
+  <verification status="accepted">
+    <command id="product_tests">npm test</command>
+    <command id="run_statistics">node WorkflowPlatform/src/cli.mjs run-statistics --db &lt;workflow-db&gt; --run &lt;run-id&gt;</command>
+    <rule id="no_raw_transcript">Полные запросы и ответы моделей в базах не сохраняются.</rule>
+    <rule id="failed_gate_is_not_green">Недоступная или не пройденная обязательная проверка не считается успешной.</rule>
+  </verification>
+</document>

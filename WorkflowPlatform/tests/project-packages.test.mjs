@@ -13,8 +13,8 @@ import { PACKAGE_DEFINITIONS } from "../packages/definitions.mjs";
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 function temporaryRoot(prefix) { const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir(); fs.mkdirSync(parent, { recursive: true }); return fs.mkdtempSync(path.join(parent, prefix)); }
 
-test("all eleven registered project packages are complete, generated and free of local identity", () => {
-  assert.deepEqual(PACKAGE_DEFINITIONS.map(item => item.key), ["indie-studio.project-m", "indie-studio.project-r", "shared-map-engine.core", "shared-lore.canon", "one-c.development", "company-web.marketplaces-data", "company-web.dashboard", "company-web.photo-hub", "company-web.mapping-hub", "company-web.interior-hub", "company-operations.core"]);
+test("all twelve registered project packages are complete, generated and free of local identity", () => {
+  assert.deepEqual(PACKAGE_DEFINITIONS.map(item => item.key), ["indie-studio.project-m", "indie-studio.project-r", "shared-map-engine.core", "shared-lore.canon", "one-c.development", "zodchi.product-development", "company-web.marketplaces-data", "company-web.dashboard", "company-web.photo-hub", "company-web.mapping-hub", "company-web.interior-hub", "company-operations.core"]);
   for (const packageValue of PACKAGE_DEFINITIONS) {
     validateWorkflowPackage(packageValue);
     const file = path.join(repositoryRoot, "packages", "generated", `${packageValue.key}.xml`), source = fs.readFileSync(file, "utf8");
@@ -23,6 +23,15 @@ test("all eleven registered project packages are complete, generated and free of
     assert.equal(packageValue.roles.every(role => role.contract.purpose && role.contract.result_schema_key && role.contract.allowed_profile_keys.length), true);
     assert.equal(packageValue.workflows.every(workflow => workflow.steps.length && workflow.transitions.length === workflow.steps.length - 1), true);
   }
+});
+
+test("Zodchi develops from source, verifies the assembled release and keeps local data external", () => {
+  const packageValue = PACKAGE_DEFINITIONS.find(item => item.key === "zodchi.product-development");
+  assert.deepEqual(packageValue.documents.map(item => item.path), ["README.md", "docs/ARCHITECTURE.md", "product.json", "CHANGELOG.md"]);
+  assert.equal(packageValue.checks.find(item => item.key === "zodchi_static").bindings.some(item => item.quality_mode_key === "prototype"), true);
+  assert.equal(packageValue.checks.find(item => item.key === "zodchi_tests").bindings.some(item => item.quality_mode_key === "mvp"), true);
+  assert.equal(packageValue.checks.find(item => item.key === "zodchi_release_build").bindings.some(item => item.quality_mode_key === "production"), true);
+  assert.equal(packageValue.purpose.includes("local data boundaries"), true);
 });
 
 test("company web packages use model classification, project checks and explicit human deployment approval", () => {
@@ -111,6 +120,6 @@ test("every generated package imports transactionally into a clean local project
     const packageFile = path.join(repositoryRoot, "packages", "generated", `${packageValue.key}.xml`), proposalFile = path.join(root, `${packageValue.key}.proposal.json`), proposal = proposeWorkflowImport(dbFile, packageFile, proposalFile, packageValue.key);
     assert.equal(proposal.status, "pending"); assert.equal(applyWorkflowImport(dbFile, proposalFile, packageValue.key, { confirmedBy: "contract-test-owner" }).status, "applied");
   }
-  const verified = openDb(dbFile); assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflow_package_releases WHERE status='active'").get().count, 11); assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflows").get().count, 78); assert.equal(verified.prepare("SELECT kind,config_json FROM check_definitions d JOIN project_checks pc ON pc.check_id=d.id WHERE pc.project_id='one-c.development' AND d.name='BSL Language Server diagnostics'").get().kind, "disabled"); verified.close();
+  const verified = openDb(dbFile); assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflow_package_releases WHERE status='active'").get().count, 12); assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflows").get().count, 87); assert.equal(verified.prepare("SELECT kind,config_json FROM check_definitions d JOIN project_checks pc ON pc.check_id=d.id WHERE pc.project_id='one-c.development' AND d.name='BSL Language Server diagnostics'").get().kind, "disabled"); verified.close();
   fs.rmSync(root, { recursive: true, force: true });
 });

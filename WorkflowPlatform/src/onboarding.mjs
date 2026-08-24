@@ -3,6 +3,18 @@ import { openDb, now } from "./db.mjs";
 
 const rows = (db, sql, values) => { const stmt = db.prepare(sql); for (const value of values) stmt.run(...value); };
 
+export function registerProject(dbFile, project) {
+  if (!project?.id || !project.name || !project.root_path || !path.isAbsolute(project.root_path)) throw new Error("register-project: id, name and absolute root_path are required");
+  const normalized = { id: project.id, name: project.name, root_path: path.resolve(project.root_path) };
+  const db = openDb(dbFile);
+  try {
+    const before = db.prepare("SELECT id,name,root_path FROM projects WHERE id=? OR name=? OR root_path=?").get(normalized.id, normalized.name, normalized.root_path);
+    if (before && (before.id !== normalized.id || before.name !== normalized.name || path.resolve(before.root_path) !== normalized.root_path)) throw new Error("register-project: id, name or root_path belongs to another project");
+    db.prepare("INSERT OR IGNORE INTO projects(id,name,root_path,created_at) VALUES(?,?,?,?)").run(normalized.id, normalized.name, normalized.root_path, now());
+    return { status: before ? "already_registered" : "registered", project: normalized };
+  } finally { db.close(); }
+}
+
 export function onboardProject(dbFile, spec) {
   if (!spec?.project?.id || !spec.project.name || !spec.project.root_path) throw new Error("onboarding: project.id, name and root_path are required");
   if (!spec.workflow?.id) throw new Error("onboarding: workflow.id is required");

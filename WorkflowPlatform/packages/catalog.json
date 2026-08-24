@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "packages": [
+    { "key": "zodchi.product-development", "version": "2.1.0", "file": "generated/zodchi.product-development.xml", "owner_acceptance": ["product", "publication", "deployment"] },
     { "key": "indie-studio.project-m", "version": "2.1.1", "file": "generated/indie-studio.project-m.xml", "owner_acceptance": ["gameplay", "visual", "product", "publication"] },
     { "key": "indie-studio.project-r", "version": "2.1.1", "file": "generated/indie-studio.project-r.xml", "owner_acceptance": ["gameplay", "visual", "product", "publication"] },
     { "key": "shared-map-engine.core", "version": "2.1.2", "file": "generated/shared-map-engine.core.xml", "owner_acceptance": ["consumer_gameplay", "consumer_visual"] },

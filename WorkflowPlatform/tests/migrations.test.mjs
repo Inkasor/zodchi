@@ -26,6 +26,18 @@ test("clean database applies numbered normalized migrations and SQLite safety pr
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("the known pre-publication migration 7 newline checksum remains readable", () => {
+  const root = temporaryRoot("workflow-migrations-legacy-seven-");
+  const file = path.join(root, "workflow.sqlite");
+  let db = openDb(file);
+  db.prepare("UPDATE schema_migrations SET checksum=? WHERE version=7").run("8080e01be11bc8882303b50e3d51dc00d1dffcd23c3f08691dee6d7452770c1c");
+  db.close();
+  db = openDb(file);
+  assert.equal(schemaVersion(db), 11);
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("database upgrades sequentially and verifies applied checksums", () => {
   const root = temporaryRoot("workflow-migrations-upgrade-");
   const migrations = path.join(root, "migrations");
