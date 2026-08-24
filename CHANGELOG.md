@@ -2,7 +2,7 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
-## Unreleased
+## 0.3.0-beta.7 — 2026-08-24
 
 - The harness is identified by the only fields that differ between the two hook payloads: Codex names the turn and the model, Claude Code names the prompt. Both send the same session id, transcript path and permission mode, so a Codex turn is no longer recorded as Claude Code.
 - The hook records the field names of the event it received, so the sending harness stays identifiable from the run history alone.
