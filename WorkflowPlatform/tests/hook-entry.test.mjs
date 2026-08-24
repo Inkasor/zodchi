@@ -1,18 +1,22 @@
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { isClaudeCodeEvent, parseHookEvent, formatHookOutput } from "../src/hook-entry.mjs";
+
+const projectRoot = path.join(os.tmpdir(), "zodchi-hook-entry-project");
 
 const claudeEvent = {
   session_id: "session-1",
   prompt_id: "550e8400-e29b-41d4-a716-446655440000",
-  transcript_path: "C:\Users\person\.claude\projects\p\session-1.jsonl",
-  cwd: "C:\projects\demo",
+  transcript_path: path.join(projectRoot, "transcript.jsonl"),
+  cwd: projectRoot,
   permission_mode: "default",
   hook_event_name: "UserPromptSubmit",
   user_input: "Prepare the release notes",
   user_input_raw: "Prepare the release notes"
 };
-const codexEvent = { event_id: "codex-event-1", prompt: "Prepare the release notes", cwd: "C:\projects\demo" };
+const codexEvent = { event_id: "codex-event-1", prompt: "Prepare the release notes", cwd: projectRoot };
 
 test("a Claude Code event is recognized and a Codex event is not", () => {
   assert.equal(isClaudeCodeEvent(claudeEvent), true);
@@ -26,7 +30,7 @@ test("a Claude Code event maps user_input and prompt_id to the shared hook contr
   assert.equal(entry.eventSource, "claude-code-hook");
   assert.equal(entry.message, "Prepare the release notes");
   assert.equal(entry.eventKey, "550e8400-e29b-41d4-a716-446655440000");
-  assert.equal(entry.project, "C:\projects\demo");
+  assert.equal(entry.project, projectRoot);
 });
 
 test("a Codex event keeps its own identity and event key", () => {
