@@ -49,10 +49,45 @@ test("project gates run only registered checks and preserve green, red, timeout 
   assert.equal(uncoveredCode.checks[0].id, "quality_contract_checks");
   const disabled = await runProjectGate(disabledProject, "mvp", dbFile, "gate-disabled", { allowedPaths: [], artifactType: "code" });
   assert.equal(disabled.status, "unavailable");
-  assert.equal(disabled.checks[0].failure, "not_configured");
+  assert.equal(disabled.checks[0].id, "quality_contract_checks");
+  assert.equal(disabled.checks.find(item => item.id !== "quality_contract_checks").failure, "not_configured");
   const verified = openDb(dbFile);
   assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM gate_runs").get().count, 7);
   verified.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("an unavailable advisory check is reported without blocking a gate that has executable evidence", async () => {
+  const root = temporaryRoot("workflow-gates-advisory-"), project = path.join(root, "project"), dbFile = path.join(root, "workflow.sqlite");
+  fs.mkdirSync(project, { recursive: true });
+  const db = openDb(dbFile);
+  db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('advisory','Advisory',?,?)").run(project, now());
+  db.prepare("INSERT INTO check_definitions(id,name,runner,kind,config_json,timeout_seconds) VALUES('live','Live check','fixture','fixture',?,30)").run(JSON.stringify({ status: "passed" }));
+  db.prepare("INSERT INTO check_definitions(id,name,runner,kind,config_json,timeout_seconds) VALUES('unity','Unity tests','unity','disabled',?,30)").run(JSON.stringify({ reason: "unity_editor_not_installed" }));
+  db.prepare("INSERT INTO project_checks(project_id,check_id,quality_mode_id,required,artifact_type_id) VALUES('advisory','live','mvp',1,'code')").run();
+  db.prepare("INSERT INTO project_checks(project_id,check_id,quality_mode_id,required,artifact_type_id) VALUES('advisory','unity','mvp',0,'code')").run();
+  db.close();
+  const result = await runProjectGate(project, "mvp", dbFile, "gate-advisory", { allowedPaths: [], artifactType: "code" });
+  assert.equal(result.status, "passed");
+  assert.equal(result.checks.some(item => item.id === "quality_contract_checks"), false);
+  const unity = result.checks.find(item => item.id === "unity");
+  assert.equal(unity.status, "unavailable");
+  assert.equal(unity.required, false);
+  assert.equal(unity.failure, "unity_editor_not_installed");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("a level covered only by unavailable checks is blocked instead of reported as verified", async () => {
+  const root = temporaryRoot("workflow-gates-uncovered-"), project = path.join(root, "project"), dbFile = path.join(root, "workflow.sqlite");
+  fs.mkdirSync(project, { recursive: true });
+  const db = openDb(dbFile);
+  db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('uncovered','Uncovered',?,?)").run(project, now());
+  db.prepare("INSERT INTO check_definitions(id,name,runner,kind,config_json,timeout_seconds) VALUES('bsl','BSL Language Server','bsl','disabled',?,30)").run(JSON.stringify({ reason: "requires_local_bsl_binding" }));
+  db.prepare("INSERT INTO project_checks(project_id,check_id,quality_mode_id,required,artifact_type_id) VALUES('uncovered','bsl','mvp',0,'code')").run();
+  db.close();
+  const result = await runProjectGate(project, "mvp", dbFile, "gate-uncovered", { allowedPaths: [], artifactType: "code" });
+  assert.equal(result.status, "unavailable");
+  assert.match(result.checks[0].failure, /No executable required checks are configured/);
   fs.rmSync(root, { recursive: true, force: true });
 });
 

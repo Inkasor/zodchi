@@ -6,6 +6,11 @@
 
 - The classifier is offered only the work types a project actually routes, plus conversation and clarification, so a narrow project can no longer be classified into a route it does not have.
 - Conversation, clarification and research answers no longer require a registered workflow route, because they are delivered directly and never enter a workflow.
+- A check that cannot run no longer blocks a workflow: it is reported as unavailable, and gate coverage is measured by the executable required checks instead, so a project is blocked only when nothing can actually verify it.
+- 1C and company operations gained an executable secret scan at prototype and MVP, because neither package had a check that could run.
+- Project M, Project R, Shared Map Engine, Shared Lore and 1C gained the entry points their roles already supported: fix, documentation and verification runs.
+- Company workflows route verification and testing to a checks-and-review run instead of leaving them unroutable.
+- Indie release and playtest run at production quality, the prototype workflow runs at prototype quality, and the 1C review step is required.
 
 ## 0.3.0-beta.5 — 2026-08-24
 
