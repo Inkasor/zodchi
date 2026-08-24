@@ -1,91 +1,98 @@
-<document id="zodchi_onboarding" status="accepted" authority="zodchi" version="0.3.0-beta.2">
-  <title>Первичная настройка Zodchi</title>
-  <purpose>Инструкция для LLM, которая устанавливает и настраивает Zodchi. Общайся с человеком простым русским языком и не заставляй его заполнять внутренние поля.</purpose>
+<document id="zodchi_onboarding" status="accepted" authority="zodchi" version="0.3.0-beta.3" language="en">
+  <title>Initial Zodchi setup</title>
+  <purpose>Instructions for the LLM that installs and configures Zodchi. Use the person's actual conversation language, explain things plainly, and never ask them to fill internal fields.</purpose>
 
-  <input id="user_request" status="accepted">Открой репозиторий Zodchi, прочитай этот документ, установи последнюю опубликованную версию и настрой её для моего проекта.</input>
+  <input id="user_request" status="accepted">Open the Zodchi repository, read this document, install the latest published release, and configure it for my project.</input>
+
+  <communication status="accepted">
+    <rule id="host_language_first">Use an explicit language supplied by the host when available.</rule>
+    <rule id="installation_language_second">Otherwise use the responseLanguage value confirmed during onboarding.</rule>
+    <rule id="conversation_language_wins">When the person starts or continues speaking another supported language, continue in that language.</rule>
+    <rule id="machine_contracts_are_english">Keep schema keys, enum values, portable packages, and machine-operated prompts in English.</rule>
+  </communication>
 
   <acquisition status="accepted">
-    <rule id="repository_link_is_enough">Если человек передал только ссылку на репозиторий, самостоятельно прочитай этот файл и продолжи настройку. Не требуй от него вручную скачивать архив или выполнять команды.</rule>
-    <step order="1" id="obtain_installer">Если локальной копии репозитория нет, клонируй https://github.com/Inkasor/zodchi во временную папку, прочитай документы и используй находящиеся в ней штатные инструменты.</step>
-    <step order="2" id="choose_mode">Определи, хочет человек пользоваться Zodchi или разрабатывать сам Zodchi. Если это неясно и влияет на пути, задай один простой вопрос.</step>
-    <step order="3" id="install_mode">Для обычного использования устанавливай последний опубликованный GitHub Release командой tools/install-latest.ps1. Не используй исходники ветки main как установленную программу.</step>
-    <step order="4" id="development_mode">Для разработки клонируй репозиторий в отдельную постоянную папку разработки, а рабочую поставку всё равно собирай и устанавливай в другую заменяемую папку.</step>
-    <step order="5" id="separate_data">Личные базы и настройки размещай в третьей постоянной папке вне репозитория и вне установленной программы.</step>
-    <rule id="development_project_layout">В проекте Codex разработки сделай исходный репозиторий основной папкой. Установленную копию и папку данных можно добавить вторичными для проверки фактической поставки и аналитики; изменения кода выполняй только в исходном репозитории, поставку обновляй сборкой, данные меняй штатными командами.</rule>
+    <rule id="repository_link_is_enough">When the person supplies only the repository URL, read this file and continue independently. Do not require a manual download or command entry.</rule>
+    <step order="1" id="obtain_installer">If no local repository exists, clone https://github.com/Inkasor/zodchi into a disposable directory, read the documentation, and use its supported tools.</step>
+    <step order="2" id="choose_mode">Determine whether the person wants to use Zodchi or develop Zodchi. If this is unclear and affects paths, ask one plain question.</step>
+    <step order="3" id="install_mode">For ordinary use, install the latest published GitHub Release with tools/install-latest.ps1. Do not use main-branch sources as the installed program.</step>
+    <step order="4" id="development_mode">For product development, clone the repository into a permanent development directory; still build and install the working release into a separate replaceable directory.</step>
+    <step order="5" id="separate_data">Keep personal databases and settings in a third permanent directory outside both source and installed program.</step>
+    <rule id="development_project_layout">In a Codex project for Zodchi development, use the source repository as the primary folder. The installed release and local data may be secondary folders for delivery verification and analytics. Edit code only in sources, update the release through the builder, and change data through supported commands.</rule>
   </acquisition>
 
   <preflight status="accepted">
-    <check id="workflow_platform_path">Найди WorkflowPlatform внутри установленной поставки Zodchi.</check>
-    <check id="agent_gateway_path">Найди AgentGateway внутри установленной поставки Zodchi.</check>
-    <check id="model_provider_catalog">Прочитай AgentGateway/model-providers.json и предлагай только реализованные там сочетания исполнительной среды и поставщика модели.</check>
-    <check id="node_runtime">Проверь Node.js и package.json.</check>
-    <check id="codex_cli">Найди Codex CLI и выполни codex --version.</check>
-    <check id="opencode_desktop_cli">Если выбран OpenCode, отдельно проверь Desktop и CLI. Наличие OpenCode Desktop не означает наличие команды opencode. При отсутствии CLI установи официальный пакет opencode-ai, выполни opencode --version и затем безопасный тестовый вызов через Gateway.</check>
-    <check id="codex_project_config">Найди проектную конфигурацию Codex и папку .codex.</check>
-    <check id="provider_access">Проверь доступность настроенных провайдеров через безопасный вызов Gateway.</check>
-    <check id="harness_access">Отдельно проверь доступность выбранной исполнительной среды: Codex, Claude Code, Kimi, OpenCode, Cursor или прямой совместимый API. Не считай название программы названием поставщика модели.</check>
-    <check id="existing_data">Не переносить чужие базы, ключи, историю и квитанции.</check>
+    <check id="workflow_platform_path">Locate WorkflowPlatform inside the installed Zodchi release.</check>
+    <check id="agent_gateway_path">Locate AgentGateway inside the installed Zodchi release.</check>
+    <check id="model_provider_catalog">Read AgentGateway/model-providers.json and propose only implemented harness-provider combinations.</check>
+    <check id="node_runtime">Verify Node.js and package.json.</check>
+    <check id="codex_cli">Locate Codex CLI and run codex --version.</check>
+    <check id="opencode_desktop_cli">When OpenCode is selected, verify Desktop and CLI independently. OpenCode Desktop does not imply an opencode command. If the CLI is absent, install the official opencode-ai package, run opencode --version, and then perform a safe Gateway smoke call.</check>
+    <check id="codex_project_config">Locate the Codex project configuration and .codex directory.</check>
+    <check id="provider_access">Verify configured provider access through a safe Gateway call.</check>
+    <check id="harness_access">Verify the selected harness separately: Codex, Claude Code, Kimi, OpenCode, Cursor, or a direct compatible API. A program name is not a model-provider name.</check>
+    <check id="existing_data">Never copy another person's databases, credentials, history, or receipts.</check>
   </preflight>
 
   <project_onboarding status="accepted">
-    <step order="1" id="identify_project">Найди корень первого проекта. Если найдено несколько вариантов, задай человеку один короткий вопрос.</step>
-    <step order="2" id="register_project">Зарегистрируй проект, путь, домен и дисциплины в Workflow DB.</step>
-    <step order="3" id="load_catalogs">Загрузи справочники из configs/catalogs.json.</step>
-    <step order="4" id="discover_documents">Найди документы проекта и проверь их формат, статус и кодировку.</step>
-    <step order="5" id="propose_ownership">Предложи человеку владельцев документов, роли с доступом на чтение и роли с доступом на запись.</step>
-    <step order="6" id="confirm_ownership">Не назначай владельцев молча. Дождись подтверждения человека.</step>
-    <step order="7" id="write_registry">После подтверждения запиши project_documents и role_documents в Workflow DB.</step>
-    <step order="8" id="confirm_routes">Предложи связи зарегистрированных work_types с workflow_routes и дождись подтверждения владельца; не выбирай продуктовый маршрут молча.</step>
-    <step order="9" id="write_routes">Запиши только подтверждённые workflow_routes. Классификатор не должен использовать маршрут, отсутствующий в реестре.</step>
-    <step order="10" id="architecture_document">Создай копию configs/WorkflowPlatformArchitecture.template.md в локальном onboarding-документе проекта и заполни только проверенные значения.</step>
-    <step order="11" id="local_assignments">На основе подтверждённых человеком назначений создай локальный installation config по шаблону configs/installation.example.json. Не помещай в него токены, cookies, пароли или auth-файлы.</step>
-    <rule id="separate_harness_and_model_provider">Для каждого локального профиля отдельно зафиксируй исполнительную среду, поставщика модели и model ID. Для совместимого API записывай только baseUrl и имя переменной окружения apiKeyEnv; значение ключа не записывай.</rule>
-    <rule id="tool_roles_need_harness">Роли, которым нужны файлы, терминал или другие инструменты, назначай агентской исполнительной среде. Прямой совместимый API используй только для ограниченной работы над уже переданным контекстом.</rule>
-    <step order="12" id="configure_installation">Запусти `node WorkflowPlatform/src/cli.mjs configure --config &lt;local-installation-config&gt;`. Общая установка должна использовать scope=shared и localDataRoot вне папки поставки. Команда создаёт внешний runtime.json, локальный policy overlay только с профилями и пути обеих баз; universal policy и адаптеры поставки не изменять.</step>
-    <step order="13" id="configure_runtime_environment">На Windows запиши возвращённый WORKFLOW_PLATFORM_CONFIG в пользовательскую переменную окружения и сообщи, что Codex нужно перезапустить. Проектные hooks должны ссылаться на WorkflowPlatform внутри поставки, а не на репозиторий разработки.</step>
-    <step order="14" id="role_contracts">Предложи переносимые versioned role contracts отдельно от локальных profile/model assignments. Для каждой роли явно задай границы, artifacts, documents, tools/skills, checks, transitions, limits, result schema и escalation; локальную модель не записывай в контракт.</step>
-    <step order="15" id="registered_checks">Регистрируй только проверки, релевантные проекту, artifact type и operational level. Не выводи команды автоматически из языка или наличия package.json.</step>
-    <step order="16" id="portable_package_contract">Задай semantic package key/version/purpose, полный граф шагов и transitions, human questions, schemas, operational policies, prompt template versions и anonymized test scenarios. Не включай local profile/model IDs, абсолютные пути или секреты.</step>
-    <step order="17" id="import_confirmation">При переносе сначала выполни workflow-import-propose, покажи человеку компактный diff и только после явного подтверждения выполни workflow-import-apply с confirmed-by.</step>
-    <step order="18" id="starter_package_selection">Покажи доступные пакеты из WorkflowPlatform/packages/catalog.json. Не импортируй пакет и не назначай ему локальные profiles/check commands, пока человек не подтвердил проект и diff.</step>
-    <step order="19" id="company_bundle_validation">Если выбран корпоративный набор, сначала выполни workflow-bundle-inspect для WorkflowPlatform/packages/generated/company-workflows.xml. Затем предложи только тот проектный пакет, который соответствует текущему проекту. Не копируй чужие проекты и не включай их hooks.</step>
+    <step order="1" id="identify_project">Locate the first project root. If several candidates remain, ask one short question.</step>
+    <step order="2" id="register_project">Register the project, root path, domain, and disciplines in Workflow DB.</step>
+    <step order="3" id="load_catalogs">Load catalogs from configs/catalogs.json.</step>
+    <step order="4" id="discover_documents">Discover project documents and validate their format, status, and encoding.</step>
+    <step order="5" id="propose_ownership">Propose document owners and role read/write access.</step>
+    <step order="6" id="confirm_ownership">Never assign ownership silently. Wait for the person's confirmation.</step>
+    <step order="7" id="write_registry">After confirmation, write project_documents and role_documents to Workflow DB.</step>
+    <step order="8" id="confirm_routes">Propose mappings from registered work_types to workflow_routes and wait for owner confirmation; never select a product route silently.</step>
+    <step order="9" id="write_routes">Write only confirmed workflow_routes. The classifier must not use a route absent from the registry.</step>
+    <step order="10" id="architecture_document">Copy configs/WorkflowPlatformArchitecture.template.md into a local project-onboarding document and fill only verified values.</step>
+    <step order="11" id="local_assignments">Create a local installation config from configs/installation.example.json using confirmed assignments. Never include tokens, cookies, passwords, or authentication files.</step>
+    <rule id="separate_harness_and_model_provider">For each local profile, record harness, model provider, and model ID separately. For a compatible API, store only baseUrl and the apiKeyEnv variable name, never the key value.</rule>
+    <rule id="tool_roles_need_harness">Assign roles that need files, terminal, or tools to an agent harness. Use a direct compatible API only for bounded work over supplied context.</rule>
+    <step order="12" id="configure_installation">Run `node WorkflowPlatform/src/cli.mjs configure --config &lt;local-installation-config&gt;`. A shared installation uses scope=shared and a localDataRoot outside the release. The command creates external runtime.json, a local policy overlay containing only profiles, and both database paths. Do not modify release adapters or universal policy.</step>
+    <step order="13" id="configure_runtime_environment">On Windows, persist the returned WORKFLOW_PLATFORM_CONFIG as a user environment variable and explain that Codex must restart. Project hooks must reference WorkflowPlatform in the installed release, not the development repository.</step>
+    <step order="14" id="role_contracts">Propose portable versioned role contracts separately from local profile/model assignments. Define boundaries, artifacts, documents, tools/skills, checks, transitions, limits, result schema, and escalation for each role; never put a local model in the contract.</step>
+    <step order="15" id="registered_checks">Register only checks relevant to the project, artifact type, and quality mode. Do not infer commands automatically from a programming language or package.json.</step>
+    <step order="16" id="portable_package_contract">Define semantic package key/version/purpose, full step graph and transitions, human questions, schemas, quality policies, prompt-template versions, and anonymized scenarios. Exclude local profiles, model IDs, absolute paths, and secrets.</step>
+    <step order="17" id="import_confirmation">Before importing, run workflow-import-propose, show a compact diff, and run workflow-import-apply with confirmed-by only after explicit confirmation.</step>
+    <step order="18" id="starter_package_selection">Show packages from WorkflowPlatform/packages/catalog.json. Do not import a package or assign local profiles/check commands until the person confirms the project and diff.</step>
+    <step order="19" id="company_bundle_validation">For a company bundle, first run workflow-bundle-inspect on WorkflowPlatform/packages/generated/company-workflows.xml. Propose only the project package matching the current project. Do not copy unrelated projects or enable their hooks.</step>
   </project_onboarding>
 
   <codex_hook status="accepted">
-    <step order="1">Возьми configs/codex-hooks.template.json.</step>
-    <step order="2">Подставь фактический путь Workflow Platform.</step>
-    <step order="3">Создай или обнови проектный .codex/hooks.json.</step>
-    <step order="4">Проверь, что команда запускает hooks/codex-user-prompt-submit.mjs.</step>
-    <step order="5">Проверь тестовым событием, что в workflow_runs появилась запись.</step>
-    <rule id="stable_event_id">Передавай устойчивый event_id клиента для защиты от повторной доставки. Не заменяй отсутствующий ID хешем текста сообщения.</rule>
-    <human_gate>Если Codex пометил hook как недоверенный, сообщи человеку: «Откройте настройки проекта Codex и включите доверие для Workflow Platform hook». Не называй это ошибкой системы.</human_gate>
-    <new_chat>После подтверждения доверия попроси человека открыть новый чат и отправить обычное тестовое сообщение.</new_chat>
+    <step order="1">Use configs/codex-hooks.template.json.</step>
+    <step order="2">Insert the installed WorkflowPlatform path.</step>
+    <step order="3">Create or update the project's .codex/hooks.json.</step>
+    <step order="4">Verify that the command starts hooks/codex-user-prompt-submit.mjs.</step>
+    <step order="5">Use a test event to confirm a workflow_runs record.</step>
+    <rule id="stable_event_id">Pass the client's stable event_id for duplicate-delivery protection. Never replace a missing ID with a message-text hash.</rule>
+    <human_gate>If Codex marks the hook untrusted, tell the person in their language to open the Codex project settings and trust the WorkflowPlatform hook. This is an authorization step, not a system failure.</human_gate>
+    <new_chat>After trust is confirmed, ask the person to open a new chat and send an ordinary test message.</new_chat>
   </codex_hook>
 
   <databases status="accepted">
-    <database id="workflow_db">Локальное состояние workflow, реестр документов, роли, маршруты, решения и проверки.</database>
-    <database id="gateway_db">Локальные технические квитанции вызовов моделей, токены, кэш, время и ошибки.</database>
-    <rule id="local_only">Базы создаются локально у каждого пользователя и не входят в поставку Zodchi.</rule>
-    <rule id="local_profiles">Конкретные исполнительные среды, поставщики, профили и модели записываются только в локальный policy.local.json после подтверждения человеком.</rule>
+    <database id="workflow_db">Local workflow state, document registry, roles, routes, decisions, and checks.</database>
+    <database id="gateway_db">Local technical model-call receipts, tokens, cache, duration, and errors.</database>
+    <rule id="local_only">Each user creates local databases; they are not part of the Zodchi release.</rule>
+    <rule id="local_profiles">Concrete harnesses, providers, profiles, and models go only into local policy.local.json after confirmation.</rule>
   </databases>
 
   <safety status="accepted">
-    <rule id="no_foreign_data">Не переносить чужие проекты, документы, базы, ключи и историю.</rule>
-    <rule id="no_silent_writes">Не менять документы и не назначать владельцев без подтверждения человека.</rule>
-    <rule id="classifier_fail_closed">Если LLM-классификатор не вернул корректное решение, остановиться с classification_failed.</rule>
-    <rule id="registered_context_only">Classifier, researcher и остальные роли получают только зарегистрированные документы, разрешённые для роли; не сканировать известные имена файлов и папок как скрытые defaults.</rule>
-    <rule id="structured_role_results">Planner, worker, reviewer и documentator должны возвращать результат своих точных схем; reviewer PASS не заменяет gates и human acceptance.</rule>
-    <rule id="experience_confirmation">Experience proposals проверяются на anonymized scenarios и никогда не применяются автоматически; подтверждение владельца создаёт новую package version.</rule>
-    <rule id="human_hook_trust">Доверие к hook подтверждает только человек в интерфейсе Codex.</rule>
+    <rule id="no_foreign_data">Never copy unrelated projects, documents, databases, credentials, or history.</rule>
+    <rule id="no_silent_writes">Never change documents or assign ownership without confirmation.</rule>
+    <rule id="classifier_fail_closed">If the LLM classifier does not return a valid decision, stop with classification_failed.</rule>
+    <rule id="registered_context_only">Classifier, researcher, and other roles receive only registered documents permitted for the role. Do not scan well-known filenames or directories as hidden defaults.</rule>
+    <rule id="structured_role_results">Planner, worker, reviewer, and documentator return their exact schemas. Reviewer PASS does not replace deterministic gates or human acceptance.</rule>
+    <rule id="experience_confirmation">Evaluate experience proposals on anonymized scenarios and never apply them automatically. Owner confirmation creates a new package version.</rule>
+    <rule id="human_hook_trust">Only a person can trust a hook in Codex.</rule>
   </safety>
 
   <output status="accepted">
-    <field id="connected_components">Что подключено.</field>
-    <field id="registered_project">Какой проект зарегистрирован.</field>
-    <field id="found_documents">Какие документы найдены.</field>
-    <field id="proposed_roles">Какие роли и владельцы предложены.</field>
-    <field id="human_actions">Что нужно подтвердить человеку.</field>
-    <field id="test_instruction">Как выполнить первый безопасный тест.</field>
-    <rule id="human_response">Не показывай SQL, JSON и внутренние идентификаторы без отдельной просьбы.</rule>
+    <field id="connected_components">Connected components.</field>
+    <field id="registered_project">Registered project.</field>
+    <field id="found_documents">Discovered documents.</field>
+    <field id="proposed_roles">Proposed roles and owners.</field>
+    <field id="human_actions">Decisions requiring confirmation.</field>
+    <field id="test_instruction">First safe test.</field>
+    <rule id="human_response">Do not show SQL, JSON, or internal identifiers unless requested.</rule>
   </output>
 </document>

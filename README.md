@@ -32,11 +32,13 @@ Zodchi is currently a Windows-first public beta with Codex as the supported chat
 
 ## For developers
 
-The repository contains the source for `WorkflowPlatform` and `AgentGateway`. Architecture, contribution, security, and update details are kept outside this human introduction:
+The repository contains the source for `WorkflowPlatform` and `AgentGateway`. Human documentation is available in English and Russian. Machine-operated setup, update, architecture, and configuration contracts use concise semantic English:
 
 - [Architecture](docs/ARCHITECTURE.md)
-- [Contributing](CONTRIBUTING.md)
-- [Security](SECURITY.md)
+- [Contributing](CONTRIBUTING.md) ([Russian](docs/ru/CONTRIBUTING.md))
+- [Security](SECURITY.md) ([Russian](docs/ru/SECURITY.md))
+- [Changelog](CHANGELOG.md) ([Russian](docs/ru/CHANGELOG.md))
+- [Third-party notices](THIRD_PARTY_NOTICES.md) ([Russian](docs/ru/THIRD_PARTY_NOTICES.md))
 - [Update contract](UPDATE.md)
 
 Zodchi is released under the [MIT License](LICENSE).

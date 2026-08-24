@@ -1,28 +1,28 @@
-<document id="zodchi_quickstart" status="accepted" authority="zodchi" version="0.3.0-beta.2" language="ru">
-  <title>Быстрый запуск Zodchi моделью</title>
-  <purpose>Эта инструкция предназначена для LLM. Человек описывает желаемый результат, а модель выполняет технические команды и задаёт только необходимые смысловые вопросы.</purpose>
+<document id="zodchi_quickstart" status="accepted" authority="zodchi" version="0.3.0-beta.3" language="en">
+  <title>LLM-operated Zodchi quick start</title>
+  <purpose>This instruction is for an LLM. The person describes the desired outcome; the LLM performs technical operations and asks only for decisions that cannot be inferred safely.</purpose>
 
   <entry status="accepted">
-    <user_message>Открой репозиторий Zodchi, прочитай ONBOARDING_PROMPT.md, установи последнюю версию и настрой её для моего проекта.</user_message>
-    <rule id="llm_operates_tools">Не перекладывай команды на человека, если можешь безопасно выполнить их своими инструментами.</rule>
-    <rule id="human_decisions_only">Спрашивай человека только о папке установки, подключаемом проекте, назначениях моделей, правах, публикации и других решениях владельца.</rule>
+    <user_message>Open the Zodchi repository, read ONBOARDING_PROMPT.md, install the latest release, and configure it for my project.</user_message>
+    <rule id="llm_operates_tools">Do not delegate commands to the person when you can execute them safely with your tools.</rule>
+    <rule id="human_decisions_only">Ask only about the installation location, target project, model assignments, permissions, publication, and other owner decisions.</rule>
   </entry>
 
   <installation status="accepted">
-    <step order="1">Прочитай ONBOARDING_PROMPT.md полностью.</step>
-    <step order="2">Если Zodchi ещё не установлен, запусти tools/install-latest.ps1 с подтверждённой папкой назначения.</step>
-    <step order="3">Проверь Node.js 24 или новее и Codex CLI.</step>
-    <step order="4">Создай отдельную папку личных данных вне папки программы.</step>
-    <step order="5">Зарегистрируй проект, импортируй подтверждённый пакет рабочего процесса и назначь локальные профили моделей.</step>
-    <step order="6">Создай проектный .codex/hooks.json из шаблона поставки.</step>
-    <step order="7">Попроси человека подтвердить доверие к hook в интерфейсе Codex и перезапустить Codex.</step>
-    <step order="8">После перезапуска проверь обычным сообщением, что запуск и квитанции появились в локальных базах.</step>
+    <step order="1">Read ONBOARDING_PROMPT.md completely.</step>
+    <step order="2">If Zodchi is not installed, run tools/install-latest.ps1 with the confirmed destination.</step>
+    <step order="3">Verify Node.js 24 or newer and Codex CLI.</step>
+    <step order="4">Create a separate personal-data directory outside the program directory.</step>
+    <step order="5">Register the project, import the confirmed workflow package, and assign local model profiles.</step>
+    <step order="6">Create the project .codex/hooks.json from the release template.</step>
+    <step order="7">Ask the person to trust the hook in Codex and restart Codex.</step>
+    <step order="8">After restart, send an ordinary message and confirm that the run and receipts exist in local databases.</step>
   </installation>
 
   <verification status="accepted">
     <command id="product_tests">npm test</command>
     <command id="run_statistics">node WorkflowPlatform/src/cli.mjs run-statistics --db &lt;workflow-db&gt; --run &lt;run-id&gt;</command>
-    <rule id="no_raw_transcript">Полные запросы и ответы моделей в базах не сохраняются.</rule>
-    <rule id="failed_gate_is_not_green">Недоступная или не пройденная обязательная проверка не считается успешной.</rule>
+    <rule id="no_raw_transcript">Do not store full model requests or responses in databases.</rule>
+    <rule id="failed_gate_is_not_green">An unavailable or failed required check is not a successful result.</rule>
   </verification>
 </document>

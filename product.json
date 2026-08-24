@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "zodchi",
   "displayName": "Zodchi",
-  "version": "0.3.0-beta.2",
+  "version": "0.3.0-beta.3",
   "workingName": false,
   "releaseChannel": "beta",
   "components": ["WorkflowPlatform", "AgentGateway"],

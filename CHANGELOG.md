@@ -1,18 +1,27 @@
-# История изменений Zodchi
+# Zodchi changelog
+
+[English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
+
+## 0.3.0-beta.3 — 2026-08-24
+
+- Added conversation-language resolution across hooks, workflow state, model prompts, questions, and final responses.
+- Human-facing project documents are now available in English and Russian; machine-facing semantic instructions use English.
+- Removed duplicate component readmes, changelogs, and license files left from the former separate repositories.
+- Updated the release builder and linter for the unified product layout.
 
 ## 0.3.0-beta.2 — 2026-08-24
 
-- Добавлены английское и русское человеческие описания с простым началом работы по одной ссылке.
-- Установка и обновление оформлены как инструкции для LLM; добавлена проверяемая загрузка последнего GitHub Release.
-- Добавлен переносимый рабочий поток разработки самого Zodchi.
-- Подготовлена единая схема проекта Codex: исходники как основная папка, установленная копия и локальные данные как вторичные папки.
+- Added English and Russian human introductions with a one-link setup flow.
+- Reworked installation and update procedures as LLM-operated instructions and added verified GitHub Release installation.
+- Added a portable workflow for developing Zodchi itself.
+- Defined a single Codex project layout: development sources as the primary folder, installed release and local data as secondary folders.
 
 ## 0.3.0-beta.1 — 2026-08-24
 
-- Первый публичный снимок под названием Zodchi.
-- Два независимых модуля собраны в одном репозитории: WorkflowPlatform и AgentGateway.
-- Добавлены переносимые рабочие потоки, уровни качества, классификация, документирование и программные проверки.
-- Личные базы, назначения моделей, проекты, ключи и история запусков отделены от поставки.
-- Добавлены воспроизводимая сборка, проверка состава, контрольные суммы и безопасное обновление.
+- Created the first public snapshot under the Zodchi name.
+- Combined WorkflowPlatform and AgentGateway in one repository while keeping their runtime responsibilities separate.
+- Added portable workflows, quality modes, classification, documentation, and deterministic project checks.
+- Kept personal databases, model assignments, projects, credentials, and run history outside the release.
+- Added reproducible release assembly, content validation, checksums, and recoverable updates.
 
-Полная экспериментальная история до публичного снимка сохранена только в локальных репозиториях автора.
+The full experimental history before the public snapshot remains only in the author's local repositories.

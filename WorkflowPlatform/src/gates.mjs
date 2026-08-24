@@ -149,7 +149,7 @@ export async function runProjectGate(project, level = "mvp", dbFile = resolveWor
   const checks = [];
   const startedAt = new Date().toISOString();
   if (!configured.length && (level === "security-audit" || CHECKED_ARTIFACTS.has(options.artifactType))) {
-    checks.push({ id: "quality_contract_checks", name: "Обязательное покрытие проверками", required: true, status: "unavailable", exit_code: 1, duration_ms: 0, failure: `Для ${level}/${options.artifactType ?? "unknown"} не настроено ни одной применимой проверки.` });
+    checks.push({ id: "quality_contract_checks", name: "Required check coverage", required: true, status: "unavailable", exit_code: 1, duration_ms: 0, failure: `No applicable checks are configured for ${level}/${options.artifactType ?? "unknown"}.` });
   }
   for (const check of configured) {
     const started = Date.now();

@@ -1,30 +1,31 @@
-<document id="workflow_platform" version="0.1" status="working" kind="governance" language="ru">
-<metadata owner="workflow-platform" authority="Workflow Platform">
+<document id="workflow_platform" version="0.2.4" status="working" kind="governance" language="en">
+<metadata owner="workflow-platform" authority="Zodchi">
 </metadata>
 <section id="documentator_contract" status="accepted">
-Документные изменения выполняются только через Documentator и проходят Document Lint.
+Document changes go only through Documentator and pass Document Lint.
 </section>
 <rule id="document_changes_go_through_documentator" status="accepted">
-Модель предлагает структурированный patch; программа проверяет и применяет его.
+A model proposes a structured patch; the program validates and applies it.
 </rule>
 <section id="installation_boundary" status="accepted">
-Исходники продукта, заменяемая поставка и локальное состояние пользователя являются тремя разными контурами.
+Product sources, replaceable release, and local user state are separate areas.
 </section>
 <rule id="development_sources_use_git" status="accepted">
-Workflow Platform и Agent Gateway являются отдельными модулями единого репозитория Zodchi; Git является историей исходного кода.
+WorkflowPlatform and AgentGateway are modules of the single Zodchi repository; Git is the source history.
 </rule>
 <rule id="release_is_replaceable" status="accepted">
-Поставка собирается из зафиксированных исходников, проверяется линтером и заменяется целиком; успешная замена не оставляет постоянную резервную копию предыдущей поставки.
+A release is assembled from committed sources, validated, and replaced as one unit; successful replacement leaves no permanent duplicate of the previous release.
 </rule>
 <rule id="local_state_is_external" status="accepted">
-Локальные профили, назначения моделей, реестр проектов, история запусков и обе базы данных хранятся вне папки поставки и не перезаписываются при обновлении продукта.
+Local profiles, model assignments, project registry, run history, and both databases stay outside the release and survive product updates.
 </rule>
 <rule id="project_hooks_use_release" status="accepted">
-Проектные hooks запускают Workflow Platform из установленной поставки, а не из репозитория разработки.
+Project hooks start WorkflowPlatform from the installed release, never from the development repository.
 </rule>
+<rule id="response_language" status="accepted">
+WorkflowPlatform stores the resolved response language and passes it to every user-facing role; schema keys and enum values remain English.
+</rule>
+<section id="license" status="accepted">
+WorkflowPlatform is distributed as part of Zodchi under the repository-level MIT License. Copyright 2026 Petr Tsap.
+</section>
 </document>
-
-## License
-
-Модуль Workflow Platform распространяется в составе Zodchi по лицензии MIT.
-Copyright 2026 Petr Tsap.

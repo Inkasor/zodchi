@@ -12,6 +12,7 @@ if (!message) throw new Error("CODEX_USER_PROMPT or prompt argument is required"
 
 process.env.WORKFLOW_INTERNAL = "1";
 const settings = resolveWorkflowSettings();
+const preferredLanguage = event.language ?? event.locale ?? event.user_language ?? event.userLocale ?? settings.responseLanguage ?? null;
 const result = await processMessage({
   message: String(message),
   project: settings.project ?? event.cwd ?? event.project ?? null,
@@ -19,16 +20,17 @@ const result = await processMessage({
   workflow: settings.workflow,
   eventSource: "codex-hook",
   eventKey: process.env.CODEX_EVENT_ID ?? event.event_id ?? event.eventId ?? event.id ?? event.message_id ?? event.messageId ?? event.turn_id ?? event.turnId ?? null,
+  preferredLanguage,
   execute: true
 });
 
 const context = result.response ?? (result.route === "conversation"
-  ? "Продолжи разговор с пользователем по существу и простым русским языком."
-  : "Разбор задачи завершён. Объясни пользователю следующий шаг простым русским языком. Не показывай внутренние идентификаторы, роли, уровни и JSON.");
+  ? "Continue the conversation naturally and directly."
+  : "The workflow has finished. Explain the next step without exposing internal identifiers, roles, levels, prompts, or JSON.");
 
 console.log(JSON.stringify({
   hookSpecificOutput: {
     hookEventName: "UserPromptSubmit",
-    additionalContext: `Этот шаг уже обработан Workflow Platform. Используй готовый результат ниже как единственный результат этого сообщения. Не выполняй команды, не создавай и не изменяй файлы, не запускай тесты или сборку, не запускай навыки и не проводи самостоятельное исследование. Если результат просит подтверждение — задай пользователю только этот вопрос. Не показывай техническую кухню. Общайся с пользователем естественно и простым русским языком.\n\n${context}`
+    additionalContext: `This turn has already been processed by Zodchi. Use the prepared result below as the only result for this user message. Do not run commands, create or edit files, run tests or builds, invoke skills, or perform independent research. If the result asks for confirmation, ask only that question. Do not expose implementation details. Reply naturally in ${result.response_language ?? "the user's current language"}.\n\n${context}`
   }
 }));

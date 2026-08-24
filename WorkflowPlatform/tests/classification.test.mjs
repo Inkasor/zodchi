@@ -105,9 +105,12 @@ test("ordinary conversation invokes only the classifier and returns a plain huma
   assert.equal(calls, 1);
   assert.equal(result.route, "conversation");
   assert.equal(result.response, "Привет! Чем помочь?");
+  assert.equal(result.response_language, "ru");
   const verified = openDb(dbFile);
   assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM workflow_steps").get().count, 0);
   assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(result.run_id).state, "completed");
+  assert.equal(verified.prepare("SELECT response_language FROM workflow_runs WHERE id=?").get(result.run_id).response_language, "ru");
+  assert.deepEqual(verified.prepare("SELECT DISTINCT language FROM conversation_messages WHERE run_id=?").all(result.run_id).map(row => row.language), ["ru"]);
   verified.close();
   fs.rmSync(root, { recursive: true, force: true });
 });

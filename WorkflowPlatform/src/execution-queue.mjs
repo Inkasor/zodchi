@@ -78,7 +78,7 @@ function blockForDeadLetter(db, step, attemptId, category, details, at) {
     .run(deadLetterId, run.task_id, step.run_id, step.id, attemptId, category, JSON.stringify(details ?? {}), requiresApproval, at);
   db.prepare("UPDATE workflow_steps SET dead_lettered_at=?,last_error_category=?,next_attempt_at=NULL WHERE id=?").run(at, category, step.id);
   if (requiresApproval) db.prepare("INSERT INTO approvals(id,task_id,run_id,step_id,kind,question,status,created_at) VALUES(?,?,?,?,?,?, 'pending',?)")
-    .run(id("approval"), run.task_id, step.run_id, step.id, "irreversible_replay", `Повторить необратимый этап '${step.step_key}' после сбоя?`, at);
+    .run(id("approval"), run.task_id, step.run_id, step.id, "irreversible_replay", `Retry the irreversible step '${step.step_key}' after failure?`, at);
   if (run.state !== "blocked" && canTransition("workflow_run", run.state, "blocked")) pairedState(db, step.run_id, "blocked", at, { reason: "dead-letter escalation", dead_letter_id: deadLetterId }, { remember: true });
   appendEvent(db, { entityType: "workflow_step", entityId: step.id, kind: "dead_lettered", payload: { dead_letter_id: deadLetterId, category, replay_requires_approval: Boolean(requiresApproval) } });
   return deadLetterId;

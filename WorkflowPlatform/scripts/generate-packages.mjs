@@ -37,7 +37,7 @@ const bundle = {
   schema_version: 1,
   key: "company-workflows.core",
   version: "2.1.0",
-  purpose: "Переносимый стандарт рабочих процессов компании без локальных путей, моделей, секретов и истории запусков.",
+  purpose: "Portable company workflow standard without local paths, models, secrets, or run history.",
   packages: PACKAGE_DEFINITIONS.filter(item => companyKeys.has(item.key)).map(item => ({
     key: item.key,
     version: item.version,

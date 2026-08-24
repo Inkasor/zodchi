@@ -1,16 +1,18 @@
-# Безопасность
+# Security
 
-Zodchi пока выпускается как бета-версия. Не передавайте в отчётах ключи API, файлы авторизации, базы данных, содержимое частных проектов и полные ответы моделей.
+[English](SECURITY.md) · [Русский](docs/ru/SECURITY.md)
 
-## Как сообщить об уязвимости
+Zodchi is currently beta software. Never include API keys, authentication files, databases, private-project content, or full model responses in a report.
 
-Используйте приватный отчёт об уязвимости в разделе Security публичного репозитория. Если он временно недоступен, свяжитесь с автором через профиль GitHub, не публикуя технические подробности в открытой задаче.
+## Reporting a vulnerability
 
-В сообщении укажите версию Zodchi, операционную систему, затронутый модуль, способ воспроизведения и возможное влияние. Секреты замените безопасными примерами.
+Use private vulnerability reporting in the public repository's Security section. If it is unavailable, contact the author through the GitHub profile without publishing technical details in a public issue.
 
-## Границы
+Include the Zodchi version, operating system, affected component, reproduction steps, and possible impact. Replace credentials and private data with safe examples.
 
-- Поставка не должна содержать личные базы, ключи, файлы авторизации и абсолютные пользовательские пути.
-- Секреты для совместимых API передаются только через переменные окружения.
-- Доверие к проектному hook подтверждает человек в интерфейсе Codex.
-- Публикация, развёртывание и другие необратимые действия требуют отдельного решения владельца.
+## Boundaries
+
+- A release must not contain personal databases, credentials, authentication files, or user-specific absolute paths.
+- Credentials for compatible APIs are supplied only through environment variables.
+- A person must explicitly trust a project hook in the Codex interface.
+- Publication, deployment, access changes, and other irreversible operations require a separate owner decision.

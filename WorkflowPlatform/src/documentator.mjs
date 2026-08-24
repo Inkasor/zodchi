@@ -31,7 +31,7 @@ function appendInsideDocument(text, block) {
 function qualityBlock(runId, outcome) {
   if (!outcome) return null;
   const safeId = String(runId ?? "run").replace(/[^a-zA-Z0-9_-]/g, "_");
-  return `<quality_result id="quality_${safeId}" status="${outcome.technical_status}" evidence="${outcome.evidence_type}" kind="${outcome.documentation_policy}" quality="${outcome.quality_level}" contract_version="${outcome.contract_version}" decision_status="${outcome.decision_status}">Результат уровня ${outcome.quality_level} зафиксирован программными проверками; решение владельца: ${outcome.decision_status}.</quality_result>`;
+  return `<quality_result id="quality_${safeId}" status="${outcome.technical_status}" evidence="${outcome.evidence_type}" kind="${outcome.documentation_policy}" quality="${outcome.quality_level}" contract_version="${outcome.contract_version}" decision_status="${outcome.decision_status}">The ${outcome.quality_level} result was recorded from programmatic checks; owner decision: ${outcome.decision_status}.</quality_result>`;
 }
 
 function renderAfter(before, patch, { runId = null, qualityOutcome = null } = {}) {

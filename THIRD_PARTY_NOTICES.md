@@ -1,10 +1,12 @@
-# Сторонние компоненты
+# Third-party notices
 
-Zodchi не включает двоичный файл BSL Language Server. В поставке находится только сгенерированный справочник диагностик для настройки проверок 1С.
+[English](THIRD_PARTY_NOTICES.md) · [Русский](docs/ru/THIRD_PARTY_NOTICES.md)
 
-- BSL Language Server, версия 1.0.7
-- Проект: https://github.com/1c-syntax/bsl-language-server
-- Лицензия: GNU Lesser General Public License v3.0 or later
-- Использование в Zodchi: названия, важность и метаданные диагностик, полученные штатной командой генерации каталога
+Zodchi does not include the BSL Language Server executable. The release contains only a generated diagnostic catalog used to configure 1C project checks.
 
-Остальные зависимости и исполнительные среды устанавливаются пользователем отдельно и сохраняют собственные лицензии и условия использования.
+- Component: BSL Language Server 1.0.7
+- Project: https://github.com/1c-syntax/bsl-language-server
+- License: GNU Lesser General Public License v3.0 or later
+- Use in Zodchi: diagnostic names, severities, and metadata produced by the catalog generator
+
+Other dependencies and execution environments are installed separately by the user and retain their own licenses and terms.

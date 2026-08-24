@@ -363,7 +363,7 @@ export function configureOneCBslCheck(dbFile, options) {
       args: [runner, "check", "--db", path.resolve(dbFile), "--project", projectId, "--quality-level", "{{quality_level}}", "--executable", executable, "--source", ".", "--workspace", ".", "--platform-bin", platformBin, "--temp-root", tempRoot, "--timeout-seconds", "1500"]
     };
     db.prepare("UPDATE check_definitions SET name=?,runner=?,kind='command',config_json=?,timeout_seconds=? WHERE id=?")
-      .run("BSL: новые критические ошибки; остальные замечания только в отчёте", "one_c_bsl_policy", JSON.stringify(config), 1800, checkId);
+      .run("BSL: new critical findings; all other diagnostics are report-only", "one_c_bsl_policy", JSON.stringify(config), 1800, checkId);
     db.exec("COMMIT");
     return { status: "configured", project_id: projectId, project_root: project.root_path, check_id: checkId, runner, executable, platform_bin: platformBin, baseline_id: baseline.id, accepted_revision: baseline.accepted_revision };
   } catch (error) {

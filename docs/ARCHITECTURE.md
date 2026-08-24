@@ -1,36 +1,37 @@
-<document id="zodchi_architecture" status="accepted" authority="zodchi" version="0.3.0-beta.2" language="ru">
-  <title>Zodchi — устройство системы</title>
+<document id="zodchi_architecture" status="accepted" authority="zodchi" version="0.3.0-beta.3" language="en">
+  <title>Zodchi system architecture</title>
 
   <purpose status="accepted">
-    Zodchi превращает обычный проектный чат в управляемый рабочий процесс. Программа берёт на себя повторяемую маршрутизацию, сбор контекста, вызовы моделей, проверки и фиксацию результата; человек сохраняет право принимать важные решения.
+    Zodchi turns an ordinary project chat into a governed workflow. The program handles repeatable routing, context assembly, model calls, checks, and result recording while the person retains authority over important decisions.
   </purpose>
 
   <components status="accepted">
-    <component id="workflow_platform" responsibility="workflow">Классифицирует запрос, собирает зарегистрированный контекст, выбирает маршрут, управляет этапами, документами и программными проверками.</component>
-    <component id="agent_gateway" responsibility="model_calls">Выполняет один ограниченный вызов назначенной модели и сохраняет техническую квитанцию без полного запроса и ответа.</component>
-    <component id="project_hook" responsibility="chat_entry">Передаёт новое сообщение из проектного чата в WorkflowPlatform и возвращает результат в тот же чат.</component>
+    <component id="workflow_platform" responsibility="workflow">Classifies the request, assembles registered context, selects a route, and manages stages, documents, and deterministic checks.</component>
+    <component id="agent_gateway" responsibility="model_calls">Performs one bounded call to the assigned model and stores a technical receipt without the full request or response.</component>
+    <component id="project_hook" responsibility="chat_entry">Passes a new project-chat message to WorkflowPlatform and returns the result to the same chat.</component>
   </components>
 
   <flow status="accepted">
-    <step id="intake" order="1">Получить сообщение пользователя и устойчивый идентификатор события.</step>
-    <step id="context" order="2">Программно собрать разрешённые сведения о проекте и зарегистрированных документах.</step>
-    <step id="classification" order="3">Определить намерение, вид работы, требуемый результат, уровень планирования и режим качества.</step>
-    <step id="dialog_or_route" order="4">Ответить или задать вопрос, если выполнение не нужно; иначе запустить зарегистрированный рабочий поток.</step>
-    <step id="execution" order="5">Последовательно выполнить планирование, работу, проверки, исправление, ревью и документирование в соответствии с контрактом.</step>
-    <step id="response" order="6">Вернуть человеку короткий итог, существенные ограничения и следующий необходимый шаг.</step>
+    <step id="intake" order="1">Receive the user message and a stable event identifier.</step>
+    <step id="context" order="2">Programmatically assemble permitted project facts and registered documents.</step>
+    <step id="classification" order="3">Determine intent, work type, expected artifact, planning level, and quality mode.</step>
+    <step id="dialog_or_route" order="4">Answer or ask a question when execution is unnecessary; otherwise start a registered workflow.</step>
+    <step id="execution" order="5">Run planning, execution, checks, correction, review, and documentation according to the selected contracts.</step>
+    <step id="response" order="6">Return a concise human result, material limitations, and the next required action in the conversation language.</step>
   </flow>
 
   <contracts status="accepted">
-    <rule id="registered_routes_only">Маршруты, роли, документы и проверки берутся из реестра, а не угадываются поиском слов в коде.</rule>
-    <rule id="one_gateway_call">Один запуск AgentGateway выполняет ровно один ограниченный вызов модели; общий процесс принадлежит WorkflowPlatform.</rule>
-    <rule id="quality_cascade">Более строгий режим качества включает применимые проверки более простых режимов и заново проверяет изменённый результат.</rule>
-    <rule id="documentator_boundary">Документатор получает целевой документ и принятые решения от рабочего потока, проверяет версию и семантическую разметку, затем применяет изменение атомарно.</rule>
-    <rule id="human_acceptance">Визуальная, игровая, продуктовая, бизнес-приёмка, доступы, публикация и развёртывание не выводятся из технического успеха автоматически.</rule>
+    <rule id="registered_routes_only">Routes, roles, documents, and checks come from registries; runtime code does not infer them from keywords.</rule>
+    <rule id="one_gateway_call">One AgentGateway run performs exactly one bounded model call; WorkflowPlatform owns the overall process.</rule>
+    <rule id="quality_cascade">A stricter quality mode includes applicable checks from simpler modes and reruns them for the changed result.</rule>
+    <rule id="documentator_boundary">Documentator receives a target document and accepted decisions from the workflow, verifies version and semantic markup, then applies the change atomically.</rule>
+    <rule id="human_acceptance">Technical success never implies visual, gameplay, product, business, access, publication, or deployment acceptance.</rule>
+    <rule id="conversation_language">Response language comes from an explicit host value when available, then installation preference, then current conversation; the current user language has priority.</rule>
   </contracts>
 
   <storage status="accepted">
-    <rule id="replaceable_release">Поставка программы заменяется целиком и не является хранилищем пользовательского состояния.</rule>
-    <rule id="external_local_data">Проекты, локальные назначения моделей, базы, история запусков и секреты находятся вне папки поставки.</rule>
-    <rule id="portable_packages">Переносимые рабочие потоки используют семантические ключи и не содержат секретов, абсолютных путей и локальных идентификаторов.</rule>
+    <rule id="replaceable_release">The program release is replaced as one unit and is not a user-state store.</rule>
+    <rule id="external_local_data">Projects, local model assignments, databases, run history, and credentials stay outside the release.</rule>
+    <rule id="portable_packages">Portable workflows use semantic keys and contain no secrets, absolute paths, or local identifiers.</rule>
   </storage>
 </document>

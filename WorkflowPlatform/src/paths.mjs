@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizeLanguage } from "./language.mjs";
 
 export const workflowPlatformRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -37,6 +38,7 @@ export function resolveWorkflowSettings(env = process.env) {
     gatewayPolicyPath: configuredPath(env.AGENT_GATEWAY_POLICY || config.agentGatewayPolicy, path.join(gatewayRoot, "data", "policy.local.json")),
     gatewayDatabasePath: configuredPath(env.AGENT_GATEWAY_DB || config.agentGatewayDatabase, path.join(gatewayRoot, "data", "gateway.sqlite")),
     project: env.WORKFLOW_PROJECT || config.projectRoot || null,
-    workflow: env.WORKFLOW_ID || config.workflow || null
+    workflow: env.WORKFLOW_ID || config.workflow || null,
+    responseLanguage: normalizeLanguage(env.ZODCHI_LANGUAGE || config.responseLanguage) ?? null
   };
 }
