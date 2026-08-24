@@ -19,10 +19,17 @@ if (-not (Test-Path -LiteralPath $lint -PathType Leaf)) { throw "Release linter 
 & node $lint $sourcePath
 if ($LASTEXITCODE -ne 0) { throw "Release validation failed with exit code $LASTEXITCODE" }
 
-$oldHook = Join-Path $destinationPath 'WorkflowPlatform\hooks\codex-user-prompt-submit.mjs'
-$newHook = Join-Path $sourcePath 'WorkflowPlatform\hooks\codex-user-prompt-submit.mjs'
-$oldHookHash = if (Test-Path -LiteralPath $oldHook -PathType Leaf) { (Get-FileHash -LiteralPath $oldHook -Algorithm SHA256).Hash } else { $null }
-$newHookHash = (Get-FileHash -LiteralPath $newHook -Algorithm SHA256).Hash
+$hookCandidates = @('WorkflowPlatform\hooks\user-prompt-submit.mjs', 'WorkflowPlatform\hooks\codex-user-prompt-submit.mjs')
+function Get-HookHash([string]$Root) {
+    foreach ($relative in $hookCandidates) {
+        $file = Join-Path $Root $relative
+        if (Test-Path -LiteralPath $file -PathType Leaf) { return (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash }
+    }
+    return $null
+}
+$oldHookHash = Get-HookHash $destinationPath
+$newHookHash = Get-HookHash $sourcePath
+if ($null -eq $newHookHash) { throw "Release hook entry is missing: $($hookCandidates[0])" }
 
 $parent = Split-Path -Parent $destinationPath
 if (-not $parent) { throw 'Destination must have a parent folder.' }

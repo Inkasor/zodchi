@@ -2,6 +2,13 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+## 0.3.0-beta.4 — 2026-08-24
+
+- Claude Code joins Codex as a supported chat entry point through one shared UserPromptSubmit hook.
+- Renamed the hook entry to hooks/user-prompt-submit.mjs and kept the former Codex filename as a compatibility entry for existing installations.
+- Hook results now expose additionalContext at the top level of the hook output, which is where Claude Code reads it.
+- Workflow runs record the originating client, and Claude Code prompt identifiers are used for duplicate-delivery protection.
+
 ## 0.3.0-beta.3 — 2026-08-24
 
 - Added conversation-language resolution across hooks, workflow state, model prompts, questions, and final responses.

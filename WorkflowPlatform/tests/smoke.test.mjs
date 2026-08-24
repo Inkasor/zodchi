@@ -146,6 +146,22 @@ test("repeating one hook event does not create a second workflow run", async () 
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("Claude Code hook events preserve prompt id and client identity", async () => {
+  const root = temporaryRoot("workflow-claude-hook-");
+  const project = path.join(root, "project"), dbFile = path.join(root, "workflow.sqlite");
+  fs.mkdirSync(project, { recursive: true });
+  const setup = openDb(dbFile);
+  registerTestProject(setup, { projectRoot: project });
+  setup.close();
+  const input = { message: "Implement one bounded package", project, dbFile, workflowDefinition: workflowDefinition(), eventSource: "claude-code-hook", eventKey: "550e8400-e29b-41d4-a716-446655440000", client: "claude-code", classificationResult: classificationDecision() };
+  const result = await processMessage(input);
+  const db = openDb(dbFile);
+  assert.equal(db.prepare("SELECT client FROM workflow_runs WHERE id=?").get(result.run_id).client, "claude-code");
+  assert.equal(db.prepare("SELECT run_id FROM inbox_events WHERE source=? AND event_key=?").get("claude-code-hook", "550e8400-e29b-41d4-a716-446655440000").run_id, result.run_id);
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("runtime advances an executed no-document workflow beyond planned", () => {
   const root = temporaryRoot("workflow-state-");
   const runtime = new Runtime(path.join(root, "workflow.sqlite"));

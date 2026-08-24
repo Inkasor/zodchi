@@ -1,4 +1,4 @@
-<document id="zodchi_onboarding" status="accepted" authority="zodchi" version="0.3.0-beta.3" language="en">
+<document id="zodchi_onboarding" status="accepted" authority="zodchi" version="0.3.0-beta.4" language="en">
   <title>Initial Zodchi setup</title>
   <purpose>Instructions for the LLM that installs and configures Zodchi. Use the person's actual conversation language, explain things plainly, and never ask them to fill internal fields.</purpose>
 
@@ -49,7 +49,7 @@
     <rule id="separate_harness_and_model_provider">For each local profile, record harness, model provider, and model ID separately. For a compatible API, store only baseUrl and the apiKeyEnv variable name, never the key value.</rule>
     <rule id="tool_roles_need_harness">Assign roles that need files, terminal, or tools to an agent harness. Use a direct compatible API only for bounded work over supplied context.</rule>
     <step order="12" id="configure_installation">Run `node WorkflowPlatform/src/cli.mjs configure --config &lt;local-installation-config&gt;`. A shared installation uses scope=shared and a localDataRoot outside the release. The command creates external runtime.json, a local policy overlay containing only profiles, and both database paths. Do not modify release adapters or universal policy.</step>
-    <step order="13" id="configure_runtime_environment">On Windows, persist the returned WORKFLOW_PLATFORM_CONFIG as a user environment variable and explain that Codex must restart. Project hooks must reference WorkflowPlatform in the installed release, not the development repository.</step>
+    <step order="13" id="configure_runtime_environment">On Windows, persist the returned WORKFLOW_PLATFORM_CONFIG as a user environment variable and explain that the chat host must restart. Project hooks must reference WorkflowPlatform in the installed release, not the development repository.</step>
     <step order="14" id="role_contracts">Propose portable versioned role contracts separately from local profile/model assignments. Define boundaries, artifacts, documents, tools/skills, checks, transitions, limits, result schema, and escalation for each role; never put a local model in the contract.</step>
     <step order="15" id="registered_checks">Register only checks relevant to the project, artifact type, and quality mode. Do not infer commands automatically from a programming language or package.json.</step>
     <step order="16" id="portable_package_contract">Define semantic package key/version/purpose, full step graph and transitions, human questions, schemas, quality policies, prompt-template versions, and anonymized scenarios. Exclude local profiles, model IDs, absolute paths, and secrets.</step>
@@ -58,16 +58,18 @@
     <step order="19" id="company_bundle_validation">For a company bundle, first run workflow-bundle-inspect on WorkflowPlatform/packages/generated/company-workflows.xml. Propose only the project package matching the current project. Do not copy unrelated projects or enable their hooks.</step>
   </project_onboarding>
 
-  <codex_hook status="accepted">
-    <step order="1">Use configs/codex-hooks.template.json.</step>
-    <step order="2">Insert the installed WorkflowPlatform path.</step>
-    <step order="3">Create or update the project's .codex/hooks.json.</step>
-    <step order="4">Verify that the command starts hooks/codex-user-prompt-submit.mjs.</step>
-    <step order="5">Use a test event to confirm a workflow_runs record.</step>
-    <rule id="stable_event_id">Pass the client's stable event_id for duplicate-delivery protection. Never replace a missing ID with a message-text hash.</rule>
+  <chat_entry_hook status="accepted">
+    <rule id="one_shared_hook">Codex and Claude Code share hooks/user-prompt-submit.mjs. The hook detects the harness from the event and records client=codex or client=claude-code.</rule>
+    <step order="1" id="select_entry">Ask which chat entry point the person uses. Configure only the selected ones.</step>
+    <step order="2" id="fill_template">Use configs/codex-hooks.template.json for Codex and configs/claude-settings.template.json for Claude Code. Insert the installed WorkflowPlatform path in place of the placeholder.</step>
+    <step order="3" id="write_config">Create or update the project's .codex/hooks.json for Codex and the project's .claude/settings.json for Claude Code. Never write the Claude Code hook into the user-wide settings file; it must stay scoped to the project.</step>
+    <step order="4" id="verify_command">Verify that the command starts hooks/user-prompt-submit.mjs in the installed release, not in the development repository.</step>
+    <step order="5" id="verify_run">Use a test event to confirm a workflow_runs record with the expected client value.</step>
+    <rule id="stable_event_id">Pass the client's stable event identifier for duplicate-delivery protection: event_id for Codex, prompt_id for Claude Code. Never replace a missing ID with a message-text hash.</rule>
+    <rule id="explicit_timeout">Keep an explicit hook timeout above the slowest registered quality mode. The Claude Code default for this event is 30 seconds and is too short for a workflow run.</rule>
     <human_gate>If Codex marks the hook untrusted, tell the person in their language to open the Codex project settings and trust the WorkflowPlatform hook. This is an authorization step, not a system failure.</human_gate>
-    <new_chat>After trust is confirmed, ask the person to open a new chat and send an ordinary test message.</new_chat>
-  </codex_hook>
+    <new_chat>Hooks are registered when a session starts. After trust is confirmed, ask the person to open a new chat and send an ordinary test message.</new_chat>
+  </chat_entry_hook>
 
   <databases status="accepted">
     <database id="workflow_db">Local workflow state, document registry, roles, routes, decisions, and checks.</database>

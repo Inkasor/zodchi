@@ -1,4 +1,4 @@
-<document id="zodchi_quickstart" status="accepted" authority="zodchi" version="0.3.0-beta.3" language="en">
+<document id="zodchi_quickstart" status="accepted" authority="zodchi" version="0.3.0-beta.4" language="en">
   <title>LLM-operated Zodchi quick start</title>
   <purpose>This instruction is for an LLM. The person describes the desired outcome; the LLM performs technical operations and asks only for decisions that cannot be inferred safely.</purpose>
 

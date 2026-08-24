@@ -91,7 +91,7 @@ function executionFailure(runtime, runId, error, finish, responseLanguage = "en"
 
 export async function processMessage({
   message, project, dbFile, workflow, workflowDefinition, execute = false, eventSource = "user", eventKey = null,
-  classificationResult = null, gatewayCall = callGateway, gateRunner = undefined, preferredLanguage = null
+  classificationResult = null, gatewayCall = callGateway, gateRunner = undefined, preferredLanguage = null, client = "codex"
 }) {
   const settings = resolveWorkflowSettings();
   project ??= settings.project;
@@ -112,7 +112,7 @@ export async function processMessage({
   workflow ??= definition?.id ?? runtime.db.prepare(`SELECT w.id FROM workflow_routes wr JOIN workflows w ON w.id=wr.workflow_id
     WHERE wr.project_id=? AND wr.enabled=1 AND w.status='active' ORDER BY wr.priority DESC,w.id LIMIT 1`).get(project)?.id;
   if (!workflow) { runtime.db.close(); throw new Error(`WORKFLOW_NOT_REGISTERED: ${project}`); }
-  const accepted = runtime.accept(message, { project_id: project, workflow_id: workflow, client: "codex", event_source: eventSource, event_key: eventKey });
+  const accepted = runtime.accept(message, { project_id: project, workflow_id: workflow, client, event_source: eventSource, event_key: eventKey });
   const runId = accepted.runId;
   const run = runtime.get(runId);
   let responseLanguage = resolveResponseLanguage({ message, preferredLanguage: preferredLanguage ?? settings.responseLanguage });

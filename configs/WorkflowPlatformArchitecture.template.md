@@ -5,12 +5,12 @@
   <system id="workflow_platform" status="accepted">
     <component id="workflow_platform_component" role="semantic_runtime">Owns intent, context, classification, routes, checks, and documents.</component>
     <component id="agent_gateway" role="model_gateway">Starts providers, profiles, and models. AgentGateway never selects a semantic route.</component>
-    <component id="codex_hook" role="entrypoint">UserPromptSubmit sends each new message to WorkflowPlatform.</component>
+    <component id="chat_entry_hook" role="entrypoint">UserPromptSubmit sends each new message from Codex or Claude Code to WorkflowPlatform.</component>
     <component id="workflow_database" role="state_store">Stores projects, documents, roles, runs, decisions, and check results.</component>
   </system>
 
   <flow id="default_flow" status="accepted">
-    <step order="1" role="codex_hook">Receive the chat message.</step>
+    <step order="1" role="chat_entry_hook">Receive the chat message.</step>
     <step order="2" role="context_builder">Assemble registered documents and bounded working context.</step>
     <step order="3" role="classifier">Determine intent, work_type, discipline, planning level, quality mode, artifact, and documentation need.</step>
     <step order="4" role="router">Select a registered route from the classifier decision.</step>
@@ -104,12 +104,13 @@
     <contract_source>contracts/quality-contracts.xml</contract_source>
   </quality_modes>
 
-  <codex_hook status="proposed">
-    <path>.codex/hooks.json</path>
-    <command>node &lt;WORKFLOW_PLATFORM_ROOT&gt;\hooks\codex-user-prompt-submit.mjs</command>
-    <human_action>After the hook changes, the person must trust it in Codex.</human_action>
-    <verification>Verify codex --version, a test event, and the workflow_runs record.</verification>
-  </codex_hook>
+  <chat_entry_hook status="proposed">
+    <path harness="codex">.codex/hooks.json</path>
+    <path harness="claude-code">.claude/settings.json</path>
+    <command>node &lt;WORKFLOW_PLATFORM_ROOT&gt;\hooks\user-prompt-submit.mjs</command>
+    <human_action>After the hook changes, the person must trust it in Codex and start a new session in each configured host.</human_action>
+    <verification>Verify the host version, a test event, and the workflow_runs record with the expected client value.</verification>
+  </chat_entry_hook>
 
   <extension_rules status="accepted">
     <rule id="no_project_names_in_runtime">WorkflowPlatform contains no names of user projects or project documents.</rule>
