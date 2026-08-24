@@ -148,8 +148,10 @@ export async function runProjectGate(project, level = "mvp", dbFile = resolveWor
   const configured = configuredChecks(resolvedProject, level, dbFile, options.artifactType ?? null);
   const checks = [];
   const startedAt = new Date().toISOString();
-  if (!configured.length && (level === "security-audit" || CHECKED_ARTIFACTS.has(options.artifactType))) {
-    checks.push({ id: "quality_contract_checks", name: "Required check coverage", required: true, status: "unavailable", exit_code: 1, duration_ms: 0, failure: `No applicable checks are configured for ${level}/${options.artifactType ?? "unknown"}.` });
+  // A check that cannot run is evidence of nothing, so coverage counts only required executable checks.
+  const executableRequired = configured.filter(check => check.required && check.kind !== "disabled");
+  if (!executableRequired.length && (level === "security-audit" || CHECKED_ARTIFACTS.has(options.artifactType))) {
+    checks.push({ id: "quality_contract_checks", name: "Required check coverage", required: true, status: "unavailable", exit_code: 1, duration_ms: 0, failure: `No executable required checks are configured for ${level}/${options.artifactType ?? "unknown"}.` });
   }
   for (const check of configured) {
     const started = Date.now();

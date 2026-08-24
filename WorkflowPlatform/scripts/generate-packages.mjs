@@ -36,7 +36,7 @@ const bundleFile = path.join(outputDirectory, "company-workflows.xml");
 const bundle = {
   schema_version: 1,
   key: "company-workflows.core",
-  version: "2.1.0",
+  version: "2.2.0",
   purpose: "Portable company workflow standard without local paths, models, secrets, or run history.",
   packages: PACKAGE_DEFINITIONS.filter(item => companyKeys.has(item.key)).map(item => ({
     key: item.key,
