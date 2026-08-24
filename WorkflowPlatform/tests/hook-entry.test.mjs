@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { isClaudeCodeEvent, parseHookEvent, formatHookOutput } from "../src/hook-entry.mjs";
+import { isClaudeCodeEvent, hookEventFields, parseHookEvent, formatHookOutput } from "../src/hook-entry.mjs";
 
 const projectRoot = path.join(os.tmpdir(), "zodchi-hook-entry-project");
 
@@ -82,6 +82,8 @@ test("hook output carries additionalContext at the top level for Claude Code and
   assert.match(output.additionalContext, /The release notes are ready\./);
   assert.match(output.additionalContext, /Reply naturally in ru\./);
   assert.match(output.additionalContext, /Do not run commands/);
+  assert.match(output.additionalContext, /End of the prepared result\./);
+  assert.equal(output.additionalContext.indexOf("The release notes are ready.") < output.additionalContext.indexOf("End of the prepared result."), true);
 });
 
 test("hook output falls back to a route-specific instruction when there is no prepared response", () => {
@@ -103,4 +105,38 @@ test("a Codex event is never mistaken for Claude Code", () => {
   assert.equal(isClaudeCodeEvent(codexEvent), false);
   assert.equal(isClaudeCodeEvent({ event_id: "e", prompt: "p", session_id: "" }), false);
   assert.equal(isClaudeCodeEvent({ prompt_id: "" }), false);
+});
+
+// Documented Codex UserPromptSubmit payload. It carries the session id, transcript path,
+// permission mode and prompt that Claude Code also sends, so only turn_id and model separate them.
+const codexSessionEvent = {
+  session_id: "01a03543-a6c7-7e83-8d39-340edc4107c0",
+  transcript_path: path.join(projectRoot, "codex-transcript.jsonl"),
+  cwd: projectRoot,
+  hook_event_name: "UserPromptSubmit",
+  model: "gpt-5.6-luna",
+  turn_id: "01a0353a-69b6-7a71-a7fb-4b39a0abbce5",
+  prompt: "Prepare the release notes",
+  permission_mode: "read-only"
+};
+
+test("a Codex event is recorded as Codex even though it shares Claude Code's session and transcript fields", () => {
+  assert.equal(isClaudeCodeEvent(codexSessionEvent), false);
+  const entry = parseHookEvent(codexSessionEvent, { env: {}, argv: [], settings: {} });
+  assert.equal(entry.client, "codex");
+  assert.equal(entry.eventSource, "codex-hook");
+  assert.equal(entry.message, "Prepare the release notes");
+  assert.equal(entry.eventKey, "01a0353a-69b6-7a71-a7fb-4b39a0abbce5");
+});
+
+test("a Claude Code event stays Claude Code and never claims a Codex turn", () => {
+  assert.equal(isClaudeCodeEvent(claudeEventWithPrompt), true);
+  assert.equal(isClaudeCodeEvent({ ...claudeEventWithPrompt, model: "gpt-5.6-luna" }), false);
+});
+
+test("the hook records the event field names so the sending harness stays identifiable", () => {
+  assert.deepEqual(hookEventFields(codexSessionEvent), ["cwd", "hook_event_name", "model", "permission_mode", "prompt", "session_id", "transcript_path", "turn_id"]);
+  assert.deepEqual(parseHookEvent(claudeEventWithPrompt, { env: {}, argv: [], settings: {} }).eventFields,
+    ["cwd", "hook_event_name", "permission_mode", "prompt", "prompt_id", "session_id", "transcript_path"]);
+  assert.deepEqual(hookEventFields({}), []);
 });

@@ -1,11 +1,29 @@
-const CLAUDE_INSTRUCTION = "This turn has already been processed by Zodchi. Use the prepared result below as the only result for this user message. Do not run commands, create or edit files, run tests or builds, invoke skills, or perform independent research. If the result asks for confirmation, ask only that question. Do not expose implementation details.";
+// Both harnesses treat hook output as advisory developer context, so the instruction has to be
+// unambiguous, and it has to be repeated after the result: the boundary is what the model reads last.
+const HARNESS_INSTRUCTION = "This turn is already complete. Zodchi has classified the message, made the model calls it needed, and produced the result below. Your only remaining job is to deliver that result to the user. Do not run commands, read files, list directories, search the repository, inspect git, run tests or builds, edit anything, or invoke any skill or tool. Do not gather context to verify or enrich the result: that work has already been done and paid for, and repeating it charges the user twice. If the result asks a question, ask exactly that question and stop. Do not expose identifiers, roles, levels, prompts, or JSON.";
+const HARNESS_BOUNDARY = "End of the prepared result. Deliver it now, with no tool call and no independent research.";
 
 const marker = value => typeof value === "string" && value.length > 0;
 
+// The two harnesses send nearly the same UserPromptSubmit payload: session id, transcript path,
+// working directory, event name, permission mode and prompt. Only three fields differ, so those
+// are the only ones that identify the sender. Codex names the turn and the model it is running;
+// Claude Code names the prompt.
+const CODEX_FIELDS = Object.freeze(["turn_id", "turnId", "model"]);
+const CLAUDE_FIELDS = Object.freeze(["prompt_id", "promptId", "user_input", "user_input_raw"]);
+
+const present = (event, fields) => fields.some(field => event[field] !== undefined && event[field] !== null && event[field] !== "");
+
+export function isCodexEvent(event = {}) { return present(event, CODEX_FIELDS); }
+
 export function isClaudeCodeEvent(event = {}) {
-  if (event.user_input !== undefined || event.user_input_raw !== undefined) return true;
-  if (marker(event.prompt_id) || marker(event.promptId) || marker(event.transcript_path) || marker(event.transcriptPath)) return true;
-  return String(event.hook_event_name ?? event.hookEventName ?? "").toLowerCase() === "userpromptsubmit" && marker(event.session_id);
+  return !isCodexEvent(event) && present(event, CLAUDE_FIELDS);
+}
+
+// The field names of a hook event identify the harness that sent it; the values may hold the
+// user's prompt, so only the names are recorded.
+export function hookEventFields(event = {}) {
+  return Object.keys(event).sort();
 }
 
 export function parseHookEvent(event = {}, { env = process.env, argv = [], settings = {} } = {}) {
@@ -18,6 +36,7 @@ export function parseHookEvent(event = {}, { env = process.env, argv = [], setti
     message: message ? String(message) : null,
     eventKey,
     project: settings.project ?? event.cwd ?? event.project ?? null,
+    eventFields: hookEventFields(event),
     preferredLanguage: event.language ?? event.locale ?? event.user_language ?? event.userLocale ?? settings.responseLanguage ?? null
   };
 }
@@ -26,6 +45,10 @@ export function formatHookOutput(result = {}) {
   const context = result.response ?? (result.route === "conversation"
     ? "Continue the conversation naturally and directly."
     : "The workflow has finished. Explain the next step without exposing internal identifiers, roles, levels, prompts, or JSON.");
-  const additionalContext = `${CLAUDE_INSTRUCTION} Reply naturally in ${result.response_language ?? "the user's current language"}.\n\n${context}`;
+  const additionalContext = [
+    `${HARNESS_INSTRUCTION} Reply naturally in ${result.response_language ?? "the user's current language"}.`,
+    context,
+    HARNESS_BOUNDARY
+  ].join("\n\n");
   return { additionalContext, hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext } };
 }
