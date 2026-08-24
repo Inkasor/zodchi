@@ -1,0 +1,86 @@
+<quality_contracts schema_version="1" version="1.1.0" inheritance="cumulative">
+  <quality_contract id="prototype" version="1.0.0" status="active" reviewer_policy="none" documentation_policy="evidence" correction_limit="0">
+    <name>Prototype</name>
+    <purpose>Test one highest-risk assumption with the smallest reversible artifact.</purpose>
+    <budgets>
+      <budget metric="calls" limit="4"/>
+      <budget metric="correction_cycles" limit="0"/>
+      <budget metric="duration_ms" limit="600000"/>
+    </budgets>
+    <rules>
+      <rule type="allowed_shortcut" id="narrow_happy_path" ordinal="1">One primary path, fixtures, stubs and mocks are allowed when declared.</rule>
+      <rule type="forbidden_shortcut" id="skip_static_checks" ordinal="1">Configured static diagnostics may not be skipped or hidden.</rule>
+      <rule type="forbidden_shortcut" id="readiness_claim" ordinal="2">Prototype evidence may not be presented as production readiness.</rule>
+      <rule type="required_evidence" id="target_signal" ordinal="1">Record at least one target signal and the known limitations.</rule>
+      <rule type="success" id="assumption_answered" ordinal="1">The named risky assumption is answered by observable evidence.</rule>
+      <rule type="success" id="artifact_inspectable" ordinal="2">The artifact can be inspected or run inside the declared boundary.</rule>
+    </rules>
+    <escalations>
+      <escalation event="owner_decision" action="ask_owner" threshold="" ordinal="1">Escalate only an owner decision or a blocked target signal.</escalation>
+    </escalations>
+  </quality_contract>
+  <quality_contract id="mvp" version="1.0.0" status="active" reviewer_policy="conditional" documentation_policy="verified_result" correction_limit="1">
+    <name>MVP</name>
+    <purpose>Deliver one complete relevant user scenario with deterministic evidence.</purpose>
+    <budgets>
+      <budget metric="calls" limit="12"/>
+      <budget metric="correction_cycles" limit="1"/>
+      <budget metric="duration_ms" limit="3600000"/>
+    </budgets>
+    <rules>
+      <rule type="allowed_shortcut" id="secondary_scope" ordinal="1">Secondary paths, polish and scale work may remain explicit follow-up work.</rule>
+      <rule type="forbidden_shortcut" id="missing_tests" ordinal="1">Relevant newly created behavior may not ship without dedicated tests.</rule>
+      <rule type="forbidden_shortcut" id="hidden_limitations" ordinal="2">Known limitations and skipped coverage may not be omitted.</rule>
+      <rule type="required_evidence" id="scenario_and_gates" ordinal="1">Record the scenario result, gate results and remaining owner acceptance.</rule>
+      <rule type="success" id="complete_scenario" ordinal="1">One relevant end-to-end user scenario works inside the accepted scope.</rule>
+      <rule type="success" id="deterministic_green" ordinal="2">All applicable static checks, dedicated tests and document lint are green.</rule>
+    </rules>
+    <escalations>
+      <escalation event="high_risk" action="independent_review" threshold="" ordinal="1">Use an independent reviewer for high-risk work.</escalation>
+      <escalation event="correction_used" action="independent_review" threshold="1" ordinal="2">Use an independent reviewer after a correction cycle.</escalation>
+      <escalation event="protected_boundary" action="independent_review" threshold="" ordinal="3">Review data, access, external contracts and cross-project boundaries.</escalation>
+    </escalations>
+  </quality_contract>
+  <quality_contract id="production" version="1.0.0" status="active" reviewer_policy="required" documentation_policy="release_record" correction_limit="1">
+    <name>Production</name>
+    <purpose>Prepare and verify a real release and deployment with rollback boundaries.</purpose>
+    <budgets>
+      <budget metric="calls" limit="18"/>
+      <budget metric="correction_cycles" limit="1"/>
+      <budget metric="duration_ms" limit="7200000"/>
+    </budgets>
+    <rules>
+      <rule type="allowed_shortcut" id="none_undeclared" ordinal="1">Only explicitly accepted non-blocking limitations are allowed.</rule>
+      <rule type="forbidden_shortcut" id="unapproved_deploy" ordinal="1">Deployment or publication may not occur without recorded owner approval.</rule>
+      <rule type="forbidden_shortcut" id="partial_regression" ordinal="2">Applicable MVP checks and release checks may not be reduced.</rule>
+      <rule type="required_evidence" id="release_record" ordinal="1">Record revision, target, checks, deployment verification and rollback evidence.</rule>
+      <rule type="success" id="release_verified" ordinal="1">The exact release is built, deployed and verified in the authorized target.</rule>
+      <rule type="success" id="rollback_ready" ordinal="2">Rollback, observability, compatibility and data-safety boundaries are explicit.</rule>
+    </rules>
+    <escalations>
+      <escalation event="gate_green" action="independent_review" threshold="" ordinal="1">Production always requires an independent reviewer after green gates.</escalation>
+      <escalation event="irreversible_action" action="owner_approval" threshold="" ordinal="2">Deployment, publication and irreversible actions require owner approval.</escalation>
+    </escalations>
+  </quality_contract>
+  <quality_contract id="security-audit" version="1.0.0" status="active" reviewer_policy="security_required" documentation_policy="security_report" correction_limit="0">
+    <name>Security audit</name>
+    <purpose>Perform a read-only scoped security assessment and report residual risk.</purpose>
+    <budgets>
+      <budget metric="calls" limit="8"/>
+      <budget metric="correction_cycles" limit="0"/>
+      <budget metric="duration_ms" limit="3600000"/>
+    </budgets>
+    <rules>
+      <rule type="allowed_shortcut" id="none_silent" ordinal="1">Coverage limits are allowed only when reported as limits.</rule>
+      <rule type="forbidden_shortcut" id="silent_remediation" ordinal="1">The audit may not modify the target unless a separate change is authorized.</rule>
+      <rule type="forbidden_shortcut" id="empty_coverage_pass" ordinal="2">Missing security coverage is unavailable, never passed.</rule>
+      <rule type="required_evidence" id="security_report" ordinal="1">Record scoped findings, evidence references and residual risk.</rule>
+      <rule type="success" id="scoped_assessment" ordinal="1">Assets, trust boundaries, threat model and coverage are explicit.</rule>
+      <rule type="success" id="findings_ranked" ordinal="2">Findings include severity, evidence, mitigation and residual risk.</rule>
+    </rules>
+    <escalations>
+      <escalation event="audit_ready" action="security_review" threshold="" ordinal="1">A designated security reviewer is mandatory.</escalation>
+      <escalation event="remediation_requested" action="separate_workflow" threshold="" ordinal="2">Remediation is a separate authorized workflow.</escalation>
+    </escalations>
+  </quality_contract>
+</quality_contracts>

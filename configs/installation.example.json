@@ -1,0 +1,13 @@
+{
+  "scope": "shared",
+  "localDataRoot": "<path-outside-release>/ZodchiData",
+  "gatewayProfiles": {
+    "codex": {
+      "local-worker": {
+        "model": "<model-selected-during-onboarding>",
+        "reasoningEffort": "low",
+        "allowedSkills": []
+      }
+    }
+  }
+}

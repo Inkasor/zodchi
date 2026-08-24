@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "packages": [
+    { "key": "indie-studio.project-m", "version": "2.1.1", "file": "generated/indie-studio.project-m.xml", "owner_acceptance": ["gameplay", "visual", "product", "publication"] },
+    { "key": "indie-studio.project-r", "version": "2.1.1", "file": "generated/indie-studio.project-r.xml", "owner_acceptance": ["gameplay", "visual", "product", "publication"] },
+    { "key": "shared-map-engine.core", "version": "2.1.2", "file": "generated/shared-map-engine.core.xml", "owner_acceptance": ["consumer_gameplay", "consumer_visual"] },
+    { "key": "shared-lore.canon", "version": "2.1.0", "file": "generated/shared-lore.canon.xml", "owner_acceptance": ["canon"] },
+    { "key": "one-c.development", "version": "2.2.0", "file": "generated/one-c.development.xml", "owner_acceptance": ["business", "runtime", "user"] },
+    { "key": "company-web.marketplaces-data", "version": "2.1.1", "file": "generated/company-web.marketplaces-data.xml", "owner_acceptance": ["data", "deployment", "production"] },
+    { "key": "company-web.dashboard", "version": "2.1.1", "file": "generated/company-web.dashboard.xml", "owner_acceptance": ["product", "data", "deployment", "production"] },
+    { "key": "company-web.photo-hub", "version": "2.1.0", "file": "generated/company-web.photo-hub.xml", "owner_acceptance": ["content", "product", "deployment", "production"] },
+    { "key": "company-web.mapping-hub", "version": "2.1.0", "file": "generated/company-web.mapping-hub.xml", "owner_acceptance": ["content", "product", "deployment", "production"] },
+    { "key": "company-web.interior-hub", "version": "2.1.0", "file": "generated/company-web.interior-hub.xml", "owner_acceptance": ["content", "visual", "product", "deployment", "production"] },
+    { "key": "company-operations.core", "version": "2.1.0", "file": "generated/company-operations.core.xml", "owner_acceptance": ["access", "security", "deployment", "production"] }
+  ]
+}

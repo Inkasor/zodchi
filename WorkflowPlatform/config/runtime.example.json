@@ -1,0 +1,6 @@
+{
+  "dataRoot": "data",
+  "agentGatewayRoot": "../AgentGateway",
+  "projectRoot": null,
+  "workflow": null
+}

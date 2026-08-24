@@ -1,0 +1,9 @@
+{
+  "name": "workflow-platform",
+  "version": "0.2.3",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": { "test": "node --test", "lint": "node src/cli.mjs lint", "packages:check": "node scripts/generate-packages.mjs --check" }
+}

@@ -1,0 +1,11 @@
+<workflow_bundle key="company-workflows.core" version="2.1.0" schema_version="1" status="accepted">
+  <purpose>Переносимый стандарт рабочих процессов компании без локальных путей, моделей, секретов и истории запусков.</purpose>
+  <packages>
+    <package key="company-web.marketplaces-data" version="2.1.1" file="company-web.marketplaces-data.xml" hash="sha256:b31a505e0845f8d8d625f3178fd263fde40094347c496388cb095597e8b92d6d" activation="activate-first"/>
+    <package key="company-web.dashboard" version="2.1.1" file="company-web.dashboard.xml" hash="sha256:0c62e92b6f8099baaa1f9bed04674053b7b5b5295ea21bb071f3ec45ae857840" activation="prepare-only"/>
+    <package key="company-web.photo-hub" version="2.1.0" file="company-web.photo-hub.xml" hash="sha256:0a2c86ef40e0e4d6534227a8fc5bc1ce99c596ff60bf7c48307fc100e0f7c0ce" activation="prepare-only"/>
+    <package key="company-web.mapping-hub" version="2.1.0" file="company-web.mapping-hub.xml" hash="sha256:26f0174071c6d28cf74c283cf8e249fe3ea62c7b805d6ad124a4dc4d8ee6712c" activation="prepare-only"/>
+    <package key="company-web.interior-hub" version="2.1.0" file="company-web.interior-hub.xml" hash="sha256:3620a5c27e271cd7b42c0aa3a40e60c584a0d81728007fbf8dffda70eb7f0134" activation="prepare-only"/>
+    <package key="company-operations.core" version="2.1.0" file="company-operations.core.xml" hash="sha256:a999320fcd450aa4b4345155e98f1a1fe4a6cb86a0077f1e6710b84204ef89c9" activation="prepare-only"/>
+  </packages>
+</workflow_bundle>

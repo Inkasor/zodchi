@@ -1,0 +1,32 @@
+import fs from "node:fs";
+import path from "node:path";
+import { documentLint } from "../WorkflowPlatform/src/lint.mjs";
+import { qualityContractsLint } from "../WorkflowPlatform/src/quality-contracts.mjs";
+
+const root = path.resolve(import.meta.dirname, "..");
+const product = JSON.parse(fs.readFileSync(path.join(root, "product.json"), "utf8"));
+const rootPackage = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+const errors = [];
+
+if (product.name !== "zodchi" || product.displayName !== "Zodchi" || product.workingName !== false) errors.push("invalid public product identity");
+if (rootPackage.name !== product.name || rootPackage.version !== product.version || rootPackage.license !== "MIT") errors.push("root package does not match product.json");
+
+for (const relative of ["ONBOARDING_PROMPT.md", "configs/WorkflowPlatformArchitecture.template.md", "docs/ARCHITECTURE.md", "WorkflowPlatform/docs/WorkflowPlatform.md"]) {
+  const file = path.join(root, relative);
+  const result = documentLint(fs.readFileSync(file, "utf8"), relative);
+  if (result.status !== "passed") errors.push(`${relative}: ${result.errors.join("; ")}`);
+}
+
+const qualityFile = path.join(root, "WorkflowPlatform/contracts/quality-contracts.xml");
+const quality = qualityContractsLint(fs.readFileSync(qualityFile, "utf8"));
+if (quality.status !== "passed") errors.push(`quality contracts: ${quality.errors.join("; ")}`);
+
+for (const relative of ["WorkflowPlatform/starter", "WorkflowPlatform/docs/BaselineAudit.md", "WorkflowPlatform/docs/GoalProgress.md"]) {
+  if (fs.existsSync(path.join(root, relative))) errors.push(`private or obsolete source artifact remains: ${relative}`);
+}
+
+if (errors.length) {
+  process.stderr.write(`${JSON.stringify({ status: "failed", errors }, null, 2)}\n`);
+  process.exit(1);
+}
+process.stdout.write(`${JSON.stringify({ status: "passed", product: product.name, version: product.version, semantic_documents: 4 })}\n`);

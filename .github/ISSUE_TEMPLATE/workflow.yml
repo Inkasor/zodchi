@@ -1,0 +1,23 @@
+name: Рабочий поток или роль
+description: Предложить новый переносимый рабочий процесс
+title: "[Рабочий поток] "
+labels: [workflow]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Какую человеческую задачу решает поток
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Какой проверяемый результат должен получиться
+    validations:
+      required: true
+  - type: textarea
+    id: roles
+    attributes:
+      label: Какие роли, документы и проверки нужны
+    validations:
+      required: true

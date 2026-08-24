@@ -1,0 +1,33 @@
+name: Ошибка
+description: Сообщить о воспроизводимой проблеме Zodchi
+title: "[Ошибка] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Не прикладывайте ключи, базы, файлы авторизации и данные частных проектов.
+  - type: input
+    id: version
+    attributes:
+      label: Версия Zodchi
+      placeholder: 0.3.0-beta.1
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Что произошло
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Как повторить
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Какой результат ожидался
+    validations:
+      required: true

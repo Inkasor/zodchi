@@ -1,0 +1,18 @@
+{
+  "description": "Zodchi: передача сообщений Codex в WorkflowPlatform.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node __WORKFLOW_PLATFORM_ROOT__\\hooks\\codex-user-prompt-submit.mjs",
+            "commandWindows": "node __WORKFLOW_PLATFORM_ROOT__\\hooks\\codex-user-prompt-submit.mjs",
+            "timeout": 3600,
+            "statusMessage": "Zodchi обрабатывает задачу"
+          }
+        ]
+      }
+    ]
+  }
+}

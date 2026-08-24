@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "providers": {
+    "openai": {
+      "status": "ready",
+      "harnesses": ["codex", "opencode"],
+      "directProfile": null
+    },
+    "anthropic": {
+      "status": "ready",
+      "harnesses": ["claude", "opencode"],
+      "directProfile": null
+    },
+    "deepseek": {
+      "status": "ready",
+      "harnesses": ["openai-compatible", "opencode"],
+      "directProfile": {
+        "baseUrl": "https://api.deepseek.com",
+        "apiKeyEnv": "DEEPSEEK_API_KEY"
+      }
+    },
+    "xai": {
+      "status": "ready",
+      "harnesses": ["openai-compatible", "opencode"],
+      "directProfile": {
+        "baseUrl": "https://api.x.ai/v1",
+        "apiKeyEnv": "XAI_API_KEY"
+      }
+    },
+    "google": {
+      "status": "ready",
+      "harnesses": ["openai-compatible", "opencode"],
+      "directProfile": {
+        "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "apiKeyEnv": "GEMINI_API_KEY",
+        "clientHeaderName": "x-goog-api-client",
+        "clientHeaderValue": "one-man-company-agent-gateway/0.3.0"
+      }
+    },
+    "zai": {
+      "status": "ready",
+      "harnesses": ["openai-compatible", "opencode"],
+      "directProfile": {
+        "baseUrl": "https://api.z.ai/api/paas/v4",
+        "apiKeyEnv": "ZAI_API_KEY"
+      }
+    },
+    "alibaba": {
+      "status": "ready-with-region-selection",
+      "harnesses": ["openai-compatible", "opencode"],
+      "directProfile": {
+        "baseUrlTemplate": "https://{WorkspaceId}.{region}.maas.aliyuncs.com/compatible-mode/v1",
+        "apiKeyEnv": "DASHSCOPE_API_KEY"
+      }
+    },
+    "moonshot": {
+      "status": "ready",
+      "harnesses": ["kimi", "opencode"],
+      "directProfile": null
+    },
+    "local": {
+      "status": "ready",
+      "harnesses": ["openai-compatible", "opencode"],
+      "directProfile": {
+        "baseUrl": "http://localhost:11434/v1",
+        "allowAnonymous": true
+      }
+    },
+    "gigachat": {
+      "status": "deferred",
+      "harnesses": [],
+      "directProfile": null
+    }
+  }
+}

@@ -1,0 +1,28 @@
+name: Проверка
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Тесты и линтеры
+        shell: pwsh
+        run: npm.cmd test
+      - name: Проверка релизной сборки
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'Zodchi'
+          .\scripts\build-release.ps1 -Output $out -StageRoot $env:RUNNER_TEMP
+          node "$out\tools\release-lint.mjs" $out
+          npm.cmd --prefix $out test

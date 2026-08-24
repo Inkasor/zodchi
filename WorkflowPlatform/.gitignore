@@ -1,0 +1,14 @@
+node_modules/
+coverage/
+dist/
+build/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.log
+*.tmp
+.env
+.env.*
+!.env.example
+config/runtime.json

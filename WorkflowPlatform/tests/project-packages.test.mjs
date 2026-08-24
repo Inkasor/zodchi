@@ -1,0 +1,116 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { openDb } from "../src/db.mjs";
+import { packageAcceptanceGates, simulateOneCCheckOutcome } from "../src/package-contracts.mjs";
+import { applyWorkflowImport, parseWorkflowPackage, proposeWorkflowImport, serializeWorkflowPackage, validateWorkflowPackage } from "../src/workflow-package.mjs";
+import { inspectWorkflowBundle, parseWorkflowBundle } from "../src/workflow-bundle.mjs";
+import { PACKAGE_DEFINITIONS } from "../packages/definitions.mjs";
+
+const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+function temporaryRoot(prefix) { const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir(); fs.mkdirSync(parent, { recursive: true }); return fs.mkdtempSync(path.join(parent, prefix)); }
+
+test("all eleven registered project packages are complete, generated and free of local identity", () => {
+  assert.deepEqual(PACKAGE_DEFINITIONS.map(item => item.key), ["indie-studio.project-m", "indie-studio.project-r", "shared-map-engine.core", "shared-lore.canon", "one-c.development", "company-web.marketplaces-data", "company-web.dashboard", "company-web.photo-hub", "company-web.mapping-hub", "company-web.interior-hub", "company-operations.core"]);
+  for (const packageValue of PACKAGE_DEFINITIONS) {
+    validateWorkflowPackage(packageValue);
+    const file = path.join(repositoryRoot, "packages", "generated", `${packageValue.key}.xml`), source = fs.readFileSync(file, "utf8");
+    assert.equal(source, serializeWorkflowPackage(packageValue)); assert.equal(parseWorkflowPackage(source).key, packageValue.key);
+    assert.equal(/[A-Za-z]:[\\/]/.test(source), false); assert.equal(source.includes("model_id"), false); assert.equal(source.includes("profile_id"), false); assert.equal(source.includes("api_key"), false);
+    assert.equal(packageValue.roles.every(role => role.contract.purpose && role.contract.result_schema_key && role.contract.allowed_profile_keys.length), true);
+    assert.equal(packageValue.workflows.every(workflow => workflow.steps.length && workflow.transitions.length === workflow.steps.length - 1), true);
+  }
+});
+
+test("company web packages use model classification, project checks and explicit human deployment approval", () => {
+  const company = PACKAGE_DEFINITIONS.filter(item => item.key.startsWith("company-web.") || item.key === "company-operations.core");
+  assert.equal(company.length, 6);
+  for (const packageValue of company) {
+    const classifier = packageValue.roles.find(item => item.key === "classifier");
+    assert.equal(classifier.contract.boundaries.keyword_routing, false);
+    assert.equal(packageValue.routes.some(item => item.work_type_key === "conversation"), true);
+    assert.equal(packageValue.routes.some(item => item.work_type_key === "incident"), true);
+    assert.equal(packageValue.routes.some(item => item.work_type_key === "deployment"), true);
+    const release = packageValue.workflows.find(item => item.key.endsWith(".release"));
+    const approval = release.steps.findIndex(item => item.key === "deployment_approval" && item.irreversible);
+    const deploy = release.steps.findIndex(item => item.key === "deploy");
+    assert.equal(approval >= 0 && deploy > approval, true);
+    assert.equal(packageValue.test_scenarios.find(item => item.key === "deployment_approval").expected.keyword_trigger, false);
+  }
+  const marketplaces = PACKAGE_DEFINITIONS.find(item => item.key === "company-web.marketplaces-data");
+  assert.deepEqual(marketplaces.documents.map(item => item.path), ["AGENTS.md", "docs/CURRENT_CHANGE.md", "docs/CURRENT_PRODUCTION.md", "docs/DEPLOYMENT.md", "package.json"]);
+  assert.deepEqual(marketplaces.roles.find(item => item.key === "data_engineer").contract.boundaries, { live_data_writes: false, backup_required_before_apply: true });
+  const operations = PACKAGE_DEFINITIONS.find(item => item.key === "company-operations.core");
+  assert.equal(operations.checks.filter(item => item.kind === "disabled").every(item => item.config.reason.startsWith("requires_")), true);
+  assert.equal(operations.checks.some(item => item.kind === "secret_scan"), true);
+  assert.equal(operations.checks.filter(item => item.kind === "command" && ["gitleaks.exe", "osv-scanner.exe"].includes(item.config.command)).length, 2);
+  for (const key of ["company-web.photo-hub", "company-web.mapping-hub", "company-web.interior-hub"]) assert.equal(PACKAGE_DEFINITIONS.find(item => item.key === key).routes.some(item => item.work_type_key === "content"), true);
+});
+
+test("company workflow bundle verifies all portable packages and keeps staged activation explicit", () => {
+  const file = path.join(repositoryRoot, "packages", "generated", "company-workflows.xml");
+  const result = inspectWorkflowBundle(file);
+  assert.equal(result.status, "passed");
+  assert.equal(result.packages.length, 6);
+  assert.deepEqual(result.packages.filter(item => item.activation === "activate-first").map(item => item.key), ["company-web.marketplaces-data"]);
+  assert.equal(result.packages.filter(item => item.activation === "prepare-only").length, 5);
+  assert.throws(() => parseWorkflowBundle(fs.readFileSync(file, "utf8").replace('activation="prepare-only"', 'activation="automatic"')), /WORKFLOW_BUNDLE_PACKAGE_INVALID/);
+});
+
+test("Project M and Project R Indie Studio packages remain separate and owner gates remain explicit", () => {
+  const projectM = PACKAGE_DEFINITIONS.find(item => item.key === "indie-studio.project-m"), projectR = PACKAGE_DEFINITIONS.find(item => item.key === "indie-studio.project-r");
+  assert.equal(projectM.workflows.length, 9); assert.equal(projectR.workflows.length, 9);
+  assert.equal(projectM.routes.every(item => item.workflow_key.startsWith("project_m.")), true); assert.equal(projectR.routes.every(item => item.workflow_key.startsWith("project_r.")), true);
+  assert.equal(projectM.checks.some(item => item.key === "project_m_map_render"), true); assert.equal(projectR.checks.some(item => item.key === "project_r_map_engine"), true);
+  assert.equal(projectM.documents.some(item => item.path === "AGENTS.md"), true); assert.equal(projectR.documents.some(item => item.path === "docs/GDD.md"), true);
+  for (const packageValue of [projectM, projectR]) assert.deepEqual(packageAcceptanceGates(packageValue), { technical: "configured", gameplay: "owner", visual: "owner", product: "owner", publication: "owner" });
+  assert.equal(projectM.test_scenarios.find(item => item.key === "visual_asset").expected.human_acceptance, "pending"); assert.equal(projectR.test_scenarios.find(item => item.key === "audio_asset").expected.human_acceptance, "pending");
+});
+
+test("production builds are not part of the MVP gate", () => {
+  for (const [packageKey, buildKey] of [
+    ["indie-studio.project-m", "project_m_build"],
+    ["indie-studio.project-r", "project_r_build"],
+    ["company-web.marketplaces-data", "marketplaces_build"],
+    ["company-web.dashboard", "dashboard_build"]
+  ]) {
+    const packageValue = PACKAGE_DEFINITIONS.find(item => item.key === packageKey);
+    const build = packageValue.checks.find(item => item.key === buildKey);
+    assert.deepEqual(build.bindings.map(item => [item.quality_mode_key, item.artifact_type_key]), [["production", "release_package"]]);
+    assert.equal(packageValue.operational_levels.find(item => item.level === "mvp").required_check_keys.includes(buildKey), false);
+    assert.equal(packageValue.operational_levels.find(item => item.level === "production").required_check_keys.includes(buildKey), true);
+  }
+});
+
+test("SharedMapEngine and Lore preserve consumer, canon and human acceptance boundaries", () => {
+  const engine = PACKAGE_DEFINITIONS.find(item => item.key === "shared-map-engine.core"), lore = PACKAGE_DEFINITIONS.find(item => item.key === "shared-lore.canon");
+  assert.deepEqual(engine.roles.map(item => item.key), ["shared_engine_architect", "shared_engine_programmer", "shared_engine_tester", "shared_engine_reviewer", "documentator"]);
+  assert.equal(engine.checks.filter(item => item.key.endsWith("compatibility")).every(item => item.kind === "project_command" && ["project-m", "project-r"].includes(item.config.project_id)), true);
+  assert.equal(engine.roles.find(item => item.key === "shared_engine_programmer").contract.allowed_skills.includes("game-production:shared-map-engine"), true);
+  assert.equal(lore.workflows[0].steps.some(item => item.key === "owner_decision" && item.irreversible), true); assert.equal(lore.roles.find(item => item.key === "lore_researcher").contract.boundaries.invent_facts, false);
+  assert.deepEqual(packageAcceptanceGates(lore), { continuity: "configured_or_unavailable", canon: "owner", consumer_updates: "separate" });
+});
+
+test("1C package uses the existing skill allowlist and requires an explicit local BSL binding", () => {
+  const packageValue = PACKAGE_DEFINITIONS.find(item => item.key === "one-c.development"), developer = packageValue.roles.find(item => item.key === "one_c_developer"), bsl = packageValue.checks.find(item => item.key === "bsl_language_server");
+  assert.deepEqual(packageValue.roles.map(item => item.key), ["one_c_analyst", "one_c_developer", "one_c_tester", "one_c_reviewer", "one_c_documentator"]);
+  for (const skill of ["advertising-project-context", "advertising-workflow", "epf-build", "epf-validate", "form-info", "form-edit", "form-validate", "cfe-diff", "cfe-patch-method", "cfe-validate"]) assert.equal(developer.contract.allowed_skills.includes(skill), true, skill);
+  assert.equal(packageValue.version, "2.2.0"); assert.equal(bsl.kind, "disabled"); assert.equal(bsl.config.reason, "requires_local_bsl_binding"); assert.equal(packageValue.checks.some(item => item.key === "one_c_source_structure"), false); assert.equal(packageValue.checks.some(item => item.config.command === "npm.cmd" || item.config.command === "node" || item.config.command === "pnpm.cmd"), false);
+  assert.equal(packageValue.workflows[0].questions.length, 4); assert.deepEqual(packageAcceptanceGates(packageValue), { source: "configured_or_unavailable", build: "separate", runtime: "separate", business: "owner", user: "owner" });
+  assert.deepEqual(simulateOneCCheckOutcome(packageValue, "passed"), { classification: "implementation", route: "one-c.change", gate_status: "passed", state: "approval_required", human_response: "Технические проверки пройдены; runtime и пользовательская приёмка остаются отдельными.", source_acceptance: "passed", build_acceptance: "not_run", runtime_acceptance: "not_run", user_acceptance: "pending" });
+  assert.equal(simulateOneCCheckOutcome(packageValue, "failed").state, "changes_requested"); assert.equal(simulateOneCCheckOutcome(packageValue, "timed_out").state, "blocked"); assert.match(simulateOneCCheckOutcome(packageValue, "unavailable").human_response, /requires_local_bsl_binding/);
+});
+
+test("every generated package imports transactionally into a clean local project registry", () => {
+  const root = temporaryRoot("workflow-project-packages-"), dbFile = path.join(root, "packages.sqlite"), db = openDb(dbFile);
+  for (const packageValue of PACKAGE_DEFINITIONS) db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES(?,?,?,?)").run(packageValue.key, packageValue.key, path.join(root, packageValue.key), new Date().toISOString()); db.close();
+  for (const packageValue of PACKAGE_DEFINITIONS) {
+    const packageFile = path.join(repositoryRoot, "packages", "generated", `${packageValue.key}.xml`), proposalFile = path.join(root, `${packageValue.key}.proposal.json`), proposal = proposeWorkflowImport(dbFile, packageFile, proposalFile, packageValue.key);
+    assert.equal(proposal.status, "pending"); assert.equal(applyWorkflowImport(dbFile, proposalFile, packageValue.key, { confirmedBy: "contract-test-owner" }).status, "applied");
+  }
+  const verified = openDb(dbFile); assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflow_package_releases WHERE status='active'").get().count, 11); assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflows").get().count, 78); assert.equal(verified.prepare("SELECT kind,config_json FROM check_definitions d JOIN project_checks pc ON pc.check_id=d.id WHERE pc.project_id='one-c.development' AND d.name='BSL Language Server diagnostics'").get().kind, "disabled"); verified.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});

@@ -1,0 +1,2580 @@
+{
+  "schema_version": 1,
+  "tool": {
+    "name": "BSL Language Server",
+    "version": "1.0.7",
+    "source_revision": "f377f95aefa16a4cf0e4d9af5b1c83800366bebc",
+    "source_url": "https://github.com/1c-syntax/bsl-language-server/tree/v1.0.7",
+    "license": "LGPL-3.0-or-later"
+  },
+  "diagnostics": [
+    {
+      "code": "AllFunctionPathMustHaveReturn",
+      "name_ru": "Все возможные пути выполнения функции должны содержать оператор Возврат",
+      "name_en": "All execution paths of a function must have a Return statement",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE",
+        "SUSPICIOUS",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "AssignAliasFieldsInQuery",
+      "name_ru": "Назначение псевдонимов выбранным полям в запросе",
+      "name_en": "Assigning aliases to selected fields in a query",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE",
+        "SQL",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "AssignToReadOnlyProperty",
+      "name_ru": "Присвоение значения свойству, доступному только для чтения",
+      "name_en": "Assignment to a read-only property",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "BadExceptionCategory",
+      "name_ru": "Недопустимая категория исключений",
+      "name_en": "Bad exception category",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE"
+      ]
+    },
+    {
+      "code": "BadWords",
+      "name_ru": "Запрещенные слова",
+      "name_en": "Prohibited words",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": false,
+      "minutes_to_fix": 1,
+      "tags": [
+        "DESIGN"
+      ]
+    },
+    {
+      "code": "BeginTransactionBeforeTryCatch",
+      "name_ru": "Нарушение правил работы с транзакциями для метода 'НачатьТранзакцию'",
+      "name_en": "Violating transaction rules for the 'BeginTransaction' method",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "CachedPublic",
+      "name_ru": "Кеширование программного интерфейса",
+      "name_en": "Cached public methods",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "DESIGN",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "CanonicalSpellingKeywords",
+      "name_ru": "Каноническое написание ключевых слов",
+      "name_en": "Canonical keyword writing",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "CodeAfterAsyncCall",
+      "name_ru": "После вызова асинхронного метода есть строки кода",
+      "name_en": "Lines of code after the asynchronous method call",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": false,
+      "minutes_to_fix": 10,
+      "tags": [
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "CodeBlockBeforeSub",
+      "name_ru": "Определения методов должны размещаться перед операторами тела модуля",
+      "name_en": "Method definitions must be placed before the module body operators",
+      "type": "ERROR",
+      "severity": "BLOCKER",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "ERROR"
+      ]
+    },
+    {
+      "code": "CodeOutOfRegion",
+      "name_ru": "Код расположен вне области",
+      "name_en": "Code out of region",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "CognitiveComplexity",
+      "name_ru": "Когнитивная сложность",
+      "name_en": "Cognitive complexity",
+      "type": "CODE_SMELL",
+      "severity": "CRITICAL",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 15,
+      "tags": [
+        "BRAINOVERLOAD"
+      ]
+    },
+    {
+      "code": "CommandModuleExportMethods",
+      "name_ru": "Экспортные методы в модулях команд и общих команд",
+      "name_en": "Export methods in command and general command modules",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "CLUMSY",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "CommentedCode",
+      "name_ru": "Закомментированный фрагмент кода",
+      "name_en": "Commented out code",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "CommitTransactionOutsideTryCatch",
+      "name_ru": "Нарушение правил работы с транзакциями для метода 'ЗафиксироватьТранзакцию'",
+      "name_en": "Violating transaction rules for the 'CommitTransaction' method",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "CommonModuleAssign",
+      "name_ru": "Присвоение общему модулю",
+      "name_en": "CommonModuleAssign",
+      "type": "ERROR",
+      "severity": "BLOCKER",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 2,
+      "tags": [
+        "ERROR"
+      ]
+    },
+    {
+      "code": "CommonModuleInvalidType",
+      "name_ru": "Общий модуль недопустимого типа",
+      "name_en": "Common module invalid type",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "DESIGN",
+        "STANDARD",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "CommonModuleMissingAPI",
+      "name_ru": "Общий модуль должен иметь программный интерфейс",
+      "name_en": "Common module should have a programming interface",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BRAINOVERLOAD",
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "CommonModuleNameCached",
+      "name_ru": "Пропущен постфикс \"ПовтИсп\"",
+      "name_en": "Missed postfix \"Cached\"",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "CommonModuleNameClient",
+      "name_ru": "Пропущен постфикс \"Клиент\"",
+      "name_en": "Missed postfix \"Client\"",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "CommonModuleNameClientServer",
+      "name_ru": "Пропущен постфикс \"КлиентСервер\"",
+      "name_en": "Missed postfix \"ClientServer\"",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "CommonModuleNameFullAccess",
+      "name_ru": "Пропущен постфикс \"ПолныеПрава\"",
+      "name_en": "Missed postfix \"FullAccess\"",
+      "type": "SECURITY_HOTSPOT",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "CommonModuleNameGlobalClient",
+      "name_ru": "Глобальный модуль с постфиксом \"Клиент\"",
+      "name_en": "Global module with postfix \"Client\"",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "CommonModuleNameGlobal",
+      "name_ru": "Пропущен постфикс \"Глобальный\"",
+      "name_en": "Missed postfix \"Global\"",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE",
+        "BRAINOVERLOAD",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "CommonModuleNameServerCall",
+      "name_ru": "Пропущен постфикс \"ВызовСервера\"",
+      "name_en": "Missed postfix \"ServerCall\"",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "CommonModuleNameWords",
+      "name_ru": "Нерекомендуемое имя общего модуля",
+      "name_en": "Unrecommended common module name",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "CommonModuleVariables",
+      "name_ru": "Объявление переменных в общем модуле",
+      "name_en": "Variables declaration in common module",
+      "type": "ERROR",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "DESIGN",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "CompareWithBoolean",
+      "name_ru": "Сравнение с булевой константой",
+      "name_en": "Comparison with a boolean constant",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "CLUMSY",
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "CompilationDirectiveLost",
+      "name_ru": "Директивы компиляции методов",
+      "name_en": "Methods compilation directive",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "STANDARD",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "CompilationDirectiveNeedLess",
+      "name_ru": "Лишняя директива компиляции",
+      "name_en": "Needless compilation directive",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "CLUMSY",
+        "STANDARD",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "ConsecutiveEmptyLines",
+      "name_ru": "Подряд идущие пустые строки",
+      "name_en": "Consecutive empty lines",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE"
+      ]
+    },
+    {
+      "code": "CrazyMultilineString",
+      "name_ru": "Безумные многострочные литералы",
+      "name_en": "Crazy multiline literals",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE",
+        "SUSPICIOUS",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "CreateQueryInCycle",
+      "name_ru": "Выполнение запроса в цикле",
+      "name_en": "Execution query on cycle",
+      "type": "ERROR",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 20,
+      "tags": [
+        "PERFORMANCE"
+      ]
+    },
+    {
+      "code": "CyclomaticComplexity",
+      "name_ru": "Цикломатическая сложность",
+      "name_en": "Cyclomatic complexity",
+      "type": "CODE_SMELL",
+      "severity": "CRITICAL",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 25,
+      "tags": [
+        "BRAINOVERLOAD"
+      ]
+    },
+    {
+      "code": "DataExchangeLoading",
+      "name_ru": "Отсутствует проверка признака ОбменДанными.Загрузка в обработчике событий объекта",
+      "name_en": "There is no check for the attribute DataExchange.Load in the object's event handler",
+      "type": "ERROR",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "DeletingCollectionItem",
+      "name_ru": "Удаление элемента при обходе коллекции посредством оператора \"Для каждого ... Из ... Цикл\"",
+      "name_en": "Deleting an item when iterating through collection using the operator \"For each ... In ... Do\"",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "ERROR",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "DenyIncompleteValues",
+      "name_ru": "Запрет незаполненных значений у измерений регистров",
+      "name_en": "Deny incomplete values for dimensions",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": false,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE"
+      ]
+    },
+    {
+      "code": "DeprecatedAttributes8312",
+      "name_ru": "Устаревшие объекты платформы 8.3.12",
+      "name_en": "Deprecated 8.3.12 platform features.",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "DEPRECATED"
+      ]
+    },
+    {
+      "code": "DeprecatedCurrentDate",
+      "name_ru": "Использование устаревшего метода \"ТекущаяДата\"",
+      "name_en": "Using of the deprecated method \"CurrentDate\"",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "DEPRECATED",
+        "STANDARD",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "DeprecatedFind",
+      "name_ru": "Использование устаревшего метода \"Найти\"",
+      "name_en": "Using of the deprecated method \"Find\"",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 2,
+      "tags": [
+        "DEPRECATED"
+      ]
+    },
+    {
+      "code": "DeprecatedMessage",
+      "name_ru": "Ограничение на использование устаревшего метода \"Сообщить\"",
+      "name_en": "Restriction on the use of deprecated \"Message\" method",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 2,
+      "tags": [
+        "DEPRECATED",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "DeprecatedMethodCall",
+      "name_ru": "Устаревшие методы не должны использоваться",
+      "name_en": "Deprecated methods should not be used",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 3,
+      "tags": [
+        "DEPRECATED",
+        "DESIGN"
+      ]
+    },
+    {
+      "code": "DeprecatedTypeManagedForm",
+      "name_ru": "Устаревшее использование типа \"УправляемаяФорма\"",
+      "name_en": "Deprecated ManagedForm type",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "DEPRECATED",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "DisableSafeMode",
+      "name_ru": "Отключение безопасного режима",
+      "name_en": "Disable safe mode",
+      "type": "VULNERABILITY",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 15,
+      "tags": [
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "DoubleNegatives",
+      "name_ru": "Двойные отрицания",
+      "name_en": "Double negatives",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 3,
+      "tags": [
+        "BADPRACTICE",
+        "BRAINOVERLOAD"
+      ]
+    },
+    {
+      "code": "DuplicateRegion",
+      "name_ru": "Повторяющиеся разделы модуля",
+      "name_en": "Duplicate regions",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "DuplicateStringLiteral",
+      "name_ru": "Повторное использование строкового литерала",
+      "name_en": "Duplicate string literal",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE"
+      ]
+    },
+    {
+      "code": "DuplicatedInsertionIntoCollection",
+      "name_ru": "Повторное добавление/вставка значений в коллекцию",
+      "name_en": "Duplicate adding or pasting a value to a collection",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE",
+        "BRAINOVERLOAD",
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "EmptyCodeBlock",
+      "name_ru": "Пустой блок кода",
+      "name_en": "Empty code block",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE",
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "EmptyRegion",
+      "name_ru": "Область не должна быть пустой",
+      "name_en": "The region should not be empty",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "EmptyStatement",
+      "name_ru": "Пустой оператор",
+      "name_en": "Empty statement",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE"
+      ]
+    },
+    {
+      "code": "EventHandlerInvalidSignature",
+      "name_ru": "Несоответствие сигнатуры обработчика события",
+      "name_en": "Event handler signature mismatch",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "STANDARD",
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "EventHandlerOutsideEventRegion",
+      "name_ru": "Обработчик события вне стандартной области",
+      "name_en": "Event handler outside standard region",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "ExcessiveAutoTestCheck",
+      "name_ru": "Избыточная проверка параметра АвтоТест",
+      "name_en": "Excessive AutoTest Check",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "DEPRECATED",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "ExecuteExternalCode",
+      "name_ru": "Выполнение произвольного кода на сервере",
+      "name_en": "Executing of external code on the server",
+      "type": "VULNERABILITY",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "ERROR",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "ExecuteExternalCodeInCommonModule",
+      "name_ru": "Выполнение произвольного кода в общем модуле на сервере",
+      "name_en": "Executing of external code in a common module on the server",
+      "type": "SECURITY_HOTSPOT",
+      "severity": "CRITICAL",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 15,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "ExportVariables",
+      "name_ru": "Запрет экспортных глобальных переменных модуля",
+      "name_en": "Ban export global module variables",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "DESIGN",
+        "STANDARD",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "ExternalAppStarting",
+      "name_ru": "Запуск внешних приложений",
+      "name_en": "External applications starting",
+      "type": "SECURITY_HOTSPOT",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "ExtraCommas",
+      "name_ru": "Запятые без указания параметра в конце вызова метода",
+      "name_en": "Commas without a parameter at the end of a method call",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "FieldsFromJoinsWithoutIsNull",
+      "name_ru": "Отсутствие проверки на NULL для полей из присоединяемых таблиц",
+      "name_en": "No NULL checks for fields from joined tables",
+      "type": "ERROR",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": false,
+      "minutes_to_fix": 2,
+      "tags": [
+        "SQL",
+        "SUSPICIOUS",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "FileSystemAccess",
+      "name_ru": "Доступ к файловой системе",
+      "name_en": "File system access",
+      "type": "VULNERABILITY",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": false,
+      "minutes_to_fix": 3,
+      "tags": [
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "ForbiddenMetadataName",
+      "name_ru": "Объекту метаданных присвоено запрещенное имя",
+      "name_en": "Metadata object has a forbidden name",
+      "type": "ERROR",
+      "severity": "BLOCKER",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 30,
+      "tags": [
+        "DESIGN",
+        "SQL",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "FormDataToValue",
+      "name_ru": "Использование метода ДанныеФормыВЗначение",
+      "name_en": "FormDataToValue method call",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE"
+      ]
+    },
+    {
+      "code": "FullOuterJoinQuery",
+      "name_ru": "Использование конструкции \"ПОЛНОЕ ВНЕШНЕЕ СОЕДИНЕНИЕ\" в запросах",
+      "name_en": "Using of \"FULL OUTER JOIN\" in queries",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "PERFORMANCE",
+        "SQL",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "FunctionNameStartsWithGet",
+      "name_ru": "Имя функции не должно начинаться с \"Получить\"",
+      "name_en": "Function name shouldn't start with \"Получить\"",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": false,
+      "minutes_to_fix": 3,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "FunctionOutParameter",
+      "name_ru": "Исходящий параметр функции",
+      "name_en": "Out function parameter",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": false,
+      "minutes_to_fix": 10,
+      "tags": [
+        "DESIGN"
+      ]
+    },
+    {
+      "code": "FunctionReturnsSamePrimitive",
+      "name_ru": "Функция всегда возвращает одно и то же примитивное значение",
+      "name_en": "The function always returns the same primitive value",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE",
+        "DESIGN"
+      ]
+    },
+    {
+      "code": "FunctionShouldHaveReturn",
+      "name_ru": "Функция должна содержать возврат",
+      "name_en": "The function should have return",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "SUSPICIOUS",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "GetFormMethod",
+      "name_ru": "Использование метода ПолучитьФорму",
+      "name_en": "GetForm method call",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 15,
+      "tags": [
+        "ERROR"
+      ]
+    },
+    {
+      "code": "GlobalContextMethodCollision8312",
+      "name_ru": "Конфликт имен методов с методами глобального контекста",
+      "name_en": "Global context method names collision",
+      "type": "ERROR",
+      "severity": "BLOCKER",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "ERROR",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "IdenticalExpressions",
+      "name_ru": "Одинаковые выражения слева и справа от \"foo\" оператора",
+      "name_en": "There are identical sub-expressions to the left and to the right of the \"foo\" operator",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "IfConditionComplexity",
+      "name_ru": "Использование сложных выражений в условии оператора \"Если\"",
+      "name_en": "Usage of complex expressions in the \"If\" condition",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BRAINOVERLOAD"
+      ]
+    },
+    {
+      "code": "IfElseDuplicatedCodeBlock",
+      "name_ru": "Повторяющиеся блоки кода в синтаксической конструкции Если...Тогда...ИначеЕсли...",
+      "name_en": "Duplicated code blocks in If...Then...ElseIf... statements",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "IfElseDuplicatedCondition",
+      "name_ru": "Повторяющиеся условия в синтаксической конструкции Если...Тогда...ИначеЕсли...",
+      "name_en": "Duplicated conditions in If...Then...ElseIf... statements",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "IfElseIfEndsWithElse",
+      "name_ru": "Использование синтаксической конструкции Если...Тогда...ИначеЕсли...",
+      "name_en": "Else...The...ElseIf... statement should end with Else branch",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "BADPRACTICE"
+      ]
+    },
+    {
+      "code": "IncorrectLineBreak",
+      "name_ru": "Неправильный перенос выражения",
+      "name_en": "Incorrect expression line break",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 2,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "IncorrectUseLikeInQuery",
+      "name_ru": "Некорректное использование 'ПОДОБНО'",
+      "name_en": "Incorrect use of 'LIKE'",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "SQL",
+        "STANDARD",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "IncorrectUseOfStrTemplate",
+      "name_ru": "Неверное использование \"СтрШаблон\"",
+      "name_en": "Incorrect use of \"StrTemplate\"",
+      "type": "ERROR",
+      "severity": "BLOCKER",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BRAINOVERLOAD",
+        "SUSPICIOUS",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "InternetAccess",
+      "name_ru": "Обращение к Интернет-ресурсам",
+      "name_en": "Referring to Internet resources",
+      "type": "VULNERABILITY",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": false,
+      "minutes_to_fix": 60,
+      "tags": [
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "InvalidCharacterInFile",
+      "name_ru": "Недопустимый символ",
+      "name_en": "Invalid character",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "ERROR",
+        "STANDARD",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "IsInRoleMethod",
+      "name_ru": "Использование метода РольДоступна",
+      "name_en": "IsInRole global method call",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "ERROR"
+      ]
+    },
+    {
+      "code": "JoinWithSubQuery",
+      "name_ru": "Соединение с вложенными запросами",
+      "name_en": "Join with sub queries",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "PERFORMANCE",
+        "SQL",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "JoinWithVirtualTable",
+      "name_ru": "Соединение с виртуальными таблицами",
+      "name_en": "Join with virtual table",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "PERFORMANCE",
+        "SQL",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "LatinAndCyrillicSymbolInWord",
+      "name_ru": "Смешивание латинских и кириллических символов в одном идентификаторе",
+      "name_en": "Mixing Latin and Cyrillic characters in one identifier",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BRAINOVERLOAD",
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "LineLength",
+      "name_ru": "Ограничение на длину строки",
+      "name_en": "Line Length limit",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "LogicalOrInJoinQuerySection",
+      "name_ru": "Логическое 'ИЛИ' в соединениях запроса",
+      "name_en": "Logical 'OR' in 'JOIN' query section",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 15,
+      "tags": [
+        "PERFORMANCE",
+        "SQL",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "LogicalOrInTheWhereSectionOfQuery",
+      "name_ru": "Использование логического \"ИЛИ\" в секции \"ГДЕ\" запроса",
+      "name_en": "Using a logical \"OR\" in the \"WHERE\" section of a query",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 15,
+      "tags": [
+        "PERFORMANCE",
+        "SQL",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "MagicDate",
+      "name_ru": "Магические даты",
+      "name_en": "Magic dates",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE",
+        "BRAINOVERLOAD"
+      ]
+    },
+    {
+      "code": "MagicNumber",
+      "name_ru": "Магические числа",
+      "name_en": "Magic numbers",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE"
+      ]
+    },
+    {
+      "code": "MetadataObjectNameLength",
+      "name_ru": "Имена объектов метаданных не должны превышать допустимой длины наименования",
+      "name_en": "Metadata object names must not exceed the allowed length",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "MethodSize",
+      "name_ru": "Ограничение на размер метода",
+      "name_en": "Method size",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 30,
+      "tags": [
+        "BADPRACTICE"
+      ]
+    },
+    {
+      "code": "MissedRequiredParameter",
+      "name_ru": "Пропущен обязательный параметр метода",
+      "name_en": "Missed a required method parameter",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "ERROR"
+      ]
+    },
+    {
+      "code": "MissingCodeTryCatchEx",
+      "name_ru": "Конструкция \"Попытка...Исключение...КонецПопытки\" не содержит кода в исключении",
+      "name_en": "Missing code in Raise block in \"Try ... Raise ... EndTry\"",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 15,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "MissingCommonModuleMethod",
+      "name_ru": "Обращение к отсутствующему методу общего модуля",
+      "name_en": "Referencing a missing common module method",
+      "type": "ERROR",
+      "severity": "BLOCKER",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "ERROR"
+      ]
+    },
+    {
+      "code": "MissingEventSubscriptionHandler",
+      "name_ru": "Отсутствует обработчик подписки на событие",
+      "name_en": "Event subscription handler missing",
+      "type": "ERROR",
+      "severity": "BLOCKER",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "ERROR"
+      ]
+    },
+    {
+      "code": "MissingParameterDescription",
+      "name_ru": "Отсутствует описание параметров метода",
+      "name_en": "Method parameters description are missing",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "MissingReturnedValueDescription",
+      "name_ru": "Отсутствует описание возвращаемого значения функции",
+      "name_en": "Function returned values description is missing",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "MissingSpace",
+      "name_ru": "Пропущены пробелы слева или справа от операторов `+ - * / = % < > <> <= >=`, от ключевых слов, а так же справа от `,` и `;`",
+      "name_en": "Missing spaces to the left or right of operators + - * / = % < > <> <= >=, keywords, and also to the right of , and ;",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE"
+      ]
+    },
+    {
+      "code": "MissingTempStorageDeletion",
+      "name_ru": "Отсутствует удаление данных из временного хранилища после использования",
+      "name_en": "Missing temporary storage data deletion after using",
+      "type": "CODE_SMELL",
+      "severity": "CRITICAL",
+      "lsp_severity": "Warning",
+      "activated_by_default": false,
+      "minutes_to_fix": 3,
+      "tags": [
+        "BADPRACTICE",
+        "PERFORMANCE",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "MissingTemporaryFileDeletion",
+      "name_ru": "Отсутствует удаление временного файла после использования",
+      "name_en": "Missing temporary file deletion after using",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "MissingVariablesDescription",
+      "name_ru": "Все объявления переменных должны иметь описание",
+      "name_en": "All variables declarations must have a description",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "MultilineStringInQuery",
+      "name_ru": "Многострочный литерал в запросе",
+      "name_en": "Multi-line literal in query",
+      "type": "ERROR",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE",
+        "SUSPICIOUS",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "MultilingualStringHasAllDeclaredLanguages",
+      "name_ru": "Есть локализованный текст для всех заявленных в конфигурации языков",
+      "name_en": "There is a localized text for all languages declared in the configuration",
+      "type": "ERROR",
+      "severity": "MINOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 2,
+      "tags": [
+        "ERROR",
+        "LOCALIZE"
+      ]
+    },
+    {
+      "code": "MultilingualStringUsingWithTemplate",
+      "name_ru": "Частично локализованный текст используется в функции СтрШаблон",
+      "name_en": "Partially localized text is used in the StrTemplate function",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 2,
+      "tags": [
+        "ERROR",
+        "LOCALIZE"
+      ]
+    },
+    {
+      "code": "NestedConstructorsInStructureDeclaration",
+      "name_ru": "Использование конструкторов с параметрами при объявлении структуры",
+      "name_en": "Nested constructors with parameters in structure declaration",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "BADPRACTICE",
+        "BRAINOVERLOAD"
+      ]
+    },
+    {
+      "code": "NestedFunctionInParameters",
+      "name_ru": "Инициализация параметров методов и конструкторов вызовом вложенных методов",
+      "name_en": "Initialization of method and constructor parameters by calling nested methods",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 2,
+      "tags": [
+        "BADPRACTICE",
+        "BRAINOVERLOAD",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "NestedStatements",
+      "name_ru": "Управляющие конструкции не должны быть вложены слишком глубоко",
+      "name_en": "Control flow statements should not be nested too deep",
+      "type": "CODE_SMELL",
+      "severity": "CRITICAL",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 30,
+      "tags": [
+        "BADPRACTICE",
+        "BRAINOVERLOAD"
+      ]
+    },
+    {
+      "code": "NestedTernaryOperator",
+      "name_ru": "Вложенный тернарный оператор",
+      "name_en": "Nested ternary operator",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BRAINOVERLOAD"
+      ]
+    },
+    {
+      "code": "NonExportMethodsInApiRegion",
+      "name_ru": "Неэкспортные методы в областях ПрограммныйИнтерфейс и СлужебныйПрограммныйИнтерфейс",
+      "name_en": "Non export methods in API regions",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "NonStandardRegion",
+      "name_ru": "Нестандартные разделы модуля",
+      "name_en": "Non-standard region of module",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "NumberOfOptionalParams",
+      "name_ru": "Ограничение на количество не обязательных параметров метода",
+      "name_en": "Limit number of optional parameters in method",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 30,
+      "tags": [
+        "BRAINOVERLOAD",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "NumberOfParams",
+      "name_ru": "Ограничение на количество параметров метода",
+      "name_en": "Number of parameters in method",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 30,
+      "tags": [
+        "BRAINOVERLOAD",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "NumberOfValuesInStructureConstructor",
+      "name_ru": "Ограничение на количество значений свойств, передаваемых в конструктор структуры",
+      "name_en": "Limit on the number of property values passed to the structure constructor",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "BRAINOVERLOAD",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "OSUsersMethod",
+      "name_ru": "Использование метода ПользователиОС",
+      "name_en": "Using method OSUsers",
+      "type": "SECURITY_HOTSPOT",
+      "severity": "CRITICAL",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 15,
+      "tags": [
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "OneStatementPerLine",
+      "name_ru": "Одно выражение в одной строке",
+      "name_en": "One statement per line",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 2,
+      "tags": [
+        "DESIGN",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "OrderOfParams",
+      "name_ru": "Порядок параметров метода",
+      "name_en": "Order of Parameters in method",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 30,
+      "tags": [
+        "DESIGN",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "OrdinaryAppSupport",
+      "name_ru": "Поддержка обычного приложения",
+      "name_en": "Ordinary application support",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "STANDARD",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "PairingBrokenTransaction",
+      "name_ru": "Нарушение парности использования методов \"НачатьТранзакцию()\" и \"ЗафиксироватьТранзакцию()\" / \"ОтменитьТранзакцию()\"",
+      "name_en": "Violation of pairing using methods \"BeginTransaction()\" & \"CommitTransaction()\" / \"RollbackTransaction()\"",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 15,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "ParseError",
+      "name_ru": "Ошибка разбора исходного кода",
+      "name_en": "Source code parse error",
+      "type": "ERROR",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "ERROR"
+      ]
+    },
+    {
+      "code": "PrivilegedModuleMethodCall",
+      "name_ru": "Обращение к методам привилегированных модулей",
+      "name_en": "Accessing privileged module methods",
+      "type": "SECURITY_HOTSPOT",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 60,
+      "tags": [
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "ProcedureReturnsValue",
+      "name_ru": "Процедура не должна возвращать значение",
+      "name_en": "Procedure should not return Value",
+      "type": "ERROR",
+      "severity": "BLOCKER",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "ERROR"
+      ]
+    },
+    {
+      "code": "ProtectedModule",
+      "name_ru": "Защищенные модули",
+      "name_en": "Protected modules",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE",
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "PublicMethodsDescription",
+      "name_ru": "Все методы программного интерфейса должны иметь описание",
+      "name_en": "All public methods must have a description",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE",
+        "BRAINOVERLOAD",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "QueryNestedFieldsByDot",
+      "name_ru": "Разыменование ссылочных полей запроса через точку",
+      "name_en": "Getting objects nested fields data by dot in database query text",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "PERFORMANCE",
+        "SQL",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "QueryParseError",
+      "name_ru": "Ошибка разбора текста запроса",
+      "name_en": "Query text parsing error",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE",
+        "SQL",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "QueryToMissingMetadata",
+      "name_ru": "Обращение к несуществующим метаданным в запросе",
+      "name_en": "Using non-existent metadata in the query",
+      "type": "ERROR",
+      "severity": "BLOCKER",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "SQL",
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "RedundantAccessToObject",
+      "name_ru": "Избыточное обращение к объекту",
+      "name_en": "Redundant access to an object",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "CLUMSY",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "RefOveruse",
+      "name_ru": "Избыточное использование \"Ссылка\" в запросе",
+      "name_en": "Overuse \"Reference\" in a query",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "PERFORMANCE",
+        "SQL"
+      ]
+    },
+    {
+      "code": "ReservedParameterNames",
+      "name_ru": "Зарезервированные имена параметров",
+      "name_en": "Reserved parameter names",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "RewriteMethodParameter",
+      "name_ru": "Перезапись параметров метода",
+      "name_en": "Rewrite method parameter",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 2,
+      "tags": [
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "SameMetadataObjectAndChildNames",
+      "name_ru": "Совпадает имя объекта метаданного и его дочернего",
+      "name_en": "Same metadata object and child name",
+      "type": "ERROR",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 30,
+      "tags": [
+        "DESIGN",
+        "SQL",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "ScheduledJobHandler",
+      "name_ru": "Обработчик регламентного задания",
+      "name_en": "Scheduled job handler",
+      "type": "ERROR",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "ERROR"
+      ]
+    },
+    {
+      "code": "SelectTopWithoutOrderBy",
+      "name_ru": "Использование 'ВЫБРАТЬ ПЕРВЫЕ' без 'УПОРЯДОЧИТЬ ПО'",
+      "name_en": "Using 'SELECT TOP' without 'ORDER BY'",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "SQL",
+        "STANDARD",
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "SelfAssign",
+      "name_ru": "Присвоение переменной самой себе",
+      "name_en": "Variable is assigned to itself",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "SelfInsertion",
+      "name_ru": "Вставка коллекции в саму себя",
+      "name_en": "Insert a collection into itself",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "PERFORMANCE",
+        "STANDARD",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "SemicolonPresence",
+      "name_ru": "Выражение должно заканчиваться символом \";\"",
+      "name_en": "Statement should end with semicolon symbol \";\"",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "ServerCallsInFormEvents",
+      "name_ru": "Серверные вызовы в событиях форм",
+      "name_en": "Server calls in form events",
+      "type": "ERROR",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 15,
+      "tags": [
+        "DESIGN"
+      ]
+    },
+    {
+      "code": "ServerSideExportFormMethod",
+      "name_ru": "Серверный экспортный метод формы",
+      "name_en": "Server-side export form method",
+      "type": "ERROR",
+      "severity": "BLOCKER",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "ERROR",
+        "SUSPICIOUS",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "SetPermissionsForNewObjects",
+      "name_ru": "Флажок «Устанавливать права для новых объектов» должен быть установлен только у роли ПолныеПрава",
+      "name_en": "The check box «Set permissions for new objects» should only be selected for the FullAccess role",
+      "type": "VULNERABILITY",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE",
+        "DESIGN",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "SetPrivilegedMode",
+      "name_ru": "Использование привилегированного режима",
+      "name_en": "Using privileged mode",
+      "type": "SECURITY_HOTSPOT",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "SeveralCompilerDirectives",
+      "name_ru": "Ошибочное указание нескольких директив компиляции",
+      "name_en": "Erroneous indication of several compilation directives",
+      "type": "ERROR",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "ERROR",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "SpaceAtStartComment",
+      "name_ru": "Пробел в начале комментария",
+      "name_en": "Space at the beginning of the comment",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "StyleElementConstructors",
+      "name_ru": "Конструктор элемента стиля",
+      "name_en": "Style element constructor",
+      "type": "ERROR",
+      "severity": "MINOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "TempFilesDir",
+      "name_ru": "Вызов функции КаталогВременныхФайлов()",
+      "name_en": "TempFilesDir() method call",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "TernaryOperatorUsage",
+      "name_ru": "Использование тернарного оператора",
+      "name_en": "Ternary operator usage",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": false,
+      "minutes_to_fix": 3,
+      "tags": [
+        "BRAINOVERLOAD"
+      ]
+    },
+    {
+      "code": "ThisObjectAssign",
+      "name_ru": "Присвоение значения свойству ЭтотОбъект",
+      "name_en": "ThisObject assign",
+      "type": "ERROR",
+      "severity": "BLOCKER",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "ERROR"
+      ]
+    },
+    {
+      "code": "TimeoutsInExternalResources",
+      "name_ru": "Таймауты при работе с внешними ресурсами",
+      "name_en": "Timeouts working with external resources",
+      "type": "ERROR",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "STANDARD",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "TooManyReturns",
+      "name_ru": "Метод не должен содержать много возвратов",
+      "name_en": "Methods should not have too many return statements",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": false,
+      "minutes_to_fix": 20,
+      "tags": [
+        "BRAINOVERLOAD"
+      ]
+    },
+    {
+      "code": "TransferringParametersBetweenClientAndServer",
+      "name_ru": "Передача параметров между клиентом и сервером",
+      "name_en": "Transferring parameters between the client and the server",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 2,
+      "tags": [
+        "BADPRACTICE",
+        "PERFORMANCE",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "TryNumber",
+      "name_ru": "Приведение к числу в попытке",
+      "name_en": "Cast to number of try catch block",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 2,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "Typo",
+      "name_ru": "Опечатка",
+      "name_en": "Typo",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE"
+      ]
+    },
+    {
+      "code": "UnaryPlusInConcatenation",
+      "name_ru": "Унарный плюс в конкатенации строк",
+      "name_en": "Unary Plus sign in string concatenation",
+      "type": "ERROR",
+      "severity": "BLOCKER",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BRAINOVERLOAD",
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "UnavailableMemberCall",
+      "name_ru": "Использование метода/свойства, недоступного в целевой версии платформы",
+      "name_en": "Use of a method/property unavailable in the target platform version",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "UnionAll",
+      "name_ru": "Использование ключевого слова \"ОБЪЕДИНИТЬ\" в запросах",
+      "name_en": "Using keyword \"UNION\" in queries",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "PERFORMANCE",
+        "SQL",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "UnknownMember",
+      "name_ru": "Обращение к неизвестному методу или свойству",
+      "name_en": "Reference to an unknown method or property",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": false,
+      "minutes_to_fix": 2,
+      "tags": [
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "UnknownPreprocessorSymbol",
+      "name_ru": "Неизвестный символ препроцессора",
+      "name_en": "Unknown preprocessor symbol",
+      "type": "ERROR",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "ERROR",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "UnreachableCode",
+      "name_ru": "Недостижимый код",
+      "name_en": "Unreachable Code",
+      "type": "ERROR",
+      "severity": "MINOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "DESIGN",
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "UnsafeFindByCode",
+      "name_ru": "Небезопасное использование метода НайтиПоКоду()",
+      "name_en": "Unsafe FindByCode() method usage",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "DESIGN",
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "UnsafeSafeModeMethodCall",
+      "name_ru": "Небезопасное использование функции БезопасныйРежим()",
+      "name_en": "Unsafe SafeMode method call",
+      "type": "ERROR",
+      "severity": "BLOCKER",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "DEPRECATED",
+        "ERROR"
+      ]
+    },
+    {
+      "code": "UnusedLocalMethod",
+      "name_ru": "Неиспользуемый локальный метод",
+      "name_en": "Unused local method",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "STANDARD",
+        "SUSPICIOUS",
+        "UNUSED"
+      ]
+    },
+    {
+      "code": "UnusedLocalVariable",
+      "name_ru": "Неиспользуемая локальная переменная",
+      "name_en": "Unused local variable",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE",
+        "BRAINOVERLOAD",
+        "UNUSED"
+      ]
+    },
+    {
+      "code": "UnusedParameters",
+      "name_ru": "Неиспользуемый параметр",
+      "name_en": "Unused parameter",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "DESIGN",
+        "UNUSED"
+      ]
+    },
+    {
+      "code": "UsageWriteLogEvent",
+      "name_ru": "Неверное использование метода \"ЗаписьЖурналаРегистрации\"",
+      "name_en": "Incorrect use of the method \"WriteLogEvent\"",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "UseLessForEach",
+      "name_ru": "Бесполезный перебор коллекции",
+      "name_en": "Useless collection iteration",
+      "type": "ERROR",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 2,
+      "tags": [
+        "CLUMSY"
+      ]
+    },
+    {
+      "code": "UseSystemInformation",
+      "name_ru": "Использование системной информации",
+      "name_en": "Use of system information",
+      "type": "SECURITY_HOTSPOT",
+      "severity": "CRITICAL",
+      "lsp_severity": "Warning",
+      "activated_by_default": false,
+      "minutes_to_fix": 5,
+      "tags": [
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "UselessTernaryOperator",
+      "name_ru": "Бесполезный тернарный оператор",
+      "name_en": "Useless ternary operator",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "BADPRACTICE",
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "UsingCancelParameter",
+      "name_ru": "Работа с параметром \"Отказ\"",
+      "name_en": "Using parameter \"Cancel\"",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "UsingExternalCodeTools",
+      "name_ru": "Использование возможностей выполнения внешнего кода",
+      "name_en": "Using external code tools",
+      "type": "SECURITY_HOTSPOT",
+      "severity": "CRITICAL",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 15,
+      "tags": [
+        "DESIGN",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "UsingFindElementByString",
+      "name_ru": "Использование методов \"НайтиПоНаименованию\", \"НайтиПоКоду\" и \"НайтиПоНомеру\"",
+      "name_en": "Using FindByName, FindByCode and FindByNumber",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 2,
+      "tags": [
+        "BADPRACTICE",
+        "PERFORMANCE",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "UsingGoto",
+      "name_ru": "Оператор \"Перейти\" не должен использоваться",
+      "name_en": "\"goto\" statement should not be used",
+      "type": "CODE_SMELL",
+      "severity": "CRITICAL",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "BADPRACTICE",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "UsingHardcodeNetworkAddress",
+      "name_ru": "Хранение ip-адресов в коде",
+      "name_en": "Using hardcode ip addresses in code",
+      "type": "VULNERABILITY",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 15,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "UsingHardcodePath",
+      "name_ru": "Хранение путей к файлам в коде",
+      "name_en": "Using hardcode file paths in code",
+      "type": "ERROR",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 15,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "UsingHardcodeSecretInformation",
+      "name_ru": "Хранение конфиденциальной информации в коде",
+      "name_en": "Storing confidential information in code",
+      "type": "VULNERABILITY",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 15,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "UsingLikeInQuery",
+      "name_ru": "Использование 'ПОДОБНО' в запросе",
+      "name_en": "Using 'LIKE' in query",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": false,
+      "minutes_to_fix": 10,
+      "tags": [
+        "SQL",
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "UsingModalWindows",
+      "name_ru": "Использование модальных окон",
+      "name_en": "Using modal windows",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 15,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "UsingObjectNotAvailableUnix",
+      "name_ru": "Использование объектов недоступных в Unix системах",
+      "name_en": "Using unavailable in Unix objects",
+      "type": "ERROR",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 30,
+      "tags": [
+        "LOCKINOS",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "UsingServiceTag",
+      "name_ru": "Использование служебных тегов",
+      "name_en": "Using service tags",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 0,
+      "tags": [
+        "BADPRACTICE"
+      ]
+    },
+    {
+      "code": "UsingSynchronousCalls",
+      "name_ru": "Использование синхронных вызовов",
+      "name_en": "Using synchronous calls",
+      "type": "CODE_SMELL",
+      "severity": "MAJOR",
+      "lsp_severity": "Warning",
+      "activated_by_default": true,
+      "minutes_to_fix": 15,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "UsingThisForm",
+      "name_ru": "Использование устаревшего свойства \"ЭтаФорма\"",
+      "name_en": "Using deprecated property \"ThisForm\"",
+      "type": "CODE_SMELL",
+      "severity": "MINOR",
+      "lsp_severity": "Information",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "DEPRECATED",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "VirtualTableCallWithoutParameters",
+      "name_ru": "Обращение к виртуальной таблице без параметров",
+      "name_en": "Virtual table call without parameters",
+      "type": "ERROR",
+      "severity": "MAJOR",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "PERFORMANCE",
+        "SQL",
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "WrongDataPathForFormElements",
+      "name_ru": "У полей формы не указан путь к данным",
+      "name_en": "Form fields do not have a data path",
+      "type": "ERROR",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "UNPREDICTABLE"
+      ]
+    },
+    {
+      "code": "WrongHttpServiceHandler",
+      "name_ru": "Неверно задан обработчик метода http-сервиса",
+      "name_en": "Missing handler for http service",
+      "type": "ERROR",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "ERROR",
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "WrongUseFunctionProceedWithCall",
+      "name_ru": "Некорректное использование функции ПродолжитьВызов()",
+      "name_en": "Wrong use of ProceedWithCall function",
+      "type": "ERROR",
+      "severity": "BLOCKER",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "ERROR",
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "WrongUseOfRollbackTransactionMethod",
+      "name_ru": "Некорректное использование метода ОтменитьТранзакцию()",
+      "name_en": "Not recommended using of RollbackTransaction method",
+      "type": "ERROR",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 1,
+      "tags": [
+        "STANDARD"
+      ]
+    },
+    {
+      "code": "WrongWebServiceHandler",
+      "name_ru": "Неверно задан обработчик операции web-сервиса",
+      "name_en": "Wrong handler for web service",
+      "type": "ERROR",
+      "severity": "CRITICAL",
+      "lsp_severity": "Error",
+      "activated_by_default": true,
+      "minutes_to_fix": 10,
+      "tags": [
+        "ERROR",
+        "SUSPICIOUS"
+      ]
+    },
+    {
+      "code": "YoLetterUsage",
+      "name_ru": "Использование буквы \"ё\" в текстах модулей",
+      "name_en": "Using Russian character \"yo\" (\"ё\") in code",
+      "type": "CODE_SMELL",
+      "severity": "INFO",
+      "lsp_severity": "Hint",
+      "activated_by_default": true,
+      "minutes_to_fix": 5,
+      "tags": [
+        "STANDARD"
+      ]
+    }
+  ]
+}

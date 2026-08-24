@@ -1,0 +1,17 @@
+node_modules/
+coverage/
+dist/
+build/
+*.db
+*.sqlite
+*.sqlite3
+*.wal
+*.shm
+*.log
+.env
+.env.*
+bundle-manifest.json
+*.zip
+SHA256SUMS.txt
+.DS_Store
+Thumbs.db
