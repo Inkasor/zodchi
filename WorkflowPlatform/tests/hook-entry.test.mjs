@@ -18,6 +18,18 @@ const claudeEvent = {
 };
 const codexEvent = { event_id: "codex-event-1", prompt: "Prepare the release notes", cwd: projectRoot };
 
+// Shape observed from an installed Claude Code release: the prompt text arrives in `prompt`,
+// while the documented `user_input` pair is absent.
+const claudeEventWithPrompt = {
+  session_id: "session-1",
+  prompt_id: "550e8400-e29b-41d4-a716-446655440000",
+  transcript_path: path.join(projectRoot, "transcript.jsonl"),
+  cwd: projectRoot,
+  permission_mode: "auto",
+  hook_event_name: "UserPromptSubmit",
+  prompt: "Prepare the release notes"
+};
+
 test("a Claude Code event is recognized and a Codex event is not", () => {
   assert.equal(isClaudeCodeEvent(claudeEvent), true);
   assert.equal(isClaudeCodeEvent(codexEvent), false);
@@ -76,4 +88,19 @@ test("hook output falls back to a route-specific instruction when there is no pr
   assert.match(formatHookOutput({ route: "conversation" }).additionalContext, /Continue the conversation naturally/);
   assert.match(formatHookOutput({ route: "product" }).additionalContext, /The workflow has finished/);
   assert.match(formatHookOutput({}).additionalContext, /the user's current language/);
+});
+
+test("a Claude Code event that carries the prompt in `prompt` is still recognized", () => {
+  assert.equal(isClaudeCodeEvent(claudeEventWithPrompt), true);
+  const entry = parseHookEvent(claudeEventWithPrompt, { env: {}, argv: [], settings: {} });
+  assert.equal(entry.client, "claude-code");
+  assert.equal(entry.eventSource, "claude-code-hook");
+  assert.equal(entry.message, "Prepare the release notes");
+  assert.equal(entry.eventKey, "550e8400-e29b-41d4-a716-446655440000");
+});
+
+test("a Codex event is never mistaken for Claude Code", () => {
+  assert.equal(isClaudeCodeEvent(codexEvent), false);
+  assert.equal(isClaudeCodeEvent({ event_id: "e", prompt: "p", session_id: "" }), false);
+  assert.equal(isClaudeCodeEvent({ prompt_id: "" }), false);
 });
