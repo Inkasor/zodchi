@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_17_2026_08_26" status="working">
+
+## 0.3.17 — 2026-08-26
+
+- Explicit source ranges now reserve the page immediately before their best lexical hit, retaining function headers, selected fields and query parameters together with a matching register or condition.
+- Semantic call-chain fallback is suppressed when explicit ranges exist; only exact cross-file definitions may precede that direct owner evidence.
+- Regression coverage keeps a query-setup page with its following register-hit page under a budget too small for the full requested range.
+
+</section>
+
 <section id="0_3_16_2026_08_26" status="working">
 
 ## 0.3.16 — 2026-08-26
