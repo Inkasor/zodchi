@@ -52,6 +52,30 @@ test("company web packages use model classification, project checks and explicit
   const marketplaces = PACKAGE_DEFINITIONS.find(item => item.key === "company-web.marketplaces-data");
   assert.deepEqual(marketplaces.documents.map(item => item.path), ["AGENTS.md", "docs/CURRENT_CHANGE.md", "docs/CURRENT_PRODUCTION.md", "docs/DEPLOYMENT.md", "package.json"]);
   assert.deepEqual(marketplaces.roles.find(item => item.key === "data_engineer").contract.boundaries, { live_data_writes: false, backup_required_before_apply: true });
+  // Deployment evidence is only worth declaring if it can actually run: the three checks that answer
+  // "did the release reach production" call registered project scripts instead of staying disabled.
+  for (const key of ["marketplaces_ci", "marketplaces_deployed_revision", "marketplaces_public_health"]) {
+    const check = marketplaces.checks.find(item => item.key === key);
+    assert.equal(check.kind, "command");
+    assert.equal(check.bindings.every(item => item.required), true);
+  }
+  assert.equal(marketplaces.checks.some(item => item.key === "marketplaces_health" && item.kind === "command"), true);
+  // Live collection spends real API requests, so it is routed on its own and the owner approves the
+  // exact identifiers after a measured dry run, not before it.
+  const collection = marketplaces.workflows.find(item => item.key === "company_web_marketplaces_data.collection");
+  assert.equal(collection.default_quality, "production");
+  assert.deepEqual(collection.steps.map(item => item.key), ["plan", "dry_run", "review", "collection_approval", "collect", "verify", "document"]);
+  assert.equal(collection.steps.find(item => item.key === "collection_approval").irreversible, true);
+  assert.equal(collection.steps.findIndex(item => item.key === "dry_run") < collection.steps.findIndex(item => item.key === "collection_approval"), true);
+  assert.equal(marketplaces.routes.some(item => item.work_type_key === "data_collection" && item.workflow_key === "company_web_marketplaces_data.collection"), true);
+  assert.deepEqual(marketplaces.roles.find(item => item.key === "collection_operator").contract.boundaries, { write_requests: false, explicit_approval_required: true, unlisted_endpoints: false, credential_output: false });
+  // A production incident is production work: the level it declares is also the floor a classifier
+  // cannot drop below, and at mvp it would have carried a single required check.
+  for (const key of ["company-web.marketplaces-data", "company-web.dashboard", "zodchi.product-development"]) {
+    const incident = PACKAGE_DEFINITIONS.find(item => item.key === key).workflows.find(item => item.key.endsWith(".incident"));
+    assert.equal(incident.default_quality, "production");
+  }
+  assert.equal(PACKAGE_DEFINITIONS.filter(item => item.routes.some(value => value.work_type_key === "data_collection")).length, 1);
   const operations = PACKAGE_DEFINITIONS.find(item => item.key === "company-operations.core");
   assert.equal(operations.checks.filter(item => item.kind === "disabled").every(item => item.config.reason.startsWith("requires_")), true);
   assert.equal(operations.checks.some(item => item.kind === "secret_scan"), true);
@@ -131,6 +155,6 @@ test("every generated package imports transactionally into a clean local project
     const packageFile = path.join(repositoryRoot, "packages", "generated", `${packageValue.key}.xml`), proposalFile = path.join(root, `${packageValue.key}.proposal.json`), proposal = proposeWorkflowImport(dbFile, packageFile, proposalFile, packageValue.key);
     assert.equal(proposal.status, "pending"); assert.equal(applyWorkflowImport(dbFile, proposalFile, packageValue.key, { confirmedBy: "contract-test-owner" }).status, "applied");
   }
-  const verified = openDb(dbFile); assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflow_package_releases WHERE status='active'").get().count, 12); assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflows").get().count, 101); assert.equal(verified.prepare("SELECT kind,config_json FROM check_definitions d JOIN project_checks pc ON pc.check_id=d.id WHERE pc.project_id='one-c.development' AND d.name='BSL Language Server diagnostics'").get().kind, "disabled"); verified.close();
+  const verified = openDb(dbFile); assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflow_package_releases WHERE status='active'").get().count, 12); assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflows").get().count, 102); assert.equal(verified.prepare("SELECT kind,config_json FROM check_definitions d JOIN project_checks pc ON pc.check_id=d.id WHERE pc.project_id='one-c.development' AND d.name='BSL Language Server diagnostics'").get().kind, "disabled"); verified.close();
   fs.rmSync(root, { recursive: true, force: true });
 });

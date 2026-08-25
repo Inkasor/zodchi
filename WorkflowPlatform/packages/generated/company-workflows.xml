@@ -1,11 +1,11 @@
 <workflow_bundle key="company-workflows.core" version="2.2.0" schema_version="1" status="accepted">
   <purpose>Portable company workflow standard without local paths, models, secrets, or run history.</purpose>
   <packages>
-    <package key="company-web.marketplaces-data" version="2.2.0" file="company-web.marketplaces-data.xml" hash="sha256:abc53b3d6a9d38ea8e6e8ef7b2380921d90deef269dc56cb61caa48d5c122207" activation="activate-first"/>
-    <package key="company-web.dashboard" version="2.2.0" file="company-web.dashboard.xml" hash="sha256:3b3038599714a86d4e022b39f81c3bec6813bab003b854d21823503b9408be4c" activation="prepare-only"/>
-    <package key="company-web.photo-hub" version="2.2.0" file="company-web.photo-hub.xml" hash="sha256:800c47db40afcf1ade299db2c1e4d18b20dacd9041baadeb555fdcbe9acbfca5" activation="prepare-only"/>
-    <package key="company-web.mapping-hub" version="2.2.0" file="company-web.mapping-hub.xml" hash="sha256:64bfe300bc4d522a8349e0bb1410410f06ca79268ca0091ae645819dc33bab60" activation="prepare-only"/>
-    <package key="company-web.interior-hub" version="2.2.0" file="company-web.interior-hub.xml" hash="sha256:d0206700f1a651f2ca6d6d317f8c61201d524afa775f50ce107563a43350ff09" activation="prepare-only"/>
-    <package key="company-operations.core" version="2.2.0" file="company-operations.core.xml" hash="sha256:5c8cc79d180d16422ede0084f91e82cf61813ce2afacd187eb232ed60d1f686f" activation="prepare-only"/>
+    <package key="company-web.marketplaces-data" version="2.3.0" file="company-web.marketplaces-data.xml" hash="sha256:c9088b66b2201a6bc3670befe4b1885cc0fcdc11518253e19899f586d9fb4cf0" activation="activate-first"/>
+    <package key="company-web.dashboard" version="2.3.0" file="company-web.dashboard.xml" hash="sha256:aa96e1c851807960def5dcb0c3b4bad87e9ed0b7e6f6462d3d42e9c60d74ff72" activation="prepare-only"/>
+    <package key="company-web.photo-hub" version="2.3.0" file="company-web.photo-hub.xml" hash="sha256:0ee6f82735142b2c903e331d540a104dbf25c3538ad313628a0d7bc082bef409" activation="prepare-only"/>
+    <package key="company-web.mapping-hub" version="2.3.0" file="company-web.mapping-hub.xml" hash="sha256:d1a9132bd313a8adf639f62eca406e7c11f643d7b6a632df73003ac93464eb60" activation="prepare-only"/>
+    <package key="company-web.interior-hub" version="2.3.0" file="company-web.interior-hub.xml" hash="sha256:91ed1c3dc0c5a276b3d889ac9002e1a8a07d8bc32f1037eb7d9aeee93cf88613" activation="prepare-only"/>
+    <package key="company-operations.core" version="2.3.0" file="company-operations.core.xml" hash="sha256:e449fb670479c80deb1531bef522ac950fba80f2b23e24217609a2f3e5768b23" activation="prepare-only"/>
   </packages>
 </workflow_bundle>
