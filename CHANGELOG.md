@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_16_2026_08_26" status="working">
+
+## 0.3.16 — 2026-08-26
+
+- Cross-file call discovery now uses a bounded second collection pass, so planner path priority no longer determines whether a later form can lead to an earlier object-module definition.
+- Member calls are harvested from the complete allowed peer file for routing only; the worker still receives only measured excerpts inside its role contract.
+- Local objective windows seed their directly called definitions when no exact cross-file definition exists, preserving both the form handler and the implementation chain in either path order.
+
+</section>
+
 <section id="0_3_15_2026_08_26" status="working">
 
 ## 0.3.15 — 2026-08-26
