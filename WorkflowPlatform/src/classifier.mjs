@@ -7,6 +7,7 @@ const BOOLEAN_FIELDS = Object.freeze(["planning_required", "human_required", "ne
 const RISKS = new Set(["low", "medium", "high"]);
 const REPLY_MODES = new Set(["conversation", "research", "clarification", "work"]);
 const OWNER_RESPONSES = new Set(["approve", "decline", "undecided", null]);
+const CLARIFICATION_INTERACTION_KINDS = new Set(["clarification", "planner_clarification"]);
 // These answers are delivered directly and never enter a workflow, so they stay classifiable
 // even when a project registers no route for them.
 const DIRECT_REPLY_WORK_TYPES = Object.freeze(["clarification", "conversation", "research"]);
@@ -127,7 +128,7 @@ export function validateClassificationDecision(value, catalog) {
   // asking back, thinking aloud. Read as agreement that is an action taken without consent, so the
   // three outcomes are named separately and anything short of an unambiguous yes is still undecided.
   const answered = catalog.pending_interactions.find(item => item.id === value.pending_interaction_id) ?? null;
-  const decides = Boolean(answered) && answered.kind !== "clarification";
+  const decides = Boolean(answered) && !CLARIFICATION_INTERACTION_KINDS.has(answered.kind);
   if (!OWNER_RESPONSES.has(value.pending_interaction_response)) throw new Error(`CLASSIFICATION_SCHEMA_INVALID: pending_interaction_response=${value.pending_interaction_response}`);
   if (decides !== (value.pending_interaction_response !== null)) throw new Error("CLASSIFICATION_SCHEMA_INVALID: pending_interaction_response belongs to a decision, and every decision needs one");
   if (value.work_type === "conversation" && (value.planning_required || value.artifact_type !== "none" || value.reply_mode !== "conversation")) throw new Error("CLASSIFICATION_SCHEMA_INVALID: conversation contract");
@@ -200,7 +201,7 @@ export function classifierPrompt({ message, catalog, projectSnapshot, acceptedDe
     "- The supplied project snapshot is proof that downstream roles can use the registered roots and sources. You only route the request; the platform collects matching file contents and Git history after a work route is selected. Never ask the user to paste source files, repository content, diffs or logs that are inside those registered roots.",
     "- A request to inspect registered project code and write the findings into a project document is documentation work: reply_mode=work, planning_required=true and document_required=true. The classifier's own lack of tools is not missing user information and never justifies clarification.",
     "- pending_interaction_id: the id from PENDING_INTERACTIONS that this message answers, or null. One message often answers every question that was asked, so when it answers several give the list of their ids instead of a single one. A short confirmation is resolved from pending interactions and ordered history, never from a keyword rule. A new detailed task does not answer an older interaction merely because it mentions the same subject.",
-    "- pending_interaction_response: null when pending_interaction_id is null or names an interaction of kind clarification. When it names any other kind, the user is being asked to decide whether an action may happen, and this field says what they decided: approve only for an unambiguous yes to that exact action, decline for a refusal, undecided for anything else. Doubt, a question back, a condition, a partial agreement and thinking aloud are all undecided: the decision stays open and the user is answered. Treating hesitation as approval takes an action the user never authorized, so undecided is the answer whenever both readings are possible.",
+    "- pending_interaction_response: null when pending_interaction_id is null or names an interaction of kind clarification or planner_clarification. When it names any other kind, the user is being asked to decide whether an action may happen, and this field says what they decided: approve only for an unambiguous yes to that exact action, decline for a refusal, undecided for anything else. Doubt, a question back, a condition, a partial agreement and thinking aloud are all undecided: the decision stays open and the user is answered. Treating hesitation as approval takes an action the user never authorized, so undecided is the answer whenever both readings are possible.",
     "- reason: why this classification, in RESPONSE_LANGUAGE.",
     "- human_response: the reply text when reply_mode is conversation, otherwise null.",
     "LEVEL_SELECTION:",

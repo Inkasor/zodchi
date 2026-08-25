@@ -49,6 +49,11 @@ function askQuestions(db, taskId, runId, count) {
   return ids;
 }
 
+function askPlannerQuestion(db, taskId, runId, approvalId = "planner_question") {
+  db.prepare("INSERT INTO approvals(id,task_id,run_id,kind,question,status,created_at) VALUES(?,?,?,'planner_clarification','Что нужно уточнить?','pending',?)").run(approvalId, taskId, runId, now());
+  return approvalId;
+}
+
 test("one answer settles every question it answered, and an id that is not pending does not end the run", () => {
   const { root, dbFile, db } = fixture("workflow-pending-");
   db.prepare("INSERT INTO tasks(id,project_id,title,state,created_at,updated_at) VALUES('task','project','asked','clarification_required',?,?)").run(now(), now());
@@ -90,6 +95,23 @@ test("a decision on an action is still named exactly", () => {
   assert.equal(granted.pending_interaction_id, "approval_deploy");
 
   db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("a planner clarification is a question, not an approval decision, and is settled by the answer", () => {
+  const { root, dbFile, db } = fixture("workflow-planner-clarification-");
+  db.prepare("INSERT INTO tasks(id,project_id,title,state,created_at,updated_at) VALUES('task','project','asked','clarification_required',?,?)").run(now(), now());
+  db.prepare("INSERT INTO workflow_runs(id,task_id,project_id,workflow_id,state,operational_level,user_message,created_at,updated_at) VALUES('asking','task','project','workflow','clarification_required','mvp','asked',?,?)").run(now(), now());
+  const pendingId = askPlannerQuestion(db, "task", "asking");
+  const classified = validateClassificationDecision(decision({ pending_interaction_id: pendingId }), classificationCatalog(db, "project"));
+  assert.equal(classified.pending_interaction_response, null);
+  db.close();
+
+  const runtime = new Runtime(dbFile);
+  const runId = runtime.create("это новая подробная постановка", { project_id: "project", workflow_id: "workflow" });
+  runtime.classify(runId, classified);
+  assert.equal(runtime.db.prepare("SELECT status FROM approvals WHERE id=?").get(pendingId).status, "approved");
+  runtime.db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
 

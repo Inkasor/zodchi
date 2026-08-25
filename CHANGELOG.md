@@ -4,6 +4,15 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_4_2026_08_25" status="working">
+
+## 0.3.4 — 2026-08-25
+
+- A question raised by the planner is now treated as a clarification throughout classification and lifecycle settlement. Previously its `planner_clarification` kind was mistaken for an approval decision, so a valid `null` decision response failed the classifier contract and the already answered question remained pending.
+- Regression coverage verifies that a planner clarification accepts an ordinary answer, never grants authority, and is settled before work continues.
+
+</section>
+
 <section id="0_3_3_2026_08_25" status="working">
 
 ## 0.3.3 — 2026-08-25
