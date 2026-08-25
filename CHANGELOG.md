@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_18_2026_08_26" status="working">
+
+## 0.3.18 — 2026-08-26
+
+- Role call budgets are now scoped to a concrete workflow step as well as run and role, so independent planner packages assigned to the same analyst do not consume one shared two-call allowance.
+- Project, task and workflow budgets continue to cap the complete run, while attempt and step-qualified role budgets bound retries inside each assignment.
+- Regression coverage executes two independent worker steps under a one-call role contract and requires both to complete without weakening the global budget hierarchy.
+
+</section>
+
 <section id="0_3_17_2026_08_26" status="working">
 
 ## 0.3.17 — 2026-08-26

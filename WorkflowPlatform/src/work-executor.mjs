@@ -203,10 +203,13 @@ function promptWithinContract(contract, qualityContract, packageContract, contex
   return prompt;
 }
 
-function roleBudgetRequest(runtime, runId, roleId, attemptId, contract, callKey) {
+function roleBudgetRequest(runtime, runId, stepId, roleId, attemptId, contract, callKey) {
   const task = runtime.getTask(runId);
   const manager = new BudgetManager(runtime.db);
-  const roleScope = `${runId}:${roleId}`;
+  // max_calls bounds one role assignment, not every independent plan step that happens to use the same
+  // role. The workflow and task scopes still cap the whole run; the step-qualified role scope prevents
+  // retries inside one assignment from becoming unbounded without starving later analyst packages.
+  const roleScope = `${runId}:${stepId}:${roleId}`;
   manager.define({ scopeType: "role", scopeId: roleScope, metric: "calls", limit: contract.max_calls });
   manager.define({ scopeType: "attempt", scopeId: attemptId, metric: "calls", limit: 1 });
   return {
@@ -241,7 +244,7 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
   const taskFile = path.join(taskRoot, `${step.ordinal}-${roleId}.md`);
   fs.writeFileSync(taskFile, prompt, "utf8");
   storeStepPayload(runtime.db, step.id, packageContract, schemaKey);
-  const { manager, request } = roleBudgetRequest(runtime, runId, roleId, lease.attemptId, contract, `${step.id}:${lease.attemptNo}:call`);
+  const { manager, request } = roleBudgetRequest(runtime, runId, step.id, roleId, lease.attemptId, contract, `${step.id}:${lease.attemptNo}:call`);
   let receipt = null;
   try {
     receipt = await invokeWithinBudget(manager, request, () => gatewayCall({
