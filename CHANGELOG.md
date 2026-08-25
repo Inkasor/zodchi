@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_20_2026_08_26" status="working">
+
+## 0.3.20 — 2026-08-26
+
+- Worker source metadata now includes bounded exact-term occurrence counts scanned across each complete allowed file, even when only excerpts fit the prompt.
+- A zero count gives deterministic evidence that a requested code identifier is absent from that source snapshot, avoiding false requests for ever-larger excerpts.
+- The scan is limited to code-shaped terms already present in the owner request or step objective and adds no file contents beyond the existing source scope.
+
+</section>
+
 <section id="0_3_19_2026_08_26" status="working">
 
 ## 0.3.19 — 2026-08-26
