@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_21_2026_08_26" status="working">
+
+## 0.3.21 — 2026-08-26
+
+- Documentators now receive the completed worker evidence, completion criteria and deterministic gate result needed to compose the final registered document.
+- The documentator contract explicitly requires a proposal rather than direct filesystem editing, because the platform atomically applies and lints the returned operation.
+- Supported document operations are now an exact validated enum; invented blocker operations can no longer pass schema validation and fail only during patch application.
+
+</section>
+
 <section id="0_3_20_2026_08_26" status="working">
 
 ## 0.3.20 — 2026-08-26

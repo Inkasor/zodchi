@@ -97,6 +97,7 @@ async function scenario({ prefix, gateStatus = "passed", reviewDecision = "PASS"
   const env = fixture(prefix, { document });
   const calls = [];
   let workerPrompt = "";
+  let documentatorPrompt = "";
   const gatewayCall = async request => {
     calls.push(request.role);
     if (request.role === "planner") return receipt("planner", plannerResult({ document }), "1", "\nRAW_PLANNER_PROSE_MARKER");
@@ -112,6 +113,7 @@ async function scenario({ prefix, gateStatus = "passed", reviewDecision = "PASS"
     }
     if (request.role === "reviewer") return receipt("reviewer", reviewerResult(reviewDecision));
     if (request.role === "documentator") {
+      documentatorPrompt = fs.readFileSync(request.taskFile, "utf8");
       const file = path.join(env.project, "docs", "control.md");
       const version = `sha256:${crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex")}`;
       return receipt("documentator", {
@@ -128,7 +130,7 @@ async function scenario({ prefix, gateStatus = "passed", reviewDecision = "PASS"
     workflowDefinition: { id: "workflow", authority: "registered test authority", roles: {} }, execute: true,
     classificationResult: classification(document, risk), gatewayCall, gateRunner
   });
-  return { ...env, calls, workerPrompt, result };
+  return { ...env, calls, workerPrompt, documentatorPrompt, result };
 }
 
 test("role result schemas reject extra fields, path escapes and false reviewer PASS", () => {
@@ -142,6 +144,7 @@ test("role result schemas reject extra fields, path escapes and false reviewer P
   assert.throws(() => validateWorkerResult({ schema_version: 1, status: "completed", summary: "x", changed_paths: ["../outside"], artifacts: [], evidence: [], questions: [] }, { contract: workerContract, packageContract: { allowed_paths: ["src/output.txt"], artifact_keys: [] } }), /relative project path/);
   assert.throws(() => validateReviewerResult({ ...reviewerResult("PASS"), blockers: [{ code: "x", message: "hidden blocker", path: null }] }), /PASS cannot contain blockers/);
   assert.throws(() => validateDocumentatorResult({ schema_version: 1, status: "proposed", document_id: "unknown", expected_version: null, operation: "create_document", authority: "owner", content: "x", section_id: null, decision_id: null, evidence_id: null, status_value: null, target_tag: null, target_id: null, replacement_id: null }, { allowedDocumentIds: ["control"] }), /document not allowed/);
+  assert.throws(() => validateDocumentatorResult({ schema_version: 1, status: "proposed", document_id: "control", expected_version: null, operation: "blocked_write_read_only_sandbox", authority: "owner", content: null, section_id: null, decision_id: null, evidence_id: null, status_value: null, target_tag: null, target_id: null, replacement_id: null }, { allowedDocumentIds: ["control"] }), /invalid operation/);
   assert.match(rolePrompt({ contract, qualityContract: loadQualityContract(db, "mvp"), packageContract: { objective: "x" }, context: {}, resultSchema: "planner.v1" }), /<workflow_role_prompt/);
   assert.equal(parseRoleReceipt(receipt("reviewer", reviewerResult("PASS")), "reviewer.v1", {}).decision, "PASS");
   assert.ok(classificationCatalog(db, "project").routes.length >= 2);
@@ -630,6 +633,10 @@ test("required document patch applies atomically after reviewer PASS and lint", 
   assert.equal(env.result.execution.status, "completed");
   assert.deepEqual(env.calls, ["planner", "worker", "reviewer", "documentator"]);
   assert.match(fs.readFileSync(path.join(env.project, "docs", "control.md"), "utf8"), /new accepted content/);
+  assert.match(env.documentatorPrompt, /document_proposal/);
+  assert.match(env.documentatorPrompt, /Do not edit or write the filesystem/);
+  assert.match(env.documentatorPrompt, /Prepared document evidence/);
+  assert.match(env.documentatorPrompt, /registered target/);
   assert.match(fs.readFileSync(path.join(env.project, "docs", "control.md"), "utf8"), /<quality_result[^>]+status="verified"[^>]+evidence="verified"[^>]+decision_status="proposed"/);
   const db = openDb(env.dbFile);
   assert.equal(db.prepare("SELECT version FROM project_documents WHERE id='control'").get().version, 1);

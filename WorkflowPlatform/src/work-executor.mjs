@@ -620,7 +620,17 @@ async function documentAndComplete({ runtime, queue, runId, projectId, projectRo
     runtime.setState(runId, "documenting", { reason: reviewerResult ? "required documentation after reviewer PASS" : "required documentation after green deterministic gate" });
     const target = writableDocument(runtime, projectId, plan, documentatorRole);
     const documentatorContract = loadRoleContract(runtime.db, projectId, documentatorRole, level);
-    const documentPackage = { document_id: target.id, path: target.path, authority: target.authority, expected_version: documentVersion(path.resolve(projectRoot, target.path)), plan_hash: structuredHash(plan), reviewer_decision: reviewerResult?.decision ?? "NOT_REQUIRED", quality_outcome: qualityOutcome };
+    const expectedVersion = documentVersion(path.resolve(projectRoot, target.path));
+    const documentPackage = {
+      document_id: target.id, path: target.path, authority: target.authority, expected_version: expectedVersion,
+      required_operation: expectedVersion === null ? "create_document" : "update_section_or_supported_operation",
+      delivery: "Return a documentator.v1 proposal only; the platform writes and lints the document atomically. Do not edit the filesystem.",
+      semantic_format: "markdown+xml_semantic",
+      plan_hash: structuredHash(plan), reviewer_decision: reviewerResult?.decision ?? "NOT_REQUIRED", quality_outcome: qualityOutcome,
+      completion_criteria: plan.completion_criteria,
+      document_evidence: workerResults.map((result, index) => ({ step_key: plan.steps[index]?.key ?? `step_${index + 1}`, summary: result.summary, evidence: result.evidence })),
+      gate: { status: gate.status, checks: gate.checks.map(check => ({ id: check.id, status: check.status, required: check.required })) }
+    };
     const documentator = await invokeRole({ runtime, queue, runId, roleId: documentatorRole, level, taskRoot, packageContract: documentPackage, context: boundedContext(discovery, documentatorRole, classification, documentatorContract.context_limit_bytes, responseLanguage), schemaKey: "documentator.v1", parseOptions: { allowedDocumentIds: [target.id] }, gatewayCall });
     try { documentation = applyRegisteredPatch({ db: runtime.db, runId, projectId, projectRoot, roleId: documentatorRole, proposal: documentator.result, qualityOutcome }); }
     catch (error) {
