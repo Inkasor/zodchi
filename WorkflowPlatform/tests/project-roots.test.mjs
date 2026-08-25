@@ -153,6 +153,22 @@ test("a form entry point follows bounded calls regardless of planned file order"
   db.close(); fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("the page before the best explicit-range hit keeps its query setup", () => {
+  const { root, producer, db } = fixture("workflow-source-range-predecessor-", { sources: ["src/**"] });
+  const lines = Array.from({ length: 400 }, (_, index) => `Строка${index + 1} = "обычный код";`);
+  lines[104] = "QuerySetupMarker = \"поля и параметры запроса\";";
+  lines[159] = "RegisterHitMarker = Источник.Себестоимость;";
+  lines[219] = "RangeTailMarker = Истина;";
+  fs.writeFileSync(path.join(producer, "src", "query.bsl"), lines.join("\n"));
+  const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" });
+  const collected = collectSourceFiles(discovery.roots, ["src/query.bsl"], sourceScope(discovery.source_scope), 3000, {
+    query: "Trace RegisterHitMarker in lines 101–220"
+  });
+  assert.match(collected.files[0].text, /RegisterHitMarker/);
+  assert.match(collected.files[0].text, /QuerySetupMarker/);
+  db.close(); fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("missing output paths do not reserve source budget", () => {
   const { root, producer, db } = fixture("workflow-source-existing-share-", { sources: ["src/**", "docs/**"] });
   fs.writeFileSync(path.join(producer, "src", "large.bsl"), "ПолезнаяСтрока = 1;\n".repeat(1000));
