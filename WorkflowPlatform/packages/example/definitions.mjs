@@ -15,6 +15,7 @@ export default function definePackages(b) {
 
   const packages = [companyWebPackage({
     key: "example.web-app",
+    version: "2.5.0",
     purpose: "Example company web workflow: bounded change, reversible data change, verified release, incident, access, security review and traceable content.",
     checks,
     content: true,

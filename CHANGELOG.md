@@ -2,6 +2,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+## 0.3.0-beta.14 — 2026-08-25
+
+- A run whose decision follows its work is now continued instead of refused. The remaining phases need the plan, the verification and the review, and all three are already recorded, so the run resumes from what it holds rather than from its objective. Re-entering from the objective was the only path available before, and it would have repeated — and paid for — every step already completed, so approving such a run was recorded and left there.
+- Continuing costs exactly the phase the decision was blocking. No worker, verification or review step is executed a second time.
+- The example package's version now says that its content changed. The declared step templates changed in the previous release while the version stayed where it was, so two different packages carried the same version and an upgrade could not tell them apart.
+- A work type the project registered is accepted even when the platform's own fallback list predates it. A package may register the work types its routes need, and the run was still judged against a frozen list, so a route every catalog offered could never start. The registry is now the authority; the list is only what a caller without one falls back to.
+- A workflow whose every step is named for verification has a role to run it again. Excluding steps named for testing keeps the verification phase's own work out of the worker steps, but applied to a route that is nothing but such steps it left nothing to execute.
+- A required document that several registered documents could satisfy now says that the workflow needs a planning step, which is what settles the choice, instead of reporting an ambiguity with no stated remedy. The registered documentation update declares that step.
+- The example package states its own version instead of inheriting the shared default. That default also stamps every role contract in every package, so raising it to describe one example change silently re-versioned all of them.
+
 ## 0.3.0-beta.13 — 2026-08-25
 
 - A workflow that declares its steps is executed as declared, with no planning call at all. Its author already named the roles, the order, the artifact types and the checks; asking a model to invent that again is what let a plan name steps the route does not have. A declared planning step still runs, because a change needs the paths and objectives only the message can supply.

@@ -8,6 +8,7 @@ import { classificationCatalog, classifierPrompt, parseClassificationReceipt, va
 import { compactProjectSnapshot, conversationContext, readProjectContext, selectProjectContext } from "../src/document-context.mjs";
 import { processMessage } from "../src/workflow-app.mjs";
 import { onboardProject, registerProject } from "../src/onboarding.mjs";
+import { Runtime } from "../src/runtime.mjs";
 
 function temporaryRoot(prefix) {
   const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir();
@@ -122,6 +123,24 @@ test("the classifier is offered only routed work types plus the direct answers t
   assert.deepEqual(catalog.work_types, ["clarification", "conversation", "decision", "narrative", "research"]);
   assert.throws(() => validateClassificationDecision(decision({ work_type: "implementation" }), catalog), /CLASSIFICATION_VALUE_UNREGISTERED: work_type=implementation/);
   db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("a registered work type is accepted even when it postdates the platform's fallback list", async () => {
+  const { root, project, dbFile, db } = fixture("workflow-registered-work-type-");
+  const { CLASSIFICATION_KINDS } = await import("../contracts/schemas.mjs");
+  // A package registers the work types its routes need, so the registry is what a run is judged
+  // against. Judged against the frozen list instead, a route the catalog still offered could never run.
+  const registered = db.prepare("SELECT id FROM work_types WHERE id NOT IN (SELECT value FROM json_each(?))").all(JSON.stringify(CLASSIFICATION_KINDS)).map(row => row.id);
+  db.prepare("INSERT OR IGNORE INTO work_types(id,name,category) VALUES('data_collection','Data collection','work')").run();
+  db.prepare("INSERT OR IGNORE INTO workflow_routes(project_id,work_type_id,workflow_id,enabled,priority) VALUES('project','data_collection','workflow',1,0)").run();
+  db.close();
+  assert.equal(CLASSIFICATION_KINDS.includes("data_collection"), false, `precondition: ${registered.join(",")}`);
+  const runtime = new Runtime(dbFile);
+  const runId = runtime.accept("Собери разрешённые данные", { project_id: "project", workflow_id: "workflow", client: "codex" }).runId;
+  runtime.classify(runId, { ...decision({ work_type: "data_collection", artifact_type: "document" }), kind: "data_collection", level: "L2", quality: "mvp" });
+  assert.equal(runtime.db.prepare("SELECT kind FROM classifications WHERE run_id=?").get(runId).kind, "data_collection");
+  runtime.db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
 
