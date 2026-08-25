@@ -3,7 +3,7 @@ import path from "node:path";
 import { buildPrompt } from "./prompt-builder.mjs";
 import { lintFile } from "./lint.mjs";
 import { processMessage } from "./workflow-app.mjs";
-import { onboardProject, registerProject } from "./onboarding.mjs";
+import { onboardProject, registerProject, registerProjectRoot } from "./onboarding.mjs";
 import { exportWorkflowPackage, proposeWorkflowImport, applyWorkflowImport } from "./workflow-package.mjs";
 import { inspectWorkflowBundle } from "./workflow-bundle.mjs";
 import { recordExperienceObservation, createExperienceProposal, evaluateExperienceProposal, applyExperienceProposal } from "./experience.mjs";
@@ -20,6 +20,7 @@ const settings = resolveWorkflowSettings();
 if (process.argv[2] === "configure") { console.log(JSON.stringify(configureInstallation(JSON.parse(fs.readFileSync(args.config, "utf8"))), null, 2)); }
 else if (process.argv[2] === "onboard") { console.log(JSON.stringify(onboardProject(args.db ?? settings.databasePath, JSON.parse(fs.readFileSync(args.config, "utf8"))), null, 2)); }
 else if (process.argv[2] === "register-project") { console.log(JSON.stringify(registerProject(args.db ?? settings.databasePath, { id: args.id, name: args.name, root_path: args.root }), null, 2)); }
+else if (process.argv[2] === "register-root") { console.log(JSON.stringify(registerProjectRoot(args.db ?? settings.databasePath, { project: args.project, key: args.key, path: args.path, access: args.access ?? "read" }), null, 2)); }
 else if (process.argv[2] === "lint") { const r = lintFile(args.file ?? path.resolve("docs/WorkflowPlatform.md")); console.log(JSON.stringify(r)); process.exitCode = r.status === "passed" ? 0 : 1; }
 else if (process.argv[2] === "quality-contracts-lint") { const file = args.file ?? path.resolve("contracts/quality-contracts.xml"); const r = qualityContractsLint(fs.readFileSync(file, "utf8")); console.log(JSON.stringify(r)); process.exitCode = r.status === "passed" ? 0 : 1; }
 else if (process.argv[2] === "quality-policy-lint") { const runtime = new Runtime(args.db ?? settings.databasePath); try { const r = operationalPoliciesLint(runtime.db, args.project ?? null); console.log(JSON.stringify(r, null, 2)); process.exitCode = r.status === "passed" ? 0 : 1; } finally { runtime.db.close(); } }

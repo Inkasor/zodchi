@@ -1,41 +1,127 @@
 {
   "schemaVersion": 1,
   "levels": {
-    "prototype": { "maxCalls": 1, "maxCorrectionCycles": 0, "timeoutSec": 900 },
-    "mvp": { "maxCalls": 1, "maxCorrectionCycles": 0, "timeoutSec": 1800 },
-    "production": { "maxCalls": 1, "maxCorrectionCycles": 0, "timeoutSec": 2400 },
-    "security-audit": { "maxCalls": 1, "maxCorrectionCycles": 0, "timeoutSec": 1800 }
+    "prototype": {
+      "maxCalls": 1,
+      "maxCorrectionCycles": 0,
+      "timeoutSec": 900
+    },
+    "mvp": {
+      "maxCalls": 1,
+      "maxCorrectionCycles": 0,
+      "timeoutSec": 1800
+    },
+    "production": {
+      "maxCalls": 1,
+      "maxCorrectionCycles": 0,
+      "timeoutSec": 2400
+    },
+    "security-audit": {
+      "maxCalls": 1,
+      "maxCorrectionCycles": 0,
+      "timeoutSec": 1800
+    }
   },
   "providers": {
     "codex": {
       "command": "codex",
-      "args": ["-c", "features.hooks=false", "exec", "--ephemeral", "--json"],
-      "status": { "args": ["login", "status"], "authenticatedPattern": "logged in" },
-      "profiles": {}
+      "args": [
+        "-c",
+        "features.hooks=false",
+        "exec",
+        "--ephemeral",
+        "--json"
+      ],
+      "status": {
+        "args": [
+          "login",
+          "status"
+        ],
+        "authenticatedPattern": "logged in"
+      },
+      "profiles": {},
+      "additionalDirectoryArg": "--add-dir"
     },
     "claude": {
       "command": "claude.exe",
-      "args": ["-p", "{prompt}", "--no-session-persistence", "--output-format", "json", "--model", "{model}", "--max-turns", "{maxTurns}", "--append-system-prompt", "{systemPrompt}"],
-      "status": { "args": ["auth", "status"], "jsonAuthenticatedField": "loggedIn", "jsonSubscriptionField": "subscriptionType" },
-      "profiles": {}
+      "args": [
+        "-p",
+        "{prompt}",
+        "--no-session-persistence",
+        "--output-format",
+        "json",
+        "--model",
+        "{model}",
+        "--max-turns",
+        "{maxTurns}",
+        "--append-system-prompt",
+        "{systemPrompt}"
+      ],
+      "status": {
+        "args": [
+          "auth",
+          "status"
+        ],
+        "jsonAuthenticatedField": "loggedIn",
+        "jsonSubscriptionField": "subscriptionType"
+      },
+      "profiles": {},
+      "additionalDirectoryArg": "--add-dir"
     },
     "kimi": {
       "command": "kimi",
-      "args": ["-m", "{model}", "-p", "{prompt}", "--output-format", "stream-json"],
-      "status": { "args": ["provider", "list"], "authenticatedPattern": "managed:kimi-code" },
+      "args": [
+        "-m",
+        "{model}",
+        "-p",
+        "{prompt}",
+        "--output-format",
+        "stream-json"
+      ],
+      "status": {
+        "args": [
+          "provider",
+          "list"
+        ],
+        "authenticatedPattern": "managed:kimi-code"
+      },
       "profiles": {}
     },
     "opencode": {
       "command": "opencode",
       "windowsCommand": "%APPDATA%\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe",
-      "args": ["run", "--format", "json", "--model", "{model}", "--agent", "{agent}", "{prompt}"],
-      "status": { "args": ["--version"] },
+      "args": [
+        "run",
+        "--format",
+        "json",
+        "--model",
+        "{model}",
+        "--agent",
+        "{agent}",
+        "{prompt}"
+      ],
+      "status": {
+        "args": [
+          "--version"
+        ]
+      },
       "profiles": {}
     },
     "cursor": {
       "command": "cursor-agent",
-      "args": ["-p", "--output-format", "json", "--model", "{model}", "{prompt}"],
-      "status": { "args": ["--version"] },
+      "args": [
+        "-p",
+        "--output-format",
+        "json",
+        "--model",
+        "{model}",
+        "{prompt}"
+      ],
+      "status": {
+        "args": [
+          "--version"
+        ]
+      },
       "profiles": {}
     },
     "openai-compatible": {

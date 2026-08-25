@@ -117,6 +117,29 @@ function diffStats(cwd) {
   } catch { return { files: null, added: null, deleted: null }; }
 }
 
+// A receipt that counted only the primary directory would under-report a call given more than one
+// writable root: whatever it did in the second one would leave no trace in the record that exists to say
+// what the call changed. Every writable directory is measured; one that is not a repository contributes
+// nothing rather than silently zeroing the total.
+function combinedDiffStats(directories) {
+  const measured = directories.map(diffStats).filter(item => item.files !== null);
+  if (!measured.length) return { files: null, added: null, deleted: null };
+  return {
+    files: measured.reduce((total, item) => total + item.files, 0),
+    added: measured.reduce((total, item) => total + item.added, 0),
+    deleted: measured.reduce((total, item) => total + item.deleted, 0)
+  };
+}
+
+// argsObject keeps the last value of a repeated flag, which is right for --profile and wrong for a root:
+// a project can have several, and quietly keeping one would run the call against less than the owner
+// registered.
+function repeatedArgs(argv, flag) {
+  const values = [];
+  for (let index = 0; index < argv.length; index += 1) if (argv[index] === flag && argv[index + 1] && !argv[index + 1].startsWith("--")) values.push(argv[index + 1]);
+  return values;
+}
+
 function readTask(file) {
   if (!file) fail("--task-file is required");
   if (!fs.existsSync(file)) fail(`Task file not found: ${file}`);
@@ -200,7 +223,7 @@ const prompt = [
 ].join("\n");
 const systemPrompt = [
   `You are a bounded ${cli.role ?? "worker"} for the ${level} delivery level.`,
-  `Work only inside the supplied project directory and follow its native instructions (${profileConfig.instructionMode ?? "native project instructions"}).`,
+  `Work only inside the supplied project directories and follow their native instructions (${profileConfig.instructionMode ?? "native project instructions"}).`,
   "Do not launch another AI agent, commit, push, deploy, or access production.",
   profileConfig.readOnly ? "This profile is read-only: do not edit or write files." : ""
 ].filter(Boolean).join(" ");
@@ -223,12 +246,22 @@ if (provider === "claude") {
 }
 if (provider === "opencode" && profileConfig.readOnly !== true) commandArgs.push("--auto");
 if (provider === "cursor" && profileConfig.readOnly !== true) commandArgs.push("--force");
+const projectPath = cli.project ? path.resolve(cli.project) : undefined;
+if (projectPath && !fs.existsSync(projectPath)) fail(`PROJECT_NOT_FOUND: ${projectPath}`);
+// A project may hold more than one writable root. The provider is told about each one through its own
+// additional-directory flag, and a provider that has no such flag is not silently run against a project
+// it cannot reach: the call fails and says so.
+const writeDirs = repeatedArgs(process.argv.slice(2), "--write-dir").map(value => path.resolve(value)).filter(value => value !== projectPath);
+for (const directory of writeDirs) if (!fs.existsSync(directory)) fail(`WRITE_ROOT_NOT_FOUND: ${directory}`);
+if (writeDirs.length) {
+  const flag = providerConfig.additionalDirectoryArg;
+  if (!flag) fail(`PROVIDER_HAS_NO_ADDITIONAL_DIRECTORY_FLAG: ${provider}`, 78);
+  for (const directory of writeDirs) commandArgs.push(flag, directory);
+}
 if (cli["dry-run"] === true) {
   process.stdout.write(`${JSON.stringify({ provider, modelProvider: inferredModelProvider(provider, profileConfig), level, profile, type: providerConfig.type ?? "cli", command: providerCommand, args: commandArgs.map((arg) => arg === prompt ? "<prompt>" : arg), limits })}\n`);
   process.exit(0);
 }
-const projectPath = cli.project ? path.resolve(cli.project) : undefined;
-if (projectPath && !fs.existsSync(projectPath)) fail(`PROJECT_NOT_FOUND: ${projectPath}`);
 const sourceHome = provider === "codex" ? paths.codexSourceHome : provider === "kimi" ? paths.kimiSourceHome : provider === "opencode" ? paths.opencodeSourceHome : null;
 let result;
 try {
@@ -238,7 +271,7 @@ try {
 } catch (error) {
   result = { exitCode: 78, stdout: "", stderr: `ADAPTER_CONFIGURATION_ERROR: ${error.message}`, timedOut: false };
 }
-const stats = diffStats(projectPath);
+const stats = combinedDiffStats([projectPath, ...writeDirs].filter(Boolean));
 const usage = normalizeUsage(extractUsage(result.stdout, provider));
 const sessionId = usage?.session_id ?? extractSessionId(`${result.stdout}\n${result.stderr}`);
 const finishedAt = new Date().toISOString();

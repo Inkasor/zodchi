@@ -4,6 +4,24 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_1_2026_08_25" status="working">
+
+## 0.3.1 — 2026-08-25
+
+- A project can now hold more than one directory. One root stays primary and writable, and further roots are registered explicitly with the access each one grants. Work that reconciles two systems has to read the producing end and the consuming end, and neither is a subdirectory of the other, so until now such a run could see only half of what it was about. A document on a read-only root is never offered as writable and a write to it is refused: changing another project's files belongs to that project's own workflow, checks and review.
+- The platform now collects source files, not only registered documents. A role reads what collection assembled for it and does not open files itself, which is what keeps a run repeatable and its cost bounded. Registering a project registered its directory, so collection covers what git already calls the project — its tracked and unignored files — and a workflow that declares `sources` narrows that rather than switching it on. Registration still decides which files are documents: an unregistered file has no authority, no role may write it, and its text is never read into the context. A credential-shaped or dump-shaped name is refused whatever the scope says.
+- Collection searches the project for the identifiers the request already contains, before any model is called. An inventory says what exists but not where the subject of the request lives, and in a project of a thousand files choosing paths by name is guessing. The planner now receives the files that actually mention what was asked about.
+- A role prompt says that its context was collected for it. A role holding an empty tool list concluded that sources were unreachable and asked the owner to paste them into the message, when the real fault was that collection had never supplied them.
+- A receipt counts the changes made in every writable root. Measuring only the primary directory would have left whatever a call did in a second root out of the record that exists to say what it changed.
+
+- Collection reads the project in the vocabulary the project uses. A request is written in ordinary words and the code is written in identifiers, and the project itself holds the translation between them: a label, a comment, the text of a query. Collection searches for the words of the request, reads the identifiers standing beside them, and searches again for those. Nothing is guessed and no model is involved — every name searched for the second time was read out of this project, so it is a name that exists here. A word is followed only if it is rare enough in the project to mean something, which is measured rather than listed.
+- One message settles every question it answered. The platform asks several questions at once and a person answers them in one paragraph; recording one and cancelling the rest lost answers that had been given.
+- A clarification named wrongly no longer ends the run. A clarification is settled by the next message either way, so an unknown id is dropped and recorded, where before it failed the classification and threw away both the answer and the call that was paid for. A decision on an action stays exact: it authorizes something, and one named wrongly is left open.
+- A classification failure says which contract was broken instead of blaming the request or the project settings.
+- A run that fails on its way into execution now ends. Execution can fail before it plans anything — a role contract that does not permit the classified work type, a role with no profile assigned at this level — and the state machine had no transition out of classified, so the person was told the run was rejected while the run itself stayed classified for ever, neither finished nor waiting, and nothing could act on it afterwards. The answer also names the contract that was broken.
+- An unconfigured Codex project delivers its prepared answer instead of losing it. Advisory output travels in the additional-context shape, and a Codex turn was observed receiving neither that context nor the prepared text: the classification ran, the call was paid for, and the answer reached nobody. Codex now defaults to the blocking shape, which both harnesses have been seen to honour. A project that states a delivery mode still gets the mode it stated.
+</section>
+
 <section id="0_3_0_beta_16_2026_08_25" status="working">
 
 ## 0.3.0-beta.16 — 2026-08-25

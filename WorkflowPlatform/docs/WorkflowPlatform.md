@@ -1,4 +1,4 @@
-<document id="workflow_platform" version="0.2.4" status="working" kind="governance" language="en">
+<document id="workflow_platform" version="0.3.0" status="working" kind="governance" language="en">
 <metadata owner="workflow-platform" authority="Zodchi">
 </metadata>
 <section id="documentator_contract" status="accepted">
@@ -24,6 +24,27 @@ Project hooks start WorkflowPlatform from the installed release, never from the 
 </rule>
 <rule id="response_language" status="accepted">
 WorkflowPlatform stores the resolved response language and passes it to every user-facing role; schema keys and enum values remain English.
+</rule>
+<section id="project_roots" status="accepted">
+A project holds one primary writable root and any number of additional roots, each registered with the access it grants.
+</section>
+<rule id="read_root_is_never_written" status="accepted">
+A document on a read-only root is never offered as writable and a write to it is refused; changing another project's files belongs to that project's own workflow, checks and review.
+</rule>
+<rule id="only_writable_roots_reach_the_provider" status="accepted">
+A model invocation receives the writable roots and never a read-only one; what a role reads was collected into the prompt before the call.
+</rule>
+<section id="context_collection" status="accepted">
+The platform reads the project and assembles the context; a role works from what it was given and does not open files itself.
+</section>
+<rule id="collection_covers_the_project" status="accepted">
+Source collection covers the project's tracked and unignored files; a declared source scope narrows that, and a credential-shaped or dump-shaped name is never collected.
+</rule>
+<rule id="collection_searches_before_planning" status="accepted">
+Collection searches the declared scope for the identifiers carried by the request and supplies the matching files to the planner.
+</rule>
+<rule id="collection_translates_through_the_project" status="accepted">
+Where a request carries no identifier, collection searches for its ordinary words, reads the identifiers standing on the matching lines, and searches again for those; every name it searches for was read out of the project.
 </rule>
 <section id="license" status="accepted">
 WorkflowPlatform is distributed as part of Zodchi under the repository-level MIT License. Copyright 2026 Petr Tsap.

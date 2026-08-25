@@ -7,6 +7,8 @@ import { BudgetManager, invokeWithinBudget } from "./budget.mjs";
 import { applyRegisteredPatch, documentVersion } from "./documentator.mjs";
 import { registeredProjectCheckKeys, runProjectGate } from "./gates.mjs";
 import { selectProjectContext } from "./document-context.mjs";
+import { collectSourceFiles, expandTerms, searchSources, sourceScope } from "./source-context.mjs";
+import { projectRoots, writableRoots } from "./project-roots.mjs";
 import { loadRoleContract, parseRoleReceipt, rolePrompt, structuredHash } from "./role-contracts.mjs";
 import { consumeCorrectionCycle, documentationOutcome, loadOperationalPolicy, loadQualityContract, operationalLevel, reviewerRequirement } from "./quality-contracts.mjs";
 
@@ -91,9 +93,20 @@ function requireWorkflowApproval(runtime, runId, contract, responseLanguage) {
   return { status: "approval_required", questions: [question], workflow_approval: contract.approval.step_key };
 }
 
-function boundedContext(discovery, roleId, classification, limit, responseLanguage) {
+function boundedContext(discovery, roleId, classification, limit, responseLanguage, supplied = {}) {
   const selected = selectProjectContext(discovery, classification, [], null, discovery.project.id, roleId);
-  const context = { project: { id: discovery.project.id, name: discovery.project.name }, role_id: roleId, response_language: responseLanguage, documents: [], decisions: discovery.decisions, pending_interactions: discovery.pending_interactions };
+  const context = {
+    project: { id: discovery.project.id, name: discovery.project.name },
+    // Where the roots are and what each one grants is the first thing a role needs and the cheapest
+    // thing to send: without it the role knows a second directory exists only when a document happens
+    // to name it, and cannot tell a directory it may change from one it may only read.
+    roots: (discovery.roots ?? []).map(root => ({ key: root.key, path: root.path, access: root.access, primary: root.primary })),
+    role_id: roleId, response_language: responseLanguage, documents: [], decisions: discovery.decisions, pending_interactions: discovery.pending_interactions,
+    // Collection is what a role reads the project with. A planner is given the inventory so it can name
+    // the paths the work needs; a worker is given the contents of the paths the plan allowed. Neither
+    // opens a file itself, so the same plan against the same tree produces the same invocation.
+    ...supplied
+  };
   let used = Buffer.byteLength(JSON.stringify(context));
   for (const document of selected.documents) {
     const remaining = limit - used;
@@ -175,6 +188,9 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
     receipt = await invokeWithinBudget(manager, request, () => gatewayCall({
       provider: contract.provider, profile: contract.profile, level, role: roleId, taskFile,
       project: runtime.db.prepare("SELECT root_path FROM projects WHERE id=?").get(runtime.get(runId).project_id).root_path,
+      // Only the writable roots go to the provider, and the primary one is already there as --project.
+      // A read-only root was collected into the prompt and is deliberately never handed to the sandbox.
+      writeDirs: writableRoots(projectRoots(runtime.db, runtime.get(runId).project_id)).filter(root => !root.primary).map(root => root.path),
       taskId: `${runId}:${step.step_key}:${lease.attemptNo}`, workflowRunId: runId, attemptNo: lease.attemptNo
     }));
     const result = parseRoleReceipt(receipt, schemaKey, { contract, ...parseOptions });
@@ -379,7 +395,18 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   // told which roles those are. Checks and artifact types were already named here; the roles were
   // validated against a list the planner never saw, and it filled the gap by naming itself.
   const plannerPackage = { objective: message, classification: { work_type: classification.work_type, artifact_type: classification.artifact_type, risk: classification.risk, quality_mode: classification.quality_mode }, registered_roles: roleCapabilities, plan_boundary: planBoundary, following_phases: followingPhases, registered_checks: registeredChecks, registered_artifact_types: registeredArtifactTypes };
-  const planner = plannerContract && await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: plannerPackage, context: boundedContext(discovery, plannerRole, classification, plannerContract.context_limit_bytes, responseLanguage), schemaKey: "planner.v1", parseOptions: { registeredRoles, registeredChecks, registeredArtifactTypes, maxStepAttempts: policy.limits.correction_cycles + 1 }, gatewayCall });
+  const planner = plannerContract && await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: plannerPackage, context: boundedContext(discovery, plannerRole, classification, Math.floor(plannerContract.context_limit_bytes / 2), responseLanguage, {
+      source_inventory: discovery.sources ?? [],
+      // An inventory says what exists; it does not say where the thing the owner asked about lives, and
+      // in a project of a thousand files choosing paths by name is guessing. The identifiers are already
+      // in the message, so the platform searches the declared scope for them before the planner is called
+      // and hands over the files that actually mention them.
+      source_matches: (() => {
+        const scope = sourceScope(discovery.source_scope);
+        const expanded = expandTerms(discovery.roots ?? [], scope, message);
+        return { ...searchSources(discovery.roots ?? [], scope, expanded.terms), derived_from: { request_words: expanded.subject, identifiers: expanded.harvested } };
+      })()
+    }), schemaKey: "planner.v1", parseOptions: { registeredRoles, registeredChecks, registeredArtifactTypes, maxStepAttempts: policy.limits.correction_cycles + 1 }, gatewayCall });
   const plan = planner ? planner.result : derivePlanFromTemplates(runtime, projectId, routeContract, message, registeredChecks, level, classification.document_required, documentatorRole, approvalGranted);
   applyPlannerToDatabase(runtime, runId, plan);
   if (planner) {
@@ -401,7 +428,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     for (const plannedStep of plan.steps) {
     const contract = loadRoleContract(runtime.db, projectId, plannedStep.role, level);
     const packageContract = { objective: plannedStep.objective, allowed_paths: plannedStep.allowed_paths, artifact_keys: plannedStep.artifact_keys, check_ids: plannedStep.check_ids, plan_hash: structuredHash(plan), correction_cycle: cycle, gate_failures: priorGate?.checks?.filter(check => check.required && check.status !== "passed") ?? [] };
-    const worker = await invokeRole({ runtime, queue, runId, roleId: plannedStep.role, level, taskRoot, packageContract, context: boundedContext(discovery, plannedStep.role, classification, contract.context_limit_bytes, responseLanguage), schemaKey: "worker.v1", parseOptions: { packageContract }, gatewayCall });
+    const worker = await invokeRole({ runtime, queue, runId, roleId: plannedStep.role, level, taskRoot, packageContract, context: boundedContext(discovery, plannedStep.role, classification, Math.floor(contract.context_limit_bytes / 2), responseLanguage, { sources: collectSourceFiles(discovery.roots ?? [], plannedStep.allowed_paths, sourceScope(discovery.source_scope), Math.floor(contract.context_limit_bytes / 2)) }), schemaKey: "worker.v1", parseOptions: { packageContract }, gatewayCall });
     if (worker.result.status !== "completed") {
       worker.fail(`worker_${worker.result.status}`, worker.result.status === "failed");
       const targetState = worker.result.status === "blocked" ? "blocked" : "retry_scheduled";

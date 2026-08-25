@@ -69,8 +69,20 @@ export function validateClassificationDecision(value, catalog) {
   if (value.needs_questions !== (value.reply_mode === "clarification")) throw new Error("CLASSIFICATION_SCHEMA_INVALID: clarification mode mismatch");
   if (typeof value.reason !== "string" || !value.reason.trim() || value.reason.length > 2000) throw new Error("CLASSIFICATION_SCHEMA_INVALID: reason");
   if (value.human_response !== null && (typeof value.human_response !== "string" || value.human_response.length > 4000)) throw new Error("CLASSIFICATION_SCHEMA_INVALID: human_response");
-  const pendingIds = catalog.pending_interactions.map(item => item.id);
-  if (value.pending_interaction_id !== null && !pendingIds.includes(value.pending_interaction_id)) throw new Error(`CLASSIFICATION_PENDING_INTERACTION_UNKNOWN: ${value.pending_interaction_id}`);
+  // A clarification lives until the next message and is then settled either way, so naming it wrongly
+  // costs nothing while refusing the whole classification costs the run, the call and the person's
+  // answer. An id that is not pending is dropped and recorded. A decision is different and stays exact:
+  // it authorizes an action, and a mis-named one is left open rather than guessed at, which is why the
+  // paired response below is only accepted for an interaction that was actually found.
+  const pending = new Map(catalog.pending_interactions.map(item => [item.id, item]));
+  const claimed = value.pending_interaction_id === null ? [] : [value.pending_interaction_id].flat();
+  const named = claimed.filter(item => pending.has(item));
+  const unknown = claimed.filter(item => !pending.has(item));
+  value.pending_interaction_id = named[0] ?? null;
+  // One message routinely answers every question the platform asked, so all of them are settled, not
+  // just the first: the schema carries one id for compatibility and the full list beside it.
+  value.pending_interaction_ids = named;
+  value.unknown_pending_interaction_ids = unknown;
   // A person answering a request for consent can also be neither agreeing nor refusing: doubting,
   // asking back, thinking aloud. Read as agreement that is an action taken without consent, so the
   // three outcomes are named separately and anything short of an unambiguous yes is still undecided.
@@ -145,7 +157,7 @@ export function classifierPrompt({ message, catalog, projectSnapshot, acceptedDe
     "- document_required: the result belongs in a registered document, not only in the reply.",
     "- needs_questions must equal questions.length > 0, and must be true exactly when reply_mode is clarification.",
     "- questions: 0 to 5 plain-language questions, each one a real choice only the user can make. Never ask what the registry or the project files already answer.",
-    "- pending_interaction_id: the id from PENDING_INTERACTIONS that this message answers, or null. A short confirmation is resolved from pending interactions and ordered history, never from a keyword rule.",
+    "- pending_interaction_id: the id from PENDING_INTERACTIONS that this message answers, or null. One message often answers every question that was asked, so when it answers several give the list of their ids instead of a single one. A short confirmation is resolved from pending interactions and ordered history, never from a keyword rule.",
     "- pending_interaction_response: null when pending_interaction_id is null or names an interaction of kind clarification. When it names any other kind, the user is being asked to decide whether an action may happen, and this field says what they decided: approve only for an unambiguous yes to that exact action, decline for a refusal, undecided for anything else. Doubt, a question back, a condition, a partial agreement and thinking aloud are all undecided: the decision stays open and the user is answered. Treating hesitation as approval takes an action the user never authorized, so undecided is the answer whenever both readings are possible.",
     "- reason: why this classification, in RESPONSE_LANGUAGE.",
     "- human_response: the reply text when reply_mode is conversation, otherwise null.",

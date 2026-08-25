@@ -134,6 +134,11 @@ export function rolePrompt({ contract, qualityContract, packageContract, context
     `    <purpose>${escapeXml(contract.purpose)}</purpose>\n`+
     `    <boundaries format="application/json">${escapeXml(stableJson(contract.boundaries))}</boundaries>\n`+
     `    <allowed_tools format="application/json">${escapeXml(stableJson(contract.allowed_tools))}</allowed_tools>\n`+
+    // The role works from the context the platform assembled for it and does not go looking for more:
+    // deterministic collection is what makes a run repeatable and its cost bounded. Saying so is not
+    // decoration — a role that was only told it had no tools concluded the sources were unreachable and
+    // asked the owner to paste them in, when the real fault was that collection had not supplied them.
+    `    <supplied_context>Everything this role may use was collected for it and appears in project_context and task_package: the platform reads the project, not the role. Do not ask the owner for sources, history or paths that collection is expected to provide. If something needed is genuinely absent, say which path or which root is missing and stop; that is a gap in collection and it is fixed there.</supplied_context>\n`+
     `    <allowed_skills format="application/json">${escapeXml(stableJson(contract.allowed_skills))}</allowed_skills>\n`+
     `  </role_contract>\n`+
     `${renderQualityContract(qualityContract, "  ")}\n`+
