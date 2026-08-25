@@ -455,6 +455,13 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     }
   }
   if (routeContract?.approval && !approvalGranted) return { ...requireWorkflowApproval(runtime, runId, routeContract, responseLanguage), planner: plan, workers: workerResults, gate, reviewer: reviewerResult };
+  return documentAndComplete({ runtime, queue, runId, projectId, projectRoot, level, classification, discovery, responseLanguage, taskRoot, gatewayCall, policy, plan, gate, reviewerResult, documentatorRole, correctionCycles, workerResults, reviewRequirement });
+}
+
+// Documentation and completion are the phases that follow the owner's decision. A run that stopped for a
+// decision after its work re-enters here with its recorded plan, gate and review, so continuing costs
+// only the phases that never ran.
+async function documentAndComplete({ runtime, queue, runId, projectId, projectRoot, level, classification, discovery, responseLanguage, taskRoot, gatewayCall, policy, plan, gate, reviewerResult, documentatorRole, correctionCycles, workerResults, reviewRequirement }) {
   let documentation = null;
   if (classification.document_required) {
     const qualityOutcome = documentationOutcome(policy.contract, { gateStatus: gate.status, ownerAccepted: ownerAccepted(runtime, runId) });
@@ -478,4 +485,60 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   }
   runtime.setState(runId, "completed", { reason: "all structured role contracts and required gates completed" });
   return { status: "completed", planner: plan, workers: workerResults, correction_cycles: correctionCycles, gate, reviewer: reviewerResult, review_requirement: reviewRequirement, documentation };
+}
+
+// A run stopped for a decision that follows its work already holds every result the remaining phases
+// need: the plan in `plans` and `workflow_steps`, the verification in `gates`, the review in `decisions`.
+// Reading that history back is what makes continuing possible without repeating, and paying for, the
+// work that was already done.
+export function recordedRunResults(db, runId) {
+  const row = db.prepare("SELECT * FROM plans WHERE run_id=?").get(runId);
+  if (!row) throw new Error(`RUN_HAS_NO_PLAN: ${runId}`);
+  const steps = db.prepare("SELECT * FROM workflow_steps WHERE run_id=? AND result_schema_key='worker.v1' ORDER BY ordinal").all(runId);
+  const planned = steps.filter(step => !step.step_key.startsWith("correction_"));
+  if (!planned.length) throw new Error(`RUN_HAS_NO_EXECUTED_STEPS: ${runId}`);
+  const plan = {
+    schema_version: row.schema_version ?? 1,
+    outcome: row.outcome,
+    scope: parseJson(row.scope_json, { included: [], excluded: [] }),
+    allowed_paths: parseJson(row.allowed_paths_json, []),
+    inputs: parseJson(row.inputs_json, []),
+    checks: parseJson(row.checks_json, []),
+    risks: parseJson(row.risks_json, []),
+    artifacts: parseJson(row.artifacts_json, []),
+    completion_criteria: parseJson(row.completion_criteria_json, []),
+    questions: parseJson(row.questions_json, []),
+    steps: planned.map(step => {
+      const contract = parseJson(step.contract_json, {});
+      return { key: step.step_key, role: step.role_id, objective: contract.objective ?? row.objective, allowed_paths: contract.allowed_paths ?? [], artifact_keys: contract.artifact_keys ?? [], check_ids: contract.check_ids ?? [], required: step.required === 1, irreversible: step.irreversible === 1, max_attempts: step.max_attempts };
+    })
+  };
+  const gateRow = db.prepare("SELECT * FROM gates WHERE run_id=? AND kind LIKE 'project_cycle_' || '%' ORDER BY rowid DESC LIMIT 1").get(runId);
+  if (!gateRow) throw new Error(`RUN_HAS_NO_GATE: ${runId}`);
+  const review = db.prepare("SELECT structured_json FROM decisions WHERE run_id=? AND kind='review' AND active=1 ORDER BY created_at DESC LIMIT 1").get(runId);
+  return {
+    plan,
+    gate: parseJson(gateRow.details_json, { status: gateRow.status, checks: [] }),
+    reviewer: review ? parseJson(review.structured_json, null) : null,
+    workers: steps.map(step => parseJson(step.result_json, null)).filter(Boolean),
+    correction_cycles: Number(String(gateRow.kind).replace("project_cycle_", "")) || 0
+  };
+}
+
+// Continuing a run whose decision followed its work runs only what the decision was blocking. The
+// alternative was to re-enter the run from its objective, which would repeat every completed step, so
+// this path deliberately never touches the worker, verification or review phases again.
+export async function continueApprovedRun({ runtime, runId, discovery, responseLanguage = "en", taskRoot, gatewayCall }) {
+  const { classification } = pausedRunObjective(runtime.db, runId);
+  const recorded = recordedRunResults(runtime.db, runId);
+  const level = operationalLevel(classification.quality_mode);
+  const projectId = runtime.get(runId).project_id;
+  const routeContract = selectedWorkflowContract(runtime.db, projectId, runtime.get(runId).workflow_id);
+  const policy = loadOperationalPolicy(runtime.db, projectId, runtime.get(runId).workflow_id, level);
+  return documentAndComplete({
+    runtime, queue: new ExecutionQueue(runtime.db), runId, projectId, projectRoot: discovery.project.root_path, level, classification, discovery, responseLanguage, taskRoot, gatewayCall, policy,
+    plan: recorded.plan, gate: recorded.gate, reviewerResult: recorded.reviewer, documentatorRole: routeContract?.documentator_role ?? "documentator",
+    correctionCycles: recorded.correction_cycles, workerResults: recorded.workers,
+    reviewRequirement: { required: Boolean(recorded.reviewer), reason: recorded.reviewer ? "review recorded before the owner decision" : "not required" }
+  });
 }

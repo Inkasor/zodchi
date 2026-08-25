@@ -324,6 +324,58 @@ test("doubt is neither consent nor refusal: the decision stays open and nothing 
   fs.rmSync(env.root, { recursive: true, force: true });
 });
 
+test("a decision that follows the work is continued from what was recorded, not by redoing it", async () => {
+  const env = fixture("workflow-owner-approve-after-work-", { document: true });
+  const db = openDb(env.dbFile);
+  db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow','prepare',1,'worker',1,0,'package.v1','worker.v1','[]','[\"check-ok\"]','{}','{}')").run();
+  db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow','owner_approval',2,NULL,1,1,'package.v1','approval.v1','[\"decision\"]','[]','{}','{}')").run();
+  db.close();
+  const calls = [];
+  const gatewayCall = async request => {
+    calls.push(request.role);
+    if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "Prepared document evidence.", changed_paths: [], artifacts: [], evidence: ["registered target"], questions: [] });
+    if (request.role === "reviewer") return receipt("reviewer", reviewerResult("PASS"));
+    if (request.role === "documentator") {
+      const file = path.join(env.project, "docs", "control.md");
+      const version = `sha256:${crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex")}`;
+      return receipt("documentator", {
+        schema_version: 1, status: "proposed", document_id: "control", expected_version: version, operation: "update_section", authority: "owner",
+        content: "new accepted content", section_id: "summary", decision_id: null, evidence_id: null, status_value: null, target_tag: null, target_id: null, replacement_id: null
+      });
+    }
+    throw new Error(`unexpected role ${request.role}`);
+  };
+  const gateRunner = async () => ({ task_id: "gate", project: env.project, level: "mvp", files: ["docs/control.md"], status: "passed", checks: [{ id: "check-ok", required: true, status: "passed" }], summary: "passed" });
+  const first = await processMessage({
+    message: "Обнови зарегистрированный документ", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} },
+    execute: true, classificationResult: classification(true), gatewayCall, gateRunner
+  });
+  assert.equal(first.execution.status, "approval_required");
+  assert.equal(calls.includes("worker"), true);
+  assert.equal(calls.includes("documentator"), false);
+  const opened = openDb(env.dbFile);
+  const approval = opened.prepare("SELECT id FROM approvals WHERE run_id=? AND status='pending'").get(first.run_id);
+  opened.close();
+  const before = calls.length;
+  const second = await processMessage({
+    message: "Да, принимаем", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true,
+    classificationResult: { ...classification(true), work_type: "conversation", artifact_type: "none", planning_required: false, document_required: false, reply_mode: "conversation", human_response: "Записал.", pending_interaction_id: approval.id, pending_interaction_response: "approve" },
+    gatewayCall, gateRunner
+  });
+  assert.equal(second.route, "work");
+  assert.equal(second.execution.status, "completed");
+  // The whole point of continuing from what was recorded: the decision costs exactly the phase it was
+  // blocking, and no completed step is executed — or paid for — a second time.
+  assert.deepEqual(calls.slice(before), ["documentator"]);
+  assert.match(fs.readFileSync(path.join(env.project, "docs", "control.md"), "utf8"), /new accepted content/);
+  const verified = openDb(env.dbFile);
+  assert.equal(verified.prepare("SELECT status FROM approvals WHERE id=?").get(approval.id).status, "approved");
+  assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(first.run_id).state, "completed");
+  assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflow_steps WHERE run_id=? AND step_key='documentation'").get(first.run_id).count, 1);
+  verified.close();
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
 test("a routed irreversible approval blocks productive roles before any Gateway call", async () => {
   const env = fixture("workflow-routed-approval-");
   const db = openDb(env.dbFile);

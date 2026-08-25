@@ -11,7 +11,7 @@ import { languageName, resolveResponseLanguage } from "./language.mjs";
 import { id, now } from "./db.mjs";
 import { appendEvent } from "./state-machine.mjs";
 import { resolveWorkflowSettings } from "./paths.mjs";
-import { executeStructuredWork, pausedRunObjective } from "./work-executor.mjs";
+import { continueApprovedRun, executeStructuredWork, pausedRunObjective } from "./work-executor.mjs";
 import { chargeDirectReceipt, initializeQualityRun, operationalLevel, reserveDirectModelCall } from "./quality-contracts.mjs";
 
 export function loadWorkflow(id, workflowsRoot = resolveWorkflowSettings().workflowsRoot) {
@@ -202,19 +202,17 @@ export async function processMessage({
       return finish({ route: "owner_decision", classification, response, gateway: receipts });
     }
     runtime.db.prepare("UPDATE approvals SET status='approved',resolved_at=? WHERE id=?").run(now(), ownerDecision.id);
-    // Resuming re-enters the paused run from its objective. That is right only while nothing has been
-    // done yet: a run that stopped for a decision after its work would redo, and pay for, every step it
-    // already completed. Approving such a run is recorded, and continuing it is refused rather than
-    // silently repeated.
-    if (runtime.db.prepare("SELECT COUNT(*) AS count FROM workflow_steps WHERE run_id=? AND state='completed'").get(ownerDecision.run_id).count) {
-      runtime.setState(runId, "completed", { reason: "owner approval recorded for a run that had already worked" });
-      const response = saveAssistant(workflowMessage("approvalAfterWork", responseLanguage));
-      return finish({ route: "owner_decision", classification, response, gateway: receipts });
-    }
-    const paused = pausedRunObjective(runtime.db, ownerDecision.run_id);
+    // Where the decision sits decides how the run continues. A decision before the work re-enters the run
+    // from its objective, because nothing has been done yet. A decision after the work must not: doing so
+    // would repeat, and pay for again, every step already completed. That run resumes from its recorded
+    // plan, gate and review, and only the phases the decision was blocking still run.
+    const worked = runtime.db.prepare("SELECT COUNT(*) AS count FROM workflow_steps WHERE run_id=? AND state='completed' AND result_schema_key='worker.v1'").get(ownerDecision.run_id).count;
     runtime.setState(runId, "completed", { reason: "owner approval delivered to the waiting run" });
     try {
-      const execution = await executeStructuredWork({ runtime, runId: ownerDecision.run_id, classification: paused.classification, definition, discovery, message: paused.message, responseLanguage, taskRoot: taskDirectory, gatewayCall, approvalGranted: true, ...(gateRunner ? { gateRunner } : {}) });
+      const paused = worked ? null : pausedRunObjective(runtime.db, ownerDecision.run_id);
+      const execution = worked
+        ? await continueApprovedRun({ runtime, runId: ownerDecision.run_id, discovery, responseLanguage, taskRoot: taskDirectory, gatewayCall })
+        : await executeStructuredWork({ runtime, runId: ownerDecision.run_id, classification: paused.classification, definition, discovery, message: paused.message, responseLanguage, taskRoot: taskDirectory, gatewayCall, approvalGranted: true, ...(gateRunner ? { gateRunner } : {}) });
       const response = saveAssistant(executionMessage(execution, responseLanguage));
       return finish({ route: "work", classification, response, execution, gateway: receipts });
     } catch (error) {

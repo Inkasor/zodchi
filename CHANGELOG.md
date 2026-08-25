@@ -2,6 +2,11 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+## 0.3.0-beta.14 — 2026-08-25
+
+- A run whose decision follows its work is now continued instead of refused. The remaining phases need the plan, the verification and the review, and all three are already recorded, so the run resumes from what it holds rather than from its objective. Re-entering from the objective was the only path available before, and it would have repeated — and paid for — every step already completed, so approving such a run was recorded and left there.
+- Continuing costs exactly the phase the decision was blocking. No worker, verification or review step is executed a second time.
+
 ## 0.3.0-beta.13 — 2026-08-25
 
 - A workflow that declares its steps is executed as declared, with no planning call at all. Its author already named the roles, the order, the artifact types and the checks; asking a model to invent that again is what let a plan name steps the route does not have. A declared planning step still runs, because a change needs the paths and objectives only the message can supply.
