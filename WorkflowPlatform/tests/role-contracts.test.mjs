@@ -324,6 +324,31 @@ test("doubt is neither consent nor refusal: the decision stays open and nothing 
   fs.rmSync(env.root, { recursive: true, force: true });
 });
 
+test("a workflow whose every step is named for verification still has a role to run it", async () => {
+  const env = fixture("workflow-verification-only-");
+  const db = openDb(env.dbFile);
+  db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow','checks',1,'worker',1,0,'package.v1','worker.v1','[]','[\"check-ok\"]','{}','{}')").run();
+  db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow','review',2,'reviewer',1,0,'package.v1','reviewer.v1','[]','[\"check-ok\"]','{}','{}')").run();
+  db.close();
+  const calls = [];
+  const result = await processMessage({
+    message: "Прогони зарегистрированные проверки", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} },
+    execute: true, classificationResult: classification(false),
+    gatewayCall: async request => {
+      calls.push(request.role);
+      if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "Проверки выполнены.", changed_paths: [], artifacts: [], evidence: ["gate"], questions: [] });
+      if (request.role === "reviewer") return receipt("reviewer", reviewerResult("PASS"));
+      throw new Error(`unexpected role ${request.role}`);
+    },
+    gateRunner: async () => ({ task_id: "gate", project: env.project, level: "mvp", files: [], status: "passed", checks: [{ id: "check-ok", required: true, status: "passed" }], summary: "passed" })
+  });
+  // Excluding steps named for testing keeps the verification phase's own work out of the worker
+  // steps. Applied to a route that is nothing but such steps it left no role at all.
+  assert.equal(result.execution.status, "completed");
+  assert.equal(calls.includes("worker"), true);
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
 test("a decision that follows the work is continued from what was recorded, not by redoing it", async () => {
   const env = fixture("workflow-owner-approve-after-work-", { document: true });
   const db = openDb(env.dbFile);

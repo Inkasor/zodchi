@@ -16,7 +16,12 @@ function parseJson(value, fallback) { try { return JSON.parse(value); } catch { 
 function selectedWorkflowContract(db, projectId, workflowId) {
   const rows = db.prepare("SELECT * FROM workflow_step_templates WHERE project_id=? AND workflow_id=? ORDER BY ordinal").all(projectId, workflowId);
   if (!rows.length) return null;
-  const productive = rows.filter(row => row.role_id && row.output_schema_key === "worker.v1" && !/(?:^|_)(?:test|tests|checks|verify|verification|preflight|review)(?:$|_)/.test(row.step_key));
+  const workerSteps = rows.filter(row => row.role_id && row.output_schema_key === "worker.v1");
+  // A step named for testing is the verification phase's own work and must not become a worker step
+  // as well. That is a refinement, not a way to empty a route: a workflow whose whole purpose is to
+  // run the registered checks names every step that way, and filtering left it with nothing to run.
+  const named = workerSteps.filter(row => !/(?:^|_)(?:test|tests|checks|verify|verification|preflight|review)(?:$|_)/.test(row.step_key));
+  const productive = named.length ? named : workerSteps;
   const approvalIndex = rows.findIndex(row => row.irreversible && !row.role_id);
   const productiveAfterApproval = approvalIndex < 0 ? [] : productive.filter(row => row.ordinal > rows[approvalIndex].ordinal);
   const productiveBeforeApproval = productive.filter(row => approvalIndex < 0 || row.ordinal < rows[approvalIndex].ordinal);
@@ -65,7 +70,7 @@ function derivePlanFromTemplates(runtime, projectId, contract, message, register
     // the same ambiguity a planner would have had to settle, and it is reported as such.
     const writable = runtime.db.prepare(`SELECT pd.path FROM project_documents pd JOIN role_documents rd ON rd.document_id=pd.id AND rd.project_id=pd.project_id
       WHERE pd.project_id=? AND rd.role_id=? AND rd.write_access=1 AND pd.active=1 ORDER BY pd.path`).all(projectId, documentatorRole);
-    if (writable.length !== 1) throw new Error(`WORKFLOW_REQUIRED_DOCUMENT_AMBIGUOUS: expected one document writable by ${documentatorRole}, found ${writable.length}`);
+    if (writable.length !== 1) throw new Error(`WORKFLOW_REQUIRED_DOCUMENT_NEEDS_PLANNING: ${contract.workflow_id} must declare a planning step to choose among the ${writable.length} documents ${documentatorRole} may write`);
     artifacts.push({ key: "required_document", type: "document", path: writable[0].path, required: true });
   }
   return { schema_version: 1, outcome: "ready", scope: { included: [message], excluded: [] }, allowed_paths: [], inputs: [], checks: registeredChecks, risks: [], artifacts, completion_criteria: [], questions: [], steps };

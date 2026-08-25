@@ -69,7 +69,7 @@ export class Runtime {
   setState(runId, state, options = {}) { return transitionRunAndTask(this.db, runId, state, options); }
 
   classify(runId, classification) {
-    const value = validateClassification(classification);
+    const value = validateClassification(classification, this.db.prepare("SELECT id FROM work_types").all().map(row => row.id));
     const run = this.get(runId);
     if (run.state === "discovering") transitionRunAndTask(this.db, runId, "classifying", { reason: "discovery complete" });
     const taskId = this.get(runId).task_id;
