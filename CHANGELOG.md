@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_22_2026_08_26" status="working">
+
+## 0.3.22 — 2026-08-26
+
+- Worker completion semantics now treat a zero exact-term count across complete allowed files as a conclusive negative result inside the authorized scope.
+- A scoped static analysis completes by reporting an absent producer and the nearest supported facts instead of blocking on a request for an excluded downstream system.
+- `blocked` remains reserved for evidence that is unavailable or unreadable inside the authorized boundary, not for a valid negative answer.
+
+</section>
+
 <section id="0_3_21_2026_08_26" status="working">
 
 ## 0.3.21 — 2026-08-26
