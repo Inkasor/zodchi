@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_13_2026_08_25" status="working">
+
+## 0.3.13 — 2026-08-25
+
+- Worker source budgets now follow planner path priority. The first of two readable sources may use two thirds of the remaining capacity while a smaller entry-point file still retains its bounded share.
+- Calendar spans such as `15–22 August` are no longer misclassified as requested source line ranges.
+- Regression coverage reproduces the unused-capacity failure where a large primary BSL module was truncated before a small form module consumed less than its equal share.
+
+</section>
+
 <section id="0_3_12_2026_08_25" status="working">
 
 ## 0.3.12 — 2026-08-25
