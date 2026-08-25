@@ -128,7 +128,7 @@ test("the primary planned source receives priority and calendar dates do not bec
   db.close(); fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("a form entry point follows bounded calls into a later implementation file", () => {
+test("a form entry point follows bounded calls regardless of planned file order", () => {
   const { root, producer, consumer, db } = fixture("workflow-source-call-chain-", { sources: ["src/**"] });
   const form = Array.from({ length: 360 }, (_, index) => `FormLine${index + 1} = 0;`);
   form.splice(39, 5, "Procedure Export(Command)", "  Result = RunExportOnServer();", "EndProcedure", "", "");
@@ -142,12 +142,14 @@ test("a form entry point follows bounded calls into a later implementation file"
   fs.writeFileSync(path.join(producer, "src", "FormModule.bsl"), form.join("\n"));
   fs.writeFileSync(path.join(consumer, "src", "ObjectModule.bsl"), object.join("\n"));
   const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" });
-  const collected = collectSourceFiles(discovery.roots, ["src/FormModule.bsl", "consumer/src/ObjectModule.bsl"], sourceScope(discovery.source_scope), 18_000, {
+  // The implementation deliberately comes first: planner path priority must not be mistaken for call
+  // direction when the later form invokes this earlier object module.
+  const collected = collectSourceFiles(discovery.roots, ["consumer/src/ObjectModule.bsl", "src/FormModule.bsl"], sourceScope(discovery.source_scope), 18_000, {
     query: "Trace the export entry point through the server scenario to NDJSON packet formation and sending."
   });
   const evidence = collected.files.map(file => file.text).join("\n");
   for (const name of ["RunExportOnServer", "ExportMain", "ExportLegacy", "ExportDay", "BuildNDJSONPacket", "SendNDJSON"]) assert.match(evidence, new RegExp(name));
-  assert.ok(collected.files[1].segments.some(segment => segment.reason.startsWith("referenced_call_chain:")));
+  assert.ok(collected.files[0].segments.some(segment => segment.reason.startsWith("referenced_call_chain:")));
   db.close(); fs.rmSync(root, { recursive: true, force: true });
 });
 
