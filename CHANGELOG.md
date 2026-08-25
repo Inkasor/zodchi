@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_7_2026_08_25" status="working">
+
+## 0.3.7 — 2026-08-25
+
+- Worker source ranking now combines the step objective with the original user request and planner evidence inputs. Exact line ranges and identifiers therefore survive a planner's shorter per-step wording.
+- Portable disabled checks are recognized as local installation hooks by their declared `config.reason` as well as by their runner name, so package upgrades preserve an activated machine-local BSL Language Server runner.
+- Regression coverage reproduces both failures observed in the live 1C documentation chain: ranges present only in the original request and the actual `bsl_language_server` portable placeholder shape.
+
+</section>
+
 <section id="0_3_6_2026_08_25" status="working">
 
 ## 0.3.6 — 2026-08-25

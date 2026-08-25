@@ -103,7 +103,7 @@ test("package upgrade preserves a machine-local runner bound to a disabled porta
   db.close();
 
   db = openDb(sourceDb);
-  db.prepare("UPDATE check_definitions SET name='Portable BSL hook',runner='requires_local_bsl_binding',kind='disabled',config_json='{}',timeout_seconds=30 WHERE id='check.green'").run();
+  db.prepare("UPDATE check_definitions SET name='Portable BSL hook',runner='bsl_language_server',kind='disabled',config_json=?,timeout_seconds=30 WHERE id='check.green'").run(JSON.stringify({ reason: "requires_local_bsl_binding" }));
   db.prepare("UPDATE workflow_package_releases SET version='1.0.1' WHERE project_id='source' AND package_key='demo.package' AND status='active'").run();
   db.close();
   const secondPackage = path.join(root, "second.xml"), secondProposal = path.join(root, "second.json");

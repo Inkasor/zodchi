@@ -234,10 +234,12 @@ test("worker prompt fits the final byte contract and receives requested regions 
   const plan = plannerResult();
   plan.allowed_paths.push("src/large.bsl");
   plan.steps[0].allowed_paths = ["src/large.bsl"];
-  plan.steps[0].objective = "Проследи СебестоимостьМаркер2800 в строках 2750–2850 и СебестоимостьМаркер4400 в строках 4380–4460";
+  // The real planner reduced this to a short objective and kept the exact ranges only in the original
+  // request. The collector must retain those global hints when it prepares this worker's source.
+  plan.steps[0].objective = "Проследи unit.cost от регистра-источника до NDJSON";
   let workerPrompt = "";
   const result = await processMessage({
-    message: "Разбери большой BSL-модуль", project: env.project, dbFile: env.dbFile,
+    message: "Разбери большой BSL-модуль: СебестоимостьМаркер2800 в строках 2750–2850 и СебестоимостьМаркер4400 в строках 4380–4460", project: env.project, dbFile: env.dbFile,
     workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, classificationResult: classification(false),
     gatewayCall: async request => {
       if (request.role === "planner") return receipt("planner", plan);
