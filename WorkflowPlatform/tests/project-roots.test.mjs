@@ -107,6 +107,16 @@ test("large files contribute relevant line windows and later planned paths keep 
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("missing output paths do not reserve source budget", () => {
+  const { root, producer, db } = fixture("workflow-source-existing-share-", { sources: ["src/**", "docs/**"] });
+  fs.writeFileSync(path.join(producer, "src", "large.bsl"), "ПолезнаяСтрока = 1;\n".repeat(1000));
+  const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" });
+  const collected = collectSourceFiles(discovery.roots, ["src/large.bsl", "docs/not-created-yet.md"], sourceScope(discovery.source_scope), 6000, { query: "ПолезнаяСтрока" });
+  assert.ok(collected.files[0].supplied_bytes > 5000);
+  assert.equal(collected.files[1].status, "missing");
+  db.close(); fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("the identifiers in a request find the files that carry them", () => {
   const { root, producer, consumer, db } = fixture("workflow-search-", { sources: ["src/**"] });
   fs.writeFileSync(path.join(producer, "src", "unrelated.mjs"), "export const total = 0;\n");

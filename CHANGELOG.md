@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_10_2026_08_25" status="working">
+
+## 0.3.10 — 2026-08-25
+
+- Worker evidence may use up to 80% of the measured role contract before final prompt fitting, allowing large contiguous source regions to use capacity that the fixed envelope does not need.
+- Source budget is divided only among readable text inputs. Missing output artifacts and invalid or binary paths no longer reserve a share that real source files could use.
+- Regression coverage verifies that a not-yet-created document path cannot starve a large BSL input.
+
+</section>
+
 <section id="0_3_9_2026_08_25" status="working">
 
 ## 0.3.9 — 2026-08-25
