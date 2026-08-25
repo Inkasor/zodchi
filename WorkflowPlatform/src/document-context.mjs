@@ -26,6 +26,14 @@ function summarize(file, text) {
   };
 }
 
+// A reference document is a manifest or an index its own tool owns and formats. Holding it to the
+// semantic document format would report every one of them as failing forever, and the report is read
+// by the roles, so the noise would be permanent and would mean nothing.
+function registeredDocumentLint(documentType, exists, text, file, db) {
+  if (documentType === "reference") return { kind: "document", file, status: "not_applicable", errors: [] };
+  return exists ? documentLint(text, file, db) : { status: "missing", errors: [] };
+}
+
 function parseJson(value, fallback) { try { return JSON.parse(value); } catch { return fallback; } }
 
 function gitSnapshot(projectRoot, enabled) {
@@ -68,7 +76,7 @@ export function readProjectContext(projectSelector, db, _workingDocuments = [], 
     return {
       id: row.id, path: row.path.replaceAll("\\", "/"), document_type: row.document_type, authority: row.authority,
       read_roles: row.read_roles.split(",").filter(Boolean).sort(), write_roles: row.write_roles.split(",").filter(Boolean).sort(),
-      exists, text, ...summarize(file, text), lint: exists ? documentLint(text, file, db) : { status: "missing", errors: [] }
+      exists, text, ...summarize(file, text), lint: registeredDocumentLint(row.document_type, exists, text, file, db)
     };
   });
   const broken_links = documents.flatMap(document => document.links.filter(link => !link.exists).map(link => ({ from: document.path, target: link.target })));

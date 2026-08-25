@@ -4,6 +4,14 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_0_beta_16_2026_08_25" status="working">
+
+## 0.3.0-beta.16 — 2026-08-25
+
+- A registered manifest is no longer reported as a failing document. Every registered document was checked against the semantic document format when the project context was assembled, so a package manifest or a generated index — a file its own tool owns and formats — failed on every single run. The report is read by the roles, so that failure was permanent noise that meant nothing. Reference documents are now reported as not applicable instead.
+
+</section>
+
 <section id="0_3_0_beta_15_2026_08_25" status="working">
 
 ## 0.3.0-beta.15 — 2026-08-25
