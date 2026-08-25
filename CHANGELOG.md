@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_14_2026_08_25" status="working">
+
+## 0.3.14 — 2026-08-25
+
+- Worker source capacity is now calculated after measuring the complete role, package, history and JSON envelope instead of assuming that source may always occupy 80% of the role limit.
+- When the first estimate is too large, source windows are recollected against the measured remainder; final prompt fitting no longer cuts off a requested range that deterministic selection had already retained.
+- Regression coverage rejects late `prompt_truncated` cuts in a tight worker contract while retaining local and globally requested BSL regions.
+
+</section>
+
 <section id="0_3_13_2026_08_25" status="working">
 
 ## 0.3.13 — 2026-08-25

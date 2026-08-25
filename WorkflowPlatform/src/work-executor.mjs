@@ -514,13 +514,32 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     const cycleResults = [];
     for (const plannedStep of plan.steps) {
     const contract = loadRoleContract(runtime.db, projectId, plannedStep.role, level);
-    const workerEvidenceBudget = Math.floor(contract.context_limit_bytes * 0.8);
     const packageContract = { objective: plannedStep.objective, allowed_paths: plannedStep.allowed_paths, artifact_keys: plannedStep.artifact_keys, check_ids: plannedStep.check_ids, plan_hash: structuredHash(plan), correction_cycle: cycle, gate_failures: priorGate?.checks?.filter(check => check.required && check.status !== "passed") ?? [] };
     // A planner commonly shortens the worker objective and leaves exact paths, identifiers or line
     // ranges in the original request and its evidence inputs. Source selection needs that complete
     // search intent even though the worker's authority remains the narrower package contract.
     const supplementalSourceQuery = [message, ...(plan.inputs ?? [])].filter(Boolean).join("\n");
-    const worker = await invokeRole({ runtime, queue, runId, roleId: plannedStep.role, level, taskRoot, packageContract, context: boundedContext(discovery, plannedStep.role, classification, workerEvidenceBudget, responseLanguage, { task_evidence: { plan_inputs: plan.inputs ?? [], git_history: collectGitHistory(discovery.roots ?? [], plannedStep.allowed_paths, sourceScope(discovery.source_scope), { enabled: discovery.git?.enabled === true }) }, sources: collectSourceFiles(discovery.roots ?? [], plannedStep.allowed_paths, sourceScope(discovery.source_scope), workerEvidenceBudget, { query: plannedStep.objective, supplementalQuery: supplementalSourceQuery }) }), schemaKey: "worker.v1", parseOptions: { packageContract }, gatewayCall });
+    const taskEvidence = { plan_inputs: plan.inputs ?? [], git_history: collectGitHistory(discovery.roots ?? [], plannedStep.allowed_paths, sourceScope(discovery.source_scope), { enabled: discovery.git?.enabled === true }) };
+    const qualityContract = loadQualityContract(runtime.db, level);
+    const makeContext = (sourceBudget, contextBudget) => boundedContext(discovery, plannedStep.role, classification, contextBudget, responseLanguage, {
+      task_evidence: taskEvidence,
+      sources: collectSourceFiles(discovery.roots ?? [], plannedStep.allowed_paths, sourceScope(discovery.source_scope), sourceBudget, { query: plannedStep.objective, supplementalQuery: supplementalSourceQuery })
+    });
+    // Source collection used to spend 80% of the role limit before the role contract, package contract,
+    // path-bound history and JSON envelope were measured. Final prompt fitting then removed the overflow
+    // with a raw prefix cut, which could discard a complete requested range that the collector had already
+    // selected. Measure the real fixed envelope and recollect against the actual remainder instead. The
+    // small reserve covers per-file and per-segment metadata, and the loop makes that estimate exact.
+    let sourceBudget = Math.floor(contract.context_limit_bytes * 0.8);
+    let probeContext;
+    for (let pass = 0; pass < 4; pass += 1) {
+      probeContext = makeContext(sourceBudget, 0);
+      const measured = Buffer.byteLength(rolePrompt({ contract, qualityContract, packageContract, context: probeContext, resultSchema: "worker.v1" }));
+      if (measured <= contract.context_limit_bytes) break;
+      sourceBudget = Math.max(0, sourceBudget - (measured - contract.context_limit_bytes) - 512);
+    }
+    const workerContext = makeContext(sourceBudget, contract.context_limit_bytes);
+    const worker = await invokeRole({ runtime, queue, runId, roleId: plannedStep.role, level, taskRoot, packageContract, context: workerContext, schemaKey: "worker.v1", parseOptions: { packageContract }, gatewayCall });
     if (worker.result.status !== "completed") {
       worker.fail(`worker_${worker.result.status}`, worker.result.status === "failed");
       const targetState = worker.result.status === "blocked" ? "blocked" : "retry_scheduled";

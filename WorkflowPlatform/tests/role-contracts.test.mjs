@@ -309,6 +309,10 @@ test("worker prompt fits the final byte contract and receives requested regions 
   const plan = plannerResult();
   plan.allowed_paths.push("src/large.bsl");
   plan.steps[0].allowed_paths = ["src/large.bsl"];
+  // Path-bound task evidence is part of the final prompt envelope. Under the previous fixed 80% source
+  // estimate this extra measured evidence forced promptWithinContract to prefix-cut source text after
+  // the collector had selected it.
+  plan.inputs.push(`bounded-evidence:${"x".repeat(6000)}`);
   // The real planner reduced this to a short objective and kept the exact ranges only in the original
   // request. The collector must retain those global hints when it prepares this worker's source.
   plan.steps[0].objective = "Проследи LocalEntryMarker и точку запуска";
@@ -333,6 +337,7 @@ test("worker prompt fits the final byte contract and receives requested regions 
   assert.match(workerPrompt, /task_evidence/);
   assert.match(workerPrompt, /plan_inputs/);
   assert.match(workerPrompt, /requested_ranges_and_objective_matches/);
+  assert.doesNotMatch(workerPrompt, /"prompt_truncated":true/);
   assert.doesNotMatch(workerPrompt, /Строка1 =/);
   fs.rmSync(env.root, { recursive: true, force: true });
 });
