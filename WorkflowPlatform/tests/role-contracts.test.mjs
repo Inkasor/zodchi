@@ -193,6 +193,35 @@ test("planner questions stop before worker and become plain pending clarificatio
   fs.rmSync(env.root, { recursive: true, force: true });
 });
 
+test("planner source evidence is fitted to its byte contract and keeps the best matching path", async () => {
+  const env = fixture("workflow-planner-source-budget-");
+  const matchingLine = suffix => `avgCost = 620008; // себестоимость ${suffix} ${"x".repeat(210)}`;
+  fs.writeFileSync(path.join(env.project, "src", "000-relevant.bsl"), Array.from({ length: 6 }, (_, index) => matchingLine(`relevant-${index}`)).join("\n"));
+  for (let index = 0; index < 450; index += 1) {
+    const name = `noise-${String(index).padStart(3, "0")}.bsl`;
+    fs.writeFileSync(path.join(env.project, "src", name), Array.from({ length: 6 }, (_, line) => matchingLine(`${index}-${line}`)).join("\n"));
+  }
+  const db = openDb(env.dbFile);
+  db.prepare("UPDATE role_contracts SET context_limit_bytes=24000 WHERE project_id='project' AND role_id='planner' AND status='active'").run();
+  db.close();
+  let plannerPrompt = "";
+  const questions = {
+    schema_version: 1, outcome: "questions", scope: { included: [], excluded: [] }, allowed_paths: [], inputs: [], checks: [], risks: [], artifacts: [],
+    completion_criteria: [], questions: ["Остановиться после проверки контекста?"], steps: []
+  };
+  const result = await processMessage({
+    message: "Проверь avgCost и себестоимость для артикула 620008", project: env.project, dbFile: env.dbFile,
+    workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, classificationResult: classification(false),
+    gatewayCall: async request => { plannerPrompt = fs.readFileSync(request.taskFile, "utf8"); return receipt("planner", questions); }
+  });
+  assert.equal(result.execution.status, "clarification_required");
+  assert.ok(Buffer.byteLength(plannerPrompt) <= 24000);
+  assert.match(plannerPrompt, /src\/000-relevant\.bsl/);
+  assert.match(plannerPrompt, /budget_truncation/);
+  assert.doesNotMatch(plannerPrompt, /src\/noise-449\.bsl/);
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
 test("configured project call budget hard-stops the real role wrapper before Gateway invocation", async () => {
   const env = fixture("workflow-structured-budget-stop-");
   const setup = openDb(env.dbFile);
