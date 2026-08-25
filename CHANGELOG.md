@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_9_2026_08_25" status="working">
+
+## 0.3.9 — 2026-08-25
+
+- Explicit source ranges are supplied as contiguous 40-line pages instead of sparse 13-line samples. Pages containing objective matches lead, while the remaining pages fill the available budget round-robin across ranges.
+- Planner evidence inputs are now visible to workers as bounded task evidence, so supplied Git facts and accepted runtime limitations remain available for analysis rather than only influencing source search.
+- Regression coverage keeps local, late-range, and task-evidence signals together under a tight role contract.
+
+</section>
+
 <section id="0_3_8_2026_08_25" status="working">
 
 ## 0.3.8 — 2026-08-25

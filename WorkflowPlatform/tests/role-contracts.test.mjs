@@ -256,6 +256,8 @@ test("worker prompt fits the final byte contract and receives requested regions 
   assert.match(workerPrompt, /LocalEntryMarker/);
   assert.match(workerPrompt, /СебестоимостьМаркер2800/);
   assert.match(workerPrompt, /СебестоимостьМаркер4400/);
+  assert.match(workerPrompt, /task_evidence/);
+  assert.match(workerPrompt, /plan_inputs/);
   assert.match(workerPrompt, /requested_ranges_and_objective_matches/);
   assert.doesNotMatch(workerPrompt, /Строка1 =/);
   fs.rmSync(env.root, { recursive: true, force: true });
