@@ -342,6 +342,35 @@ test("worker prompt fits the final byte contract and receives requested regions 
   fs.rmSync(env.root, { recursive: true, force: true });
 });
 
+test("independent plan steps using one role receive independent role call budgets", async () => {
+  const env = fixture("workflow-role-budget-per-step-");
+  const db = openDb(env.dbFile);
+  db.prepare("UPDATE role_contracts SET max_calls=1 WHERE project_id='project' AND role_id='worker' AND status='active'").run();
+  db.close();
+  const plan = plannerResult();
+  plan.allowed_paths = []; plan.artifacts = [];
+  plan.steps = ["first-analysis", "second-analysis"].map(key => ({
+    key, role: "worker", objective: `Complete ${key}`, allowed_paths: [], artifact_keys: [], check_ids: ["check-ok"], required: true, irreversible: false, max_attempts: 1
+  }));
+  let workerCalls = 0;
+  const result = await processMessage({
+    message: "Run two bounded analysis packages", project: env.project, dbFile: env.dbFile,
+    workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, classificationResult: classification(false),
+    gatewayCall: async request => {
+      if (request.role === "planner") return receipt("planner", plan);
+      if (request.role === "worker") {
+        workerCalls += 1;
+        return receipt("worker", { schema_version: 1, status: "completed", summary: `Completed package ${workerCalls}.`, changed_paths: [], artifacts: [], evidence: [request.taskId], questions: [] }, String(workerCalls));
+      }
+      throw new Error(`unexpected role ${request.role}`);
+    },
+    gateRunner: async () => ({ task_id: "gate", project: env.project, level: "mvp", files: [], status: "passed", checks: [{ id: "check-ok", required: true, status: "passed" }], summary: "passed" })
+  });
+  assert.equal(workerCalls, 2);
+  assert.equal(result.execution.status, "completed");
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
 test("configured project call budget hard-stops the real role wrapper before Gateway invocation", async () => {
   const env = fixture("workflow-structured-budget-stop-");
   const setup = openDb(env.dbFile);
