@@ -2,6 +2,14 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+## 0.3.0-beta.10 — 2026-08-25
+
+- MarketplacesData verifies that a release actually reached production. The GitHub Actions run for the exact commit, the revision the server is serving and the health of the running service were declared but unavailable; they now call registered project scripts, so the project keeps the server alias, paths and endpoint and the package carries only a script name.
+- A production incident runs at production quality in every company web package. The workflow named itself production work while declaring MVP, which required a single check and no independent reviewer.
+- MarketplacesData routes live data collection to its own workflow. Collection spends real marketplace requests and no rollback returns them, so a measured dry run and a review come first, the owner then approves the exact endpoint identifiers, and only the approved list may run.
+- A collection operator role may never send a write request, widen the approved endpoint list or expose credentials.
+- A reversible data change is now also checked against the database itself, not only by the tests and the build it shares with a code change.
+
 ## 0.3.0-beta.9 — 2026-08-24
 
 - A workflow declares the quality it was built for, and that declaration is now a floor: the classifier may raise a routed run above it but never below, because a lower level drops the checks the workflow depends on.
