@@ -32,6 +32,7 @@ export function resolveWorkflowSettings(env = process.env) {
     databasePath: configuredPath(env.WORKFLOW_DB || config.database, path.join(dataRoot, "workflow.sqlite")),
     workflowsRoot: configuredPath(config.workflowsRoot, "workflows"),
     packagesRoot: configuredPath(config.packagesRoot, "packages"),
+    packageDefinitions: configuredPath(env.ZODCHI_PACKAGE_DEFINITIONS || config.packageDefinitions, path.join("packages", "example", "definitions.mjs")),
     tempRoot: configuredPath(env.WORKFLOW_TEMP || config.tempRoot, path.join(os.tmpdir(), "workflow-platform")),
     backgroundErrorLog: configuredPath(config.backgroundErrorLog, path.join(dataRoot, "background-errors.log")),
     gatewayRoot,
