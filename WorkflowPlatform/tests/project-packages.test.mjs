@@ -54,6 +54,21 @@ test("an irreversible step is never taken by a role, and deployment is approved 
 
 // The workflow names itself production work, and the level it declares is also the floor a classifier
 // cannot drop below, so declaring MVP would quietly reduce a production incident to one check.
+// A route without a declared planning step is executed exactly as it was declared, and nothing in that
+// derivation can produce an allowed path. A worker role that may write therefore has to be given its
+// paths by a planner, or it would be turned loose on the whole project.
+test("a workflow whose workers may write declares a planning step", () => {
+  for (const packageValue of PACKAGE_DEFINITIONS) {
+    const writes = new Map(packageValue.roles.map(role => [role.key, (role.contract.allowed_tools ?? []).length > 0]));
+    for (const workflow of packageValue.workflows) {
+      const worker = workflow.steps.filter(step => step.role_key && step.output_schema_key === "worker.v1");
+      const writing = worker.filter(step => writes.get(step.role_key));
+      if (!writing.length) continue;
+      assert.equal(workflow.steps.some(step => step.output_schema_key === "planner.v1"), true, `${packageValue.key}/${workflow.key}: ${writing.map(step => step.key).join(",")}`);
+    }
+  }
+});
+
 test("a production incident runs at production quality", () => {
   for (const packageValue of PACKAGE_DEFINITIONS) {
     const incident = packageValue.workflows.find(item => item.key.endsWith(".incident"));

@@ -103,6 +103,10 @@ export class Runtime {
     const planId = id("plan"), timestamp = now();
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      // A run stopped for the owner's decision already holds an empty plan: it was opened to record the
+      // objective and then paused before anything was planned into it. Resuming plans into that same run,
+      // so the placeholder gives way. A plan that already has steps is real history and is never replaced.
+      if (!this.db.prepare("SELECT COUNT(*) AS count FROM workflow_steps WHERE run_id=?").get(runId).count) this.db.prepare("DELETE FROM plans WHERE run_id=?").run(runId);
       this.db.prepare("INSERT INTO plans(id,run_id,objective,authority,status,created_at) VALUES(?,?,?,?,?,?)").run(planId, runId, plan.objective, plan.authority ?? null, "planned", timestamp);
       for (const [index, stageDefinition] of (plan.steps ?? []).entries()) {
         const stage = typeof stageDefinition === "string" ? { key: stageDefinition } : stageDefinition;

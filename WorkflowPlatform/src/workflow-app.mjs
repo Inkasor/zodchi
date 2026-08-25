@@ -11,7 +11,7 @@ import { languageName, resolveResponseLanguage } from "./language.mjs";
 import { id, now } from "./db.mjs";
 import { appendEvent } from "./state-machine.mjs";
 import { resolveWorkflowSettings } from "./paths.mjs";
-import { executeStructuredWork } from "./work-executor.mjs";
+import { executeStructuredWork, pausedRunObjective } from "./work-executor.mjs";
 import { chargeDirectReceipt, initializeQualityRun, operationalLevel, reserveDirectModelCall } from "./quality-contracts.mjs";
 
 export function loadWorkflow(id, workflowsRoot = resolveWorkflowSettings().workflowsRoot) {
@@ -74,6 +74,16 @@ function recordClassificationFailure(runtime, runId, error) {
   runtime.db.prepare("INSERT INTO decisions(id,task_id,run_id,kind,outcome,source,structured_json,active,created_at) VALUES(?,?,?,'classification','INVALID','classifier',?,1,?)")
     .run(id("decision"), taskId, runId, JSON.stringify(payload), now());
   appendEvent(runtime.db, { entityType: "workflow_run", entityId: runId, kind: "contract_error", payload });
+}
+
+function executionMessage(execution, responseLanguage) {
+  return execution.status === "completed"
+    ? execution.reviewer ? workflowMessage("completedReviewed", responseLanguage) : workflowMessage("completed", responseLanguage)
+    : execution.status === "rejected" ? workflowMessage("rejected", responseLanguage)
+      : execution.status === "changes_requested" ? workflowMessage("changesRequested", responseLanguage)
+        : execution.status === "approval_required" ? formatQuestions({ summary: responseLanguage === "ru" ? "Следующий шаг требует отдельного решения владельца." : "The next step requires a separate owner decision.", questions: execution.questions, nextStep: responseLanguage === "ru" ? "продолжить выбранный маршрут" : "continue with the selected workflow", language: responseLanguage })
+          : execution.status === "clarification_required" ? formatQuestions({ summary: responseLanguage === "ru" ? "План требует уточнения." : "The plan needs clarification.", questions: execution.questions, nextStep: responseLanguage === "ru" ? "продолжить исполнение" : "continue execution", language: responseLanguage })
+            : workflowMessage("controlledStop", responseLanguage);
 }
 
 function classificationFailure(runtime, runId, error, finish, responseLanguage = "en") {
@@ -174,6 +184,45 @@ export async function processMessage({
     return classificationFailure(runtime, runId, error, finish, responseLanguage);
   }
 
+  // An owner decision is not a clarification: it authorizes an action that has not happened yet. The run
+  // that asked holds the objective and the plan, and the confirming message classifies as a conversation,
+  // so a yes continues that run instead of starting a new one. A refusal ends it. Anything else — doubt,
+  // a question back, a condition — leaves the decision open and answers the person, because reading
+  // hesitation as consent would take the action they were still deciding about.
+  const ownerDecision = classification.pending_interaction_response && classification.pending_interaction_response !== "undecided"
+    ? runtime.db.prepare("SELECT id,run_id FROM approvals WHERE id=? AND status='pending'").get(classification.pending_interaction_id)
+    : null;
+  if (ownerDecision) {
+    const receipts = classifierReceipt ? { mode: "executed", receipts: [{ step: "classifier", receipt: classifierReceipt }] } : { mode: "contract-test" };
+    if (classification.pending_interaction_response === "decline") {
+      runtime.db.prepare("UPDATE approvals SET status='rejected',resolved_at=? WHERE id=?").run(now(), ownerDecision.id);
+      runtime.setState(ownerDecision.run_id, "cancelled", { reason: "owner declined the requested action" });
+      runtime.setState(runId, "completed", { reason: "owner decision recorded" });
+      const response = saveAssistant(workflowMessage("approvalDeclined", responseLanguage));
+      return finish({ route: "owner_decision", classification, response, gateway: receipts });
+    }
+    runtime.db.prepare("UPDATE approvals SET status='approved',resolved_at=? WHERE id=?").run(now(), ownerDecision.id);
+    // Resuming re-enters the paused run from its objective. That is right only while nothing has been
+    // done yet: a run that stopped for a decision after its work would redo, and pay for, every step it
+    // already completed. Approving such a run is recorded, and continuing it is refused rather than
+    // silently repeated.
+    if (runtime.db.prepare("SELECT COUNT(*) AS count FROM workflow_steps WHERE run_id=? AND state='completed'").get(ownerDecision.run_id).count) {
+      runtime.setState(runId, "completed", { reason: "owner approval recorded for a run that had already worked" });
+      const response = saveAssistant(workflowMessage("approvalAfterWork", responseLanguage));
+      return finish({ route: "owner_decision", classification, response, gateway: receipts });
+    }
+    const paused = pausedRunObjective(runtime.db, ownerDecision.run_id);
+    runtime.setState(runId, "completed", { reason: "owner approval delivered to the waiting run" });
+    try {
+      const execution = await executeStructuredWork({ runtime, runId: ownerDecision.run_id, classification: paused.classification, definition, discovery, message: paused.message, responseLanguage, taskRoot: taskDirectory, gatewayCall, approvalGranted: true, ...(gateRunner ? { gateRunner } : {}) });
+      const response = saveAssistant(executionMessage(execution, responseLanguage));
+      return finish({ route: "work", classification, response, execution, gateway: receipts });
+    } catch (error) {
+      const response = saveAssistant(workflowMessage("contractRejected", responseLanguage));
+      return finish({ route: "execution_failed", classification, response, execution: { status: runtime.get(ownerDecision.run_id).state, error: String(error.message).split(":")[0].slice(0, 120) } });
+    }
+  }
+
   if (classification.needs_questions) {
     const taskId = runtime.get(runId).task_id;
     for (const question of classification.questions) runtime.db.prepare("INSERT INTO approvals(id,task_id,run_id,kind,question,status,created_at) VALUES(?,?,?,'clarification',?,'pending',?)")
@@ -214,15 +263,7 @@ export async function processMessage({
   if (execute) {
     try {
       const execution = await executeStructuredWork({ runtime, runId, classification, definition, discovery, message, responseLanguage, taskRoot: taskDirectory, gatewayCall, ...(gateRunner ? { gateRunner } : {}) });
-      const response = execution.status === "completed"
-        ? execution.reviewer
-          ? workflowMessage("completedReviewed", responseLanguage)
-          : workflowMessage("completed", responseLanguage)
-        : execution.status === "rejected" ? workflowMessage("rejected", responseLanguage)
-          : execution.status === "changes_requested" ? workflowMessage("changesRequested", responseLanguage)
-            : execution.status === "approval_required" ? formatQuestions({ summary: responseLanguage === "ru" ? "Следующий шаг требует отдельного решения владельца." : "The next step requires a separate owner decision.", questions: execution.questions, nextStep: responseLanguage === "ru" ? "продолжить выбранный маршрут" : "continue with the selected workflow", language: responseLanguage })
-            : execution.status === "clarification_required" ? formatQuestions({ summary: responseLanguage === "ru" ? "План требует уточнения." : "The plan needs clarification.", questions: execution.questions, nextStep: responseLanguage === "ru" ? "продолжить исполнение" : "continue execution", language: responseLanguage })
-              : workflowMessage("controlledStop", responseLanguage);
+      const response = executionMessage(execution, responseLanguage);
       saveAssistant(response);
       return finish({ route: "work", classification, response, execution });
     } catch (error) {
