@@ -225,6 +225,7 @@ test("planner source evidence is fitted to its byte contract and keeps the best 
 test("worker prompt fits the final byte contract and receives requested regions from a large source", async () => {
   const env = fixture("workflow-worker-source-budget-");
   const lines = Array.from({ length: 4500 }, (_, index) => `Строка${index + 1} = "обычный код";`);
+  lines[99] = "LocalEntryMarker = ВыполнитьРегламентнуюВыгрузку();";
   lines[2799] = "СебестоимостьМаркер2800 = Источник.Себестоимость;";
   lines[4399] = "СебестоимостьМаркер4400 = Строка.Себестоимость;";
   fs.writeFileSync(path.join(env.project, "src", "large.bsl"), lines.join("\n"));
@@ -236,7 +237,7 @@ test("worker prompt fits the final byte contract and receives requested regions 
   plan.steps[0].allowed_paths = ["src/large.bsl"];
   // The real planner reduced this to a short objective and kept the exact ranges only in the original
   // request. The collector must retain those global hints when it prepares this worker's source.
-  plan.steps[0].objective = "Проследи unit.cost от регистра-источника до NDJSON";
+  plan.steps[0].objective = "Проследи LocalEntryMarker и точку запуска";
   let workerPrompt = "";
   const result = await processMessage({
     message: "Разбери большой BSL-модуль: СебестоимостьМаркер2800 в строках 2750–2850 и СебестоимостьМаркер4400 в строках 4380–4460", project: env.project, dbFile: env.dbFile,
@@ -252,6 +253,7 @@ test("worker prompt fits the final byte contract and receives requested regions 
   });
   assert.equal(result.execution.status, "blocked");
   assert.ok(Buffer.byteLength(workerPrompt) <= 24000);
+  assert.match(workerPrompt, /LocalEntryMarker/);
   assert.match(workerPrompt, /СебестоимостьМаркер2800/);
   assert.match(workerPrompt, /СебестоимостьМаркер4400/);
   assert.match(workerPrompt, /requested_ranges_and_objective_matches/);

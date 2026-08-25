@@ -4,6 +4,15 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_8_2026_08_25" status="working">
+
+## 0.3.8 — 2026-08-25
+
+- Large-source selection now keeps the worker's local objective and global request evidence as separate priorities. Local objective matches lead, while global ranges and identifiers supplement them instead of displacing step-specific proof.
+- Regression coverage verifies one local entry-point marker outside the globally requested ranges together with both later requested BSL regions under the same 24,000-byte contract.
+
+</section>
+
 <section id="0_3_7_2026_08_25" status="working">
 
 ## 0.3.7 — 2026-08-25
