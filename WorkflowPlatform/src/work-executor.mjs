@@ -486,12 +486,13 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     const cycleResults = [];
     for (const plannedStep of plan.steps) {
     const contract = loadRoleContract(runtime.db, projectId, plannedStep.role, level);
+    const workerEvidenceBudget = Math.floor(contract.context_limit_bytes * 0.8);
     const packageContract = { objective: plannedStep.objective, allowed_paths: plannedStep.allowed_paths, artifact_keys: plannedStep.artifact_keys, check_ids: plannedStep.check_ids, plan_hash: structuredHash(plan), correction_cycle: cycle, gate_failures: priorGate?.checks?.filter(check => check.required && check.status !== "passed") ?? [] };
     // A planner commonly shortens the worker objective and leaves exact paths, identifiers or line
     // ranges in the original request and its evidence inputs. Source selection needs that complete
     // search intent even though the worker's authority remains the narrower package contract.
     const supplementalSourceQuery = [message, ...(plan.inputs ?? [])].filter(Boolean).join("\n");
-    const worker = await invokeRole({ runtime, queue, runId, roleId: plannedStep.role, level, taskRoot, packageContract, context: boundedContext(discovery, plannedStep.role, classification, Math.floor(contract.context_limit_bytes / 2), responseLanguage, { task_evidence: { plan_inputs: plan.inputs ?? [] }, sources: collectSourceFiles(discovery.roots ?? [], plannedStep.allowed_paths, sourceScope(discovery.source_scope), Math.floor(contract.context_limit_bytes / 2), { query: plannedStep.objective, supplementalQuery: supplementalSourceQuery }) }), schemaKey: "worker.v1", parseOptions: { packageContract }, gatewayCall });
+    const worker = await invokeRole({ runtime, queue, runId, roleId: plannedStep.role, level, taskRoot, packageContract, context: boundedContext(discovery, plannedStep.role, classification, workerEvidenceBudget, responseLanguage, { task_evidence: { plan_inputs: plan.inputs ?? [] }, sources: collectSourceFiles(discovery.roots ?? [], plannedStep.allowed_paths, sourceScope(discovery.source_scope), workerEvidenceBudget, { query: plannedStep.objective, supplementalQuery: supplementalSourceQuery }) }), schemaKey: "worker.v1", parseOptions: { packageContract }, gatewayCall });
     if (worker.result.status !== "completed") {
       worker.fail(`worker_${worker.result.status}`, worker.result.status === "failed");
       const targetState = worker.result.status === "blocked" ? "blocked" : "retry_scheduled";
