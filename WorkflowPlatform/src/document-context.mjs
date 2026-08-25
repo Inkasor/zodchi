@@ -81,8 +81,11 @@ export function readProjectContext(projectSelector, db, _workingDocuments = [], 
   const roles = db.prepare("SELECT DISTINCT r.id,r.name FROM roles r JOIN role_documents rd ON rd.role_id=r.id WHERE rd.project_id=? ORDER BY r.id").all(project.id);
   const profiles = db.prepare(`SELECT DISTINCT p.id,p.provider,p.name,p.role_id FROM profiles p
     JOIN role_documents rd ON rd.role_id=p.role_id WHERE rd.project_id=? ORDER BY p.id`).all(project.id);
-  const decisions = db.prepare("SELECT id,kind,outcome,source,structured_json,created_at FROM decisions WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND active=1 ORDER BY created_at,id").all(project.id)
-    .map(row => ({ ...row, structured: parseJson(row.structured_json, null), structured_json: undefined }));
+  // Every run records a decision, so an unbounded history grows into every role prompt until nothing
+  // fits. Artifacts are already bounded the same way; the most recent decisions are the ones a role can
+  // still act on, and they are returned oldest-first so the reading order stays chronological.
+  const decisions = db.prepare("SELECT id,kind,outcome,source,structured_json,created_at FROM decisions WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND active=1 ORDER BY created_at DESC,id DESC LIMIT 50").all(project.id)
+    .map(row => ({ ...row, structured: parseJson(row.structured_json, null), structured_json: undefined })).reverse();
   const pending = db.prepare("SELECT id,kind,question,status,created_at FROM approvals WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND status='pending' ORDER BY created_at,id").all(project.id);
   const artifacts = db.prepare("SELECT id,kind,uri,content_hash,status,provenance_json FROM artifacts WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND status NOT IN ('rejected','superseded') ORDER BY created_at,id LIMIT 200").all(project.id)
     .map(row => ({ ...row, provenance: parseJson(row.provenance_json, null), provenance_json: undefined }));

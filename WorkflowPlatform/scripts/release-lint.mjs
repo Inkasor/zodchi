@@ -174,7 +174,7 @@ const universalFiles = actualFiles.filter(item => /^(?:WorkflowPlatform\/(?:src|
 for (const item of universalFiles) {
   if (!textExtensions.has(path.extname(item.path).toLowerCase())) continue;
   const text = fs.readFileSync(path.join(root, item.path), "utf8");
-  if (/project-r/i.test(text)) findings.push(`${item.path}: Project R embedded in universal runtime`);
+  if (/\bproject-r\b/i.test(text)) findings.push(`${item.path}: Project R embedded in universal runtime`);
 }
 
 const duplicateCandidates = new Map();

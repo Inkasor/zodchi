@@ -2,6 +2,15 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+## 0.3.0-beta.12 — 2026-08-25
+
+- A role assignment now records which portable requirement it satisfies. A package names a requirement key and onboarding creates a local profile, so comparing the two by equality left most role contracts unloadable and no project could execute structured work at all.
+- The result schema a role is judged against is now written into its own prompt, from the same source the validator reads. The prompt said "matching this schema" without ever showing it while the validator demanded an exact field set, and a test now fails if the two ever drift apart.
+- Recorded decisions are bounded in a role's context the same way artifacts already were, and history gives way before authority when a prompt has to be trimmed. Every run records a decision, so a project used to grow until nothing fit and then stopped working the more it had been used.
+- Planning is a declared step of a workflow rather than a platform role assumed to exist, and a workflow that declares its shape without a planning step now says so instead of reporting a missing role.
+- The planner is given the roles the route may execute, each one's purpose, boundaries and permitted work, and the phases that run after its steps. It was validated against a list it was never shown, so it named itself, assigned edits to a read-only role, and spent worker steps on work the verification and documentation phases already perform.
+- A package must declare a local profile for every portable requirement its roles allow, which is now asserted for every package.
+
 ## 0.3.0-beta.11 — 2026-08-25
 
 - Package definitions describe real projects, so their source is now chosen by the `packageDefinitions` setting and this repository ships only the builders and one complete example. A definition file default-exports a function that receives the builder module, so it needs no import path and can live outside the repository; generated packages are written beside their source.
