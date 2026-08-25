@@ -192,7 +192,29 @@ test("every explicit range is represented before long call chains consume a tigh
   assert.match(evidence, /SecondRangeMarker/);
   assert.match(evidence, /ThirdRangeMarker/);
   assert.ok(collected.files[0].segments.some(segment => segment.reason.startsWith("referenced_call_chain:")));
+  assert.deepEqual(collected.files[0].exact_term_scan, {
+    scope: "complete_file",
+    match: "literal_case_insensitive",
+    occurrences: [
+      { term: "TraceCost0", count: 1 },
+      { term: "FirstRangeMarker", count: 1 },
+      { term: "SecondRangeMarker", count: 1 },
+      { term: "ThirdRangeMarker", count: 1 }
+    ]
+  });
   assert.ok(collected.files[0].supplied_bytes <= 12_000);
+  db.close(); fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("a complete-file exact term scan proves that a requested identifier is absent outside excerpts", () => {
+  const { root, producer, db } = fixture("workflow-source-absent-term-", { sources: ["src/**"] });
+  fs.writeFileSync(path.join(producer, "src", "large.bsl"), "unitCost = 42;\n".repeat(2000));
+  const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" });
+  const collected = collectSourceFiles(discovery.roots, ["src/large.bsl"], sourceScope(discovery.source_scope), 2000, {
+    query: "Trace avgCost and unitCost"
+  });
+  assert.equal(collected.files[0].truncated, true);
+  assert.deepEqual(collected.files[0].exact_term_scan.occurrences, [{ term: "avgCost", count: 0 }, { term: "unitCost", count: 2000 }]);
   db.close(); fs.rmSync(root, { recursive: true, force: true });
 });
 
