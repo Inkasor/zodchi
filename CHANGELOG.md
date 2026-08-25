@@ -6,6 +6,7 @@
 
 - A run whose decision follows its work is now continued instead of refused. The remaining phases need the plan, the verification and the review, and all three are already recorded, so the run resumes from what it holds rather than from its objective. Re-entering from the objective was the only path available before, and it would have repeated — and paid for — every step already completed, so approving such a run was recorded and left there.
 - Continuing costs exactly the phase the decision was blocking. No worker, verification or review step is executed a second time.
+- The example package's version now says that its content changed. The declared step templates changed in the previous release while the version stayed where it was, so two different packages carried the same version and an upgrade could not tell them apart.
 
 ## 0.3.0-beta.13 — 2026-08-25
 
