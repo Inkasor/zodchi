@@ -165,7 +165,12 @@ export function validatePlannerResult(value, { contract, registeredRoles = [], r
     exactObject(item, ["key", "type", "path", "required"], "planner.v1.artifact");
     if (typeof item.key !== "string" || !item.key || typeof item.required !== "boolean") throw new Error("planner.v1.artifact: invalid key or required");
     if (!registeredArtifactTypes.includes(item.type) || !contract.allowed_artifact_types.includes(item.type)) throw new Error(`planner.v1.artifact: type not allowed ${item.type}`);
-    return { ...item, path: relativePath(item.path, "planner.v1.artifact.path", { nullable: true }) };
+    const artifactPath = relativePath(item.path, "planner.v1.artifact.path", { nullable: true });
+    // A pathless planner artifact is carried by the structured role receipt. Today the only native
+    // runtime entity with those semantics is a decision; every other artifact is file-backed and must
+    // name the file that the worker will return and the platform will hash.
+    if (artifactPath === null && item.type !== "decision") throw new Error("planner.v1.artifact: only decision may have a null path");
+    return { ...item, path: artifactPath };
   });
   value.steps = value.steps.map(item => {
     exactObject(item, ["key", "role", "objective", "allowed_paths", "artifact_keys", "check_ids", "required", "irreversible", "max_attempts"], "planner.v1.step");
