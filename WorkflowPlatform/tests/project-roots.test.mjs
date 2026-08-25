@@ -169,6 +169,33 @@ test("the page before the best explicit-range hit keeps its query setup", () => 
   db.close(); fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("every explicit range is represented before long call chains consume a tight source budget", () => {
+  const { root, producer, db } = fixture("workflow-source-range-reservation-", { sources: ["src/**"] });
+  const lines = Array.from({ length: 4600 }, (_, index) => `Строка${index + 1} = "обычный код";`);
+  lines[2749] = "FirstRangeMarker = Регистр.Себестоимость;";
+  lines[3499] = "SecondRangeMarker = Регистр.СтоимостьПериода;";
+  lines[4389] = "ThirdRangeMarker = JSON.Себестоимость;";
+  for (let definition = 0; definition < 6; definition += 1) {
+    const start = 100 + definition * 140;
+    lines[start] = `Функция TraceCost${definition}()`;
+    lines[start + 1] = definition < 5 ? `  Возврат TraceCost${definition + 1}();` : "  Возврат 1;";
+    lines[start + 104] = "КонецФункции";
+  }
+  fs.writeFileSync(path.join(producer, "src", "large.bsl"), lines.join("\n"));
+  const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" });
+  const collected = collectSourceFiles(discovery.roots, ["src/large.bsl"], sourceScope(discovery.source_scope), 12_000, {
+    query: "TraceCost0",
+    supplementalQuery: "Проверь FirstRangeMarker в строках 2700–2800, SecondRangeMarker в строках 3450–3550 и ThirdRangeMarker в строках 4350–4450"
+  });
+  const evidence = collected.files[0].text;
+  assert.match(evidence, /FirstRangeMarker/);
+  assert.match(evidence, /SecondRangeMarker/);
+  assert.match(evidence, /ThirdRangeMarker/);
+  assert.ok(collected.files[0].segments.some(segment => segment.reason.startsWith("referenced_call_chain:")));
+  assert.ok(collected.files[0].supplied_bytes <= 12_000);
+  db.close(); fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("missing output paths do not reserve source budget", () => {
   const { root, producer, db } = fixture("workflow-source-existing-share-", { sources: ["src/**", "docs/**"] });
   fs.writeFileSync(path.join(producer, "src", "large.bsl"), "ПолезнаяСтрока = 1;\n".repeat(1000));
