@@ -1,3 +1,5 @@
+<document id="zodchi_readme" status="working" authority="zodchi" version="1.0" language="en" format="markdown+xml_semantic">
+
 # Zodchi
 
 [English](README.md) · [Русский](docs/ru/README.md)
@@ -5,6 +7,8 @@
 Zodchi turns one ordinary AI chat into a coordinated team for real project work.
 
 You describe the result in your own words. Zodchi decides what kind of work is needed, gives each specialist only the relevant context, runs the appropriate checks, records accepted decisions, and returns a clear answer in the same chat.
+
+<section id="why_use_it" status="working">
 
 ## Why use it
 
@@ -14,11 +18,19 @@ You describe the result in your own words. Zodchi decides what kind of work is n
 - Predictable quality: code, documents, releases, and other outputs pass checks configured for the project.
 - One familiar interface: people keep talking naturally in their AI coding assistant.
 
+</section>
+
+<section id="what_it_can_help_with" status="working">
+
 ## What it can help with
 
 Zodchi can coordinate software development, research, marketing and content production, game design, visual and audio work, data operations, releases, and incident response. Its workflows and roles are configurable, so the same installation can support very different projects.
 
 The owner still approves important decisions, publication, access changes, deployment, and subjective product acceptance.
+
+</section>
+
+<section id="start_with_one_message" status="working">
 
 ## Start with one message
 
@@ -29,6 +41,10 @@ Open a new chat in Codex or Claude Code and send it this repository link with th
 Keep that setup chat. You can later use it to add projects, change models, create roles, and customize workflows.
 
 Zodchi is currently a Windows-first public beta. Codex and Claude Code are supported chat entry points. Other model harnesses can already be used as workers when they are installed and configured locally.
+
+</section>
+
+<section id="for_developers" status="working">
 
 ## For developers
 
@@ -42,3 +58,7 @@ The repository contains the source for `WorkflowPlatform` and `AgentGateway`. Hu
 - [Update contract](UPDATE.md)
 
 Zodchi is released under the [MIT License](LICENSE).
+
+</section>
+
+</document>

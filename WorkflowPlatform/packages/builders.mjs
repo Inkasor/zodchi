@@ -140,7 +140,14 @@ function companyWebPackage(spec) {
   ];
   if (spec.collection) routes.push(route("data_collection", `${prefix}.collection`));
   if (spec.content) { routes.push(route("content", `${prefix}.content`), route("asset", `${prefix}.content`)); }
-  const documents = spec.documents.map(item => document(item.key, item.path, item.type, item.authority, roles.map(value => binding(value.key, value.key === "documentator", value.key === "documentator" ? "accepted project record" : "registered project context", value.key === "documentator" ? 20 : 0))));
+  // A reference document is registered context the roles read, not a record the documentator maintains:
+  // package manifests and generated indexes belong to the tools that own them. Granting write access
+  // anyway would oblige the documentator to keep them in the semantic document format, which would stop
+  // them being what they are.
+  const documents = spec.documents.map(item => {
+    const writes = value => value.key === "documentator" && item.type !== "reference";
+    return document(item.key, item.path, item.type, item.authority, roles.map(value => binding(value.key, writes(value), writes(value) ? "accepted project record" : "registered project context", writes(value) ? 20 : 0)));
+  });
   const requiredMvpChecks = [...new Set([...codeChecks, ...dataChecks, ...contentChecks])];
   return finalize({
     key: spec.key,

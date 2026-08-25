@@ -1,6 +1,19 @@
+<document id="zodchi_changelog" status="working" authority="zodchi" version="1.0" language="en" format="markdown+xml_semantic">
+
 # Zodchi changelog
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
+
+<section id="0_3_0_beta_15_2026_08_25" status="working">
+
+## 0.3.0-beta.15 — 2026-08-25
+
+- A document registered as reference is read context, not a record the documentator maintains. Write access was granted on every registered document, which obliged the documentator to keep package manifests and generated indexes in the semantic document format; a manifest kept that way would stop being a manifest. Reference documents are now read-only, and the tools that own them keep owning them.
+- This repository's own README and changelog are written in the semantic document format, like every other registered document. They are documents the platform may write, and until now no run could finish that wrote one.
+
+</section>
+
+<section id="0_3_0_beta_14_2026_08_25" status="working">
 
 ## 0.3.0-beta.14 — 2026-08-25
 
@@ -12,6 +25,10 @@
 - A required document that several registered documents could satisfy now says that the workflow needs a planning step, which is what settles the choice, instead of reporting an ambiguity with no stated remedy. The registered documentation update declares that step.
 - The example package states its own version instead of inheriting the shared default. That default also stamps every role contract in every package, so raising it to describe one example change silently re-versioned all of them.
 
+</section>
+
+<section id="0_3_0_beta_13_2026_08_25" status="working">
+
 ## 0.3.0-beta.13 — 2026-08-25
 
 - A workflow that declares its steps is executed as declared, with no planning call at all. Its author already named the roles, the order, the artifact types and the checks; asking a model to invent that again is what let a plan name steps the route does not have. A declared planning step still runs, because a change needs the paths and objectives only the message can supply.
@@ -20,6 +37,10 @@
 - A granted approval continues the run that asked for it instead of starting a new one. The confirming message classifies as a conversation, so the paused run supplies its own objective and classification; nothing could resolve these approvals before, and every message started over.
 - The roles a route may execute after an owner decision are now known. Only the steps before the decision were ever named, so a granted approval left the route with nothing to run.
 - A pending interaction is offered to the classifier under its real kind, which is what separates a question from a decision on an action.
+
+</section>
+
+<section id="0_3_0_beta_12_2026_08_25" status="working">
 
 ## 0.3.0-beta.12 — 2026-08-25
 
@@ -30,12 +51,20 @@
 - The planner is given the roles the route may execute, each one's purpose, boundaries and permitted work, and the phases that run after its steps. It was validated against a list it was never shown, so it named itself, assigned edits to a read-only role, and spent worker steps on work the verification and documentation phases already perform.
 - A package must declare a local profile for every portable requirement its roles allow, which is now asserted for every package.
 
+</section>
+
+<section id="0_3_0_beta_11_2026_08_25" status="working">
+
 ## 0.3.0-beta.11 — 2026-08-25
 
 - Package definitions describe real projects, so their source is now chosen by the `packageDefinitions` setting and this repository ships only the builders and one complete example. A definition file default-exports a function that receives the builder module, so it needs no import path and can live outside the repository; generated packages are written beside their source.
 - The package tests assert the contract every package must satisfy instead of the content of any one project, so they run against whichever definitions an installation configured.
 - A secret scan and a dependency scan also run on a release. A gate resolves its own level and every level below it, and a security audit sits above production, so bound to the audit alone these never ran at the one moment a project publishes code.
 - An irreversible step never carries a role, and where a release acts on the outside world the approval comes before that action. Both are now checked for every package.
+
+</section>
+
+<section id="0_3_0_beta_10_2026_08_25" status="working">
 
 ## 0.3.0-beta.10 — 2026-08-25
 
@@ -44,6 +73,10 @@
 - MarketplacesData routes live data collection to its own workflow. Collection spends real marketplace requests and no rollback returns them, so a measured dry run and a review come first, the owner then approves the exact endpoint identifiers, and only the approved list may run.
 - A collection operator role may never send a write request, widen the approved endpoint list or expose credentials.
 - A reversible data change is now also checked against the database itself, not only by the tests and the build it shares with a code change.
+
+</section>
+
+<section id="0_3_0_beta_9_2026_08_24" status="working">
 
 ## 0.3.0-beta.9 — 2026-08-24
 
@@ -54,9 +87,17 @@
 - Delivery mode is chosen per project on the hook command, because hooks are installed per project.
 - Project Lore records a LORE-CHANGE card in `docs/decisions` before the owner decides, so a candidate that stays open or turns out to be a conflict still leaves a durable record without reaching canon. The change workflow also asks for the candidate scope and the impact on both projects, and every level keeps the owner gate.
 
+</section>
+
+<section id="0_3_0_beta_8_2026_08_24" status="working">
+
 ## 0.3.0-beta.8 — 2026-08-24
 
 - Run statistics report the entry point the run came from. The per-call `harness` field repeated the gateway provider and read as the chat client, so a Claude Code run was reported as Codex; it is replaced by `client` on the run.
+
+</section>
+
+<section id="0_3_0_beta_7_2026_08_24" status="working">
 
 ## 0.3.0-beta.7 — 2026-08-24
 
@@ -64,6 +105,10 @@
 - The hook records the field names of the event it received, so the sending harness stays identifiable from the run history alone.
 - The instruction returned to the harness states plainly that the turn is already complete and is repeated after the result, because hook output is advisory context in both harnesses and a chat that researches the answer again charges the user twice.
 - Classifier and researcher receipts carry the workflow run they belong to, which only the structured work steps recorded before.
+
+</section>
+
+<section id="0_3_0_beta_6_2026_08_24" status="working">
 
 ## 0.3.0-beta.6 — 2026-08-24
 
@@ -75,10 +120,18 @@
 - Company workflows route verification and testing to a checks-and-review run instead of leaving them unroutable.
 - Indie release and playtest run at production quality, the prototype workflow runs at prototype quality, and the 1C review step is required.
 
+</section>
+
+<section id="0_3_0_beta_5_2026_08_24" status="working">
+
 ## 0.3.0-beta.5 — 2026-08-24
 
 - Claude Code events are recognized by identifiers the harness actually sends, so runs started from Claude Code are recorded under their own client instead of falling back to Codex.
 - The shipped Claude Code settings template uses the exec command form, which keeps Windows paths intact when the hook starts.
+
+</section>
+
+<section id="0_3_0_beta_4_2026_08_24" status="working">
 
 ## 0.3.0-beta.4 — 2026-08-24
 
@@ -87,6 +140,10 @@
 - Hook results now expose additionalContext at the top level of the hook output, which is where Claude Code reads it.
 - Workflow runs record the originating client, and Claude Code prompt identifiers are used for duplicate-delivery protection.
 
+</section>
+
+<section id="0_3_0_beta_3_2026_08_24" status="working">
+
 ## 0.3.0-beta.3 — 2026-08-24
 
 - Added conversation-language resolution across hooks, workflow state, model prompts, questions, and final responses.
@@ -94,12 +151,20 @@
 - Removed duplicate component readmes, changelogs, and license files left from the former separate repositories.
 - Updated the release builder and linter for the unified product layout.
 
+</section>
+
+<section id="0_3_0_beta_2_2026_08_24" status="working">
+
 ## 0.3.0-beta.2 — 2026-08-24
 
 - Added English and Russian human introductions with a one-link setup flow.
 - Reworked installation and update procedures as LLM-operated instructions and added verified GitHub Release installation.
 - Added a portable workflow for developing Zodchi itself.
 - Defined a single Codex project layout: development sources as the primary folder, installed release and local data as secondary folders.
+
+</section>
+
+<section id="0_3_0_beta_1_2026_08_24" status="working">
 
 ## 0.3.0-beta.1 — 2026-08-24
 
@@ -110,3 +175,7 @@
 - Added reproducible release assembly, content validation, checksums, and recoverable updates.
 
 The full experimental history before the public snapshot remains only in the author's local repositories.
+
+</section>
+
+</document>
