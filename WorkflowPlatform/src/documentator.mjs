@@ -4,6 +4,7 @@ import path from "node:path";
 import { documentLint } from "./lint.mjs";
 import { validateDocumentPatch } from "../contracts/schemas.mjs";
 import { id, now } from "./db.mjs";
+import { projectRoots, findRoot, resolveInRoot } from "./project-roots.mjs";
 
 const esc = value => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const versionOf = text => text ? `sha256:${crypto.createHash("sha256").update(text).digest("hex")}` : null;
@@ -109,8 +110,15 @@ export function applyRegisteredPatch({ db, runId, projectId, projectRoot, roleId
     WHERE pd.id=? AND pd.project_id=? AND pd.active=1 AND rd.role_id=?`).get(proposal.document_id, projectId, roleId);
   if (!document || document.write_access !== 1) throw new Error(`DOCUMENT_WRITE_NOT_AUTHORIZED: ${proposal.document_id}`);
   if (proposal.authority !== document.authority) throw new Error(`DOCUMENT_AUTHORITY_MISMATCH: ${proposal.authority}`);
-  const file = path.resolve(projectRoot, document.path);
-  assertInside(file, projectRoot);
+  // The root decides what may happen to the document, and it decides before the role bindings do. A read
+  // root is registered so a run can see the other end of an integration; a document living there belongs
+  // to the project that owns that directory, and a write from here would edit another project's files
+  // outside its own workflow, its own checks and its own review.
+  const roots = projectRoots(db, projectId);
+  const root = findRoot(roots, document.root_key);
+  if (root.access !== "write") throw new Error(`DOCUMENT_ROOT_IS_READ_ONLY: ${root.key}:${document.path}`);
+  const file = resolveInRoot(root, document.path);
+  assertInside(file, root.path);
   const before = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
   const currentVersion = versionOf(before);
   if (before && proposal.expected_version !== currentVersion) throw new Error(`DOCUMENT_VERSION_CONFLICT: expected ${proposal.expected_version}, current ${currentVersion}`);
@@ -128,7 +136,7 @@ export function applyRegisteredPatch({ db, runId, projectId, projectRoot, roleId
   };
   db.exec("BEGIN IMMEDIATE");
   try {
-    const result = applyPatch({ file, patch, runId, db, projectRoot, documentId: document.id, roleId, qualityOutcome });
+    const result = applyPatch({ file, patch, runId, db, projectRoot: root.path, documentId: document.id, roleId, qualityOutcome });
     db.prepare("UPDATE project_documents SET version=version+1,content_hash=?,updated_at=? WHERE id=?").run(result.afterVersion, now(), document.id);
     db.exec("COMMIT");
     return result;

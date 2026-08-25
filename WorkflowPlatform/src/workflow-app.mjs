@@ -89,7 +89,11 @@ function executionMessage(execution, responseLanguage) {
 function classificationFailure(runtime, runId, error, finish, responseLanguage = "en") {
   recordClassificationFailure(runtime, runId, error);
   if (runtime.get(runId).state !== "classification_failed") runtime.setState(runId, "classification_failed", { reason: "classifier contract rejected" });
-  return finish({ route: "classification_failed", response: workflowMessage("classificationFailed", responseLanguage), error: String(error.message).split(":")[0].slice(0, 120) });
+  // Naming the category matters more here than anywhere else: the run is over, the call is paid for, and
+  // a message that blames the request or the project settings sends the person to look where the fault
+  // is not. The category is already recorded; it belongs in the answer too.
+  const category = String(error.message).split(":")[0].slice(0, 120);
+  return finish({ route: "classification_failed", response: `${workflowMessage("classificationFailed", responseLanguage)} (${category})`, error: category });
 }
 
 function executionFailure(runtime, runId, error, finish, responseLanguage = "en") {
@@ -265,10 +269,19 @@ export async function processMessage({
       saveAssistant(response);
       return finish({ route: "work", classification, response, execution });
     } catch (error) {
+      const category = String(error.message).split(":")[0].slice(0, 120);
+      // A run that failed on its way into execution has to end. Where the failure already put the run
+      // somewhere meaningful — waiting for a person, scheduled to retry, blocked — that state is the
+      // truth and is left alone; anywhere else the run is finished as failed, because a run reported as
+      // rejected while it sits in a live state is a run nothing will ever pick up or clean away.
+      const settled = new Set(["failed", "blocked", "cancelled", "rejected", "completed", "documented", "approval_required", "clarification_required", "retry_scheduled", "paused"]);
+      if (!settled.has(runtime.get(runId).state)) {
+        try { runtime.setState(runId, "failed", { reason: category }); } catch { /* the original failure is what matters */ }
+      }
       const state = runtime.get(runId).state;
-      const response = workflowMessage("contractRejected", responseLanguage);
+      const response = `${workflowMessage("contractRejected", responseLanguage)} (${category})`;
       saveAssistant(response);
-      return finish({ route: "execution_failed", classification, response, execution: { status: state, error: String(error.message).split(":")[0].slice(0, 120) } });
+      return finish({ route: "execution_failed", classification, response, execution: { status: state, error: category } });
     }
   }
 

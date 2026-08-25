@@ -43,7 +43,7 @@ export function parseHookEvent(event = {}, { env = process.env, argv = [], setti
     eventKey,
     project: settings.project ?? event.cwd ?? event.project ?? null,
     eventFields: hookEventFields(event),
-    deliveryMode: normalizeDeliveryMode(flagged ? flagged.slice(DELIVERY_FLAG.length) : settings.deliveryMode),
+    deliveryMode: resolveDeliveryMode(flagged ? flagged.slice(DELIVERY_FLAG.length) : settings.deliveryMode, claude ? "claude-code" : "codex"),
     preferredLanguage: event.language ?? event.locale ?? event.user_language ?? event.userLocale ?? settings.responseLanguage ?? null
   };
 }
@@ -52,6 +52,17 @@ export const DELIVERY_MODES = Object.freeze(["advisory", "final"]);
 
 export function normalizeDeliveryMode(value) {
   return DELIVERY_MODES.includes(value) ? value : "advisory";
+}
+
+// Advisory output is delivered through the additional-context shape, and that shape is Claude Code's.
+// A Codex turn was observed receiving neither the context nor the prepared text: the classification ran,
+// the call was paid for, and the answer reached nobody, which is the worst of the possible outcomes. The
+// blocking shape is the one both harnesses have been seen to honour, so it is what an unconfigured Codex
+// project gets. This is a default, not a rule: a project that states a mode still gets the mode it
+// stated, in either harness.
+export function resolveDeliveryMode(configured, client) {
+  if (DELIVERY_MODES.includes(configured)) return configured;
+  return client === "codex" ? "final" : "advisory";
 }
 
 // Advisory output is only developer context: the chat is free to ignore it, research the answer

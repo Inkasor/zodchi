@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { resolveWorkflowSettings } from "./paths.mjs";
 
-export function callGateway({ gateway, gatewayDatabase, gatewayPolicy, provider = "codex", profile, level = "mvp", role = "worker", taskFile, project, taskId, workflowRunId = null, attemptNo = null, artifactRef = null, decisionRef = null }) {
+export function callGateway({ gateway, gatewayDatabase, gatewayPolicy, provider = "codex", profile, level = "mvp", role = "worker", taskFile, project, writeDirs = [], taskId, workflowRunId = null, attemptNo = null, artifactRef = null, decisionRef = null }) {
   const settings = resolveWorkflowSettings();
   gateway ??= settings.gatewayEntry;
   gatewayDatabase ??= settings.gatewayDatabasePath;
@@ -10,6 +10,12 @@ export function callGateway({ gateway, gatewayDatabase, gatewayPolicy, provider 
   return new Promise((resolve, reject) => {
     const args = [gateway, "run", "--provider", provider, "--profile", profile, "--level", level, "--role", role, "--task-file", taskFile, "--task", taskId ?? taskFile];
     if (project) args.push("--project", project);
+    // Only a writable root reaches the provider. What a role reads was collected before the call and
+    // travels inside the prompt, so a read-only root is never handed to the process at all: a directory
+    // the sandbox was never given cannot be touched by mistake. Each writable root travels as its own
+    // flag because the receipt has to record which directories the call could change, and a single
+    // project path cannot state that for several.
+    for (const directory of writeDirs) args.push("--write-dir", directory);
     if (workflowRunId) args.push("--workflow-run", workflowRunId);
     if (attemptNo) args.push("--attempt", String(attemptNo));
     if (artifactRef) args.push("--artifact-ref", artifactRef);

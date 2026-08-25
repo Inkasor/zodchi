@@ -14,7 +14,11 @@ const taskTransitions = {
   discovering: ["classifying", "clarification_required", "failed", "paused", "cancelled"],
   classifying: ["classified", "clarification_required", "classification_failed", "failed", "paused", "cancelled"],
   clarification_required: ["discovering", "classifying", "rejected", "cancelled"],
-  classified: ["clarification_required", "planning", "executing", "documenting", "completed", "paused", "cancelled"],
+  // Execution can fail before it has planned anything — a role contract that does not permit the work
+  // type, a role with no profile assigned at this level — and a classified run had nowhere to go: the
+  // failure was reported to the person while the run stayed classified for ever, neither finished nor
+  // waiting for anything, and nothing could act on it afterwards.
+  classified: ["clarification_required", "planning", "executing", "documenting", "completed", "failed", "blocked", "paused", "cancelled"],
   classification_failed: ["retry_scheduled", "blocked", "failed", "cancelled"],
   planning: ["executing", "documenting", "clarification_required", "approval_required", "retry_scheduled", "failed", "blocked", "paused", "cancelled"],
   executing: ["verifying", "documenting", "approval_required", "retry_scheduled", "failed", "blocked", "paused", "cancelled"],

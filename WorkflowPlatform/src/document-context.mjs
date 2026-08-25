@@ -2,14 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { documentLint } from "./lint.mjs";
+import { projectRoots, primaryRoot, findRoot, resolveInRoot, displayPath } from "./project-roots.mjs";
+import { sourceInventory, inventorySummary, sourceScope } from "./source-context.mjs";
 
 const values = (text, pattern) => [...text.matchAll(pattern)].map(match => match[1]).filter(Boolean);
-
-function inside(root, candidate) {
-  const base = path.resolve(root);
-  const resolved = path.resolve(candidate);
-  return resolved === base || resolved.startsWith(`${base}${path.sep}`);
-}
 
 function summarize(file, text) {
   const statuses = {};
@@ -67,15 +63,21 @@ export function readProjectContext(projectSelector, db, _workingDocuments = [], 
       COALESCE(GROUP_CONCAT(CASE WHEN rd.write_access=1 THEN rd.role_id END, ','),'') AS write_roles
     FROM project_documents pd LEFT JOIN role_documents rd ON rd.document_id=pd.id AND rd.project_id=pd.project_id
     WHERE pd.project_id=? AND pd.active=1 GROUP BY pd.id ORDER BY pd.path`).all(project.id);
+  const roots = projectRoots(db, project.id);
   const documents = documentRows.map(row => {
     if (path.isAbsolute(row.path)) throw new Error(`DISCOVERY_DOCUMENT_PATH_MUST_BE_RELATIVE: ${row.path}`);
-    const file = path.resolve(project.root_path, row.path);
-    if (!inside(project.root_path, file)) throw new Error(`DISCOVERY_DOCUMENT_OUTSIDE_PROJECT: ${row.path}`);
+    const root = findRoot(roots, row.root_key);
+    const file = resolveInRoot(root, row.path);
     const exists = fs.existsSync(file) && fs.statSync(file).isFile();
     const text = exists ? fs.readFileSync(file, "utf8") : "";
     return {
-      id: row.id, path: row.path.replaceAll("\\", "/"), document_type: row.document_type, authority: row.authority,
-      read_roles: row.read_roles.split(",").filter(Boolean).sort(), write_roles: row.write_roles.split(",").filter(Boolean).sort(),
+      id: row.id, path: displayPath(root, row.path), root: root.key, relative_path: row.path.replaceAll("\\", "/"),
+      document_type: row.document_type, authority: row.authority,
+      read_roles: row.read_roles.split(",").filter(Boolean).sort(),
+      // A document on a read-only root cannot be written whatever the role bindings say, and the write
+      // is refused when it is attempted. Advertising it here would send a role to spend its one call
+      // producing a patch that is rejected on arrival, so the binding is dropped where it cannot hold.
+      write_roles: root.access === "write" ? row.write_roles.split(",").filter(Boolean).sort() : [],
       exists, text, ...summarize(file, text), lint: registeredDocumentLint(row.document_type, exists, text, file, db)
     };
   });
@@ -99,14 +101,25 @@ export function readProjectContext(projectSelector, db, _workingDocuments = [], 
     .map(row => ({ ...row, provenance: parseJson(row.provenance_json, null), provenance_json: undefined }));
   return {
     project: { id: project.id, name: project.name, root_path: project.root_path }, workflows, goals, stages, checks, roles, profiles,
+    // Each root carries its own history, so one snapshot of the primary would describe only half of an
+    // integration. `git` stays the primary root's snapshot because that is what it has always meant.
+    roots: roots.map(root => ({ ...root, git: gitSnapshot(root.path, discoveryConfig.git === true) })),
+    // Collection reads the project so the roles do not have to. The inventory is what lets a plan name a
+    // path it has not been shown the contents of; the contents follow, for the paths the plan allowed.
+    sources: sourceInventory(roots, sourceScope(discoveryConfig.sources), { maxFilesPerRoot: discoveryConfig.max_files_per_root ?? 400 }),
+    source_scope: discoveryConfig.sources ?? [],
     documents, missing: documents.filter(document => !document.exists).map(document => document.path), open_points, broken_links,
-    decisions, pending_interactions: pending, artifacts, git: gitSnapshot(project.root_path, discoveryConfig.git === true)
+    decisions, pending_interactions: pending, artifacts, git: gitSnapshot(primaryRoot(roots).path, discoveryConfig.git === true)
   };
 }
 
 export function compactProjectSnapshot(discovery) {
   return {
     project: { id: discovery.project.id, name: discovery.project.name },
+    // A role that is not told where the other end lives cannot look at it, and a role that is not told
+    // the other end is read-only will plan to change it.
+    roots: (discovery.roots ?? []).map(root => ({ key: root.key, path: root.path, access: root.access, primary: root.primary })),
+    sources: inventorySummary(discovery.sources ?? []),
     workflows: discovery.workflows.map(workflow => ({ id: workflow.id, name: workflow.name, default_quality: workflow.default_quality, default_level: workflow.default_level })),
     goals: discovery.goals, stages: discovery.stages, checks: discovery.checks, roles: discovery.roles,
     documents: discovery.documents.map(document => ({ id: document.id, path: document.path, document_type: document.document_type, authority: document.authority, exists: document.exists, bytes: document.bytes, headings: document.headings, statuses: document.statuses, lint_status: document.lint.status })),

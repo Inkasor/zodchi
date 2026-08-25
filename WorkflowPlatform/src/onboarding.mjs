@@ -10,8 +10,32 @@ export function registerProject(dbFile, project) {
   try {
     const before = db.prepare("SELECT id,name,root_path FROM projects WHERE id=? OR name=? OR root_path=?").get(normalized.id, normalized.name, normalized.root_path);
     if (before && (before.id !== normalized.id || before.name !== normalized.name || path.resolve(before.root_path) !== normalized.root_path)) throw new Error("register-project: id, name or root_path belongs to another project");
-    db.prepare("INSERT OR IGNORE INTO projects(id,name,root_path,created_at) VALUES(?,?,?,?)").run(normalized.id, normalized.name, normalized.root_path, now());
+    const timestamp = now();
+    db.prepare("INSERT OR IGNORE INTO projects(id,name,root_path,created_at) VALUES(?,?,?,?)").run(normalized.id, normalized.name, normalized.root_path, timestamp);
+    db.prepare("INSERT OR IGNORE INTO project_roots(project_id,root_key,path,access,is_primary,created_at) VALUES(?,'primary',?,'write',1,?)").run(normalized.id, normalized.root_path, timestamp);
     return { status: before ? "already_registered" : "registered", project: normalized };
+  } finally { db.close(); }
+}
+
+// An additional root widens what a project's runs can see, and on a write root what they can change, so
+// it is registered deliberately and never derived from a working directory. A second project's primary
+// root is a legitimate target: that is how the consuming end of an integration is read without the
+// integration owning it. Registering it as writable is refused, because a change to another project's
+// files belongs to that project's own workflow, checks and review.
+export function registerProjectRoot(dbFile, { project, key, path: rootPath, access = "read" }) {
+  if (!project || !key || !rootPath || !path.isAbsolute(rootPath)) throw new Error("register-root: project, key and an absolute path are required");
+  if (!["read", "write"].includes(access)) throw new Error("register-root: access must be read or write");
+  if (key === "primary") throw new Error("register-root: the primary root is the project's own directory and is registered with the project");
+  const resolved = path.resolve(rootPath);
+  const db = openDb(dbFile);
+  try {
+    if (!db.prepare("SELECT 1 FROM projects WHERE id=?").get(project)) throw new Error(`register-root: unknown project ${project}`);
+    const owner = db.prepare("SELECT id FROM projects WHERE lower(root_path)=lower(?)").get(resolved);
+    if (owner && owner.id !== project && access === "write") throw new Error(`register-root: ${resolved} is the primary root of ${owner.id} and can only be registered for reading`);
+    const existing = db.prepare("SELECT path,access FROM project_roots WHERE project_id=? AND root_key=?").get(project, key);
+    if (existing && (path.resolve(existing.path) !== resolved || existing.access !== access)) throw new Error(`register-root: ${key} is already registered for ${project} with a different path or access`);
+    db.prepare("INSERT OR IGNORE INTO project_roots(project_id,root_key,path,access,is_primary,created_at) VALUES(?,?,?,?,0,?)").run(project, key, resolved, access, now());
+    return { status: existing ? "already_registered" : "registered", project, root: { key, path: resolved, access } };
   } finally { db.close(); }
 }
 
@@ -23,6 +47,12 @@ export function onboardProject(dbFile, spec) {
   db.exec("BEGIN");
   try {
     rows(db, "INSERT OR IGNORE INTO projects (id,name,root_path,created_at) VALUES (?, ?, ?, ?)", [[spec.project.id, spec.project.name, spec.project.root_path, now()]]);
+    // The primary root is the project's own directory and is always writable. Any further root is
+    // declared in the package, with the access it grants stated there rather than inferred, so widening
+    // what a run may touch is a reviewed change to the definition and not a runtime accident.
+    rows(db, "INSERT OR IGNORE INTO project_roots (project_id,root_key,path,access,is_primary,created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      [[spec.project.id, "primary", spec.project.root_path, "write", 1, now()],
+        ...(spec.project.roots ?? []).map(x => [spec.project.id, x.key, x.path, x.access === "write" ? "write" : "read", 0, now()])]);
     rows(db, "INSERT OR IGNORE INTO work_types (id,name,category) VALUES (?, ?, ?)", (spec.work_types ?? []).map(x => [x.id, x.name ?? x.id, x.category ?? "general"]));
     rows(db, "INSERT OR IGNORE INTO workflows (id,name,project_id,package_key,package_version,default_quality,default_level,status,discovery_json,history_budget_bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [[spec.workflow.id, spec.workflow.name ?? spec.workflow.id, spec.project.id, spec.workflow.package_key ?? null, spec.workflow.package_version ?? null, spec.workflow.default_quality ?? "mvp", spec.workflow.default_level ?? "L2", "active", JSON.stringify(spec.workflow.discovery ?? { git: false }), spec.workflow.history_budget_bytes ?? 24000]]);
     rows(db, "INSERT OR IGNORE INTO domains (id,name) VALUES (?, ?)", (spec.domains ?? []).map(x => [x.id, x.name ?? x.id]));
@@ -36,7 +66,7 @@ export function onboardProject(dbFile, spec) {
     rows(db, "INSERT OR IGNORE INTO evidence_types (id,name) VALUES (?, ?)", (spec.evidence_types ?? []).map(x => [x.id, x.name ?? x.id]));
     rows(db, "INSERT OR IGNORE INTO check_definitions (id,name,runner,kind,config_json,timeout_seconds) VALUES (?, ?, ?, ?, ?, ?)", (spec.checks ?? []).map(x => [x.id, x.name ?? x.id, x.runner ?? x.id, x.kind ?? "command", JSON.stringify(x.config ?? {}), x.timeout_seconds ?? 900]));
     rows(db, "INSERT OR IGNORE INTO project_checks (project_id,check_id,quality_mode_id,required,artifact_type_id) VALUES (?, ?, ?, ?, ?)", (spec.project_checks ?? []).map(x => [spec.project.id, x.check_id, x.quality_mode_id, x.required ? 1 : 0, x.artifact_type_id ?? null]));
-    rows(db, "INSERT OR IGNORE INTO project_documents (id,project_id,path,document_type,authority,status,active) VALUES (?, ?, ?, ?, ?, ?, ?)", (spec.documents ?? []).map(x => [x.id, spec.project.id, x.path, x.document_type ?? "working", x.authority ?? null, x.status ?? "active", x.active === false ? 0 : 1]));
+    rows(db, "INSERT OR IGNORE INTO project_documents (id,project_id,path,root_key,document_type,authority,status,active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (spec.documents ?? []).map(x => [x.id, spec.project.id, x.path, x.root ?? "primary", x.document_type ?? "working", x.authority ?? null, x.status ?? "active", x.active === false ? 0 : 1]));
     rows(db, "INSERT OR IGNORE INTO role_documents (project_id,role_id,document_id,read_access,write_access,purpose,priority) VALUES (?, ?, ?, ?, ?, ?, ?)", (spec.role_documents ?? []).map(x => [spec.project.id, x.role_id, x.document_id, x.read_access === false ? 0 : 1, x.write_access ? 1 : 0, x.purpose ?? null, x.priority ?? 0]));
     rows(db, "INSERT OR IGNORE INTO workflow_routes (project_id,work_type_id,workflow_id,enabled,priority) VALUES (?, ?, ?, ?, ?)", (spec.routes ?? []).map(x => [spec.project.id, x.work_type_id, x.workflow_id ?? spec.workflow.id, x.enabled === false ? 0 : 1, x.priority ?? 0]));
     rows(db, `INSERT OR IGNORE INTO role_contracts

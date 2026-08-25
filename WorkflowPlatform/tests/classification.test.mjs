@@ -264,14 +264,20 @@ test("discovery and role context read only registered documents and explicit per
   fs.mkdirSync(path.join(project, "docs"));
   fs.writeFileSync(path.join(project, "docs", "research.md"), "# Research\n<point status=\"open\">One</point>");
   fs.writeFileSync(path.join(project, "docs", "planner.md"), "# Planner\nPlan");
-  fs.writeFileSync(path.join(project, "docs", "unregistered-secret.md"), "must not be discovered");
+  fs.writeFileSync(path.join(project, "docs", "unregistered.md"), "must not be discovered");
+  fs.writeFileSync(path.join(project, ".env"), "TOKEN=must-not-be-discovered");
   db.prepare("INSERT INTO project_documents(id,project_id,path,document_type,authority,status,active) VALUES('research-doc','project','docs/research.md','authority','owner','active',1)").run();
   db.prepare("INSERT INTO project_documents(id,project_id,path,document_type,authority,status,active) VALUES('planner-doc','project','docs/planner.md','plan','owner','active',1)").run();
   db.prepare("INSERT INTO role_documents(project_id,role_id,document_id,read_access,write_access,purpose,priority) VALUES('project','researcher','research-doc',1,0,'research',10)").run();
   db.prepare("INSERT INTO role_documents(project_id,role_id,document_id,read_access,write_access,purpose,priority) VALUES('project','planner','planner-doc',1,0,'planning',10)").run();
   const discovery = readProjectContext(project, db, [], { workflowId: "workflow" });
   assert.deepEqual(discovery.documents.map(item => item.path), ["docs/planner.md", "docs/research.md"]);
-  assert.equal(JSON.stringify(discovery).includes("unregistered-secret"), false);
+  // Registration decides which files are documents: a file nobody registered has no authority, no role
+  // may write it, and its text is never read into the context. Collection still names it, because the
+  // project directory is what registration registered. A credential-shaped name is not named at all.
+  assert.equal(JSON.stringify(discovery.documents).includes("unregistered"), false);
+  assert.equal(JSON.stringify(discovery).includes("must not be discovered"), false);
+  assert.equal(JSON.stringify(discovery).includes(".env"), false);
   assert.equal(discovery.git.status, "not_requested");
   const selected = selectProjectContext(discovery, decision(), [], db, "project", "researcher");
   assert.deepEqual(selected.documents.map(item => item.path), ["docs/research.md"]);

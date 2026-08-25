@@ -74,7 +74,7 @@ function workflow(key, name, steps, questions = [], options = {}) { return { key
 const question = (key, prompt, phase = "planning", required = true) => ({ key, phase, prompt, answer_schema: { type: "string", min_length: 1 }, required });
 const route = (workType, workflowKey, priority = 10) => ({ work_type_key: workType, workflow_key: workflowKey, enabled: true, priority });
 const binding = (roleKey, write = false, purpose = "registered context", priority = 0) => ({ role_key: roleKey, read: true, write, purpose, priority });
-const document = (key, filePath, type, authority, bindings) => ({ key, path: filePath, type, authority, status: "active", bindings });
+const document = (key, filePath, type, authority, bindings, root = "primary") => ({ key, path: filePath, root, type, authority, status: "active", bindings });
 const scenario = (key, input, expected) => ({ key, input, expected, anonymized: true });
 
 function finalize({ key, purpose, roles, workflows, routes, checks, operationalLevels, documents, scenarios, version = PACKAGE_VERSION }) {
@@ -144,9 +144,13 @@ function companyWebPackage(spec) {
   // package manifests and generated indexes belong to the tools that own them. Granting write access
   // anyway would oblige the documentator to keep them in the semantic document format, which would stop
   // them being what they are.
+  // A document on a read-only root belongs to the project that owns that directory: it is registered
+  // here so the roles can see the other end of an integration, and the documentator maintaining it from
+  // this side would edit another project's files outside that project's own checks and review.
   const documents = spec.documents.map(item => {
-    const writes = value => value.key === "documentator" && item.type !== "reference";
-    return document(item.key, item.path, item.type, item.authority, roles.map(value => binding(value.key, writes(value), writes(value) ? "accepted project record" : "registered project context", writes(value) ? 20 : 0)));
+    const readOnlyRoot = (spec.roots ?? []).some(root => root.key === item.root && root.access !== "write");
+    const writes = value => value.key === "documentator" && item.type !== "reference" && !readOnlyRoot;
+    return document(item.key, item.path, item.type, item.authority, roles.map(value => binding(value.key, writes(value), writes(value) ? "accepted project record" : "registered project context", writes(value) ? 20 : 0)), item.root ?? "primary");
   });
   const requiredMvpChecks = [...new Set([...codeChecks, ...dataChecks, ...contentChecks])];
   return finalize({
