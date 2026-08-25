@@ -21,7 +21,7 @@ export const RESULT_SCHEMA_SHAPES = Object.freeze({
     artifacts: [{ key: "string", type: "registered artifact type", path: "path relative to the project root, or null", required: true }],
     completion_criteria: ["string"],
     questions: ["string, at most 5; empty when outcome is ready"],
-    steps: [{ key: "string", role: "role id from task_package.registered_roles", objective: "string", allowed_paths: ["subset of the plan allowed_paths"], artifact_keys: ["key of an artifact declared above"], check_ids: ["registered check id"], required: true, irreversible: false, max_attempts: 1 }]
+    steps: [{ key: "string", role: "role id from task_package.registered_roles", objective: "string", allowed_paths: ["subset of the plan allowed_paths"], artifact_keys: ["keys of non-document artifacts this worker creates; final document artifacts belong to the documentator"], check_ids: ["registered check id"], required: true, irreversible: false, max_attempts: 1 }]
   }),
   "worker.v1": Object.freeze({
     schema_version: 1,
@@ -179,9 +179,18 @@ export function validatePlannerResult(value, { contract, registeredRoles = [], r
     if (maxStepAttempts !== null && item.max_attempts > maxStepAttempts) throw new Error(`planner.v1.step: max_attempts exceeds quality contract for ${item.key}`);
     const allowed = strings(item.allowed_paths, "planner.v1.step.allowed_paths").map(entry => relativePath(entry, "planner.v1.step.allowed_paths"));
     if (allowed.some(entry => !value.allowed_paths.includes(entry))) throw new Error("planner.v1.step: path outside plan allowlist");
-    for (const key of strings(item.artifact_keys, "planner.v1.step.artifact_keys")) if (!value.artifacts.some(artifact => artifact.key === key)) throw new Error(`planner.v1.step: unknown artifact ${key}`);
+    const artifactKeys = strings(item.artifact_keys, "planner.v1.step.artifact_keys");
+    for (const key of artifactKeys) if (!value.artifacts.some(artifact => artifact.key === key)) throw new Error(`planner.v1.step: unknown artifact ${key}`);
     for (const check of strings(item.check_ids, "planner.v1.step.check_ids")) if (!registeredChecks.includes(check)) throw new Error(`planner.v1.step: unregistered check ${check}`);
-    return { ...item, allowed_paths: allowed };
+    // The documentator owns final documents after workers and gates complete. A planner sometimes assigns
+    // that final key to every analytical step; carrying it forward would require each read-only worker to
+    // create the same file. Paths outside a step's own allowlist are equally impossible outputs, so both
+    // forms are removed while the plan-level artifact remains available to the documentator.
+    const producibleArtifactKeys = artifactKeys.filter(key => {
+      const artifact = value.artifacts.find(candidate => candidate.key === key);
+      return artifact.type !== "document" && (artifact.path === null || allowed.includes(artifact.path));
+    });
+    return { ...item, allowed_paths: allowed, artifact_keys: producibleArtifactKeys };
   });
   if (value.outcome === "questions" && !value.questions.length) throw new Error("planner.v1: questions outcome requires questions");
   if (value.outcome === "ready" && (!value.steps.length || value.questions.length)) throw new Error("planner.v1: ready outcome requires steps and no questions");

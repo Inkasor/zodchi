@@ -7,7 +7,7 @@ import { BudgetManager, invokeWithinBudget } from "./budget.mjs";
 import { applyRegisteredPatch, documentVersion } from "./documentator.mjs";
 import { registeredProjectCheckKeys, runProjectGate } from "./gates.mjs";
 import { selectProjectContext } from "./document-context.mjs";
-import { collectSourceFiles, expandTerms, inventorySummary, searchSources, sourceScope } from "./source-context.mjs";
+import { collectGitHistory, collectSourceFiles, expandTerms, inventorySummary, searchSources, sourceScope } from "./source-context.mjs";
 import { projectRoots, writableRoots } from "./project-roots.mjs";
 import { loadRoleContract, parseRoleReceipt, rolePrompt, structuredHash } from "./role-contracts.mjs";
 import { consumeCorrectionCycle, documentationOutcome, loadOperationalPolicy, loadQualityContract, operationalLevel, reviewerRequirement } from "./quality-contracts.mjs";
@@ -287,6 +287,22 @@ function applyPlannerToDatabase(runtime, runId, plannerResult) {
     .run(plannerResult.outcome, JSON.stringify(plannerResult.scope), JSON.stringify(plannerResult.allowed_paths), JSON.stringify(plannerResult.inputs), JSON.stringify(plannerResult.checks), JSON.stringify(plannerResult.risks), JSON.stringify(plannerResult.artifacts), JSON.stringify(plannerResult.completion_criteria), JSON.stringify(plannerResult.questions), plannerResult.outcome === "ready" ? "authorized" : "clarification_required", plan.id);
 }
 
+function registerNewPlannedDocument(runtime, projectId, projectRoot, plannerResult, documentatorRole) {
+  const required = plannerResult.artifacts.filter(item => item.required && item.type === "document" && item.path);
+  if (required.length !== 1) return;
+  const target = required[0];
+  const existing = runtime.db.prepare("SELECT id FROM project_documents WHERE project_id=? AND path=? AND active=1").get(projectId, target.path);
+  if (existing) return;
+  if (!/^docs\/[A-Za-z0-9Ѐ-ӿ_. -]+\.md$/i.test(target.path)) throw new Error(`DOCUMENT_NEW_TARGET_NOT_ALLOWED: ${target.path}`);
+  const file = path.resolve(projectRoot, target.path);
+  if (!file.startsWith(`${path.resolve(projectRoot)}${path.sep}`) || fs.existsSync(file)) throw new Error(`DOCUMENT_UNREGISTERED_EXISTING_TARGET: ${target.path}`);
+  const documentId = id("document");
+  runtime.db.prepare("INSERT INTO project_documents(id,project_id,path,root_key,document_type,authority,status,active,version,updated_at) VALUES(?,?,?,'primary','report','workflow','active',1,0,?)")
+    .run(documentId, projectId, target.path, now());
+  runtime.db.prepare("INSERT INTO role_documents(project_id,role_id,document_id,read_access,write_access,purpose,priority) VALUES(?,?,?,1,1,'task-planned document output',100)")
+    .run(projectId, documentatorRole, documentId);
+}
+
 function appendSteps(runtime, runId, steps) {
   const timestamp = now();
   const existing = runtime.db.prepare("SELECT COALESCE(MAX(ordinal),0) AS ordinal FROM workflow_steps WHERE run_id=?").get(runId).ordinal;
@@ -478,6 +494,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       })()
     }), schemaKey: "planner.v1", parseOptions: { registeredRoles, registeredChecks, registeredArtifactTypes, maxStepAttempts: policy.limits.correction_cycles + 1 }, gatewayCall });
   const plan = planner ? planner.result : derivePlanFromTemplates(runtime, projectId, routeContract, message, registeredChecks, level, classification.document_required, documentatorRole, approvalGranted);
+  if (classification.document_required) registerNewPlannedDocument(runtime, projectId, projectRoot, plan, documentatorRole);
   applyPlannerToDatabase(runtime, runId, plan);
   if (planner) {
     planner.complete({ outcome: plan.outcome });
@@ -503,7 +520,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     // ranges in the original request and its evidence inputs. Source selection needs that complete
     // search intent even though the worker's authority remains the narrower package contract.
     const supplementalSourceQuery = [message, ...(plan.inputs ?? [])].filter(Boolean).join("\n");
-    const worker = await invokeRole({ runtime, queue, runId, roleId: plannedStep.role, level, taskRoot, packageContract, context: boundedContext(discovery, plannedStep.role, classification, workerEvidenceBudget, responseLanguage, { task_evidence: { plan_inputs: plan.inputs ?? [] }, sources: collectSourceFiles(discovery.roots ?? [], plannedStep.allowed_paths, sourceScope(discovery.source_scope), workerEvidenceBudget, { query: plannedStep.objective, supplementalQuery: supplementalSourceQuery }) }), schemaKey: "worker.v1", parseOptions: { packageContract }, gatewayCall });
+    const worker = await invokeRole({ runtime, queue, runId, roleId: plannedStep.role, level, taskRoot, packageContract, context: boundedContext(discovery, plannedStep.role, classification, workerEvidenceBudget, responseLanguage, { task_evidence: { plan_inputs: plan.inputs ?? [], git_history: collectGitHistory(discovery.roots ?? [], plannedStep.allowed_paths, sourceScope(discovery.source_scope), { enabled: discovery.git?.enabled === true }) }, sources: collectSourceFiles(discovery.roots ?? [], plannedStep.allowed_paths, sourceScope(discovery.source_scope), workerEvidenceBudget, { query: plannedStep.objective, supplementalQuery: supplementalSourceQuery }) }), schemaKey: "worker.v1", parseOptions: { packageContract }, gatewayCall });
     if (worker.result.status !== "completed") {
       worker.fail(`worker_${worker.result.status}`, worker.result.status === "failed");
       const targetState = worker.result.status === "blocked" ? "blocked" : "retry_scheduled";

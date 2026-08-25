@@ -8,7 +8,7 @@ import { openDb, now } from "../src/db.mjs";
 import { readProjectContext, compactProjectSnapshot } from "../src/document-context.mjs";
 import { applyRegisteredPatch } from "../src/documentator.mjs";
 import { projectRoots, writableRoots } from "../src/project-roots.mjs";
-import { collectSourceFiles, expandTerms, searchSources, searchTerms, sourceInventory, sourceScope } from "../src/source-context.mjs";
+import { collectGitHistory, collectSourceFiles, expandTerms, searchSources, searchTerms, sourceInventory, sourceScope } from "../src/source-context.mjs";
 
 function temporaryRoot(prefix) {
   const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir();
@@ -114,6 +114,23 @@ test("missing output paths do not reserve source budget", () => {
   const collected = collectSourceFiles(discovery.roots, ["src/large.bsl", "docs/not-created-yet.md"], sourceScope(discovery.source_scope), 6000, { query: "ПолезнаяСтрока" });
   assert.ok(collected.files[0].supplied_bytes > 5000);
   assert.equal(collected.files[1].status, "missing");
+  db.close(); fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("path-bound Git history proves the commits of an allowed source without diff bodies", () => {
+  const { root, producer, db } = fixture("workflow-source-history-", { sources: ["src/**"] });
+  fs.writeFileSync(path.join(producer, "src", "history.bsl"), "Версия = 1;\n");
+  execFileSync("git", ["init"], { cwd: producer, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: producer });
+  execFileSync("git", ["config", "user.name", "Test"], { cwd: producer });
+  execFileSync("git", ["add", "src/history.bsl"], { cwd: producer });
+  execFileSync("git", ["commit", "-m", "tracked history"], { cwd: producer, env: { ...process.env, GIT_AUTHOR_DATE: "2026-08-11T12:00:00Z", GIT_COMMITTER_DATE: "2026-08-11T12:00:00Z" }, stdio: "ignore" });
+  const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" });
+  const history = collectGitHistory(discovery.roots, ["src/history.bsl", "outside.txt"], sourceScope(discovery.source_scope));
+  assert.equal(history.status, "available");
+  assert.equal(history.files.length, 1);
+  assert.match(history.files[0].commits[0], /2026-08-11T12:00:00(?:Z|\+00:00)\ttracked history$/);
+  assert.equal(JSON.stringify(history).includes("Версия = 1"), false);
   db.close(); fs.rmSync(root, { recursive: true, force: true });
 });
 

@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_12_2026_08_25" status="working">
+
+## 0.3.12 — 2026-08-25
+
+- Workers receive bounded, path-specific Git history for their allowed sources when Git discovery is enabled, so file-history claims can be verified rather than repeated from the request.
+- Final document artifacts remain owned by the documentator even when a planner assigns their keys to analytical worker steps.
+- A missing Markdown target directly under `docs/` can be registered as the task's new document output; existing unregistered files and paths outside that boundary remain protected.
+
+</section>
+
 <section id="0_3_11_2026_08_25" status="working">
 
 ## 0.3.11 — 2026-08-25
