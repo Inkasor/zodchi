@@ -171,6 +171,56 @@ test("low-risk green MVP skips the independent reviewer", async () => {
   fs.rmSync(env.root, { recursive: true, force: true });
 });
 
+test("a pathless decision artifact is materialized from worker evidence instead of requiring a file", async () => {
+  const env = fixture("workflow-worker-decision-");
+  const setup = openDb(env.dbFile);
+  for (const role of ["planner", "worker"]) setup.prepare("UPDATE role_contracts SET allowed_artifact_types_json='[\"code\",\"document\",\"decision\"]' WHERE project_id='project' AND role_id=? AND status='active'").run(role);
+  setup.close();
+  const plan = plannerResult();
+  plan.allowed_paths = [];
+  plan.artifacts = [{ key: "analysis-findings", type: "decision", path: null, required: true }];
+  plan.steps[0] = { ...plan.steps[0], objective: "Establish the finding from supplied sources", allowed_paths: [], artifact_keys: ["analysis-findings"] };
+  const result = await processMessage({
+    message: "Establish a bounded analytical finding", project: env.project, dbFile: env.dbFile,
+    workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, classificationResult: classification(false),
+    gatewayCall: async request => {
+      if (request.role === "planner") return receipt("planner", plan);
+      if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "The entry point is established.", changed_paths: [], artifacts: [], evidence: ["Form calls the server export procedure."], questions: [] });
+      throw new Error(`unexpected role ${request.role}`);
+    },
+    gateRunner: async () => ({ task_id: "gate", project: env.project, level: "mvp", files: [], status: "passed", checks: [{ id: "check-ok", required: true, status: "passed" }], summary: "passed" })
+  });
+  assert.equal(result.execution.status, "completed");
+  const db = openDb(env.dbFile);
+  const decision = db.prepare("SELECT outcome,source,structured_json FROM decisions WHERE run_id=? AND kind='artifact:analysis-findings'").get(result.run_id);
+  assert.equal(decision.outcome, "COMPLETED");
+  assert.equal(decision.source, "worker");
+  assert.match(decision.structured_json, /Form calls the server export procedure/);
+  assert.equal(db.prepare("SELECT state FROM workflow_steps WHERE run_id=? AND result_schema_key='worker.v1'").get(result.run_id).state, "completed");
+  db.close();
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
+test("a worker artifact verification failure settles the worker step", async () => {
+  const env = fixture("workflow-worker-artifact-failure-");
+  const result = await processMessage({
+    message: "Implement bounded output", project: env.project, dbFile: env.dbFile,
+    workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, classificationResult: classification(false),
+    gatewayCall: async request => {
+      if (request.role === "planner") return receipt("planner", plannerResult());
+      if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "Claimed output.", changed_paths: [], artifacts: [{ key: "code-output", type: "code", path: "src/output.txt", content_hash: null, status: "created" }], evidence: [], questions: [] });
+      throw new Error(`unexpected role ${request.role}`);
+    }
+  });
+  assert.equal(result.route, "execution_failed");
+  assert.equal(result.execution.error, "WORKER_ARTIFACT_FILE_MISSING");
+  const db = openDb(env.dbFile);
+  assert.equal(db.prepare("SELECT state FROM workflow_steps WHERE run_id=? AND result_schema_key='worker.v1'").get(result.run_id).state, "blocked");
+  assert.equal(db.prepare("SELECT a.state FROM attempts a JOIN workflow_steps s ON s.id=a.step_id WHERE s.run_id=? AND s.result_schema_key='worker.v1'").get(result.run_id).state, "failed");
+  db.close();
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
 test("planner questions stop before worker and become plain pending clarifications", async () => {
   const env = fixture("workflow-planner-questions-");
   let calls = 0;

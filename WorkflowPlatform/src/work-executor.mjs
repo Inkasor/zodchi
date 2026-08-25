@@ -322,8 +322,9 @@ function appendDocumentatorStep(runtime, runId, roleId, outcome) {
 }
 
 function verifyWorkerArtifacts(runtime, runId, stepId, projectRoot, plannerResult, artifactKeys, workerResult) {
-  for (const required of plannerResult.artifacts.filter(item => item.required && artifactKeys.includes(item.key))) if (!workerResult.artifacts.some(item => item.key === required.key)) throw new Error(`WORKER_REQUIRED_ARTIFACT_MISSING: ${required.key}`);
   const taskId = runtime.get(runId).task_id;
+  const assigned = plannerResult.artifacts.filter(item => artifactKeys.includes(item.key));
+  for (const required of assigned.filter(item => item.required && item.path !== null)) if (!workerResult.artifacts.some(item => item.key === required.key)) throw new Error(`WORKER_REQUIRED_ARTIFACT_MISSING: ${required.key}`);
   for (const artifact of workerResult.artifacts) {
     const file = path.resolve(projectRoot, artifact.path);
     if (!file.startsWith(`${path.resolve(projectRoot)}${path.sep}`) || !fs.existsSync(file) || !fs.statSync(file).isFile()) throw new Error(`WORKER_ARTIFACT_FILE_MISSING: ${artifact.path}`);
@@ -331,6 +332,16 @@ function verifyWorkerArtifacts(runtime, runId, stepId, projectRoot, plannerResul
     if (artifact.content_hash && artifact.content_hash !== actualHash) throw new Error(`WORKER_ARTIFACT_HASH_MISMATCH: ${artifact.path}`);
     runtime.db.prepare("INSERT INTO artifacts(id,task_id,run_id,step_id,kind,uri,content_hash,status,provenance_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
       .run(id("artifact"), taskId, runId, stepId, artifact.type, artifact.path, actualHash, "created", JSON.stringify({ source: "worker.v1", key: artifact.key }), now(), now());
+  }
+  // A planner may ask an analytical worker for a decision rather than a file. worker.v1 already
+  // carries that result as a validated summary plus evidence, so requiring it to invent a file-shaped
+  // artifact makes the contract impossible to satisfy. Materialize the receipt in the native decisions
+  // table and keep its planner key for auditability and later context selection.
+  for (const artifact of assigned.filter(item => item.path === null)) {
+    const decisionId = id("decision");
+    runtime.db.prepare("INSERT INTO decisions(id,task_id,run_id,step_id,kind,outcome,source,structured_json,active,created_at) VALUES(?,?,?,?,?,'COMPLETED','worker',?,1,?)")
+      .run(decisionId, taskId, runId, stepId, `artifact:${artifact.key}`, JSON.stringify({ artifact_key: artifact.key, artifact_type: artifact.type, summary: workerResult.summary, evidence: workerResult.evidence }), now());
+    runtime.db.prepare("UPDATE gateway_calls SET decision_ref=? WHERE run_id=? AND step_id=?").run(decisionId, runId, stepId);
   }
 }
 
@@ -499,7 +510,11 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       if (runtime.get(runId).state !== targetState) runtime.setState(runId, targetState, { reason: `worker returned ${worker.result.status}` });
       return { stopped: { status: worker.result.status, planner: plan, workers: [...workerResults, ...cycleResults, worker.result], gate: priorGate, reviewer: null } };
     }
-    verifyWorkerArtifacts(runtime, runId, worker.step.id, projectRoot, plan, plannedStep.artifact_keys, worker.result);
+    try { verifyWorkerArtifacts(runtime, runId, worker.step.id, projectRoot, plan, plannedStep.artifact_keys, worker.result); }
+    catch (error) {
+      worker.fail(String(error.message).split(":")[0].slice(0, 120), false);
+      throw error;
+    }
     worker.complete({ status: worker.result.status });
     cycleResults.push({ ...worker.result, correction_cycle: cycle, plan_step: plannedStep.key });
     }

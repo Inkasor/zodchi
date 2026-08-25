@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_11_2026_08_25" status="working">
+
+## 0.3.11 — 2026-08-25
+
+- Pathless `decision` artifacts are now materialized from a completed worker's structured summary and evidence instead of being incorrectly required as files.
+- Planner validation reserves `path: null` for native decisions; all file-backed artifact types must still declare a project-relative path and pass existence and hash checks.
+- Worker artifact post-validation failures now settle the attempt as failed and the exhausted step as blocked instead of leaving it permanently running.
+
+</section>
+
 <section id="0_3_10_2026_08_25" status="working">
 
 ## 0.3.10 — 2026-08-25
