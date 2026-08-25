@@ -85,6 +85,28 @@ test("a declared source scope narrows collection on every root", () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("large files contribute relevant line windows and later planned paths keep a fair share", () => {
+  const { root, producer, consumer, db } = fixture("workflow-source-excerpts-", { sources: ["src/**"] });
+  const lines = Array.from({ length: 4500 }, (_, index) => `Строка${index + 1} = "обычный код";`);
+  lines[2799] = "СебестоимостьМаркер2800 = Источник.Себестоимость;";
+  lines[4399] = "СебестоимостьМаркер4400 = Строка.Себестоимость;";
+  fs.writeFileSync(path.join(producer, "src", "ObjectModule.bsl"), lines.join("\n"));
+  fs.writeFileSync(path.join(consumer, "src", "FormModule.bsl"), "Процедура ЗапуститьВыгрузку()\n  Сервер.Выгрузить();\nКонецПроцедуры\n");
+  const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" });
+  const collected = collectSourceFiles(discovery.roots, ["src/ObjectModule.bsl", "consumer/src/FormModule.bsl"], sourceScope(discovery.source_scope), 6000, {
+    query: "Проследи СебестоимостьМаркер2800 в строках 2750–2850 и СебестоимостьМаркер4400 в строках 4380–4460"
+  });
+  assert.ok(collected.bytes <= 6000);
+  assert.match(collected.files[0].text, /СебестоимостьМаркер2800/);
+  assert.match(collected.files[0].text, /СебестоимостьМаркер4400/);
+  assert.doesNotMatch(collected.files[0].text, /Строка1 =/);
+  assert.equal(collected.files[0].selection, "requested_ranges_and_objective_matches");
+  assert.match(collected.files[1].text, /ЗапуститьВыгрузку/);
+  assert.equal(collected.files[1].selection, "complete_file");
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("the identifiers in a request find the files that carry them", () => {
   const { root, producer, consumer, db } = fixture("workflow-search-", { sources: ["src/**"] });
   fs.writeFileSync(path.join(producer, "src", "unrelated.mjs"), "export const total = 0;\n");

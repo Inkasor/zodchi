@@ -4,6 +4,17 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_6_2026_08_25" status="working">
+
+## 0.3.6 — 2026-08-25
+
+- Worker source collection now selects line-numbered windows around explicit ranges and objective-derived identifiers instead of truncating every large file from its beginning. Requested ranges are interleaved, and every planned path receives a fair share of the evidence budget.
+- The final assembled worker prompt is measured against its role contract and source text yields deterministically when the fixed envelope, plan, and evidence together exceed it.
+- New portable role contracts default to 65,536 bytes instead of the original undocumented 24,000-byte value; packages may still declare a smaller contract to exercise or enforce tighter fitting.
+- Regression coverage verifies a 4,500-line BSL source with relevant evidence around lines 2,800 and 4,400, a second planned file, and a complete worker prompt bounded to 24,000 bytes.
+
+</section>
+
 <section id="0_3_5_2026_08_25" status="working">
 
 ## 0.3.5 — 2026-08-25
