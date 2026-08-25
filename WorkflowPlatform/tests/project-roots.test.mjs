@@ -128,6 +128,29 @@ test("the primary planned source receives priority and calendar dates do not bec
   db.close(); fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("a form entry point follows bounded calls into a later implementation file", () => {
+  const { root, producer, consumer, db } = fixture("workflow-source-call-chain-", { sources: ["src/**"] });
+  const form = Array.from({ length: 360 }, (_, index) => `FormLine${index + 1} = 0;`);
+  form.splice(39, 5, "Procedure Export(Command)", "  Result = RunExportOnServer();", "EndProcedure", "", "");
+  form.splice(199, 5, "Function RunExportOnServer()", "  Return Handler.ExportMain();", "EndFunction", "", "");
+  const object = Array.from({ length: 1200 }, (_, index) => `ObjectLine${index + 1} = 0;`);
+  object.splice(99, 5, "Function ExportMain()", "  Return ExportLegacy();", "EndFunction", "", "");
+  object.splice(299, 5, "Function ExportLegacy()", "  Return ExportDay();", "EndFunction", "", "");
+  object.splice(499, 6, "Function ExportDay()", "  Packet = BuildNDJSONPacket();", "  Return SendNDJSON(Packet);", "EndFunction", "", "");
+  object.splice(699, 3, "Function BuildNDJSONPacket()", "  Return \"packet\";", "EndFunction");
+  object.splice(899, 3, "Function SendNDJSON(Packet)", "  Return Packet;", "EndFunction");
+  fs.writeFileSync(path.join(producer, "src", "FormModule.bsl"), form.join("\n"));
+  fs.writeFileSync(path.join(consumer, "src", "ObjectModule.bsl"), object.join("\n"));
+  const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" });
+  const collected = collectSourceFiles(discovery.roots, ["src/FormModule.bsl", "consumer/src/ObjectModule.bsl"], sourceScope(discovery.source_scope), 18_000, {
+    query: "Trace the export entry point through the server scenario to NDJSON packet formation and sending."
+  });
+  const evidence = collected.files.map(file => file.text).join("\n");
+  for (const name of ["RunExportOnServer", "ExportMain", "ExportLegacy", "ExportDay", "BuildNDJSONPacket", "SendNDJSON"]) assert.match(evidence, new RegExp(name));
+  assert.ok(collected.files[1].segments.some(segment => segment.reason.startsWith("referenced_call_chain:")));
+  db.close(); fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("missing output paths do not reserve source budget", () => {
   const { root, producer, db } = fixture("workflow-source-existing-share-", { sources: ["src/**", "docs/**"] });
   fs.writeFileSync(path.join(producer, "src", "large.bsl"), "ПолезнаяСтрока = 1;\n".repeat(1000));

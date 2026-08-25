@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_15_2026_08_26" status="working">
+
+## 0.3.15 — 2026-08-26
+
+- Source collection follows member calls from an earlier planned file into definitions in a later allowed file, so a form-to-object-module entry path remains visible without granting workers direct filesystem access.
+- A bounded call-chain pass follows relevant definitions for at most three hops and eight functions, retaining compact function bodies that connect entry points, wrappers, packet builders and senders.
+- Regression coverage traces a form server call through a separate implementation file to NDJSON construction and delivery under a fixed evidence budget.
+
+</section>
+
 <section id="0_3_14_2026_08_25" status="working">
 
 ## 0.3.14 — 2026-08-25
