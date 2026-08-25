@@ -201,6 +201,30 @@ test("a pathless decision artifact is materialized from worker evidence instead 
   fs.rmSync(env.root, { recursive: true, force: true });
 });
 
+test("final document artifacts stay with the documentator even when a planner assigns them to a worker", async () => {
+  const env = fixture("workflow-new-planned-document-");
+  const plan = plannerResult({ document: true });
+  plan.allowed_paths = ["src/output.txt", "docs/new-analysis.md"];
+  plan.artifacts = [{ key: "new-analysis", type: "document", path: "docs/new-analysis.md", required: true }];
+  plan.steps[0] = { ...plan.steps[0], allowed_paths: ["src/output.txt"], artifact_keys: ["new-analysis"] };
+  let workerPrompt = "";
+  const result = await processMessage({
+    message: "Create a new analysis document", project: env.project, dbFile: env.dbFile,
+    workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, classificationResult: classification(true),
+    gatewayCall: async request => {
+      if (request.role === "planner") return receipt("planner", plan);
+      if (request.role === "worker") { workerPrompt = fs.readFileSync(request.taskFile, "utf8"); return receipt("worker", { schema_version: 1, status: "completed", summary: "Evidence prepared.", changed_paths: [], artifacts: [], evidence: ["bounded source"], questions: [] }); }
+      if (request.role === "documentator") { const lookup = openDb(env.dbFile); const documentId = lookup.prepare("SELECT id FROM project_documents WHERE project_id='project' AND path='docs/new-analysis.md'").get().id; lookup.close(); return receipt("documentator", { schema_version: 1, status: "proposed", document_id: documentId, expected_version: null, operation: "create_document", authority: "workflow", content: '<document id="new_analysis" status="working" authority="workflow" version="1.0"><section id="summary" status="working">New analysis</section></document>', section_id: null, decision_id: null, evidence_id: null, status_value: null, target_tag: null, target_id: null, replacement_id: null }); }
+      throw new Error(`unexpected role ${request.role}`);
+    },
+    gateRunner: async () => ({ task_id: "gate", project: env.project, level: "mvp", files: [], status: "passed", checks: [{ id: "check-ok", required: true, status: "passed" }], summary: "passed" })
+  });
+  assert.equal(result.execution.status, "completed");
+  assert.match(workerPrompt, /&quot;artifact_keys&quot;:\[\]/);
+  assert.match(fs.readFileSync(path.join(env.project, "docs", "new-analysis.md"), "utf8"), /New analysis/);
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
 test("a worker artifact verification failure settles the worker step", async () => {
   const env = fixture("workflow-worker-artifact-failure-");
   const result = await processMessage({
