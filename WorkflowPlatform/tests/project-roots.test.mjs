@@ -127,7 +127,7 @@ test("path-bound Git history proves the commits of an allowed source without dif
   execFileSync("git", ["commit", "-m", "tracked history"], { cwd: producer, env: { ...process.env, GIT_AUTHOR_DATE: "2026-08-11T12:00:00Z", GIT_COMMITTER_DATE: "2026-08-11T12:00:00Z" }, stdio: "ignore" });
   const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" });
   const history = collectGitHistory(discovery.roots, ["src/history.bsl", "outside.txt"], sourceScope(discovery.source_scope));
-  assert.equal(history.status, "available");
+  assert.equal(history.status, "available", JSON.stringify(history));
   assert.equal(history.files.length, 1);
   assert.match(history.files[0].commits[0], /2026-08-11T12:00:00(?:Z|\+00:00)\ttracked history$/);
   assert.equal(JSON.stringify(history).includes("Версия = 1"), false);
