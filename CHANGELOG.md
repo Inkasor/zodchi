@@ -4,6 +4,14 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_2_2026_08_25" status="working">
+
+## 0.3.2 — 2026-08-25
+
+- The 0.3.1 migration could not be applied to a database that had been used. Rebuilding a table other tables reference is refused while foreign keys are enforced, and a fresh database has nothing referencing it — so the migration passed every test and failed on the first real database, which rolled it back and left the release unusable there. Enforcement is now turned off around each migration and a foreign key check runs before it commits, which is the documented rebuild and moves the check rather than dropping it. A migration is now tested against a database that already holds referencing rows.
+
+</section>
+
 <section id="0_3_1_2026_08_25" status="working">
 
 ## 0.3.1 — 2026-08-25
