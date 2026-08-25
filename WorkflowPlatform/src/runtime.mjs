@@ -97,9 +97,9 @@ export class Runtime {
   settleClarifications(runId, answered = null) {
     const run = this.get(runId), timestamp = now();
     const answeredIds = (answered === null ? [] : [answered].flat()).filter(Boolean);
-    const settle = this.db.prepare("UPDATE approvals SET status='approved',resolved_at=? WHERE id=? AND kind='clarification' AND status='pending'");
+    const settle = this.db.prepare("UPDATE approvals SET status='approved',resolved_at=? WHERE id=? AND kind IN ('clarification','planner_clarification') AND status='pending'");
     for (const answeredId of answeredIds) settle.run(timestamp, answeredId);
-    this.db.prepare(`UPDATE approvals SET status='cancelled',resolved_at=? WHERE kind='clarification' AND status='pending' AND run_id<>?
+    this.db.prepare(`UPDATE approvals SET status='cancelled',resolved_at=? WHERE kind IN ('clarification','planner_clarification') AND status='pending' AND run_id<>?
       AND task_id IN (SELECT id FROM tasks WHERE project_id=?)`).run(timestamp, runId, run.project_id);
   }
 
