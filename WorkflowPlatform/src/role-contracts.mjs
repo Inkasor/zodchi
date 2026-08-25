@@ -132,6 +132,9 @@ export function rolePrompt({ contract, qualityContract, packageContract, context
   const documentProposalInstruction = resultSchema === "documentator.v1"
     ? "The role proposes a structured document operation only. Do not edit or write the filesystem and do not use file-editing tools: the platform validates, atomically applies and lints the returned proposal after this invocation. For a missing target whose expected_version is null, use create_document and put the complete new semantic document in content."
     : null;
+  const workerCompletionInstruction = resultSchema === "worker.v1"
+    ? "Treat the task package allowed_paths as the complete authority boundary, not as a reason to request a broader system. A complete-file exact term scan with count zero is conclusive negative evidence inside that boundary. If it proves that a requested identifier or producer is absent, complete the step with that negative finding and the nearest supported facts; do not return blocked or ask for out-of-scope sources merely because no positive producer exists. Return blocked only when the objective cannot be answered even negatively because authorized evidence is genuinely unavailable or unreadable."
+    : null;
   return `<workflow_role_prompt schema_version="2" prompt_template_version="${escapeXml(contract.prompt_template_version)}">\n`+
     `  <role_contract id="${escapeXml(contract.role_id)}" version="${escapeXml(contract.version)}">\n`+
     `    <purpose>${escapeXml(contract.purpose)}</purpose>\n`+
@@ -149,6 +152,7 @@ export function rolePrompt({ contract, qualityContract, packageContract, context
     `  <project_context format="application/json">${escapeXml(stableJson(context ?? {}))}</project_context>\n`+
     `  <result_contract schema="${escapeXml(resultSchema)}">\n`+
     `    <instruction>Return exactly one JSON object carrying exactly the fields of the shape below: no field missing and no field added. A value written as "a | b" lists the only permitted values; any other value states the type expected there. Do not wrap the object in Markdown and do not expose private reasoning.</instruction>\n`+
+    (workerCompletionInstruction ? `    <completion_semantics>${escapeXml(workerCompletionInstruction)}</completion_semantics>\n` : "")+
     (documentProposalInstruction ? `    <document_proposal>${escapeXml(documentProposalInstruction)}</document_proposal>\n` : "")+
     `    <shape format="application/json">${escapeXml(stableJson(RESULT_SCHEMA_SHAPES[resultSchema] ?? {}))}</shape>\n`+
     `  </result_contract>\n`+
