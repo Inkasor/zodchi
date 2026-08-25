@@ -2,6 +2,13 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+## 0.3.0-beta.11 — 2026-08-25
+
+- Package definitions describe real projects, so their source is now chosen by the `packageDefinitions` setting and this repository ships only the builders and one complete example. A definition file default-exports a function that receives the builder module, so it needs no import path and can live outside the repository; generated packages are written beside their source.
+- The package tests assert the contract every package must satisfy instead of the content of any one project, so they run against whichever definitions an installation configured.
+- A secret scan and a dependency scan also run on a release. A gate resolves its own level and every level below it, and a security audit sits above production, so bound to the audit alone these never ran at the one moment a project publishes code.
+- An irreversible step never carries a role, and where a release acts on the outside world the approval comes before that action. Both are now checked for every package.
+
 ## 0.3.0-beta.10 — 2026-08-25
 
 - MarketplacesData verifies that a release actually reached production. The GitHub Actions run for the exact commit, the revision the server is serving and the health of the running service were declared but unavailable; they now call registered project scripts, so the project keeps the server alias, paths and endpoint and the package carries only a script name.

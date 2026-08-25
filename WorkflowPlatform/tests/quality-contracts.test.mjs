@@ -6,9 +6,14 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { openDb } from "../src/db.mjs";
 import { DEFAULT_QUALITY_CONTRACTS, floorOperationalLevel, operationalPoliciesLint, parseQualityContracts, qualityContractsLint, qualityModesThrough, reviewerRequirement, serializeQualityContracts } from "../src/quality-contracts.mjs";
-import { applyWorkflowImport, proposeWorkflowImport } from "../src/workflow-package.mjs";
+import { applyWorkflowImport, proposeWorkflowImport, serializeWorkflowPackage } from "../src/workflow-package.mjs";
+import * as builders from "../packages/builders.mjs";
+import defineExample from "../packages/example/definitions.mjs";
 
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+// The example package is built here rather than read from disk, so these tests do not depend on
+// which definition source the installation configured.
+const examplePackageFile = directory => { const file = path.join(directory, "example.web-app.xml"); fs.writeFileSync(file, serializeWorkflowPackage(defineExample(builders).packages[0]), "utf8"); return file; };
 function temporaryRoot(prefix) { const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir(); fs.mkdirSync(parent, { recursive: true }); return fs.mkdtempSync(path.join(parent, prefix)); }
 
 test("the universal quality contract round-trips through limited XML", () => {
@@ -44,7 +49,7 @@ test("an imported software package has four normalized and checkable quality pol
   let db = openDb(dbFile);
   db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('project-r','Project R',?,?)").run(projectRoot, new Date().toISOString());
   db.close();
-  const packageFile = path.join(repositoryRoot, "packages", "generated", "indie-studio.project-r.xml");
+  const packageFile = examplePackageFile(root);
   proposeWorkflowImport(dbFile, packageFile, proposalFile, "project-r");
   applyWorkflowImport(dbFile, proposalFile, "project-r", { confirmedBy: "contract-test-owner" });
   db = openDb(dbFile);
