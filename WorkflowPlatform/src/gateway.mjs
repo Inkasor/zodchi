@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { resolveWorkflowSettings } from "./paths.mjs";
 
-export function callGateway({ gateway, gatewayDatabase, gatewayPolicy, provider = "codex", profile, level = "mvp", role = "worker", taskFile, project, writeDirs = [], taskId, workflowRunId = null, attemptNo = null, artifactRef = null, decisionRef = null }) {
+export function callGateway({ gateway, gatewayDatabase, gatewayPolicy, provider = "codex", profile, level = "mvp", role = "worker", taskFile, outputSchemaFile = null, project, writeDirs = [], taskId, workflowRunId = null, attemptNo = null, artifactRef = null, decisionRef = null }) {
   const settings = resolveWorkflowSettings();
   gateway ??= settings.gatewayEntry;
   gatewayDatabase ??= settings.gatewayDatabasePath;
@@ -9,6 +9,7 @@ export function callGateway({ gateway, gatewayDatabase, gatewayPolicy, provider 
   if (!profile) throw new Error("Gateway profile is required; assign it during onboarding");
   return new Promise((resolve, reject) => {
     const args = [gateway, "run", "--provider", provider, "--profile", profile, "--level", level, "--role", role, "--task-file", taskFile, "--task", taskId ?? taskFile];
+    if (outputSchemaFile) args.push("--output-schema", outputSchemaFile);
     if (project) args.push("--project", project);
     // Only a writable root reaches the provider. What a role reads was collected before the call and
     // travels inside the prompt, so a read-only root is never handed to the process at all: a directory

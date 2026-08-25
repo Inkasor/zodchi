@@ -40,6 +40,46 @@ export function assertCatalogComplete(catalog) {
   return catalog;
 }
 
+export function classificationJsonSchema(catalog) {
+  assertCatalogComplete(catalog);
+  const pendingIds = catalog.pending_interactions.map(item => item.id);
+  const pendingInteraction = pendingIds.length
+    ? {
+        anyOf: [
+          { type: "string", enum: pendingIds },
+          { type: "array", items: { type: "string", enum: pendingIds }, minItems: 1 },
+          { type: "null" }
+        ]
+      }
+    : { type: "null" };
+  return {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    type: "object",
+    additionalProperties: false,
+    required: [...REQUIRED_FIELDS],
+    properties: {
+      schema_version: { type: "integer", enum: [1] },
+      work_type: { type: "string", enum: catalog.work_types },
+      artifact_type: { type: "string", enum: catalog.artifact_types },
+      domain: { type: "string", enum: catalog.domains },
+      discipline: { type: "string", enum: catalog.disciplines },
+      risk: { type: "string", enum: [...RISKS] },
+      planning_level: { type: "string", enum: catalog.planning_levels },
+      quality_mode: { type: "string", enum: catalog.quality_modes },
+      planning_required: { type: "boolean" },
+      human_required: { type: "boolean" },
+      needs_questions: { type: "boolean" },
+      document_required: { type: "boolean" },
+      reply_mode: { type: "string", enum: [...REPLY_MODES] },
+      pending_interaction_id: pendingInteraction,
+      pending_interaction_response: { enum: [...OWNER_RESPONSES] },
+      reason: { type: "string", minLength: 1, maxLength: 2000 },
+      questions: { type: "array", items: { type: "string", minLength: 1, maxLength: 1000 }, maxItems: 5 },
+      human_response: { anyOf: [{ type: "string", maxLength: 4000 }, { type: "null" }] }
+    }
+  };
+}
+
 function assertRegistered(catalog, field, catalogField, value) {
   if (!catalog[catalogField].includes(value)) throw new Error(`CLASSIFICATION_VALUE_UNREGISTERED: ${field}=${value}`);
 }
@@ -157,7 +197,9 @@ export function classifierPrompt({ message, catalog, projectSnapshot, acceptedDe
     "- document_required: the result belongs in a registered document, not only in the reply.",
     "- needs_questions must equal questions.length > 0, and must be true exactly when reply_mode is clarification.",
     "- questions: 0 to 5 plain-language questions, each one a real choice only the user can make. Never ask what the registry or the project files already answer.",
-    "- pending_interaction_id: the id from PENDING_INTERACTIONS that this message answers, or null. One message often answers every question that was asked, so when it answers several give the list of their ids instead of a single one. A short confirmation is resolved from pending interactions and ordered history, never from a keyword rule.",
+    "- The supplied project snapshot is proof that downstream roles can use the registered roots and sources. You only route the request; the platform collects matching file contents and Git history after a work route is selected. Never ask the user to paste source files, repository content, diffs or logs that are inside those registered roots.",
+    "- A request to inspect registered project code and write the findings into a project document is documentation work: reply_mode=work, planning_required=true and document_required=true. The classifier's own lack of tools is not missing user information and never justifies clarification.",
+    "- pending_interaction_id: the id from PENDING_INTERACTIONS that this message answers, or null. One message often answers every question that was asked, so when it answers several give the list of their ids instead of a single one. A short confirmation is resolved from pending interactions and ordered history, never from a keyword rule. A new detailed task does not answer an older interaction merely because it mentions the same subject.",
     "- pending_interaction_response: null when pending_interaction_id is null or names an interaction of kind clarification. When it names any other kind, the user is being asked to decide whether an action may happen, and this field says what they decided: approve only for an unambiguous yes to that exact action, decline for a refusal, undecided for anything else. Doubt, a question back, a condition, a partial agreement and thinking aloud are all undecided: the decision stays open and the user is answered. Treating hesitation as approval takes an action the user never authorized, so undecided is the answer whenever both readings are possible.",
     "- reason: why this classification, in RESPONSE_LANGUAGE.",
     "- human_response: the reply text when reply_mode is conversation, otherwise null.",

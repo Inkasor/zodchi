@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { openDb, now } from "../src/db.mjs";
-import { classificationCatalog, classifierPrompt, parseClassificationReceipt, validateClassificationDecision } from "../src/classifier.mjs";
+import { classificationCatalog, classificationJsonSchema, classifierPrompt, parseClassificationReceipt, validateClassificationDecision } from "../src/classifier.mjs";
 import { compactProjectSnapshot, conversationContext, readProjectContext, selectProjectContext } from "../src/document-context.mjs";
 import { processMessage } from "../src/workflow-app.mjs";
 import { onboardProject, registerProject } from "../src/onboarding.mjs";
@@ -68,6 +68,11 @@ test("classification schema accepts only exact registered values and known provi
   const envelope = JSON.stringify({ type: "item.completed", item: { text: JSON.stringify(decision()) } });
   assert.equal(parseClassificationReceipt(receipt(`{"type":"turn.started"}\n${envelope}`), catalog).work_type, "implementation");
   assert.throws(() => parseClassificationReceipt(receipt("prefix { not accepted as JSON }"), catalog), /CLASSIFICATION_OUTPUT_INVALID_JSON/);
+  const schema = classificationJsonSchema(catalog);
+  assert.equal(schema.additionalProperties, false);
+  assert.deepEqual(schema.required.sort(), Object.keys(decision()).sort());
+  assert.deepEqual(schema.properties.work_type.enum, catalog.work_types);
+  assert.deepEqual(schema.properties.pending_interaction_id, { type: "null" });
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -78,7 +83,7 @@ test("invalid classifier output fails closed before any productive role", async 
   let calls = 0;
   const result = await processMessage({
     message: "Implement a package", project, dbFile, workflowDefinition: definition(), execute: true,
-    gatewayCall: async () => { calls += 1; return receipt("not-json"); }
+    gatewayCall: async request => { calls += 1; assert.match(request.outputSchemaFile, /classifier-output\.schema\.json$/); return receipt(JSON.stringify({ ...decision(), surprise: true })); }
   });
   assert.equal(calls, 1);
   assert.equal(result.route, "classification_failed");
@@ -86,7 +91,8 @@ test("invalid classifier output fails closed before any productive role", async 
   assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(result.run_id).state, "classification_failed");
   assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM workflow_steps").get().count, 0);
   assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM gateway_calls").get().count, 1);
-  assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM decisions WHERE outcome='INVALID'").get().count, 1);
+  const invalid = JSON.parse(verified.prepare("SELECT structured_json FROM decisions WHERE outcome='INVALID'").get().structured_json);
+  assert.deepEqual(invalid, { category: "CLASSIFICATION_SCHEMA_INVALID", detail: "missing= extra=surprise" });
   verified.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -361,6 +367,8 @@ test("the classifier prompt keeps run state below an invariant head long enough 
   // with room to spare on the narrowest project in the registry.
   assert.equal(first.indexOf("PROJECT_SNAPSHOT") > 3800, true, `invariant head is only ${first.indexOf("PROJECT_SNAPSHOT")} bytes`);
   assert.equal(shared >= first.indexOf("PROJECT_SNAPSHOT"), true, `two runs share only ${shared} bytes`);
+  assert.match(first, /Never ask the user to paste source files/);
+  assert.match(first, /inspect registered project code and write the findings/);
   for (const field of ["PROJECT_SNAPSHOT", "ACCEPTED_DECISIONS", "PENDING_INTERACTIONS", "ORDERED_HISTORY", "CURRENT_USER_MESSAGE"]) {
     assert.equal(first.indexOf(field) > first.indexOf("REGISTERED_ROUTES"), true, `${field} must follow the invariant head`);
   }

@@ -240,6 +240,11 @@ const replaceArg = (arg) => {
 };
 const commandArgs = (providerConfig.args ?? []).map(replaceArg);
 const providerCommand = providerConfig.type === "openai-compatible" ? null : resolveProviderCommand(providerConfig);
+const outputSchema = cli["output-schema"] ? path.resolve(String(cli["output-schema"])) : null;
+if (outputSchema) {
+  if (!fs.existsSync(outputSchema) || !fs.statSync(outputSchema).isFile()) fail(`OUTPUT_SCHEMA_NOT_FOUND: ${outputSchema}`);
+  if (providerConfig.outputSchemaArg) commandArgs.push(providerConfig.outputSchemaArg, outputSchema);
+}
 if (provider === "claude") {
   for (const tool of profileConfig.allowedTools ?? []) commandArgs.push("--allowedTools", tool);
   for (const tool of profileConfig.disallowedTools ?? []) commandArgs.push("--disallowedTools", tool);

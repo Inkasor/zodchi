@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Runtime, recordLint } from "./runtime.mjs";
-import { classificationCatalog, classifierPrompt, parseClassificationReceipt, resolveWorkflowRoute, validateClassificationDecision } from "./classifier.mjs";
+import { classificationCatalog, classificationJsonSchema, classifierPrompt, parseClassificationReceipt, resolveWorkflowRoute, validateClassificationDecision } from "./classifier.mjs";
 import { buildPrompt } from "./prompt-builder.mjs";
 import { callGateway } from "./gateway.mjs";
 import { workflowLint } from "./lint.mjs";
@@ -70,10 +70,13 @@ function researchPrompt({ message, project, discovery, responseLanguage }) {
 
 function recordClassificationFailure(runtime, runId, error) {
   const taskId = runtime.get(runId).task_id;
-  const payload = { category: String(error.message).split(":")[0].slice(0, 120) };
+  const message = String(error.message).replace(/[\r\n\t]+/g, " ").trim();
+  const [head, ...tail] = message.split(":");
+  const payload = { category: head.slice(0, 120), detail: tail.join(":").trim().slice(0, 500) || null };
   runtime.db.prepare("INSERT INTO decisions(id,task_id,run_id,kind,outcome,source,structured_json,active,created_at) VALUES(?,?,?,'classification','INVALID','classifier',?,1,?)")
     .run(id("decision"), taskId, runId, JSON.stringify(payload), now());
   appendEvent(runtime.db, { entityType: "workflow_run", entityId: runId, kind: "contract_error", payload });
+  return payload;
 }
 
 function executionMessage(execution, responseLanguage) {
@@ -87,13 +90,14 @@ function executionMessage(execution, responseLanguage) {
 }
 
 function classificationFailure(runtime, runId, error, finish, responseLanguage = "en") {
-  recordClassificationFailure(runtime, runId, error);
+  const failure = recordClassificationFailure(runtime, runId, error);
   if (runtime.get(runId).state !== "classification_failed") runtime.setState(runId, "classification_failed", { reason: "classifier contract rejected" });
   // Naming the category matters more here than anywhere else: the run is over, the call is paid for, and
   // a message that blames the request or the project settings sends the person to look where the fault
   // is not. The category is already recorded; it belongs in the answer too.
-  const category = String(error.message).split(":")[0].slice(0, 120);
-  return finish({ route: "classification_failed", response: `${workflowMessage("classificationFailed", responseLanguage)} (${category})`, error: category });
+  const category = failure.category;
+  const diagnostic = failure.detail ? `${category}: ${failure.detail}` : category;
+  return finish({ route: "classification_failed", response: `${workflowMessage("classificationFailed", responseLanguage)} (${diagnostic})`, error: category });
 }
 
 function executionFailure(runtime, runId, error, finish, responseLanguage = "en") {
@@ -160,7 +164,9 @@ export async function processMessage({
   };
   fs.mkdirSync(taskDirectory, { recursive: true });
   const classifierTaskFile = path.join(taskDirectory, "classifier-task.md");
+  const classifierSchemaFile = path.join(taskDirectory, "classifier-output.schema.json");
   fs.writeFileSync(classifierTaskFile, classifierPrompt({ message, catalog, projectSnapshot: compactProjectSnapshot(discovery), acceptedDecisions: historyContext.accepted_decisions, history: historyContext.history, responseLanguage }), "utf8");
+  fs.writeFileSync(classifierSchemaFile, `${JSON.stringify(classificationJsonSchema(catalog), null, 2)}\n`, "utf8");
   runtime.setState(runId, "classifying", { reason: "deterministic discovery complete" });
 
   let classifierReceipt = null;
@@ -171,7 +177,7 @@ export async function processMessage({
       if (!execute) throw new Error("CLASSIFICATION_EXECUTION_REQUIRED: supply a validated contract result for dry-run tests");
       const role = definition.roles?.classifier;
       if (!role?.provider || !role.profile || !role.role) throw new Error("CLASSIFIER_ROLE_NOT_CONFIGURED");
-      classifierReceipt = await gatewayCall({ provider: role.provider, profile: role.profile, level: "prototype", role: role.role, taskFile: classifierTaskFile, project: projectRoot, taskId: `${runId}:classifier`, workflowRunId: runId });
+      classifierReceipt = await gatewayCall({ provider: role.provider, profile: role.profile, level: "prototype", role: role.role, taskFile: classifierTaskFile, outputSchemaFile: classifierSchemaFile, project: projectRoot, taskId: `${runId}:classifier`, workflowRunId: runId });
       runtime.linkGateway(runId, classifierReceipt);
       classification = parseClassificationReceipt(classifierReceipt, catalog);
     }
