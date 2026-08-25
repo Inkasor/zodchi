@@ -45,7 +45,7 @@ export const RESULT_SCHEMA_SHAPES = Object.freeze({
     status: "proposed",
     document_id: "id of an allowed registered document",
     expected_version: "sha256:<64 hex> or null",
-    operation: "string",
+    operation: "create_document | update_section | append_decision | append_evidence | change_status | supersede_document | create_plan | create_package_record",
     authority: "non-empty string",
     content: "string or null", section_id: "string or null", decision_id: "string or null", evidence_id: "string or null",
     status_value: "string or null", target_tag: "string or null", target_id: "string or null", replacement_id: "string or null"
@@ -129,6 +129,9 @@ export function rolePrompt({ contract, qualityContract, packageContract, context
   if (contract.result_schema_key !== resultSchema) throw new Error(`ROLE_RESULT_SCHEMA_MISMATCH: ${contract.result_schema_key} != ${resultSchema}`);
   validateQualityContract(qualityContract);
   const responseLanguage = normalizeLanguage(context?.response_language) ?? "en";
+  const documentProposalInstruction = resultSchema === "documentator.v1"
+    ? "The role proposes a structured document operation only. Do not edit or write the filesystem and do not use file-editing tools: the platform validates, atomically applies and lints the returned proposal after this invocation. For a missing target whose expected_version is null, use create_document and put the complete new semantic document in content."
+    : null;
   return `<workflow_role_prompt schema_version="2" prompt_template_version="${escapeXml(contract.prompt_template_version)}">\n`+
     `  <role_contract id="${escapeXml(contract.role_id)}" version="${escapeXml(contract.version)}">\n`+
     `    <purpose>${escapeXml(contract.purpose)}</purpose>\n`+
@@ -146,6 +149,7 @@ export function rolePrompt({ contract, qualityContract, packageContract, context
     `  <project_context format="application/json">${escapeXml(stableJson(context ?? {}))}</project_context>\n`+
     `  <result_contract schema="${escapeXml(resultSchema)}">\n`+
     `    <instruction>Return exactly one JSON object carrying exactly the fields of the shape below: no field missing and no field added. A value written as "a | b" lists the only permitted values; any other value states the type expected there. Do not wrap the object in Markdown and do not expose private reasoning.</instruction>\n`+
+    (documentProposalInstruction ? `    <document_proposal>${escapeXml(documentProposalInstruction)}</document_proposal>\n` : "")+
     `    <shape format="application/json">${escapeXml(stableJson(RESULT_SCHEMA_SHAPES[resultSchema] ?? {}))}</shape>\n`+
     `  </result_contract>\n`+
     `  <task_package format="application/json">${escapeXml(stableJson(packageContract ?? {}))}</task_package>\n`+
@@ -232,7 +236,8 @@ export function validateDocumentatorResult(value, { allowedDocumentIds }) {
   exactObject(value, schemaFields("documentator.v1"), "documentator.v1");
   if (value.schema_version !== 1 || value.status !== "proposed" || !allowedDocumentIds.includes(value.document_id)) throw new Error("documentator.v1: document not allowed");
   if (value.expected_version !== null && (typeof value.expected_version !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value.expected_version))) throw new Error("documentator.v1: invalid expected_version");
-  if (typeof value.operation !== "string" || typeof value.authority !== "string" || !value.authority) throw new Error("documentator.v1: invalid operation or authority");
+  const operations = ["create_document", "update_section", "append_decision", "append_evidence", "change_status", "supersede_document", "create_plan", "create_package_record"];
+  if (!operations.includes(value.operation) || typeof value.authority !== "string" || !value.authority) throw new Error("documentator.v1: invalid operation or authority");
   for (const field of ["content", "section_id", "decision_id", "evidence_id", "status_value", "target_tag", "target_id", "replacement_id"]) if (value[field] !== null && typeof value[field] !== "string") throw new Error(`documentator.v1: ${field} must be string or null`);
   return value;
 }
