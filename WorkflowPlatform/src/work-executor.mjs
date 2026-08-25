@@ -26,7 +26,10 @@ function selectedWorkflowContract(db, projectId, workflowId) {
     rows,
     worker_roles: workerRoles,
     check_keys: checks,
-    planner_role: rows.find(row => row.output_schema_key === "planner.v1")?.role_id ?? "planner",
+    // A workflow that declares no planning step has nothing to drive execution from: the plan is what
+    // names the steps, their roles, paths and checks. Falling back to a literal role name hid that as a
+    // missing-role error in whichever package happened to use different names.
+    planner_role: rows.find(row => row.output_schema_key === "planner.v1")?.role_id ?? null,
     reviewer_role: rows.find(row => row.output_schema_key === "reviewer.v1")?.role_id ?? "reviewer",
     documentator_role: rows.find(row => row.output_schema_key === "documentator.v1")?.role_id ?? "documentator",
     approval: approvalIndex < 0 ? null : { step_key: rows[approvalIndex].step_key, before_productive_work: productiveAfterApproval.length > 0 }
@@ -70,6 +73,13 @@ function storeStepPayload(db, stepId, contract, resultSchemaKey, result = null) 
 function promptWithinContract(contract, qualityContract, packageContract, context, schemaKey) {
   const fitted = structuredClone(context ?? {});
   let prompt = rolePrompt({ contract, qualityContract, packageContract, context: fitted, resultSchema: schemaKey });
+  // History gives way before authority. Registered documents are what a role reasons from, while
+  // decisions accumulate with every run, so trimming documents first would drop the authority to keep
+  // an ever-growing log and the role would fail on a project purely because it had been used a lot.
+  while (Buffer.byteLength(prompt) > contract.context_limit_bytes && Array.isArray(fitted.decisions) && fitted.decisions.length) {
+    fitted.decisions.shift();
+    prompt = rolePrompt({ contract, qualityContract, packageContract, context: fitted, resultSchema: schemaKey });
+  }
   while (Buffer.byteLength(prompt) > contract.context_limit_bytes && Array.isArray(fitted.documents) && fitted.documents.length) {
     const overflow = Buffer.byteLength(prompt) - contract.context_limit_bytes;
     const document = fitted.documents.at(-1), text = String(document.text ?? "");
@@ -265,7 +275,11 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     runtime.plan(runId, { objective: message, authority: definition.authority ?? "registered project documents", steps: [] });
     return requireWorkflowApproval(runtime, runId, routeContract, responseLanguage);
   }
-  const plannerRole = routeContract?.planner_role ?? "planner";
+  // A workflow with no declared shape at all falls back to the platform roles. One that declares its
+  // shape and omits planning is a different thing: the plan is what names the steps to execute, so
+  // there is nothing to run, and the literal fallback used to report that as a missing role instead.
+  const plannerRole = routeContract ? routeContract.planner_role : "planner";
+  if (!plannerRole) throw new Error(`WORKFLOW_DECLARES_NO_PLANNING_STEP: ${runtime.get(runId).workflow_id}`);
   const reviewerRole = routeContract?.reviewer_role ?? "reviewer";
   const documentatorRole = routeContract?.documentator_role ?? "documentator";
   const plannerContract = loadRoleContract(runtime.db, projectId, plannerRole, level);
@@ -278,7 +292,35 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   const allRegisteredChecks = registeredProjectCheckKeys(runtime.db, projectId, level, classification.artifact_type);
   const registeredChecks = routeContract?.check_keys.length ? allRegisteredChecks.filter(check => routeContract.check_keys.includes(check)) : allRegisteredChecks;
   const registeredArtifactTypes = runtime.db.prepare("SELECT id FROM artifact_types ORDER BY id").all().map(row => row.id);
-  const plannerPackage = { objective: message, classification: { work_type: classification.work_type, artifact_type: classification.artifact_type, risk: classification.risk, quality_mode: classification.quality_mode }, registered_checks: registeredChecks, registered_artifact_types: registeredArtifactTypes };
+  // Naming the roles is not enough: a role that may not edit will refuse an editing step, and the plan
+  // is then unsatisfiable from the moment it is written. The planner needs each role's purpose and its
+  // boundaries so it can put the work where the work is permitted.
+  // A role the planner may name but whose contract this project does not carry still has to appear, or
+  // the planner would be validated against a role it was never shown.
+  const roleCapabilities = registeredRoles.map(role => {
+    let contract; try { contract = loadRoleContract(runtime.db, projectId, role, level); } catch { return { id: role }; }
+    return { id: role, purpose: contract.purpose, boundaries: contract.boundaries, allowed_work_types: contract.allowed_work_types, allowed_artifact_types: contract.allowed_artifact_types, allowed_tools: contract.allowed_tools };
+  });
+  // Review and documentation run as their own phases after the worker steps, so a plan that assigns
+  // a document write to a worker step asks a role to do work the route never gave it. The planner has
+  // to know what happens after its steps in order to stop at the right place.
+  const followingPhases = [
+    { phase: "verification", runs: "runs every registered check listed below and records the gate", role: null, checks: registeredChecks },
+    { phase: "review", runs: "independent review when the quality contract requires it", role: reviewerRole },
+    { phase: "documentation", runs: classification.document_required ? "applies the required registered document change" : "applies a registered document change when one is required", role: documentatorRole }
+  ];
+  // Naming the later phases was not enough on its own: a plan still spent a worker step on defining the
+  // verification gates, which is the verification phase's own work given to a role that may not do it.
+  // The boundary has to be stated, not left to be inferred from the list.
+  const planBoundary = {
+    covers: "only the steps the worker roles below execute before verification",
+    excludes: followingPhases.map(item => `${item.phase}: ${item.runs}`),
+    rule: "Do not plan a step for work a following phase already performs, and assign every step to a role whose allowed_work_types and boundaries permit that step."
+  };
+  // A plan step is rejected when its role is not one the route may execute, so the planner has to be
+  // told which roles those are. Checks and artifact types were already named here; the roles were
+  // validated against a list the planner never saw, and it filled the gap by naming itself.
+  const plannerPackage = { objective: message, classification: { work_type: classification.work_type, artifact_type: classification.artifact_type, risk: classification.risk, quality_mode: classification.quality_mode }, registered_roles: roleCapabilities, plan_boundary: planBoundary, following_phases: followingPhases, registered_checks: registeredChecks, registered_artifact_types: registeredArtifactTypes };
   const planner = await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: plannerPackage, context: boundedContext(discovery, plannerRole, classification, plannerContract.context_limit_bytes, responseLanguage), schemaKey: "planner.v1", parseOptions: { registeredRoles, registeredChecks, registeredArtifactTypes, maxStepAttempts: policy.limits.correction_cycles + 1 }, gatewayCall });
   applyPlannerToDatabase(runtime, runId, planner.result);
   planner.complete({ outcome: planner.result.outcome });

@@ -8,7 +8,7 @@ import { onboardProject } from "../src/onboarding.mjs";
 import { openDb } from "../src/db.mjs";
 import { processMessage } from "../src/workflow-app.mjs";
 import { classificationCatalog } from "../src/classifier.mjs";
-import { loadRoleContract, parseRoleReceipt, rolePrompt, validateDocumentatorResult, validatePlannerResult, validateReviewerResult, validateWorkerResult } from "../src/role-contracts.mjs";
+import { RESULT_SCHEMA_SHAPES, loadRoleContract, parseRoleReceipt, rolePrompt, validateDocumentatorResult, validatePlannerResult, validateReviewerResult, validateWorkerResult } from "../src/role-contracts.mjs";
 import { BudgetManager } from "../src/budget.mjs";
 import { loadQualityContract } from "../src/quality-contracts.mjs";
 
@@ -293,4 +293,66 @@ test("document version conflict preserves original and blocks required completio
   assert.notEqual(db.prepare("SELECT state FROM workflow_runs WHERE id=?").get(env.result.run_id).state, "completed");
   db.close();
   fs.rmSync(env.root, { recursive: true, force: true });
+});
+
+// A package names the profile it requires; onboarding names the profile the installation has. Comparing
+// a local id against a portable key made every restricted contract unloadable, and nothing caught it
+// because every earlier fixture allowed any profile.
+function requirementFixture(prefix, { allowed, satisfies, omitRequirement = false } = {}) {
+  const root = temporaryRoot(prefix);
+  const project = path.join(root, "project");
+  const dbFile = path.join(root, "workflow.sqlite");
+  fs.mkdirSync(project, { recursive: true });
+  onboardProject(dbFile, {
+    project: { id: "project", name: "Project", root_path: project },
+    workflow: { id: "workflow", name: "Workflow", package_key: "example.web-app" },
+    profiles: [{ id: "local.project.worker", provider: "codex", name: "local worker", role_id: "worker" }],
+    role_contracts: [{ ...roleContract("worker", "worker.v1", ["code"]), allowed_profiles: allowed }],
+    role_assignments: [{ role_id: "worker", profile_id: "local.project.worker", operational_level: "mvp", ...(satisfies === undefined ? {} : { satisfies_profile_key: satisfies }) }],
+    ...(omitRequirement ? {} : { profile_requirements: [{ key: "example.web-app.worker.mvp", role_id: "worker", operational_levels: ["mvp"] }] })
+  });
+  return { root, dbFile };
+}
+
+test("a local profile satisfies a portable requirement instead of being compared to its key", () => {
+  const env = requirementFixture("workflow-profile-requirement-", { allowed: ["example.web-app.worker.mvp"] });
+  const db = openDb(env.dbFile);
+  const contract = loadRoleContract(db, "project", "worker", "mvp");
+  assert.equal(contract.profile_id, "local.project.worker");
+  assert.equal(contract.satisfies_profile_key, "example.web-app.worker.mvp");
+  db.close(); fs.rmSync(env.root, { recursive: true, force: true });
+});
+
+test("a profile that fulfils no declared requirement never loads a restricted contract", () => {
+  const undeclared = requirementFixture("workflow-profile-undeclared-", { allowed: ["example.web-app.worker.mvp"], satisfies: null, omitRequirement: true });
+  const undeclaredDb = openDb(undeclared.dbFile);
+  assert.throws(() => loadRoleContract(undeclaredDb, "project", "worker", "mvp"), /ROLE_PROFILE_REQUIREMENT_UNDECLARED/);
+  undeclaredDb.close(); fs.rmSync(undeclared.root, { recursive: true, force: true });
+  const other = requirementFixture("workflow-profile-other-requirement-", { allowed: ["example.web-app.reviewer.mvp"] });
+  const otherDb = openDb(other.dbFile);
+  assert.throws(() => loadRoleContract(otherDb, "project", "worker", "mvp"), /ROLE_PROFILE_REQUIREMENT_NOT_ALLOWED/);
+  otherDb.close(); fs.rmSync(other.root, { recursive: true, force: true });
+});
+
+test("a contract open to any profile still loads without a declared requirement", () => {
+  const env = requirementFixture("workflow-profile-any-", { allowed: ["*"], omitRequirement: true });
+  const db = openDb(env.dbFile);
+  assert.equal(loadRoleContract(db, "project", "worker", "mvp").satisfies_profile_key, null);
+  db.close(); fs.rmSync(env.root, { recursive: true, force: true });
+});
+
+// The validator accepts an exact field set and the prompt states that set. If the two ever drift, the
+// model is told one contract and judged by another, which is exactly what made every structured role
+// fail: the prompt named the schema and never said what was in it.
+test("the shape shown to a role is the shape its result is validated against", () => {
+  for (const [key, shape] of Object.entries(RESULT_SCHEMA_SHAPES)) {
+    const env = requirementFixture(`workflow-shape-${key.replace(/\W/g, "-")}-`, { allowed: ["*"], omitRequirement: true });
+    const db = openDb(env.dbFile);
+    db.prepare("UPDATE role_contracts SET result_schema_key=? WHERE project_id='project' AND role_id='worker'").run(key);
+    const contract = loadRoleContract(db, "project", "worker", "mvp");
+    const prompt = rolePrompt({ contract, qualityContract: loadQualityContract(db, "mvp"), packageContract: {}, context: { response_language: "en" }, resultSchema: key });
+    for (const field of Object.keys(shape)) assert.equal(prompt.includes(`&quot;${field}&quot;`), true, `${key}: ${field} missing from the prompt`);
+    assert.throws(() => parseRoleReceipt({ output: JSON.stringify({ schema_version: 1 }) }, key, { contract, packageContract: { allowed_paths: [], artifact_keys: [] }, allowedDocumentIds: [] }), new RegExp(`${key.replace(".", "\.")}: fields mismatch`));
+    db.close(); fs.rmSync(env.root, { recursive: true, force: true });
+  }
 });

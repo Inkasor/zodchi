@@ -102,3 +102,17 @@ test("every generated package imports transactionally into a clean local project
   verified.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+// A role contract names portable requirement keys; an installation satisfies them with local profiles.
+// A requirement that no role declares can never be satisfied, and a role whose declared profiles are
+// not declared as requirements can never be loaded.
+test("every role's allowed profiles are declared as portable requirements", () => {
+  for (const packageValue of PACKAGE_DEFINITIONS) {
+    const required = new Set(packageValue.profiles.map(item => item.key));
+    for (const item of packageValue.roles) {
+      const allowed = item.contract.allowed_profile_keys;
+      if (allowed.includes("*")) continue;
+      for (const key of allowed) assert.equal(required.has(key), true, `${packageValue.key}: ${item.key} allows undeclared requirement ${key}`);
+    }
+  }
+});
