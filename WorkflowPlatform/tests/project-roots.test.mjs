@@ -107,6 +107,27 @@ test("large files contribute relevant line windows and later planned paths keep 
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("the primary planned source receives priority and calendar dates do not become line ranges", () => {
+  const { root, producer, consumer, db } = fixture("workflow-source-priority-", { sources: ["src/**"] });
+  const primary = Array.from({ length: 4500 }, (_, index) => `Строка${index + 1} = "основной код";`);
+  primary[3019] = "СредняяСебестоимость = Источник.Себестоимость;";
+  primary[3020] = "Код = КодСхемыРаботы(СхемаРаботы);";
+  primary[4199] = "Функция КодСхемыРаботы(СхемаРаботы)";
+  primary[4200] = "Если СхемаРаботы = FBO Тогда Возврат \"FBO\"; КонецЕсли;";
+  primary[4201] = "КонецФункции";
+  fs.writeFileSync(path.join(producer, "src", "ObjectModule.bsl"), primary.join("\n"));
+  fs.writeFileSync(path.join(consumer, "src", "FormModule.bsl"), "Процедура Выгрузить()\n  Сервер.Выгрузить();\nКонецПроцедуры\n");
+  const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" });
+  const collected = collectSourceFiles(discovery.roots, ["src/ObjectModule.bsl", "consumer/src/FormModule.bsl"], sourceScope(discovery.source_scope), 24_000, {
+    query: "Проверь среднюю себестоимость и схемы около строк 2990–3050, а также историю за 15–22 августа 2026 года"
+  });
+  assert.ok(collected.files[0].supplied_bytes > collected.files[1].supplied_bytes);
+  assert.match(collected.files[0].text, /СредняяСебестоимость/);
+  assert.match(collected.files[0].text, /Функция КодСхемыРаботы/);
+  assert.equal(collected.files.flatMap(file => file.segments).some(segment => segment.reason === "requested_lines:15-22"), false);
+  db.close(); fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("missing output paths do not reserve source budget", () => {
   const { root, producer, db } = fixture("workflow-source-existing-share-", { sources: ["src/**", "docs/**"] });
   fs.writeFileSync(path.join(producer, "src", "large.bsl"), "ПолезнаяСтрока = 1;\n".repeat(1000));
