@@ -90,6 +90,39 @@ test("package upgrade removes bindings for checks no longer declared by that pac
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("package upgrade preserves a machine-local runner bound to a disabled portable check", () => {
+  const root = temporaryRoot("workflow-package-local-check-"), sourceDb = seedSource(root), targetDb = seedTarget(root);
+  const firstPackage = path.join(root, "first.xml"), firstProposal = path.join(root, "first.json");
+  exportWorkflowPackage(sourceDb, firstPackage, "source", "demo.package");
+  const first = proposeWorkflowImport(targetDb, firstPackage, firstProposal, "target");
+  applyWorkflowImport(targetDb, firstProposal, "target", { confirmedBy: "owner" });
+  let db = openDb(targetDb);
+  const checkId = db.prepare("SELECT local_id FROM package_import_mappings WHERE proposal_id=? AND entity_type='check' AND semantic_key='check.green'").get(first.id).local_id;
+  const localConfig = stableLocalConfig(root);
+  db.prepare("UPDATE check_definitions SET name='Local BSL LS',runner='one_c_bsl_policy',kind='command',config_json=?,timeout_seconds=1800 WHERE id=?").run(JSON.stringify(localConfig), checkId);
+  db.close();
+
+  db = openDb(sourceDb);
+  db.prepare("UPDATE check_definitions SET name='Portable BSL hook',runner='requires_local_bsl_binding',kind='disabled',config_json='{}',timeout_seconds=30 WHERE id='check.green'").run();
+  db.prepare("UPDATE workflow_package_releases SET version='1.0.1' WHERE project_id='source' AND package_key='demo.package' AND status='active'").run();
+  db.close();
+  const secondPackage = path.join(root, "second.xml"), secondProposal = path.join(root, "second.json");
+  exportWorkflowPackage(sourceDb, secondPackage, "source", "demo.package");
+  proposeWorkflowImport(targetDb, secondPackage, secondProposal, "target");
+  applyWorkflowImport(targetDb, secondProposal, "target", { confirmedBy: "owner" });
+
+  db = openDb(targetDb);
+  const definition = db.prepare("SELECT name,runner,kind,config_json,timeout_seconds FROM check_definitions WHERE id=?").get(checkId);
+  assert.deepEqual({ ...definition, config_json: JSON.parse(definition.config_json) }, { name: "Local BSL LS", runner: "one_c_bsl_policy", kind: "command", config_json: localConfig, timeout_seconds: 1800 });
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM project_checks WHERE project_id='target' AND check_id=? AND required=1").get(checkId).count, 4);
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+function stableLocalConfig(root) {
+  return { executable: path.join(root, "tools", "bsl-language-server.exe"), platform_bin: path.join(root, "1c", "bin") };
+}
+
 test("changed package or target invalidates a pending import", () => {
   const root = temporaryRoot("workflow-package-stale-"), sourceDb = seedSource(root), targetDb = seedTarget(root), packageFile = path.join(root, "package.xml"), proposalFile = path.join(root, "proposal.json");
   exportWorkflowPackage(sourceDb, packageFile, "source", "demo.package"); proposeWorkflowImport(targetDb, packageFile, proposalFile, "target"); fs.appendFileSync(packageFile, " \n", "utf8");

@@ -7,7 +7,7 @@ import { BudgetManager, invokeWithinBudget } from "./budget.mjs";
 import { applyRegisteredPatch, documentVersion } from "./documentator.mjs";
 import { registeredProjectCheckKeys, runProjectGate } from "./gates.mjs";
 import { selectProjectContext } from "./document-context.mjs";
-import { collectSourceFiles, expandTerms, searchSources, sourceScope } from "./source-context.mjs";
+import { collectSourceFiles, expandTerms, inventorySummary, searchSources, sourceScope } from "./source-context.mjs";
 import { projectRoots, writableRoots } from "./project-roots.mjs";
 import { loadRoleContract, parseRoleReceipt, rolePrompt, structuredHash } from "./role-contracts.mjs";
 import { consumeCorrectionCycle, documentationOutcome, loadOperationalPolicy, loadQualityContract, operationalLevel, reviewerRequirement } from "./quality-contracts.mjs";
@@ -93,6 +93,31 @@ function requireWorkflowApproval(runtime, runId, contract, responseLanguage) {
   return { status: "approval_required", questions: [question], workflow_approval: contract.approval.step_key };
 }
 
+function promptBytes(value) { return Buffer.byteLength(JSON.stringify(value)); }
+
+// Search results are already ranked best-first. When their independent collection caps add up to more
+// than a role can receive, discard the least relevant evidence first and keep the highest-ranked path.
+// The inventory is structural context, so counts per area replace hundreds of path/size records; paths
+// proven relevant by the two-pass search remain in source_matches.
+function fitSourceEvidence(context, limit, measure = promptBytes) {
+  if (Array.isArray(context.source_inventory)) context.source_inventory = inventorySummary(context.source_inventory);
+  const refresh = () => measure(context);
+  while (refresh() > limit && Array.isArray(context.decisions) && context.decisions.length) context.decisions.shift();
+  const result = context.source_matches;
+  if (!result || !Array.isArray(result.files)) return context;
+  const originalFiles = result.files.length;
+  while (refresh() > limit && result.files.length > 1) {
+    result.files.pop();
+    result.truncated = true;
+    result.budget_truncation = { retained_files: result.files.length, omitted_files: originalFiles - result.files.length };
+  }
+  // Keep the best path even under an unusually small envelope; matching lines are supporting detail and
+  // can be reduced without losing where the proven hit lives.
+  const best = result.files[0];
+  while (refresh() > limit && Array.isArray(best?.matches) && best.matches.length > 1) best.matches.pop();
+  return context;
+}
+
 function boundedContext(discovery, roleId, classification, limit, responseLanguage, supplied = {}) {
   const selected = selectProjectContext(discovery, classification, [], null, discovery.project.id, roleId);
   const context = {
@@ -107,7 +132,8 @@ function boundedContext(discovery, roleId, classification, limit, responseLangua
     // opens a file itself, so the same plan against the same tree produces the same invocation.
     ...supplied
   };
-  let used = Buffer.byteLength(JSON.stringify(context));
+  fitSourceEvidence(context, limit);
+  let used = promptBytes(context);
   for (const document of selected.documents) {
     const remaining = limit - used;
     if (remaining <= 256) break;
@@ -133,6 +159,8 @@ function promptWithinContract(contract, qualityContract, packageContract, contex
     fitted.decisions.shift();
     prompt = rolePrompt({ contract, qualityContract, packageContract, context: fitted, resultSchema: schemaKey });
   }
+  fitSourceEvidence(fitted, contract.context_limit_bytes, value => Buffer.byteLength(rolePrompt({ contract, qualityContract, packageContract, context: value, resultSchema: schemaKey })));
+  prompt = rolePrompt({ contract, qualityContract, packageContract, context: fitted, resultSchema: schemaKey });
   while (Buffer.byteLength(prompt) > contract.context_limit_bytes && Array.isArray(fitted.documents) && fitted.documents.length) {
     const overflow = Buffer.byteLength(prompt) - contract.context_limit_bytes;
     const document = fitted.documents.at(-1), text = String(document.text ?? "");
@@ -396,7 +424,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   // validated against a list the planner never saw, and it filled the gap by naming itself.
   const plannerPackage = { objective: message, classification: { work_type: classification.work_type, artifact_type: classification.artifact_type, risk: classification.risk, quality_mode: classification.quality_mode }, registered_roles: roleCapabilities, plan_boundary: planBoundary, following_phases: followingPhases, registered_checks: registeredChecks, registered_artifact_types: registeredArtifactTypes };
   const planner = plannerContract && await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: plannerPackage, context: boundedContext(discovery, plannerRole, classification, Math.floor(plannerContract.context_limit_bytes / 2), responseLanguage, {
-      source_inventory: discovery.sources ?? [],
+      source_inventory: inventorySummary(discovery.sources ?? []),
       // An inventory says what exists; it does not say where the thing the owner asked about lives, and
       // in a project of a thousand files choosing paths by name is guessing. The identifiers are already
       // in the message, so the platform searches the declared scope for them before the planner is called

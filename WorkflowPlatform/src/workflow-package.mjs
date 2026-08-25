@@ -188,7 +188,12 @@ function applyChecks(db, proposal, projectId, value) {
   }
   for (const check of value.checks) {
     const checkId = mapEntity(db, proposal.id, projectId, value.key, "check", check.key); checkMap.set(check.key, checkId);
-    db.prepare("INSERT INTO check_definitions(id,name,runner,kind,config_json,timeout_seconds) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,runner=excluded.runner,kind=excluded.kind,config_json=excluded.config_json,timeout_seconds=excluded.timeout_seconds").run(checkId, check.name, check.runner, check.kind, stableJson(check.config), check.timeout_seconds);
+    const existing = db.prepare("SELECT kind FROM check_definitions WHERE id=?").get(checkId);
+    // A disabled portable check is an installation hook, not an instruction to erase machine-local
+    // executable paths. Once the owner has bound that hook to a real runner, package upgrades may still
+    // update its project bindings below but must preserve the local definition.
+    const preserveLocalDefinition = check.kind === "disabled" && check.runner.startsWith("requires_local_") && existing && existing.kind !== "disabled";
+    if (!preserveLocalDefinition) db.prepare("INSERT INTO check_definitions(id,name,runner,kind,config_json,timeout_seconds) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,runner=excluded.runner,kind=excluded.kind,config_json=excluded.config_json,timeout_seconds=excluded.timeout_seconds").run(checkId, check.name, check.runner, check.kind, stableJson(check.config), check.timeout_seconds);
     db.prepare("DELETE FROM project_checks WHERE project_id=? AND check_id=?").run(projectId, checkId);
     for (const binding of check.bindings) db.prepare("INSERT INTO project_checks(project_id,check_id,quality_mode_id,required,artifact_type_id) VALUES(?,?,?,?,?)").run(projectId, checkId, binding.quality_mode_key, Number(binding.required), binding.artifact_type_key);
   }

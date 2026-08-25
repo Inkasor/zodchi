@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_5_2026_08_25" status="working">
+
+## 0.3.5 — 2026-08-25
+
+- Planner source evidence now obeys the role's single byte contract. Large inventories are reduced to structural counts, low-ranked search hits are removed deterministically, and the highest-ranked proven source path is retained instead of rejecting the task before a model call.
+- Importing a newer workflow package no longer replaces an activated machine-local check definition with its disabled portable placeholder. Package-owned bindings still update while executable paths and runner settings remain local.
+- Regression coverage reproduces a 24,000-byte planner contract with 451 source files and verifies both deterministic context fitting and preservation of a locally configured check across package upgrades.
+
+</section>
+
 <section id="0_3_4_2026_08_25" status="working">
 
 ## 0.3.4 — 2026-08-25
