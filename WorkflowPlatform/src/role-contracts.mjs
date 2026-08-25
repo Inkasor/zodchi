@@ -14,11 +14,11 @@ export const RESULT_SCHEMA_SHAPES = Object.freeze({
     schema_version: 1,
     outcome: "ready | questions",
     scope: { included: ["string"], excluded: ["string"] },
-    allowed_paths: ["project-relative path"],
+    allowed_paths: ["path relative to the project root"],
     inputs: ["string"],
     checks: ["registered check id from task_package.registered_checks"],
     risks: ["string"],
-    artifacts: [{ key: "string", type: "registered artifact type", path: "project-relative path or null", required: true }],
+    artifacts: [{ key: "string", type: "registered artifact type", path: "path relative to the project root, or null", required: true }],
     completion_criteria: ["string"],
     questions: ["string, at most 5; empty when outcome is ready"],
     steps: [{ key: "string", role: "role id from task_package.registered_roles", objective: "string", allowed_paths: ["subset of the plan allowed_paths"], artifact_keys: ["key of an artifact declared above"], check_ids: ["registered check id"], required: true, irreversible: false, max_attempts: 1 }]
@@ -36,7 +36,7 @@ export const RESULT_SCHEMA_SHAPES = Object.freeze({
     schema_version: 1,
     decision: "PASS | CHANGES_REQUESTED | REJECT",
     summary: "non-empty string",
-    blockers: [{ code: "string", message: "string", path: "project-relative path or null" }],
+    blockers: [{ code: "string", message: "string", path: "path relative to the project root, or null" }],
     required_actions: ["string"],
     evidence_refs: ["string"]
   }),
