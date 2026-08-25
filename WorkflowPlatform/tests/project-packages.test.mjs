@@ -7,6 +7,7 @@ import { openDb } from "../src/db.mjs";
 import { applyWorkflowImport, parseWorkflowPackage, proposeWorkflowImport, serializeWorkflowPackage, validateWorkflowPackage } from "../src/workflow-package.mjs";
 import { inspectWorkflowBundle, parseWorkflowBundle } from "../src/workflow-bundle.mjs";
 import { PACKAGE_BUNDLES, PACKAGE_DEFINITIONS, generatedPackagesDirectory } from "../packages/definitions.mjs";
+import { role } from "../packages/builders.mjs";
 
 // Package definitions are an installation's own material and the configured source may be private, so
 // these tests assert the contract every package must satisfy rather than the content of any one
@@ -14,6 +15,13 @@ import { PACKAGE_BUNDLES, PACKAGE_DEFINITIONS, generatedPackagesDirectory } from
 // example this repository ships.
 function temporaryRoot(prefix) { const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir(); fs.mkdirSync(parent, { recursive: true }); return fs.mkdtempSync(path.join(parent, prefix)); }
 const generatedFile = key => path.join(generatedPackagesDirectory, `${key}.xml`);
+
+test("new role contracts use a measured-prompt allowance above the old 24KB default", () => {
+  const ordinary = role("analyst", "Inspect bounded evidence.", ["research"], ["document"]);
+  const deliberatelySmall = role("fixture", "Exercise fitting.", ["research"], ["document"], { context: 24000 });
+  assert.equal(ordinary.contract.context_limit_bytes, 65536);
+  assert.equal(deliberatelySmall.contract.context_limit_bytes, 24000);
+});
 
 test("at least one package is configured and every one is generated and free of local identity", () => {
   assert.equal(PACKAGE_DEFINITIONS.length >= 1, true);

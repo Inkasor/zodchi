@@ -118,6 +118,35 @@ function fitSourceEvidence(context, limit, measure = promptBytes) {
   return context;
 }
 
+function utf8Prefix(value, maxBytes) {
+  const text = String(value ?? "");
+  if (maxBytes <= 0) return "";
+  if (Buffer.byteLength(text) <= maxBytes) return text;
+  let low = 0, high = text.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (Buffer.byteLength(text.slice(0, middle)) <= maxBytes) low = middle;
+    else high = middle - 1;
+  }
+  return text.slice(0, low);
+}
+
+function fitWorkerSources(context, limit, measure) {
+  const files = context.sources?.files;
+  if (!Array.isArray(files)) return context;
+  for (let index = files.length - 1; measure(context) > limit && index >= 0; index -= 1) {
+    const file = files[index], text = String(file.text ?? "");
+    if (!text) continue;
+    const overflow = measure(context) - limit;
+    file.text = utf8Prefix(text, Math.max(0, Buffer.byteLength(text) - overflow - 256));
+    file.supplied_bytes = Buffer.byteLength(file.text);
+    file.truncated = true;
+    file.prompt_truncated = true;
+  }
+  context.sources.bytes = files.reduce((total, file) => total + Buffer.byteLength(String(file.text ?? "")), 0);
+  return context;
+}
+
 function boundedContext(discovery, roleId, classification, limit, responseLanguage, supplied = {}) {
   const selected = selectProjectContext(discovery, classification, [], null, discovery.project.id, roleId);
   const context = {
@@ -168,6 +197,8 @@ function promptWithinContract(contract, qualityContract, packageContract, contex
     else fitted.documents.pop();
     prompt = rolePrompt({ contract, qualityContract, packageContract, context: fitted, resultSchema: schemaKey });
   }
+  fitWorkerSources(fitted, contract.context_limit_bytes, value => Buffer.byteLength(rolePrompt({ contract, qualityContract, packageContract, context: value, resultSchema: schemaKey })));
+  prompt = rolePrompt({ contract, qualityContract, packageContract, context: fitted, resultSchema: schemaKey });
   if (Buffer.byteLength(prompt) > contract.context_limit_bytes) throw new Error(`ROLE_CONTEXT_BUDGET_EXCEEDED: fixed contract envelope is ${Buffer.byteLength(prompt)}/${contract.context_limit_bytes} bytes`);
   return prompt;
 }
@@ -456,7 +487,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     for (const plannedStep of plan.steps) {
     const contract = loadRoleContract(runtime.db, projectId, plannedStep.role, level);
     const packageContract = { objective: plannedStep.objective, allowed_paths: plannedStep.allowed_paths, artifact_keys: plannedStep.artifact_keys, check_ids: plannedStep.check_ids, plan_hash: structuredHash(plan), correction_cycle: cycle, gate_failures: priorGate?.checks?.filter(check => check.required && check.status !== "passed") ?? [] };
-    const worker = await invokeRole({ runtime, queue, runId, roleId: plannedStep.role, level, taskRoot, packageContract, context: boundedContext(discovery, plannedStep.role, classification, Math.floor(contract.context_limit_bytes / 2), responseLanguage, { sources: collectSourceFiles(discovery.roots ?? [], plannedStep.allowed_paths, sourceScope(discovery.source_scope), Math.floor(contract.context_limit_bytes / 2)) }), schemaKey: "worker.v1", parseOptions: { packageContract }, gatewayCall });
+    const worker = await invokeRole({ runtime, queue, runId, roleId: plannedStep.role, level, taskRoot, packageContract, context: boundedContext(discovery, plannedStep.role, classification, Math.floor(contract.context_limit_bytes / 2), responseLanguage, { sources: collectSourceFiles(discovery.roots ?? [], plannedStep.allowed_paths, sourceScope(discovery.source_scope), Math.floor(contract.context_limit_bytes / 2), { query: plannedStep.objective }) }), schemaKey: "worker.v1", parseOptions: { packageContract }, gatewayCall });
     if (worker.result.status !== "completed") {
       worker.fail(`worker_${worker.result.status}`, worker.result.status === "failed");
       const targetState = worker.result.status === "blocked" ? "blocked" : "retry_scheduled";

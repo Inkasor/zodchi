@@ -222,6 +222,41 @@ test("planner source evidence is fitted to its byte contract and keeps the best 
   fs.rmSync(env.root, { recursive: true, force: true });
 });
 
+test("worker prompt fits the final byte contract and receives requested regions from a large source", async () => {
+  const env = fixture("workflow-worker-source-budget-");
+  const lines = Array.from({ length: 4500 }, (_, index) => `Строка${index + 1} = "обычный код";`);
+  lines[2799] = "СебестоимостьМаркер2800 = Источник.Себестоимость;";
+  lines[4399] = "СебестоимостьМаркер4400 = Строка.Себестоимость;";
+  fs.writeFileSync(path.join(env.project, "src", "large.bsl"), lines.join("\n"));
+  const db = openDb(env.dbFile);
+  db.prepare("UPDATE role_contracts SET context_limit_bytes=24000 WHERE project_id='project' AND role_id='worker' AND status='active'").run();
+  db.close();
+  const plan = plannerResult();
+  plan.allowed_paths.push("src/large.bsl");
+  plan.steps[0].allowed_paths = ["src/large.bsl"];
+  plan.steps[0].objective = "Проследи СебестоимостьМаркер2800 в строках 2750–2850 и СебестоимостьМаркер4400 в строках 4380–4460";
+  let workerPrompt = "";
+  const result = await processMessage({
+    message: "Разбери большой BSL-модуль", project: env.project, dbFile: env.dbFile,
+    workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, classificationResult: classification(false),
+    gatewayCall: async request => {
+      if (request.role === "planner") return receipt("planner", plan);
+      if (request.role === "worker") {
+        workerPrompt = fs.readFileSync(request.taskFile, "utf8");
+        return receipt("worker", { schema_version: 1, status: "blocked", summary: "Fixture stops after context inspection.", changed_paths: [], artifacts: [], evidence: ["prompt captured"], questions: [] });
+      }
+      throw new Error(`unexpected role ${request.role}`);
+    }
+  });
+  assert.equal(result.execution.status, "blocked");
+  assert.ok(Buffer.byteLength(workerPrompt) <= 24000);
+  assert.match(workerPrompt, /СебестоимостьМаркер2800/);
+  assert.match(workerPrompt, /СебестоимостьМаркер4400/);
+  assert.match(workerPrompt, /requested_ranges_and_objective_matches/);
+  assert.doesNotMatch(workerPrompt, /Строка1 =/);
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
 test("configured project call budget hard-stops the real role wrapper before Gateway invocation", async () => {
   const env = fixture("workflow-structured-budget-stop-");
   const setup = openDb(env.dbFile);

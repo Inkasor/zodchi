@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "zodchi",
   "displayName": "Zodchi",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "workingName": false,
   "releaseChannel": "beta",
   "components": [
