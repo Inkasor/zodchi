@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_3_2026_08_25" status="working">
+
+## 0.3.3 — 2026-08-25
+
+- Classification now uses Codex native structured output instead of relying on prompt-only JSON. Invalid responses fail with safe structural detail, while raw prompts and model output remain outside the gateway database.
+- Project source discovery now preserves non-ASCII Git paths, balances capped inventories across top-level areas, ranks direct request terms first, and excludes Codex attachment metadata. A registered project root is explicitly treated as source available to downstream roles, so documentation work no longer asks the user to paste code that is already present.
+- Regression coverage verifies the output schema and gateway propagation, safe failure diagnostics, Cyrillic paths, balanced inventories, search ranking, and attachment filtering.
+
+</section>
+
 <section id="0_3_2_2026_08_25" status="working">
 
 ## 0.3.2 — 2026-08-25

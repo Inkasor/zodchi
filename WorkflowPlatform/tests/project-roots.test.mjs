@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -7,7 +8,7 @@ import { openDb, now } from "../src/db.mjs";
 import { readProjectContext, compactProjectSnapshot } from "../src/document-context.mjs";
 import { applyRegisteredPatch } from "../src/documentator.mjs";
 import { projectRoots, writableRoots } from "../src/project-roots.mjs";
-import { collectSourceFiles, expandTerms, searchSources, searchTerms, sourceScope } from "../src/source-context.mjs";
+import { collectSourceFiles, expandTerms, searchSources, searchTerms, sourceInventory, sourceScope } from "../src/source-context.mjs";
 
 function temporaryRoot(prefix) {
   const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir();
@@ -90,7 +91,7 @@ test("the identifiers in a request find the files that carry them", () => {
   fs.writeFileSync(path.join(producer, "src", "cost.mjs"), "// avgCost is read here\nconst avgCost = row.avgCost;\n");
   fs.writeFileSync(path.join(consumer, "src", "view.mjs"), "render(avgCost);\n");
 
-  const terms = searchTerms("Откуда берётся avgCost по артикулу 620008 и чем он отличается от unit.cost?");
+  const terms = searchTerms("# Files mentioned by the user:\nattachment-path/AppData/codex-clipboard.png\n\n## My request:\nОткуда берётся avgCost по артикулу 620008 и чем он отличается от unit.cost?");
   // Prose is not a search term: only names that look like code, and identifiers long enough to be one.
   assert.deepEqual(terms, ["avgCost", "620008", "unit.cost"]);
 
@@ -103,6 +104,26 @@ test("the identifiers in a request find the files that carry them", () => {
   assert.equal(found.files[0].matches[0].line, 1);
 
   db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("git inventory keeps Cyrillic paths literal and balances a capped inventory across project areas", () => {
+  const root = temporaryRoot("workflow-unicode-git-");
+  fs.mkdirSync(path.join(root, ".codex"));
+  fs.mkdirSync(path.join(root, "Конфигурация", "ОбщиеМодули"), { recursive: true });
+  for (let index = 0; index < 5; index += 1) fs.writeFileSync(path.join(root, ".codex", `${index}.md`), "DataPath metadata\n");
+  fs.writeFileSync(path.join(root, "Конфигурация", "ОбщиеМодули", "Себестоимость.bsl"), "avgCost = unit.cost;\n");
+  execFileSync("git", ["init", "--quiet"], { cwd: root, windowsHide: true });
+  execFileSync("git", ["add", "."], { cwd: root, windowsHide: true });
+
+  const [inventory] = sourceInventory([{ key: "primary", path: root, access: "write", primary: true }], sourceScope([]), { maxFilesPerRoot: 2 });
+  assert.equal(inventory.total_files, 6);
+  assert.deepEqual(inventory.directories, { ".codex": 5, "Конфигурация": 1 });
+  assert.equal(inventory.files.some(file => file.path === "Конфигурация/ОбщиеМодули/Себестоимость.bsl"), true);
+  assert.equal(inventory.files.some(file => file.path.startsWith('"')), false);
+  const found = searchSources([{ key: "primary", path: root, access: "write", primary: true }], sourceScope([]), ["avgCost", "DataPath"], { maxFiles: 2 });
+  assert.equal(found.files[0].path, "Конфигурация/ОбщиеМодули/Себестоимость.bsl");
+  assert.equal(found.truncated, true);
   fs.rmSync(root, { recursive: true, force: true });
 });
 

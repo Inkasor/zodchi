@@ -40,7 +40,8 @@
         "authenticatedPattern": "logged in"
       },
       "profiles": {},
-      "additionalDirectoryArg": "--add-dir"
+      "additionalDirectoryArg": "--add-dir",
+      "outputSchemaArg": "--output-schema"
     },
     "claude": {
       "command": "claude.exe",
