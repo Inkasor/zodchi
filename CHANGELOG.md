@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_3_19_2026_08_26" status="working">
+
+## 0.3.19 — 2026-08-26
+
+- Every explicit source range now reserves its highest-scoring page before long semantic call-chain excerpts can consume the role context budget.
+- Call-chain and referenced-definition evidence still follows those reserved pages, and remaining range pages continue round-robin within the measured prompt envelope.
+- Regression coverage proves that three distant requested regions and a long function chain remain represented together under a tight source budget.
+
+</section>
+
 <section id="0_3_18_2026_08_26" status="working">
 
 ## 0.3.18 — 2026-08-26
