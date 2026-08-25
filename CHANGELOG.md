@@ -2,6 +2,15 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+## 0.3.0-beta.13 — 2026-08-25
+
+- A workflow that declares its steps is executed as declared, with no planning call at all. Its author already named the roles, the order, the artifact types and the checks; asking a model to invent that again is what let a plan name steps the route does not have. A declared planning step still runs, because a change needs the paths and objectives only the message can supply.
+- Nothing in that derivation can produce an allowed path, and a worker without one may change nothing, so a workflow whose worker roles may write must declare a planning step. This is now asserted for every package, and the least-privilege access change workflow gained the planning step it was missing.
+- An owner decision has three outcomes, not two. A person asked to authorize an action can also be neither agreeing nor refusing: doubting, asking back, agreeing in part. Only an unambiguous yes continues the waiting run; a refusal closes it; anything else leaves the decision open and answers the person. Reading hesitation as consent would take an action that was never authorized.
+- A granted approval continues the run that asked for it instead of starting a new one. The confirming message classifies as a conversation, so the paused run supplies its own objective and classification; nothing could resolve these approvals before, and every message started over.
+- The roles a route may execute after an owner decision are now known. Only the steps before the decision were ever named, so a granted approval left the route with nothing to run.
+- A pending interaction is offered to the classifier under its real kind, which is what separates a question from a decision on an action.
+
 ## 0.3.0-beta.12 — 2026-08-25
 
 - A role assignment now records which portable requirement it satisfies. A package names a requirement key and onboarding creates a local profile, so comparing the two by equality left most role contracts unloadable and no project could execute structured work at all.

@@ -1,11 +1,12 @@
 const REQUIRED_FIELDS = Object.freeze([
   "schema_version", "work_type", "artifact_type", "domain", "discipline", "risk", "planning_level", "quality_mode",
-  "planning_required", "human_required", "needs_questions", "document_required", "reply_mode", "pending_interaction_id",
+  "planning_required", "human_required", "needs_questions", "document_required", "reply_mode", "pending_interaction_id", "pending_interaction_response",
   "reason", "questions", "human_response"
 ]);
 const BOOLEAN_FIELDS = Object.freeze(["planning_required", "human_required", "needs_questions", "document_required"]);
 const RISKS = new Set(["low", "medium", "high"]);
 const REPLY_MODES = new Set(["conversation", "research", "clarification", "work"]);
+const OWNER_RESPONSES = new Set(["approve", "decline", "undecided", null]);
 // These answers are delivered directly and never enter a workflow, so they stay classifiable
 // even when a project registers no route for them.
 const DIRECT_REPLY_WORK_TYPES = Object.freeze(["clarification", "conversation", "research"]);
@@ -18,7 +19,9 @@ export function classificationCatalog(db, projectId) {
     WHERE wr.project_id=? AND wr.enabled=1 AND w.status='active'
     ORDER BY wr.work_type_id,wr.priority DESC,wr.workflow_id`).all(projectId);
   const pending = [
-    ...db.prepare("SELECT id,'approval' AS kind,question AS summary FROM approvals WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND status='pending' ORDER BY created_at,id").all(projectId),
+    // The kind is what separates a question from a decision on an action, and collapsing every approval
+    // into one label left the classifier unable to tell them apart in the very list it reads.
+    ...db.prepare("SELECT id,kind,question AS summary FROM approvals WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND status='pending' ORDER BY created_at,id").all(projectId),
     ...db.prepare("SELECT id,'document_proposal' AS kind,target AS summary FROM document_proposals WHERE project_id=? AND status='pending' ORDER BY created_at,id").all(projectId)
   ].sort((a, b) => a.id.localeCompare(b.id, "en"));
   return Object.freeze({
@@ -68,6 +71,13 @@ export function validateClassificationDecision(value, catalog) {
   if (value.human_response !== null && (typeof value.human_response !== "string" || value.human_response.length > 4000)) throw new Error("CLASSIFICATION_SCHEMA_INVALID: human_response");
   const pendingIds = catalog.pending_interactions.map(item => item.id);
   if (value.pending_interaction_id !== null && !pendingIds.includes(value.pending_interaction_id)) throw new Error(`CLASSIFICATION_PENDING_INTERACTION_UNKNOWN: ${value.pending_interaction_id}`);
+  // A person answering a request for consent can also be neither agreeing nor refusing: doubting,
+  // asking back, thinking aloud. Read as agreement that is an action taken without consent, so the
+  // three outcomes are named separately and anything short of an unambiguous yes is still undecided.
+  const answered = catalog.pending_interactions.find(item => item.id === value.pending_interaction_id) ?? null;
+  const decides = Boolean(answered) && answered.kind !== "clarification";
+  if (!OWNER_RESPONSES.has(value.pending_interaction_response)) throw new Error(`CLASSIFICATION_SCHEMA_INVALID: pending_interaction_response=${value.pending_interaction_response}`);
+  if (decides !== (value.pending_interaction_response !== null)) throw new Error("CLASSIFICATION_SCHEMA_INVALID: pending_interaction_response belongs to a decision, and every decision needs one");
   if (value.work_type === "conversation" && (value.planning_required || value.artifact_type !== "none" || value.reply_mode !== "conversation")) throw new Error("CLASSIFICATION_SCHEMA_INVALID: conversation contract");
   if (value.reply_mode === "work" && !value.planning_required) throw new Error("CLASSIFICATION_SCHEMA_INVALID: work requires planning");
   return Object.freeze({ ...value, kind: value.work_type, artifact: value.artifact_type, level: value.planning_level, quality: value.quality_mode });
@@ -136,6 +146,7 @@ export function classifierPrompt({ message, catalog, projectSnapshot, acceptedDe
     "- needs_questions must equal questions.length > 0, and must be true exactly when reply_mode is clarification.",
     "- questions: 0 to 5 plain-language questions, each one a real choice only the user can make. Never ask what the registry or the project files already answer.",
     "- pending_interaction_id: the id from PENDING_INTERACTIONS that this message answers, or null. A short confirmation is resolved from pending interactions and ordered history, never from a keyword rule.",
+    "- pending_interaction_response: null when pending_interaction_id is null or names an interaction of kind clarification. When it names any other kind, the user is being asked to decide whether an action may happen, and this field says what they decided: approve only for an unambiguous yes to that exact action, decline for a refusal, undecided for anything else. Doubt, a question back, a condition, a partial agreement and thinking aloud are all undecided: the decision stays open and the user is answered. Treating hesitation as approval takes an action the user never authorized, so undecided is the answer whenever both readings are possible.",
     "- reason: why this classification, in RESPONSE_LANGUAGE.",
     "- human_response: the reply text when reply_mode is conversation, otherwise null.",
     "LEVEL_SELECTION:",

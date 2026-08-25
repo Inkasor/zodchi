@@ -13,7 +13,7 @@ if (role === "classifier") {
   result = {
     schema_version: 1, work_type: "implementation", artifact_type: "code", domain: "game-development", discipline: "software",
     risk: "low", planning_level: "L2", quality_mode: "mvp", planning_required: true, human_required: false,
-    needs_questions: false, document_required: false, reply_mode: "work", pending_interaction_id: null,
+    needs_questions: false, document_required: false, reply_mode: "work", pending_interaction_id: null, pending_interaction_response: null,
     reason: "A registered read-only verification route was requested.", questions: [], human_response: null
   };
   if (conversation) Object.assign(result, { work_type: "conversation", artifact_type: "none", domain: "general", discipline: "general", planning_level: "L0", planning_required: false, reply_mode: "conversation", reason: "Ordinary conversation requires no productive role.", human_response: "Привет! Workflow Platform отвечает в тот же чат без запуска рабочих ролей." });

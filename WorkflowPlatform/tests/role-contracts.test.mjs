@@ -23,7 +23,7 @@ function classification(documentRequired = false, risk = "low") {
     schema_version: 1, work_type: documentRequired ? "documentation" : "implementation", artifact_type: documentRequired ? "document" : "code",
     domain: "workflow", discipline: documentRequired ? "documentation" : "software", risk, planning_level: "L2", quality_mode: "mvp",
     planning_required: true, human_required: false, needs_questions: false, document_required: documentRequired, reply_mode: "work",
-    pending_interaction_id: null, reason: documentRequired ? "Нужно обновить зарегистрированный документ." : "Нужен ограниченный пакет кода.", questions: [], human_response: null
+    pending_interaction_id: null, pending_interaction_response: null, reason: documentRequired ? "Нужно обновить зарегистрированный документ." : "Нужен ограниченный пакет кода.", questions: [], human_response: null
   };
 }
 
@@ -210,6 +210,117 @@ test("configured project call budget hard-stops the real role wrapper before Gat
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM events WHERE run_id=? AND kind='budget_hard_stop'").get(result.run_id).count, 1);
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM gateway_calls WHERE run_id=?").get(result.run_id).count, 0);
   db.close();
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
+// A route that declares its steps has already been planned by whoever wrote it. Re-deriving that shape
+// from a model is what let a plan name steps the route does not have, so a route without a declared
+// planning step is executed exactly as declared, with no planning call at all.
+test("a route that declares its steps without planning runs them without a planner call", async () => {
+  const env = fixture("workflow-derived-plan-");
+  const db = openDb(env.dbFile);
+  db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow',?,?,?,1,0,'package.v1',?,'[]','[\"check-ok\"]','{}','{}')").run("inspect", 1, "worker", "worker.v1");
+  db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow',?,?,?,1,0,'package.v1',?,'[]','[\"check-ok\"]','{}','{}')").run("review", 2, "reviewer", "reviewer.v1");
+  db.close();
+  const calls = [];
+  const result = await processMessage({
+    message: "Проверь зарегистрированный контекст", project: env.project, dbFile: env.dbFile,
+    workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, classificationResult: classification(false),
+    gatewayCall: async request => {
+      calls.push(request.role);
+      if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "Inspected.", changed_paths: [], artifacts: [], evidence: ["registered context"], questions: [] });
+      if (request.role === "reviewer") return receipt("reviewer", reviewerResult("PASS"));
+      throw new Error(`unexpected role ${request.role}`);
+    },
+    gateRunner: async () => ({ task_id: "gate", project: env.project, level: "mvp", files: [], status: "passed", checks: [{ id: "check-ok", required: true, status: "passed" }], summary: "passed" })
+  });
+  assert.equal(calls.includes("planner"), false);
+  assert.equal(result.execution.status, "completed");
+  const verified = openDb(env.dbFile);
+  assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflow_steps WHERE run_id=? AND step_key='planning'").get(result.run_id).count, 0);
+  assert.equal(verified.prepare("SELECT step_key FROM workflow_steps WHERE run_id=? ORDER BY ordinal LIMIT 1").get(result.run_id).step_key, "inspect");
+  verified.close();
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
+// Nothing in that derivation can produce an allowed path, and a worker without one may change nothing.
+// A route whose workers may write therefore has to declare planning rather than fail inside the worker.
+test("a declared route whose worker may write is refused without a planning step", async () => {
+  const env = fixture("workflow-derived-plan-writer-");
+  const db = openDb(env.dbFile);
+  db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow',?,?,?,1,0,'package.v1',?,'[]','[\"check-ok\"]','{}','{}')").run("apply", 1, "worker", "worker.v1");
+  db.prepare("UPDATE role_contracts SET allowed_tools_json='[\"apply_patch\"]' WHERE role_id='worker'").run();
+  db.close();
+  let calls = 0;
+  const result = await processMessage({
+    message: "Внеси изменение", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} },
+    execute: true, classificationResult: classification(false), gatewayCall: async () => { calls += 1; throw new Error("must not be called"); }
+  });
+  assert.equal(calls, 0);
+  assert.equal(result.execution.error, "WORKFLOW_WRITING_STEP_REQUIRES_PLANNING");
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
+// A person asked to authorize an action can also be neither agreeing nor refusing. Reading that as a
+// yes takes an action they were still deciding about, so doubt leaves the decision exactly where it was.
+async function approvalScenario(prefix, ownerResponse) {
+  const env = fixture(prefix);
+  const db = openDb(env.dbFile);
+  db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow',?,?,?,1,?,'package.v1',?,'[]','[\"check-ok\"]','{}','{}')").run("owner_approval", 1, null, 1, "approval.v1");
+  db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow',?,?,?,1,?,'package.v1',?,'[]','[\"check-ok\"]','{}','{}')").run("apply", 2, "worker", 0, "worker.v1");
+  db.close();
+  const first = await processMessage({
+    message: "Разверни изменение", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} },
+    execute: true, classificationResult: classification(false), gatewayCall: async () => { throw new Error("must not be called"); }
+  });
+  assert.equal(first.execution.status, "approval_required");
+  const opened = openDb(env.dbFile);
+  const approval = opened.prepare("SELECT id FROM approvals WHERE run_id=? AND status='pending'").get(first.run_id);
+  opened.close();
+  const calls = [];
+  const second = await processMessage({
+    message: "ответ владельца", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true,
+    classificationResult: { ...classification(false), work_type: "conversation", artifact_type: "none", planning_required: false, reply_mode: "conversation", human_response: "Записал.", pending_interaction_id: approval.id, pending_interaction_response: ownerResponse },
+    gatewayCall: async request => {
+      calls.push(request.role);
+      if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "Applied.", changed_paths: [], artifacts: [], evidence: ["bounded"], questions: [] });
+      throw new Error(`unexpected role ${request.role}`);
+    },
+    gateRunner: async () => ({ task_id: "gate", project: env.project, level: "mvp", files: [], status: "passed", checks: [{ id: "check-ok", required: true, status: "passed" }], summary: "passed" })
+  });
+  const db2 = openDb(env.dbFile);
+  const state = { approval: db2.prepare("SELECT status FROM approvals WHERE id=?").get(approval.id).status, run: db2.prepare("SELECT state FROM workflow_runs WHERE id=?").get(first.run_id).state };
+  db2.close();
+  return { env, first, second, calls, state };
+}
+
+test("an unambiguous yes continues the waiting run instead of starting a new one", async () => {
+  const { env, first, second, calls, state } = await approvalScenario("workflow-owner-approve-", "approve");
+  assert.equal(state.approval, "approved");
+  assert.equal(second.route, "work");
+  assert.equal(second.execution.status, "completed");
+  assert.equal(calls.includes("worker"), true);
+  assert.equal(state.run, "completed");
+  assert.notEqual(second.run_id, first.run_id);
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
+test("a refusal closes the waiting run and takes no action", async () => {
+  const { env, second, calls, state } = await approvalScenario("workflow-owner-decline-", "decline");
+  assert.equal(state.approval, "rejected");
+  assert.equal(state.run, "cancelled");
+  assert.deepEqual(calls, []);
+  assert.equal(second.route, "owner_decision");
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
+test("doubt is neither consent nor refusal: the decision stays open and nothing is done", async () => {
+  const { env, first, second, calls, state } = await approvalScenario("workflow-owner-undecided-", "undecided");
+  assert.equal(state.approval, "pending");
+  assert.equal(state.run, "approval_required");
+  assert.deepEqual(calls, []);
+  assert.equal(second.route, "conversation");
+  assert.notEqual(second.run_id, first.run_id);
   fs.rmSync(env.root, { recursive: true, force: true });
 });
 
