@@ -43,16 +43,27 @@ export function applyMigrations(db, directory = defaultMigrationsDirectory) {
     if (expected.name !== row.name || (expected.checksum !== row.checksum && !compatible)) throw new Error(`MIGRATION_CHECKSUM_MISMATCH: ${row.version}`);
   }
   const insert = db.prepare("INSERT INTO schema_migrations(version,name,checksum,applied_at) VALUES(?,?,?,?)");
+  // A table whose constraints have to change is rebuilt, and SQLite refuses to drop a table other
+  // tables reference while foreign keys are enforced. The documented rebuild turns enforcement off
+  // around the change, which cannot be done inside a transaction, and checks afterwards that the
+  // change left no reference dangling — so nothing is taken on trust, the check is simply moved to
+  // where it can run. A fresh database has no referencing rows, which is why a migration like this
+  // passes every test and fails on the first database that has been used.
   for (const migration of migrations.filter(item => !applied.some(row => row.version === item.version))) {
+    db.exec("PRAGMA foreign_keys=OFF");
     db.exec("BEGIN IMMEDIATE");
     try {
       db.exec(migration.sql);
       insert.run(migration.version, migration.name, migration.checksum, new Date().toISOString());
       db.exec(`PRAGMA user_version=${migration.version}`);
+      const violations = db.prepare("PRAGMA foreign_key_check").all();
+      if (violations.length) throw new Error(`FOREIGN_KEY_VIOLATIONS: ${violations.slice(0, 5).map(row => `${row.table}:${row.rowid}`).join(", ")}`);
       db.exec("COMMIT");
     } catch (error) {
       db.exec("ROLLBACK");
       throw new Error(`MIGRATION_FAILED ${migration.name}: ${error.message}`, { cause: error });
+    } finally {
+      db.exec("PRAGMA foreign_keys=ON");
     }
   }
   return { currentVersion: migrations.at(-1).version, applied: migrations.length };

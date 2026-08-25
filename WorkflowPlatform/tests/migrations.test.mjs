@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { openDb, schemaVersion } from "../src/db.mjs";
+import { openDb, schemaVersion, now } from "../src/db.mjs";
+import { fileURLToPath } from "node:url";
+
+const migrationsDirectory = fileURLToPath(new URL("../migrations", import.meta.url));
 
 function temporaryRoot(prefix) {
   const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir();
@@ -76,5 +79,35 @@ test("failed migration rolls back and legacy database fails closed", () => {
   db.exec("CREATE TABLE old_experiment(id TEXT)");
   db.close();
   assert.throws(() => openDb(legacy), /LEGACY_DATABASE_UNSUPPORTED/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("a migration that rebuilds a referenced table survives a database that has been used", () => {
+  const root = temporaryRoot("workflow-migration-rebuild-");
+  const partial = path.join(root, "migrations");
+  const all = fs.readdirSync(migrationsDirectory).filter(name => /^\d{3}_/.test(name)).sort();
+  fs.mkdirSync(partial);
+  // Everything up to the rebuild, so the database can be filled the way a real one is before the
+  // rebuilding migration runs against it.
+  for (const name of all.slice(0, -1)) fs.copyFileSync(path.join(migrationsDirectory, name), path.join(partial, name));
+
+  const file = path.join(root, "workflow.sqlite");
+  const before = openDb(file, { migrationsDirectory: partial });
+  before.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('project','Project',?,?)").run(root, now());
+  before.prepare("INSERT OR IGNORE INTO roles(id,name) VALUES('documentator','Documentator')").run();
+  before.prepare("INSERT INTO project_documents(id,project_id,path,document_type,authority,status,active) VALUES('doc','project','docs/plan.md','plan','owner','active',1)").run();
+  before.prepare("INSERT INTO role_documents(project_id,role_id,document_id,read_access,write_access,purpose,priority) VALUES('project','documentator','doc',1,1,'record',10)").run();
+  before.close();
+
+  // A fresh database has nothing referencing the table being rebuilt, so a migration that cannot drop
+  // it passes every test and fails on the first database anyone has actually used.
+  const after = openDb(file);
+  assert.equal(schemaVersion(after), all.length);
+  assert.equal(after.prepare("SELECT COUNT(*) AS count FROM project_documents").get().count, 1);
+  assert.equal(after.prepare("SELECT root_key FROM project_documents WHERE id='doc'").get().root_key, "primary");
+  assert.equal(after.prepare("SELECT COUNT(*) AS count FROM role_documents WHERE document_id='doc'").get().count, 1);
+  assert.equal(after.prepare("PRAGMA foreign_key_check").all().length, 0);
+  after.close();
+
   fs.rmSync(root, { recursive: true, force: true });
 });

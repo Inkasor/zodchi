@@ -40,6 +40,9 @@ END;
 -- table is rebuilt because the old uniqueness lives in its definition and cannot be dropped in place.
 ALTER TABLE project_documents ADD COLUMN root_key TEXT NOT NULL DEFAULT 'primary';
 
+-- role_documents and document_operations reference project_documents, so dropping it is refused while
+-- foreign keys are enforced. The migration runner turns enforcement off around each migration and runs
+-- a foreign key check before committing, which is the documented way to rebuild a referenced table.
 CREATE TABLE project_documents_rooted (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id),
