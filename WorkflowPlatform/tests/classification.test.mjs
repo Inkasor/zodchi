@@ -238,6 +238,27 @@ test("an unpinned project hook lets the classifier select the registered workflo
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("a registered manifest is not held to the semantic document format", () => {
+  const { root, project, db } = fixture("workflow-reference-document-");
+  fs.writeFileSync(path.join(project, "package.json"), `{ "name": "example" }`);
+  fs.mkdirSync(path.join(project, "docs"));
+  fs.writeFileSync(path.join(project, "docs", "plan.md"), `<document id="plan">
+# Plan
+</document>`);
+  db.prepare("INSERT INTO project_documents(id,project_id,path,document_type,authority,status,active) VALUES('manifest','project','package.json','reference','owner','active',1)").run();
+  db.prepare("INSERT INTO project_documents(id,project_id,path,document_type,authority,status,active) VALUES('plan-doc','project','docs/plan.md','plan','owner','active',1)").run();
+  const discovery = readProjectContext(project, db, [], { workflowId: "workflow" });
+  const manifest = discovery.documents.find(item => item.path === "package.json");
+  const plan = discovery.documents.find(item => item.path === "docs/plan.md");
+  // The manifest belongs to the tool that reads it, so the semantic format does not apply and no
+  // permanent failure is reported; a plan is a document the platform writes and is still checked.
+  assert.equal(manifest.lint.status, "not_applicable");
+  assert.deepEqual(manifest.lint.errors, []);
+  assert.equal(plan.lint.status, "passed");
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("discovery and role context read only registered documents and explicit permissions", () => {
   const { root, project, db } = fixture("workflow-discovery-");
   fs.mkdirSync(path.join(project, "docs"));
