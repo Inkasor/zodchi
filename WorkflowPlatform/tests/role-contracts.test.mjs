@@ -94,8 +94,13 @@ function receipt(role, result, suffix = "1", rawSuffix = "") {
   };
 }
 
-async function scenario({ prefix, gateStatus = "passed", reviewDecision = "PASS", invalidFirstReviewer = false, document = false, invalidDocumentVersion = false, message = null, risk = "high" }) {
+async function scenario({ prefix, gateStatus = "passed", reviewDecision = "PASS", invalidFirstReviewer = false, document = false, invalidDocumentVersion = false, message = null, risk = "high", projectInputTokenLimit = null }) {
   const env = fixture(prefix, { document });
+  if (projectInputTokenLimit !== null) {
+    const budgetDb = openDb(env.dbFile);
+    new BudgetManager(budgetDb).define({ scopeType: "project", scopeId: "project", metric: "input_tokens", limit: projectInputTokenLimit });
+    budgetDb.close();
+  }
   const calls = [];
   let workerPrompt = "";
   let plannerPrompt = "";
@@ -454,6 +459,16 @@ test("configured project call budget hard-stops the real role wrapper before Gat
   const db = openDb(env.dbFile);
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM events WHERE run_id=? AND kind='budget_hard_stop'").get(result.run_id).count, 1);
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM gateway_calls WHERE run_id=?").get(result.run_id).count, 0);
+  db.close();
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
+test("a receipt is linked even when post-receipt token accounting exhausts the budget", async () => {
+  const env = await scenario({ prefix: "workflow-post-receipt-budget-", projectInputTokenLimit: 5 });
+  assert.equal(env.result.route, "execution_failed");
+  assert.deepEqual(env.calls, ["planner"]);
+  const db = openDb(env.dbFile);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM gateway_calls WHERE run_id=? AND role_id='planner'").get(env.result.run_id).count, 1);
   db.close();
   fs.rmSync(env.root, { recursive: true, force: true });
 });

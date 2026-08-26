@@ -416,7 +416,7 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
   const contract = loadRoleContract(runtime.db, runtime.get(runId).project_id, roleId, level);
   const qualityContract = loadQualityContract(runtime.db, level);
   if (contract.result_schema_key !== schemaKey) throw new Error(`ROLE_SCHEMA_NOT_ALLOWED: ${roleId}:${schemaKey}`);
-  const lease = queue.checkout({ ownerId: `workflow:${roleId}`, runId, leaseMs: contract.timeout_seconds * 1000 });
+  const lease = queue.checkout({ ownerId: `workflow:${roleId}`, runId, roleId, leaseMs: contract.timeout_seconds * 1000 });
   if (!lease) throw new Error(`ROLE_STEP_NOT_READY: ${roleId}`);
   const step = runtime.db.prepare("SELECT * FROM workflow_steps WHERE id=?").get(lease.stepId);
   if (step.role_id !== roleId) throw new Error(`ROLE_STEP_MISMATCH: expected ${step.role_id}, got ${roleId}`);
@@ -493,8 +493,10 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
       fail: (category, retryable = true) => queue.fail(lease.token, { category, retryable })
     };
   } catch (error) {
-    if (receipt && error.code === "ROLE_RESULT_SCHEMA_INVALID") {
+    if (receipt) {
       try { runtime.linkGateway(runId, { ...receipt, step_id: step.id, attempt_id: lease.attemptId, contract_hash: structuredHash({ role_contract_id: contract.id, package: packageContract }) }); } catch {}
+    }
+    if (receipt && error.code === "ROLE_RESULT_SCHEMA_INVALID") {
       recordRunEvidence(runtime.db, runId, step.id, "role_result_validation_error", {
         step_key: step.step_key,
         role_id: roleId,
@@ -534,13 +536,17 @@ function appendSteps(runtime, runId, steps, { sameOrdinal = false } = {}) {
   const timestamp = now();
   const existing = runtime.db.prepare("SELECT COALESCE(MAX(ordinal),0) AS ordinal FROM workflow_steps WHERE run_id=?").get(runId).ordinal;
   const keys = new Set(runtime.db.prepare("SELECT step_key FROM workflow_steps WHERE run_id=?").all(runId).map(row => row.step_key));
+  const inserted = [];
   for (const [index, step] of steps.entries()) {
     if (keys.has(step.key)) throw new Error(`PLAN_STEP_DUPLICATE: ${step.key}`);
     keys.add(step.key);
     const ordinal = sameOrdinal ? existing + 1 : existing + index + 1;
+    const stepId = id("step");
     runtime.db.prepare("INSERT INTO workflow_steps(id,run_id,step_key,ordinal,role_id,state,required,irreversible,idempotency_key,created_at,updated_at,max_attempts,contract_json,result_schema_key) VALUES(?,?,?,?,?,'pending',?,?,?,?,?,?,?,?)")
-      .run(id("step"), runId, step.key, ordinal, step.role, step.required ? 1 : 0, step.irreversible ? 1 : 0, `${runId}:${step.key}:${ordinal}`, timestamp, timestamp, step.max_attempts, JSON.stringify(step.contract), step.schema);
+      .run(stepId, runId, step.key, ordinal, step.role, step.required ? 1 : 0, step.irreversible ? 1 : 0, `${runId}:${step.key}:${ordinal}`, timestamp, timestamp, step.max_attempts, JSON.stringify(step.contract), step.schema);
+    inserted.push(stepId);
   }
+  return inserted;
 }
 
 function appendExecutionSteps(runtime, runId, plannerResult) {
@@ -558,7 +564,7 @@ function appendCorrectionSteps(runtime, runId, plannerResult, cycle, selectedSte
 }
 
 function appendReviewerSteps(runtime, runId, roles, reason, cycle = 0) {
-  appendSteps(runtime, runId, roles.map((role, index) => ({ key: cycle || index ? `review_${cycle}_${index + 1}` : "review", role, required: true, irreversible: false, max_attempts: 2, schema: "reviewer.v1", contract: { reason, independent_member: index + 1 } })), { sameOrdinal: true });
+  return appendSteps(runtime, runId, roles.map((role, index) => ({ key: cycle || index ? `review_${cycle}_${index + 1}` : "review", role, required: true, irreversible: false, max_attempts: 2, schema: "reviewer.v1", contract: { reason, independent_member: index + 1 } })), { sameOrdinal: true });
 }
 
 function appendDocumentatorStep(runtime, runId, roleId, outcome) {
@@ -644,6 +650,20 @@ export function remainingWorkflowCalls(db, runId) {
   return budget ? Math.max(0, Number(budget.limit_value) - Number(budget.used_value)) : Number.POSITIVE_INFINITY;
 }
 
+export function reviewPhaseCallFloor(db, projectId, reviewerRole, policy, classification) {
+  const available = new Set(db.prepare("SELECT role_id FROM role_contracts WHERE project_id=? AND status='active'").all(projectId).map(row => row.role_id));
+  const roles = policy.improvement_strategy === "gauntlet"
+    ? consiliumRoles(available, reviewerRole, policy.max_parallel_consilium_members)
+    : [reviewerRole];
+  const selected = roles.length ? roles : [reviewerRole];
+  return selected.length + (available.has("judge") ? 1 : 0) + (classification.document_required ? 1 : 0);
+}
+
+export function correctionCallFloor(db, projectId, reviewerRole, policy, classification, correctionCycle, selectedStepCount) {
+  const review = reviewerRequirement(policy.contract, classification, correctionCycle, policy.project_escalations);
+  return selectedStepCount + (review.required ? reviewPhaseCallFloor(db, projectId, reviewerRole, policy, classification) : 0);
+}
+
 export function registeredReplanCatalog(db, projectId, level, artifactType, availableRoles = []) {
   return {
     registeredRoles: [...availableRoles],
@@ -701,7 +721,14 @@ async function executeIndependentReview({ runtime, queue, runId, projectId, revi
     const result = parseJson(latest?.structured_json, null) ?? { decision: "CHANGES_REQUESTED", summary: "Canonical review evidence is identical to the prior cycle.", blockers: [{ code: "DUPLICATE_REVIEW_EVIDENCE", message: "Correction added no canonical review evidence.", path: null }], evidence_refs: [reviewEvidence.base_evidence_hash], required_actions: [], schema_version: 1 };
     return { duplicate: true, result, opinions: [], base_evidence_hash: reviewEvidence.base_evidence_hash, review_evidence: reviewEvidence, budget_exhausted: false, cost_budget: null };
   }
-  appendReviewerSteps(runtime, runId, selectedRoles, reviewReason, correctionCycles);
+  const phaseCallFloor = selectedRoles.length + (available.has("judge") ? 1 : 0) + (classification.document_required ? 1 : 0);
+  if (remainingWorkflowCalls(runtime.db, runId) < phaseCallFloor) {
+    recordRunEvidence(runtime.db, runId, null, "review_admission_rejected", { reason: "workflow_call_budget_minimum_unsatisfiable", remaining_calls: remainingWorkflowCalls(runtime.db, runId), required_calls: phaseCallFloor, selected_roles: selectedRoles, correction_cycle: correctionCycles });
+    const latest = runtime.db.prepare("SELECT structured_json FROM decisions WHERE run_id=? AND kind='review' AND active=1 ORDER BY created_at DESC,id DESC LIMIT 1").get(runId);
+    const result = parseJson(latest?.structured_json, null) ?? { decision: "CHANGES_REQUESTED", summary: "The bounded review phase cannot be admitted within the remaining workflow call budget.", blockers: [{ code: "REVIEW_CALL_BUDGET_MINIMUM_UNSATISFIABLE", message: "Insufficient calls remain for the complete admitted review phase.", path: null }], evidence_refs: [reviewEvidence.base_evidence_hash], required_actions: [], schema_version: 1 };
+    return { budget_unavailable: true, result, opinions: [], base_evidence_hash: reviewEvidence.base_evidence_hash, review_evidence: reviewEvidence, budget_exhausted: false, cost_budget: null };
+  }
+  const reviewerStepIds = appendReviewerSteps(runtime, runId, selectedRoles, reviewReason, correctionCycles);
   queue.enqueueRun(runId);
   runtime.setState(runId, "review_required", { reason: reviewReason });
   const activeInvocations = new Set();
@@ -730,6 +757,7 @@ async function executeIndependentReview({ runtime, queue, runId, projectId, revi
   // Drain every admitted participant first; invokeRole closes its own queue lifecycle on both paths.
   const { settled: settledOpinions, rejected: rejectedOpinion, values: opinions } = await settleAdmittedReviewInvocations(invocations);
   if (rejectedOpinion) {
+    queue.abandonSteps(runId, reviewerStepIds, { reason: "review phase failed after all admitted participants settled" });
     recordRunEvidence(runtime.db, runId, null, "review_consilium_settled", {
       base_evidence_hash: reviewEvidence.base_evidence_hash,
       participants: selectedRoles.map((role, index) => ({ role, status: settledOpinions[index].status }))
@@ -867,7 +895,7 @@ function ownerAccepted(runtime, runId) {
 }
 
 async function executeGateStep({ runtime, queue, runId, stepKey, projectRoot, level, plannerResult, classification, gateRunner, cycle }) {
-  const gateLease = queue.checkout({ ownerId: "workflow:project-gate", runId, leaseMs: 900_000 });
+  const gateLease = queue.checkout({ ownerId: "workflow:project-gate", runId, stepKey, leaseMs: 900_000 });
   if (!gateLease || gateLease.stepKey !== stepKey) throw new Error(`GATE_STEP_NOT_READY: expected ${stepKey}`);
   queue.start(gateLease.token);
   let gate;
@@ -1145,7 +1173,6 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       runtime.db.prepare("UPDATE gates SET required=0 WHERE run_id=? AND kind=?").run(runId, `project_cycle_${correctionCycles}`);
       runtime.setState(runId, "changes_requested", { reason: "required project gate not green; targeted correction authorized" });
       correctionCycles += 1;
-      consumeCorrectionCycle(runtime, runId, correctionCycles);
       let routing = recoveryRouting ?? targetedSteps(plan, { gate });
       if (!routing.steps.length) {
         recordRunEvidence(runtime.db, runId, null, "correction_routing_unresolved", routing);
@@ -1165,6 +1192,14 @@ export async function executeStructuredWork({ runtime, runId, classification, de
         }
       }
       const selected = routing.steps;
+      const requiredCalls = correctionCallFloor(runtime.db, projectId, reviewerRole, policy, classification, correctionCycles, selected.length);
+      const remainingCalls = remainingWorkflowCalls(runtime.db, runId);
+      if (remainingCalls < requiredCalls) {
+        recordRunEvidence(runtime.db, runId, null, "correction_admission_rejected", { reason: "workflow_call_budget_minimum_unsatisfiable", progress_kind: "gate", remaining_calls: remainingCalls, required_calls: requiredCalls, selected_step_keys: selected.map(step => step.key), correction_cycle: correctionCycles });
+        runtime.setState(runId, "blocked", { reason: "insufficient workflow calls for correction and its required review phase" });
+        return { status: "blocked", planner: plan, workers: workerResults, gate, reviewer: reviewerResult, progress, routing };
+      }
+      consumeCorrectionCycle(runtime, runId, correctionCycles);
       recordRunEvidence(runtime.db, runId, null, "correction_routing", { ...routing, progress_kind: "gate", semantic_gap_fingerprint: progress.latest?.semantic_fingerprint ?? progress.latest?.primary_gap_fingerprint ?? null, route_keys: selected.map(step => step.key), packet_hash_before: progress.latest?.packet_hash ?? null, semantic_fingerprint_before: progress.latest?.semantic_fingerprint ?? null, frontier_fingerprint_before: progress.latest?.frontier_fingerprint ?? null });
       appendCorrectionSteps(runtime, runId, plan, correctionCycles, selected);
       queue.enqueueRun(runId);
@@ -1181,6 +1216,10 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     if (!reviewRequirement.required) break;
     const reviewed = await executeIndependentReview({ runtime, queue, runId, projectId, reviewerRole, policy, level, classification, discovery, responseLanguage, taskRoot, gatewayCall, reviewReason: reviewRequirement.reason, plan, gate, workerResults, correctionCycles });
     reviewerResult = reviewed.result;
+    if (reviewed.budget_unavailable) {
+      runtime.setState(runId, "blocked", { reason: "insufficient workflow calls for a complete admitted review phase" });
+      return { status: "blocked", planner: plan, workers: workerResults, gate, reviewer: reviewerResult, review_opinions: reviewed.opinions, review_evidence: reviewed.review_evidence };
+    }
     if (reviewed.budget_exhausted) {
       runtime.setState(runId, "blocked", { reason: "post-factum cost budget exhausted after all admitted review members settled" });
       return { status: "blocked", planner: plan, workers: workerResults, gate, reviewer: reviewerResult, review_opinions: reviewed.opinions, cost_budget: reviewed.cost_budget };
@@ -1214,7 +1253,6 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     }
     runtime.setState(runId, "changes_requested", { reason: "primary review gap routed to targeted correction" });
     correctionCycles += 1;
-    consumeCorrectionCycle(runtime, runId, correctionCycles);
     let routing = recoveryRouting ?? targetedSteps(plan, { reviewer: reviewerResult });
     if (!routing.steps.length) {
       recordRunEvidence(runtime.db, runId, null, "correction_routing_unresolved", routing);
@@ -1235,6 +1273,14 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       }
     }
     const selected = routing.steps;
+    const requiredCalls = correctionCallFloor(runtime.db, projectId, reviewerRole, policy, classification, correctionCycles, selected.length);
+    const remainingCalls = remainingWorkflowCalls(runtime.db, runId);
+    if (remainingCalls < requiredCalls) {
+      recordRunEvidence(runtime.db, runId, null, "correction_admission_rejected", { reason: "workflow_call_budget_minimum_unsatisfiable", progress_kind: "semantic_review", semantic_gap_fingerprint: progress.latest?.semantic_fingerprint ?? progress.latest?.primary_gap_fingerprint ?? null, remaining_calls: remainingCalls, required_calls: requiredCalls, selected_step_keys: selected.map(step => step.key), correction_cycle: correctionCycles });
+      runtime.setState(runId, "blocked", { reason: "insufficient workflow calls for correction and its required review phase" });
+      return { status: "blocked", planner: plan, workers: workerResults, gate, reviewer: reviewerResult, review_opinions: reviewed.opinions, progress, routing };
+    }
+    consumeCorrectionCycle(runtime, runId, correctionCycles);
     recordRunEvidence(runtime.db, runId, null, "correction_routing", { ...routing, progress_kind: "semantic_review", semantic_gap_fingerprint: progress.latest?.semantic_fingerprint ?? progress.latest?.primary_gap_fingerprint ?? null, route_keys: selected.map(step => step.key), packet_hash_before: progress.latest?.packet_hash ?? null, semantic_fingerprint_before: progress.latest?.semantic_fingerprint ?? null, frontier_fingerprint_before: progress.latest?.frontier_fingerprint ?? null });
     appendCorrectionSteps(runtime, runId, plan, correctionCycles, selected);
     queue.enqueueRun(runId);

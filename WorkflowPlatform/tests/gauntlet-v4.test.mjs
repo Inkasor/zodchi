@@ -10,7 +10,7 @@ import { BudgetManager } from "../src/budget.mjs";
 import { now } from "../src/db.mjs";
 import { buildReviewEvidence, captureRunBaselines, claimCenteredReviewEvidence, recordRunEvidence, runChangeEvidence } from "../src/run-evidence.mjs";
 import { applyRunControlAtBoundary, blockerFingerprint, evidenceFrontierFingerprint, recordProgressSnapshot, requestRunControl, semanticGapFingerprint } from "../src/progress-supervisor.mjs";
-import { consiliumRoles, invokeReviewerWithSchemaRepair, priorWorkerResultsForStep, recoveryRoute, registeredReplanCatalog, remainingWorkflowCalls, settleAdmittedReviewInvocations, targetedSteps, validRecoverySelection } from "../src/work-executor.mjs";
+import { consiliumRoles, correctionCallFloor, invokeReviewerWithSchemaRepair, priorWorkerResultsForStep, recoveryRoute, registeredReplanCatalog, remainingWorkflowCalls, reviewPhaseCallFloor, settleAdmittedReviewInvocations, targetedSteps, validRecoverySelection } from "../src/work-executor.mjs";
 import { selectFlowEvidenceAdapter } from "../src/evidence-flow-adapters.mjs";
 import { callGateway } from "../src/gateway.mjs";
 import { transactionAwaitViolations } from "../src/transaction-guard.mjs";
@@ -272,6 +272,29 @@ test("frontier-only progress is bounded and never marks verified semantic progre
     assert.equal(status.frontier_only_cycles, 3);
     assert.equal(status.stagnating, true);
   } finally { fx.close(); }
+});
+
+test("frontier progress cannot hide a diverging change blast radius for the same semantic gap", () => {
+  const fx = fixture("gauntlet-frontier-blast-");
+  try {
+    initGit(fx.projectRoot);
+    captureRunBaselines(fx.runtime.db, fx.runId, [{ key: "primary", path: fx.projectRoot, access: "write" }]);
+    const packet = refs => ({ claim_coverage: [{ claim_id: "chain", claim_type: "cross_layer_chain", coverage: "incomplete", edge_coverage: [{ edge: "client->state", status: "unknown", source_anchor_refs: refs }] }] });
+    recordProgressSnapshot(fx.runtime.db, fx.runId, { cycle: 0, reviewer: { blockers: [] }, reviewEvidence: packet(["a"]), allowedPaths: ["allowed.js"] });
+    fs.writeFileSync(path.join(fx.projectRoot, "allowed.js"), "export const allowed = 2;\n");
+    const status = recordProgressSnapshot(fx.runtime.db, fx.runId, { cycle: 1, reviewer: { blockers: [] }, reviewEvidence: packet(["a", "b"]), allowedPaths: ["allowed.js"] });
+    assert.equal(status.evidence_frontier_progress, true);
+    assert.equal(status.blast_radius_diverging, true);
+    assert.equal(status.stagnating, true);
+  } finally { fx.close(); }
+});
+
+test("correction admission reserves the complete required review phase", () => {
+  const db = { prepare: () => ({ all: () => [{ role_id: "reviewer" }, { role_id: "adversarial_reviewer" }] }) };
+  const policy = { contract: DEFAULT_QUALITY_CONTRACTS.find(item => item.level === "mvp"), improvement_strategy: "gauntlet", max_parallel_consilium_members: 2, project_escalations: [] };
+  const classification = { risk: "high", work_type: "documentation", artifact_type: "document", document_required: true };
+  assert.equal(reviewPhaseCallFloor(db, "project", "reviewer", policy, classification), 3);
+  assert.equal(correctionCallFloor(db, "project", "reviewer", policy, classification, 1, 1), 4);
 });
 
 test("verification changes only evidence frontier, not claim semantics", () => {

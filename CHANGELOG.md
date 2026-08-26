@@ -4,6 +4,17 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_22_2026_08_26" status="working">
+
+## 0.5.22 — 2026-08-26
+
+- Every received Gateway receipt is linked before a post-receipt accounting or persistence failure can terminate the role, so calls and spend remain auditable on budget exhaustion.
+- Queue checkout can now select the exact role or deterministic step key. Parallel reviewers cannot lease a sibling role, and a failed settled review phase explicitly abandons its own remaining leases and runnable steps.
+- Correction admission reserves the selected source calls and the complete required review/arbitration/documentation floor before consuming a correction cycle or materializing work. A terminal budget stop therefore cannot leave `ready` or `retry_scheduled` review steps.
+- Evidence-frontier progress no longer masks a growing change blast radius for the same semantic gap.
+
+</section>
+
 <section id="0_5_21_2026_08_26" status="working">
 
 ## 0.5.21 — 2026-08-26

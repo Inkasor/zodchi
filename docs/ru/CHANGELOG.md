@@ -4,6 +4,17 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_22_2026_08_26" status="working">
+
+## 0.5.22 — 2026-08-26
+
+- Каждый полученный Gateway receipt теперь связывается с run до того, как post-receipt ошибка учёта или сохранения завершит роль, поэтому вызовы и расход не теряются при исчерпании бюджета.
+- Queue checkout умеет выбирать точную роль или детерминированный step key. Параллельный reviewer не может арендовать step соседней роли, а неуспешная завершённая review-фаза явно закрывает собственные оставшиеся leases и runnable steps.
+- Admission коррекции заранее резервирует вызовы выбранных source steps и полный обязательный floor последующих review/arbitration/documentation фаз — до списания correction cycle и материализации работы. Terminal budget stop больше не оставляет `ready` или `retry_scheduled` review steps.
+- Продвижение evidence frontier больше не маскирует растущий change blast radius при неизменном semantic gap.
+
+</section>
+
 <section id="0_5_21_2026_08_26" status="working">
 
 ## 0.5.21 — 2026-08-26

@@ -158,7 +158,16 @@ export function progressStatus(db, runId) {
     }
   }
   const previous = channel.at(-2);
-  const blastDiverging = Boolean(latest && previous && latest.blast_radius > previous.blast_radius && repeated >= 2);
+  let sameGapSnapshots = 0;
+  if (latest) {
+    const signature = latest.primary_gap_fingerprint || latest.failure_fingerprints.join("|") || latest.gate_vector.join("|");
+    for (let index = channel.length - 1; index >= 0; index -= 1) {
+      const item = channel[index], candidate = item.primary_gap_fingerprint || item.failure_fingerprints.join("|") || item.gate_vector.join("|");
+      if (!signature || candidate !== signature) break;
+      sameGapSnapshots += 1;
+    }
+  }
+  const blastDiverging = Boolean(latest && previous && latest.blast_radius > previous.blast_radius && sameGapSnapshots >= 2);
   const semanticGap = Boolean(latest?.primary_gap_fingerprint?.startsWith("semantic:"));
   const duplicatePacket = Boolean(latest?.packet_hash && previous?.packet_hash && latest.packet_hash === previous.packet_hash);
   const sameSemantic = Boolean(latest?.semantic_fingerprint && latest.semantic_fingerprint === previous?.semantic_fingerprint);
