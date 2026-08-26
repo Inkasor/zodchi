@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_8_2026_08_26" status="working">
+
+## 0.5.8 — 2026-08-26
+
+- Software reviewer, adversarial reviewer, strategy reviewer and judge contracts use the next measured bounded tier of 256 KiB.
+- A live 107-range Dashboard package measured 153,817 evidence bytes and a 198,277-byte complete prompt; the former 128 KiB tier could not retain its primary evidence.
+- The full-prompt acceptance remains tied to each configured role contract, so the larger tier does not create unbounded context.
+
+</section>
+
 <section id="0_5_7_2026_08_26" status="working">
 
 ## 0.5.7 — 2026-08-26

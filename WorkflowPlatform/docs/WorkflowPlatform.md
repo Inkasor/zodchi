@@ -1,4 +1,4 @@
-<document id="workflow_platform" version="0.5.7" status="working" kind="governance" language="en">
+<document id="workflow_platform" version="0.5.8" status="working" kind="governance" language="en">
 <metadata owner="workflow-platform" authority="Zodchi">
 </metadata>
 <section id="documentator_contract" status="accepted">

@@ -4,6 +4,16 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_8_2026_08_26" status="working">
+
+## 0.5.8 — 2026-08-26
+
+- Контракты software reviewer, adversarial reviewer, strategy reviewer и judge переведены на следующий измеренный bounded tier 256 КиБ.
+- Живой Dashboard package со 107 ranges занял 153 817 байт evidence и 198 277 байт полного prompt; прежний tier 128 КиБ не мог сохранить первичные доказательства.
+- Acceptance полного prompt по-прежнему привязан к настроенному контракту каждой роли, поэтому увеличение tier не делает контекст безлимитным.
+
+</section>
+
 <section id="0_5_7_2026_08_26" status="working">
 
 ## 0.5.7 — 2026-08-26
