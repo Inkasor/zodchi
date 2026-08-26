@@ -15,6 +15,9 @@ import { workflowRunStatistics } from "./statistics.mjs";
 import { backupInstallation, restoreInstallation } from "./backup.mjs";
 import { operationalPoliciesLint, qualityContractsLint } from "./quality-contracts.mjs";
 import { configureOneCBslCheck, createOneCBslBaseline } from "./one-c-bsl-check.mjs";
+import { readProjectContext } from "./document-context.mjs";
+import { expandTerms, searchSources, sourceScope } from "./source-context.mjs";
+import { buildCodeIntelligence, mergeGraphMatches } from "./code-intelligence.mjs";
 const args = Object.fromEntries(process.argv.slice(3).reduce((a, v, i, x) => { if (v.startsWith("--")) { const next = x[i + 1]; a.push([v.slice(2), next === undefined || next.startsWith("--") ? true : next]); } return a; }, []));
 const settings = resolveWorkflowSettings();
 if (process.argv[2] === "configure") { console.log(JSON.stringify(configureInstallation(JSON.parse(fs.readFileSync(args.config, "utf8"))), null, 2)); }
@@ -37,6 +40,15 @@ else if (process.argv[2] === "experience-propose") { console.log(JSON.stringify(
 else if (process.argv[2] === "experience-evaluate") { const results = JSON.parse(fs.readFileSync(args.results, "utf8")); console.log(JSON.stringify(await evaluateExperienceProposal(args.db, args.proposal, request => results[request.scenario_key]?.[request.variant]), null, 2)); }
 else if (process.argv[2] === "experience-apply") { console.log(JSON.stringify(applyExperienceProposal(args.db, args.proposal, { confirmedBy: args["confirmed-by"] }), null, 2)); }
 else if (process.argv[2] === "run-statistics") { console.log(JSON.stringify(workflowRunStatistics(args.db ?? settings.databasePath, args.run), null, 2)); }
+else if (process.argv[2] === "code-search") {
+  const runtime = new Runtime(args.db ?? settings.databasePath);
+  try {
+    const discovery = readProjectContext(args.project, runtime.db), scope = sourceScope(discovery.source_scope), query = args.query ?? "";
+    const expanded = expandTerms(discovery.roots, scope, query), lexical = searchSources(discovery.roots, scope, expanded.terms);
+    const intelligence = buildCodeIntelligence(discovery.roots, scope, expanded.terms, lexical, { primaryTerms: expanded.code });
+    console.log(JSON.stringify({ query, derived_from: { request_words: expanded.subject, identifiers: expanded.harvested, explicit_identifiers: expanded.code }, result: mergeGraphMatches(lexical, intelligence) }, null, 2));
+  } finally { runtime.db.close(); }
+}
 else if (process.argv[2] === "backup") { console.log(JSON.stringify(await backupInstallation({ workflowDatabase: args.db ?? settings.databasePath, gatewayDatabase: args["gateway-db"] ?? settings.gatewayDatabasePath, outputDirectory: args.out }), null, 2)); }
 else if (process.argv[2] === "restore") { console.log(JSON.stringify(restoreInstallation({ backupDirectory: args.backup, workflowDatabase: args.db ?? settings.databasePath, gatewayDatabase: args["gateway-db"] ?? settings.gatewayDatabasePath }), null, 2)); }
 else if (["queue-recover", "run-pause", "run-resume", "run-cancel", "dead-letter-retry"].includes(process.argv[2])) {
@@ -50,4 +62,4 @@ else if (["queue-recover", "run-pause", "run-resume", "run-cancel", "dead-letter
     else console.log(JSON.stringify(queue.retryDeadLetter(args["dead-letter"], { approved: args.approved === true, actor: args.actor ?? "CLI operator" }), null, 2));
   } finally { runtime.db.close(); }
 }
-else console.log("Usage: node src/cli.mjs configure --config <file> | register-project --id <id> --name <name> --root <absolute-path> | onboard | lint | quality-contracts-lint | quality-policy-lint [--project <id>] | one-c-bsl-baseline --db <db> --project <id> --executable <file> --source <directory> --platform-bin <directory> --accepted-revision <sha> --confirmed-by <owner> --temp-root <directory> | one-c-bsl-configure --db <db> --project <id> --executable <file> --platform-bin <directory> --runner <file> --temp-root <directory> | prompt | run [--event-key <id>] | run-statistics --db <db> --run <id> | backup --db <workflow-db> --gateway-db <gateway-db> --out <directory> | restore --backup <directory> --db <new-workflow-db> --gateway-db <new-gateway-db> | queue-recover | run-pause --run <id> | run-resume --run <id> | run-cancel --run <id> | dead-letter-retry --dead-letter <id> [--approved] | workflow-export --db <db> --out <file> --project <id> | workflow-import-propose --db <db> --package <file> --proposal <file> --project <id> | workflow-import-apply --db <db> --proposal <file> --project <id> --confirmed-by <owner> | workflow-bundle-inspect --bundle <file> | experience-record|experience-propose --db <db> --input <json> | experience-evaluate --db <db> --proposal <id> --results <json> | experience-apply --db <db> --proposal <id> --confirmed-by <owner>");
+else console.log("Usage: node src/cli.mjs configure --config <file> | register-project --id <id> --name <name> --root <absolute-path> | onboard | lint | quality-contracts-lint | quality-policy-lint [--project <id>] | one-c-bsl-baseline --db <db> --project <id> --executable <file> --source <directory> --platform-bin <directory> --accepted-revision <sha> --confirmed-by <owner> --temp-root <directory> | one-c-bsl-configure --db <db> --project <id> --executable <file> --platform-bin <directory> --runner <file> --temp-root <directory> | prompt | run [--event-key <id>] | code-search --db <db> --project <id> --query <text> | run-statistics --db <db> --run <id> | backup --db <workflow-db> --gateway-db <gateway-db> --out <directory> | restore --backup <directory> --db <new-workflow-db> --gateway-db <new-gateway-db> | queue-recover | run-pause --run <id> | run-resume --run <id> | run-cancel --run <id> | dead-letter-retry --dead-letter <id> [--approved] | workflow-export --db <db> --out <file> --project <id> | workflow-import-propose --db <db> --package <file> --proposal <file> --project <id> | workflow-import-apply --db <db> --proposal <file> --project <id> --confirmed-by <owner> | workflow-bundle-inspect --bundle <file> | experience-record|experience-propose --db <db> --input <json> | experience-evaluate --db <db> --proposal <id> --results <json> | experience-apply --db <db> --proposal <id> --confirmed-by <owner>");

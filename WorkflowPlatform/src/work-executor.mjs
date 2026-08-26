@@ -8,6 +8,7 @@ import { applyRegisteredPatch, documentVersion } from "./documentator.mjs";
 import { registeredProjectCheckKeys, runProjectGate } from "./gates.mjs";
 import { selectProjectContext } from "./document-context.mjs";
 import { collectGitHistory, collectSourceFiles, expandTerms, inventorySummary, searchSources, sourceScope } from "./source-context.mjs";
+import { buildCodeIntelligence, mergeGraphMatches } from "./code-intelligence.mjs";
 import { projectRoots, writableRoots } from "./project-roots.mjs";
 import { loadRoleContract, parseRoleReceipt, rolePrompt, structuredHash } from "./role-contracts.mjs";
 import { consumeCorrectionCycle, documentationOutcome, loadOperationalPolicy, loadQualityContract, operationalLevel, reviewerRequirement } from "./quality-contracts.mjs";
@@ -111,6 +112,11 @@ function fitSourceEvidence(context, limit, measure = promptBytes) {
     result.truncated = true;
     result.budget_truncation = { retained_files: result.files.length, omitted_files: originalFiles - result.files.length };
   }
+  const intelligence = result.code_intelligence;
+  while (refresh() > limit && Array.isArray(intelligence?.edges) && intelligence.edges.length) intelligence.edges.pop();
+  while (refresh() > limit && Array.isArray(intelligence?.nodes) && intelligence.nodes.length > 4) intelligence.nodes.pop();
+  while (refresh() > limit && Array.isArray(intelligence?.ranked_files) && intelligence.ranked_files.length > 4) intelligence.ranked_files.pop();
+  if (intelligence && refresh() > limit) intelligence.prompt_truncated = true;
   // Keep the best path even under an unusually small envelope; matching lines are supporting detail and
   // can be reduced without losing where the proven hit lives.
   const best = result.files[0];
@@ -493,7 +499,9 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       source_matches: (() => {
         const scope = sourceScope(discovery.source_scope);
         const expanded = expandTerms(discovery.roots ?? [], scope, message);
-        return { ...searchSources(discovery.roots ?? [], scope, expanded.terms), derived_from: { request_words: expanded.subject, identifiers: expanded.harvested } };
+        const lexical = searchSources(discovery.roots ?? [], scope, expanded.terms);
+        const intelligence = buildCodeIntelligence(discovery.roots ?? [], scope, expanded.terms, lexical, { primaryTerms: expanded.code });
+        return { ...mergeGraphMatches(lexical, intelligence), derived_from: { request_words: expanded.subject, identifiers: expanded.harvested } };
       })()
     }), schemaKey: "planner.v1", parseOptions: { registeredRoles, registeredChecks, registeredArtifactTypes, maxStepAttempts: policy.limits.correction_cycles + 1 }, gatewayCall });
   const plan = planner ? planner.result : derivePlanFromTemplates(runtime, projectId, routeContract, message, registeredChecks, level, classification.document_required, documentatorRole, approvalGranted);

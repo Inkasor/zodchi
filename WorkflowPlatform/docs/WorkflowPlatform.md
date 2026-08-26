@@ -1,4 +1,4 @@
-<document id="workflow_platform" version="0.3.0" status="working" kind="governance" language="en">
+<document id="workflow_platform" version="0.4.0" status="working" kind="governance" language="en">
 <metadata owner="workflow-platform" authority="Zodchi">
 </metadata>
 <section id="documentator_contract" status="accepted">
@@ -45,6 +45,12 @@ Collection searches the declared scope for the identifiers carried by the reques
 </rule>
 <rule id="collection_translates_through_the_project" status="accepted">
 Where a request carries no identifier, collection searches for its ordinary words, reads the identifiers standing on the matching lines, and searches again for those; every name it searches for was read out of the project.
+</rule>
+<rule id="collection_expands_language_graph" status="accepted">
+Lexical candidates expand through a bounded language adapter: TypeScript Compiler API symbols for TypeScript and JavaScript, or BSL procedures, functions, unique-name calls and metadata references. Adapter coverage, ambiguity and truncation are part of the evidence.
+</rule>
+<rule id="code_search_is_reproducible" status="accepted">
+The `code-search --project &lt;id&gt; --query &lt;text&gt;` command returns the same lexical and language-graph package used during planning, including timing and completeness statistics.
 </rule>
 <section id="license" status="accepted">
 WorkflowPlatform is distributed as part of Zodchi under the repository-level MIT License. Copyright 2026 Petr Tsap.

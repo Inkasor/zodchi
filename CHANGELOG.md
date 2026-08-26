@@ -4,6 +4,18 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_4_0_2026_08_26" status="working">
+
+## 0.4.0 — 2026-08-26
+
+- Source discovery now combines the existing corpus-derived two-pass lexical search with a bounded language graph instead of handing the planner a file inventory alone.
+- TypeScript Compiler API adapters resolve definitions, references, imports, calls, and constructors across TypeScript and JavaScript projects, including `.js`, `.jsx`, and `.mjs` sources through `allowJs`.
+- The BSL adapter indexes procedures, functions, unique-name calls, and 1C metadata references; ambiguous calls remain explicitly measured rather than presented as compiler-resolved truth.
+- Identifier harvesting ranks names by proximity to the rare request words that found them, so a direct bridge such as `avgCost: "Средняя себестоимость"` outranks generic nearby members.
+- Every result reports adapter coverage, parsed and skipped files, graph size, returned evidence, duration, and truncation. The `code-search` CLI exposes the same package used by planners for reproducible measurement.
+
+</section>
+
 <section id="0_3_22_2026_08_26" status="working">
 
 ## 0.3.22 — 2026-08-26

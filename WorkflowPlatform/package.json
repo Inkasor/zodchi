@@ -11,5 +11,8 @@
     "test": "node --test",
     "lint": "node src/cli.mjs lint",
     "packages:check": "node scripts/generate-packages.mjs --check"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
   }
 }

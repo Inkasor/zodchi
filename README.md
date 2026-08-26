@@ -15,6 +15,7 @@ You describe the result in your own words. Zodchi decides what kind of work is n
 - Better results: planning, execution, review, and documentation follow explicit workflows instead of one oversized prompt.
 - Lower model costs: routine work can use cheaper models, while stronger models are reserved for difficult decisions.
 - Less repeated context: project facts and documents are selected programmatically and reused efficiently.
+- Better code discovery: deterministic lexical retrieval expands through TypeScript/JavaScript compiler links and BSL structure before source is sent to a model; no vector database is required.
 - Predictable quality: code, documents, releases, and other outputs pass checks configured for the project.
 - One familiar interface: people keep talking naturally in their AI coding assistant.
 
