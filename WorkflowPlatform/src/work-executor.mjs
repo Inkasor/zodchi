@@ -110,6 +110,16 @@ function compactCodeIntelligenceEvidence(sourceMatches) {
   };
 }
 
+function reviewCodeIntelligenceEvidence(sourceMatches) {
+  const intelligence = sourceMatches?.code_intelligence;
+  if (!intelligence) return null;
+  return {
+    ...compactCodeIntelligenceEvidence(sourceMatches),
+    nodes: (intelligence.nodes ?? []).slice(0, 40).map(node => ({ id: node.id, kind: node.kind, name: node.name, path: node.path, start_line: node.start_line, end_line: node.end_line, reasons: node.reasons ?? [] })),
+    edges: (intelligence.edges ?? []).slice(0, 80).map(edge => ({ id: edge.id ?? null, from: edge.from, to: edge.to, type: edge.type }))
+  };
+}
+
 // Search results are already ranked best-first. When their independent collection caps add up to more
 // than a role can receive, discard the least relevant evidence first and keep the highest-ranked path.
 // The inventory is structural context, so counts per area replace hundreds of path/size records; paths
@@ -180,7 +190,7 @@ function utf8Prefix(value, maxBytes) {
   return text.slice(0, low);
 }
 
-function compactPriorWorkerResults(results, maxBytes = 16_000) {
+export function compactPriorWorkerResults(results, maxBytes = 16_000) {
   const items = [];
   for (const result of results ?? []) {
     const item = {
@@ -199,6 +209,42 @@ function compactPriorWorkerResults(results, maxBytes = 16_000) {
     items.push(item);
   }
   return { items, retained_results: items.length, total_results: results?.length ?? 0, truncated: items.length < (results?.length ?? 0) };
+}
+
+export function priorWorkerResultsForStep(results, stepKey, correctionReview = null) {
+  if (!correctionReview) return results ?? [];
+  // A correction already carries the review gap. Repeating every earlier worker narrative starves the
+  // exact source ranges the reviewer asked to inspect. Keep only the latest result of this targeted step;
+  // the immutable review package remains the cross-step synthesis authority.
+  return (results ?? []).filter(result => result.plan_step === stepKey).slice(-1);
+}
+
+export function preDocumentationTelemetry(db, runId) {
+  const calls = db.prepare("SELECT role_id,receipt_id,input_tokens,cached_tokens,output_tokens,reasoning_tokens,duration_ms FROM gateway_calls WHERE run_id=? ORDER BY started_at,id").all(runId);
+  const tokens = calls.reduce((total, call) => {
+    total.input += Number(call.input_tokens) || 0;
+    total.cached += Number(call.cached_tokens) || 0;
+    total.output += Number(call.output_tokens) || 0;
+    total.reasoning += Number(call.reasoning_tokens) || 0;
+    return total;
+  }, { input: 0, cached: 0, output: 0, reasoning: 0 });
+  const run = db.prepare("SELECT created_at FROM workflow_runs WHERE id=?").get(runId);
+  const promptMeasurements = db.prepare("SELECT evidence_json,evidence_hash FROM run_evidence WHERE run_id=? AND kind='role_prompt_metrics' ORDER BY created_at").all(runId)
+    .map(row => ({ ...parseJson(row.evidence_json, {}), provenance_hash: row.evidence_hash }));
+  const gates = db.prepare("SELECT kind,status,details_json FROM gates WHERE run_id=? ORDER BY rowid").all(runId).map(row => {
+    const details = parseJson(row.details_json, {});
+    return { kind: row.kind, status: row.status, checks: (details.checks ?? []).map(check => ({ id: check.id, status: check.status, required: check.required, duration_ms: check.duration_ms ?? null })) };
+  });
+  return {
+    scope: "pre_documentation_snapshot",
+    lifecycle_note: "Final state, total duration and the documentator receipt are appended by platform run statistics after this document proposal is applied.",
+    calls: calls.length,
+    receipts: calls.map(call => ({ role: call.role_id, receipt_id: call.receipt_id, duration_ms: call.duration_ms })),
+    tokens,
+    elapsed_ms: run?.created_at ? Math.max(0, Date.now() - Date.parse(run.created_at)) : null,
+    prompt_measurements: promptMeasurements,
+    gates
+  };
 }
 
 function fitWorkerSources(context, limit, measure) {
@@ -329,6 +375,13 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
     const failure = queue.fail(lease.token, { category: "context_budget_exceeded", retryable: false });
     throw new Error(`${error.message}: ${JSON.stringify(failure)}`);
   }
+  recordRunEvidence(runtime.db, runId, step.id, "role_prompt_metrics", {
+    step_key: step.step_key,
+    role_id: roleId,
+    prompt_bytes: Buffer.byteLength(prompt),
+    context_limit_bytes: contract.context_limit_bytes,
+    review_evidence_bytes: packageContract?.review_evidence ? Buffer.byteLength(JSON.stringify(packageContract.review_evidence)) : null
+  });
   fs.mkdirSync(taskRoot, { recursive: true });
   const taskFile = path.join(taskRoot, `${step.ordinal}-${roleId}.md`);
   fs.writeFileSync(taskFile, prompt, "utf8");
@@ -470,8 +523,14 @@ function reviewerDecision(runtime, runId, stepId, result) {
 
 function decisionRank(value) { return value === "REJECT" ? 3 : value === "CHANGES_REQUESTED" ? 2 : 1; }
 
-export function reviewerTaskPackage(reviewEvidence, reviewReason, correctionCycles) {
-  return { review_reason: reviewReason, review_evidence: reviewEvidence, correction_cycles: correctionCycles };
+export function reviewerTaskPackage(reviewEvidence, reviewReason, correctionCycles, correctionLimit = correctionCycles) {
+  return {
+    review_reason: reviewReason,
+    review_evidence: reviewEvidence,
+    correction_cycles: correctionCycles,
+    correction_limit: correctionLimit,
+    remaining_correction_cycles: Math.max(0, correctionLimit - correctionCycles)
+  };
 }
 
 export function reviewerPromptContext(classification, responseLanguage) {
@@ -498,7 +557,7 @@ async function executeIndependentReview({ runtime, queue, runId, projectId, revi
   queue.enqueueRun(runId);
   runtime.setState(runId, "review_required", { reason: reviewReason });
   const invocations = selectedRoles.map(async roleId => {
-    const reviewerPackage = reviewerTaskPackage(reviewEvidence, reviewReason, correctionCycles);
+    const reviewerPackage = reviewerTaskPackage(reviewEvidence, reviewReason, correctionCycles, Number(policy.limits.correction_cycles) || 0);
     const reviewer = await invokeRole({ runtime, queue, runId, roleId, level, taskRoot, packageContract: reviewerPackage, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "reviewer.v1", parseOptions: {}, gatewayCall });
     reviewer.complete({ decision: reviewer.result.decision, base_evidence_hash: reviewEvidence.base_evidence_hash });
     return { role: roleId, invocation: reviewer, result: reviewer.result };
@@ -723,7 +782,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     // document; rereading files is neither necessary nor a substitute for the earlier conclusions.
     const taskEvidence = {
       plan_inputs: plan.inputs ?? [],
-      prior_worker_results: compactPriorWorkerResults([...workerResults, ...cycleResults]),
+      prior_worker_results: compactPriorWorkerResults(priorWorkerResultsForStep([...workerResults, ...cycleResults], plannedStep.key, correctionReview)),
       code_intelligence: compactCodeIntelligenceEvidence(plannerSourceMatches),
       git_history: collectGitHistory(discovery.roots ?? [], plannedStep.allowed_paths, sourceScope(discovery.source_scope), { enabled: discovery.git?.enabled === true })
     };
@@ -748,7 +807,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     const workerContext = makeContext(sourceBudget, contract.context_limit_bytes);
     recordRunEvidence(runtime.db, runId, null, "worker_source", {
       plan_step: plannedStep.key,
-      code_intelligence: taskEvidence.code_intelligence,
+      code_intelligence: reviewCodeIntelligenceEvidence(plannerSourceMatches),
       files: (workerContext.sources?.files ?? []).map(file => ({ path: file.path, segments: file.segments, exact_term_scan: file.exact_term_scan, supplied_bytes: file.supplied_bytes, text: file.text }))
     });
     let worker;
@@ -867,7 +926,8 @@ async function documentAndComplete({ runtime, queue, runId, projectId, projectRo
       semantic_format: "markdown+xml_semantic",
       plan_hash: structuredHash(plan), reviewer_decision: reviewerResult?.decision ?? "NOT_REQUIRED", quality_outcome: qualityOutcome,
       completion_criteria: plan.completion_criteria,
-      document_evidence: workerResults.map((result, index) => ({ step_key: plan.steps[index]?.key ?? `step_${index + 1}`, summary: result.summary, evidence: result.evidence })),
+      document_evidence: compactPriorWorkerResults(workerResults, 24_000),
+      run_telemetry: preDocumentationTelemetry(runtime.db, runId),
       gate: {
         status: gate.status,
         summary: gate.summary ?? null,

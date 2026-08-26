@@ -76,7 +76,7 @@ export function appendEvent(db, { entityType, entityId, kind, fromState = null, 
     .run(id("evt"), entityType, entityId, refs.taskId, refs.runId, refs.stepId, refs.attemptId, kind, fromState, toState, JSON.stringify(payload), now());
 }
 
-export function completionBlockers(db, taskId) {
+export function completionBlockers(db, taskId, { excludeReviewDecisions = false } = {}) {
   const blockers = [];
   const unfinishedSteps = db.prepare("SELECT COUNT(*) AS count FROM workflow_steps ws JOIN workflow_runs wr ON wr.id=ws.run_id WHERE wr.task_id=? AND ws.required=1 AND ws.state NOT IN ('completed','documented')").get(taskId).count;
   if (unfinishedSteps) blockers.push({ kind: "required_steps", count: unfinishedSteps });
@@ -84,7 +84,14 @@ export function completionBlockers(db, taskId) {
   if (failedGates) blockers.push({ kind: "required_gates", count: failedGates });
   const pendingApprovals = db.prepare("SELECT COUNT(*) AS count FROM approvals WHERE task_id=? AND status='pending'").get(taskId).count;
   if (pendingApprovals) blockers.push({ kind: "pending_approvals", count: pendingApprovals });
-  const rejectingDecisions = db.prepare("SELECT COUNT(*) AS count FROM decisions WHERE task_id=? AND active=1 AND outcome IN ('REJECT','CHANGES_REQUESTED')").get(taskId).count;
+  // While a corrected package is being reviewed, the previous review decision is the reason for the
+  // new review, not independent proof that the correction failed. Keep it active for crash recovery and
+  // ordinary completion checks, but let the new immutable review package evaluate the corrected facts
+  // without treating the decision it is about to supersede as a canonical blocker.
+  const rejectingQuery = excludeReviewDecisions
+    ? "SELECT COUNT(*) AS count FROM decisions WHERE task_id=? AND active=1 AND kind!='review' AND outcome IN ('REJECT','CHANGES_REQUESTED')"
+    : "SELECT COUNT(*) AS count FROM decisions WHERE task_id=? AND active=1 AND outcome IN ('REJECT','CHANGES_REQUESTED')";
+  const rejectingDecisions = db.prepare(rejectingQuery).get(taskId).count;
   if (rejectingDecisions) blockers.push({ kind: "rejecting_decisions", count: rejectingDecisions });
   return blockers;
 }

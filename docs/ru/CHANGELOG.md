@@ -4,6 +4,19 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_9_2026_08_26" status="working">
+
+## 0.5.9 — 2026-08-26
+
+- Review evidence теперь строится вокруг claims: для каждого material conclusion фиксируются primary ranges, exact-scan refs, релевантные graph edges, provenance hashes и детерминированный coverage `sufficient`/`incomplete`.
+- Сквозная API→UI-цепочка хранит anchors для producer, transformation, API response, client mapping и UI consumer; отсутствующий переход становится targeted evidence gap вместо повторной передачи всего research trace.
+- Каждое observed cross-layer edge содержит собственный provenance на source ranges и graph edges; отсутствие пути в bounded graph считается `unknown`, а не доказательством отсутствующего проектного ребра.
+- Correction получает только последний вывод своего targeted step, освобождая bounded context роли для недостающих первичных диапазонов исходников.
+- Предыдущее решение reviewer остаётся в аудите, но исключается из canonical blockers на время свежей переоценки исправленного пакета.
+- Reviewer больше не блокирует отсутствие финальных receipts и prompt telemetry, которые платформа создаёт после review; измеренные prompt bytes и pre-documentation snapshot передаются documentator.
+
+</section>
+
 <section id="0_5_8_2026_08_26" status="working">
 
 ## 0.5.8 — 2026-08-26
