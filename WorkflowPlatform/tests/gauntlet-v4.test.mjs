@@ -147,6 +147,27 @@ test("invalid or unsafe structured evidence paths remain unresolved", () => {
   assert.equal(result[0].unresolvable_evidence_refs.length, 2);
 });
 
+test("structured references resolve symbolic array selectors and deterministic value predicates", () => {
+  const evidence = {
+    analytical_evidence: { conclusions: [{ plan_step: "synthesize_acceptance_evidence", summary: "bounded evidence" }] },
+    cross_layer_chains: [{ coverage: "incomplete", unknown_edges: ["api->client_mapping"] }]
+  };
+  const opinion = { role: "reviewer", result: {
+    decision: "CHANGES_REQUESTED",
+    evidence_refs: [
+      "task_package.review_evidence.analytical_evidence.conclusions[synthesize_acceptance_evidence]",
+      "task_package.review_evidence.cross_layer_chains[0].coverage=incomplete"
+    ],
+    blockers: [{ code: "CROSS_LAYER_CHAIN_INCOMPLETE", message: "Canonical edge coverage remains incomplete", path: null }]
+  } };
+  const result = blockerAdmissibility([opinion], evidence);
+  assert.equal(result[0].status, "supported");
+  assert.equal(result[0].unresolvable_evidence_refs.length, 0);
+  const falsePredicate = structuredClone(opinion);
+  falsePredicate.result.evidence_refs[1] = "review_evidence.cross_layer_chains[0].coverage=sufficient";
+  assert.equal(blockerAdmissibility([falsePredicate], evidence)[0].status, "unknown");
+});
+
 test("typed targeted verification distinguishes observed, missing and unknown", () => {
   const evidence = { exact_scan_catalog: [{ scan_id: "scan-a", path: "src/a.ts", scope: "complete_file", occurrences: [{ term: "avgCost", count: 2 }, { term: "missingField", count: 0 }] }] };
   const request = (subject, path = "src/a.ts") => ({ kind: "exact_term", subject, from: null, to: null, path, evidence_refs: [] });

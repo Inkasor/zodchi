@@ -4,6 +4,14 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_16_2026_08_26" status="working">
+
+## 0.5.16 — 2026-08-26
+
+- Структурные reviewer evidence refs теперь могут выбирать элементы массива по устойчивому semantic key, например `plan_step`, и проверять детерминированный предикат вроде `coverage=incomplete`. Ложные предикаты и неизвестные selector-ы остаются unresolved, а реальные cross-layer incompleteness blockers проходят admissibility и запускают correction.
+
+</section>
+
 <section id="0_5_15_2026_08_26" status="working">
 
 ## 0.5.15 — 2026-08-26

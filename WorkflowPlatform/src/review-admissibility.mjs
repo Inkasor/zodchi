@@ -21,23 +21,30 @@ function incompleteEvidence(reviewEvidence) {
 
 function structuredEvidencePath(reference) {
   if (typeof reference !== "string") return null;
-  const match = reference.match(/^((?:task_package\.)?(?:review_evidence\.)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\.[A-Za-z_][A-Za-z0-9_]*)|(?:\[\d+\]))*)(?=:|$)/);
+  const match = reference.match(/^((?:task_package\.)?(?:review_evidence\.)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\.[A-Za-z_][A-Za-z0-9_]*)|(?:\[(?:\d+|[A-Za-z_][A-Za-z0-9_]*)\]))*)(?:=([A-Za-z_][A-Za-z0-9_-]*|\d+|true|false|null))?(?=:|$)/);
   if (!match) return null;
   let value = match[1];
   if (value.startsWith("task_package.review_evidence.")) value = value.slice("task_package.review_evidence.".length);
   else if (value.startsWith("review_evidence.")) value = value.slice("review_evidence.".length);
-  return value.match(/[A-Za-z_][A-Za-z0-9_]*|\d+/g);
+  return { segments: value.match(/[A-Za-z_][A-Za-z0-9_]*|\d+/g), expected: match[2] ?? null };
 }
 
 function resolvesStructuredEvidence(reference, reviewEvidence) {
-  const segments = structuredEvidencePath(reference);
+  const parsed = structuredEvidencePath(reference), segments = parsed?.segments;
   if (!segments?.length || segments.some(segment => FORBIDDEN_PATH_SEGMENTS.has(segment))) return false;
   let cursor = reviewEvidence;
   for (const segment of segments) {
-    if (cursor === null || cursor === undefined || !Object.prototype.hasOwnProperty.call(Object(cursor), segment)) return false;
-    cursor = cursor[segment];
+    if (cursor === null || cursor === undefined) return false;
+    if (Array.isArray(cursor) && !/^\d+$/.test(segment)) {
+      cursor = cursor.find(item => item && typeof item === "object" && ["id", "claim_id", "plan_step", "key", "edge", "scan_id", "range_id"].some(field => item[field] === segment));
+      if (cursor === undefined) return false;
+    } else {
+      if (!Object.prototype.hasOwnProperty.call(Object(cursor), segment)) return false;
+      cursor = cursor[segment];
+    }
   }
-  return true;
+  if (parsed.expected === null) return true;
+  return String(cursor) === parsed.expected;
 }
 
 function referenceResolves(reference, known, reviewEvidence) {
