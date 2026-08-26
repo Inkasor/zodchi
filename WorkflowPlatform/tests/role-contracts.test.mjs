@@ -97,10 +97,14 @@ async function scenario({ prefix, gateStatus = "passed", reviewDecision = "PASS"
   const env = fixture(prefix, { document });
   const calls = [];
   let workerPrompt = "";
+  let plannerPrompt = "";
   let documentatorPrompt = "";
   const gatewayCall = async request => {
     calls.push(request.role);
-    if (request.role === "planner") return receipt("planner", plannerResult({ document }), "1", "\nRAW_PLANNER_PROSE_MARKER");
+    if (request.role === "planner") {
+      plannerPrompt = fs.readFileSync(request.taskFile, "utf8");
+      return receipt("planner", plannerResult({ document }), "1", "\nRAW_PLANNER_PROSE_MARKER");
+    }
     if (request.role === "worker") {
       workerPrompt = fs.readFileSync(request.taskFile, "utf8");
       if (!document) {
@@ -130,7 +134,7 @@ async function scenario({ prefix, gateStatus = "passed", reviewDecision = "PASS"
     workflowDefinition: { id: "workflow", authority: "registered test authority", roles: {} }, execute: true,
     classificationResult: classification(document, risk), gatewayCall, gateRunner
   });
-  return { ...env, calls, workerPrompt, documentatorPrompt, result };
+  return { ...env, calls, plannerPrompt, workerPrompt, documentatorPrompt, result };
 }
 
 test("role result schemas reject extra fields, path escapes and false reviewer PASS", () => {
@@ -150,6 +154,7 @@ test("role result schemas reject extra fields, path escapes and false reviewer P
   assert.match(workerPrompt, /No tool calls are authorized/);
   assert.match(workerPrompt, /analyze only the evidence already present/);
   assert.match(workerPrompt, /complete-file exact term scan with count zero is conclusive negative evidence/);
+  assert.match(workerPrompt, /positive count must never be summarized as absent/);
   assert.match(workerPrompt, /do not return blocked or ask for out-of-scope sources/);
   const reviewerContract = loadRoleContract(db, "project", "reviewer", "mvp");
   const reviewerPrompt = rolePrompt({ contract: reviewerContract, qualityContract: loadQualityContract(db, "mvp"), packageContract: { plan: { artifacts: [{ type: "document", required: true }] }, worker_results: [{ artifacts: [], changed_paths: [] }] }, context: {}, resultSchema: "reviewer.v1" });
@@ -166,6 +171,8 @@ test("structured planner-worker-gate-reviewer PASS completes and raw planner pro
   assert.equal(env.result.execution.status, "completed");
   assert.deepEqual(env.calls, ["planner", "worker", "reviewer"]);
   assert.equal(env.workerPrompt.includes("RAW_PLANNER_PROSE_MARKER"), false);
+  assert.match(env.plannerPrompt, /more than eight source paths/);
+  assert.match(env.plannerPrompt, /split into sequential read-only investigation steps/);
   const db = openDb(env.dbFile);
   assert.equal(db.prepare("SELECT state FROM workflow_runs WHERE id=?").get(env.result.run_id).state, "completed");
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM workflow_steps WHERE run_id=? AND state='completed'").get(env.result.run_id).count, 4);
