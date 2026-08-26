@@ -167,6 +167,31 @@ function parseTypeScript(root, files) {
     return modules.get(syntax.getSourceFile());
   };
   let resolvedReferences = 0, unresolvedCalls = 0;
+  const unresolvedCallCategories = {
+    standard_library: 0,
+    external_dependency: 0,
+    external_source: 0,
+    dynamic_or_untyped: 0,
+    project_internal_unmapped: 0
+  };
+  const unresolvedCallSamples = Object.fromEntries(Object.keys(unresolvedCallCategories).map(key => [key, []]));
+  const classifyUnresolvedCall = (source, file, syntax, symbol) => {
+    const declarations = [...new Set([...(symbol?.declarations ?? []), symbol?.valueDeclaration].filter(Boolean))];
+    let category;
+    if (!declarations.length) category = "dynamic_or_untyped";
+    else {
+      const declarationFiles = declarations.map(item => path.resolve(item.getSourceFile().fileName));
+      if (declarationFiles.some(item => fileByAbsolute.has(item.toLowerCase()))) category = "project_internal_unmapped";
+      else if (declarationFiles.some(item => /[\\/]node_modules[\\/]typescript[\\/]lib[\\/]lib\.[^\\/]+\.d\.ts$/i.test(item))) category = "standard_library";
+      else if (declarationFiles.some(item => /[\\/]node_modules[\\/]/i.test(item))) category = "external_dependency";
+      else category = "external_source";
+    }
+    unresolvedCallCategories[category] += 1;
+    if (unresolvedCallSamples[category].length < 4) {
+      const position = source.getLineAndCharacterOfPosition(syntax.getStart(source));
+      unresolvedCallSamples[category].push({ path: file.path, line: position.line + 1, expression: syntax.expression.getText(source).slice(0, 120) });
+    }
+  };
   for (const source of projectSources) {
     const file = fileByAbsolute.get(path.resolve(source.fileName).toLowerCase());
     const visit = syntax => {
@@ -176,7 +201,10 @@ function parseTypeScript(root, files) {
         if (target) {
           const position = source.getLineAndCharacterOfPosition(syntax.getStart(source));
           addEdge(edges, edgeKeys, from, target.id, ts.isNewExpression(syntax) ? "constructs" : "calls", { path: file.path, line: position.line + 1 });
-        } else unresolvedCalls += 1;
+        } else {
+          unresolvedCalls += 1;
+          classifyUnresolvedCall(source, file, syntax, symbol);
+        }
       } else if (ts.isIdentifier(syntax)) {
         const symbol = resolveSymbol(checker.getSymbolAtLocation(syntax)), target = symbolNodes.get(symbol), from = containingUnit(syntax);
         if (target && from && from !== target.id) {
@@ -187,7 +215,7 @@ function parseTypeScript(root, files) {
     };
     visit(source);
   }
-  return { adapter: "typescript-compiler", nodes, edges, stats: { files: selected.length, compiler_available: true, definitions: symbolNodes.size, resolved_references: resolvedReferences, unresolved_calls: unresolvedCalls, semantic_diagnostics: program.getSemanticDiagnostics().length } };
+  return { adapter: "typescript-compiler", nodes, edges, stats: { files: selected.length, compiler_available: true, definitions: symbolNodes.size, resolved_references: resolvedReferences, unresolved_calls: unresolvedCalls, unresolved_call_categories: unresolvedCallCategories, unresolved_call_samples: unresolvedCallSamples, semantic_diagnostics: program.getSemanticDiagnostics().length } };
 }
 
 function selectGraph(parts, exactTerms, contextParts, lexical, nodes, edges, limits) {
