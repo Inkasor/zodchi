@@ -11,6 +11,7 @@ import { applyRegisteredPatch } from "../src/documentator.mjs";
 import { projectRoots, writableRoots } from "../src/project-roots.mjs";
 import { collectGitHistory, collectSourceFiles, expandTerms, searchSources, searchTerms, sourceInventory, sourceScope } from "../src/source-context.mjs";
 import { buildCodeIntelligence, mergeGraphMatches } from "../src/code-intelligence.mjs";
+import { fitSourceEvidence } from "../src/work-executor.mjs";
 
 function temporaryRoot(prefix) {
   const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir();
@@ -349,6 +350,43 @@ test("a request written in prose finds the code through the project's own wordin
 
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("long workflow wording does not displace the domain terms at the end of the request", () => {
+  const { root, producer, db } = fixture("workflow-long-search-request-", { sources: ["src/**"] });
+  fs.writeFileSync(path.join(producer, "src", "labels.mjs"), `export const labels = { avgCost: "Средняя себестоимость" };\n`);
+  fs.writeFileSync(path.join(producer, "src", "report.mjs"), `${"// daily workflow helper\n".repeat(12)}export const value = row.avgCost;\n`);
+  const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" }), scope = sourceScope(discovery.source_scope);
+  const message = "Повтори полное исследование на установленном Zodchi с новым специализированным поиском. Проследи, откуда передаётся средняя себестоимость avgCost";
+  const expanded = expandTerms(discovery.roots, scope, message);
+  assert.equal(expanded.subject.some(term => term.startsWith("себесто")), true);
+  assert.equal(expanded.harvested.includes("avgCost"), true);
+  const found = searchSources(discovery.roots, scope, ["avgCost", "daily"], { maxMatchesPerFile: 2 });
+  assert.equal(found.files.find(file => file.path === "src/report.mjs").matches.some(match => match.term === "avgCost"), true);
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("source evidence keeps exact lexical and graph anchors under a shared byte budget", () => {
+  const lexical = { terms: ["avgCost", "unit.cost", "Register.Cost"], files: [
+    { path: "docs/analysis-avg-cost.md", matches: [{ line: 1, term: "avgCost", text: "x" }, { line: 2, term: "unit.cost", text: "x" }] },
+    { path: "metadata/Register.Cost.xml", matches: [{ line: 1, term: "Register.Cost", text: "x" }] },
+    ...Array.from({ length: 12 }, (_, index) => ({ path: `docs/noise-${index}.md`, matches: [{ line: 1, term: "avgCost", text: "x" }] }))
+  ] };
+  const intelligence = {
+    primary_terms: ["avgcost", "unit.cost", "register.cost"],
+    ranked_files: ["src/dashboard.ts", "src/report.ts", "src/cost.ts", "src/api.ts"].map((file, index) => ({ path: file, score: 900 - index * 50 })),
+    nodes: ["src/dashboard.ts", "src/report.ts", "src/cost.ts", "src/api.ts"].map((file, index) => ({ id: String(index), path: file, kind: "function", name: `symbol${index}`, start_line: 1, reasons: ["exact_identifier"] })),
+    edges: []
+  };
+  const merged = mergeGraphMatches(lexical, intelligence);
+  const context = { source_matches: merged };
+  fitSourceEvidence(context, 4200);
+  const paths = context.source_matches.files.map(file => file.path);
+  assert.equal(paths.includes("docs/analysis-avg-cost.md"), true);
+  assert.equal(paths.includes("src/dashboard.ts"), true);
+  assert.equal(paths.includes("src/report.ts"), true);
+  assert.equal(Buffer.byteLength(JSON.stringify(context)) <= 4200, true);
 });
 
 test("BSL intelligence expands lexical evidence through procedures and metadata", () => {

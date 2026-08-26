@@ -100,22 +100,43 @@ function promptBytes(value) { return Buffer.byteLength(JSON.stringify(value)); }
 // than a role can receive, discard the least relevant evidence first and keep the highest-ranked path.
 // The inventory is structural context, so counts per area replace hundreds of path/size records; paths
 // proven relevant by the two-pass search remain in source_matches.
-function fitSourceEvidence(context, limit, measure = promptBytes) {
+export function fitSourceEvidence(context, limit, measure = promptBytes) {
   if (Array.isArray(context.source_inventory)) context.source_inventory = inventorySummary(context.source_inventory);
   const refresh = () => measure(context);
   while (refresh() > limit && Array.isArray(context.decisions) && context.decisions.length) context.decisions.shift();
   const result = context.source_matches;
   if (!result || !Array.isArray(result.files)) return context;
   const originalFiles = result.files.length;
+  const intelligence = result.code_intelligence;
+  // Global graph rows duplicate the path-local summaries already attached to ranked files. Compact that
+  // supporting detail before dropping the actual matching paths and lines the planner needs to assign
+  // work. 0.4.0 did this in the opposite order and could reduce forty results to one noisy file.
+  while (refresh() > limit && Array.isArray(intelligence?.edges) && intelligence.edges.length) intelligence.edges.pop();
+  while (refresh() > limit && Array.isArray(intelligence?.nodes) && intelligence.nodes.length > 8) intelligence.nodes.pop();
+  while (refresh() > limit && Array.isArray(intelligence?.ranked_files) && intelligence.ranked_files.length > 8) intelligence.ranked_files.pop();
+  for (let index = result.files.length - 1; refresh() > limit && index >= 0; index -= 1) {
+    const nodes = result.files[index].graph?.nodes;
+    while (refresh() > limit && Array.isArray(nodes) && nodes.length > 2) nodes.pop();
+  }
+  for (let index = result.files.length - 1; refresh() > limit && index >= 0; index -= 1) {
+    const matches = result.files[index].matches;
+    while (refresh() > limit && Array.isArray(matches) && matches.length > 2) matches.pop();
+  }
+  while (refresh() > limit && result.files.length > 6) {
+    result.files.pop();
+    result.truncated = true;
+    result.budget_truncation = { retained_files: result.files.length, omitted_files: originalFiles - result.files.length };
+  }
+  for (let index = result.files.length - 1; refresh() > limit && index >= 0; index -= 1) {
+    const matches = result.files[index].matches, nodes = result.files[index].graph?.nodes;
+    while (refresh() > limit && Array.isArray(matches) && matches.length > 1) matches.pop();
+    while (refresh() > limit && Array.isArray(nodes) && nodes.length > 1) nodes.pop();
+  }
   while (refresh() > limit && result.files.length > 1) {
     result.files.pop();
     result.truncated = true;
     result.budget_truncation = { retained_files: result.files.length, omitted_files: originalFiles - result.files.length };
   }
-  const intelligence = result.code_intelligence;
-  while (refresh() > limit && Array.isArray(intelligence?.edges) && intelligence.edges.length) intelligence.edges.pop();
-  while (refresh() > limit && Array.isArray(intelligence?.nodes) && intelligence.nodes.length > 4) intelligence.nodes.pop();
-  while (refresh() > limit && Array.isArray(intelligence?.ranked_files) && intelligence.ranked_files.length > 4) intelligence.ranked_files.pop();
   if (intelligence && refresh() > limit) intelligence.prompt_truncated = true;
   // Keep the best path even under an unusually small envelope; matching lines are supporting detail and
   // can be reduced without losing where the proven hit lives.
@@ -500,7 +521,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
         const scope = sourceScope(discovery.source_scope);
         const expanded = expandTerms(discovery.roots ?? [], scope, message);
         const lexical = searchSources(discovery.roots ?? [], scope, expanded.terms);
-        const intelligence = buildCodeIntelligence(discovery.roots ?? [], scope, expanded.terms, lexical, { primaryTerms: expanded.code });
+        const intelligence = buildCodeIntelligence(discovery.roots ?? [], scope, expanded.terms, lexical, { primaryTerms: expanded.code, contextTerms: expanded.subject });
         return { ...mergeGraphMatches(lexical, intelligence), derived_from: { request_words: expanded.subject, identifiers: expanded.harvested } };
       })()
     }), schemaKey: "planner.v1", parseOptions: { registeredRoles, registeredChecks, registeredArtifactTypes, maxStepAttempts: policy.limits.correction_cycles + 1 }, gatewayCall });

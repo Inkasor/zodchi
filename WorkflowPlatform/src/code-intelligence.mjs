@@ -190,7 +190,7 @@ function parseTypeScript(root, files) {
   return { adapter: "typescript-compiler", nodes, edges, stats: { files: selected.length, compiler_available: true, definitions: symbolNodes.size, resolved_references: resolvedReferences, unresolved_calls: unresolvedCalls, semantic_diagnostics: program.getSemanticDiagnostics().length } };
 }
 
-function selectGraph(parts, exactTerms, lexical, nodes, edges, limits) {
+function selectGraph(parts, exactTerms, contextParts, lexical, nodes, edges, limits) {
   const byPath = new Map();
   for (const node of nodes) {
     if (!byPath.has(node.path)) byPath.set(node.path, []);
@@ -223,6 +223,12 @@ function selectGraph(parts, exactTerms, lexical, nodes, edges, limits) {
     const matching = parts.filter(part => words.some(word => word.includes(part) || part.includes(word)));
     if (matching.length) score(node.id, matching.map(partWeight).sort((left, right) => right - left).slice(0, 3).reduce((total, value) => total + value, 0), "identifier_match");
     if (exactTerms.has(normalized(node.name))) score(node.id, exactTerms.get(normalized(node.name)) + partWeight(normalized(node.name)), "exact_identifier");
+    // Domain wording often names the subsystem rather than a symbol: "выгрузка Dashboard" points at
+    // мпВыгрузкаДанныхВДашборд even though avgCost is introduced only downstream. Reward rare request
+    // parts found in a source path, but keep this below an exact identifier match and cap the effect.
+    const pathWords = identifierParts(node.path);
+    const pathMatches = contextParts.filter(part => pathWords.some(word => word.includes(part) || part.includes(word)));
+    if (pathMatches.length) score(node.id, Math.min(900, 300 * new Set(pathMatches).size), "request_path_match");
   }
   const nodesById = new Map(nodes.map(node => [node.id, node]));
   const adjacency = new Map();
@@ -266,14 +272,16 @@ export function buildCodeIntelligence(roots, scope, terms, lexical = {}, options
   for (const root of roots) adapters.push(parseTypeScript(root, collected.files));
   const allNodes = adapters.flatMap(adapter => adapter.nodes), allEdges = adapters.flatMap(adapter => adapter.edges);
   const parts = [...new Set((terms ?? []).flatMap(identifierParts))];
+  const contextParts = [...new Set((options.contextTerms ?? []).flatMap(identifierParts))];
   const primary = new Set((options.primaryTerms ?? []).map(normalized));
   const exactTerms = new Map((terms ?? []).map((term, index) => [normalized(term), primary.size
     ? (primary.has(normalized(term)) ? Math.max(1400, 2200 - index * 120) : Math.max(260, 620 - index * 20))
     : Math.max(520, 2000 - index * 96)]));
-  const selected = selectGraph(parts, exactTerms, lexical, allNodes, allEdges, limits);
+  const selected = selectGraph(parts, exactTerms, contextParts, lexical, allNodes, allEdges, limits);
   return {
     schema_version: 1,
     strategy: "lexical_to_language_graph",
+    primary_terms: [...primary],
     adapters: adapters.filter(adapter => adapter.stats.files > 0).map(adapter => ({ name: adapter.adapter, ...adapter.stats })),
     completeness: { eligible_files: collected.eligible, parsed_files: collected.files.length, skipped_large_files: collected.skippedLarge, file_scan_truncated: collected.truncated },
     statistics: { terms: terms?.length ?? 0, identifier_parts: parts.length, graph_nodes: allNodes.length, graph_edges: allEdges.length, returned_nodes: selected.nodes.length, returned_edges: selected.edges.length, duration_ms: Math.round(performance.now() - started) },
@@ -282,7 +290,7 @@ export function buildCodeIntelligence(roots, scope, terms, lexical = {}, options
 }
 
 export function mergeGraphMatches(lexical, intelligence, maxFiles = 40) {
-  const files = [...(lexical.files ?? [])], byPath = new Map(files.map(file => [file.path, file]));
+  const files = (lexical.files ?? []).map((file, index) => ({ ...file, lexical_rank: index })), byPath = new Map(files.map(file => [file.path, file]));
   for (const ranked of intelligence.ranked_files ?? []) {
     const nodes = intelligence.nodes.filter(node => node.path === ranked.path).slice(0, 6);
     if (byPath.has(ranked.path)) {
@@ -292,6 +300,26 @@ export function mergeGraphMatches(lexical, intelligence, maxFiles = 40) {
     const item = { path: ranked.path, root: null, bytes: null, matches: nodes.map(node => ({ line: node.start_line, term: node.name, text: `${node.kind} ${node.name}` })), graph: { score: ranked.score, nodes: nodes.map(node => ({ kind: node.kind, name: node.name, line: node.start_line, reasons: node.reasons })) } };
     files.push(item); byPath.set(item.path, item);
   }
-  files.sort((left, right) => (right.graph?.score ?? 0) - (left.graph?.score ?? 0) || left.path.localeCompare(right.path, "en"));
-  return { ...lexical, files: files.slice(0, maxFiles), truncated: lexical.truncated || files.length > maxFiles, code_intelligence: intelligence };
+  // A graph expansion is supporting evidence, not permission to bury an exact lexical hit. In 0.4.0
+  // an unrelated module with many graph edges displaced the only document containing avgCost. Combine
+  // exact request identifiers with graph evidence: this interleaves the prior conclusion document with
+  // the implementation paths instead of returning forty prose hits or forty graph nodes exclusively.
+  const primaryTerms = new Map((intelligence.primary_terms ?? []).map((term, index) => [normalized(term), index]));
+  const primaryHits = file => new Set((file.matches ?? []).map(match => normalized(match.term)).filter(term => primaryTerms.has(term))).size;
+  const pathPrimaryHits = file => [...primaryTerms.keys()].filter(term => normalized(file.path).includes(term.replaceAll(".", "-")) || normalized(file.path).includes(term)).length;
+  const lexicalAnchors = files.filter(file => primaryHits(file) > 0).sort((left, right) => pathPrimaryHits(right) - pathPrimaryHits(left) || primaryHits(right) - primaryHits(left) || left.lexical_rank - right.lexical_rank || left.path.localeCompare(right.path, "en"));
+  const graphAnchors = files.filter(file => file.graph?.score).sort((left, right) => primaryHits(right) - primaryHits(left) || right.graph.score - left.graph.score || left.path.localeCompare(right.path, "en"));
+  const lexicalRest = files.filter(file => Number.isInteger(file.lexical_rank)).sort((left, right) => left.lexical_rank - right.lexical_rank || left.path.localeCompare(right.path, "en"));
+  const ordered = [], seen = new Set();
+  const append = file => { if (file && !seen.has(file.path)) { seen.add(file.path); ordered.push(file); } };
+  // Reserve both kinds of proof before filling the rest: exact request identifiers (including a prior
+  // analysis document) and the strongest language-graph paths. This diversity survives the later byte
+  // fit even when it has room for only six compact records.
+  lexicalAnchors.slice(0, 2).forEach(append);
+  graphAnchors.slice(0, 4).forEach(append);
+  lexicalAnchors.forEach(append);
+  graphAnchors.forEach(append);
+  lexicalRest.forEach(append);
+  files.forEach(append);
+  return { ...lexical, files: ordered.slice(0, maxFiles), truncated: lexical.truncated || ordered.length > maxFiles, code_intelligence: intelligence };
 }
