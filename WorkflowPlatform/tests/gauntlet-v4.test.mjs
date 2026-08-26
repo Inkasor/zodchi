@@ -10,7 +10,7 @@ import { BudgetManager } from "../src/budget.mjs";
 import { now } from "../src/db.mjs";
 import { buildReviewEvidence, captureRunBaselines, claimCenteredReviewEvidence, recordRunEvidence, runChangeEvidence } from "../src/run-evidence.mjs";
 import { applyRunControlAtBoundary, blockerFingerprint, requestRunControl } from "../src/progress-supervisor.mjs";
-import { priorWorkerResultsForStep, targetedSteps } from "../src/work-executor.mjs";
+import { consiliumRoles, priorWorkerResultsForStep, targetedSteps } from "../src/work-executor.mjs";
 import { callGateway } from "../src/gateway.mjs";
 import { transactionAwaitViolations } from "../src/transaction-guard.mjs";
 import { DEFAULT_QUALITY_CONTRACTS } from "../src/quality-contracts.mjs";
@@ -18,6 +18,7 @@ import { rolePrompt } from "../src/role-contracts.mjs";
 import { reviewerPromptContext, reviewerTaskPackage } from "../src/work-executor.mjs";
 import { completionBlockers } from "../src/state-machine.mjs";
 import { blockerAdmissibility } from "../src/review-admissibility.mjs";
+import { executeTargetedVerification } from "../src/targeted-verification.mjs";
 
 const CLASSIFICATION = { kind: "task", domain: "workflow", discipline: "general", risk: "low", level: "L2", quality: "mvp", planning_required: true, human_required: false, document_required: false };
 const temp = prefix => fs.mkdtempSync(path.join(process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir(), prefix));
@@ -116,12 +117,21 @@ test("a positive referenced exact scan contradicts an absence blocker", () => {
   assert.equal(blockerAdmissibility(opinions, evidence)[0].status, "contradicted");
 });
 
+test("typed targeted verification distinguishes observed, missing and unknown", () => {
+  const evidence = { exact_scan_catalog: [{ scan_id: "scan-a", path: "src/a.ts", scope: "complete_file", occurrences: [{ term: "avgCost", count: 2 }, { term: "missingField", count: 0 }] }] };
+  const request = (subject, path = "src/a.ts") => ({ kind: "exact_term", subject, from: null, to: null, path, evidence_refs: [] });
+  assert.equal(executeTargetedVerification(request("avgCost"), evidence).status, "observed");
+  assert.equal(executeTargetedVerification(request("missingField"), evidence).status, "missing");
+  assert.equal(executeTargetedVerification(request("unknownField", "src/b.ts"), evidence).status, "unknown");
+});
+
 test("a concrete response-field assignment creates an observed source-derived edge with transition provenance", () => {
-  const source = (plan_step, path, text) => ({ plan_step, evidence_hash: `hash-${plan_step}`, files: [{ path, text: `--- lines 1-20 (edge anchor) ---\n${text}`, segments: [{ start_line: 1, end_line: 20, reason: "edge anchor", complete: true }] }] });
+  const source = (plan_step, path, text, code_intelligence = null) => ({ plan_step, evidence_hash: `hash-${plan_step}`, code_intelligence, files: [{ path, text: `--- lines 1-20 (edge anchor) ---\n${text}`, segments: [{ start_line: 1, end_line: 20, reason: "edge anchor", complete: true }] }] });
+  const ast = { adapters: [{ name: "typescript-compiler", compiler_available: true, transitions: [{ id: "ts-transition-1", kind: "field_assignment", direction: "from_to", symbol_from: "avgCost", symbol_to: "avgCost", path: "src/client.js", line: 2, method: "typescript_ast" }] }], nodes: [], edges: [] };
   const sources = [
     source("producer", "scripts/import-mp-daily.mjs", "writeRow({ avgCost });"),
     source("api", "scripts/dashboard-query-service.mjs", "return { avgCost };"),
-    source("client", "src/client.js", "const avgCost = response.avgCost;"),
+    source("client", "src/client.js", "const avgCost = response.avgCost;", ast),
     source("state", "src/state.js", "setModel({ avgCost });"),
     source("ui", "src/View.jsx", "return <div>{row.avgCost}</div>;")
   ];
@@ -132,7 +142,8 @@ test("a concrete response-field assignment creates an observed source-derived ed
   assert.equal(edge.source_anchor_refs.length, 2);
   assert.ok(edge.transition_anchor_refs.length >= 1);
   assert.equal(edge.derived_edge_refs.length, 1);
-  assert.equal(packet.derived_edge_catalog[0].kind, "source_transition");
+  assert.equal(packet.derived_edge_catalog[0].kind, "field_assignment");
+  assert.equal(packet.derived_edge_catalog[0].provenance.method, "typescript_ast");
 });
 
 test("a sufficient cross-layer claim has provenance for every observed edge", () => {
@@ -246,7 +257,8 @@ test("C-D: committed and initially dirty files remain visible in the run-relativ
 test("E: a local blocker selects exactly the affected plan step", () => {
   const plan = { steps: Array.from({ length: 5 }, (_, index) => ({ key: `step-${index}`, allowed_paths: [`src/${index}.ts`], check_ids: [`check-${index}`] })) };
   const selected = targetedSteps(plan, { gate: { checks: [{ id: "check-3", required: true, status: "failed", execution_project_id: "consumer", execution_root: "registered-consumer-root" }] } });
-  assert.deepEqual(selected.map(item => item.key), ["step-3"]);
+  assert.deepEqual(selected.steps.map(item => item.key), ["step-3"]);
+  assert.equal(selected.confidence, "high");
 });
 
 test("a pathless review gap targets the source step named by top-level evidence refs", () => {
@@ -259,7 +271,7 @@ test("a pathless review gap targets the source step named by top-level evidence 
     evidence_refs: ["scripts/dashboard-query-service.mjs:3336-3410"],
     required_actions: ["Collect the complete range from scripts/dashboard-query-service.mjs"]
   };
-  assert.deepEqual(targetedSteps(plan, { reviewer }).map(item => item.key), ["trace-profit"]);
+  assert.deepEqual(targetedSteps(plan, { reviewer }).steps.map(item => item.key), ["trace-profit"]);
 });
 
 test("a semantic API-to-UI gap targets the client source step instead of pathless synthesis", () => {
@@ -273,7 +285,19 @@ test("a semantic API-to-UI gap targets the client source step instead of pathles
     evidence_refs: [],
     required_actions: ["Collect source anchors for API, client mapping, state model and UI consumer"]
   };
-  assert.deepEqual(targetedSteps(plan, { reviewer }).map(item => item.key), ["trace_client_ui"]);
+  assert.deepEqual(targetedSteps(plan, { reviewer }).steps.map(item => item.key), ["trace_client_ui"]);
+});
+
+test("targeted path routing respects canonical segment boundaries", () => {
+  const plan = { steps: [{ key: "a", allowed_paths: ["src/a"], check_ids: [] }, { key: "ab", allowed_paths: ["src/ab/file.ts"], check_ids: [] }] };
+  const reviewer = { blockers: [{ code: "LOCAL", message: "fix source", path: "src/ab/file.ts" }], evidence_refs: [], required_actions: [] };
+  assert.deepEqual(targetedSteps(plan, { reviewer }).steps.map(item => item.key), ["ab"]);
+});
+
+test("targeted routing reports none instead of guessing a synthesis or first step", () => {
+  const result = targetedSteps({ steps: [{ key: "first", objective: "unrelated", allowed_paths: ["src/a.ts"], check_ids: [] }, { key: "synthesis", objective: "combine", allowed_paths: [], check_ids: [] }] }, { reviewer: { blockers: [], evidence_refs: [], required_actions: [] } });
+  assert.deepEqual(result.steps, []);
+  assert.equal(result.confidence, "none");
 });
 
 test("F: post-factum cost records the overshooting receipt and denies the next call", () => {
@@ -360,6 +384,14 @@ test("K: same-ordinal reviewers do not emit queue_drained until both finish", ()
   } finally { fx.close(); }
 });
 
+test("consilium member cap 1, 2 and 3 changes the actual selected review calls", () => {
+  const available = new Set(["reviewer", "adversarial_reviewer", "evidence_reviewer"]);
+  assert.deepEqual(consiliumRoles(available, "reviewer", 1), ["reviewer"]);
+  assert.deepEqual(consiliumRoles(available, "reviewer", 2), ["reviewer", "adversarial_reviewer"]);
+  assert.deepEqual(consiliumRoles(available, "reviewer", 3), ["reviewer", "adversarial_reviewer", "evidence_reviewer"]);
+  assert.equal(consiliumRoles(available, "reviewer", 99).length, 3);
+});
+
 test("L: model work may overlap outside DatabaseSync transactions and the static guard rejects await in one", async () => {
   let release; const barrier = new Promise(resolve => { release = resolve; }); let active = 0, maximum = 0;
   const invoke = async () => { active += 1; maximum = Math.max(maximum, active); await barrier; active -= 1; };
@@ -377,5 +409,5 @@ test("M: cross-project check provenance is retained while routing by its registe
   const selected = targetedSteps({ steps: [{ key: "consumer-fix", allowed_paths: ["src/consumer.ts"], check_ids: ["consumer-schema"] }, { key: "producer", allowed_paths: ["src/producer.ts"], check_ids: [] }] }, { gate });
   assert.equal(gate.checks[0].execution_project_id, "consumer");
   assert.equal(gate.checks[0].execution_root, "registered-consumer-root");
-  assert.deepEqual(selected.map(item => item.key), ["consumer-fix"]);
+  assert.deepEqual(selected.steps.map(item => item.key), ["consumer-fix"]);
 });

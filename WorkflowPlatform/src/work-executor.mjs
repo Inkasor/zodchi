@@ -15,6 +15,7 @@ import { consumeCorrectionCycle, documentationOutcome, loadOperationalPolicy, lo
 import { buildReviewEvidence, captureRunBaselines, recordRunEvidence, runChangeEvidence } from "./run-evidence.mjs";
 import { applyRunControlAtBoundary, pendingRunControl, recordProgressSnapshot } from "./progress-supervisor.mjs";
 import { blockerAdmissibility, admissibleOpinionDecision } from "./review-admissibility.mjs";
+import { executeTargetedVerification } from "./targeted-verification.mjs";
 
 function hashFile(file) { return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"); }
 function parseJson(value, fallback) { try { return JSON.parse(value); } catch { return fallback; } }
@@ -426,6 +427,13 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
   } catch (error) {
     if (receipt) {
       try { runtime.linkGateway(runId, { ...receipt, step_id: step.id, attempt_id: lease.attemptId, contract_hash: structuredHash({ role_contract_id: contract.id, package: packageContract }) }); } catch {}
+      recordRunEvidence(runtime.db, runId, step.id, "role_result_validation_error", {
+        step_key: step.step_key,
+        role_id: roleId,
+        schema_key: schemaKey,
+        error: String(error.message),
+        raw_result_hash: crypto.createHash("sha256").update(String(receipt.output ?? "")).digest("hex")
+      });
     }
     try { queue.fail(lease.token, { category: String(error.message).split(":")[0].slice(0, 120), retryable: true }); } catch {}
     throw error;
@@ -524,6 +532,11 @@ function reviewerDecision(runtime, runId, stepId, result) {
 
 function decisionRank(value) { return value === "REJECT" ? 3 : value === "CHANGES_REQUESTED" ? 2 : 1; }
 
+export function consiliumRoles(availableRoles, reviewerRole, maximum) {
+  const available = availableRoles instanceof Set ? availableRoles : new Set(availableRoles);
+  return [reviewerRole, "adversarial_reviewer", "evidence_reviewer"].filter((role, index, values) => available.has(role) && values.indexOf(role) === index).slice(0, Math.max(1, Math.min(3, Number(maximum) || 2)));
+}
+
 export function reviewerTaskPackage(reviewEvidence, reviewReason, correctionCycles, correctionLimit = correctionCycles) {
   return {
     review_reason: reviewReason,
@@ -545,7 +558,7 @@ export function reviewerPromptContext(classification, responseLanguage) {
 async function executeIndependentReview({ runtime, queue, runId, projectId, reviewerRole, policy, level, classification, discovery, responseLanguage, taskRoot, gatewayCall, reviewReason, plan, gate, workerResults, correctionCycles }) {
   const available = new Set(runtime.db.prepare("SELECT role_id FROM role_contracts WHERE project_id=? AND status='active'").all(projectId).map(row => row.role_id));
   const roles = policy.improvement_strategy === "gauntlet"
-    ? [reviewerRole, "adversarial_reviewer"].filter((role, index, values) => available.has(role) && values.indexOf(role) === index).slice(0, policy.max_parallel_consilium_members)
+    ? consiliumRoles(available, reviewerRole, policy.max_parallel_consilium_members)
     : [reviewerRole];
   const selectedRoles = roles.length ? roles : [reviewerRole];
   const reviewerContracts = selectedRoles.map(roleId => loadRoleContract(runtime.db, projectId, roleId, level));
@@ -584,7 +597,11 @@ async function executeIndependentReview({ runtime, queue, runId, projectId, revi
       judge.complete({ outcome: judge.result.decision });
       if (judge.result.decision === "PASS") final = { decision: "PASS", summary: judge.result.rationale, blockers: [], evidence_refs: judge.result.evidence_refs, required_actions: [], schema_version: 1 };
       else if (judge.result.decision === "PRIMARY_GAP") final = { decision: "CHANGES_REQUESTED", summary: judge.result.rationale, blockers: [{ code: judge.result.primary_gap.kind, message: judge.result.primary_gap.message, path: judge.result.primary_gap.path }], evidence_refs: judge.result.primary_gap.evidence_refs, required_actions: [judge.result.primary_gap.search_intent], schema_version: 1 };
-      else if (judge.result.decision === "TARGETED_VERIFICATION") final = { decision: "CHANGES_REQUESTED", summary: judge.result.rationale, blockers: [{ code: "TARGETED_VERIFICATION", message: judge.result.verification_request.subject, path: judge.result.verification_request.path }], evidence_refs: judge.result.verification_request.evidence_refs, required_actions: [JSON.stringify(judge.result.verification_request)], schema_version: 1 };
+      else if (judge.result.decision === "TARGETED_VERIFICATION") {
+        const verification = executeTargetedVerification(judge.result.verification_request, reviewEvidence);
+        recordRunEvidence(runtime.db, runId, judge.step.id, "targeted_verification_result", verification);
+        final = { decision: "CHANGES_REQUESTED", summary: `${judge.result.rationale} Deterministic verification status: ${verification.status}.`, blockers: [{ code: `TARGETED_VERIFICATION_${verification.status.toUpperCase()}`, message: judge.result.verification_request.subject, path: judge.result.verification_request.path }], evidence_refs: [...new Set([...judge.result.verification_request.evidence_refs, ...verification.evidence_refs])], required_actions: verification.status === "unknown" ? [JSON.stringify(judge.result.verification_request)] : [`Use deterministic verification result ${verification.status}: ${JSON.stringify(verification.facts)}`], schema_version: 1 };
+      }
       else final = { decision: "CHANGES_REQUESTED", summary: judge.result.rationale, blockers: [{ code: "OWNER_DECISION", message: judge.result.rationale, path: null }], evidence_refs: judge.result.evidence_refs, required_actions: [judge.result.rationale], schema_version: 1 };
     } else {
       recordRunEvidence(runtime.db, runId, null, "consilium_conflict_without_judge", { base_evidence_hash: reviewEvidence.base_evidence_hash, opinions: effectiveOpinions.map(item => ({ role: item.role, decision: item.effective_decision })) });
@@ -594,7 +611,43 @@ async function executeIndependentReview({ runtime, queue, runId, projectId, revi
   const finalStep = opinions.find(item => item.result === final)?.invocation.step.id ?? opinions[0].invocation.step.id;
   const decisionId = reviewerDecision(runtime, runId, finalStep, final);
   runtime.db.prepare("UPDATE gateway_calls SET decision_ref=? WHERE run_id=? AND step_id=?").run(decisionId, runId, finalStep);
-  return { result: final, opinions: opinions.map(item => ({ role: item.role, result: item.result })), base_evidence_hash: reviewEvidence.base_evidence_hash, budget_exhausted: budgetExhausted, cost_budget: costBudget ?? null };
+  return { result: final, opinions: opinions.map(item => ({ role: item.role, result: item.result })), base_evidence_hash: reviewEvidence.base_evidence_hash, review_evidence: reviewEvidence, budget_exhausted: budgetExhausted, cost_budget: costBudget ?? null };
+}
+
+async function executeStrategyRecovery({ runtime, queue, runId, projectId, level, classification, responseLanguage, taskRoot, gatewayCall, plan, gate, reviewer, reviewEvidence, progress, cycle }) {
+  const available = new Set(runtime.db.prepare("SELECT role_id FROM role_contracts WHERE project_id=? AND status='active'").all(projectId).map(row => row.role_id));
+  if (!available.has("strategy_reviewer")) return { decision: "NO_VIABLE_STRATEGY", rationale: "strategy_reviewer is not registered", steps: [] };
+  appendSteps(runtime, runId, [{ key: `strategy_review_${cycle}`, role: "strategy_reviewer", required: true, irreversible: false, max_attempts: 1, schema: "strategy_review.v1", contract: { cycle } }]);
+  queue.enqueueRun(runId);
+  const strategyPackage = {
+    objective: "Select the next bounded recovery strategy without executing it.",
+    available_steps: plan.steps.map(step => ({ key: step.key, objective: step.objective, allowed_paths: step.allowed_paths, check_ids: step.check_ids })),
+    primary_gap: reviewer?.blockers?.[0] ?? null,
+    gate_failures: (gate?.checks ?? []).filter(check => check.required && check.status !== "passed").map(check => ({ id: check.id, failure_path: check.failure_path ?? null })),
+    prior_progress: progress ?? null,
+    claim_coverage: reviewEvidence?.claim_coverage ?? [],
+    correction_cycle: cycle
+  };
+  const strategy = await invokeRole({ runtime, queue, runId, roleId: "strategy_reviewer", level, taskRoot, packageContract: strategyPackage, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "strategy_review.v1", parseOptions: { availableStepKeys: plan.steps.map(step => step.key) }, gatewayCall });
+  strategy.complete({ decision: strategy.result.decision });
+  recordRunEvidence(runtime.db, runId, strategy.step.id, "strategy_review", strategy.result);
+  if (strategy.result.decision === "SELECT_EXISTING_STEP") return { ...strategy.result, steps: plan.steps.filter(step => strategy.result.selected_step_keys.includes(step.key)) };
+  if (strategy.result.decision === "TARGETED_VERIFICATION") {
+    const verification = executeTargetedVerification(strategy.result.verification_request, reviewEvidence ?? {});
+    recordRunEvidence(runtime.db, runId, strategy.step.id, "targeted_verification_result", verification);
+    return { ...strategy.result, verification, steps: [] };
+  }
+  if (strategy.result.decision !== "REPLAN") return { ...strategy.result, steps: [] };
+  const plannerRole = runtime.db.prepare("SELECT role_id FROM role_contracts WHERE project_id=? AND status='active' AND result_schema_key='planner.v1' ORDER BY role_id LIMIT 1").get(projectId)?.role_id;
+  if (!plannerRole) return { decision: "NO_VIABLE_STRATEGY", rationale: "bounded replan requested but no planner is registered", steps: [] };
+  appendSteps(runtime, runId, [{ key: `strategy_replan_${cycle}`, role: plannerRole, required: true, irreversible: false, max_attempts: 1, schema: "planner.v1", contract: { cycle } }]);
+  queue.enqueueRun(runId);
+  const registeredRoles = [...available], registeredChecks = registeredProjectCheckKeys(runtime.db, projectId), registeredArtifactTypes = runtime.db.prepare("SELECT id FROM artifact_types").all().map(row => row.id);
+  const replanPackage = { objective: strategy.result.replan_intent, previous_plan: plan, primary_gap: reviewer?.blockers?.[0] ?? null, registered_roles: registeredRoles, registered_checks: registeredChecks, registered_artifact_types: registeredArtifactTypes, rule: "Return a bounded replacement plan. Do not execute any step." };
+  const planner = await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: replanPackage, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "planner.v1", parseOptions: { registeredRoles, registeredChecks, registeredArtifactTypes, maxStepAttempts: 1 }, gatewayCall });
+  planner.complete({ outcome: planner.result.outcome });
+  recordRunEvidence(runtime.db, runId, planner.step.id, "strategy_replan", { prior_plan_hash: structuredHash(plan), replacement_plan_hash: structuredHash(planner.result), intent: strategy.result.replan_intent });
+  return { ...strategy.result, plan: planner.result, steps: [] };
 }
 
 function writableDocument(runtime, projectId, plannerResult, documentatorRole = "documentator") {
@@ -649,12 +702,16 @@ export function targetedSteps(plan, { gate = null, reviewer = null } = {}) {
     primary?.message,
     ...(gate?.checks ?? []).map(check => check.failure_path)
   ];
-  const paths = reviewSignals.filter(Boolean).map(value => String(value).replaceAll("\\", "/"));
-  const selected = plan.steps.filter(step => {
-    if ((step.check_ids ?? []).some(check => failedChecks.has(check))) return true;
-    return (step.allowed_paths ?? []).some(allowed => paths.some(value => value === allowed || value.startsWith(`${allowed}/`) || value.includes(allowed)));
+  const paths = reviewSignals.filter(Boolean).map(value => String(value).replaceAll("\\", "/").replace(/:\d+(?:-\d+)?$/, ""));
+  const checkSelected = plan.steps.filter(step => (step.check_ids ?? []).some(check => failedChecks.has(check)));
+  if (checkSelected.length) return { steps: checkSelected, confidence: "high", basis: "registered_check_binding", unresolved_signals: [] };
+  const pathSelected = plan.steps.filter(step => {
+    return (step.allowed_paths ?? []).some(allowed => paths.some(value => {
+      const candidate = value.toLowerCase(), boundary = allowed.toLowerCase().replace(/\/$/, "");
+      return candidate === boundary || candidate.startsWith(`${boundary}/`) || candidate.includes(`/${boundary}/`) || candidate.endsWith(`/${boundary}`);
+    }));
   });
-  if (selected.length) return selected;
+  if (pathSelected.length) return { steps: pathSelected, confidence: "high", basis: "canonical_path_boundary", unresolved_signals: [] };
   // A semantic review gap often has no single file path (for example API -> client mapping -> UI).
   // Route it to the source-bearing plan step whose key/objective best matches that primary intent;
   // never spend the correction on a pathless synthesis step while a searchable source step exists.
@@ -664,9 +721,8 @@ export function targetedSteps(plan, { gate = null, reviewer = null } = {}) {
     const haystack = `${step.key} ${step.objective ?? ""}`.toLowerCase();
     return { step, score: semanticTokens.reduce((total, token) => total + (haystack.includes(token) ? 1 : 0), 0) };
   }).filter(item => item.score > 0).sort((left, right) => right.score - left.score);
-  if (scored.length) return [scored[0].step];
-  const analytical = plan.steps.filter(step => !(step.allowed_paths ?? []).length);
-  return analytical.length ? [analytical.at(-1)] : [plan.steps[0]].filter(Boolean);
+  if (scored.length && (scored.length === 1 || scored[0].score > scored[1].score)) return { steps: [scored[0].step], confidence: "medium", basis: "unique_semantic_intent_score", unresolved_signals: [] };
+  return { steps: [], confidence: scored.length ? "low" : "none", basis: scored.length ? "ambiguous_semantic_intent" : "no_supported_route", unresolved_signals: reviewSignals.filter(Boolean).map(String).slice(0, 12) };
 }
 
 // A run stopped for the owner's decision holds everything needed to continue: the classification it was
@@ -767,7 +823,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       // and hands over the files that actually mention them.
       source_matches: plannerSourceMatches
     }), schemaKey: "planner.v1", parseOptions: { registeredRoles, registeredChecks, registeredArtifactTypes, maxStepAttempts: policy.limits.correction_cycles + 1 }, gatewayCall });
-  const plan = planner ? planner.result : derivePlanFromTemplates(runtime, projectId, routeContract, message, registeredChecks, level, classification.document_required, documentatorRole, approvalGranted);
+  let plan = planner ? planner.result : derivePlanFromTemplates(runtime, projectId, routeContract, message, registeredChecks, level, classification.document_required, documentatorRole, approvalGranted);
   if (classification.document_required) registerNewPlannedDocument(runtime, projectId, projectRoot, plan, documentatorRole);
   applyPlannerToDatabase(runtime, runId, plan);
   if (planner) {
@@ -857,6 +913,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   if (firstWorkers.stopped) return firstWorkers.stopped;
 
   let correctionCycles = 0;
+  let strategyRecoveries = 0;
   const emergencyFuse = Math.min(12, Math.max(0, Number(policy.limits.correction_cycles) || 0));
   let gate = await executeGateStep({ runtime, queue, runId, stepKey: "verification", projectRoot, level, plannerResult: plan, classification, gateRunner, cycle: 0 });
   let reviewerResult = null;
@@ -866,7 +923,19 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     if (boundaryControl) return { status: boundaryControl.action === "pause" ? "paused" : "cancelled", planner: plan, workers: workerResults, gate, reviewer: reviewerResult };
     if (gate.status !== "passed") {
       const progress = recordProgressSnapshot(runtime.db, runId, { cycle: correctionCycles, gate, allowedPaths: plan.allowed_paths });
-      if (correctionCycles >= emergencyFuse || progress.stagnating) {
+      let recoveryRouting = null;
+      if (progress.stagnating && strategyRecoveries < 1) {
+        strategyRecoveries += 1;
+        const recovery = await executeStrategyRecovery({ runtime, queue, runId, projectId, level, classification, responseLanguage, taskRoot, gatewayCall, plan, gate, reviewer: null, reviewEvidence: { verification: { gate } }, progress, cycle: correctionCycles });
+        if (recovery.plan) { plan = recovery.plan; applyPlannerToDatabase(runtime, runId, plan); }
+        const candidate = recovery.steps?.length ? recovery.steps : targetedSteps(plan, { gate }).steps;
+        if (candidate.length) recoveryRouting = { steps: candidate, confidence: "high", basis: `strategy_review:${recovery.decision}`, unresolved_signals: [] };
+        else if (recovery.decision === "NO_VIABLE_STRATEGY") {
+          runtime.setState(runId, "blocked", { reason: "strategy review found no viable bounded recovery" });
+          return { status: "blocked", planner: plan, workers: workerResults, gate, reviewer: reviewerResult, progress, strategy: recovery };
+        }
+      }
+      if (correctionCycles >= emergencyFuse || (progress.stagnating && !recoveryRouting)) {
         runtime.setState(runId, progress.stagnating ? "blocked" : "changes_requested", { reason: progress.stagnating ? "gauntlet stagnation detected" : "required project gate not green" });
         return { status: progress.stagnating ? "blocked" : "changes_requested", planner: plan, workers: workerResults, gate, reviewer: reviewerResult, progress };
       }
@@ -874,7 +943,23 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       runtime.setState(runId, "changes_requested", { reason: "required project gate not green; targeted correction authorized" });
       correctionCycles += 1;
       consumeCorrectionCycle(runtime, runId, correctionCycles);
-      const selected = targetedSteps(plan, { gate });
+      let routing = recoveryRouting ?? targetedSteps(plan, { gate });
+      if (!routing.steps.length) {
+        recordRunEvidence(runtime.db, runId, null, "correction_routing_unresolved", routing);
+        if (strategyRecoveries < 1) {
+          strategyRecoveries += 1;
+          const recovery = await executeStrategyRecovery({ runtime, queue, runId, projectId, level, classification, responseLanguage, taskRoot, gatewayCall, plan, gate, reviewer: null, reviewEvidence: { verification: { gate } }, progress, cycle: correctionCycles });
+          if (recovery.plan) { plan = recovery.plan; applyPlannerToDatabase(runtime, runId, plan); }
+          const candidate = recovery.steps?.length ? recovery.steps : targetedSteps(plan, { gate }).steps;
+          routing = { steps: candidate, confidence: candidate.length ? "high" : "none", basis: `strategy_review:${recovery.decision}`, unresolved_signals: [] };
+        }
+        if (!routing.steps.length) {
+          runtime.setState(runId, "changes_requested", { reason: "no supported correction route after bounded strategy review" });
+          return { status: "changes_requested", planner: plan, workers: workerResults, gate, reviewer: reviewerResult, routing };
+        }
+      }
+      const selected = routing.steps;
+      recordRunEvidence(runtime.db, runId, null, "correction_routing", routing);
       appendCorrectionSteps(runtime, runId, plan, correctionCycles, selected);
       queue.enqueueRun(runId);
       runtime.db.prepare("UPDATE workflow_runs SET cycle=?,updated_at=? WHERE id=?").run(correctionCycles, now(), runId);
@@ -903,14 +988,42 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       return { status: "rejected", planner: plan, workers: workerResults, gate, reviewer: reviewerResult, review_opinions: reviewed.opinions };
     }
     const progress = recordProgressSnapshot(runtime.db, runId, { cycle: correctionCycles, gate, reviewer: reviewerResult, allowedPaths: plan.allowed_paths });
-    if (correctionCycles >= emergencyFuse || progress.stagnating) {
+    let recoveryRouting = null;
+    if (progress.stagnating && strategyRecoveries < 1) {
+      strategyRecoveries += 1;
+      const recovery = await executeStrategyRecovery({ runtime, queue, runId, projectId, level, classification, responseLanguage, taskRoot, gatewayCall, plan, gate, reviewer: reviewerResult, reviewEvidence: reviewed.review_evidence, progress, cycle: correctionCycles });
+      if (recovery.plan) { plan = recovery.plan; applyPlannerToDatabase(runtime, runId, plan); }
+      const candidate = recovery.steps?.length ? recovery.steps : targetedSteps(plan, { reviewer: reviewerResult }).steps;
+      if (candidate.length) recoveryRouting = { steps: candidate, confidence: "high", basis: `strategy_review:${recovery.decision}`, unresolved_signals: [] };
+      else if (recovery.decision === "NO_VIABLE_STRATEGY") {
+        runtime.setState(runId, "blocked", { reason: "strategy review found no viable bounded recovery" });
+        return { status: "blocked", planner: plan, workers: workerResults, gate, reviewer: reviewerResult, review_opinions: reviewed.opinions, progress, strategy: recovery };
+      }
+    }
+    if (correctionCycles >= emergencyFuse || (progress.stagnating && !recoveryRouting)) {
       runtime.setState(runId, progress.stagnating ? "blocked" : "changes_requested", { reason: progress.stagnating ? "repeated primary review gap" : "reviewer requested changes" });
       return { status: progress.stagnating ? "blocked" : "changes_requested", planner: plan, workers: workerResults, gate, reviewer: reviewerResult, review_opinions: reviewed.opinions, progress };
     }
     runtime.setState(runId, "changes_requested", { reason: "primary review gap routed to targeted correction" });
     correctionCycles += 1;
     consumeCorrectionCycle(runtime, runId, correctionCycles);
-    const selected = targetedSteps(plan, { reviewer: reviewerResult });
+    let routing = recoveryRouting ?? targetedSteps(plan, { reviewer: reviewerResult });
+    if (!routing.steps.length) {
+      recordRunEvidence(runtime.db, runId, null, "correction_routing_unresolved", routing);
+      if (strategyRecoveries < 1) {
+        strategyRecoveries += 1;
+        const recovery = await executeStrategyRecovery({ runtime, queue, runId, projectId, level, classification, responseLanguage, taskRoot, gatewayCall, plan, gate, reviewer: reviewerResult, reviewEvidence: reviewed.review_evidence, progress, cycle: correctionCycles });
+        if (recovery.plan) { plan = recovery.plan; applyPlannerToDatabase(runtime, runId, plan); }
+        const candidate = recovery.steps?.length ? recovery.steps : targetedSteps(plan, { reviewer: reviewerResult }).steps;
+        routing = { steps: candidate, confidence: candidate.length ? "high" : "none", basis: `strategy_review:${recovery.decision}`, unresolved_signals: [] };
+      }
+      if (!routing.steps.length) {
+        runtime.setState(runId, "changes_requested", { reason: "no supported review-gap route after bounded strategy review" });
+        return { status: "changes_requested", planner: plan, workers: workerResults, gate, reviewer: reviewerResult, review_opinions: reviewed.opinions, routing };
+      }
+    }
+    const selected = routing.steps;
+    recordRunEvidence(runtime.db, runId, null, "correction_routing", routing);
     appendCorrectionSteps(runtime, runId, plan, correctionCycles, selected);
     queue.enqueueRun(runId);
     runtime.db.prepare("UPDATE workflow_runs SET cycle=?,updated_at=? WHERE id=?").run(correctionCycles, now(), runId);

@@ -4,7 +4,7 @@ import { escapeXml } from "./limited-xml.mjs";
 import { renderQualityContract, validateQualityContract } from "./quality-contracts.mjs";
 import { languageName, normalizeLanguage } from "./language.mjs";
 
-const RESULT_SCHEMAS = new Set(["planner.v1", "worker.v1", "reviewer.v1", "judge.v1", "documentator.v1"]);
+const RESULT_SCHEMAS = new Set(["planner.v1", "worker.v1", "reviewer.v1", "judge.v1", "strategy_review.v1", "documentator.v1"]);
 
 // The validator accepts an exact field set, so the prompt has to state that set. Naming the schema and
 // leaving the fields unsaid asks the model to guess a shape that is then rejected for guessing wrong.
@@ -47,6 +47,15 @@ export const RESULT_SCHEMA_SHAPES = Object.freeze({
     evidence_refs: ["string"],
     primary_gap: { kind: "string", message: "string", path: "path relative to the project root, or null", evidence_refs: ["string"], search_intent: "string" },
     verification_request: { kind: "symbol_reference | exact_term | directed_relation | field_flow | path_change | gate_fact", subject: "string", from: "string or null", to: "string or null", path: "path relative to the project root, or null", evidence_refs: ["string"] }
+  }),
+  "strategy_review.v1": Object.freeze({
+    schema_version: 1,
+    decision: "SELECT_EXISTING_STEP | REPLAN | TARGETED_VERIFICATION | OWNER_DECISION | NO_VIABLE_STRATEGY",
+    rationale: "non-empty string",
+    selected_step_keys: ["existing planner step key"],
+    verification_request: { kind: "symbol_reference | exact_term | directed_relation | field_flow | path_change | gate_fact", subject: "string", from: "string or null", to: "string or null", path: "path relative to the project root, or null", evidence_refs: ["string"] },
+    replan_intent: "non-empty string or null",
+    evidence_refs: ["string"]
   }),
   "documentator.v1": Object.freeze({
     schema_version: 1,
@@ -147,7 +156,9 @@ export function rolePrompt({ contract, qualityContract, packageContract, context
     ? "This independent review runs after worker evidence and deterministic gates but before the documentator. Compare the result first with task_package.review_evidence.owner_objective.verbatim and task_package.review_evidence.canonical_completion; planner completion criteria are advisory and never override owner intent, the quality contract, registered gates or completionBlockers. For change evidence, judge the run-relative delta and primary facts, never a builder or worker narrative. For analytical evidence, judge whether the conclusion follows from the supplied primary source ranges and scans. Truncated evidence is not absent evidence, incomplete collection is not a false fact, and failure to find a path in a bounded graph is not proof that the path is missing. A required final document is intentionally not created yet and its absence from worker artifacts or changed_paths is not a blocker. Final receipt totals, calls, tokens, cache, total duration and this invocation's full prompt measurement are platform-generated after review; their absence from review_evidence is not a blocker and they are supplied to the documentator and final run statistics later. Use CHANGES_REQUESTED for an evidence gap that a targeted correction can still address when task_package.remaining_correction_cycles is positive. Reserve REJECT for a fundamental unsafe, unauthorized or contradictory result that another bounded evidence collection cycle cannot repair."
     : null;
   const judgeInstruction = resultSchema === "judge.v1"
-    ? "Resolve only the evaluative conflict in the independently recorded opinions after considering task_package.blocker_admissibility. Unsupported, invalid or unknown factual blockers are not vetoes. Truncated evidence is not absence, incomplete collection is not falsehood, and no path in a bounded graph is not a missing edge. Use TARGETED_VERIFICATION for a fact that the deterministic verifier can resolve; use PRIMARY_GAP for an admissible correction gap; use OWNER_DECISION only for a genuine product or authority decision."
+    ? "Resolve only the evaluative conflict in the independently recorded opinions after considering task_package.blocker_admissibility. Unsupported, invalid or unknown factual blockers are not vetoes. Truncated evidence is not absence, incomplete collection is not falsehood, and no path in a bounded graph is not a missing edge. Use TARGETED_VERIFICATION for a fact that the deterministic verifier can resolve; use PRIMARY_GAP for an admissible correction gap; use OWNER_DECISION only for a genuine product or authority decision. Nullable payload rule is strict: PRIMARY_GAP requires primary_gap object and verification_request=null; TARGETED_VERIFICATION requires verification_request object and primary_gap=null; PASS and OWNER_DECISION require both fields=null. Never populate both nullable fields."
+    : resultSchema === "strategy_review.v1"
+    ? "Review only the correction strategy, never execute it. Select only keys listed in task_package.available_steps. SELECT_EXISTING_STEP requires one or more selected_step_keys and no replan or verification payload. REPLAN requires replan_intent and no selected steps or verification payload. TARGETED_VERIFICATION requires verification_request and no selected steps or replan. OWNER_DECISION and NO_VIABLE_STRATEGY require no selected steps, verification request or replan intent. NO_VIABLE_STRATEGY means no bounded evidence, existing-step, verification, replan or owner-decision path remains."
     : null;
   const toolAuthorityInstruction = contract.allowed_tools.length
     ? "Only the tools listed in allowed_tools are authorized. The supplied context remains the primary evidence package."
@@ -281,6 +292,25 @@ export function validateJudgeResult(value) {
   return value;
 }
 
+export function validateStrategyReviewResult(value, { availableStepKeys = [] } = {}) {
+  exactObject(value, schemaFields("strategy_review.v1"), "strategy_review.v1");
+  if (value.schema_version !== 1 || !["SELECT_EXISTING_STEP", "REPLAN", "TARGETED_VERIFICATION", "OWNER_DECISION", "NO_VIABLE_STRATEGY"].includes(value.decision) || typeof value.rationale !== "string" || !value.rationale.trim()) throw new Error("strategy_review.v1: invalid scalar field");
+  strings(value.selected_step_keys, "strategy_review.v1.selected_step_keys");
+  if (value.selected_step_keys.some(key => !availableStepKeys.includes(key))) throw new Error("strategy_review.v1: unknown selected step");
+  strings(value.evidence_refs, "strategy_review.v1.evidence_refs");
+  if (value.replan_intent !== null && (typeof value.replan_intent !== "string" || !value.replan_intent.trim())) throw new Error("strategy_review.v1: invalid replan_intent");
+  if (value.verification_request !== null) {
+    exactObject(value.verification_request, ["kind", "subject", "from", "to", "path", "evidence_refs"], "strategy_review.v1.verification_request");
+    if (!["symbol_reference", "exact_term", "directed_relation", "field_flow", "path_change", "gate_fact"].includes(value.verification_request.kind) || typeof value.verification_request.subject !== "string" || !value.verification_request.subject.trim()) throw new Error("strategy_review.v1.verification_request: invalid");
+    for (const key of ["from", "to"]) if (value.verification_request[key] !== null && (typeof value.verification_request[key] !== "string" || !value.verification_request[key].trim())) throw new Error(`strategy_review.v1.verification_request.${key}: string or null required`);
+    value.verification_request.path = relativePath(value.verification_request.path, "strategy_review.v1.verification_request.path", { nullable: true });
+    strings(value.verification_request.evidence_refs, "strategy_review.v1.verification_request.evidence_refs");
+  }
+  const selected = value.selected_step_keys.length > 0, verification = Boolean(value.verification_request), replan = Boolean(value.replan_intent);
+  if ((value.decision === "SELECT_EXISTING_STEP") !== selected || (value.decision === "TARGETED_VERIFICATION") !== verification || (value.decision === "REPLAN") !== replan) throw new Error("strategy_review.v1: decision payload mismatch");
+  return value;
+}
+
 export function validateDocumentatorResult(value, { allowedDocumentIds }) {
   exactObject(value, schemaFields("documentator.v1"), "documentator.v1");
   if (value.schema_version !== 1 || value.status !== "proposed" || !allowedDocumentIds.includes(value.document_id)) throw new Error("documentator.v1: document not allowed");
@@ -297,6 +327,7 @@ export function parseRoleReceipt(receipt, schemaKey, options) {
   if (schemaKey === "worker.v1") return validateWorkerResult(value, options);
   if (schemaKey === "reviewer.v1") return validateReviewerResult(value, options);
   if (schemaKey === "judge.v1") return validateJudgeResult(value, options);
+  if (schemaKey === "strategy_review.v1") return validateStrategyReviewResult(value, options);
   if (schemaKey === "documentator.v1") return validateDocumentatorResult(value, options);
   throw new Error(`ROLE_RESULT_SCHEMA_UNKNOWN: ${schemaKey}`);
 }

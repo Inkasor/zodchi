@@ -23,6 +23,14 @@ function role(key, purpose, workTypes, artifacts, options = {}) {
 }
 const profilesFor = (packageKey, roles) => roles.map(item => ({ key: `${packageKey}.${item.key}.mvp`, role_key: item.key, provider_family: null, capabilities: item.contract.allowed_skills, operational_levels: ["prototype", "mvp", "production", "security-audit"] }));
 const promptsFor = roles => roles.map(item => { const template = `ROLE ${item.key}. Follow the versioned role contract and the separately supplied quality contract. Return only ${item.contract.result_schema_key}. Do not make owner decisions or publish.`; return { key: `${item.key}.default`, version: PACKAGE_VERSION, role_key: item.key, result_schema_key: item.contract.result_schema_key, template, content_hash: promptHash(template) }; });
+function addRoleToPackage(packageValue, item) {
+  item = { ...item, contract: { ...item.contract, allowed_profile_keys: [`${packageValue.key}.${item.key}.mvp`] } };
+  packageValue.roles.push(item);
+  packageValue.profiles.push(...profilesFor(packageValue.key, [item]));
+  packageValue.prompt_templates.push(...promptsFor([item]));
+  for (const document of packageValue.documents ?? []) document.bindings.push(binding(item.key));
+  return packageValue;
+}
 const checkBinding = (quality, artifact, required = true) => ({ quality_mode_key: quality, artifact_type_key: artifact, required });
 const commandCheck = (key, name, command, args, bindings, timeout = 900) => ({ key, name, runner: key, kind: "command", config: { command, args }, timeout_seconds: timeout, bindings });
 const projectCommandCheck = (key, name, projectId, command, args, bindings, timeout = 900) => ({ key, name, runner: key, kind: "project_command", config: { project_id: projectId, command, args }, timeout_seconds: timeout, bindings });
@@ -104,7 +112,8 @@ function companyWebPackage(spec) {
     role("tester", "Run registered deterministic checks and keep source, CI, runtime and user evidence separate.", ["testing", "verification", ...(spec.collection ? ["data_collection"] : [])], ["test_report", "deployment_evidence", ...(spec.collection ? ["collection_evidence"] : [])], { checks: [...new Set([...codeChecks, ...dataChecks, ...releaseChecks, ...contentChecks])] }),
     role("reviewer", "Return PASS, CHANGES_REQUESTED or REJECT after required deterministic checks; never replace owner approval.", ["review", "verification", "security_review"], ["test_report", "code", "document", "security_report"], { context: REVIEW_CONTEXT_BYTES, checks: [...new Set([...codeChecks, ...dataChecks, ...releaseChecks, ...contentChecks])], boundaries: { owner_decisions: false, production_deploy: false } }),
     role("adversarial_reviewer", "Independently challenge the same immutable evidence and identify the strongest unsupported claim without seeing another review opinion.", ["review", "verification", "security_review"], ["test_report", "code", "document", "security_report"], { context: REVIEW_CONTEXT_BYTES, checks: [...new Set([...codeChecks, ...dataChecks, ...releaseChecks, ...contentChecks])], boundaries: { edits: false, opinions_from_other_reviewers: false, owner_decisions: false } }),
-    role("strategy_reviewer", "Independently assess whether the current evidence-backed strategy targets the primary remaining gap without replaying completed work.", ["review", "verification", "planning"], ["test_report", "code", "document", "decision"], { context: REVIEW_CONTEXT_BYTES, boundaries: { edits: false, opinions_from_other_reviewers: false, owner_decisions: false } }),
+    role("evidence_reviewer", "Independently check whether every material conclusion is supported by primary evidence without seeing another review opinion.", ["review", "verification", "security_review"], ["test_report", "code", "document", "security_report"], { context: REVIEW_CONTEXT_BYTES, checks: [...new Set([...codeChecks, ...dataChecks, ...releaseChecks, ...contentChecks])], boundaries: { edits: false, opinions_from_other_reviewers: false, owner_decisions: false } }),
+    role("strategy_reviewer", "Independently assess whether the current evidence-backed strategy targets the primary remaining gap without replaying completed work.", ["review", "verification", "planning"], ["test_report", "code", "document", "decision"], { context: REVIEW_CONTEXT_BYTES, schema: "strategy_review.v1", boundaries: { edits: false, opinions_from_other_reviewers: false, owner_decisions: false } }),
     role("judge", "Resolve only judgment conflicts between independent opinions after factual disagreements have been sent to deterministic verification.", ["review", "verification"], ["decision", "test_report", "document"], { context: REVIEW_CONTEXT_BYTES, schema: "judge.v1", boundaries: { edits: false, majority_vote: false, owner_decisions: false } }),
     role("documentator", "Update only registered working documents from accepted structured decisions and pass semantic lint.", ["documentation", "decision"], ["document", "decision"], { tools: ["apply_patch"] }),
     role("release_operator", "Prepare or execute only an explicitly approved exact release and verify the deployed revision without changing shared data by hand.", ["release", "deployment"], ["release_package", "deployment_evidence"], { tools: ["exec_command"], checks: releaseChecks, boundaries: { explicit_approval_required: true, direct_release_edit: false, live_data_edit: false } }),
@@ -187,4 +196,4 @@ function companyWebPackage(spec) {
 }
 
 
-export { PACKAGE_VERSION, role, checkBinding, commandCheck, projectCommandCheck, disabledCheck, secretCheck, securityChecks, withBroadSecretScan, addBinding, completeSoftwareChecks, step, workflow, question, route, binding, document, scenario, finalize, companyWebPackage };
+export { PACKAGE_VERSION, role, addRoleToPackage, checkBinding, commandCheck, projectCommandCheck, disabledCheck, secretCheck, securityChecks, withBroadSecretScan, addBinding, completeSoftwareChecks, step, workflow, question, route, binding, document, scenario, finalize, companyWebPackage };

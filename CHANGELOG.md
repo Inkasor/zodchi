@@ -4,6 +4,19 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_12_2026_08_26" status="working">
+
+## 0.5.12 — 2026-08-26
+
+- Typed deterministic verification handles symbol, exact-term, directed-relation, field-flow, path-change and gate-fact requests and reports `observed`, `missing` or `unknown`; bounded no-find remains unknown.
+- Correction routing returns selected steps together with confidence, basis and unresolved signals. Canonical path-segment matching replaces substring collisions, and there is no guessed first-step or synthesis fallback.
+- `strategy_review.v1` can select an existing step, request deterministic verification, request a bounded planner replan, ask for an owner decision or prove `NO_VIABLE_STRATEGY`; stagnation gets one bounded recovery before blocking.
+- TypeScript field continuity is derived from compiler AST transitions with direction, symbols, transition kind and source provenance. Shared identifiers remain search hints when no transition exists; unavailable BSL transition evidence remains unknown.
+- Judge nullable payload rules are explicit, and every structured-result validation failure records its schema, exact error and raw-result hash without persisting the raw model payload.
+- Gauntlet consilium membership is hard-capped at three and configured values 1, 2 and 3 select one, two and three independent review calls respectively.
+
+</section>
+
 <section id="0_5_11_2026_08_26" status="working">
 
 ## 0.5.11 — 2026-08-26
