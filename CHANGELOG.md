@@ -4,6 +4,14 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_16_2026_08_26" status="working">
+
+## 0.5.16 — 2026-08-26
+
+- Structural reviewer evidence references can select array records by stable semantic keys such as `plan_step` and can assert deterministic value predicates such as `coverage=incomplete`. False predicates and unknown selectors remain unresolved, while real cross-layer incompleteness blockers now survive admissibility and enter correction.
+
+</section>
+
 <section id="0_5_15_2026_08_26" status="working">
 
 ## 0.5.15 — 2026-08-26
