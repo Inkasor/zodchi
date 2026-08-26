@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { utf8Prefix } from "./utf8.mjs";
 import { execFileSync } from "node:child_process";
 import { id, now } from "./db.mjs";
 import { completionBlockers } from "./state-machine.mjs";
@@ -161,8 +162,6 @@ export function recordRunEvidence(db, runId, stepId, kind, value) {
 }
 
 function parse(value, fallback) { try { return JSON.parse(value); } catch { return fallback; } }
-function utf8Prefix(value, bytes) { return Buffer.from(String(value ?? "")).subarray(0, Math.max(0, bytes)).toString("utf8"); }
-
 function compactCodeIntelligence(value, includeSamples = true) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const copy = {};
@@ -295,7 +294,9 @@ export function claimCenteredReviewEvidence(workerResults, sourceEvidence, owner
       const nodes = itemNodes(latestSources, edge); return nodes.some(node => paths.has(node.path));
     }).slice(0, 16).map(edge => edge.id ?? `${edge.from}->${edge.to}:${edge.type}`);
     const exactScanRefs = candidates.map(registerScan).filter(Boolean);
-    const claimId = `claim_${digest(`${planStep}\n${result.summary ?? ""}`).slice(0, 16)}`;
+    // The plan step is the stable material-claim identity across correction cycles. Worker prose is an
+    // analytical artifact, not identity: changing a summary must never manufacture semantic progress.
+    const claimId = `claim_${digest(planStep).slice(0, 16)}`;
     const crossLayerNarrative = chainRequested && /synth|coverage_package|cross.?layer|end.?to.?end/i.test(planStep);
     // A synthesis result is an analytical conclusion, not a second evidence narrative. Cross-layer
     // coverage has its own deterministic chain record below and must never be duplicated as a generic
@@ -538,9 +539,15 @@ export function buildReviewEvidence(db, runId, { plan, gate, workerResults, allo
     .map(row => ({ kind: row.kind, ...parse(row.structured_json, {}) }));
   const hasChanges = changes.run_changed_paths.length > 0, hasAnalysis = decisionArtifacts.length > 0;
   const type = hasChanges && hasAnalysis ? "mixed" : hasChanges ? "change" : "analytical";
-  const sourceEvidence = db.prepare("SELECT step_id,evidence_hash,evidence_json FROM run_evidence WHERE run_id=? AND kind='worker_source' ORDER BY created_at").all(runId)
+  const sourceRows = db.prepare("SELECT step_id,evidence_hash,evidence_json FROM run_evidence WHERE run_id=? AND kind='worker_source' ORDER BY created_at,id").all(runId)
     .map(row => ({ step_id: row.step_id, evidence_hash: row.evidence_hash, ...parse(row.evidence_json, {}) }));
+  // The append-only trace retains every collection attempt. The reviewer envelope stores one physical
+  // copy of identical evidence and references it by hash, so retry bookkeeping cannot masquerade as a
+  // changed proof packet.
+  const sourceEvidence = [...new Map(sourceRows.map(item => [item.evidence_hash, item])).values()];
   const centered = claimCenteredReviewEvidence(workerResults, sourceEvidence, ownerObjective(db, runId).verbatim);
+  const verificationResults = db.prepare("SELECT evidence_hash,evidence_json FROM run_evidence WHERE run_id=? AND kind='targeted_verification_result' ORDER BY created_at,id").all(runId)
+    .map(row => ({ evidence_hash: row.evidence_hash, ...parse(row.evidence_json, {}) }));
   const evidence = {
     schema_version: 1, type, owner_objective: ownerObjective(db, runId),
     canonical_completion: {
@@ -548,7 +555,7 @@ export function buildReviewEvidence(db, runId, { plan, gate, workerResults, allo
       review_reconsideration: "The active decision from the previous review cycle is intentionally excluded because this package supersedes it; all other completion blockers remain canonical."
     },
     planner_advisory: { completion_criteria: plan?.completion_criteria ?? [], authority: "advisory" },
-    verification: { gate: gate ?? null },
+    verification: { gate: gate ?? null, verification_results: verificationResults },
     change_evidence: type === "analytical" ? null : changes,
     analytical_evidence: type === "change" ? null : { decision_artifacts: decisionArtifacts, conclusions: centered.conclusions },
     claim_coverage: centered.claims,

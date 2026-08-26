@@ -18,7 +18,7 @@ function temporaryRoot(prefix) {
 test("clean database applies numbered normalized migrations and SQLite safety pragmas", () => {
   const root = temporaryRoot("workflow-migrations-clean-");
   const db = openDb(path.join(root, "workflow.sqlite"));
-  assert.equal(schemaVersion(db), 16);
+  assert.equal(schemaVersion(db), 17);
   assert.equal(db.prepare("PRAGMA foreign_keys").get().foreign_keys, 1);
   assert.equal(db.prepare("PRAGMA journal_mode").get().journal_mode, "wal");
   assert.equal(db.prepare("PRAGMA busy_timeout").get().timeout, 5000);
@@ -36,7 +36,7 @@ test("the known pre-publication migration 7 newline checksum remains readable", 
   db.prepare("UPDATE schema_migrations SET checksum=? WHERE version=7").run("8080e01be11bc8882303b50e3d51dc00d1dffcd23c3f08691dee6d7452770c1c");
   db.close();
   db = openDb(file);
-  assert.equal(schemaVersion(db), 16);
+  assert.equal(schemaVersion(db), 17);
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });

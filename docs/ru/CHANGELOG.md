@@ -4,6 +4,17 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_18_2026_08_26" status="working">
+
+## 0.5.18 — 2026-08-26
+
+- Прогресс Gauntlet теперь измеряется независимо по идентичности пакета, generic semantic state и детерминированному evidence frontier. Истории gate и semantic review разделены, а outcome маршрута хранит fingerprints до и после попытки.
+- Идентичный canonical review packet останавливается до нового вызова reviewer. Strategy recovery больше не откатывается к исчерпанному targeted route: `NO_VIABLE_STRATEGY` завершает bounded recovery, выбор исчерпанного шага отклоняется, replan требует зарегистрированного planner, а targeted verification входит в следующий canonical decision package.
+- Повторные worker evidence остаются в append-only `run_evidence`, но физически дедуплицируются в reviewer envelope. Recovery budget привязан к каналу и semantic gap и расходуется только при фактическом вызове strategy reviewer.
+- Все пути подгонки prompt используют безопасное ограничение по UTF-8 bytes. Диагностика различает fixed role floor, неудовлетворимый mandatory context floor и dynamic overflow; byte contract закреплён тестами на кириллице, смешанном ASCII и emoji.
+
+</section>
+
 <section id="0_5_17_2026_08_26" status="working">
 
 ## 0.5.17 — 2026-08-26

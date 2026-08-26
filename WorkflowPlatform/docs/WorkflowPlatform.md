@@ -1,4 +1,4 @@
-<document id="workflow_platform" version="0.5.17" status="working" kind="governance" language="en">
+<document id="workflow_platform" version="0.5.18" status="working" kind="governance" language="en">
 <metadata owner="workflow-platform" authority="Zodchi">
 </metadata>
 <section id="documentator_contract" status="accepted">
@@ -42,6 +42,21 @@ Source collection covers the project's tracked and unignored files; a declared s
 </rule>
 <rule id="collection_searches_before_planning" status="accepted">
 Collection searches the declared scope for the identifiers carried by the request and supplies the matching files to the planner.
+</rule>
+<section id="bounded_convergence" status="accepted">
+Recovery is governed by deterministic packet identity, semantic state and evidence frontier before another model call is admitted.
+</section>
+<rule id="duplicate_review_packet_short_circuits" status="accepted">
+An identical canonical review evidence hash is absolute no-progress: the platform records it and enters bounded strategy recovery without invoking reviewers again.
+</rule>
+<rule id="recovery_never_repeats_an_exhausted_route" status="accepted">
+A route is exhausted for one semantic gap when neither its canonical semantic state nor deterministic evidence frontier advances. NO_VIABLE_STRATEGY is terminal, targeted verification feeds the canonical package, and recovery never falls back to the route that caused stagnation.
+</rule>
+<rule id="progress_channels_are_independent" status="accepted">
+Gate and semantic-review snapshots are compared only with earlier snapshots of the same kind; one channel cannot erase stagnation in the other.
+</rule>
+<rule id="context_limits_are_utf8_bytes" status="accepted">
+Every context limit is enforced against the final UTF-8 prompt. Fixed prompt floor, mandatory context floor and dynamic context are measured separately and reported with distinct failure categories.
 </rule>
 <rule id="collection_translates_through_the_project" status="accepted">
 Where a request carries no identifier, collection searches for its ordinary words, reads the identifiers standing on the matching lines, and searches again for those; every name it searches for was read out of the project.

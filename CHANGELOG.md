@@ -4,6 +4,17 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_18_2026_08_26" status="working">
+
+## 0.5.18 — 2026-08-26
+
+- Gauntlet progress now has independent packet-identity, generic semantic-state and deterministic evidence-frontier signals. Gate and semantic-review histories are separate, while route outcomes retain the packet, semantic and frontier fingerprints that prove whether a route is exhausted.
+- An identical canonical review packet short-circuits before another reviewer call. Strategy recovery cannot fall back to an exhausted targeted route: `NO_VIABLE_STRATEGY` terminates bounded recovery, exhausted existing-step selections are rejected, replanning requires a registered planner, and targeted-verification results enter the next canonical decision package.
+- Repeated worker evidence remains append-only in `run_evidence` but is physically deduplicated in the reviewer envelope. Recovery budgets are keyed by progress channel and semantic gap and are consumed only by an actual strategy invocation.
+- Every prompt-fitting path uses UTF-8 byte-safe prefixing. Diagnostics distinguish a fixed role floor, an unsatisfiable mandatory context floor and dynamic overflow, with Cyrillic, mixed ASCII and emoji regressions enforcing the final byte contract.
+
+</section>
+
 <section id="0_5_17_2026_08_26" status="working">
 
 ## 0.5.17 — 2026-08-26

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { utf8Prefix } from "./utf8.mjs";
 import { Runtime, recordLint } from "./runtime.mjs";
 import { classificationCatalog, classificationJsonSchema, classifierPrompt, parseClassificationReceipt, resolveWorkflowRoute, validateClassificationDecision } from "./classifier.mjs";
 import { buildPrompt } from "./prompt-builder.mjs";
@@ -50,7 +51,7 @@ function boundedDocuments(discovery, maxBytes = 32_000) {
   for (const document of discovery.documents) {
     const remaining = maxBytes - used;
     if (remaining <= 0) break;
-    const text = String(document.text ?? "").slice(0, remaining);
+    const text = utf8Prefix(document.text, remaining);
     result.push({ path: document.path, authority: document.authority, text });
     used += Buffer.byteLength(text);
   }

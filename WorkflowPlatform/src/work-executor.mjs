@@ -13,10 +13,11 @@ import { projectRoots, writableRoots } from "./project-roots.mjs";
 import { loadRoleContract, parseRoleReceipt, rolePrompt, structuredHash } from "./role-contracts.mjs";
 import { consumeCorrectionCycle, documentationOutcome, loadOperationalPolicy, loadQualityContract, operationalLevel, reviewerRequirement } from "./quality-contracts.mjs";
 import { buildReviewEvidence, captureRunBaselines, recordRunEvidence, runChangeEvidence } from "./run-evidence.mjs";
-import { applyRunControlAtBoundary, pendingRunControl, recordProgressSnapshot } from "./progress-supervisor.mjs";
+import { applyRunControlAtBoundary, pendingRunControl, recordProgressSnapshot, semanticGapFingerprint } from "./progress-supervisor.mjs";
 import { blockerAdmissibility, admissibleOpinionDecision, hasSupportedFactualBlocker } from "./review-admissibility.mjs";
 import { executeTargetedVerification } from "./targeted-verification.mjs";
 import { documentTermScore, rankTerms } from "./term-ranking.mjs";
+import { utf8Prefix } from "./utf8.mjs";
 
 function hashFile(file) { return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"); }
 function parseJson(value, fallback) { try { return JSON.parse(value); } catch { return fallback; } }
@@ -211,19 +212,6 @@ export function fitSourceEvidence(context, limit, measure = promptBytes) {
   return context;
 }
 
-function utf8Prefix(value, maxBytes) {
-  const text = String(value ?? "");
-  if (maxBytes <= 0) return "";
-  if (Buffer.byteLength(text) <= maxBytes) return text;
-  let low = 0, high = text.length;
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    if (Buffer.byteLength(text.slice(0, middle)) <= maxBytes) low = middle;
-    else high = middle - 1;
-  }
-  return text.slice(0, low);
-}
-
 export function compactPriorWorkerResults(results, maxBytes = 16_000) {
   const items = [];
   for (const result of results ?? []) {
@@ -316,7 +304,7 @@ function boundedContext(discovery, roleId, classification, limit, responseLangua
   for (const document of selected.documents) {
     const remaining = limit - used;
     if (remaining <= 256) break;
-    const item = { id: document.id, path: document.path, authority: document.authority, version: document.content_hash ?? null, text: String(document.text ?? "").slice(0, Math.max(0, remaining - 256)) };
+    const item = { id: document.id, path: document.path, authority: document.authority, version: document.content_hash ?? null, text: utf8Prefix(document.text, Math.max(0, remaining - 256)) };
     context.documents.push(item);
     used = Buffer.byteLength(JSON.stringify(context));
   }
@@ -330,6 +318,22 @@ function storeStepPayload(db, stepId, contract, resultSchemaKey, result = null) 
 
 function promptWithinContract(contract, qualityContract, packageContract, context, schemaKey) {
   const fitted = structuredClone(context ?? {});
+  const fixedPromptFloorBytes = Buffer.byteLength(rolePrompt({ contract, qualityContract, packageContract: {}, context: {}, resultSchema: schemaKey }));
+  const mandatoryContext = Object.fromEntries(Object.entries(fitted).filter(([key]) => !new Set(["documents", "decisions", "pending_interactions", "source_inventory", "source_matches", "sources"]).has(key)));
+  const mandatoryContextFloorBytes = Buffer.byteLength(rolePrompt({ contract, qualityContract, packageContract, context: mandatoryContext, resultSchema: schemaKey }));
+  const floorError = (code, measured) => {
+    const error = new Error(`${code}: role envelope is ${measured}/${contract.context_limit_bytes} bytes`);
+    error.prompt_metrics = {
+      prompt_bytes: measured,
+      context_limit_bytes: contract.context_limit_bytes,
+      fixed_prompt_floor_bytes: fixedPromptFloorBytes,
+      mandatory_context_floor_bytes: mandatoryContextFloorBytes,
+      dynamic_context_bytes: 0
+    };
+    return error;
+  };
+  if (fixedPromptFloorBytes > contract.context_limit_bytes) throw floorError("ROLE_CONTEXT_FLOOR_EXCEEDED", fixedPromptFloorBytes);
+  if (mandatoryContextFloorBytes > contract.context_limit_bytes) throw floorError("ROLE_CONTEXT_MINIMUM_UNSATISFIABLE", mandatoryContextFloorBytes);
   let prompt = rolePrompt({ contract, qualityContract, packageContract, context: fitted, resultSchema: schemaKey });
   // History gives way before authority. Registered documents are what a role reasons from, while
   // decisions accumulate with every run, so trimming documents first would drop the authority to keep
@@ -343,17 +347,20 @@ function promptWithinContract(contract, qualityContract, packageContract, contex
   while (Buffer.byteLength(prompt) > contract.context_limit_bytes && Array.isArray(fitted.documents) && fitted.documents.length) {
     const overflow = Buffer.byteLength(prompt) - contract.context_limit_bytes;
     const document = fitted.documents.at(-1), text = String(document.text ?? "");
-    if (Buffer.byteLength(text) > overflow + 512) document.text = text.slice(0, Math.max(0, text.length - overflow - 256));
+    if (Buffer.byteLength(text) > overflow + 512) document.text = utf8Prefix(text, Math.max(0, Buffer.byteLength(text) - overflow - 256));
     else fitted.documents.pop();
     prompt = rolePrompt({ contract, qualityContract, packageContract, context: fitted, resultSchema: schemaKey });
   }
   fitWorkerSources(fitted, contract.context_limit_bytes, value => Buffer.byteLength(rolePrompt({ contract, qualityContract, packageContract, context: value, resultSchema: schemaKey })));
   prompt = rolePrompt({ contract, qualityContract, packageContract, context: fitted, resultSchema: schemaKey });
   if (Buffer.byteLength(prompt) > contract.context_limit_bytes) {
-    const error = new Error(`ROLE_CONTEXT_BUDGET_EXCEEDED: fixed contract envelope is ${Buffer.byteLength(prompt)}/${contract.context_limit_bytes} bytes`);
+    const error = new Error(`ROLE_CONTEXT_DYNAMIC_OVERFLOW: compacted role envelope is ${Buffer.byteLength(prompt)}/${contract.context_limit_bytes} bytes`);
     error.prompt_metrics = {
       prompt_bytes: Buffer.byteLength(prompt),
       context_limit_bytes: contract.context_limit_bytes,
+      fixed_prompt_floor_bytes: fixedPromptFloorBytes,
+      mandatory_context_floor_bytes: mandatoryContextFloorBytes,
+      dynamic_context_bytes: Math.max(0, Buffer.byteLength(prompt) - mandatoryContextFloorBytes),
       project_context_bytes: Buffer.byteLength(JSON.stringify(fitted)),
       task_package_bytes: Buffer.byteLength(JSON.stringify(packageContract ?? {})),
       document_bytes: Buffer.byteLength(JSON.stringify(fitted.documents ?? [])),
@@ -605,6 +612,16 @@ export function reviewerPromptContext(classification, responseLanguage) {
   };
 }
 
+export function recoveryRoute(recovery) {
+  const steps = Array.isArray(recovery?.steps) ? recovery.steps : [];
+  return { steps, confidence: steps.length ? "high" : "none", basis: `strategy_review:${recovery?.decision ?? "NO_VIABLE_STRATEGY"}`, unresolved_signals: [] };
+}
+
+export function validRecoverySelection(selectedStepKeys, exhaustedStepKeys = []) {
+  const exhausted = new Set(exhaustedStepKeys);
+  return (selectedStepKeys ?? []).length > 0 && !(selectedStepKeys ?? []).some(key => exhausted.has(key));
+}
+
 async function executeIndependentReview({ runtime, queue, runId, projectId, reviewerRole, policy, level, classification, discovery, responseLanguage, taskRoot, gatewayCall, reviewReason, plan, gate, workerResults, correctionCycles }) {
   const available = new Set(runtime.db.prepare("SELECT role_id FROM role_contracts WHERE project_id=? AND status='active'").all(projectId).map(row => row.role_id));
   const roles = policy.improvement_strategy === "gauntlet"
@@ -616,7 +633,22 @@ async function executeIndependentReview({ runtime, queue, runId, projectId, revi
   // Thirty percent remains for the XML contract, task package framing, schema and escaping overhead; the
   // final invokeRole measurement remains authoritative for every individual reviewer.
   const reviewEvidenceLimit = Math.floor(Math.min(...reviewerContracts.map(contract => contract.context_limit_bytes)) * 7 / 10);
+  const previousBase = runtime.db.prepare("SELECT evidence_json FROM run_evidence WHERE run_id=? AND kind='review_base' ORDER BY created_at DESC,id DESC LIMIT 1").get(runId);
+  const previousEvidence = parseJson(previousBase?.evidence_json, null);
   const reviewEvidence = buildReviewEvidence(runtime.db, runId, { plan, gate, workerResults, allowedPaths: plan.allowed_paths, reviewEvidenceLimit });
+  if (correctionCycles > 0 && previousEvidence?.base_evidence_hash === reviewEvidence.base_evidence_hash) {
+    const previousRoutes = runtime.db.prepare("SELECT evidence_json FROM run_evidence WHERE run_id=? AND kind='correction_routing' ORDER BY created_at DESC,id DESC LIMIT 1").all(runId)
+      .flatMap(row => parseJson(row.evidence_json, {}).route_keys ?? parseJson(row.evidence_json, {}).steps?.map(step => step.key) ?? []);
+    recordRunEvidence(runtime.db, runId, null, "duplicate_review_evidence", {
+      previous_hash: previousEvidence.base_evidence_hash,
+      current_hash: reviewEvidence.base_evidence_hash,
+      semantic_gap_fingerprint: semanticGapFingerprint(reviewEvidence)?.fingerprint ?? null,
+      previous_route_keys: previousRoutes
+    });
+    const latest = runtime.db.prepare("SELECT structured_json FROM decisions WHERE run_id=? AND kind='review' AND active=1 ORDER BY created_at DESC,id DESC LIMIT 1").get(runId);
+    const result = parseJson(latest?.structured_json, null) ?? { decision: "CHANGES_REQUESTED", summary: "Canonical review evidence is identical to the prior cycle.", blockers: [{ code: "DUPLICATE_REVIEW_EVIDENCE", message: "Correction added no canonical review evidence.", path: null }], evidence_refs: [reviewEvidence.base_evidence_hash], required_actions: [], schema_version: 1 };
+    return { duplicate: true, result, opinions: [], base_evidence_hash: reviewEvidence.base_evidence_hash, review_evidence: reviewEvidence, budget_exhausted: false, cost_budget: null };
+  }
   appendReviewerSteps(runtime, runId, selectedRoles, reviewReason, correctionCycles);
   queue.enqueueRun(runId);
   runtime.setState(runId, "review_required", { reason: reviewReason });
@@ -666,9 +698,19 @@ async function executeIndependentReview({ runtime, queue, runId, projectId, revi
   return { result: final, opinions: opinions.map(item => ({ role: item.role, result: item.result })), base_evidence_hash: reviewEvidence.base_evidence_hash, review_evidence: reviewEvidence, budget_exhausted: budgetExhausted, cost_budget: costBudget ?? null };
 }
 
+function exhaustedRouteKeys(db, runId, semanticGap) {
+  if (!semanticGap) return [];
+  return [...new Set(db.prepare("SELECT evidence_json FROM run_evidence WHERE run_id=? AND kind='correction_route_outcome' ORDER BY created_at,id").all(runId)
+    .map(row => parseJson(row.evidence_json, {}))
+    .filter(outcome => outcome.semantic_gap_fingerprint === semanticGap && outcome.exhausted)
+    .flatMap(outcome => outcome.attempted_route_keys ?? []))];
+}
+
 async function executeStrategyRecovery({ runtime, queue, runId, projectId, level, classification, responseLanguage, taskRoot, gatewayCall, plan, gate, reviewer, reviewEvidence, progress, cycle }) {
   const available = new Set(runtime.db.prepare("SELECT role_id FROM role_contracts WHERE project_id=? AND status='active'").all(projectId).map(row => row.role_id));
-  if (!available.has("strategy_reviewer")) return { decision: "NO_VIABLE_STRATEGY", rationale: "strategy_reviewer is not registered", steps: [] };
+  if (!available.has("strategy_reviewer")) return { decision: "NO_VIABLE_STRATEGY", rationale: "strategy_reviewer is not registered", steps: [], executed: false };
+  const semanticGap = progress?.latest?.semantic_fingerprint ?? progress?.latest?.primary_gap_fingerprint ?? semanticGapFingerprint(reviewEvidence)?.fingerprint ?? null;
+  const exhausted = exhaustedRouteKeys(runtime.db, runId, semanticGap);
   appendSteps(runtime, runId, [{ key: `strategy_review_${cycle}`, role: "strategy_reviewer", required: true, irreversible: false, max_attempts: 1, schema: "strategy_review.v1", contract: { cycle } }]);
   queue.enqueueRun(runId);
   const strategyPackage = {
@@ -678,20 +720,33 @@ async function executeStrategyRecovery({ runtime, queue, runId, projectId, level
     gate_failures: (gate?.checks ?? []).filter(check => check.required && check.status !== "passed").map(check => ({ id: check.id, failure_path: check.failure_path ?? null })),
     prior_progress: progress ?? null,
     claim_coverage: reviewEvidence?.claim_coverage ?? [],
+    verification_results: reviewEvidence?.verification?.verification_results ?? [],
+    exhausted_step_keys: exhausted,
     correction_cycle: cycle
   };
   const strategy = await invokeRole({ runtime, queue, runId, roleId: "strategy_reviewer", level, taskRoot, packageContract: strategyPackage, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "strategy_review.v1", parseOptions: { availableStepKeys: plan.steps.map(step => step.key) }, gatewayCall });
   strategy.complete({ decision: strategy.result.decision });
   recordRunEvidence(runtime.db, runId, strategy.step.id, "strategy_review", strategy.result);
-  if (strategy.result.decision === "SELECT_EXISTING_STEP") return { ...strategy.result, steps: plan.steps.filter(step => strategy.result.selected_step_keys.includes(step.key)) };
+  if (strategy.result.decision === "SELECT_EXISTING_STEP") {
+    const selected = strategy.result.selected_step_keys ?? [];
+    if (!validRecoverySelection(selected, exhausted)) {
+      recordRunEvidence(runtime.db, runId, strategy.step.id, "strategy_selection_rejected", { semantic_gap_fingerprint: semanticGap, selected_step_keys: selected, exhausted_step_keys: exhausted });
+      return { decision: "NO_VIABLE_STRATEGY", rationale: "strategy selected a route exhausted for the unchanged semantic gap", steps: [], executed: true };
+    }
+    return { ...strategy.result, steps: plan.steps.filter(step => selected.includes(step.key)), executed: true };
+  }
   if (strategy.result.decision === "TARGETED_VERIFICATION") {
     const verification = executeTargetedVerification(strategy.result.verification_request, reviewEvidence ?? {});
     recordRunEvidence(runtime.db, runId, strategy.step.id, "targeted_verification_result", verification);
-    return { ...strategy.result, verification, steps: [] };
+    if (verification.status !== "unknown") return { ...strategy.result, verification, review_again: true, steps: [], executed: true };
+    const verificationReviewer = { blockers: [{ code: "TARGETED_VERIFICATION_UNKNOWN", message: strategy.result.verification_request.subject, path: strategy.result.verification_request.path }], evidence_refs: verification.evidence_refs, required_actions: [JSON.stringify(strategy.result.verification_request)] };
+    const candidate = targetedSteps(plan, { reviewer: verificationReviewer }).steps.filter(step => !exhausted.includes(step.key));
+    if (!candidate.length) return { decision: "NO_VIABLE_STRATEGY", rationale: "targeted verification remained unknown and no new source-bearing route can collect the missing proof", verification, steps: [], executed: true };
+    return { ...strategy.result, verification, steps: candidate, executed: true };
   }
-  if (strategy.result.decision !== "REPLAN") return { ...strategy.result, steps: [] };
+  if (strategy.result.decision !== "REPLAN") return { ...strategy.result, steps: [], executed: true };
   const plannerRole = runtime.db.prepare("SELECT role_id FROM role_contracts WHERE project_id=? AND status='active' AND result_schema_key='planner.v1' ORDER BY role_id LIMIT 1").get(projectId)?.role_id;
-  if (!plannerRole) return { decision: "NO_VIABLE_STRATEGY", rationale: "bounded replan requested but no planner is registered", steps: [] };
+  if (!plannerRole) return { decision: "NO_VIABLE_STRATEGY", rationale: "bounded replan requested but no planner is registered", steps: [], executed: true };
   appendSteps(runtime, runId, [{ key: `strategy_replan_${cycle}`, role: plannerRole, required: true, irreversible: false, max_attempts: 1, schema: "planner.v1", contract: { cycle } }]);
   queue.enqueueRun(runId);
   const registeredRoles = [...available], registeredChecks = registeredProjectCheckKeys(runtime.db, projectId), registeredArtifactTypes = runtime.db.prepare("SELECT id FROM artifact_types").all().map(row => row.id);
@@ -699,7 +754,8 @@ async function executeStrategyRecovery({ runtime, queue, runId, projectId, level
   const planner = await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: replanPackage, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "planner.v1", parseOptions: { registeredRoles, registeredChecks, registeredArtifactTypes, maxStepAttempts: 1 }, gatewayCall });
   planner.complete({ outcome: planner.result.outcome });
   recordRunEvidence(runtime.db, runId, planner.step.id, "strategy_replan", { prior_plan_hash: structuredHash(plan), replacement_plan_hash: structuredHash(planner.result), intent: strategy.result.replan_intent });
-  return { ...strategy.result, plan: planner.result, steps: [] };
+  const replacementRoute = targetedSteps(planner.result, reviewer ? { reviewer } : { gate });
+  return { ...strategy.result, plan: planner.result, steps: replacementRoute.steps, executed: true };
 }
 
 function writableDocument(runtime, projectId, plannerResult, documentatorRole = "documentator") {
@@ -965,7 +1021,8 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   if (firstWorkers.stopped) return firstWorkers.stopped;
 
   let correctionCycles = 0;
-  let strategyRecoveries = 0;
+  const strategyRecoveries = new Set();
+  const recoveryKey = (kind, progress) => `${kind}:${progress?.latest?.semantic_fingerprint ?? progress?.latest?.primary_gap_fingerprint ?? "none"}`;
   const emergencyFuse = Math.min(12, Math.max(0, Number(policy.limits.correction_cycles) || 0));
   let gate = await executeGateStep({ runtime, queue, runId, stepKey: "verification", projectRoot, level, plannerResult: plan, classification, gateRunner, cycle: 0 });
   let reviewerResult = null;
@@ -976,12 +1033,13 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     if (gate.status !== "passed") {
       const progress = recordProgressSnapshot(runtime.db, runId, { cycle: correctionCycles, gate, allowedPaths: plan.allowed_paths });
       let recoveryRouting = null;
-      if (progress.stagnating && strategyRecoveries < 1) {
-        strategyRecoveries += 1;
+      const gateRecoveryKey = recoveryKey("gate", progress);
+      if (progress.stagnating && !strategyRecoveries.has(gateRecoveryKey)) {
         const recovery = await executeStrategyRecovery({ runtime, queue, runId, projectId, level, classification, responseLanguage, taskRoot, gatewayCall, plan, gate, reviewer: null, reviewEvidence: { verification: { gate } }, progress, cycle: correctionCycles });
+        if (recovery.executed) strategyRecoveries.add(gateRecoveryKey);
         if (recovery.plan) { plan = recovery.plan; applyPlannerToDatabase(runtime, runId, plan); }
-        const candidate = recovery.steps?.length ? recovery.steps : targetedSteps(plan, { gate }).steps;
-        if (candidate.length) recoveryRouting = { steps: candidate, confidence: "high", basis: `strategy_review:${recovery.decision}`, unresolved_signals: [] };
+        const strictRouting = recoveryRoute(recovery), candidate = strictRouting.steps;
+        if (candidate.length) recoveryRouting = strictRouting;
         else if (recovery.decision === "NO_VIABLE_STRATEGY") {
           runtime.setState(runId, "blocked", { reason: "strategy review found no viable bounded recovery" });
           return { status: "blocked", planner: plan, workers: workerResults, gate, reviewer: reviewerResult, progress, strategy: recovery };
@@ -998,12 +1056,15 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       let routing = recoveryRouting ?? targetedSteps(plan, { gate });
       if (!routing.steps.length) {
         recordRunEvidence(runtime.db, runId, null, "correction_routing_unresolved", routing);
-        if (strategyRecoveries < 1) {
-          strategyRecoveries += 1;
+        if (!strategyRecoveries.has(gateRecoveryKey)) {
           const recovery = await executeStrategyRecovery({ runtime, queue, runId, projectId, level, classification, responseLanguage, taskRoot, gatewayCall, plan, gate, reviewer: null, reviewEvidence: { verification: { gate } }, progress, cycle: correctionCycles });
+          if (recovery.executed) strategyRecoveries.add(gateRecoveryKey);
           if (recovery.plan) { plan = recovery.plan; applyPlannerToDatabase(runtime, runId, plan); }
-          const candidate = recovery.steps?.length ? recovery.steps : targetedSteps(plan, { gate }).steps;
-          routing = { steps: candidate, confidence: candidate.length ? "high" : "none", basis: `strategy_review:${recovery.decision}`, unresolved_signals: [] };
+          routing = recoveryRoute(recovery);
+          if (recovery.decision === "NO_VIABLE_STRATEGY") {
+            runtime.setState(runId, "blocked", { reason: "strategy review found no viable bounded gate recovery" });
+            return { status: "blocked", planner: plan, workers: workerResults, gate, reviewer: reviewerResult, progress, strategy: recovery };
+          }
         }
         if (!routing.steps.length) {
           runtime.setState(runId, "changes_requested", { reason: "no supported correction route after bounded strategy review" });
@@ -1011,7 +1072,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
         }
       }
       const selected = routing.steps;
-      recordRunEvidence(runtime.db, runId, null, "correction_routing", routing);
+      recordRunEvidence(runtime.db, runId, null, "correction_routing", { ...routing, progress_kind: "gate", semantic_gap_fingerprint: progress.latest?.semantic_fingerprint ?? progress.latest?.primary_gap_fingerprint ?? null, route_keys: selected.map(step => step.key), packet_hash_before: progress.latest?.packet_hash ?? null, semantic_fingerprint_before: progress.latest?.semantic_fingerprint ?? null, frontier_fingerprint_before: progress.latest?.frontier_fingerprint ?? null });
       appendCorrectionSteps(runtime, runId, plan, correctionCycles, selected);
       queue.enqueueRun(runId);
       runtime.db.prepare("UPDATE workflow_runs SET cycle=?,updated_at=? WHERE id=?").run(correctionCycles, now(), runId);
@@ -1032,21 +1093,23 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       return { status: "blocked", planner: plan, workers: workerResults, gate, reviewer: reviewerResult, review_opinions: reviewed.opinions, cost_budget: reviewed.cost_budget };
     }
     if (reviewerResult.decision === "PASS") {
-      recordProgressSnapshot(runtime.db, runId, { cycle: correctionCycles, gate, reviewer: reviewerResult, allowedPaths: plan.allowed_paths, verifiedProgress: true });
+      recordProgressSnapshot(runtime.db, runId, { cycle: correctionCycles, gate, reviewer: reviewerResult, reviewEvidence: reviewed.review_evidence, allowedPaths: plan.allowed_paths });
       break;
     }
     if (reviewerResult.decision === "REJECT") {
       runtime.setState(runId, "rejected", { reason: "independent review rejected result" });
       return { status: "rejected", planner: plan, workers: workerResults, gate, reviewer: reviewerResult, review_opinions: reviewed.opinions };
     }
-    const progress = recordProgressSnapshot(runtime.db, runId, { cycle: correctionCycles, gate, reviewer: reviewerResult, allowedPaths: plan.allowed_paths });
+    const progress = recordProgressSnapshot(runtime.db, runId, { cycle: correctionCycles, gate, reviewer: reviewerResult, reviewEvidence: reviewed.review_evidence, allowedPaths: plan.allowed_paths });
     let recoveryRouting = null;
-    if (progress.stagnating && strategyRecoveries < 1) {
-      strategyRecoveries += 1;
+    const semanticRecoveryKey = recoveryKey("semantic_review", progress);
+    if (progress.stagnating && !strategyRecoveries.has(semanticRecoveryKey)) {
       const recovery = await executeStrategyRecovery({ runtime, queue, runId, projectId, level, classification, responseLanguage, taskRoot, gatewayCall, plan, gate, reviewer: reviewerResult, reviewEvidence: reviewed.review_evidence, progress, cycle: correctionCycles });
+      if (recovery.executed) strategyRecoveries.add(semanticRecoveryKey);
       if (recovery.plan) { plan = recovery.plan; applyPlannerToDatabase(runtime, runId, plan); }
-      const candidate = recovery.steps?.length ? recovery.steps : targetedSteps(plan, { reviewer: reviewerResult }).steps;
-      if (candidate.length) recoveryRouting = { steps: candidate, confidence: "high", basis: `strategy_review:${recovery.decision}`, unresolved_signals: [] };
+      if (recovery.review_again) continue;
+      const strictRouting = recoveryRoute(recovery), candidate = strictRouting.steps;
+      if (candidate.length) recoveryRouting = strictRouting;
       else if (recovery.decision === "NO_VIABLE_STRATEGY") {
         runtime.setState(runId, "blocked", { reason: "strategy review found no viable bounded recovery" });
         return { status: "blocked", planner: plan, workers: workerResults, gate, reviewer: reviewerResult, review_opinions: reviewed.opinions, progress, strategy: recovery };
@@ -1062,12 +1125,16 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     let routing = recoveryRouting ?? targetedSteps(plan, { reviewer: reviewerResult });
     if (!routing.steps.length) {
       recordRunEvidence(runtime.db, runId, null, "correction_routing_unresolved", routing);
-      if (strategyRecoveries < 1) {
-        strategyRecoveries += 1;
+      if (!strategyRecoveries.has(semanticRecoveryKey)) {
         const recovery = await executeStrategyRecovery({ runtime, queue, runId, projectId, level, classification, responseLanguage, taskRoot, gatewayCall, plan, gate, reviewer: reviewerResult, reviewEvidence: reviewed.review_evidence, progress, cycle: correctionCycles });
+        if (recovery.executed) strategyRecoveries.add(semanticRecoveryKey);
         if (recovery.plan) { plan = recovery.plan; applyPlannerToDatabase(runtime, runId, plan); }
-        const candidate = recovery.steps?.length ? recovery.steps : targetedSteps(plan, { reviewer: reviewerResult }).steps;
-        routing = { steps: candidate, confidence: candidate.length ? "high" : "none", basis: `strategy_review:${recovery.decision}`, unresolved_signals: [] };
+        if (recovery.review_again) continue;
+        routing = recoveryRoute(recovery);
+        if (recovery.decision === "NO_VIABLE_STRATEGY") {
+          runtime.setState(runId, "blocked", { reason: "strategy review found no viable bounded semantic recovery" });
+          return { status: "blocked", planner: plan, workers: workerResults, gate, reviewer: reviewerResult, review_opinions: reviewed.opinions, progress, strategy: recovery };
+        }
       }
       if (!routing.steps.length) {
         runtime.setState(runId, "changes_requested", { reason: "no supported review-gap route after bounded strategy review" });
@@ -1075,7 +1142,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       }
     }
     const selected = routing.steps;
-    recordRunEvidence(runtime.db, runId, null, "correction_routing", routing);
+    recordRunEvidence(runtime.db, runId, null, "correction_routing", { ...routing, progress_kind: "semantic_review", semantic_gap_fingerprint: progress.latest?.semantic_fingerprint ?? progress.latest?.primary_gap_fingerprint ?? null, route_keys: selected.map(step => step.key), packet_hash_before: progress.latest?.packet_hash ?? null, semantic_fingerprint_before: progress.latest?.semantic_fingerprint ?? null, frontier_fingerprint_before: progress.latest?.frontier_fingerprint ?? null });
     appendCorrectionSteps(runtime, runId, plan, correctionCycles, selected);
     queue.enqueueRun(runId);
     runtime.db.prepare("UPDATE workflow_runs SET cycle=?,updated_at=? WHERE id=?").run(correctionCycles, now(), runId);
