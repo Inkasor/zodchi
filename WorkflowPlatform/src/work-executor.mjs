@@ -412,7 +412,7 @@ async function controlledGatewayReceipt(runtime, queue, runId, invocation) {
   return result;
 }
 
-async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, packageContract, context, schemaKey, parseOptions, gatewayCall }) {
+async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, packageContract, context, schemaKey, parseOptions, gatewayCall, activeInvocations = null }) {
   const contract = loadRoleContract(runtime.db, runtime.get(runId).project_id, roleId, level);
   const qualityContract = loadQualityContract(runtime.db, level);
   if (contract.result_schema_key !== schemaKey) throw new Error(`ROLE_SCHEMA_NOT_ALLOWED: ${roleId}:${schemaKey}`);
@@ -448,14 +448,18 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
   const { manager, request } = roleBudgetRequest(runtime, runId, step.id, roleId, lease.attemptId, contract, `${step.id}:${lease.attemptNo}:call`);
   let receipt = null;
   try {
-    receipt = await invokeWithinBudget(manager, request, () => controlledGatewayReceipt(runtime, queue, runId, gatewayCall({
-      provider: contract.provider, profile: contract.profile, level, role: roleId, taskFile,
-      project: runtime.db.prepare("SELECT root_path FROM projects WHERE id=?").get(runtime.get(runId).project_id).root_path,
-      // Only the writable roots go to the provider, and the primary one is already there as --project.
-      // A read-only root was collected into the prompt and is deliberately never handed to the sandbox.
-      writeDirs: writableRoots(projectRoots(runtime.db, runtime.get(runId).project_id)).filter(root => !root.primary).map(root => root.path),
-      taskId: `${runId}:${step.step_key}:${lease.attemptNo}`, workflowRunId: runId, attemptNo: lease.attemptNo
-    })));
+    receipt = await invokeWithinBudget(manager, request, () => {
+      const gatewayInvocation = gatewayCall({
+        provider: contract.provider, profile: contract.profile, level, role: roleId, taskFile,
+        project: runtime.db.prepare("SELECT root_path FROM projects WHERE id=?").get(runtime.get(runId).project_id).root_path,
+        // Only the writable roots go to the provider, and the primary one is already there as --project.
+        // A read-only root was collected into the prompt and is deliberately never handed to the sandbox.
+        writeDirs: writableRoots(projectRoots(runtime.db, runtime.get(runId).project_id)).filter(root => !root.primary).map(root => root.path),
+        taskId: `${runId}:${step.step_key}:${lease.attemptNo}`, workflowRunId: runId, attemptNo: lease.attemptNo
+      });
+      activeInvocations?.add(gatewayInvocation);
+      return controlledGatewayReceipt(runtime, queue, runId, gatewayInvocation).finally(() => activeInvocations?.delete(gatewayInvocation));
+    });
     const result = parseRoleReceipt(receipt, schemaKey, { contract, ...parseOptions });
     const usage = receipt.usage ?? {};
     const measured = {
@@ -622,6 +626,12 @@ export function validRecoverySelection(selectedStepKeys, exhaustedStepKeys = [])
   return (selectedStepKeys ?? []).length > 0 && !(selectedStepKeys ?? []).some(key => exhausted.has(key));
 }
 
+export async function settleAdmittedReviewInvocations(invocations) {
+  const settled = await Promise.allSettled(invocations);
+  const rejected = settled.find(item => item.status === "rejected");
+  return { settled, rejected, values: rejected ? [] : settled.map(item => item.value) };
+}
+
 async function executeIndependentReview({ runtime, queue, runId, projectId, reviewerRole, policy, level, classification, discovery, responseLanguage, taskRoot, gatewayCall, reviewReason, plan, gate, workerResults, correctionCycles }) {
   const available = new Set(runtime.db.prepare("SELECT role_id FROM role_contracts WHERE project_id=? AND status='active'").all(projectId).map(row => row.role_id));
   const roles = policy.improvement_strategy === "gauntlet"
@@ -652,13 +662,29 @@ async function executeIndependentReview({ runtime, queue, runId, projectId, revi
   appendReviewerSteps(runtime, runId, selectedRoles, reviewReason, correctionCycles);
   queue.enqueueRun(runId);
   runtime.setState(runId, "review_required", { reason: reviewReason });
+  const activeInvocations = new Set();
   const invocations = selectedRoles.map(async roleId => {
-    const reviewerPackage = reviewerTaskPackage(reviewEvidence, reviewReason, correctionCycles, Number(policy.limits.correction_cycles) || 0);
-    const reviewer = await invokeRole({ runtime, queue, runId, roleId, level, taskRoot, packageContract: reviewerPackage, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "reviewer.v1", parseOptions: {}, gatewayCall });
-    reviewer.complete({ decision: reviewer.result.decision, base_evidence_hash: reviewEvidence.base_evidence_hash });
-    return { role: roleId, invocation: reviewer, result: reviewer.result };
+    try {
+      const reviewerPackage = reviewerTaskPackage(reviewEvidence, reviewReason, correctionCycles, Number(policy.limits.correction_cycles) || 0);
+      const reviewer = await invokeRole({ runtime, queue, runId, roleId, level, taskRoot, packageContract: reviewerPackage, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "reviewer.v1", parseOptions: {}, gatewayCall, activeInvocations });
+      reviewer.complete({ decision: reviewer.result.decision, base_evidence_hash: reviewEvidence.base_evidence_hash });
+      return { role: roleId, invocation: reviewer, result: reviewer.result };
+    } catch (error) {
+      await Promise.allSettled([...activeInvocations].map(invocation => typeof invocation.cancel === "function" ? invocation.cancel() : Promise.resolve()));
+      throw error;
+    }
   });
-  const opinions = await Promise.all(invocations);
+  // Every consilium member above has already been admitted and started. A fail-fast Promise.all would
+  // let the parent transition the run while another Gateway call still owns a live lease and budget.
+  // Drain every admitted participant first; invokeRole closes its own queue lifecycle on both paths.
+  const { settled: settledOpinions, rejected: rejectedOpinion, values: opinions } = await settleAdmittedReviewInvocations(invocations);
+  if (rejectedOpinion) {
+    recordRunEvidence(runtime.db, runId, null, "review_consilium_settled", {
+      base_evidence_hash: reviewEvidence.base_evidence_hash,
+      participants: selectedRoles.map((role, index) => ({ role, status: settledOpinions[index].status }))
+    });
+    throw rejectedOpinion.reason;
+  }
   recordRunEvidence(runtime.db, runId, null, "review_opinions", { base_evidence_hash: reviewEvidence.base_evidence_hash, opinions: opinions.map(item => ({ role: item.role, result: item.result })) });
   const costBudget = runtime.db.prepare("SELECT used_value,limit_value,status FROM budgets WHERE scope_type='workflow' AND scope_id=? AND metric='cost_usd'").get(runId);
   const budgetExhausted = Boolean(costBudget && (costBudget.status === "exhausted" || costBudget.used_value >= costBudget.limit_value));

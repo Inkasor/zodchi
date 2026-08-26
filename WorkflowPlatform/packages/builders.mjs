@@ -88,13 +88,13 @@ const binding = (roleKey, write = false, purpose = "registered context", priorit
 const document = (key, filePath, type, authority, bindings, root = "primary") => ({ key, path: filePath, root, type, authority, status: "active", bindings });
 const scenario = (key, input, expected) => ({ key, input, expected, anonymized: true });
 
-function finalize({ key, purpose, roles, workflows, routes, checks, operationalLevels, documents, scenarios, version = PACKAGE_VERSION }) {
+function finalize({ key, purpose, roles, workflows, routes, checks, operationalLevels, documents, scenarios, evidenceFlows = [], version = PACKAGE_VERSION }) {
   roles = roles.map(item => ({ ...item, contract: { ...item.contract, allowed_profile_keys: [`${key}.${item.key}.mvp`] } }));
   const workTypes = [...new Set([...roles.flatMap(item => item.contract.allowed_work_types), ...routes.map(item => item.work_type_key)])];
   const artifacts = [...new Set([...roles.flatMap(item => item.contract.allowed_artifact_types), ...workflows.flatMap(item => item.steps.flatMap(value => value.artifact_type_keys)), ...checks.flatMap(item => item.bindings.map(value => value.artifact_type_key).filter(Boolean))])];
   const qualities = Object.keys(qualityCatalog);
   const levels = [...new Set(workflows.map(item => item.default_level))];
-  return { schema_version: 1, key, version, purpose, prompt_builder_version: PACKAGE_VERSION, catalogs: { work_types: catalog(workTypeCatalog, workTypes, "category"), artifact_types: catalog(artifactCatalog, artifacts, "category"), quality_modes: catalog(qualityCatalog, qualities, "ordinal"), planning_levels: catalog(levelCatalog, levels, "ordinal") }, roles, profiles: profilesFor(key, roles), workflows, state_machine: stateMachine(), routes, checks, operational_levels: normalizeOperationalLevels(operationalLevels, checks), documents, prompt_templates: promptsFor(roles), test_scenarios: scenarios };
+  return { schema_version: 1, key, version, purpose, prompt_builder_version: PACKAGE_VERSION, catalogs: { work_types: catalog(workTypeCatalog, workTypes, "category"), artifact_types: catalog(artifactCatalog, artifacts, "category"), quality_modes: catalog(qualityCatalog, qualities, "ordinal"), planning_levels: catalog(levelCatalog, levels, "ordinal") }, roles, profiles: profilesFor(key, roles), workflows, state_machine: stateMachine(), routes, checks, operational_levels: normalizeOperationalLevels(operationalLevels, checks), evidence_flows: evidenceFlows, documents, prompt_templates: promptsFor(roles), test_scenarios: scenarios };
 }
 
 function companyWebPackage(spec) {
@@ -182,6 +182,7 @@ function companyWebPackage(spec) {
       { level: "production", budgets: { calls: 18, duration_ms: 7200000 }, required_check_keys: releaseChecks, correction_limit: 1, escalation: { reviewer_required: true, deployment_requires_recorded_approval: true } },
       { level: "security-audit", budgets: { calls: 8, duration_ms: 3600000 }, required_check_keys: [], correction_limit: 0, escalation: { owner_decision_required: true } }
     ],
+    evidenceFlows: spec.evidenceFlows ?? [],
     documents,
     scenarios: [
       scenario("natural_conversation", { message: "Talk with me about the current state", classifier: "model" }, { work_type: "conversation", productive_roles: [] }),

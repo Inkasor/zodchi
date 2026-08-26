@@ -1,37 +1,30 @@
-const WEB_CHAIN_EDGES = ["producer->api", "api->client_mapping", "client_mapping->state_model", "state_model->ui_consumer"];
-
-const WEB_ANCHORS = [
-  ["producer", /producer|storage|persist|import|profit/i, /(?:write|insert|update|return|produce|cost|profit)/i],
-  ["api", /(?:^|_)api|contract|response|transform/i, /(?:res\.|response|return|json|contract|cost|profit)/i],
-  ["client_mapping", /client|mapping|fetch/i, /(?:response|payload|data|normalize|map|assign|cost|profit)/i],
-  ["state_model", /state|model/i, /(?:set[A-Z]|useState|store|model|assign|cost|profit)/i],
-  ["ui_consumer", /ui|view|consumer|render/i, /(?:return\s*<|<td|<div|render|display|column|row\.|model\[)/i]
-];
-
 function adapterNames(sources) {
   return new Set([...sources.values()].flatMap(source => source.code_intelligence?.adapters ?? []).map(adapter => adapter.name));
 }
 
-// The generic evidence selector consumes only this structural adapter contract. Language/domain
-// patterns and the capability to prove transitions stay here; an adapter without deterministic
-// transitions still provides anchors and correctly leaves the corresponding edge unknown.
-export function selectFlowEvidenceAdapter(ownerText, sources) {
-  const requested = /\bapi\b/i.test(String(ownerText ?? "")) && /\bui\b/i.test(String(ownerText ?? ""));
-  if (!requested) return null;
-  const names = adapterNames(sources);
-  if (names.has("typescript-compiler")) return { id: "typescript-web-flow.v1", required_edges: WEB_CHAIN_EDGES, anchor_specs: WEB_ANCHORS, transition_adapter: "typescript-compiler", transition_method: "typescript_ast" };
-  if (names.has("bsl-structural")) return { id: "bsl-structural-flow.v1", required_edges: WEB_CHAIN_EDGES, anchor_specs: WEB_ANCHORS, transition_adapter: null, transition_method: null };
-  return { id: "generic-cross-layer-flow.v1", required_edges: WEB_CHAIN_EDGES, anchor_specs: WEB_ANCHORS, transition_adapter: null, transition_method: null };
+// Selection is package/workflow structural. Natural-language owner text and platform business
+// vocabulary deliberately play no role here.
+export function selectFlowEvidenceAdapter(flows, workflowKey, sources) {
+  const candidates = (flows ?? []).filter(flow => flow.status === "active" && (flow.workflow_keys ?? []).includes(workflowKey));
+  if (!candidates.length) return { status: "none", reason: "no_registered_flow_for_workflow", flow: null };
+  const available = adapterNames(sources);
+  const ranked = candidates.map(flow => ({
+    ...flow,
+    transition_adapter_available: !flow.transition?.adapter || available.has(flow.transition.adapter)
+  })).sort((left, right) => Number(right.transition_adapter_available) - Number(left.transition_adapter_available) || left.key.localeCompare(right.key));
+  return { status: "selected", reason: "registered_package_workflow_binding", flow: ranked[0] };
 }
 
-export function adapterMaterialSymbols(left, right, ownerText) {
-  const identifiers = value => new Set(String(value ?? "").match(/[A-Za-z_$][A-Za-z0-9_$]{3,}/g) ?? []);
-  const leftIds = identifiers(left), rightIds = identifiers(right), ownerIds = identifiers(ownerText);
-  return [...leftIds].filter(symbol => rightIds.has(symbol) && (ownerIds.has(symbol) || /cost|profit|order|sale|price|margin|commission/i.test(symbol))).sort();
+export function adapterMaterialSymbols(left, right, flowAdapter) {
+  const identifiers = value => new Set(String(value ?? "").match(/[A-Za-zА-Яа-яЁё_$][A-Za-zА-Яа-яЁё0-9_$]{2,}/gu) ?? []);
+  const leftIds = identifiers(left), rightIds = identifiers(right);
+  const configured = new Set(flowAdapter?.material_symbols ?? []);
+  return [...leftIds].filter(symbol => rightIds.has(symbol) && configured.has(symbol)).sort();
 }
 
 export function adapterTransitions(flowAdapter, symbols, targetPath, sources) {
-  if (!flowAdapter?.transition_adapter) return [];
-  const transitions = [...sources.values()].flatMap(source => (source.code_intelligence?.adapters ?? []).flatMap(adapter => adapter.name === flowAdapter.transition_adapter ? adapter.transitions ?? [] : []));
+  const adapterName = flowAdapter?.transition?.adapter;
+  if (!adapterName) return [];
+  const transitions = [...sources.values()].flatMap(source => (source.code_intelligence?.adapters ?? []).flatMap(adapter => adapter.name === adapterName ? adapter.transitions ?? [] : []));
   return transitions.filter(transition => (!targetPath || transition.path === targetPath) && symbols.some(symbol => transition.symbol_from === symbol || transition.symbol_to === symbol)).slice(0, 4);
 }

@@ -4,6 +4,17 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_19_2026_08_26" status="working">
+
+## 0.5.19 — 2026-08-26
+
+- Параллельный consilium теперь при отказе одного участника отменяет незавершённые Gateway-вызовы и дожидается завершения lifecycle всех допущенных участников до terminal transition; активные lease и расход бюджета после остановки больше не остаются.
+- Чистое продвижение evidence frontier ограничено: оно не выставляет verified semantic progress и может отложить застой неизменной claim semantics не более чем на три последовательных snapshot. Verification results меняют frontier, а не создают ложный semantic shift.
+- Идентичность generic claim устойчива без insertion-order ID, а graph evidence refs участвуют в детерминированном frontier.
+- Cross-layer flows стали переносимыми package contracts, структурно привязанными к semantic workflow keys. Platform core больше не выбирает Dashboard-shaped evidence по словам owner request и business literals; узлы, рёбра, anchor hints, material symbols и transition capability регистрирует проект, а отсутствие подходящего flow фиксируется явно.
+
+</section>
+
 <section id="0_5_18_2026_08_26" status="working">
 
 ## 0.5.18 — 2026-08-26
