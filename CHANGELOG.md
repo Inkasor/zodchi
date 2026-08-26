@@ -4,6 +4,14 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_15_2026_08_26" status="working">
+
+## 0.5.15 — 2026-08-26
+
+- Factual blocker admissibility now resolves safe structural paths into the immutable reviewer evidence packet, including claim conclusions and cross-layer edge coverage. A deterministically supported factual blocker remains canonical and proceeds to targeted correction instead of being submitted to a model Judge as an evaluative disagreement.
+
+</section>
+
 <section id="0_5_14_2026_08_26" status="working">
 
 ## 0.5.14 — 2026-08-26

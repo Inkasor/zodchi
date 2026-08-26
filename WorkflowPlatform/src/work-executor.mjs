@@ -14,7 +14,7 @@ import { loadRoleContract, parseRoleReceipt, rolePrompt, structuredHash } from "
 import { consumeCorrectionCycle, documentationOutcome, loadOperationalPolicy, loadQualityContract, operationalLevel, reviewerRequirement } from "./quality-contracts.mjs";
 import { buildReviewEvidence, captureRunBaselines, recordRunEvidence, runChangeEvidence } from "./run-evidence.mjs";
 import { applyRunControlAtBoundary, pendingRunControl, recordProgressSnapshot } from "./progress-supervisor.mjs";
-import { blockerAdmissibility, admissibleOpinionDecision } from "./review-admissibility.mjs";
+import { blockerAdmissibility, admissibleOpinionDecision, hasSupportedFactualBlocker } from "./review-admissibility.mjs";
 import { executeTargetedVerification } from "./targeted-verification.mjs";
 import { documentTermScore, rankTerms } from "./term-ranking.mjs";
 
@@ -635,7 +635,9 @@ async function executeIndependentReview({ runtime, queue, runId, projectId, revi
   const effectiveOpinions = opinions.map(item => ({ ...item, effective_decision: admissibleOpinionDecision(item, admissibility) }));
   let final = effectiveOpinions.sort((a, b) => decisionRank(b.effective_decision) - decisionRank(a.effective_decision))[0].result;
   if (effectiveOpinions.every(item => item.effective_decision === "PASS")) final = { decision: "PASS", summary: "No admissible blocker remains after deterministic factual admissibility.", blockers: [], evidence_refs: [reviewEvidence.base_evidence_hash], required_actions: [], schema_version: 1 };
-  if (new Set(effectiveOpinions.map(item => item.effective_decision)).size > 1) {
+  const supportedFactualBlocker = hasSupportedFactualBlocker(admissibility);
+  if (supportedFactualBlocker) recordRunEvidence(runtime.db, runId, null, "deterministic_factual_blocker", { base_evidence_hash: reviewEvidence.base_evidence_hash, blockers: admissibility.filter(item => item.blocker_kind === "factual" && item.status === "supported") });
+  if (new Set(effectiveOpinions.map(item => item.effective_decision)).size > 1 && !supportedFactualBlocker) {
     // Factual disagreement is first exposed as deterministic targeted-verification evidence. The current
     // registered gate is immutable evidence; a judge is used only when the project has registered one.
     recordRunEvidence(runtime.db, runId, null, "targeted_verification", { reason: "independent_review_disagreement", gate, base_evidence_hash: reviewEvidence.base_evidence_hash });
