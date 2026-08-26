@@ -12,6 +12,7 @@
 - A corpus-wide negative is accepted only when Git/filesystem enumeration and every scanned partition are complete for the registered project boundary. Truncation, Git fallback, large files or read failures remain explicit incomplete evidence and can never become `missing`.
 - Targeted exact-term verification can materialize a new complete corpus scan for a reviewer-discovered subject without another model call, then feed that result back into canonical review and recovery state.
 - Reviewer and worker prompts receive one compact primary scan reference with aggregate counts and bounded anchors, while the append-only evidence trace retains every covered path and content hash.
+- Repeated verification reuses an unchanged complete scan, short subjects fail fast without reading the corpus, and every executed scan records duration and bytes read. Partition completeness is scoped by source root as well as extension.
 
 </section>
 

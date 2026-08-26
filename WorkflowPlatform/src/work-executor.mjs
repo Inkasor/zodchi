@@ -147,9 +147,35 @@ function recordCorpusExactScan(runtime, runId, stepId, scan) {
   return stored;
 }
 
+function reusableCorpusExactScan(runtime, runId, discovery, subject) {
+  const expectedScope = JSON.stringify([...(discovery.source_scope ?? [])]), expectedRoots = JSON.stringify((discovery.roots ?? []).map(root => ({ key: root.key, access: root.access })));
+  const projectId = runtime.get(runId).project_id;
+  for (const row of runtime.db.prepare("SELECT evidence_json,created_at FROM run_evidence WHERE run_id=? AND kind='corpus_exact_scan' ORDER BY created_at DESC,id DESC").all(runId)) {
+    const scan = parseJson(row.evidence_json, null);
+    if (!scan?.scan_id || scan.completeness !== "complete" || scan.boundary?.authority !== "registered_project_source_scope" || scan.boundary?.enumeration_complete !== true) continue;
+    if (!scan.terms?.some(term => term.toLowerCase() === subject.toLowerCase())) continue;
+    if (JSON.stringify(scan.boundary.source_scope_patterns ?? []) !== expectedScope) continue;
+    if (JSON.stringify((scan.provenance?.roots ?? []).map(root => ({ key: root.key, access: root.access }))) !== expectedRoots) continue;
+    // A completed worker after the snapshot may have changed source. Read-only work is conservatively
+    // treated the same way because proving that it did not mutate would cost more than one fresh scan.
+    const laterWorker = runtime.db.prepare(`SELECT 1 FROM attempts a
+      JOIN workflow_steps ws ON ws.id=a.step_id
+      JOIN role_contracts rc ON rc.project_id=? AND rc.role_id=ws.role_id AND rc.result_schema_key='worker.v1' AND rc.status='active'
+      WHERE ws.run_id=? AND a.state='succeeded' AND a.finished_at>? LIMIT 1`).get(projectId, runId, row.created_at);
+    if (!laterWorker) return scan;
+  }
+  return null;
+}
+
 export function executeVerificationWithCorpusFallback({ request, evidence, discovery, runtime, runId, stepId }) {
   let verification = executeTargetedVerification(request, evidence ?? {});
   if (verification.status !== "unknown" || request.path || !["symbol_reference", "exact_term"].includes(request.kind)) return verification;
+  if (request.subject.length < 4) return { ...verification, facts: [{ reason: "corpus scan requires an exact subject of at least four characters", subject_length: request.subject.length }], scan_skipped: "subject_too_short" };
+  const reusable = reusableCorpusExactScan(runtime, runId, discovery, request.subject);
+  if (reusable) {
+    const reused = executeTargetedVerification(request, { ...(evidence ?? {}), exact_scan_catalog: [...(evidence?.exact_scan_catalog ?? []), compactCorpusExactScan(reusable)] });
+    if (reused.status !== "unknown") return { ...reused, reused_evidence_ref: reusable.scan_id };
+  }
   const scan = scanSourceCorpus(discovery.roots ?? [], sourceScope(discovery.source_scope), [request.subject]);
   const stored = recordCorpusExactScan(runtime, runId, stepId, scan);
   const augmented = { ...(evidence ?? {}), exact_scan_catalog: [...(evidence?.exact_scan_catalog ?? []), compactCorpusExactScan(stored)] };
