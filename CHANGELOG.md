@@ -4,6 +4,17 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_10_2026_08_26" status="working">
+
+## 0.5.10 — 2026-08-26
+
+- A cross-layer synthesis is represented once by its deterministic chain record; it can no longer be duplicated as a generic `claim -> primary_evidence` assertion with a contradictory `sufficient` status.
+- Source-proven cross-layer edges carry refs to both role-specific anchors and a deterministic derived-edge record naming the shared material field and derivation method.
+- Graph paths used as edge provenance are directed; mere undirected connectivity cannot establish data flow.
+- A pathless semantic review gap is routed by its primary intent to the best matching source-bearing plan step, so API-to-UI corrections collect client/state/UI source instead of rerunning a narrative synthesis.
+
+</section>
+
 <section id="0_5_9_2026_08_26" status="working">
 
 ## 0.5.9 — 2026-08-26

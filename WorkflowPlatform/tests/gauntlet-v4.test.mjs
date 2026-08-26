@@ -78,9 +78,28 @@ test("claim-centered review packet records primary coverage and an explicit API-
   assert.ok(packet.source_evidence.flatMap(item => item.files).length < sources.flatMap(item => item.files).length + 1);
 });
 
+test("source-field continuity proves an observed edge only with refs on both role-specific anchors", () => {
+  const source = (plan_step, path, text) => ({ plan_step, evidence_hash: `hash-${plan_step}`, files: [{ path, text: `--- lines 1-20 (edge anchor) ---\n${text}`, segments: [{ start_line: 1, end_line: 20, reason: "edge anchor", complete: true }] }] });
+  const sources = [
+    source("producer", "scripts/import-mp-daily.mjs", "const avgCost = unit.cost;"),
+    source("api", "scripts/dashboard-query-service.mjs", "return { avgCost };"),
+    source("client", "src/client.js", "const avgCost = response.avgCost;"),
+    source("state", "src/state.js", "setModel({ avgCost });"),
+    source("ui", "src/View.jsx", "return <div>{row.avgCost}</div>;")
+  ];
+  const workers = sources.map(item => ({ plan_step: item.plan_step, status: "completed", summary: item.plan_step, evidence: [`${item.files[0].path}:1-20`] }));
+  const packet = claimCenteredReviewEvidence(workers, sources, "Trace avgCost from API to UI");
+  const chain = packet.cross_layer_chains[0];
+  assert.equal(chain.coverage, "sufficient");
+  assert.equal(chain.observed_edges.length, chain.required_edges.length);
+  assert.ok(chain.observed_edges.every(edge => edge.source_anchor_refs.length === 2 && edge.derived_edge_refs.length === 1));
+  assert.ok(chain.observed_edges.every(edge => edge.provenance_refs.length === 3));
+  assert.equal(packet.derived_edge_catalog.length, 4);
+});
+
 test("a sufficient cross-layer claim has provenance for every observed edge", () => {
   const nodes = [
-    ["producer", "scripts/marketplace-scheme-profit.mjs"], ["api", "scripts/dev-api-server.mjs"],
+    ["producer", "scripts/marketplace-scheme-profit.mjs"], ["api", "scripts/dashboard-query-service.mjs"],
     ["client", "src/client.js"], ["state", "src/state.js"], ["ui", "src/View.jsx"]
   ].map(([id, path]) => ({ id, path, kind: "function", name: id, start_line: 1, end_line: 20 }));
   const edges = [["e1", "producer", "api"], ["e2", "api", "client"], ["e3", "client", "state"], ["e4", "state", "ui"]].map(([id, from, to]) => ({ id, from, to, type: "calls" }));
@@ -203,6 +222,20 @@ test("a pathless review gap targets the source step named by top-level evidence 
     required_actions: ["Collect the complete range from scripts/dashboard-query-service.mjs"]
   };
   assert.deepEqual(targetedSteps(plan, { reviewer }).map(item => item.key), ["trace-profit"]);
+});
+
+test("a semantic API-to-UI gap targets the client source step instead of pathless synthesis", () => {
+  const plan = { steps: [
+    { key: "trace_api_contract", objective: "Trace storage to API response", allowed_paths: ["scripts/api.mjs"], check_ids: [] },
+    { key: "trace_client_ui", objective: "Trace API response to client mapping, state model and UI consumer", allowed_paths: ["src/main.jsx"], check_ids: [] },
+    { key: "synthesize", objective: "Combine the findings", allowed_paths: [], check_ids: [] }
+  ] };
+  const reviewer = {
+    blockers: [{ code: "INCOMPLETE_CROSS_LAYER_CHAIN", message: "API to client mapping to state model to UI consumer is unknown", path: null }],
+    evidence_refs: [],
+    required_actions: ["Collect source anchors for API, client mapping, state model and UI consumer"]
+  };
+  assert.deepEqual(targetedSteps(plan, { reviewer }).map(item => item.key), ["trace_client_ui"]);
 });
 
 test("F: post-factum cost records the overshooting receipt and denies the next call", () => {

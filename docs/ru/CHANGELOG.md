@@ -4,6 +4,17 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_10_2026_08_26" status="working">
+
+## 0.5.10 — 2026-08-26
+
+- Cross-layer synthesis теперь представлен один раз детерминированной записью цепочки и больше не дублируется как общий `claim → primary_evidence` с противоречащим статусом `sufficient`.
+- Доказанные по исходникам cross-layer edges содержат refs на оба role-specific anchor и отдельную deterministic derived-edge запись с общим material field и методом вывода.
+- Graph paths для provenance теперь направленные: простая ненаправленная connectivity не может доказывать поток данных.
+- Pathless semantic review gap маршрутизируется по primary intent в наиболее подходящий source-bearing шаг, поэтому API→UI correction добирает client/state/UI исходники, а не повторяет narrative synthesis.
+
+</section>
+
 <section id="0_5_9_2026_08_26" status="working">
 
 ## 0.5.9 — 2026-08-26
