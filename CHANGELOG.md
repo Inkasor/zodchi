@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_4_2026_08_26" status="working">
+
+## 0.5.4 — 2026-08-26
+
+- Independent reviewers now receive one immutable evidence package instead of duplicated owner, blocker, planner, and gate fields plus a full project context.
+- Review evidence uses a 32 KB allowance so the complete measured XML role prompt fits the 65,536-byte reviewer contract.
+- Dense exact scans preserve every term count in a compact index while retaining concrete path and line anchors; the regression now measures the final reviewer prompt.
+
+</section>
+
 <section id="0_5_3_2026_08_26" status="working">
 
 ## 0.5.3 — 2026-08-26

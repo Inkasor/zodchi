@@ -4,6 +4,16 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_4_2026_08_26" status="working">
+
+## 0.5.4 — 2026-08-26
+
+- Независимые reviewer теперь получают один immutable evidence package без дублирования цели, blockers, planner criteria и gate вместе с полным project context.
+- Review evidence ограничен 32 КБ, чтобы полный измеренный XML prompt укладывался в контракт reviewer на 65 536 байт.
+- Плотные exact scans сохраняют counts всех термов в компактном индексе и отдельные path/line anchors; регрессия теперь измеряет финальный reviewer prompt.
+
+</section>
+
 <section id="0_5_3_2026_08_26" status="working">
 
 ## 0.5.3 — 2026-08-26
