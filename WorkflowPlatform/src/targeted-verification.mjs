@@ -15,7 +15,14 @@ function scanVerification(request, evidence) {
   const candidates = scans.filter(scan => !request.path || samePath(scan.path, request.path));
   const occurrences = candidates.flatMap(scan => (scan.occurrences ?? []).filter(item => String(item.term).toLowerCase() === request.subject.toLowerCase()).map(item => ({ scan, occurrence: item })));
   const observed = occurrences.filter(item => Number(item.occurrence.count) > 0);
-  if (observed.length) return { status: "observed", evidence_refs: observed.map(item => item.scan.scan_id).filter(Boolean), facts: observed.map(item => ({ path: item.scan.path, count: item.occurrence.count, matched_lines: item.occurrence.matched_lines })) };
+  if (observed.length) return { status: "observed", evidence_refs: observed.map(item => item.scan.scan_id).filter(Boolean), facts: observed.map(item => ({ path: item.scan.path ?? null, scope: item.scan.scope, count: item.occurrence.count, matched_lines: item.occurrence.matched_lines, matched_files: item.occurrence.matched_files ?? null })) };
+  const completeCorpus = occurrences.filter(item => !request.path
+    && item.scan.scope === "complete_corpus"
+    && item.scan.completeness === "complete"
+    && item.scan.boundary?.authority === "registered_project_source_scope"
+    && item.scan.boundary?.enumeration_complete === true
+    && Number(item.occurrence.count) === 0);
+  if (completeCorpus.length) return { status: "missing", evidence_refs: completeCorpus.map(item => item.scan.scan_id).filter(Boolean), facts: completeCorpus.map(item => ({ path: null, count: 0, scope: item.scan.scope, boundary: item.scan.boundary })) };
   const complete = occurrences.filter(item => item.scan.scope === "complete_file" && Number(item.occurrence.count) === 0);
   if (complete.length && (!request.path || candidates.length === complete.length)) return { status: "missing", evidence_refs: complete.map(item => item.scan.scan_id).filter(Boolean), facts: complete.map(item => ({ path: item.scan.path, count: 0, scope: item.scan.scope })) };
   return { status: "unknown", evidence_refs: [], facts: [{ searched_scans: candidates.length, reason: "no complete conclusive scan for the requested subject and boundary" }] };

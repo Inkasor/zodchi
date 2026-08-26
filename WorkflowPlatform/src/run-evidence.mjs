@@ -547,6 +547,16 @@ export function buildReviewEvidence(db, runId, { plan, gate, workerResults, allo
   // copy of identical evidence and references it by hash, so retry bookkeeping cannot masquerade as a
   // changed proof packet.
   const sourceEvidence = [...new Map(sourceRows.map(item => [item.evidence_hash, item])).values()];
+  const corpusScans = db.prepare("SELECT evidence_hash,evidence_json FROM run_evidence WHERE run_id=? AND kind='corpus_exact_scan' ORDER BY created_at,id").all(runId)
+    .map(row => ({ evidence_hash: row.evidence_hash, ...parse(row.evidence_json, {}) }))
+    .filter(scan => scan.scan_id)
+    .map(scan => ({
+      scan_id: scan.scan_id, scope: scan.scope, match: scan.match, terms: scan.terms,
+      completeness: scan.completeness, boundary: scan.boundary,
+      occurrences: (scan.occurrences ?? []).map(item => ({ ...item, locations: (item.locations ?? []).slice(0, 4), locations_truncated: item.locations_truncated || (item.locations ?? []).length > 4 })),
+      covered_files_ref: scan.provenance?.inventory_hash ?? null,
+      provenance: { ...scan.provenance, source_evidence_hash: scan.evidence_hash, roots: (scan.provenance?.roots ?? []).map(root => ({ key: root.key, access: root.access })) }
+    }));
   const workflowKey = db.prepare(`SELECT m.semantic_key FROM package_import_mappings m
     JOIN workflow_import_proposals p ON p.id=m.proposal_id
     WHERE p.target_project_id=? AND p.status='applied' AND m.entity_type='workflow' AND m.local_id=?
@@ -560,6 +570,19 @@ export function buildReviewEvidence(db, runId, { plan, gate, workerResults, allo
   const flowSelection = selectFlowEvidenceAdapter(registeredFlows, workflowKey, sourceMap);
   recordRunEvidence(db, runId, null, "flow_adapter_selection", { status: flowSelection.status, reason: flowSelection.reason, workflow_key: workflowKey, flow_key: flowSelection.flow?.key ?? null });
   const centered = claimCenteredReviewEvidence(workerResults, sourceEvidence, flowSelection.flow);
+  const corpusClaims = corpusScans.map(scan => {
+    const complete = scan.completeness === "complete" && scan.boundary?.authority === "registered_project_source_scope" && scan.boundary?.enumeration_complete === true;
+    const edge = "claim->complete_corpus_scan";
+    return {
+      claim_id: `claim_${digest(scan.scan_id).slice(0, 16)}`, claim_type: "exact_corpus_scan",
+      subject: scan.terms, target: scan.boundary?.source_scope_patterns ?? [], required_edges: [edge],
+      observed_edges: complete ? [{ edge, status: "observed", provenance_refs: [scan.scan_id] }] : [],
+      primary_evidence_refs: [scan.scan_id], contradicting_evidence_refs: [], graph_edge_refs: [], exact_scan_refs: [scan.scan_id],
+      provenance: { scan_id: scan.scan_id, inventory_hash: scan.covered_files_ref, source_evidence_hash: scan.provenance?.source_evidence_hash },
+      edge_coverage: [{ edge, status: complete ? "observed" : "unknown", provenance_refs: [scan.scan_id] }],
+      coverage: complete ? "sufficient" : "incomplete", missing_edges: [], unknown_edges: complete ? [] : [edge]
+    };
+  });
   const verificationResults = db.prepare("SELECT evidence_hash,evidence_json FROM run_evidence WHERE run_id=? AND kind='targeted_verification_result' ORDER BY created_at,id").all(runId)
     .map(row => ({ evidence_hash: row.evidence_hash, ...parse(row.evidence_json, {}) }));
   const evidence = {
@@ -573,10 +596,10 @@ export function buildReviewEvidence(db, runId, { plan, gate, workerResults, allo
     verification: { gate: gate ?? null, verification_results: verificationResults },
     change_evidence: type === "analytical" ? null : changes,
     analytical_evidence: type === "change" ? null : { decision_artifacts: decisionArtifacts, conclusions: centered.conclusions },
-    claim_coverage: centered.claims,
+    claim_coverage: [...centered.claims, ...corpusClaims],
     cross_layer_chains: centered.cross_layer_chains,
     source_range_catalog: centered.source_range_catalog,
-    exact_scan_catalog: centered.exact_scan_catalog,
+    exact_scan_catalog: [...new Map([...centered.exact_scan_catalog, ...corpusScans].map(scan => [scan.scan_id, scan])).values()],
     source_evidence: centered.source_evidence,
     artifacts: db.prepare("SELECT kind,uri,content_hash,status,provenance_json FROM artifacts WHERE run_id=? ORDER BY created_at").all(runId)
   };

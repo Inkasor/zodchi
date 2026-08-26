@@ -4,6 +4,17 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_23_2026_08_26" status="working">
+
+## 0.5.23 — 2026-08-26
+
+- Детерминированный exact-term evidence теперь может покрывать весь зарегистрированный source corpus. Канонический заголовок содержит authoritative enumeration, scope, completeness, факты по расширениям и независимый от машины inventory hash; полный список покрытых файлов хранится отдельно ограниченными evidence chunks.
+- Corpus-wide отрицание принимается только при полном перечислении Git/filesystem и полном scan каждой partition в зарегистрированной границе проекта. Усечение, Git fallback, слишком большие файлы и ошибки чтения остаются явным incomplete evidence и никогда не превращаются в `missing`.
+- Targeted exact-term verification умеет без нового model call материализовать полный corpus scan для subject, обнаруженного reviewer-ом, и вернуть результат в canonical review/recovery state.
+- Reviewer и worker получают одну компактную primary scan-ссылку с агрегированными counts и ограниченными anchors, а append-only evidence trace сохраняет каждый покрытый путь и content hash.
+
+</section>
+
 <section id="0_5_22_2026_08_26" status="working">
 
 ## 0.5.22 — 2026-08-26

@@ -10,7 +10,7 @@ import { BudgetManager } from "../src/budget.mjs";
 import { now } from "../src/db.mjs";
 import { buildReviewEvidence, captureRunBaselines, claimCenteredReviewEvidence, recordRunEvidence, runChangeEvidence } from "../src/run-evidence.mjs";
 import { applyRunControlAtBoundary, blockerFingerprint, evidenceFrontierFingerprint, recordProgressSnapshot, requestRunControl, semanticGapFingerprint } from "../src/progress-supervisor.mjs";
-import { consiliumRoles, correctionCallFloor, invokeReviewerWithSchemaRepair, priorWorkerResultsForStep, recoveryRoute, registeredReplanCatalog, remainingWorkflowCalls, reviewPhaseCallFloor, settleAdmittedReviewInvocations, targetedSteps, validRecoverySelection } from "../src/work-executor.mjs";
+import { consiliumRoles, correctionCallFloor, executeVerificationWithCorpusFallback, invokeReviewerWithSchemaRepair, priorWorkerResultsForStep, recoveryRoute, registeredReplanCatalog, remainingWorkflowCalls, reviewPhaseCallFloor, settleAdmittedReviewInvocations, targetedSteps, validRecoverySelection } from "../src/work-executor.mjs";
 import { selectFlowEvidenceAdapter } from "../src/evidence-flow-adapters.mjs";
 import { callGateway } from "../src/gateway.mjs";
 import { transactionAwaitViolations } from "../src/transaction-guard.mjs";
@@ -375,12 +375,62 @@ test("targeted verification results enter the next canonical review package", ()
   } finally { fx.close(); }
 });
 
+test("a complete corpus scan enters the reviewer packet once as primary claim evidence", () => {
+  const fx = fixture("gauntlet-corpus-scan-");
+  try {
+    captureRunBaselines(fx.runtime.db, fx.runId, [{ key: "primary", path: fx.projectRoot, access: "write" }]);
+    recordRunEvidence(fx.runtime.db, fx.runId, null, "corpus_exact_scan", {
+      scan_id: "scan_corpus_avg_cost", scope: "complete_corpus", match: "literal_case_insensitive", terms: ["avgCost"], completeness: "complete",
+      boundary: { authority: "registered_project_source_scope", enumeration_complete: true, source_scope_patterns: ["src/**"], eligible_files: 958, scanned_files: 958, skipped_large_files: 0, read_errors: 0, file_scan_truncated: false },
+      covered_files: Array.from({ length: 958 }, (_, index) => ({ path: `src/${index}.bsl`, bytes: 10, content_hash: `hash-${index}` })),
+      occurrences: [{ term: "avgCost", count: 3, matched_lines: 3, matched_files: 2, locations: [{ path: "src/a.bsl", line: 10, text: "avgCost = 1;" }], locations_truncated: true }],
+      provenance: { method: "deterministic_literal_corpus_scan", version: 1, inventory_hash: "inventory-hash", roots: [{ key: "primary", access: "read", path: fx.projectRoot }] }
+    });
+    const packet = buildReviewEvidence(fx.runtime.db, fx.runId, { plan: { completion_criteria: [] }, gate: { status: "passed", checks: [] }, workerResults: [], allowedPaths: [] });
+    const scan = packet.exact_scan_catalog.find(item => item.scan_id === "scan_corpus_avg_cost");
+    assert.equal(scan.boundary.scanned_files, 958);
+    assert.equal(scan.covered_files, undefined);
+    assert.equal(scan.covered_files_ref, "inventory-hash");
+    assert.equal(scan.provenance.roots[0].path, undefined);
+    const claim = packet.claim_coverage.find(item => item.claim_type === "exact_corpus_scan");
+    assert.equal(claim.coverage, "sufficient");
+    assert.deepEqual(claim.primary_evidence_refs, ["scan_corpus_avg_cost"]);
+    assert.deepEqual(claim.observed_edges[0].provenance_refs, ["scan_corpus_avg_cost"]);
+  } finally { fx.close(); }
+});
+
 test("typed targeted verification distinguishes observed, missing and unknown", () => {
   const evidence = { exact_scan_catalog: [{ scan_id: "scan-a", path: "src/a.ts", scope: "complete_file", occurrences: [{ term: "avgCost", count: 2 }, { term: "missingField", count: 0 }] }] };
   const request = (subject, path = "src/a.ts") => ({ kind: "exact_term", subject, from: null, to: null, path, evidence_refs: [] });
   assert.equal(executeTargetedVerification(request("avgCost"), evidence).status, "observed");
   assert.equal(executeTargetedVerification(request("missingField"), evidence).status, "missing");
   assert.equal(executeTargetedVerification(request("unknownField", "src/b.ts"), evidence).status, "unknown");
+  const corpus = { exact_scan_catalog: [{ scan_id: "scan-corpus", scope: "complete_corpus", completeness: "complete", boundary: { authority: "registered_project_source_scope", enumeration_complete: true, scanned_files: 958 }, occurrences: [{ term: "absentEverywhere", count: 0, matched_lines: 0, matched_files: 0 }] }] };
+  assert.equal(executeTargetedVerification(request("absentEverywhere", null), corpus).status, "missing");
+  corpus.exact_scan_catalog[0].completeness = "incomplete";
+  assert.equal(executeTargetedVerification(request("absentEverywhere", null), corpus).status, "unknown");
+});
+
+test("targeted verification materializes a complete corpus scan without another model call", () => {
+  const fx = fixture("gauntlet-verification-corpus-fallback-");
+  try {
+    fs.mkdirSync(path.join(fx.projectRoot, "src"), { recursive: true });
+    fs.writeFileSync(path.join(fx.projectRoot, "src", "producer.bsl"), "Себестоимость = 42;\n");
+    const request = { kind: "exact_term", subject: "avgCost", from: null, to: null, path: null, evidence_refs: [] };
+    const result = executeVerificationWithCorpusFallback({
+      request, evidence: {}, discovery: { roots: [{ key: "primary", path: fx.projectRoot, access: "read", primary: true }], source_scope: ["src/**"] },
+      runtime: fx.runtime, runId: fx.runId, stepId: null
+    });
+    assert.equal(result.status, "missing");
+    assert.equal(result.generated_evidence_refs.length, 1);
+    const header = JSON.parse(fx.runtime.db.prepare("SELECT evidence_json FROM run_evidence WHERE run_id=? AND kind='corpus_exact_scan'").get(fx.runId).evidence_json);
+    assert.equal(header.covered_files, undefined);
+    assert.equal(header.inventory.file_count, 1);
+    assert.equal(header.boundary.enumeration_complete, true);
+    const chunk = JSON.parse(fx.runtime.db.prepare("SELECT evidence_json FROM run_evidence WHERE run_id=? AND kind='corpus_exact_scan_inventory_chunk'").get(fx.runId).evidence_json);
+    assert.equal(chunk.files.length, 1);
+    assert.equal(chunk.inventory_hash, header.provenance.inventory_hash);
+  } finally { fx.close(); }
 });
 
 test("a concrete response-field assignment creates an observed source-derived edge with transition provenance", () => {

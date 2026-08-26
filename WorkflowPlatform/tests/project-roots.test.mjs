@@ -9,7 +9,7 @@ import { openDb, now } from "../src/db.mjs";
 import { readProjectContext, compactProjectSnapshot } from "../src/document-context.mjs";
 import { applyRegisteredPatch } from "../src/documentator.mjs";
 import { projectRoots, writableRoots } from "../src/project-roots.mjs";
-import { collectGitHistory, collectSourceFiles, expandTerms, searchSources, searchTerms, sourceInventory, sourceScope } from "../src/source-context.mjs";
+import { collectGitHistory, collectSourceFiles, expandTerms, scanSourceCorpus, searchSources, searchTerms, sourceInventory, sourceScope } from "../src/source-context.mjs";
 import { buildCodeIntelligence, mergeGraphMatches } from "../src/code-intelligence.mjs";
 import { fitSourceEvidence } from "../src/work-executor.mjs";
 
@@ -225,6 +225,58 @@ test("a complete-file exact term scan proves that a requested identifier is abse
   assert.ok(present.locations.length > 4 && present.locations.length <= 12);
   assert.equal(present.locations_truncated, true);
   db.close(); fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("a corpus exact scan records complete deterministic coverage separately from bounded excerpts", () => {
+  const { root, producer, db } = fixture("workflow-corpus-exact-scan-", { sources: ["src/**"] });
+  fs.writeFileSync(path.join(producer, "src", "producer.bsl"), "Результат.avgCost = 42;\n");
+  fs.writeFileSync(path.join(producer, "src", "consumer.ts"), "const unitCost = row.avgCost;\n");
+  fs.writeFileSync(path.join(producer, "README.md"), "avgCost is prose outside source scope\n");
+  const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" });
+  const scan = scanSourceCorpus(discovery.roots, sourceScope(discovery.source_scope), ["avgCost", "missingField"]);
+  assert.equal(scan.scope, "complete_corpus");
+  assert.equal(scan.completeness, "complete");
+  assert.equal(scan.boundary.eligible_files, 2);
+  assert.equal(scan.boundary.scanned_files, 2);
+  assert.equal(scan.covered_files.length, 2);
+  assert.ok(scan.covered_files.every(file => file.content_hash));
+  assert.equal(scan.occurrences.find(item => item.term === "avgCost").count, 2);
+  assert.equal(scan.occurrences.find(item => item.term === "avgCost").matched_files, 2);
+  assert.equal(scan.occurrences.find(item => item.term === "avgCost").by_partition.find(item => item.partition === ".bsl").count, 1);
+  assert.equal(scan.occurrences.find(item => item.term === "avgCost").by_partition.find(item => item.partition === ".ts").count, 1);
+  assert.ok(scan.boundary.partitions.every(item => item.completeness === "complete"));
+  assert.equal(scan.occurrences.find(item => item.term === "missingField").count, 0);
+  assert.match(scan.scan_id, /^scan_corpus_/);
+  assert.equal(scan.provenance.inventory_hash.length, 64);
+  const repeated = scanSourceCorpus(discovery.roots, sourceScope(discovery.source_scope), ["avgCost", "missingField"]);
+  assert.equal(repeated.scan_id, scan.scan_id);
+  assert.equal(repeated.provenance.inventory_hash, scan.provenance.inventory_hash);
+  db.close(); fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("corpus completeness follows authoritative enumeration and scan identity ignores machine paths", () => {
+  const left = fs.mkdtempSync(path.join(os.tmpdir(), "workflow-corpus-left-"));
+  const right = fs.mkdtempSync(path.join(os.tmpdir(), "workflow-corpus-right-"));
+  try {
+    for (const root of [left, right]) {
+      fs.mkdirSync(path.join(root, "src"), { recursive: true });
+      fs.writeFileSync(path.join(root, "src", "a.bsl"), "avgCost = 1;\n");
+      fs.writeFileSync(path.join(root, "src", "b.bsl"), "unitCost = 2;\n");
+    }
+    const root = directory => [{ key: "primary", path: directory, access: "read", primary: true }];
+    const scope = sourceScope(["src/**"]);
+    const truncated = scanSourceCorpus(root(left), scope, ["avgCost"], { maxFiles: 1 });
+    assert.equal(truncated.completeness, "incomplete");
+    assert.equal(truncated.boundary.enumeration_complete, false);
+    assert.equal(truncated.boundary.listings[0].truncated, true);
+    const completeLeft = scanSourceCorpus(root(left), scope, ["avgCost"]);
+    const completeRight = scanSourceCorpus(root(right), scope, ["avgCost"]);
+    assert.equal(completeLeft.completeness, "complete");
+    assert.equal(completeLeft.boundary.listings[0].source, "walk");
+    assert.equal(completeLeft.scan_id, completeRight.scan_id);
+  } finally {
+    fs.rmSync(left, { recursive: true, force: true }); fs.rmSync(right, { recursive: true, force: true });
+  }
 });
 
 test("delegation routing metadata cannot displace exact domain anchors from worker source", () => {
