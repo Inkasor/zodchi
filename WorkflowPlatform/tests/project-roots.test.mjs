@@ -274,6 +274,13 @@ test("corpus completeness follows authoritative enumeration and scan identity ig
     assert.equal(completeLeft.completeness, "complete");
     assert.equal(completeLeft.boundary.listings[0].source, "walk");
     assert.equal(completeLeft.scan_id, completeRight.scan_id);
+    fs.rmSync(path.join(left, "src", "b.bsl"));
+    const multiRoot = scanSourceCorpus([
+      { key: "primary", path: left, access: "read", primary: true },
+      { key: "secondary", path: right, access: "read", primary: false }
+    ], scope, ["avgCost"], { maxFiles: 1 });
+    assert.equal(multiRoot.boundary.partitions.find(item => item.root === "primary" && item.partition === ".bsl").completeness, "complete");
+    assert.equal(multiRoot.boundary.partitions.find(item => item.root === "secondary" && item.partition === ".bsl").completeness, "incomplete");
   } finally {
     fs.rmSync(left, { recursive: true, force: true }); fs.rmSync(right, { recursive: true, force: true });
   }

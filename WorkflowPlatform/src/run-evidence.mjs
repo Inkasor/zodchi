@@ -547,7 +547,7 @@ export function buildReviewEvidence(db, runId, { plan, gate, workerResults, allo
   // copy of identical evidence and references it by hash, so retry bookkeeping cannot masquerade as a
   // changed proof packet.
   const sourceEvidence = [...new Map(sourceRows.map(item => [item.evidence_hash, item])).values()];
-  const corpusScans = db.prepare("SELECT evidence_hash,evidence_json FROM run_evidence WHERE run_id=? AND kind='corpus_exact_scan' ORDER BY created_at,id").all(runId)
+  const corpusScanRows = db.prepare("SELECT evidence_hash,evidence_json FROM run_evidence WHERE run_id=? AND kind='corpus_exact_scan' ORDER BY created_at,id").all(runId)
     .map(row => ({ evidence_hash: row.evidence_hash, ...parse(row.evidence_json, {}) }))
     .filter(scan => scan.scan_id)
     .map(scan => ({
@@ -557,6 +557,7 @@ export function buildReviewEvidence(db, runId, { plan, gate, workerResults, allo
       covered_files_ref: scan.provenance?.inventory_hash ?? null,
       provenance: { ...scan.provenance, source_evidence_hash: scan.evidence_hash, roots: (scan.provenance?.roots ?? []).map(root => ({ key: root.key, access: root.access })) }
     }));
+  const corpusScans = [...new Map(corpusScanRows.map(scan => [scan.scan_id, scan])).values()];
   const workflowKey = db.prepare(`SELECT m.semantic_key FROM package_import_mappings m
     JOIN workflow_import_proposals p ON p.id=m.proposal_id
     WHERE p.target_project_id=? AND p.status='applied' AND m.entity_type='workflow' AND m.local_id=?

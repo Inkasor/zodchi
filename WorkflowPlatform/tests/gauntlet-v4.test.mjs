@@ -386,6 +386,8 @@ test("a complete corpus scan enters the reviewer packet once as primary claim ev
       occurrences: [{ term: "avgCost", count: 3, matched_lines: 3, matched_files: 2, locations: [{ path: "src/a.bsl", line: 10, text: "avgCost = 1;" }], locations_truncated: true }],
       provenance: { method: "deterministic_literal_corpus_scan", version: 1, inventory_hash: "inventory-hash", roots: [{ key: "primary", access: "read", path: fx.projectRoot }] }
     });
+    const duplicate = JSON.parse(fx.runtime.db.prepare("SELECT evidence_json FROM run_evidence WHERE run_id=? AND kind='corpus_exact_scan'").get(fx.runId).evidence_json);
+    recordRunEvidence(fx.runtime.db, fx.runId, null, "corpus_exact_scan", duplicate);
     const packet = buildReviewEvidence(fx.runtime.db, fx.runId, { plan: { completion_criteria: [] }, gate: { status: "passed", checks: [] }, workerResults: [], allowedPaths: [] });
     const scan = packet.exact_scan_catalog.find(item => item.scan_id === "scan_corpus_avg_cost");
     assert.equal(scan.boundary.scanned_files, 958);
@@ -393,6 +395,7 @@ test("a complete corpus scan enters the reviewer packet once as primary claim ev
     assert.equal(scan.covered_files_ref, "inventory-hash");
     assert.equal(scan.provenance.roots[0].path, undefined);
     const claim = packet.claim_coverage.find(item => item.claim_type === "exact_corpus_scan");
+    assert.equal(packet.claim_coverage.filter(item => item.claim_type === "exact_corpus_scan").length, 1);
     assert.equal(claim.coverage, "sufficient");
     assert.deepEqual(claim.primary_evidence_refs, ["scan_corpus_avg_cost"]);
     assert.deepEqual(claim.observed_edges[0].provenance_refs, ["scan_corpus_avg_cost"]);
@@ -427,9 +430,20 @@ test("targeted verification materializes a complete corpus scan without another 
     assert.equal(header.covered_files, undefined);
     assert.equal(header.inventory.file_count, 1);
     assert.equal(header.boundary.enumeration_complete, true);
+    assert.ok(header.boundary.read_bytes > 0);
+    assert.ok(header.boundary.duration_ms >= 0);
     const chunk = JSON.parse(fx.runtime.db.prepare("SELECT evidence_json FROM run_evidence WHERE run_id=? AND kind='corpus_exact_scan_inventory_chunk'").get(fx.runId).evidence_json);
     assert.equal(chunk.files.length, 1);
     assert.equal(chunk.inventory_hash, header.provenance.inventory_hash);
+    const repeated = executeVerificationWithCorpusFallback({ request, evidence: {}, discovery: { roots: [{ key: "primary", path: fx.projectRoot, access: "read", primary: true }], source_scope: ["src/**"] }, runtime: fx.runtime, runId: fx.runId, stepId: null });
+    assert.equal(repeated.status, "missing");
+    assert.equal(repeated.reused_evidence_ref, header.scan_id);
+    assert.equal(fx.runtime.db.prepare("SELECT COUNT(*) count FROM run_evidence WHERE run_id=? AND kind='corpus_exact_scan'").get(fx.runId).count, 1);
+    const beforeShort = fx.runtime.db.prepare("SELECT COUNT(*) count FROM run_evidence WHERE run_id=?").get(fx.runId).count;
+    const short = executeVerificationWithCorpusFallback({ request: { ...request, subject: "id" }, evidence: {}, discovery: { roots: [{ key: "primary", path: fx.projectRoot, access: "read", primary: true }], source_scope: ["src/**"] }, runtime: fx.runtime, runId: fx.runId, stepId: null });
+    assert.equal(short.status, "unknown");
+    assert.equal(short.scan_skipped, "subject_too_short");
+    assert.equal(fx.runtime.db.prepare("SELECT COUNT(*) count FROM run_evidence WHERE run_id=?").get(fx.runId).count, beforeShort);
   } finally { fx.close(); }
 });
 

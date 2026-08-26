@@ -12,6 +12,7 @@
 - Corpus-wide отрицание принимается только при полном перечислении Git/filesystem и полном scan каждой partition в зарегистрированной границе проекта. Усечение, Git fallback, слишком большие файлы и ошибки чтения остаются явным incomplete evidence и никогда не превращаются в `missing`.
 - Targeted exact-term verification умеет без нового model call материализовать полный corpus scan для subject, обнаруженного reviewer-ом, и вернуть результат в canonical review/recovery state.
 - Reviewer и worker получают одну компактную primary scan-ссылку с агрегированными counts и ограниченными anchors, а append-only evidence trace сохраняет каждый покрытый путь и content hash.
+- Повторная verification переиспользует неизменившийся полный scan, короткий subject завершается без чтения корпуса, а выполненный scan записывает duration и объём прочитанных данных. Полнота partition учитывается отдельно по source root и расширению.
 
 </section>
 
