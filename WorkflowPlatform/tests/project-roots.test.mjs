@@ -226,6 +226,24 @@ test("a complete-file exact term scan proves that a requested identifier is abse
   db.close(); fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("delegation routing metadata cannot displace exact domain anchors from worker source", () => {
+  const { root, producer, db } = fixture("workflow-source-delegated-anchor-", { sources: ["src/**"] });
+  const lines = Array.from({ length: 2600 }, (_, index) => `ОбщаяСебестоимость${index} = 0;`);
+  lines[2300] = "Источник = РегистрСведений.мпКалькуляцияЮнитЭкономики.СрезПоследних();";
+  fs.writeFileSync(path.join(producer, "src", "large.bsl"), lines.join("\n"));
+  const delegated = `<codex_delegation><source_thread_id>01a039bb-6e38-7e61-be6d-3c2edf0449e0</source_thread_id><input>Проследи avgCost от мпКалькуляцияЮнитЭкономики до unit.cost</input></codex_delegation>`;
+  assert.deepEqual(searchTerms(delegated), ["avgCost", "мпКалькуляцияЮнитЭкономики", "unit.cost"]);
+  const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" });
+  const collected = collectSourceFiles(discovery.roots, ["src/large.bsl"], sourceScope(discovery.source_scope), 2200, {
+    query: "Проследить источник себестоимости до строки выгрузки",
+    supplementalQuery: delegated
+  });
+  assert.match(collected.files[0].text, /мпКалькуляцияЮнитЭкономики/);
+  assert.ok(collected.files[0].segments.some(segment => segment.reason === "supplemental_objective_match"));
+  assert.equal(collected.files[0].exact_term_scan.occurrences.find(item => item.term === "мпКалькуляцияЮнитЭкономики").count, 1);
+  db.close(); fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("missing output paths do not reserve source budget", () => {
   const { root, producer, db } = fixture("workflow-source-existing-share-", { sources: ["src/**", "docs/**"] });
   fs.writeFileSync(path.join(producer, "src", "large.bsl"), "ПолезнаяСтрока = 1;\n".repeat(1000));
