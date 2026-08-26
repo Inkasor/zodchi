@@ -97,7 +97,7 @@ test("C-D: committed and initially dirty files remain visible in the run-relativ
 
 test("E: a local blocker selects exactly the affected plan step", () => {
   const plan = { steps: Array.from({ length: 5 }, (_, index) => ({ key: `step-${index}`, allowed_paths: [`src/${index}.ts`], check_ids: [`check-${index}`] })) };
-  const selected = targetedSteps(plan, { gate: { checks: [{ id: "check-3", required: true, status: "failed", execution_project_id: "consumer", execution_root: "E:/consumer" }] } });
+  const selected = targetedSteps(plan, { gate: { checks: [{ id: "check-3", required: true, status: "failed", execution_project_id: "consumer", execution_root: "registered-consumer-root" }] } });
   assert.deepEqual(selected.map(item => item.key), ["step-3"]);
 });
 
@@ -198,9 +198,9 @@ test("L: model work may overlap outside DatabaseSync transactions and the static
 });
 
 test("M: cross-project check provenance is retained while routing by its registered check", () => {
-  const gate = { checks: [{ id: "consumer-schema", required: true, status: "failed", execution_project_id: "consumer", execution_root: "E:/Consumer" }] };
+  const gate = { checks: [{ id: "consumer-schema", required: true, status: "failed", execution_project_id: "consumer", execution_root: "registered-consumer-root" }] };
   const selected = targetedSteps({ steps: [{ key: "consumer-fix", allowed_paths: ["src/consumer.ts"], check_ids: ["consumer-schema"] }, { key: "producer", allowed_paths: ["src/producer.ts"], check_ids: [] }] }, { gate });
   assert.equal(gate.checks[0].execution_project_id, "consumer");
-  assert.equal(gate.checks[0].execution_root, "E:/Consumer");
+  assert.equal(gate.checks[0].execution_root, "registered-consumer-root");
   assert.deepEqual(selected.map(item => item.key), ["consumer-fix"]);
 });
