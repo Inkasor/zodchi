@@ -637,8 +637,8 @@ export function targetedSteps(plan, { gate = null, reviewer = null } = {}) {
   const reviewSignals = [
     primary?.path,
     ...(reviewer?.evidence_refs ?? []),
-    ...(reviewer?.required_actions ?? []),
-    ...(reviewer?.blockers ?? []).flatMap(blocker => [blocker.path, blocker.message]),
+    reviewer?.required_actions?.[0],
+    primary?.message,
     ...(gate?.checks ?? []).map(check => check.failure_path)
   ];
   const paths = reviewSignals.filter(Boolean).map(value => String(value).replaceAll("\\", "/"));
@@ -647,6 +647,16 @@ export function targetedSteps(plan, { gate = null, reviewer = null } = {}) {
     return (step.allowed_paths ?? []).some(allowed => paths.some(value => value === allowed || value.startsWith(`${allowed}/`) || value.includes(allowed)));
   });
   if (selected.length) return selected;
+  // A semantic review gap often has no single file path (for example API -> client mapping -> UI).
+  // Route it to the source-bearing plan step whose key/objective best matches that primary intent;
+  // never spend the correction on a pathless synthesis step while a searchable source step exists.
+  const semanticTokens = [...new Set(reviewSignals.filter(Boolean).join(" ").toLowerCase().match(/[a-zа-яё_$][a-zа-яё0-9_$.-]{3,}/giu) ?? [])]
+    .filter(token => !new Set(["source", "evidence", "required", "доказ", "переход", "цепоч", "кажд", "собствен"]).has(token));
+  const scored = plan.steps.filter(step => (step.allowed_paths ?? []).length).map(step => {
+    const haystack = `${step.key} ${step.objective ?? ""}`.toLowerCase();
+    return { step, score: semanticTokens.reduce((total, token) => total + (haystack.includes(token) ? 1 : 0), 0) };
+  }).filter(item => item.score > 0).sort((left, right) => right.score - left.score);
+  if (scored.length) return [scored[0].step];
   const analytical = plan.steps.filter(step => !(step.allowed_paths ?? []).length);
   return analytical.length ? [analytical.at(-1)] : [plan.steps[0]].filter(Boolean);
 }

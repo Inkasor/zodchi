@@ -246,6 +246,14 @@ function chainAnchor(files, pathPattern, textPattern) {
   return null;
 }
 
+function materialSymbols(left, right, ownerText) {
+  const identifiers = value => new Set(String(value ?? "").match(/[A-Za-z_$][A-Za-z0-9_$]{3,}/g) ?? []);
+  const leftIds = identifiers(left), rightIds = identifiers(right), ownerIds = identifiers(ownerText);
+  return [...leftIds].filter(symbol => rightIds.has(symbol) && (
+    ownerIds.has(symbol) || /cost|profit|order|sale|price|margin|commission/i.test(symbol)
+  )).sort();
+}
+
 export function claimCenteredReviewEvidence(workerResults, sourceEvidence, ownerText = "") {
   const compacted = sourceEvidence.map(item => ({ ...item, files: (item.files ?? []).map(compactSourceFile) }));
   const latestResults = new Map(), latestSources = new Map();
@@ -264,6 +272,8 @@ export function claimCenteredReviewEvidence(workerResults, sourceEvidence, owner
     if (!scanCatalog.has(scanId)) scanCatalog.set(scanId, { scan_id: scanId, path: file.path, ...file.exact_term_scan, provenance: { source_snapshot_hashes: sourceHashes(file) } });
     return scanId;
   };
+  const chainRequested = /api/i.test(ownerText) && /ui|интерфейс/i.test(ownerText);
+  const requiredChainEdges = ["producer->api", "api->client_mapping", "client_mapping->state_model", "state_model->ui_consumer"];
   const claims = [], conclusions = [];
   for (const [planStep, result] of latestResults) {
     const rawEvidenceRefs = (result.evidence ?? []).map(String), claimText = `${result.summary ?? ""}\n${rawEvidenceRefs.join("\n")}`;
@@ -280,49 +290,65 @@ export function claimCenteredReviewEvidence(workerResults, sourceEvidence, owner
       const nodes = itemNodes(latestSources, edge); return nodes.some(node => paths.has(node.path));
     }).slice(0, 16).map(edge => edge.id ?? `${edge.from}->${edge.to}:${edge.type}`);
     const exactScanRefs = candidates.map(registerScan).filter(Boolean);
-    const requiredEdges = ["claim->primary_evidence"];
-    const edgeCoverage = [{ edge: requiredEdges[0], status: primaryEvidenceRefs.length ? "observed" : "unknown", provenance_refs: [...new Set(primaryEvidenceRefs)] }];
-    claims.push({
-      claim_id: `claim_${digest(`${planStep}\n${result.summary ?? ""}`).slice(0, 16)}`,
-      claim_type: /api|ui|trace/i.test(planStep) ? "cross_layer_trace" : /test|check|verify/i.test(planStep) ? "verification" : "analytical",
+    const claimId = `claim_${digest(`${planStep}\n${result.summary ?? ""}`).slice(0, 16)}`;
+    const crossLayerNarrative = chainRequested && /synth|coverage_package|cross.?layer|end.?to.?end/i.test(planStep);
+    // A synthesis result is an analytical conclusion, not a second evidence narrative. Cross-layer
+    // coverage has its own deterministic chain record below and must never be duplicated as a generic
+    // claim->primary_evidence assertion that can contradict the real edge coverage.
+    if (primaryEvidenceRefs.length && !crossLayerNarrative) claims.push({
+      claim_id: claimId,
+      claim_type: /test|check|verify/i.test(planStep) ? "verification" : "analytical",
       subject: planStep,
       target: [...paths].sort(),
-      required_edges: requiredEdges,
-      observed_edges: edgeCoverage.filter(edge => edge.status === "observed"),
+      required_edges: ["claim->primary_evidence"],
+      observed_edges: [{ edge: "claim->primary_evidence", status: "observed", provenance_refs: [...new Set(primaryEvidenceRefs)] }],
       primary_evidence_refs: [...new Set(primaryEvidenceRefs)],
       contradicting_evidence_refs: [],
       graph_edge_refs: [...new Set(graphEdges)],
       exact_scan_refs: [...new Set(exactScanRefs)],
       provenance: { worker_result_hash: digest(JSON.stringify(result)), source_snapshot_hashes: [...new Set(compacted.filter(item => (item.files ?? []).some(file => candidates.includes(file))).map(item => item.evidence_hash).filter(Boolean))] },
-      edge_coverage: edgeCoverage,
-      coverage: edgeCoverage.every(edge => edge.status === "observed" && edge.provenance_refs.length) ? "sufficient" : "incomplete",
-      missing_edges: edgeCoverage.filter(edge => edge.status === "missing").map(edge => edge.edge),
-      unknown_edges: edgeCoverage.filter(edge => edge.status === "unknown").map(edge => edge.edge)
+      edge_coverage: [{ edge: "claim->primary_evidence", status: "observed", provenance_refs: [...new Set(primaryEvidenceRefs)] }],
+      coverage: "sufficient",
+      missing_edges: [],
+      unknown_edges: []
     });
-    conclusions.push({ claim_id: claims.at(-1).claim_id, plan_step: planStep, summary: result.summary ?? "", evidence_refs: rawEvidenceRefs.slice(0, 12).map(value => utf8Prefix(value, 320)) });
+    conclusions.push({ claim_id: primaryEvidenceRefs.length && !crossLayerNarrative ? claimId : null, plan_step: planStep, summary: result.summary ?? "", evidence_refs: rawEvidenceRefs.slice(0, 12).map(value => utf8Prefix(value, 320)) });
   }
-  const chainRequested = /api/i.test(ownerText) && /ui|интерфейс/i.test(ownerText);
   const anchorSpecs = chainRequested ? [
-    ["producer", /marketplace-scheme-profit|company-profit-from-cost/i, /legacyUpdateRow|recalculateCompanyProfitFromCost|avgCost/i],
-    ["api", /dashboard-query-service|dev-api-server/i, /buildProductDailyDetails|res\.json|sendJson|response/i],
-    ["client_mapping", /src\//i, /fetch|await\s+[^\n]*\.json|response\.|data\./i],
-    ["state_model", /src\//i, /set[A-Z][A-Za-z0-9_$]*\(|useState|normalizeServerModelCost/],
-    ["ui_consumer", /src\//i, /<[^>]+>.*(?:avgCost|profit)|(?:avgCost|profit).*<[^>]+>/is]
+    ["producer", /import-mp-daily|marketplace-scheme-profit|company-profit-from-cost/i, /unit\.?cost|legacyUpdateRow|recalculateCompanyProfitFromCost|avgCost/i],
+    ["api", /dashboard-query-service/i, /buildProductDailyDetails|normalizeSeriesRow|avgCost/i],
+    ["client_mapping", /src\//i, /normalizeServerModelCost|response\.json|fetchJson|avgCost/i],
+    ["state_model", /src\//i, /normalizeServerModels|set[A-Z][A-Za-z0-9_$]*\(|useState|normalizeServerModelCost/i],
+    ["ui_consumer", /src\//i, /rowAvgCost|rowMetricValue|profit|avgCost/i]
   ] : [];
-  const anchors = Object.fromEntries(anchorSpecs.map(([name, pathPattern, textPattern]) => {
+  const anchorDetails = Object.fromEntries(anchorSpecs.map(([name, pathPattern, textPattern]) => {
     const anchor = chainAnchor(allFiles, pathPattern, textPattern);
-    return [name, anchor ? registerRange(anchor.file, anchor.range) : null];
+    return [name, anchor ? { ...anchor, range_id: registerRange(anchor.file, anchor.range) } : null];
   }));
-  const requiredChainEdges = ["producer->api", "api->client_mapping", "client_mapping->state_model", "state_model->ui_consumer"];
+  const anchors = Object.fromEntries(Object.entries(anchorDetails).map(([name, value]) => [name, value?.range_id ?? null]));
+  const derivedEdgeCatalog = [];
   const chainEdgeCoverage = requiredChainEdges.map(edge => {
     const [from, to] = edge.split("->");
     const endpointRefs = [anchors[from], anchors[to]].filter(Boolean);
-    if (anchors[from] && anchors[from] === anchors[to]) return { edge, status: "observed", provenance_refs: endpointRefs };
+    const sourceAnchorRefs = [...new Set(endpointRefs)];
+    if (anchors[from] && anchors[from] === anchors[to]) return { edge, status: "observed", graph_edge_refs: [], source_anchor_refs: sourceAnchorRefs, derived_edge_refs: [], provenance_refs: sourceAnchorRefs };
     const graphRefs = graphPath(latestSources, rangeCatalog.get(anchors[from])?.path, rangeCatalog.get(anchors[to])?.path);
-    if (anchors[from] && anchors[to] && graphRefs.length) return { edge, status: "observed", provenance_refs: [...new Set([...endpointRefs, ...graphRefs])] };
+    if (anchors[from] && anchors[to] && graphRefs.length) return { edge, status: "observed", graph_edge_refs: graphRefs, source_anchor_refs: sourceAnchorRefs, derived_edge_refs: [], provenance_refs: [...new Set([...sourceAnchorRefs, ...graphRefs])] };
+    const symbols = anchors[from] && anchors[to]
+      ? materialSymbols(anchorDetails[from].range.text, anchorDetails[to].range.text, ownerText)
+      : [];
+    if (symbols.length) {
+      const edgeId = `derived_edge_${digest(`${edge}\n${sourceAnchorRefs.join("\n")}\n${symbols.join("\n")}`).slice(0, 20)}`;
+      derivedEdgeCatalog.push({
+        edge_id: edgeId, from, to, kind: "source_field_continuity", symbols,
+        source_anchor_refs: sourceAnchorRefs,
+        provenance: { method: "shared_material_identifier_in_role_specific_source_anchors", source_range_refs: sourceAnchorRefs }
+      });
+      return { edge, status: "observed", graph_edge_refs: [], source_anchor_refs: sourceAnchorRefs, derived_edge_refs: [edgeId], provenance_refs: [...sourceAnchorRefs, edgeId] };
+    }
     // The selected graph is bounded supporting evidence. Failure to find a path in it is not proof that
     // the project has no path; a deterministic complete negative scan would be required for `missing`.
-    return { edge, status: "unknown", provenance_refs: endpointRefs };
+    return { edge, status: "unknown", graph_edge_refs: [], source_anchor_refs: sourceAnchorRefs, derived_edge_refs: [], provenance_refs: sourceAnchorRefs };
   });
   const usedRanges = new Set([...claims.flatMap(claim => claim.primary_evidence_refs), ...Object.values(anchors).filter(Boolean)]);
   const selectedSources = [...latestSources.values()].map(item => ({
@@ -341,6 +367,7 @@ export function claimCenteredReviewEvidence(workerResults, sourceEvidence, owner
     conclusions,
     source_range_catalog: [...rangeCatalog.values()].filter(range => usedRanges.has(range.range_id)),
     exact_scan_catalog: [...scanCatalog.values()],
+    derived_edge_catalog: derivedEdgeCatalog,
     source_evidence: claims.length ? selectedSources : [...latestSources.values()],
     cross_layer_chains: chainRequested ? [{
       claim_id: "claim_cross_layer_producer_to_ui",
@@ -352,6 +379,8 @@ export function claimCenteredReviewEvidence(workerResults, sourceEvidence, owner
       primary_evidence_refs: [...new Set(Object.values(anchors).filter(Boolean))],
       contradicting_evidence_refs: [],
       exact_scan_refs: [],
+      graph_edge_refs: [...new Set(chainEdgeCoverage.flatMap(item => item.graph_edge_refs ?? []))],
+      derived_edge_refs: [...new Set(chainEdgeCoverage.flatMap(item => item.derived_edge_refs ?? []))],
       anchors,
       edge_coverage: chainEdgeCoverage,
       coverage: chainEdgeCoverage.every(edge => edge.status === "observed" && edge.provenance_refs.length) ? "sufficient" : "incomplete",
@@ -375,8 +404,8 @@ function graphPath(sources, fromPath, toPath) {
     const current = frontier.shift();
     if (targets.has(current.id)) return current.provenance;
     if (current.depth >= 4) continue;
-    for (const edge of edges.filter(item => item.from === current.id || item.to === current.id)) {
-      const next = edge.from === current.id ? edge.to : edge.from;
+    for (const edge of edges.filter(item => item.from === current.id)) {
+      const next = edge.to;
       const edgeRef = edge.id ?? `${edge.from}->${edge.to}:${edge.type}`;
       if (!visited.has(next)) { visited.add(next); frontier.push({ id: next, depth: current.depth + 1, provenance: [...current.provenance, edgeRef] }); }
     }
