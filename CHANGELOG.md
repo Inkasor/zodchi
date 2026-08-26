@@ -4,6 +4,17 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_4_2_2026_08_26" status="working">
+
+## 0.4.2 — 2026-08-26
+
+- Planner contracts now distinguish ranked locator evidence from the full source contents supplied to workers; missing source detail becomes an investigation step rather than an owner clarification.
+- Exact request identifiers carry a compact corpus-wide index of every matching path and line count, with independent scan-completeness and result-cap fields.
+- Tracked files deleted from the current working tree no longer appear as unreadable corpus entries, and NDJSON payloads are excluded from source retrieval.
+- Compact exact-term indexes are fitted deterministically under extreme prompt budgets while retaining explicit truncation evidence.
+
+</section>
+
 <section id="0_4_1_2026_08_26" status="working">
 
 ## 0.4.1 — 2026-08-26

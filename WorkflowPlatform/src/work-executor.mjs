@@ -122,6 +122,14 @@ export function fitSourceEvidence(context, limit, measure = promptBytes) {
     const matches = result.files[index].matches;
     while (refresh() > limit && Array.isArray(matches) && matches.length > 2) matches.pop();
   }
+  while (refresh() > limit && Array.isArray(result.exact_term_index)) {
+    const candidate = result.exact_term_index.filter(item => Array.isArray(item.paths) && item.paths.length > 8)
+      .sort((left, right) => right.paths.length - left.paths.length || left.term.localeCompare(right.term, "en"))[0];
+    if (!candidate) break;
+    candidate.paths.pop();
+    candidate.paths_truncated = true;
+    candidate.retained_paths = candidate.paths.length;
+  }
   while (refresh() > limit && result.files.length > 6) {
     result.files.pop();
     result.truncated = true;
@@ -511,6 +519,11 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   // told which roles those are. Checks and artifact types were already named here; the roles were
   // validated against a list the planner never saw, and it filled the gap by naming itself.
   const plannerPackage = { objective: message, classification: { work_type: classification.work_type, artifact_type: classification.artifact_type, risk: classification.risk, quality_mode: classification.quality_mode }, registered_roles: roleCapabilities, plan_boundary: planBoundary, following_phases: followingPhases, registered_checks: registeredChecks, registered_artifact_types: registeredArtifactTypes };
+  plannerPackage.collection_contract = {
+    source_matches: "Ranked locator evidence. It is deliberately excerpted and may cap returned result files; use exact_term_index and completeness to distinguish a result cap from an incomplete corpus scan.",
+    worker_sources: "After planning, each worker receives contents and relevant ranges for its allowed_paths and performs complete exact-term scans there. The planner must select paths and assign investigation steps; it must not request full source bodies for itself.",
+    clarification_rule: "Ask the owner only for a missing product decision or external fact. A need for more registered source content is a worker investigation step, not an owner clarification."
+  };
   const planner = plannerContract && await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: plannerPackage, context: boundedContext(discovery, plannerRole, classification, Math.floor(plannerContract.context_limit_bytes / 2), responseLanguage, {
       source_inventory: inventorySummary(discovery.sources ?? []),
       // An inventory says what exists; it does not say where the thing the owner asked about lives, and
@@ -520,7 +533,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       source_matches: (() => {
         const scope = sourceScope(discovery.source_scope);
         const expanded = expandTerms(discovery.roots ?? [], scope, message);
-        const lexical = searchSources(discovery.roots ?? [], scope, expanded.terms);
+        const lexical = searchSources(discovery.roots ?? [], scope, expanded.terms, { indexedTerms: expanded.code });
         const intelligence = buildCodeIntelligence(discovery.roots ?? [], scope, expanded.terms, lexical, { primaryTerms: expanded.code, contextTerms: expanded.subject });
         return { ...mergeGraphMatches(lexical, intelligence), derived_from: { request_words: expanded.subject, identifiers: expanded.harvested } };
       })()
