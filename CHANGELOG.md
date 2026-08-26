@@ -9,8 +9,9 @@
 ## 0.5.6 — 2026-08-26
 
 - Review evidence no longer discards every source body after a shared 24 KB pre-compaction allowance.
-- Supplied source is represented as independently inspectable line ranges; measured compaction retains a concrete excerpt from every range while fitting the complete reviewer prompt.
+- Supplied source is represented as independently inspectable line ranges; measured compaction retains at least 512 bytes from every range and fits the complete prompt to the configured 128 KiB reviewer tier.
 - A pathless review gap now targets the source-producing plan step named by top-level evidence references and required actions instead of falling back to a pathless synthesis step.
+- Review-gap corrections receive the exact blocker, required actions and evidence references as both bounded authority and source-search intent.
 
 </section>
 
