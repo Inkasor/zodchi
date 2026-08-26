@@ -162,17 +162,6 @@ export function recordRunEvidence(db, runId, stepId, kind, value) {
 function parse(value, fallback) { try { return JSON.parse(value); } catch { return fallback; } }
 function utf8Prefix(value, bytes) { return Buffer.from(String(value ?? "")).subarray(0, Math.max(0, bytes)).toString("utf8"); }
 
-function boundedSourceEvidence(value, remaining) {
-  const copy = structuredClone(value), files = Array.isArray(copy.files) ? copy.files : [];
-  copy.files = files.map(file => {
-    const text = String(file.text ?? ""), allowance = Math.max(0, Math.min(4_096, remaining.value));
-    const supplied = Buffer.from(text).subarray(0, allowance).toString("utf8");
-    remaining.value -= Buffer.byteLength(supplied);
-    return { ...file, text: supplied, source_text_truncated: Buffer.byteLength(text) > Buffer.byteLength(supplied) };
-  });
-  return copy;
-}
-
 function compactCodeIntelligence(value, includeSamples = true) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const copy = {};
@@ -194,6 +183,14 @@ function compactCodeIntelligence(value, includeSamples = true) {
 
 function compactSourceFile(file) {
   const scan = file.exact_term_scan;
+  const source = String(file.text ?? ""), headers = [...source.matchAll(/^--- lines (\d+)-(\d+) \(([^)]*)\) ---\r?\n/gm)];
+  const sourceRanges = headers.length ? headers.map((header, index) => ({
+    start_line: Number(header[1]), end_line: Number(header[2]), reason: utf8Prefix(header[3], 160),
+    text: source.slice(header.index + header[0].length, headers[index + 1]?.index ?? source.length).trim()
+  })) : source ? [{
+    start_line: file.segments?.[0]?.start_line ?? null, end_line: file.segments?.[0]?.end_line ?? null,
+    reason: utf8Prefix(file.segments?.[0]?.reason ?? "supplied_source", 160), text: source
+  }] : [];
   return {
     path: file.path,
     segments: (file.segments ?? []).slice(0, 12).map(segment => ({
@@ -208,7 +205,7 @@ function compactSourceFile(file) {
       }))
     } } : {}),
     supplied_bytes: file.supplied_bytes,
-    text: String(file.text ?? ""), source_text_truncated: Boolean(file.source_text_truncated)
+    source_ranges: sourceRanges
   };
 }
 
@@ -232,7 +229,7 @@ function trimStringValues(entries, read, write, bytesToRemove, minimum = 0) {
   return bytesToRemove - remaining;
 }
 
-function compactReviewEvidence(evidence, limit = 32_000) {
+function compactReviewEvidence(evidence, limit = 39_500) {
   const copy = structuredClone(evidence);
   // buildReviewEvidence adds a SHA-256 field after compaction; reserve its JSON envelope here so
   // the object actually delivered to reviewers, not only its pre-hash form, stays under the limit.
@@ -279,10 +276,12 @@ function compactReviewEvidence(evidence, limit = 32_000) {
   const size = () => Buffer.byteLength(JSON.stringify(copy));
   const excessBytes = () => size() > contentLimit ? size() - contentLimit + 64 : 0;
   const files = copy.source_evidence.flatMap(item => item.files ?? []);
-  // Primary snippets share the reduction fairly in one measured pass. This avoids repeatedly
-  // serializing a large envelope once per line or byte range.
+  const sourceRanges = files.flatMap(file => file.source_ranges ?? []);
+  // Preserve a concrete excerpt from every supplied primary range. Large concatenated file strings
+  // used to be reduced to empty values before lower-value scan metadata was compacted, leaving a
+  // reviewer with paths and counts but no code it could independently inspect.
   let excess = excessBytes();
-  if (excess && trimStringValues(files, file => file.text, (file, value) => { file.text = value; file.source_text_truncated = true; }, excess)) copy.evidence_compaction.source_text_reduced = true;
+  if (excess && trimStringValues(sourceRanges, range => range.text, (range, value) => { range.text = value; range.text_truncated = true; }, excess, 240)) copy.evidence_compaction.source_text_reduced = true;
   // Real analytical workflows may carry several independent exact scans. Keep every term, count,
   // path and line while reducing duplicated line bodies and prose summaries only as needed.
   const occurrences = files.flatMap(file => file.exact_term_scan?.occurrences ?? []);
@@ -301,7 +300,7 @@ function compactReviewEvidence(evidence, limit = 32_000) {
   const sampleMaps = copy.code_intelligence_catalog.flatMap(item => item.adapters ?? []).map(adapter => adapter.unresolved_call_samples ?? {});
   if (size() > contentLimit) for (const samples of sampleMaps) for (const category of Object.keys(samples).sort()) { samples[category] = []; copy.evidence_compaction.metadata_reduced = true; }
   if (size() > contentLimit) for (const segment of files.flatMap(file => file.segments ?? [])) { segment.reason = ""; copy.evidence_compaction.metadata_reduced = true; }
-  if (size() > contentLimit) for (const file of files) { delete file.supplied_bytes; if (!file.text) delete file.source_text_truncated; copy.evidence_compaction.metadata_reduced = true; }
+  if (size() > contentLimit) for (const file of files) { delete file.supplied_bytes; copy.evidence_compaction.metadata_reduced = true; }
   if (size() > contentLimit) for (const file of files) {
     const scan = file.exact_term_scan, occurrences = scan?.occurrences ?? [];
     if (!occurrences.length) continue;
@@ -315,6 +314,10 @@ function compactReviewEvidence(evidence, limit = 32_000) {
   excess = excessBytes();
   if (excess && trimStringValues(references, item => item.owner[item.key][item.index], (item, value) => { item.owner[item.key][item.index] = value; }, excess, 120)) copy.evidence_compaction.metadata_reduced = true;
   if (size() > contentLimit) for (const item of summaries) for (const key of ["evidence_refs", "evidence"]) if ((item[key] ?? []).length > 3) { item[key] = item[key].slice(0, 3); copy.evidence_compaction.metadata_reduced = true; }
+  // JSON escaping and the final compaction counters add a small measured envelope overhead. Pay that
+  // from every range fairly while retaining a non-empty inspectable excerpt from each one.
+  excess = excessBytes();
+  if (excess && trimStringValues(sourceRanges, range => range.text, (range, value) => { range.text = value; range.text_truncated = true; }, excess, 200)) copy.evidence_compaction.source_text_reduced = true;
   copy.evidence_compaction.supplied_bytes = size();
   if (size() > contentLimit) throw new Error(`REVIEW_EVIDENCE_BUDGET_EXCEEDED: ${size()}/${limit}`);
   return copy;
@@ -328,9 +331,8 @@ export function buildReviewEvidence(db, runId, { plan, gate, workerResults, allo
     .map(row => ({ kind: row.kind, ...parse(row.structured_json, {}) }));
   const hasChanges = changes.run_changed_paths.length > 0, hasAnalysis = decisionArtifacts.length > 0;
   const type = hasChanges && hasAnalysis ? "mixed" : hasChanges ? "change" : "analytical";
-  const remainingSourceBytes = { value: 24_000 };
   const sourceEvidence = db.prepare("SELECT step_id,evidence_hash,evidence_json FROM run_evidence WHERE run_id=? AND kind='worker_source' ORDER BY created_at").all(runId)
-    .map(row => ({ step_id: row.step_id, evidence_hash: row.evidence_hash, ...boundedSourceEvidence(parse(row.evidence_json, {}), remainingSourceBytes) }));
+    .map(row => ({ step_id: row.step_id, evidence_hash: row.evidence_hash, ...parse(row.evidence_json, {}) }));
   const evidence = {
     schema_version: 1, type, owner_objective: ownerObjective(db, runId),
     canonical_completion: { blockers: completionBlockers(db, run.task_id) },

@@ -77,6 +77,7 @@ test("review evidence compacts large source and gate payloads under its measured
     assert.ok(Buffer.byteLength(JSON.stringify(evidence)) <= 40_000);
     assert.equal(evidence.code_intelligence_catalog[0].anchors[0], "criticalSymbol");
     assert.equal(evidence.source_evidence[0].files[0].path, "src/0.ts");
+    assert.ok(evidence.source_evidence[0].files.every(file => file.source_ranges[0].text.length >= 200));
     assert.equal(evidence.verification.gate.checks[0].execution_project_id, "project");
   } finally { fx.close(); }
 });
@@ -94,11 +95,13 @@ test("review evidence compacts repeated TS graph and exact-scan metadata without
     assert.equal(evidence.source_evidence[6].files[3].path, "src/6-3.ts");
     assert.equal(evidence.code_intelligence_catalog.length, 1);
     assert.equal(evidence.source_evidence[6].code_intelligence_ref, evidence.code_intelligence_catalog[0].id);
+    assert.ok(evidence.source_evidence.flatMap(item => item.files).every(file => file.source_ranges.every(range => range.text.length >= 200)));
     assert.equal(evidence.source_evidence[0].files[0].exact_term_scan.count_index["anchor-11"].count, 12);
     assert.equal(evidence.code_intelligence_catalog[0].adapters[0].unresolved_call_categories.project_internal_unmapped, 1304);
     const contract = { role_id: "reviewer", version: "1.0.0", purpose: "Independently review immutable evidence.", boundaries: {}, allowed_tools: [], allowed_skills: [], prompt_template_version: "1.0.0", result_schema_key: "reviewer.v1", context_limit_bytes: 65_536 };
     const prompt = rolePrompt({ contract, qualityContract: DEFAULT_QUALITY_CONTRACTS.find(item => item.level === "mvp"), packageContract: reviewerTaskPackage(evidence, "project_policy", 0), context: reviewerPromptContext({ work_type: "documentation", artifact_type: "document", risk: "medium", quality_mode: "mvp" }, "ru"), resultSchema: "reviewer.v1" });
-    assert.ok(Buffer.byteLength(prompt) <= contract.context_limit_bytes);
+    const promptBytes = Buffer.byteLength(prompt);
+    assert.ok(promptBytes <= contract.context_limit_bytes, `reviewer prompt ${promptBytes}/${contract.context_limit_bytes}`);
   } finally { fx.close(); }
 });
 
@@ -123,6 +126,19 @@ test("E: a local blocker selects exactly the affected plan step", () => {
   const plan = { steps: Array.from({ length: 5 }, (_, index) => ({ key: `step-${index}`, allowed_paths: [`src/${index}.ts`], check_ids: [`check-${index}`] })) };
   const selected = targetedSteps(plan, { gate: { checks: [{ id: "check-3", required: true, status: "failed", execution_project_id: "consumer", execution_root: "registered-consumer-root" }] } });
   assert.deepEqual(selected.map(item => item.key), ["step-3"]);
+});
+
+test("a pathless review gap targets the source step named by top-level evidence refs", () => {
+  const plan = { steps: [
+    { key: "trace-profit", allowed_paths: ["scripts/dashboard-query-service.mjs"], check_ids: [] },
+    { key: "synthesize", allowed_paths: [], check_ids: [] }
+  ] };
+  const reviewer = {
+    blockers: [{ code: "PRIMARY_SOURCE_RANGES_MISSING", message: "Primary ranges are missing", path: null }],
+    evidence_refs: ["scripts/dashboard-query-service.mjs:3336-3410"],
+    required_actions: ["Collect the complete range from scripts/dashboard-query-service.mjs"]
+  };
+  assert.deepEqual(targetedSteps(plan, { reviewer }).map(item => item.key), ["trace-profit"]);
 });
 
 test("F: post-factum cost records the overshooting receipt and denies the next call", () => {
