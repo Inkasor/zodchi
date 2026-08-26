@@ -4,6 +4,16 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_5_2026_08_26" status="working">
+
+## 0.5.5 — 2026-08-26
+
+- Одинаковые code-intelligence графы сохраняются в review evidence один раз в дедуплицированном по содержимому каталоге, а worker snapshots ссылаются на них.
+- Correction snapshot больше не повторяет глобальную статистику TypeScript compiler; при этом представлены все уникальные графы и все source snapshots.
+- Плотная аналитическая регрессия теперь покрывает семь snapshots, включая добавление размера correction, и по-прежнему измеряет финальный reviewer prompt.
+
+</section>
+
 <section id="0_5_4_2026_08_26" status="working">
 
 ## 0.5.4 — 2026-08-26

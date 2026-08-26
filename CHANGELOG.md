@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_5_2026_08_26" status="working">
+
+## 0.5.5 — 2026-08-26
+
+- Review evidence stores identical code-intelligence graphs once in a content-deduplicated catalog and keeps per-worker references.
+- Correction snapshots no longer repeat the same global TypeScript compiler statistics, while every distinct graph and every source snapshot remains represented.
+- The dense analytical regression now covers seven snapshots, including a correction-sized addition, and still measures the final reviewer prompt.
+
+</section>
+
 <section id="0_5_4_2026_08_26" status="working">
 
 ## 0.5.4 — 2026-08-26
