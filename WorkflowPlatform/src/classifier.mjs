@@ -88,6 +88,13 @@ function assertRegistered(catalog, field, catalogField, value) {
 export function validateClassificationDecision(value, catalog) {
   assertCatalogComplete(catalog);
   if (!value || Array.isArray(value) || typeof value !== "object") throw new Error("CLASSIFICATION_SCHEMA_INVALID: object required");
+  // `continuation` is the conversational route for a short follow-up, not a generic label meaning that
+  // the subject appeared earlier in chat. Models naturally call a detailed request "continuation" even
+  // when they also correctly identify a required document and work execution. Preserve those substantive
+  // fields and route that one unambiguous combination to the registered documentation workflow.
+  if (value.work_type === "continuation" && value.reply_mode === "work" && value.artifact_type === "document" && value.document_required && catalog.work_types.includes("documentation")) {
+    value = { ...value, work_type: "documentation" };
+  }
   const keys = Object.keys(value).sort();
   const expected = [...REQUIRED_FIELDS].sort();
   if (JSON.stringify(keys) !== JSON.stringify(expected)) {
@@ -132,6 +139,7 @@ export function validateClassificationDecision(value, catalog) {
   if (!OWNER_RESPONSES.has(value.pending_interaction_response)) throw new Error(`CLASSIFICATION_SCHEMA_INVALID: pending_interaction_response=${value.pending_interaction_response}`);
   if (decides !== (value.pending_interaction_response !== null)) throw new Error("CLASSIFICATION_SCHEMA_INVALID: pending_interaction_response belongs to a decision, and every decision needs one");
   if (value.work_type === "conversation" && (value.planning_required || value.artifact_type !== "none" || value.reply_mode !== "conversation")) throw new Error("CLASSIFICATION_SCHEMA_INVALID: conversation contract");
+  if (value.work_type === "continuation" && (value.planning_required || value.document_required || value.artifact_type !== "none" || value.reply_mode !== "conversation")) throw new Error("CLASSIFICATION_SCHEMA_INVALID: continuation contract");
   if (value.reply_mode === "work" && !value.planning_required) throw new Error("CLASSIFICATION_SCHEMA_INVALID: work requires planning");
   return Object.freeze({ ...value, kind: value.work_type, artifact: value.artifact_type, level: value.planning_level, quality: value.quality_mode });
 }
@@ -192,6 +200,7 @@ export function classifierPrompt({ message, catalog, projectSnapshot, acceptedDe
     "- risk: low when the message cannot damage anything, medium when it changes registered material, high when it is irreversible or touches production.",
     "- reply_mode: conversation for ordinary talk, research for a bounded question answered from registered sources, clarification when required information is missing, work when a registered route must run.",
     "- work_type=conversation forces artifact_type=none, planning_required=false and reply_mode=conversation.",
+    "- work_type=continuation is only a short conversational follow-up with artifact_type=none, document_required=false, planning_required=false and reply_mode=conversation. A detailed task remains the underlying registered work type even when the same subject appeared earlier; a request to create a document is documentation, not continuation.",
     "- reply_mode=work requires planning_required=true and a work_type that REGISTERED_ROUTES actually routes.",
     "- planning_required: the answer needs ordered steps rather than a single response.",
     "- human_required: a person must decide or approve before the result can stand.",
