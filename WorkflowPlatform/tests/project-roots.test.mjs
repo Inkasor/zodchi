@@ -199,10 +199,10 @@ test("every explicit range is represented before long call chains consume a tigh
     scope: "complete_file",
     match: "literal_case_insensitive",
     occurrences: [
-      { term: "TraceCost0", count: 1 },
-      { term: "FirstRangeMarker", count: 1 },
-      { term: "SecondRangeMarker", count: 1 },
-      { term: "ThirdRangeMarker", count: 1 }
+      { term: "TraceCost0", count: 1, matched_lines: 1, locations: [{ line: 101, text: "Функция TraceCost0()" }], locations_truncated: false },
+      { term: "FirstRangeMarker", count: 1, matched_lines: 1, locations: [{ line: 2750, text: "FirstRangeMarker = Регистр.Себестоимость;" }], locations_truncated: false },
+      { term: "SecondRangeMarker", count: 1, matched_lines: 1, locations: [{ line: 3500, text: "SecondRangeMarker = Регистр.СтоимостьПериода;" }], locations_truncated: false },
+      { term: "ThirdRangeMarker", count: 1, matched_lines: 1, locations: [{ line: 4390, text: "ThirdRangeMarker = JSON.Себестоимость;" }], locations_truncated: false }
     ]
   });
   assert.ok(collected.files[0].supplied_bytes <= 12_000);
@@ -217,7 +217,12 @@ test("a complete-file exact term scan proves that a requested identifier is abse
     query: "Trace avgCost and unitCost"
   });
   assert.equal(collected.files[0].truncated, true);
-  assert.deepEqual(collected.files[0].exact_term_scan.occurrences, [{ term: "avgCost", count: 0 }, { term: "unitCost", count: 2000 }]);
+  const [absent, present] = collected.files[0].exact_term_scan.occurrences;
+  assert.deepEqual(absent, { term: "avgCost", count: 0, matched_lines: 0, locations: [], locations_truncated: false });
+  assert.equal(present.count, 2000);
+  assert.equal(present.matched_lines, 2000);
+  assert.equal(present.locations.length, 16);
+  assert.equal(present.locations_truncated, true);
   db.close(); fs.rmSync(root, { recursive: true, force: true });
 });
 

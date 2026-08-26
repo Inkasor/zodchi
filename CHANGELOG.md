@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_4_3_2026_08_26" status="working">
+
+## 0.4.3 — 2026-08-26
+
+- Complete-file exact-term scans now include bounded line numbers and source snippets, so workers receive positive evidence even when the larger selected excerpt is later reduced to fit the prompt.
+- Exact scans still report deterministic zero counts and now separately report matched lines and location truncation.
+- The strongest literal match for a worker objective is reserved before inferred call-chain windows can consume the source byte budget.
+
+</section>
+
 <section id="0_4_2_2026_08_26" status="working">
 
 ## 0.4.2 — 2026-08-26
