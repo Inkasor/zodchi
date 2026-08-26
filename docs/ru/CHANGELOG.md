@@ -4,6 +4,16 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_20_2026_08_26" status="working">
+
+## 0.5.20 — 2026-08-26
+
+- Reviewer prompt теперь явно закрепляет условный инвариант результата: `PASS` несовместим с blockers и required actions.
+- Если reviewer нарушил только структурный result contract, платформа даёт ему одну ограниченную schema-repair попытку. Остальные участники consilium продолжают независимо; отмена и terminal transition происходят только после исчерпания repair и завершения всех допущенных участников.
+- Repair сохраняет исходный evidence packet, фиксирует validation error и hash предыдущего результата, не ослабляет валидатор и не подменяет противоречивый ответ придуманным платформой решением.
+
+</section>
+
 <section id="0_5_19_2026_08_26" status="working">
 
 ## 0.5.19 — 2026-08-26

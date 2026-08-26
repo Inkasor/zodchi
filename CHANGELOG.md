@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_20_2026_08_26" status="working">
+
+## 0.5.20 — 2026-08-26
+
+- Reviewer prompts now state the conditional result invariant explicitly: `PASS` cannot coexist with blockers or required actions.
+- A reviewer result that violates only the structured result contract receives one bounded schema-repair attempt. Other consilium members continue independently; cancellation and terminal transition happen only after repair is exhausted and every admitted participant settles.
+- Repair attempts preserve the original evidence packet, record their validation error and prior-result hash, and never weaken the validator or convert a contradictory response into a platform-invented judgment.
+
+</section>
+
 <section id="0_5_19_2026_08_26" status="working">
 
 ## 0.5.19 — 2026-08-26

@@ -31,7 +31,7 @@ function roleContract(roleId, schema, artifacts) {
   return {
     id: `contract-${roleId}`, role_id: roleId, version: "1.0.0", purpose: `${roleId} test contract`, boundaries: { writes: roleId === "worker" || roleId === "documentator" },
     allowed_work_types: ["*"], allowed_artifact_types: artifacts, allowed_tools: [], allowed_skills: [], required_checks: ["check-ok"],
-    allowed_transitions: [], allowed_profiles: ["*"], context_limit_bytes: 65536, max_calls: roleId === "worker" ? 2 : 1, max_correction_cycles: roleId === "worker" || roleId === "planner" ? 1 : 0,
+    allowed_transitions: [], allowed_profiles: ["*"], context_limit_bytes: 65536, max_calls: roleId === "worker" || roleId === "reviewer" ? 2 : 1, max_correction_cycles: roleId === "worker" || roleId === "planner" ? 1 : 0,
     timeout_seconds: 60, result_schema_key: schema, prompt_template_version: "1.0.0", escalation: { on_invalid: "blocked" }
   };
 }
@@ -94,12 +94,13 @@ function receipt(role, result, suffix = "1", rawSuffix = "") {
   };
 }
 
-async function scenario({ prefix, gateStatus = "passed", reviewDecision = "PASS", document = false, invalidDocumentVersion = false, message = null, risk = "high" }) {
+async function scenario({ prefix, gateStatus = "passed", reviewDecision = "PASS", invalidFirstReviewer = false, document = false, invalidDocumentVersion = false, message = null, risk = "high" }) {
   const env = fixture(prefix, { document });
   const calls = [];
   let workerPrompt = "";
   let plannerPrompt = "";
   let documentatorPrompt = "";
+  let reviewerCalls = 0;
   const gatewayCall = async request => {
     calls.push(request.role);
     if (request.role === "planner") {
@@ -116,7 +117,12 @@ async function scenario({ prefix, gateStatus = "passed", reviewDecision = "PASS"
       }
       return receipt("worker", { schema_version: 1, status: "completed", summary: "Prepared document evidence.", changed_paths: [], artifacts: [], evidence: ["registered target"], questions: [] });
     }
-    if (request.role === "reviewer") return receipt("reviewer", reviewerResult(reviewDecision));
+    if (request.role === "reviewer") {
+      reviewerCalls += 1;
+      if (invalidFirstReviewer && reviewerCalls === 1) return receipt("reviewer", { ...reviewerResult("PASS"), blockers: [{ code: "gap", message: "Contradictory first result.", path: null }] }, "1");
+      if (invalidFirstReviewer) assert.match(fs.readFileSync(request.taskFile, "utf8"), /schema_repair/);
+      return receipt("reviewer", reviewerResult(reviewDecision), String(reviewerCalls));
+    }
     if (request.role === "documentator") {
       documentatorPrompt = fs.readFileSync(request.taskFile, "utf8");
       const file = path.join(env.project, "docs", "control.md");
@@ -168,6 +174,10 @@ test("role result schemas reject extra fields, path escapes and false reviewer P
   const reviewerPrompt = rolePrompt({ contract: reviewerContract, qualityContract: loadQualityContract(db, "mvp"), packageContract: { plan: { artifacts: [{ type: "document", required: true }] }, worker_results: [{ artifacts: [], changed_paths: [] }] }, context: {}, resultSchema: "reviewer.v1" });
   assert.match(reviewerPrompt, /before the documentator/);
   assert.match(reviewerPrompt, /absence from worker artifacts or changed_paths is not a blocker/);
+  assert.match(reviewerPrompt, /PASS requires blockers=\[\] and required_actions=\[\]/);
+  assert.match(reviewerPrompt, /Never return PASS while describing a blocker/);
+  const repairPrompt = rolePrompt({ contract: reviewerContract, qualityContract: loadQualityContract(db, "mvp"), packageContract: { schema_repair: { validation_error: "reviewer.v1: PASS cannot contain blockers" } }, context: {}, resultSchema: "reviewer.v1" });
+  assert.match(repairPrompt, /schema_repair/);
   assert.match(reviewerPrompt, /Final receipt totals, calls, tokens, cache, total duration/);
   assert.match(reviewerPrompt, /their absence from review_evidence is not a blocker/);
   assert.match(reviewerPrompt, /Use CHANGES_REQUESTED for an evidence gap/);
@@ -196,6 +206,20 @@ test("structured planner-worker-gate-reviewer PASS completes and raw planner pro
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM workflow_steps WHERE run_id=? AND state='completed'").get(env.result.run_id).count, 4);
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM gateway_calls WHERE run_id=? AND length(contract_hash)=64 AND length(result_hash)=64").get(env.result.run_id).count, 3);
   assert.equal(JSON.stringify(db.prepare("SELECT result_json FROM workflow_steps WHERE run_id=?").all(env.result.run_id)).includes("RAW_PLANNER_PROSE_MARKER"), false);
+  db.close();
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
+test("a contradictory reviewer result is repaired once inside the same review phase", async () => {
+  const env = await scenario({ prefix: "workflow-reviewer-schema-repair-", invalidFirstReviewer: true });
+  assert.equal(env.result.execution.status, "completed");
+  assert.deepEqual(env.calls, ["planner", "worker", "reviewer", "reviewer"]);
+  const db = openDb(env.dbFile);
+  const runId = env.result.run_id;
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM attempts a JOIN workflow_steps s ON s.id=a.step_id WHERE s.run_id=? AND s.result_schema_key='reviewer.v1'").get(runId).count, 2);
+  assert.equal(db.prepare("SELECT state FROM workflow_steps WHERE run_id=? AND result_schema_key='reviewer.v1'").get(runId).state, "completed");
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM run_evidence WHERE run_id=? AND kind='reviewer_schema_repair'").get(runId).count, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM run_evidence WHERE run_id=? AND kind='role_result_validation_error'").get(runId).count, 1);
   db.close();
   fs.rmSync(env.root, { recursive: true, force: true });
 });
