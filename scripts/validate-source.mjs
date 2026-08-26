@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { documentLint } from "../WorkflowPlatform/src/lint.mjs";
 import { qualityContractsLint } from "../WorkflowPlatform/src/quality-contracts.mjs";
+import { transactionAwaitViolations } from "../WorkflowPlatform/src/transaction-guard.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const product = JSON.parse(fs.readFileSync(path.join(root, "product.json"), "utf8"));
@@ -20,6 +21,14 @@ for (const relative of ["ONBOARDING_PROMPT.md", "QUICKSTART.md", "UPDATE.md", "c
 const qualityFile = path.join(root, "WorkflowPlatform/contracts/quality-contracts.xml");
 const quality = qualityContractsLint(fs.readFileSync(qualityFile, "utf8"));
 if (quality.status !== "passed") errors.push(`quality contracts: ${quality.errors.join("; ")}`);
+
+for (const directory of ["WorkflowPlatform/src", "AgentGateway/src"]) {
+  for (const entry of fs.readdirSync(path.join(root, directory), { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".mjs")) continue;
+    const relative = `${directory}/${entry.name}`;
+    errors.push(...transactionAwaitViolations(fs.readFileSync(path.join(root, relative), "utf8"), relative));
+  }
+}
 
 for (const relative of ["WorkflowPlatform/starter", "WorkflowPlatform/docs/BaselineAudit.md", "WorkflowPlatform/docs/GoalProgress.md"]) {
   if (fs.existsSync(path.join(root, relative))) errors.push(`private or obsolete source artifact remains: ${relative}`);

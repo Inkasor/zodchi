@@ -49,18 +49,24 @@ function pairedState(db, runId, toState, at, payload = {}, { remember = false, c
   return toState;
 }
 
-function activateNext(db, runId, at) {
-  const step = db.prepare(`SELECT ws.* FROM workflow_steps ws
+function activateNextPhase(db, runId, at) {
+  const runnableOrdinal = db.prepare(`SELECT MIN(ws.ordinal) AS ordinal FROM workflow_steps ws
     WHERE ws.run_id=? AND ws.state='pending'
       AND NOT EXISTS (
         SELECT 1 FROM workflow_steps previous
         WHERE previous.run_id=ws.run_id AND previous.ordinal<ws.ordinal
           AND previous.required=1 AND previous.state NOT IN ('completed','documented','cancelled')
-      )
-    ORDER BY ws.ordinal LIMIT 1`).get(runId);
-  if (!step) return null;
-  entityState(db, "workflow_step", step.id, "ready", at, { reason: "previous required steps confirmed" });
-  return db.prepare("SELECT * FROM workflow_steps WHERE id=?").get(step.id);
+      )`).get(runId)?.ordinal;
+  if (runnableOrdinal === null || runnableOrdinal === undefined) return [];
+  const steps = db.prepare("SELECT * FROM workflow_steps WHERE run_id=? AND ordinal=? AND state='pending' ORDER BY step_key").all(runId, runnableOrdinal);
+  for (const step of steps) entityState(db, "workflow_step", step.id, "ready", at, { reason: "minimal runnable ordinal phase activated", ordinal: runnableOrdinal });
+  return steps.map(step => db.prepare("SELECT * FROM workflow_steps WHERE id=?").get(step.id));
+}
+
+const ACTIVE_QUEUE_STATES = ["pending", "ready", "leased", "running", "retry_scheduled"];
+export function isQueueDrained(db, runId) {
+  const placeholders = ACTIVE_QUEUE_STATES.map(() => "?").join(",");
+  return !db.prepare(`SELECT 1 FROM workflow_steps WHERE run_id=? AND required=1 AND state IN (${placeholders}) LIMIT 1`).get(runId, ...ACTIVE_QUEUE_STATES);
 }
 
 function activeLeaseByToken(db, token, { allowReleased = false } = {}) {
@@ -113,6 +119,9 @@ function recoverExpiredInternal(db, at) {
     appendEvent(db, { entityType: "workflow_step", entityId: step.id, kind: "lease_expired", payload: { lease_id: lease.id, action } });
     recovered.push({ leaseId: lease.id, stepId: step.id, action });
   }
+  for (const runId of new Set(recovered.map(item => db.prepare("SELECT run_id FROM workflow_steps WHERE id=?").get(item.stepId)?.run_id).filter(Boolean))) {
+    activateNextPhase(db, runId, at);
+  }
   return recovered;
 }
 
@@ -120,7 +129,11 @@ export class ExecutionQueue {
   constructor(db) { this.db = db; }
 
   enqueueRun(runId, at = now()) {
-    return transaction(this.db, () => activateNext(this.db, runId, iso(at)));
+    return transaction(this.db, () => {
+      const activated = activateNextPhase(this.db, runId, iso(at));
+      const first = activated[0] ?? null;
+      return first ? { ...first, activatedStepIds: activated.map(step => step.id) } : null;
+    });
   }
 
   checkout({ ownerId, runId = null, leaseMs = 60_000, at = now() }) {
@@ -193,6 +206,7 @@ export class ExecutionQueue {
       const lease = activeLeaseByToken(this.db, token, { allowReleased: true });
       const attempt = this.db.prepare("SELECT * FROM attempts WHERE lease_id=? ORDER BY ordinal DESC LIMIT 1").get(lease.id);
       if (lease.released_at) {
+        if (lease.release_reason === "cancelled") return { stepId: lease.step_id, attemptId: attempt?.id ?? null, idempotent: true, ignored: true, reason: "cancelled" };
         if (lease.release_reason !== "completed") throw new Error(`LEASE_RELEASED: ${lease.release_reason}`);
         return { stepId: lease.step_id, attemptId: attempt?.id ?? null, idempotent: true };
       }
@@ -203,9 +217,12 @@ export class ExecutionQueue {
       entityState(this.db, "workflow_step", step.id, "verifying", timestamp, { reason: "attempt succeeded" });
       entityState(this.db, "workflow_step", step.id, "completed", timestamp, { reason: "attempt result confirmed" });
       this.db.prepare("UPDATE leases SET released_at=?,release_reason='completed' WHERE id=?").run(timestamp, lease.id);
-      const next = activateNext(this.db, step.run_id, timestamp);
-      if (!next) appendEvent(this.db, { entityType: "workflow_run", entityId: step.run_id, kind: "queue_drained", payload: { last_step_id: step.id } });
-      return { stepId: step.id, attemptId: attempt.id, nextStepId: next?.id ?? null, idempotent: false };
+      const activated = activateNextPhase(this.db, step.run_id, timestamp);
+      if (isQueueDrained(this.db, step.run_id)) {
+        const recorded = this.db.prepare("SELECT 1 FROM events WHERE entity_type='workflow_run' AND entity_id=? AND kind='queue_drained' LIMIT 1").get(step.run_id);
+        if (!recorded) appendEvent(this.db, { entityType: "workflow_run", entityId: step.run_id, kind: "queue_drained", payload: { last_step_id: step.id } });
+      }
+      return { stepId: step.id, attemptId: attempt.id, nextStepId: activated[0]?.id ?? null, nextStepIds: activated.map(item => item.id), idempotent: false };
     });
   }
 

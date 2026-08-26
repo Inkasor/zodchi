@@ -55,7 +55,7 @@ test("an imported software package has four normalized and checkable quality pol
   db = openDb(dbFile);
   const result = operationalPoliciesLint(db, "project-r");
   assert.deepEqual(result, { kind: "operational_policies", status: "passed", errors: [], projects: 1, packages: 1 });
-  assert.equal(db.prepare("SELECT COUNT(*) count FROM operational_level_budget_limits WHERE project_id='project-r'").get().count, 12);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM operational_level_budget_limits WHERE project_id='project-r'").get().count, 16);
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });

@@ -44,6 +44,14 @@ export function onboardProject(dbFile, spec) {
   if (!spec.workflow?.id) throw new Error("onboarding: workflow.id is required");
   for (const document of spec.documents ?? []) if (!document.id || !document.path || path.isAbsolute(document.path) || document.path.split(/[\\/]/).includes("..")) throw new Error(`onboarding: document path must be a registered relative path: ${document.path ?? "missing"}`);
   const db = openDb(dbFile);
+  const normalizedPolicies = (spec.operational_levels ?? []).map(policy => {
+    const defaults = Object.fromEntries(db.prepare("SELECT metric,limit_value FROM quality_contract_budgets WHERE level=?").all(policy.level).map(row => [row.metric, Number(row.limit_value)]));
+    const strategy = policy.improvement_strategy ?? "standard";
+    const budgets = strategy === "gauntlet" ? { ...defaults, ...(policy.budgets ?? {}) } : defaults;
+    const correctionLimit = strategy === "gauntlet" ? Number(policy.correction_limit ?? budgets.correction_cycles ?? 0) : Number(defaults.correction_cycles ?? 0);
+    budgets.correction_cycles = correctionLimit;
+    return { ...policy, improvement_strategy: strategy, budgets, correction_limit: correctionLimit };
+  });
   db.exec("BEGIN");
   try {
     rows(db, "INSERT OR IGNORE INTO projects (id,name,root_path,created_at) VALUES (?, ?, ?, ?)", [[spec.project.id, spec.project.name, spec.project.root_path, now()]]);
@@ -88,8 +96,8 @@ export function onboardProject(dbFile, spec) {
     rows(db, "INSERT OR IGNORE INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (spec.workflow_steps ?? []).map(x => [spec.project.id, x.workflow_id ?? spec.workflow.id, x.key, x.ordinal, x.role_id ?? null, x.required === false ? 0 : 1, x.irreversible ? 1 : 0, x.input_schema_key, x.output_schema_key, JSON.stringify(x.artifact_type_keys ?? []), JSON.stringify(x.check_keys ?? []), JSON.stringify(x.correction ?? {}), JSON.stringify(x.escalation ?? {})]));
     rows(db, "INSERT OR IGNORE INTO workflow_transition_templates(project_id,workflow_id,from_step_key,to_step_key,condition_json) VALUES(?,?,?,?,?)", (spec.workflow_transitions ?? []).map(x => [spec.project.id, x.workflow_id ?? spec.workflow.id, x.from, x.to, JSON.stringify(x.condition ?? {})]));
     rows(db, "INSERT OR IGNORE INTO workflow_questions(project_id,workflow_id,question_key,phase,prompt,answer_schema_json,required) VALUES(?,?,?,?,?,?,?)", (spec.workflow_questions ?? []).map(x => [spec.project.id, x.workflow_id ?? spec.workflow.id, x.key, x.phase, x.prompt, JSON.stringify(x.answer_schema ?? {}), x.required === false ? 0 : 1]));
-    rows(db, "INSERT OR IGNORE INTO operational_level_policies(project_id,package_key,level,budgets_json,required_checks_json,correction_limit,escalation_json) VALUES(?,?,?,?,?,?,?)", (spec.operational_levels ?? []).map(x => [spec.project.id, x.package_key ?? spec.workflow.package_key ?? spec.workflow.id, x.level, JSON.stringify(x.budgets ?? {}), JSON.stringify(x.required_check_keys ?? []), x.correction_limit ?? 0, JSON.stringify(x.escalation ?? {})]));
-    for (const policy of spec.operational_levels ?? []) {
+    rows(db, "INSERT OR IGNORE INTO operational_level_policies(project_id,package_key,level,budgets_json,required_checks_json,correction_limit,escalation_json,improvement_strategy) VALUES(?,?,?,?,?,?,?,?)", normalizedPolicies.map(x => [spec.project.id, x.package_key ?? spec.workflow.package_key ?? spec.workflow.id, x.level, JSON.stringify(x.budgets), JSON.stringify(x.required_check_keys ?? []), x.correction_limit, JSON.stringify(x.escalation ?? {}), x.improvement_strategy]));
+    for (const policy of normalizedPolicies) {
       const packageKey = policy.package_key ?? spec.workflow.package_key ?? spec.workflow.id;
       const budgets = { ...(policy.budgets ?? {}), correction_cycles: policy.correction_limit ?? policy.budgets?.correction_cycles ?? 0 };
       for (const [metric, limit] of Object.entries(budgets)) rows(db, "INSERT OR IGNORE INTO operational_level_budget_limits(project_id,package_key,level,metric,limit_value) VALUES(?,?,?,?,?)", [[spec.project.id, packageKey, policy.level, metric, Number(limit)]]);

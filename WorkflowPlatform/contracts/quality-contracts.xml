@@ -5,6 +5,7 @@
     <budgets>
       <budget metric="calls" limit="4"/>
       <budget metric="correction_cycles" limit="0"/>
+      <budget metric="cost_usd" limit="0.5"/>
       <budget metric="duration_ms" limit="600000"/>
     </budgets>
     <rules>
@@ -25,6 +26,7 @@
     <budgets>
       <budget metric="calls" limit="12"/>
       <budget metric="correction_cycles" limit="1"/>
+      <budget metric="cost_usd" limit="2"/>
       <budget metric="duration_ms" limit="3600000"/>
     </budgets>
     <rules>
@@ -47,6 +49,7 @@
     <budgets>
       <budget metric="calls" limit="18"/>
       <budget metric="correction_cycles" limit="1"/>
+      <budget metric="cost_usd" limit="8"/>
       <budget metric="duration_ms" limit="7200000"/>
     </budgets>
     <rules>
@@ -68,6 +71,7 @@
     <budgets>
       <budget metric="calls" limit="8"/>
       <budget metric="correction_cycles" limit="0"/>
+      <budget metric="cost_usd" limit="4"/>
       <budget metric="duration_ms" limit="3600000"/>
     </budgets>
     <rules>

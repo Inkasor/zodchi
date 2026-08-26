@@ -65,7 +65,8 @@ function configuredChecks(project, level, dbFile, artifactType = null) {
       const executionRoot = row.kind === "project_command" && typeof config.project_id === "string"
         ? db.prepare("SELECT root_path FROM projects WHERE id=?").get(config.project_id)?.root_path ?? null
         : row.kind === "command" ? project : null;
-      return { ...row, config, execution_root: executionRoot };
+      const executionProjectId = row.kind === "project_command" && typeof config.project_id === "string" ? config.project_id : projectId;
+      return { ...row, config, execution_root: executionRoot, execution_project_id: executionProjectId };
     });
   } finally { db.close(); }
 }
@@ -151,12 +152,12 @@ export async function runProjectGate(project, level = "mvp", dbFile = resolveWor
   // A check that cannot run is evidence of nothing, so coverage counts only required executable checks.
   const executableRequired = configured.filter(check => check.required && check.kind !== "disabled");
   if (!executableRequired.length && (level === "security-audit" || CHECKED_ARTIFACTS.has(options.artifactType))) {
-    checks.push({ id: "quality_contract_checks", name: "Required check coverage", required: true, status: "unavailable", exit_code: 1, duration_ms: 0, failure: `No executable required checks are configured for ${level}/${options.artifactType ?? "unknown"}.` });
+    checks.push({ id: "quality_contract_checks", name: "Required check coverage", required: true, status: "unavailable", exit_code: 1, duration_ms: 0, failure: `No executable required checks are configured for ${level}/${options.artifactType ?? "unknown"}.`, execution_project_id: null, execution_root: resolvedProject });
   }
   for (const check of configured) {
     const started = Date.now();
     const result = await executeCheck(check, resolvedProject, allowedPaths, { level, artifactType: options.artifactType ?? null });
-    checks.push({ id: check.check_id, name: check.name, required: check.required, inherited_from: check.quality_sources, status: result.status, exit_code: result.exit_code, duration_ms: Date.now() - started, ...(result.failure ? { failure: result.failure } : {}) });
+    checks.push({ id: check.check_id, name: check.name, required: check.required, inherited_from: check.quality_sources, execution_project_id: check.execution_project_id, execution_root: check.execution_root, status: result.status, exit_code: result.exit_code, duration_ms: Date.now() - started, ...(result.failure ? { failure: result.failure } : {}) });
   }
   const blocking = checks.filter(check => check.required && check.status !== "passed");
   const status = blocking.some(check => check.status === "failed") ? "failed"

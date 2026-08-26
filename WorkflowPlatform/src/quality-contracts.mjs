@@ -5,13 +5,14 @@ export const QUALITY_LEVELS = Object.freeze(["prototype", "mvp", "production", "
 const REVIEW_POLICIES = new Set(["none", "conditional", "required", "security_required"]);
 const DOCUMENTATION_POLICIES = new Set(["evidence", "verified_result", "release_record", "security_report"]);
 const RULE_TYPES = new Set(["success", "allowed_shortcut", "forbidden_shortcut", "required_evidence"]);
-const BUDGET_METRICS = new Set(["calls", "duration_ms", "correction_cycles"]);
+const BUDGET_METRICS = new Set(["calls", "duration_ms", "correction_cycles", "cost_usd"]);
 
 const rules = (level, values) => Object.entries(values).flatMap(([type, entries]) => entries.map(([key, description], index) => ({ level, type, key, description, ordinal: index + 1 })));
-const budgets = (calls, duration, corrections) => [
+const budgets = (calls, duration, corrections, costUsd) => [
   { metric: "calls", limit: calls },
   { metric: "duration_ms", limit: duration },
-  { metric: "correction_cycles", limit: corrections }
+  { metric: "correction_cycles", limit: corrections },
+  { metric: "cost_usd", limit: costUsd }
 ];
 const escalations = entries => entries.map(([event, action, threshold, description], index) => ({ event, action, threshold, description, ordinal: index + 1 }));
 
@@ -19,7 +20,7 @@ export const DEFAULT_QUALITY_CONTRACTS = Object.freeze([
   {
     level: "prototype", version: "1.0.0", name: "Prototype",
     purpose: "Test one highest-risk assumption with the smallest reversible artifact.", reviewer_policy: "none", documentation_policy: "evidence", correction_limit: 0, status: "active",
-    budgets: budgets(4, 600000, 0),
+    budgets: budgets(4, 600000, 0, 0.5),
     rules: rules("prototype", {
       success: [["assumption_answered", "The named risky assumption is answered by observable evidence."], ["artifact_inspectable", "The artifact can be inspected or run inside the declared boundary."]],
       allowed_shortcut: [["narrow_happy_path", "One primary path, fixtures, stubs and mocks are allowed when declared."]],
@@ -31,7 +32,7 @@ export const DEFAULT_QUALITY_CONTRACTS = Object.freeze([
   {
     level: "mvp", version: "1.0.0", name: "MVP",
     purpose: "Deliver one complete relevant user scenario with deterministic evidence.", reviewer_policy: "conditional", documentation_policy: "verified_result", correction_limit: 1, status: "active",
-    budgets: budgets(12, 3600000, 1),
+    budgets: budgets(12, 3600000, 1, 2),
     rules: rules("mvp", {
       success: [["complete_scenario", "One relevant end-to-end user scenario works inside the accepted scope."], ["deterministic_green", "All applicable static checks, dedicated tests and document lint are green."]],
       allowed_shortcut: [["secondary_scope", "Secondary paths, polish and scale work may remain explicit follow-up work."]],
@@ -47,7 +48,7 @@ export const DEFAULT_QUALITY_CONTRACTS = Object.freeze([
   {
     level: "production", version: "1.0.0", name: "Production",
     purpose: "Prepare and verify a real release and deployment with rollback boundaries.", reviewer_policy: "required", documentation_policy: "release_record", correction_limit: 1, status: "active",
-    budgets: budgets(18, 7200000, 1),
+    budgets: budgets(18, 7200000, 1, 8),
     rules: rules("production", {
       success: [["release_verified", "The exact release is built, deployed and verified in the authorized target."], ["rollback_ready", "Rollback, observability, compatibility and data-safety boundaries are explicit."]],
       allowed_shortcut: [["none_undeclared", "Only explicitly accepted non-blocking limitations are allowed."]],
@@ -62,7 +63,7 @@ export const DEFAULT_QUALITY_CONTRACTS = Object.freeze([
   {
     level: "security-audit", version: "1.0.0", name: "Security audit",
     purpose: "Perform a read-only scoped security assessment and report residual risk.", reviewer_policy: "security_required", documentation_policy: "security_report", correction_limit: 0, status: "active",
-    budgets: budgets(8, 3600000, 0),
+    budgets: budgets(8, 3600000, 0, 4),
     rules: rules("security-audit", {
       success: [["scoped_assessment", "Assets, trust boundaries, threat model and coverage are explicit."], ["findings_ranked", "Findings include severity, evidence, mitigation and residual risk."]],
       allowed_shortcut: [["none_silent", "Coverage limits are allowed only when reported as limits."]],
@@ -203,11 +204,21 @@ export function loadOperationalPolicy(db, projectId, workflowId, level) {
   const row = db.prepare("SELECT * FROM operational_level_policies WHERE project_id=? AND package_key=? AND level=?").get(projectId, packageKey, contract.level);
   const overrides = db.prepare("SELECT metric,limit_value FROM operational_level_budget_limits WHERE project_id=? AND package_key=? AND level=?").all(projectId, packageKey, contract.level);
   const overrideMap = new Map(overrides.map(item => [item.metric, Number(item.limit_value)]));
-  const limits = Object.fromEntries(contract.budgets.map(item => [item.metric, overrideMap.has(item.metric) ? Math.min(Number(item.limit), overrideMap.get(item.metric)) : Number(item.limit)]));
   const projectEscalations = db.prepare("SELECT event_key AS event,action_key AS action,threshold_value AS threshold,ordinal FROM operational_level_escalation_rules WHERE project_id=? AND package_key=? AND level=? ORDER BY ordinal").all(projectId, packageKey, contract.level);
   let requiredChecks = [];
   try { requiredChecks = row ? JSON.parse(row.required_checks_json) : []; } catch { throw new Error(`OPERATIONAL_POLICY_CHECKS_INVALID: ${projectId}:${contract.level}`); }
-  return Object.freeze({ contract, project_id: projectId, package_key: packageKey, limits, required_checks: requiredChecks, project_escalations: projectEscalations });
+  const strategy = row?.improvement_strategy ?? "standard";
+  if (!["standard", "gauntlet"].includes(strategy)) throw new Error(`IMPROVEMENT_STRATEGY_INVALID: ${projectId}:${contract.level}:${strategy}`);
+  // Standard is intentionally bounded by the global quality contract. Gauntlet is an
+  // explicitly selected operating strategy and may raise a project-local allowance;
+  // it still remains hard-bounded by that declared allowance and the emergency fuse.
+  const limits = Object.fromEntries(contract.budgets.map(item => {
+    const baseline = Number(item.limit), configured = overrideMap.get(item.metric);
+    return [item.metric, configured === undefined ? baseline : strategy === "gauntlet" ? configured : Math.min(baseline, configured)];
+  }));
+  const parallelRule = projectEscalations.find(item => item.event === "max_parallel_consilium_members");
+  const maxParallelConsiliumMembers = Math.max(1, Math.min(4, Number(parallelRule?.threshold) || 2));
+  return Object.freeze({ contract, project_id: projectId, package_key: packageKey, limits, required_checks: requiredChecks, project_escalations: projectEscalations, improvement_strategy: strategy, max_parallel_consilium_members: maxParallelConsiliumMembers });
 }
 
 function directBudgetRequest(runtime, runId, metric, amount, key, reason) {
@@ -230,8 +241,8 @@ export function initializeQualityRun(runtime, runId, classification, classifierR
     manager.define({ scopeType: "task", scopeId: task.id, metric, limit });
     manager.define({ scopeType: "workflow", scopeId: runId, metric, limit });
   }
-  runtime.db.prepare("UPDATE workflow_runs SET operational_level=?,quality_contract_version=?,reviewer_policy=? WHERE id=?")
-    .run(level, policy.contract.version, policy.contract.reviewer_policy, runId);
+  runtime.db.prepare("UPDATE workflow_runs SET operational_level=?,quality_contract_version=?,reviewer_policy=?,improvement_strategy=? WHERE id=?")
+    .run(level, policy.contract.version, policy.contract.reviewer_policy, policy.improvement_strategy, runId);
   if (classifierReceipt) {
     manager.consume(directBudgetRequest(runtime, runId, "calls", 1, `${runId}:classifier:call`, "control:classifier"));
     chargeDirectReceipt(runtime, runId, classifierReceipt, "classifier");
@@ -245,8 +256,11 @@ export function reserveDirectModelCall(runtime, runId, role, suffix = "call") {
 }
 
 export function chargeDirectReceipt(runtime, runId, receipt, role) {
+  const manager = new BudgetManager(runtime.db);
   const duration = receipt?.duration_ms ?? (receipt?.startedAt && receipt?.finishedAt ? Math.max(0, Date.parse(receipt.finishedAt) - Date.parse(receipt.startedAt)) : null);
-  if (Number.isFinite(Number(duration)) && Number(duration) > 0) new BudgetManager(runtime.db).consume(directBudgetRequest(runtime, runId, "duration_ms", Number(duration), `${runId}:${role}:duration`, `control:${role}:duration`));
+  const cost = receipt?.usage?.cost_usd;
+  if (Number.isFinite(Number(duration)) && Number(duration) > 0) manager.consume(directBudgetRequest(runtime, runId, "duration_ms", Number(duration), `${runId}:${role}:duration`, `control:${role}:duration`));
+  if (Number.isFinite(Number(cost)) && Number(cost) > 0) manager.settleActual(directBudgetRequest(runtime, runId, "cost_usd", Number(cost), `${runId}:${role}:cost_usd`, `control:${role}:cost_usd`));
 }
 
 export function consumeCorrectionCycle(runtime, runId, cycle) {
@@ -301,6 +315,7 @@ export function operationalPoliciesLint(db, projectId = null) {
     for (const level of QUALITY_LEVELS) {
       const policy = db.prepare("SELECT * FROM operational_level_policies WHERE project_id=? AND package_key=? AND level=?").get(item.project_id, item.package_key, level);
       if (!policy) { errors.push(`missing policy: ${item.project_id}:${item.package_key}:${level}`); continue; }
+      if (!["standard", "gauntlet"].includes(policy.improvement_strategy)) errors.push(`invalid improvement strategy: ${item.project_id}:${item.package_key}:${level}`);
       const contract = loadQualityContract(db, level);
       const limits = db.prepare("SELECT metric,limit_value FROM operational_level_budget_limits WHERE project_id=? AND package_key=? AND level=?").all(item.project_id, item.package_key, level);
       const map = new Map(limits.map(value => [value.metric, Number(value.limit_value)]));

@@ -71,7 +71,7 @@ function buildPackage(db, projectId, workflowFilter) {
   const operationalLevels = db.prepare("SELECT * FROM operational_level_policies WHERE project_id=? AND package_key=? ORDER BY level").all(projectId, packageKey).map(row => {
     const normalized = db.prepare("SELECT metric,limit_value FROM operational_level_budget_limits WHERE project_id=? AND package_key=? AND level=? ORDER BY metric").all(projectId, packageKey, row.level);
     const budgets = normalized.length ? Object.fromEntries(normalized.map(item => [item.metric, item.limit_value])) : parseJson(row.budgets_json, {});
-    return { level: row.level, budgets, required_check_keys: parseJson(row.required_checks_json, []), correction_limit: row.correction_limit, escalation: parseJson(row.escalation_json, {}) };
+    return { level: row.level, improvement_strategy: row.improvement_strategy ?? "standard", budgets, required_check_keys: parseJson(row.required_checks_json, []), correction_limit: row.correction_limit, escalation: parseJson(row.escalation_json, {}) };
   });
   const prompts = db.prepare("SELECT * FROM prompt_templates WHERE project_id=? AND package_key=? AND status='active' ORDER BY template_key").all(projectId, packageKey).map(row => ({ key: row.template_key, version: row.version, role_key: row.role_id, result_schema_key: row.result_schema_key, template: row.template_text, content_hash: row.content_hash }));
   const scenarios = db.prepare("SELECT * FROM package_test_scenarios WHERE project_id=? AND package_key=? AND package_version=? ORDER BY scenario_key").all(projectId, packageKey, version).map(row => ({ key: row.scenario_key, input: parseJson(row.input_json, {}), expected: parseJson(row.expected_json, {}), anonymized: Boolean(row.anonymized) }));
@@ -110,12 +110,17 @@ export function validateWorkflowPackage(value) {
   if (policies.length !== QUALITY_LEVELS.length || QUALITY_LEVELS.some(level => !policies.some(policy => policy.level === level))) throw new Error("operational_levels: all four quality contracts are required");
   const softwarePackage = value.roles.some(role => role.contract.allowed_artifact_types.some(type => ["code", "prototype", "release_package"].includes(type)));
   for (const policy of policies) {
-    exactObject(policy, ["level", "budgets", "required_check_keys", "correction_limit", "escalation"], "operational_level");
+    exactObject(policy, ["level", "improvement_strategy", "budgets", "required_check_keys", "correction_limit", "escalation"], "operational_level");
+    if (!["standard", "gauntlet"].includes(policy.improvement_strategy)) throw new Error(`operational_level.${policy.level}: invalid improvement strategy`);
     const qualityContract = DEFAULT_QUALITY_CONTRACTS.find(item => item.level === policy.level);
-    if (!qualityContract || policy.correction_limit !== qualityContract.correction_limit) throw new Error(`operational_level.${policy.level}: invalid correction contract`);
+    if (!qualityContract || !Number.isInteger(policy.correction_limit) || policy.correction_limit < 0 || policy.correction_limit !== Number(policy.budgets.correction_cycles)) throw new Error(`operational_level.${policy.level}: invalid correction contract`);
     const budgetKeys = Object.keys(policy.budgets).sort();
-    if (stableJson(budgetKeys) !== stableJson(["calls", "correction_cycles", "duration_ms"])) throw new Error(`operational_level.${policy.level}: budgets must be normalized`);
-    for (const budget of qualityContract.budgets) if (Number(policy.budgets[budget.metric]) !== Number(budget.limit)) throw new Error(`operational_level.${policy.level}: budget differs from universal contract`);
+    if (stableJson(budgetKeys) !== stableJson(["calls", "correction_cycles", "cost_usd", "duration_ms"])) throw new Error(`operational_level.${policy.level}: budgets must be normalized`);
+    for (const budget of qualityContract.budgets) {
+      const configured = Number(policy.budgets[budget.metric]);
+      if (!Number.isFinite(configured) || configured < 0) throw new Error(`operational_level.${policy.level}: invalid budget`);
+      if (policy.improvement_strategy === "standard" && configured !== Number(budget.limit)) throw new Error(`operational_level.${policy.level}: standard budget differs from universal contract`);
+    }
     const inheritedQualities = new Set(qualityModesThrough(policy.level));
     for (const checkKey of policy.required_check_keys) {
       if (!checkKeys.has(checkKey)) throw new Error(`operational_level.${policy.level}: missing check`);
@@ -233,7 +238,7 @@ function applyBindingsAndPolicies(db, proposal, projectId, value, workflowMap) {
   db.prepare("DELETE FROM operational_level_budget_limits WHERE project_id=? AND package_key=?").run(projectId, value.key);
   db.prepare("DELETE FROM operational_level_escalation_rules WHERE project_id=? AND package_key=?").run(projectId, value.key);
   for (const policy of value.operational_levels) {
-    db.prepare("INSERT INTO operational_level_policies(project_id,package_key,level,budgets_json,required_checks_json,correction_limit,escalation_json) VALUES(?,?,?,?,?,?,?)").run(projectId, value.key, policy.level, stableJson(policy.budgets), stableJson(policy.required_check_keys), policy.correction_limit, stableJson(policy.escalation));
+    db.prepare("INSERT INTO operational_level_policies(project_id,package_key,level,budgets_json,required_checks_json,correction_limit,escalation_json,improvement_strategy) VALUES(?,?,?,?,?,?,?,?)").run(projectId, value.key, policy.level, stableJson(policy.budgets), stableJson(policy.required_check_keys), policy.correction_limit, stableJson(policy.escalation), policy.improvement_strategy);
     const budgetValues = { ...policy.budgets, correction_cycles: policy.correction_limit };
     for (const [metric, limit] of Object.entries(budgetValues)) db.prepare("INSERT INTO operational_level_budget_limits(project_id,package_key,level,metric,limit_value) VALUES(?,?,?,?,?)").run(projectId, value.key, policy.level, metric, Number(limit));
     let ordinal = 0;

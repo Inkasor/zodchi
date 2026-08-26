@@ -38,10 +38,10 @@ function seedSource(root) {
     ], workflow_transitions: [{ from: "plan", to: "implement", condition: { outcome: "planned" } }, { from: "implement", to: "review", condition: { gates: "passed" } }, { from: "review", to: "document", condition: { decision: "PASS" } }],
     workflow_questions: [{ key: "scope", phase: "planning", prompt: "Какие границы пакета?", answer_schema: { type: "string" }, required: true }],
     operational_levels: [
-      { level: "prototype", budgets: { calls: 4, duration_ms: 600000, correction_cycles: 0 }, required_check_keys: ["check.green"], correction_limit: 0, escalation: {} },
-      { level: "mvp", budgets: { calls: 12, duration_ms: 3600000, correction_cycles: 1 }, required_check_keys: ["check.green"], correction_limit: 1, escalation: { reviewer: true } },
-      { level: "production", budgets: { calls: 18, duration_ms: 7200000, correction_cycles: 1 }, required_check_keys: ["check.green"], correction_limit: 1, escalation: { reviewer: true } },
-      { level: "security-audit", budgets: { calls: 8, duration_ms: 3600000, correction_cycles: 0 }, required_check_keys: ["check.green"], correction_limit: 0, escalation: { reviewer: true } }
+      { level: "prototype", improvement_strategy: "standard", budgets: { calls: 4, duration_ms: 600000, correction_cycles: 0, cost_usd: 0.5 }, required_check_keys: ["check.green"], correction_limit: 0, escalation: {} },
+      { level: "mvp", improvement_strategy: "standard", budgets: { calls: 12, duration_ms: 3600000, correction_cycles: 1, cost_usd: 2 }, required_check_keys: ["check.green"], correction_limit: 1, escalation: { reviewer: true } },
+      { level: "production", improvement_strategy: "standard", budgets: { calls: 18, duration_ms: 7200000, correction_cycles: 1, cost_usd: 8 }, required_check_keys: ["check.green"], correction_limit: 1, escalation: { reviewer: true } },
+      { level: "security-audit", improvement_strategy: "standard", budgets: { calls: 8, duration_ms: 3600000, correction_cycles: 0, cost_usd: 4 }, required_check_keys: ["check.green"], correction_limit: 0, escalation: { reviewer: true } }
     ],
     prompt_templates: [{ id: "prompt.worker", key: "worker.default", version: "1.0.0", role_id: "worker", result_schema_key: "worker.v1", template, content_hash: promptHash(template) }],
     test_scenarios: [{ id: "scenario.basic", key: "basic", package_version: "1.0.0", input: { work_type: "implementation", artifact_type: "code" }, expected: { final_state: "completed", gates: "passed" }, anonymized: true }],
