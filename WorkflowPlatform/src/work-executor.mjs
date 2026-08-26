@@ -488,12 +488,16 @@ async function executeIndependentReview({ runtime, queue, runId, projectId, revi
     ? [reviewerRole, "adversarial_reviewer"].filter((role, index, values) => available.has(role) && values.indexOf(role) === index).slice(0, policy.max_parallel_consilium_members)
     : [reviewerRole];
   const selectedRoles = roles.length ? roles : [reviewerRole];
-  const reviewEvidence = buildReviewEvidence(runtime.db, runId, { plan, gate, workerResults, allowedPaths: plan.allowed_paths });
+  const reviewerContracts = selectedRoles.map(roleId => loadRoleContract(runtime.db, projectId, roleId, level));
+  // Evidence is bounded by the actual selected role contracts, not by a historical global constant.
+  // Thirty percent remains for the XML contract, task package framing, schema and escaping overhead; the
+  // final invokeRole measurement remains authoritative for every individual reviewer.
+  const reviewEvidenceLimit = Math.floor(Math.min(...reviewerContracts.map(contract => contract.context_limit_bytes)) * 7 / 10);
+  const reviewEvidence = buildReviewEvidence(runtime.db, runId, { plan, gate, workerResults, allowedPaths: plan.allowed_paths, reviewEvidenceLimit });
   appendReviewerSteps(runtime, runId, selectedRoles, reviewReason, correctionCycles);
   queue.enqueueRun(runId);
   runtime.setState(runId, "review_required", { reason: reviewReason });
   const invocations = selectedRoles.map(async roleId => {
-    const reviewerContract = loadRoleContract(runtime.db, projectId, roleId, level);
     const reviewerPackage = reviewerTaskPackage(reviewEvidence, reviewReason, correctionCycles);
     const reviewer = await invokeRole({ runtime, queue, runId, roleId, level, taskRoot, packageContract: reviewerPackage, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "reviewer.v1", parseOptions: {}, gatewayCall });
     reviewer.complete({ decision: reviewer.result.decision, base_evidence_hash: reviewEvidence.base_evidence_hash });

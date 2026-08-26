@@ -323,7 +323,7 @@ function compactReviewEvidence(evidence, limit = 72_000) {
   return copy;
 }
 
-export function buildReviewEvidence(db, runId, { plan, gate, workerResults, allowedPaths = [] } = {}) {
+export function buildReviewEvidence(db, runId, { plan, gate, workerResults, allowedPaths = [], reviewEvidenceLimit = 72_000 } = {}) {
   const run = db.prepare("SELECT task_id FROM workflow_runs WHERE id=?").get(runId);
   if (!run) throw new Error(`RUN_NOT_FOUND: ${runId}`);
   const changes = runChangeEvidence(db, runId, allowedPaths);
@@ -343,7 +343,7 @@ export function buildReviewEvidence(db, runId, { plan, gate, workerResults, allo
     source_evidence: sourceEvidence,
     artifacts: db.prepare("SELECT kind,uri,content_hash,status,provenance_json FROM artifacts WHERE run_id=? ORDER BY created_at").all(runId)
   };
-  const compact = compactReviewEvidence(evidence);
+  const compact = compactReviewEvidence(evidence, reviewEvidenceLimit);
   compact.base_evidence_hash = digest(JSON.stringify(compact));
   recordRunEvidence(db, runId, null, "review_base", compact);
   return compact;
