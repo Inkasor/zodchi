@@ -59,6 +59,7 @@ const required = [
   "WorkflowPlatform/src/paths.mjs",
   "WorkflowPlatform/src/project-roots.mjs",
   "WorkflowPlatform/src/source-context.mjs",
+  "WorkflowPlatform/src/code-intelligence.mjs",
   "WorkflowPlatform/src/language.mjs",
   "WorkflowPlatform/migrations/001_normalized_runtime.sql",
   "WorkflowPlatform/migrations/003_reliable_execution.sql",

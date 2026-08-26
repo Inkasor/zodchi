@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,6 +10,7 @@ import { readProjectContext, compactProjectSnapshot } from "../src/document-cont
 import { applyRegisteredPatch } from "../src/documentator.mjs";
 import { projectRoots, writableRoots } from "../src/project-roots.mjs";
 import { collectGitHistory, collectSourceFiles, expandTerms, searchSources, searchTerms, sourceInventory, sourceScope } from "../src/source-context.mjs";
+import { buildCodeIntelligence, mergeGraphMatches } from "../src/code-intelligence.mjs";
 
 function temporaryRoot(prefix) {
   const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir();
@@ -344,6 +346,47 @@ test("a request written in prose finds the code through the project's own wordin
   // Both the label that carried the word and the code that uses the name come back; a file that has
   // neither does not.
   assert.deepEqual(found.files.map(file => file.path).sort(), ["src/labels.mjs", "src/report.mjs"]);
+
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("BSL intelligence expands lexical evidence through procedures and metadata", () => {
+  const { root, producer, db } = fixture("workflow-bsl-graph-", { sources: ["src/**"] });
+  fs.writeFileSync(path.join(producer, "src", "labels.bsl"), `Процедура СформироватьОтчет()\n  Себестоимость = ПолучитьСебестоимость();\nКонецПроцедуры\n`);
+  fs.writeFileSync(path.join(producer, "src", "cost.bsl"), `Функция ПолучитьСебестоимость()\n  Возврат РегистрыСведений.мпКалькуляцияЮнитЭкономики.СрезПоследних();\nКонецФункции\n`);
+  const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" }), scope = sourceScope(discovery.source_scope);
+  const lexical = searchSources(discovery.roots, scope, ["СформироватьОтчет"]);
+  const graph = buildCodeIntelligence(discovery.roots, scope, ["СформироватьОтчет"], lexical);
+
+  assert.equal(graph.adapters.some(adapter => adapter.name === "bsl-structural" && adapter.definitions === 2), true);
+  assert.equal(graph.edges.some(edge => edge.type === "calls"), true);
+  assert.equal(graph.ranked_files.some(file => file.path === "src/cost.bsl"), true);
+  assert.equal(graph.completeness.file_scan_truncated, false);
+
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("TypeScript compiler intelligence resolves JavaScript calls across files", t => {
+  const { root, producer, db } = fixture("workflow-ts-graph-", { sources: ["src/**"] });
+  fs.writeFileSync(path.join(producer, "package.json"), JSON.stringify({ type: "module", dependencies: { typescript: "*" } }));
+  let localTypeScript;
+  try { localTypeScript = path.dirname(createRequire(import.meta.url).resolve("typescript/package.json")); }
+  catch { db.close(); fs.rmSync(root, { recursive: true, force: true }); t.skip("TypeScript is supplied by the analyzed project, not bundled with Zodchi"); return; }
+  fs.mkdirSync(path.join(producer, "node_modules"), { recursive: true });
+  fs.symlinkSync(localTypeScript, path.join(producer, "node_modules", "typescript"), "junction");
+  fs.writeFileSync(path.join(producer, "src", "cost.mjs"), `export function calculateAverageCost(unit) { return unit.cost; }\n`);
+  fs.writeFileSync(path.join(producer, "src", "report.mjs"), `import { calculateAverageCost } from "./cost.mjs";\nexport function buildReport(unit) { return calculateAverageCost(unit); }\n`);
+  const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" }), scope = sourceScope(discovery.source_scope);
+  const lexical = searchSources(discovery.roots, scope, ["buildReport"]);
+  const graph = buildCodeIntelligence(discovery.roots, scope, ["buildReport"], lexical);
+
+  assert.equal(graph.adapters.some(adapter => adapter.name === "typescript-compiler" && adapter.compiler_available), true);
+  assert.equal(graph.edges.some(edge => edge.type === "calls"), true);
+  assert.equal(graph.ranked_files.some(file => file.path === "src/cost.mjs"), true);
+  const merged = mergeGraphMatches(lexical, graph);
+  assert.equal(merged.files.some(file => file.path === "src/cost.mjs"), true);
 
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
