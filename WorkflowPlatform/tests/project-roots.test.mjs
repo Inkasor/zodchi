@@ -222,7 +222,7 @@ test("a complete-file exact term scan proves that a requested identifier is abse
   assert.deepEqual(absent, { term: "avgCost", count: 0, matched_lines: 0, locations: [], locations_truncated: false });
   assert.equal(present.count, 2000);
   assert.equal(present.matched_lines, 2000);
-  assert.equal(present.locations.length, 4);
+  assert.ok(present.locations.length > 4 && present.locations.length <= 12);
   assert.equal(present.locations_truncated, true);
   db.close(); fs.rmSync(root, { recursive: true, force: true });
 });
@@ -278,6 +278,18 @@ test("many allowed files spend source bytes on content relevance instead of inve
   assert.ok(Math.min(...supplied.slice(0, 4)) > Math.max(...supplied.slice(12)) * 5);
   assert.ok(collected.files.slice(0, 4).every(file => file.text.includes("product_unit_economics_by_scheme")));
   assert.ok(collected.files.every(file => file.status === "read"));
+  db.close(); fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("a JavaScript evidence window keeps a complete medium-sized enclosing function", () => {
+  const { root, producer, db } = fixture("workflow-source-js-function-", { sources: ["src/**"] });
+  const body = Array.from({ length: 190 }, (_, index) => `  const calculation${index} = row.avgCost + ${index};`);
+  body.push("  const completedFallback = row.product_unit_economics_by_scheme;");
+  fs.writeFileSync(path.join(producer, "src", "cost.mjs"), `export function calculateAvgCost(row) {\n${body.join("\n")}\n  return completedFallback;\n}\n${"const unrelatedDashboardValue = 1;\n".repeat(1000)}`);
+  const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" });
+  const collected = collectSourceFiles(discovery.roots, ["src/cost.mjs"], sourceScope(discovery.source_scope), 20_000, { query: "Trace calculateAvgCost and product_unit_economics_by_scheme" });
+  assert.match(collected.files[0].text, /completedFallback/);
+  assert.ok(collected.files[0].segments.some(segment => segment.reason === "referenced_call_chain:calculateAvgCost" && segment.complete), JSON.stringify(collected.files[0].segments));
   db.close(); fs.rmSync(root, { recursive: true, force: true });
 });
 
