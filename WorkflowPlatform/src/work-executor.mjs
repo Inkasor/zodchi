@@ -166,6 +166,27 @@ function utf8Prefix(value, maxBytes) {
   return text.slice(0, low);
 }
 
+function compactPriorWorkerResults(results, maxBytes = 16_000) {
+  const items = [];
+  for (const result of results ?? []) {
+    const item = {
+      plan_step: result.plan_step ?? null,
+      status: result.status,
+      summary: utf8Prefix(result.summary, 2000),
+      evidence: [],
+      artifacts: result.artifacts ?? []
+    };
+    for (const evidence of result.evidence ?? []) {
+      const candidate = { ...item, evidence: [...item.evidence, utf8Prefix(evidence, 2000)] };
+      if (Buffer.byteLength(JSON.stringify({ items: [...items, candidate] })) > maxBytes) break;
+      item.evidence = candidate.evidence;
+    }
+    if (Buffer.byteLength(JSON.stringify({ items: [...items, item] })) > maxBytes) break;
+    items.push(item);
+  }
+  return { items, retained_results: items.length, total_results: results?.length ?? 0, truncated: items.length < (results?.length ?? 0) };
+}
+
 function fitWorkerSources(context, limit, measure) {
   const files = context.sources?.files;
   if (!Array.isArray(files)) return context;
@@ -564,7 +585,14 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     // ranges in the original request and its evidence inputs. Source selection needs that complete
     // search intent even though the worker's authority remains the narrower package contract.
     const supplementalSourceQuery = [message, ...(plan.inputs ?? [])].filter(Boolean).join("\n");
-    const taskEvidence = { plan_inputs: plan.inputs ?? [], git_history: collectGitHistory(discovery.roots ?? [], plannedStep.allowed_paths, sourceScope(discovery.source_scope), { enabled: discovery.git?.enabled === true }) };
+    // Sequential analysis steps build one evidence chain. A later synthesis/handoff step must receive
+    // completed worker findings even when its own allowed_paths contains only a not-yet-created output
+    // document; rereading files is neither necessary nor a substitute for the earlier conclusions.
+    const taskEvidence = {
+      plan_inputs: plan.inputs ?? [],
+      prior_worker_results: compactPriorWorkerResults([...workerResults, ...cycleResults]),
+      git_history: collectGitHistory(discovery.roots ?? [], plannedStep.allowed_paths, sourceScope(discovery.source_scope), { enabled: discovery.git?.enabled === true })
+    };
     const qualityContract = loadQualityContract(runtime.db, level);
     const makeContext = (sourceBudget, contextBudget) => boundedContext(discovery, plannedStep.role, classification, contextBudget, responseLanguage, {
       task_evidence: taskEvidence,

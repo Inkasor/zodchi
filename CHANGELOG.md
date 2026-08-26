@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_4_4_2026_08_26" status="working">
+
+## 0.4.4 — 2026-08-26
+
+- Sequential worker steps now receive a bounded structured handoff of completed prior worker summaries, evidence, and artifacts.
+- Synthesis and documentation-handoff steps no longer lose the evidence chain when their own allowed path is only a not-yet-created output document.
+- Prior-result handoffs report retained and total result counts plus explicit truncation under the role prompt budget.
+
+</section>
+
 <section id="0_4_3_2026_08_26" status="working">
 
 ## 0.4.3 — 2026-08-26
