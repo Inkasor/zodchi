@@ -71,13 +71,62 @@ export class BudgetManager {
     throw error;
   }
 
+  // Actual provider cost is known only after a receipt exists. Settlement therefore records the full
+  // amount even when it crosses the nominal limit; the exhausted status prevents the next admission.
+  // Parallel callers may all have been admitted before any settlement, so lifecycle blocking belongs to
+  // the phase supervisor after every in-flight receipt has been preserved, not inside this transaction.
+  settleActual({ scopes, metric = "cost_usd", amount, idempotencyKey, taskId = null, runId = null, reason = null, at = now() }) {
+    if (metric !== "cost_usd") throw new Error(`BUDGET_POST_FACTUM_METRIC_INVALID: ${metric}`);
+    if (!Array.isArray(scopes) || !scopes.length) throw new Error("BUDGET_SCOPES_REQUIRED");
+    if (!Number.isFinite(Number(amount)) || Number(amount) < 0) throw new Error(`BUDGET_AMOUNT_INVALID: ${amount}`);
+    if (!idempotencyKey) throw new Error("BUDGET_IDEMPOTENCY_KEY_REQUIRED");
+    const uniqueScopes = [...new Map(scopes.map(scope => [`${scope.type}:${scope.id}`, scope])).values()];
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const budgets = uniqueScopes.map(scope => this.db.prepare("SELECT * FROM budgets WHERE scope_type=? AND scope_id=? AND metric=?").get(scope.type, scope.id, metric)).filter(Boolean);
+      const existing = budgets.filter(budget => this.db.prepare("SELECT 1 FROM budget_entries WHERE budget_id=? AND idempotency_key=?").get(budget.id, String(idempotencyKey)));
+      if (existing.length) { this.db.exec("COMMIT"); return { applied: false, idempotent: true, exhausted: existing.some(item => item.status === "exhausted") }; }
+      let exhausted = false, maximumOvershoot = 0;
+      for (const budget of budgets) {
+        const used = budget.used_value + Number(amount), overshoot = Math.max(0, used - budget.limit_value);
+        exhausted ||= used >= budget.limit_value; maximumOvershoot = Math.max(maximumOvershoot, overshoot);
+        this.db.prepare("UPDATE budgets SET used_value=?,status=?,updated_at=? WHERE id=?").run(used, used >= budget.limit_value ? "exhausted" : "active", at, budget.id);
+        this.db.prepare("INSERT INTO budget_entries(id,budget_id,task_id,run_id,amount,idempotency_key,reason,created_at) VALUES(?,?,?,?,?,?,?,?)")
+          .run(id("budget_entry"), budget.id, taskId, runId, Number(amount), String(idempotencyKey), reason, at);
+      }
+      if (runId && exhausted) appendEvent(this.db, { entityType: "workflow_run", entityId: runId, kind: "budget_post_factum_exhausted", payload: { metric, amount: Number(amount), overshoot: maximumOvershoot, semantics: "no subsequent model call may start" } });
+      this.db.exec("COMMIT");
+      return { applied: true, idempotent: false, exhausted, overshoot: maximumOvershoot };
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   remaining(scopeType, scopeId, metric) {
     const budget = this.db.prepare("SELECT * FROM budgets WHERE scope_type=? AND scope_id=? AND metric=?").get(scopeType, scopeId, metric);
     return budget ? Math.max(0, budget.limit_value - budget.used_value) : null;
   }
+
+  assertModelAdmission({ scopes, taskId = null, runId = null, at = now() }) {
+    const blockers = [...new Map(scopes.map(scope => [`${scope.type}:${scope.id}`, scope])).values()]
+      .map(scope => this.db.prepare("SELECT * FROM budgets WHERE scope_type=? AND scope_id=? AND metric='cost_usd'").get(scope.type, scope.id))
+      .filter(budget => budget && (budget.status !== "active" || budget.used_value >= budget.limit_value))
+      .map(budget => ({ budgetId: budget.id, scopeType: budget.scope_type, scopeId: budget.scope_id, used: budget.used_value, limit: budget.limit_value }));
+    if (!blockers.length) return { admitted: true };
+    const payload = { metric: "cost_usd", semantics: "post_factum_stop", blockers };
+    if (runId) appendEvent(this.db, { entityType: "workflow_run", entityId: runId, kind: "budget_admission_denied", payload });
+    if (taskId) appendEvent(this.db, { entityType: "task", entityId: taskId, kind: "budget_admission_denied", payload });
+    if (runId) {
+      const run = this.db.prepare("SELECT state FROM workflow_runs WHERE id=?").get(runId);
+      if (run && canTransition("workflow_run", run.state, "blocked")) transitionRunAndTask(this.db, runId, "blocked", { reason: "post-factum cost budget exhausted" });
+    }
+    const error = new Error(`BUDGET_EXHAUSTED: ${JSON.stringify(blockers)}`); error.blockers = blockers; throw error;
+  }
 }
 
 export async function invokeWithinBudget(manager, budgetRequest, invocation) {
+  manager.assertModelAdmission(budgetRequest);
   manager.consume(budgetRequest);
   return invocation();
 }

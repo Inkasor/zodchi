@@ -1,7 +1,7 @@
 import { ATTEMPT_STATES, RUN_STATES, STEP_STATES, TASK_STATES, ALLOWED_TRANSITIONS } from "../src/state-machine.mjs";
 import { structuredHash } from "../src/role-contracts.mjs";
 
-const PACKAGE_VERSION = "2.5.0";
+const PACKAGE_VERSION = "3.0.0";
 
 const workTypeCatalog = {
   conversation: ["Conversation", "dialogue"], continuation: ["Continuation", "dialogue"], clarification: ["Clarification", "dialogue"], task: ["Task", "work"], decision: ["Decision", "work"], research: ["Research", "work"], implementation: ["Implementation", "work"], documentation: ["Documentation", "work"], review: ["Review", "verification"], verification: ["Verification", "verification"], testing: ["Testing", "verification"], planning: ["Planning", "work"], fix: ["Fix", "work"], content: ["Content", "material"], marketing: ["Marketing", "material"], release: ["Release", "work"], deployment: ["Deployment", "work"], data_change: ["Data change", "work"], data_collection: ["Data collection", "work"], incident: ["Incident", "work"], access_management: ["Access management", "work"], project_bootstrap: ["Project bootstrap", "work"], security_review: ["Security review", "verification"], game_design: ["Game design", "game"], narrative: ["Narrative", "game"], map_design: ["Map design", "game"], technical_art: ["Technical art", "material"], art_direction: ["Art direction", "material"], audio: ["Audio", "material"], asset: ["Asset", "material"], prototype: ["Prototype", "work"], producer: ["Producer", "work"]
@@ -51,21 +51,23 @@ const completeSoftwareChecks = (checks, staticKey, packageKey) => checks.map(che
 }).concat(securityChecks(packageKey));
 
 const QUALITY_LIMITS = Object.freeze({
-  prototype: { calls: 4, duration_ms: 600000, correction_cycles: 0 },
-  mvp: { calls: 12, duration_ms: 3600000, correction_cycles: 1 },
-  production: { calls: 18, duration_ms: 7200000, correction_cycles: 1 },
-  "security-audit": { calls: 8, duration_ms: 3600000, correction_cycles: 0 }
+  prototype: { calls: 4, duration_ms: 600000, correction_cycles: 0, cost_usd: 0.5 },
+  mvp: { calls: 12, duration_ms: 3600000, correction_cycles: 1, cost_usd: 2 },
+  production: { calls: 18, duration_ms: 7200000, correction_cycles: 1, cost_usd: 8 },
+  "security-audit": { calls: 8, duration_ms: 3600000, correction_cycles: 0, cost_usd: 4 }
 });
 function normalizeOperationalLevels(levels = [], checks = []) {
   const byLevel = new Map(levels.map(item => [item.level, item]));
   const order = ["prototype", "mvp", "production", "security"];
   return Object.entries(QUALITY_LIMITS).map(([level, budgets]) => {
     const existing = byLevel.get(level) ?? {};
+    const improvementStrategy = existing.improvement_strategy ?? "standard";
     const quality = level === "security-audit" ? "security" : level;
     const inherited = new Set(order.slice(0, order.indexOf(quality) + 1));
     const applicable = new Set(checks.filter(item => item.bindings.some(binding => inherited.has(binding.quality_mode_key) && binding.required)).map(item => item.key));
     const requested = existing.required_check_keys?.filter(key => applicable.has(key)) ?? [];
-    return { level, budgets: { ...budgets }, required_check_keys: requested.length ? requested : [...applicable], correction_limit: budgets.correction_cycles, escalation: existing.escalation ?? {} };
+    const effectiveBudgets = improvementStrategy === "gauntlet" ? { ...budgets, ...(existing.budgets ?? {}) } : { ...budgets };
+    return { level, improvement_strategy: improvementStrategy, budgets: effectiveBudgets, required_check_keys: requested.length ? requested : [...applicable], correction_limit: effectiveBudgets.correction_cycles, escalation: existing.escalation ?? {} };
   });
 }
 function step(key, ordinal, roleKey, artifacts = [], checks = [], options = {}) { return { key, ordinal, role_key: roleKey, required: options.required !== false, irreversible: Boolean(options.irreversible), input_schema_key: options.input ?? "package.v1", output_schema_key: options.output ?? (roleKey?.includes("reviewer") || roleKey === "reviewer" ? "reviewer.v1" : roleKey?.includes("documentator") || roleKey === "documentator" ? "documentator.v1" : roleKey?.includes("planner") || roleKey === "planner" ? "planner.v1" : roleKey ? "worker.v1" : "approval.v1"), artifact_type_keys: artifacts, check_keys: checks, correction: options.correction ?? { max_cycles: roleKey && !roleKey.includes("reviewer") ? 1 : 0 }, escalation: options.escalation ?? { human_required_for_owner_decision: true } }; }
@@ -100,6 +102,9 @@ function companyWebPackage(spec) {
     role("data_engineer", "Implement a reversible data contract or migration against fixtures or an isolated copy, never live data.", ["data_change", "implementation", "fix"], ["code", "data_migration"], { tools: ["apply_patch"], checks: dataChecks, boundaries: { live_data_writes: false, backup_required_before_apply: true } }),
     role("tester", "Run registered deterministic checks and keep source, CI, runtime and user evidence separate.", ["testing", "verification", ...(spec.collection ? ["data_collection"] : [])], ["test_report", "deployment_evidence", ...(spec.collection ? ["collection_evidence"] : [])], { checks: [...new Set([...codeChecks, ...dataChecks, ...releaseChecks, ...contentChecks])] }),
     role("reviewer", "Return PASS, CHANGES_REQUESTED or REJECT after required deterministic checks; never replace owner approval.", ["review", "verification", "security_review"], ["test_report", "code", "document", "security_report"], { checks: [...new Set([...codeChecks, ...dataChecks, ...releaseChecks, ...contentChecks])], boundaries: { owner_decisions: false, production_deploy: false } }),
+    role("adversarial_reviewer", "Independently challenge the same immutable evidence and identify the strongest unsupported claim without seeing another review opinion.", ["review", "verification", "security_review"], ["test_report", "code", "document", "security_report"], { checks: [...new Set([...codeChecks, ...dataChecks, ...releaseChecks, ...contentChecks])], boundaries: { edits: false, opinions_from_other_reviewers: false, owner_decisions: false } }),
+    role("strategy_reviewer", "Independently assess whether the current evidence-backed strategy targets the primary remaining gap without replaying completed work.", ["review", "verification", "planning"], ["test_report", "code", "document", "decision"], { boundaries: { edits: false, opinions_from_other_reviewers: false, owner_decisions: false } }),
+    role("judge", "Resolve only judgment conflicts between independent opinions after factual disagreements have been sent to deterministic verification.", ["review", "verification"], ["decision", "test_report", "document"], { schema: "worker.v1", boundaries: { edits: false, majority_vote: false, owner_decisions: false } }),
     role("documentator", "Update only registered working documents from accepted structured decisions and pass semantic lint.", ["documentation", "decision"], ["document", "decision"], { tools: ["apply_patch"] }),
     role("release_operator", "Prepare or execute only an explicitly approved exact release and verify the deployed revision without changing shared data by hand.", ["release", "deployment"], ["release_package", "deployment_evidence"], { tools: ["exec_command"], checks: releaseChecks, boundaries: { explicit_approval_required: true, direct_release_edit: false, live_data_edit: false } }),
     role("incident_responder", "Diagnose production read-only, preserve evidence and separate a local repair from any later deployment.", ["incident", "research", "fix"], ["incident_report", "document"], { boundaries: { production_writes: false, deploy: false } }),

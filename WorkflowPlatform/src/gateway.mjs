@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { resolveWorkflowSettings } from "./paths.mjs";
 
 export function callGateway({ gateway, gatewayDatabase, gatewayPolicy, provider = "codex", profile, level = "mvp", role = "worker", taskFile, outputSchemaFile = null, project, writeDirs = [], taskId, workflowRunId = null, attemptNo = null, artifactRef = null, decisionRef = null }) {
@@ -7,7 +7,8 @@ export function callGateway({ gateway, gatewayDatabase, gatewayPolicy, provider 
   gatewayDatabase ??= settings.gatewayDatabasePath;
   gatewayPolicy ??= settings.gatewayPolicyPath;
   if (!profile) throw new Error("Gateway profile is required; assign it during onboarding");
-  return new Promise((resolve, reject) => {
+  let child = null, cancellationRequested = false;
+  const promise = new Promise((resolve, reject) => {
     const args = [gateway, "run", "--provider", provider, "--profile", profile, "--level", level, "--role", role, "--task-file", taskFile, "--task", taskId ?? taskFile];
     if (outputSchemaFile) args.push("--output-schema", outputSchemaFile);
     if (project) args.push("--project", project);
@@ -21,7 +22,7 @@ export function callGateway({ gateway, gatewayDatabase, gatewayPolicy, provider 
     if (attemptNo) args.push("--attempt", String(attemptNo));
     if (artifactRef) args.push("--artifact-ref", artifactRef);
     if (decisionRef) args.push("--decision-ref", decisionRef);
-    const child = spawn(process.execPath, args, { windowsHide: true, env: { ...process.env, AGENT_GATEWAY_POLICY: gatewayPolicy, AGENT_GATEWAY_DB: gatewayDatabase } });
+    child = spawn(process.execPath, args, { windowsHide: true, detached: process.platform !== "win32", env: { ...process.env, AGENT_GATEWAY_POLICY: gatewayPolicy, AGENT_GATEWAY_DB: gatewayDatabase } });
     let out = "", err = "", settled = false, pendingReceipt = null;
     const captureReceipt = () => {
       if (settled || pendingReceipt) return;
@@ -38,7 +39,22 @@ export function callGateway({ gateway, gatewayDatabase, gatewayPolicy, provider 
       if (settled) return;
       captureReceipt(); settled = true;
       if (pendingReceipt) resolve(pendingReceipt);
+      else if (cancellationRequested) { const error = new Error("GATEWAY_INVOCATION_CANCELLED"); error.code = "GATEWAY_INVOCATION_CANCELLED"; reject(error); }
       else { const text = err || out; reject(new Error(`Gateway exited before receipt (${code}): ${text}`)); }
     });
   });
+  promise.supports_cancel = true;
+  promise.cancel_mode = "process_tree";
+  promise.cancel = async () => {
+    if (!child || child.exitCode !== null) return { cancelled: false, reason: "already_settled" };
+    cancellationRequested = true;
+    if (process.platform === "win32") spawnSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+    else {
+      try { process.kill(-child.pid, "SIGTERM"); } catch {}
+      await new Promise(resolve => setTimeout(resolve, 500));
+      if (child.exitCode === null) { try { process.kill(-child.pid, "SIGKILL"); } catch {} }
+    }
+    return { cancelled: true, pid: child.pid, mode: "process_tree" };
+  };
+  return promise;
 }

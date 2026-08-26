@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import crypto from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { execFileSync } from "node:child_process";
 import { resolveGatewayPaths } from "./paths.mjs";
 import { cleanupConfirmedOrphans, withProviderEnvironment } from "./ephemeral.mjs";
@@ -154,19 +154,35 @@ function runProcess(command, commandArgs, input, timeoutSec, cwd, env = process.
       executable = process.execPath;
       args = [path.join(process.env.APPDATA ?? "", "npm", "node_modules", "@openai", "codex", "bin", "codex.js"), ...commandArgs];
     }
-    const child = spawn(executable, args, { windowsHide: true, cwd: cwd || undefined, env, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(executable, args, { windowsHide: true, detached: process.platform !== "win32", cwd: cwd || undefined, env, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
     let settled = false;
+    const signalHandlers = new Map();
+    const terminateTree = () => {
+      if (child.exitCode !== null) return;
+      if (process.platform === "win32") spawnSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+      else { try { process.kill(-child.pid, "SIGTERM"); } catch {} }
+    };
     const finish = (exitCode) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       if (exitWatchdog) clearInterval(exitWatchdog);
+      for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
       resolve({ exitCode: exitCode ?? 1, stdout, stderr, timedOut });
     };
-    const timer = setTimeout(() => { timedOut = true; child.kill(); }, timeoutSec * 1000);
+    const timer = setTimeout(() => { timedOut = true; terminateTree(); }, timeoutSec * 1000);
+    for (const signal of ["SIGINT", "SIGTERM"]) {
+      const handler = () => {
+        terminateTree();
+        // Installing a signal handler suppresses Node's default exit. Exit the
+        // gateway after forwarding cancellation so the outer supervisor cannot hang.
+        setTimeout(() => process.exit(signal === "SIGINT" ? 130 : 143), 25).unref();
+      };
+      signalHandlers.set(signal, handler); process.once(signal, handler);
+    }
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     child.on("error", (error) => { stderr += error.message; finish(127); });
@@ -285,6 +301,8 @@ const failureCategory = cli["failure-category"] ?? (result.timedOut ? "timeout" 
 const receipt = {
   receiptId, taskId, provider, profile, level, role: cli.role ?? "worker",
   harness: provider,
+  supportsCancel: true,
+  cancelMode: "process_tree",
   modelProvider: cli["model-provider"] ?? inferredModelProvider(provider, profileConfig),
   workflowRunId: cli["workflow-run"] ?? null,
   attemptNo: Number(cli.attempt ?? correctionCycles + 1),

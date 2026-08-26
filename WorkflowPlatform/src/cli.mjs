@@ -18,6 +18,7 @@ import { configureOneCBslCheck, createOneCBslBaseline } from "./one-c-bsl-check.
 import { readProjectContext } from "./document-context.mjs";
 import { expandTerms, searchSources, sourceScope } from "./source-context.mjs";
 import { buildCodeIntelligence, mergeGraphMatches } from "./code-intelligence.mjs";
+import { applyIdleRunControl, requestRunControl, resumeRunControl, runControlStatus } from "./progress-supervisor.mjs";
 const args = Object.fromEntries(process.argv.slice(3).reduce((a, v, i, x) => { if (v.startsWith("--")) { const next = x[i + 1]; a.push([v.slice(2), next === undefined || next.startsWith("--") ? true : next]); } return a; }, []));
 const settings = resolveWorkflowSettings();
 if (process.argv[2] === "configure") { console.log(JSON.stringify(configureInstallation(JSON.parse(fs.readFileSync(args.config, "utf8"))), null, 2)); }
@@ -40,6 +41,24 @@ else if (process.argv[2] === "experience-propose") { console.log(JSON.stringify(
 else if (process.argv[2] === "experience-evaluate") { const results = JSON.parse(fs.readFileSync(args.results, "utf8")); console.log(JSON.stringify(await evaluateExperienceProposal(args.db, args.proposal, request => results[request.scenario_key]?.[request.variant]), null, 2)); }
 else if (process.argv[2] === "experience-apply") { console.log(JSON.stringify(applyExperienceProposal(args.db, args.proposal, { confirmedBy: args["confirmed-by"] }), null, 2)); }
 else if (process.argv[2] === "run-statistics") { console.log(JSON.stringify(workflowRunStatistics(args.db ?? settings.databasePath, args.run), null, 2)); }
+else if (process.argv[2] === "run-status") {
+  const runtime = new Runtime(args.db ?? settings.databasePath);
+  try { console.log(JSON.stringify(runControlStatus(runtime.db, args.run), null, 2)); } finally { runtime.db.close(); }
+}
+else if (process.argv[2] === "run-watch") {
+  const terminal = new Set(["completed", "rejected", "failed", "cancelled", "blocked"]), interval = Math.max(250, Number(args["interval-ms"] ?? 1000));
+  let previous = "";
+  while (true) {
+    const runtime = new Runtime(args.db ?? settings.databasePath);
+    let status;
+    try { status = runControlStatus(runtime.db, args.run); } finally { runtime.db.close(); }
+    const serialized = JSON.stringify(status);
+    if (serialized !== previous) process.stdout.write(`${serialized}\n`);
+    previous = serialized;
+    if (terminal.has(status.state) || args.once === true) break;
+    await new Promise(resolve => setTimeout(resolve, interval));
+  }
+}
 else if (process.argv[2] === "code-search") {
   const runtime = new Runtime(args.db ?? settings.databasePath);
   try {
@@ -56,10 +75,10 @@ else if (["queue-recover", "run-pause", "run-resume", "run-cancel", "dead-letter
   const queue = new ExecutionQueue(runtime.db);
   try {
     if (process.argv[2] === "queue-recover") console.log(JSON.stringify(queue.recoverExpiredLeases(args.at ?? undefined), null, 2));
-    else if (process.argv[2] === "run-pause") console.log(JSON.stringify({ state: queue.pauseRun(args.run, { reason: args.reason ?? "paused by CLI" }) }));
-    else if (process.argv[2] === "run-resume") console.log(JSON.stringify({ state: queue.resumeRun(args.run) }));
-    else if (process.argv[2] === "run-cancel") console.log(JSON.stringify({ state: queue.cancelRun(args.run, { reason: args.reason ?? "cancelled by CLI" }) }));
+    else if (process.argv[2] === "run-pause") { const request = requestRunControl(runtime.db, args.run, "pause", args.reason ?? "paused by CLI"); console.log(JSON.stringify({ ...request, applied: applyIdleRunControl(runtime.db, queue, args.run) }, null, 2)); }
+    else if (process.argv[2] === "run-resume") console.log(JSON.stringify({ run_id: args.run, state: resumeRunControl(runtime.db, queue, args.run) }, null, 2));
+    else if (process.argv[2] === "run-cancel") { const request = requestRunControl(runtime.db, args.run, "cancel", args.reason ?? "cancelled by CLI"); console.log(JSON.stringify({ ...request, applied: applyIdleRunControl(runtime.db, queue, args.run) }, null, 2)); }
     else console.log(JSON.stringify(queue.retryDeadLetter(args["dead-letter"], { approved: args.approved === true, actor: args.actor ?? "CLI operator" }), null, 2));
   } finally { runtime.db.close(); }
 }
-else console.log("Usage: node src/cli.mjs configure --config <file> | register-project --id <id> --name <name> --root <absolute-path> | onboard | lint | quality-contracts-lint | quality-policy-lint [--project <id>] | one-c-bsl-baseline --db <db> --project <id> --executable <file> --source <directory> --platform-bin <directory> --accepted-revision <sha> --confirmed-by <owner> --temp-root <directory> | one-c-bsl-configure --db <db> --project <id> --executable <file> --platform-bin <directory> --runner <file> --temp-root <directory> | prompt | run [--event-key <id>] | code-search --db <db> --project <id> --query <text> | run-statistics --db <db> --run <id> | backup --db <workflow-db> --gateway-db <gateway-db> --out <directory> | restore --backup <directory> --db <new-workflow-db> --gateway-db <new-gateway-db> | queue-recover | run-pause --run <id> | run-resume --run <id> | run-cancel --run <id> | dead-letter-retry --dead-letter <id> [--approved] | workflow-export --db <db> --out <file> --project <id> | workflow-import-propose --db <db> --package <file> --proposal <file> --project <id> | workflow-import-apply --db <db> --proposal <file> --project <id> --confirmed-by <owner> | workflow-bundle-inspect --bundle <file> | experience-record|experience-propose --db <db> --input <json> | experience-evaluate --db <db> --proposal <id> --results <json> | experience-apply --db <db> --proposal <id> --confirmed-by <owner>");
+else console.log("Usage: node src/cli.mjs configure --config <file> | register-project --id <id> --name <name> --root <absolute-path> | onboard | lint | quality-contracts-lint | quality-policy-lint [--project <id>] | one-c-bsl-baseline --db <db> --project <id> --executable <file> --source <directory> --platform-bin <directory> --accepted-revision <sha> --confirmed-by <owner> --temp-root <directory> | one-c-bsl-configure --db <db> --project <id> --executable <file> --platform-bin <directory> --runner <file> --temp-root <directory> | prompt | run [--event-key <id>] | code-search --db <db> --project <id> --query <text> | run-statistics|run-status|run-watch --db <db> --run <id> | backup --db <workflow-db> --gateway-db <gateway-db> --out <directory> | restore --backup <directory> --db <new-workflow-db> --gateway-db <new-gateway-db> | queue-recover | run-pause --run <id> | run-resume --run <id> | run-cancel --run <id> | dead-letter-retry --dead-letter <id> [--approved] | workflow-export --db <db> --out <file> --project <id> | workflow-import-propose --db <db> --package <file> --proposal <file> --project <id> | workflow-import-apply --db <db> --proposal <file> --project <id> --confirmed-by <owner> | workflow-bundle-inspect --bundle <file> | experience-record|experience-propose --db <db> --input <json> | experience-evaluate --db <db> --proposal <id> --results <json> | experience-apply --db <db> --proposal <id> --confirmed-by <owner>");
