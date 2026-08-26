@@ -161,6 +161,9 @@ test("role result schemas reject extra fields, path escapes and false reviewer P
   const reviewerPrompt = rolePrompt({ contract: reviewerContract, qualityContract: loadQualityContract(db, "mvp"), packageContract: { plan: { artifacts: [{ type: "document", required: true }] }, worker_results: [{ artifacts: [], changed_paths: [] }] }, context: {}, resultSchema: "reviewer.v1" });
   assert.match(reviewerPrompt, /before the documentator/);
   assert.match(reviewerPrompt, /absence from worker artifacts or changed_paths is not a blocker/);
+  assert.match(reviewerPrompt, /Final receipt totals, calls, tokens, cache, total duration/);
+  assert.match(reviewerPrompt, /their absence from review_evidence is not a blocker/);
+  assert.match(reviewerPrompt, /Use CHANGES_REQUESTED for an evidence gap/);
   assert.equal(parseRoleReceipt(receipt("reviewer", reviewerResult("PASS")), "reviewer.v1", {}).decision, "PASS");
   assert.ok(classificationCatalog(db, "project").routes.length >= 2);
   db.close();

@@ -8,14 +8,15 @@ import { Runtime } from "../src/runtime.mjs";
 import { ExecutionQueue } from "../src/execution-queue.mjs";
 import { BudgetManager } from "../src/budget.mjs";
 import { now } from "../src/db.mjs";
-import { buildReviewEvidence, captureRunBaselines, recordRunEvidence, runChangeEvidence } from "../src/run-evidence.mjs";
+import { buildReviewEvidence, captureRunBaselines, claimCenteredReviewEvidence, recordRunEvidence, runChangeEvidence } from "../src/run-evidence.mjs";
 import { applyRunControlAtBoundary, blockerFingerprint, requestRunControl } from "../src/progress-supervisor.mjs";
-import { targetedSteps } from "../src/work-executor.mjs";
+import { priorWorkerResultsForStep, targetedSteps } from "../src/work-executor.mjs";
 import { callGateway } from "../src/gateway.mjs";
 import { transactionAwaitViolations } from "../src/transaction-guard.mjs";
 import { DEFAULT_QUALITY_CONTRACTS } from "../src/quality-contracts.mjs";
 import { rolePrompt } from "../src/role-contracts.mjs";
 import { reviewerPromptContext, reviewerTaskPackage } from "../src/work-executor.mjs";
+import { completionBlockers } from "../src/state-machine.mjs";
 
 const CLASSIFICATION = { kind: "task", domain: "workflow", discipline: "general", risk: "low", level: "L2", quality: "mvp", planning_required: true, human_required: false, document_required: false };
 const temp = prefix => fs.mkdtempSync(path.join(process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir(), prefix));
@@ -45,12 +46,71 @@ test("A: reviewer evidence preserves the verbatim owner objective and canonical 
   const fx = fixture("gauntlet-owner-");
   try {
     captureRunBaselines(fx.runtime.db, fx.runId, [{ key: "primary", path: fx.projectRoot, access: "write" }]);
+    const taskId = fx.runtime.get(fx.runId).task_id;
+    fx.runtime.db.prepare("INSERT INTO decisions(id,task_id,run_id,step_id,kind,outcome,source,structured_json,active,created_at) VALUES('old-review',?,?,NULL,'review','CHANGES_REQUESTED','reviewer','{}',1,?)").run(taskId, fx.runId, now());
     const evidence = buildReviewEvidence(fx.runtime.db, fx.runId, { plan: { completion_criteria: ["planner claim"] }, gate: { status: "passed", checks: [] }, workerResults: [], allowedPaths: [] });
     assert.equal(evidence.owner_objective.verbatim, "Точная исходная формулировка владельца — без пересказа.");
     assert.equal(evidence.owner_objective.source, "conversation_messages");
     assert.ok(Array.isArray(evidence.canonical_completion.blockers));
+    assert.ok(completionBlockers(fx.runtime.db, taskId).some(item => item.kind === "rejecting_decisions"));
+    assert.ok(!evidence.canonical_completion.blockers.some(item => item.kind === "rejecting_decisions"));
     assert.equal(evidence.planner_advisory.authority, "advisory");
   } finally { fx.close(); }
+});
+
+test("claim-centered review packet records primary coverage and an explicit API-to-UI gap", () => {
+  const source = (plan_step, path, text, code_intelligence = null) => ({ plan_step, evidence_hash: `hash-${plan_step}`, code_intelligence, files: [{ path, text: `--- lines 1-20 (claim anchor) ---\n${text}`, segments: [{ start_line: 1, end_line: 20, reason: "claim anchor", complete: true }], exact_term_scan: { scope: "complete_file", match: "literal_case_insensitive", occurrences: [{ term: "avgCost", count: 1, matched_lines: 1, locations: [{ line: 2, text }], locations_truncated: false }] } }] });
+  const sources = [
+    source("producer", "scripts/marketplace-scheme-profit.mjs", "function legacyUpdateRow(avgCost) { return avgCost; }"),
+    source("transform", "scripts/dashboard-query-service.mjs", "function buildProductDailyDetails(avgCost) { return { avgCost }; }"),
+    source("api", "scripts/dev-api-server.mjs", "res.json(await buildProductDailyDetails());"),
+    source("client", "src/main.jsx", "function normalizeServerModelCost(response) { setModel(response); }")
+  ];
+  const workers = sources.map(item => ({ plan_step: item.plan_step, status: "completed", summary: `${item.plan_step} material claim`, evidence: [`${item.files[0].path}:1-20`] }));
+  const packet = claimCenteredReviewEvidence(workers, sources, "Trace producer through API to UI consumer");
+  assert.ok(packet.claims.every(claim => claim.primary_evidence_refs.length >= 1 && claim.coverage === "sufficient"));
+  assert.ok(packet.claims.every(claim => !Object.hasOwn(claim, "summary") && !Object.hasOwn(claim, "conclusion") && !Object.hasOwn(claim, "evidence")));
+  assert.equal(packet.cross_layer_chains[0].coverage, "incomplete");
+  assert.equal(packet.cross_layer_chains[0].anchors.ui_consumer, null);
+  assert.ok(packet.cross_layer_chains[0].unknown_edges.includes("state_model->ui_consumer"));
+  assert.deepEqual(packet.cross_layer_chains[0].missing_edges, []);
+  assert.equal(new Set(packet.source_range_catalog.map(range => range.range_id)).size, packet.source_range_catalog.length);
+  assert.ok(packet.source_evidence.flatMap(item => item.files).length < sources.flatMap(item => item.files).length + 1);
+});
+
+test("a sufficient cross-layer claim has provenance for every observed edge", () => {
+  const nodes = [
+    ["producer", "scripts/marketplace-scheme-profit.mjs"], ["api", "scripts/dev-api-server.mjs"],
+    ["client", "src/client.js"], ["state", "src/state.js"], ["ui", "src/View.jsx"]
+  ].map(([id, path]) => ({ id, path, kind: "function", name: id, start_line: 1, end_line: 20 }));
+  const edges = [["e1", "producer", "api"], ["e2", "api", "client"], ["e3", "client", "state"], ["e4", "state", "ui"]].map(([id, from, to]) => ({ id, from, to, type: "calls" }));
+  const graph = { strategy: "lexical_to_language_graph", nodes, edges, adapters: [], completeness: { parsed_files: 5, eligible_files: 5 }, statistics: {} };
+  const rows = [
+    ["producer", nodes[0].path, "function legacyUpdateRow(avgCost) { return avgCost; }"],
+    ["api", nodes[1].path, "res.json(await buildProductDailyDetails());"],
+    ["client", nodes[2].path, "const data = await response.json();"],
+    ["state", nodes[3].path, "setModel(normalizeServerModelCost(data));"],
+    ["ui", nodes[4].path, "const View = () => <div>{profit}</div>;"]
+  ];
+  const sources = rows.map(([plan_step, path, text], index) => ({ plan_step, evidence_hash: `hash-${plan_step}`, code_intelligence: index === 0 ? graph : null, files: [{ path, text: `--- lines 1-20 (edge anchor) ---\n${text}`, segments: [{ start_line: 1, end_line: 20, reason: "edge anchor", complete: true }] }] }));
+  const workers = sources.map(item => ({ plan_step: item.plan_step, status: "completed", summary: item.plan_step, evidence: [`${item.files[0].path}:1-20`] }));
+  const chain = claimCenteredReviewEvidence(workers, sources, "Trace producer through API to UI").cross_layer_chains[0];
+  assert.equal(chain.coverage, "sufficient");
+  assert.equal(chain.observed_edges.length, chain.required_edges.length);
+  assert.ok(chain.observed_edges.every(edge => edge.provenance_refs.length >= 3));
+  assert.deepEqual(chain.unknown_edges, []);
+});
+
+test("targeted correction keeps only the latest result for its primary gap", () => {
+  const results = [
+    { plan_step: "api_ui", summary: "old packet" },
+    { plan_step: "profit", summary: "unrelated packet" },
+    { plan_step: "api_ui", summary: "latest packet" }
+  ];
+  assert.deepEqual(priorWorkerResultsForStep(results, "api_ui", { blockers: [] }).map(item => item.summary), ["latest packet"]);
+  assert.equal(priorWorkerResultsForStep(results, "api_ui", null).length, 3);
+  const reviewPackage = reviewerTaskPackage({}, "project_policy", 1, 4);
+  assert.equal(reviewPackage.remaining_correction_cycles, 3);
 });
 
 test("B: analytical review retains conclusion and primary source evidence with an empty diff", () => {
@@ -96,8 +156,9 @@ test("review evidence compacts repeated TS graph and exact-scan metadata without
     assert.equal(evidence.source_evidence[6].files[3].path, "src/6-3.ts");
     assert.equal(evidence.code_intelligence_catalog.length, 1);
     assert.equal(evidence.source_evidence[6].code_intelligence_ref, evidence.code_intelligence_catalog[0].id);
-    assert.ok(evidence.source_evidence.flatMap(item => item.files).every(file => file.source_ranges.every(range => range.text.length >= 512)));
-    const firstScan = evidence.source_evidence[0].files[0].exact_term_scan;
+    assert.ok(evidence.source_range_catalog.every(range => range.text.length >= 512));
+    assert.ok(evidence.source_evidence.flatMap(item => item.files).every(file => file.source_range_refs.every(ref => evidence.source_range_catalog.some(range => range.range_id === ref))));
+    const firstScan = evidence.exact_scan_catalog[0];
     const anchorEleven = firstScan.count_index?.["anchor-11"] ?? firstScan.occurrences.find(item => item.term === "anchor-11");
     assert.equal(anchorEleven.count, 12);
     assert.equal(evidence.code_intelligence_catalog[0].adapters[0].unresolved_call_categories.project_internal_unmapped, 1304);

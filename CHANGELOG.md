@@ -4,6 +4,19 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_9_2026_08_26" status="working">
+
+## 0.5.9 — 2026-08-26
+
+- Reviewer evidence is claim-centered: every material conclusion records primary ranges, exact-scan references, relevant graph edges, provenance hashes and deterministic sufficient/incomplete coverage.
+- Cross-layer API-to-UI traces record producer, transformation, API response, client mapping and UI consumer anchors; an absent transition becomes a targeted evidence gap instead of another full research replay.
+- Every observed cross-layer edge carries its own source-range and graph-edge provenance; an absent path in a bounded graph is `unknown`, not proof that the project edge is missing.
+- A correction keeps only the latest result of its targeted step as prior narrative, leaving the bounded role context for the missing primary source ranges.
+- A prior review decision remains auditable but is excluded from canonical blockers while its corrected package is being re-evaluated.
+- Reviewers no longer block on final receipts and prompt telemetry that the platform produces after review; measured prompt bytes and a pre-documentation receipt snapshot are delivered to the documentator.
+
+</section>
+
 <section id="0_5_8_2026_08_26" status="working">
 
 ## 0.5.8 — 2026-08-26

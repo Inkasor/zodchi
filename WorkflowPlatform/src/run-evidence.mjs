@@ -182,6 +182,11 @@ function compactCodeIntelligence(value, includeSamples = true) {
 }
 
 function compactSourceFile(file) {
+  if (Array.isArray(file.source_range_refs)) return { path: file.path, source_range_refs: [...file.source_range_refs], exact_scan_ref: file.exact_scan_ref ?? null };
+  if (Array.isArray(file.source_ranges)) return {
+    ...file,
+    source_ranges: file.source_ranges.map(range => ({ ...range, reason: utf8Prefix(range.reason, 160), text: String(range.text ?? "") }))
+  };
   const scan = file.exact_term_scan;
   const source = String(file.text ?? ""), headers = [...source.matchAll(/^--- lines (\d+)-(\d+) \(([^)]*)\) ---\r?\n/gm)];
   const sourceRanges = headers.length ? headers.map((header, index) => ({
@@ -209,6 +214,176 @@ function compactSourceFile(file) {
   };
 }
 
+function claimTokens(value) {
+  return [...new Set(String(value ?? "").toLowerCase().match(/[a-zа-яё_$][a-zа-яё0-9_$.-]{3,}/giu) ?? [])]
+    .filter(token => !new Set(["this", "that", "with", "from", "через", "котор", "подтверж", "evidence", "source"]).has(token)).slice(0, 40);
+}
+
+function rangeRef(file, range) {
+  return `${file.path}:${range.start_line ?? "?"}-${range.end_line ?? "?"}`;
+}
+
+function selectClaimRanges(file, claimText, evidenceRefs) {
+  const explicitLines = evidenceRefs.flatMap(value => {
+    const expression = new RegExp(`${String(file.path).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:(\\d+)(?:-(\\d+))?`, "ig");
+    return [...String(value).matchAll(expression)].map(match => ({ start: Number(match[1]), end: Number(match[2] ?? match[1]) }));
+  });
+  const tokens = claimTokens(claimText);
+  const scored = (file.source_ranges ?? []).map((range, index) => {
+    const text = `${range.reason ?? ""}\n${range.text ?? ""}`.toLowerCase();
+    const explicit = explicitLines.some(lines => Number(range.start_line) <= lines.end && Number(range.end_line) >= lines.start);
+    return { range, index, explicit, score: tokens.reduce((total, token) => total + (text.includes(token) ? 1 : 0), 0) };
+  }).filter(item => item.explicit || item.score > 0).sort((left, right) => Number(right.explicit) - Number(left.explicit) || right.score - left.score || left.index - right.index);
+  const selected = scored.length ? scored.slice(0, 3) : (file.source_ranges ?? []).slice(0, 1).map((range, index) => ({ range, index }));
+  return selected.map(item => item.range);
+}
+
+function chainAnchor(files, pathPattern, textPattern) {
+  for (const file of files.filter(item => pathPattern.test(item.path))) {
+    const range = (file.source_ranges ?? []).find(item => textPattern.test(item.text ?? ""));
+    if (range) return { file, range };
+  }
+  return null;
+}
+
+export function claimCenteredReviewEvidence(workerResults, sourceEvidence, ownerText = "") {
+  const compacted = sourceEvidence.map(item => ({ ...item, files: (item.files ?? []).map(compactSourceFile) }));
+  const latestResults = new Map(), latestSources = new Map();
+  for (const result of workerResults ?? []) latestResults.set(result.plan_step ?? `claim_${latestResults.size + 1}`, result);
+  for (const source of compacted) latestSources.set(source.plan_step ?? `source_${latestSources.size + 1}`, source);
+  const allFiles = [...latestSources.values()].flatMap(item => item.files ?? []), rangeCatalog = new Map(), scanCatalog = new Map();
+  const sourceHashes = file => [...new Set(compacted.filter(item => (item.files ?? []).some(candidate => candidate.path === file.path)).map(item => item.evidence_hash).filter(Boolean))];
+  const registerRange = (file, range) => {
+    const rangeId = `range_${digest(`${file.path}\n${range.start_line}\n${range.end_line}\n${range.text ?? ""}`).slice(0, 20)}`;
+    if (!rangeCatalog.has(rangeId)) rangeCatalog.set(rangeId, { range_id: rangeId, path: file.path, start_line: range.start_line, end_line: range.end_line, reason: range.reason, text: range.text, provenance: { source_snapshot_hashes: sourceHashes(file), content_hash: digest(range.text ?? "") } });
+    return rangeId;
+  };
+  const registerScan = file => {
+    if (!file.exact_term_scan) return null;
+    const scanId = `scan_${digest(`${file.path}\n${JSON.stringify(file.exact_term_scan)}`).slice(0, 20)}`;
+    if (!scanCatalog.has(scanId)) scanCatalog.set(scanId, { scan_id: scanId, path: file.path, ...file.exact_term_scan, provenance: { source_snapshot_hashes: sourceHashes(file) } });
+    return scanId;
+  };
+  const claims = [], conclusions = [];
+  for (const [planStep, result] of latestResults) {
+    const rawEvidenceRefs = (result.evidence ?? []).map(String), claimText = `${result.summary ?? ""}\n${rawEvidenceRefs.join("\n")}`;
+    const mentioned = allFiles.filter(file => rawEvidenceRefs.some(value => normalized(value).includes(normalized(file.path))));
+    const stepFiles = latestSources.get(planStep)?.files ?? [];
+    const candidates = mentioned.length ? mentioned : stepFiles;
+    const primaryEvidenceRefs = [];
+    for (const file of candidates) {
+      const ranges = selectClaimRanges(file, claimText, rawEvidenceRefs);
+      primaryEvidenceRefs.push(...ranges.map(range => registerRange(file, range)));
+    }
+    const paths = new Set(candidates.map(file => file.path));
+    const graphEdges = [...latestSources.values()].flatMap(item => item.code_intelligence?.edges ?? []).filter(edge => {
+      const nodes = itemNodes(latestSources, edge); return nodes.some(node => paths.has(node.path));
+    }).slice(0, 16).map(edge => edge.id ?? `${edge.from}->${edge.to}:${edge.type}`);
+    const exactScanRefs = candidates.map(registerScan).filter(Boolean);
+    const requiredEdges = ["claim->primary_evidence"];
+    const edgeCoverage = [{ edge: requiredEdges[0], status: primaryEvidenceRefs.length ? "observed" : "unknown", provenance_refs: [...new Set(primaryEvidenceRefs)] }];
+    claims.push({
+      claim_id: `claim_${digest(`${planStep}\n${result.summary ?? ""}`).slice(0, 16)}`,
+      claim_type: /api|ui|trace/i.test(planStep) ? "cross_layer_trace" : /test|check|verify/i.test(planStep) ? "verification" : "analytical",
+      subject: planStep,
+      target: [...paths].sort(),
+      required_edges: requiredEdges,
+      observed_edges: edgeCoverage.filter(edge => edge.status === "observed"),
+      primary_evidence_refs: [...new Set(primaryEvidenceRefs)],
+      contradicting_evidence_refs: [],
+      graph_edge_refs: [...new Set(graphEdges)],
+      exact_scan_refs: [...new Set(exactScanRefs)],
+      provenance: { worker_result_hash: digest(JSON.stringify(result)), source_snapshot_hashes: [...new Set(compacted.filter(item => (item.files ?? []).some(file => candidates.includes(file))).map(item => item.evidence_hash).filter(Boolean))] },
+      edge_coverage: edgeCoverage,
+      coverage: edgeCoverage.every(edge => edge.status === "observed" && edge.provenance_refs.length) ? "sufficient" : "incomplete",
+      missing_edges: edgeCoverage.filter(edge => edge.status === "missing").map(edge => edge.edge),
+      unknown_edges: edgeCoverage.filter(edge => edge.status === "unknown").map(edge => edge.edge)
+    });
+    conclusions.push({ claim_id: claims.at(-1).claim_id, plan_step: planStep, summary: result.summary ?? "", evidence_refs: rawEvidenceRefs.slice(0, 12).map(value => utf8Prefix(value, 320)) });
+  }
+  const chainRequested = /api/i.test(ownerText) && /ui|интерфейс/i.test(ownerText);
+  const anchorSpecs = chainRequested ? [
+    ["producer", /marketplace-scheme-profit|company-profit-from-cost/i, /legacyUpdateRow|recalculateCompanyProfitFromCost|avgCost/i],
+    ["api", /dashboard-query-service|dev-api-server/i, /buildProductDailyDetails|res\.json|sendJson|response/i],
+    ["client_mapping", /src\//i, /fetch|await\s+[^\n]*\.json|response\.|data\./i],
+    ["state_model", /src\//i, /set[A-Z][A-Za-z0-9_$]*\(|useState|normalizeServerModelCost/],
+    ["ui_consumer", /src\//i, /<[^>]+>.*(?:avgCost|profit)|(?:avgCost|profit).*<[^>]+>/is]
+  ] : [];
+  const anchors = Object.fromEntries(anchorSpecs.map(([name, pathPattern, textPattern]) => {
+    const anchor = chainAnchor(allFiles, pathPattern, textPattern);
+    return [name, anchor ? registerRange(anchor.file, anchor.range) : null];
+  }));
+  const requiredChainEdges = ["producer->api", "api->client_mapping", "client_mapping->state_model", "state_model->ui_consumer"];
+  const chainEdgeCoverage = requiredChainEdges.map(edge => {
+    const [from, to] = edge.split("->");
+    const endpointRefs = [anchors[from], anchors[to]].filter(Boolean);
+    if (anchors[from] && anchors[from] === anchors[to]) return { edge, status: "observed", provenance_refs: endpointRefs };
+    const graphRefs = graphPath(latestSources, rangeCatalog.get(anchors[from])?.path, rangeCatalog.get(anchors[to])?.path);
+    if (anchors[from] && anchors[to] && graphRefs.length) return { edge, status: "observed", provenance_refs: [...new Set([...endpointRefs, ...graphRefs])] };
+    // The selected graph is bounded supporting evidence. Failure to find a path in it is not proof that
+    // the project has no path; a deterministic complete negative scan would be required for `missing`.
+    return { edge, status: "unknown", provenance_refs: endpointRefs };
+  });
+  const usedRanges = new Set([...claims.flatMap(claim => claim.primary_evidence_refs), ...Object.values(anchors).filter(Boolean)]);
+  const selectedSources = [...latestSources.values()].map(item => ({
+    step_id: item.step_id ?? null,
+    evidence_hash: item.evidence_hash ?? null,
+    plan_step: item.plan_step ?? null,
+    code_intelligence: item.code_intelligence,
+    files: (item.files ?? []).map(file => {
+      const refs = (file.source_ranges ?? []).map(range => registerRange(file, range)).filter(ref => usedRanges.has(ref));
+      const exactScanRef = [...scanCatalog.values()].find(scan => scan.path === file.path)?.scan_id ?? null;
+      return refs.length || exactScanRef ? { path: file.path, source_range_refs: refs, exact_scan_ref: exactScanRef } : null;
+    }).filter(Boolean)
+  })).filter(item => item.files.length).filter((item, index, values) => values.findLastIndex(candidate => candidate.plan_step === item.plan_step) === index);
+  return {
+    claims,
+    conclusions,
+    source_range_catalog: [...rangeCatalog.values()].filter(range => usedRanges.has(range.range_id)),
+    exact_scan_catalog: [...scanCatalog.values()],
+    source_evidence: claims.length ? selectedSources : [...latestSources.values()],
+    cross_layer_chains: chainRequested ? [{
+      claim_id: "claim_cross_layer_producer_to_ui",
+      claim_type: "cross_layer_chain",
+      subject: "avgCost and profit",
+      target: "UI consumer",
+      required_edges: requiredChainEdges,
+      observed_edges: chainEdgeCoverage.filter(edge => edge.status === "observed"),
+      primary_evidence_refs: [...new Set(Object.values(anchors).filter(Boolean))],
+      contradicting_evidence_refs: [],
+      exact_scan_refs: [],
+      anchors,
+      edge_coverage: chainEdgeCoverage,
+      coverage: chainEdgeCoverage.every(edge => edge.status === "observed" && edge.provenance_refs.length) ? "sufficient" : "incomplete",
+      missing_edges: chainEdgeCoverage.filter(edge => edge.status === "missing").map(edge => edge.edge),
+      unknown_edges: chainEdgeCoverage.filter(edge => edge.status === "unknown").map(edge => edge.edge)
+    }] : []
+  };
+}
+
+function itemNodes(sources, edge) {
+  const nodes = [...sources.values()].flatMap(item => item.code_intelligence?.nodes ?? []);
+  return nodes.filter(node => node.id === edge.from || node.id === edge.to);
+}
+
+function graphPath(sources, fromPath, toPath) {
+  if (!fromPath || !toPath) return [];
+  const nodes = [...sources.values()].flatMap(item => item.code_intelligence?.nodes ?? []), edges = [...sources.values()].flatMap(item => item.code_intelligence?.edges ?? []);
+  const targets = new Set(nodes.filter(node => node.path === toPath).map(node => node.id));
+  let frontier = nodes.filter(node => node.path === fromPath).map(node => ({ id: node.id, depth: 0, provenance: [] })), visited = new Set(frontier.map(item => item.id));
+  while (frontier.length) {
+    const current = frontier.shift();
+    if (targets.has(current.id)) return current.provenance;
+    if (current.depth >= 4) continue;
+    for (const edge of edges.filter(item => item.from === current.id || item.to === current.id)) {
+      const next = edge.from === current.id ? edge.to : edge.from;
+      const edgeRef = edge.id ?? `${edge.from}->${edge.to}:${edge.type}`;
+      if (!visited.has(next)) { visited.add(next); frontier.push({ id: next, depth: current.depth + 1, provenance: [...current.provenance, edgeRef] }); }
+    }
+  }
+  return [];
+}
+
 function trimStringValues(entries, read, write, bytesToRemove, minimum = 0) {
   let remaining = Math.max(0, bytesToRemove), candidates = entries.map(entry => ({ entry, bytes: Buffer.byteLength(String(read(entry) ?? "")) })).filter(item => item.bytes > minimum);
   while (remaining > 0 && candidates.length) {
@@ -233,7 +408,7 @@ function compactReviewEvidence(evidence, limit = 72_000) {
   const copy = structuredClone(evidence);
   // buildReviewEvidence adds a SHA-256 field after compaction; reserve its JSON envelope here so
   // the object actually delivered to reviewers, not only its pre-hash form, stays under the limit.
-  const contentLimit = Math.max(0, limit - 320);
+  const contentLimit = Math.max(0, limit - 192);
   copy.evidence_compaction = { limit_bytes: limit, supplied_bytes: 0, source_text_reduced: false, metadata_reduced: false };
   if (copy.change_evidence) {
     copy.change_evidence.run_changed_paths = copy.change_evidence.run_changed_paths.slice(0, 200);
@@ -276,7 +451,7 @@ function compactReviewEvidence(evidence, limit = 72_000) {
   const size = () => Buffer.byteLength(JSON.stringify(copy));
   const excessBytes = () => size() > contentLimit ? size() - contentLimit + 64 : 0;
   const files = copy.source_evidence.flatMap(item => item.files ?? []);
-  const sourceRanges = files.flatMap(file => file.source_ranges ?? []);
+  const sourceRanges = (copy.source_range_catalog?.length ? copy.source_range_catalog : files.flatMap(file => file.source_ranges ?? []));
   // Preserve a concrete excerpt from every supplied primary range. Large concatenated file strings
   // used to be reduced to empty values before lower-value scan metadata was compacted, leaving a
   // reviewer with paths and counts but no code it could independently inspect.
@@ -284,7 +459,8 @@ function compactReviewEvidence(evidence, limit = 72_000) {
   if (excess && trimStringValues(sourceRanges, range => range.text, (range, value) => { range.text = value; range.text_truncated = true; }, excess, 768)) copy.evidence_compaction.source_text_reduced = true;
   // Real analytical workflows may carry several independent exact scans. Keep every term, count,
   // path and line while reducing duplicated line bodies and prose summaries only as needed.
-  const occurrences = files.flatMap(file => file.exact_term_scan?.occurrences ?? []);
+  const scans = copy.exact_scan_catalog?.length ? copy.exact_scan_catalog : files.map(file => file.exact_term_scan).filter(Boolean);
+  const occurrences = scans.flatMap(scan => scan.occurrences ?? []);
   const locations = occurrences.flatMap(item => item.locations ?? []);
   const summaries = [...(copy.analytical_evidence?.conclusions ?? []), ...(copy.analytical_evidence?.decision_artifacts ?? [])];
   excess = excessBytes();
@@ -294,15 +470,15 @@ function compactReviewEvidence(evidence, limit = 72_000) {
   }
   // If many workers scanned the same lexical vocabulary, one located occurrence per file keeps a
   // concrete line anchor while the remaining entries still preserve every term and its full count.
-  if (size() > contentLimit) for (const file of files) for (const occurrence of (file.exact_term_scan?.occurrences ?? []).slice(1)) {
+  if (size() > contentLimit) for (const scan of scans) for (const occurrence of (scan.occurrences ?? []).slice(1)) {
     occurrence.locations = []; occurrence.locations_truncated = true; copy.evidence_compaction.metadata_reduced = true;
   }
   const sampleMaps = copy.code_intelligence_catalog.flatMap(item => item.adapters ?? []).map(adapter => adapter.unresolved_call_samples ?? {});
   if (size() > contentLimit) for (const samples of sampleMaps) for (const category of Object.keys(samples).sort()) { samples[category] = []; copy.evidence_compaction.metadata_reduced = true; }
   if (size() > contentLimit) for (const segment of files.flatMap(file => file.segments ?? [])) { segment.reason = ""; copy.evidence_compaction.metadata_reduced = true; }
   if (size() > contentLimit) for (const file of files) { delete file.supplied_bytes; copy.evidence_compaction.metadata_reduced = true; }
-  if (size() > contentLimit) for (const file of files) {
-    const scan = file.exact_term_scan, occurrences = scan?.occurrences ?? [];
+  if (size() > contentLimit) for (const scan of scans) {
+    const occurrences = scan?.occurrences ?? [];
     if (!occurrences.length) continue;
     scan.count_index = Object.fromEntries(occurrences.map(item => [item.term, { count: item.count, matched_lines: item.matched_lines }]));
     scan.occurrences = occurrences.filter(item => (item.locations ?? []).length).slice(0, 1);
@@ -333,14 +509,22 @@ export function buildReviewEvidence(db, runId, { plan, gate, workerResults, allo
   const type = hasChanges && hasAnalysis ? "mixed" : hasChanges ? "change" : "analytical";
   const sourceEvidence = db.prepare("SELECT step_id,evidence_hash,evidence_json FROM run_evidence WHERE run_id=? AND kind='worker_source' ORDER BY created_at").all(runId)
     .map(row => ({ step_id: row.step_id, evidence_hash: row.evidence_hash, ...parse(row.evidence_json, {}) }));
+  const centered = claimCenteredReviewEvidence(workerResults, sourceEvidence, ownerObjective(db, runId).verbatim);
   const evidence = {
     schema_version: 1, type, owner_objective: ownerObjective(db, runId),
-    canonical_completion: { blockers: completionBlockers(db, run.task_id) },
+    canonical_completion: {
+      blockers: completionBlockers(db, run.task_id, { excludeReviewDecisions: true }),
+      review_reconsideration: "The active decision from the previous review cycle is intentionally excluded because this package supersedes it; all other completion blockers remain canonical."
+    },
     planner_advisory: { completion_criteria: plan?.completion_criteria ?? [], authority: "advisory" },
     verification: { gate: gate ?? null },
     change_evidence: type === "analytical" ? null : changes,
-    analytical_evidence: type === "change" ? null : { decision_artifacts: decisionArtifacts, conclusions: (workerResults ?? []).map(item => ({ plan_step: item.plan_step, summary: item.summary, evidence_refs: item.evidence })) },
-    source_evidence: sourceEvidence,
+    analytical_evidence: type === "change" ? null : { decision_artifacts: decisionArtifacts, conclusions: centered.conclusions },
+    claim_coverage: centered.claims,
+    cross_layer_chains: centered.cross_layer_chains,
+    source_range_catalog: centered.source_range_catalog,
+    exact_scan_catalog: centered.exact_scan_catalog,
+    source_evidence: centered.source_evidence,
     artifacts: db.prepare("SELECT kind,uri,content_hash,status,provenance_json FROM artifacts WHERE run_id=? ORDER BY created_at").all(runId)
   };
   const compact = compactReviewEvidence(evidence, reviewEvidenceLimit);
