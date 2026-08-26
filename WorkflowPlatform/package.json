@@ -1,6 +1,6 @@
 {
   "name": "workflow-platform",
-  "version": "0.5.17",
+  "version": "0.5.18",
   "license": "MIT",
   "private": true,
   "type": "module",

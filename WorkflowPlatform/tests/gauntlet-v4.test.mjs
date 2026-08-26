@@ -9,8 +9,8 @@ import { ExecutionQueue } from "../src/execution-queue.mjs";
 import { BudgetManager } from "../src/budget.mjs";
 import { now } from "../src/db.mjs";
 import { buildReviewEvidence, captureRunBaselines, claimCenteredReviewEvidence, recordRunEvidence, runChangeEvidence } from "../src/run-evidence.mjs";
-import { applyRunControlAtBoundary, blockerFingerprint, requestRunControl } from "../src/progress-supervisor.mjs";
-import { consiliumRoles, priorWorkerResultsForStep, targetedSteps } from "../src/work-executor.mjs";
+import { applyRunControlAtBoundary, blockerFingerprint, evidenceFrontierFingerprint, recordProgressSnapshot, requestRunControl, semanticGapFingerprint } from "../src/progress-supervisor.mjs";
+import { consiliumRoles, priorWorkerResultsForStep, recoveryRoute, targetedSteps, validRecoverySelection } from "../src/work-executor.mjs";
 import { callGateway } from "../src/gateway.mjs";
 import { transactionAwaitViolations } from "../src/transaction-guard.mjs";
 import { DEFAULT_QUALITY_CONTRACTS } from "../src/quality-contracts.mjs";
@@ -19,6 +19,7 @@ import { reviewerPromptContext, reviewerTaskPackage } from "../src/work-executor
 import { completionBlockers } from "../src/state-machine.mjs";
 import { blockerAdmissibility, admissibleOpinionDecision, hasSupportedFactualBlocker } from "../src/review-admissibility.mjs";
 import { executeTargetedVerification } from "../src/targeted-verification.mjs";
+import { utf8Prefix } from "../src/utf8.mjs";
 
 const CLASSIFICATION = { kind: "task", domain: "workflow", discipline: "general", risk: "low", level: "L2", quality: "mvp", planning_required: true, human_required: false, document_required: false };
 const temp = prefix => fs.mkdtempSync(path.join(process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir(), prefix));
@@ -186,6 +187,118 @@ test("semantic evidence aliases and annotated exact ids remain resolvable", () =
   const result = blockerAdmissibility([opinion], evidence);
   assert.equal(result[0].status, "supported");
   assert.equal(result[0].unresolvable_evidence_refs.length, 0);
+});
+
+test("semantic progress fingerprint follows canonical edge statuses instead of reviewer wording", () => {
+  const packet = statuses => ({ cross_layer_chains: [{
+    claim_id: "claim_cross_layer",
+    coverage: statuses.every(status => status === "observed") ? "sufficient" : "incomplete",
+    required_edges: ["producer->api", "api->client_mapping"],
+    edge_coverage: [
+      { edge: "producer->api", status: statuses[0], provenance_refs: ["range-a"] },
+      { edge: "api->client_mapping", status: statuses[1], provenance_refs: ["range-b"] }
+    ]
+  }] });
+  const first = semanticGapFingerprint(packet(["unknown", "unknown"]));
+  const renamedReviewer = semanticGapFingerprint(packet(["unknown", "unknown"]));
+  const advanced = semanticGapFingerprint(packet(["observed", "unknown"]));
+  assert.equal(first.fingerprint, renamedReviewer.fingerprint);
+  assert.notEqual(first.fingerprint, advanced.fingerprint);
+  assert.equal(semanticGapFingerprint(packet(["observed", "observed"])), null);
+});
+
+test("one correction with unchanged canonical edge coverage triggers strategy recovery", () => {
+  const fx = fixture("gauntlet-semantic-progress-");
+  try {
+    captureRunBaselines(fx.runtime.db, fx.runId, [{ key: "primary", path: fx.projectRoot, access: "write" }]);
+    const reviewEvidence = { cross_layer_chains: [{ claim_id: "chain", coverage: "incomplete", required_edges: ["api->client_mapping"], edge_coverage: [{ edge: "api->client_mapping", status: "unknown" }] }] };
+    const reviewer = { blockers: [{ code: "FIRST_WORDING", message: "gap", path: "src/main.jsx" }] };
+    const first = recordProgressSnapshot(fx.runtime.db, fx.runId, { cycle: 0, reviewer, reviewEvidence, allowedPaths: [] });
+    assert.equal(first.stagnating, false);
+    reviewer.blockers[0].code = "RENAMED_WORDING";
+    const second = recordProgressSnapshot(fx.runtime.db, fx.runId, { cycle: 1, reviewer, reviewEvidence, allowedPaths: [] });
+    assert.equal(second.repeated_blocker_cycles, 2);
+    assert.equal(second.semantic_gap, true);
+    assert.equal(second.stagnating, true);
+  } finally { fx.close(); }
+});
+
+test("generic material claims use canonical semantic state instead of reviewer wording", () => {
+  const first = semanticGapFingerprint({ claim_coverage: [{ claim_id: "claim-schema", claim_type: "schema_compatibility", coverage: "incomplete", primary_evidence_refs: ["range-a"] }] });
+  const second = semanticGapFingerprint({ claim_coverage: [{ claim_id: "claim-schema", claim_type: "schema_compatibility", coverage: "incomplete", primary_evidence_refs: ["range-b"] }] });
+  assert.equal(first.fingerprint, second.fingerprint);
+  assert.match(first.fingerprint, /^semantic:/);
+});
+
+test("worker narrative does not change stable material claim identity", () => {
+  const source = { plan_step: "trace", evidence_hash: "source", files: [{ path: "src/a.ts", text: "--- lines 1-2 (proof) ---\nconst proof = true;", segments: [{ start_line: 1, end_line: 2, reason: "proof", complete: true }] }] };
+  const packet = summary => claimCenteredReviewEvidence([{ plan_step: "trace", summary, evidence: ["src/a.ts:1-2"] }], [source], "plain material claim");
+  assert.equal(packet("first wording").claims[0].claim_id, packet("renamed wording").claims[0].claim_id);
+});
+
+test("evidence frontier distinguishes partial factual progress from stagnation", () => {
+  const packet = refs => ({ claim_coverage: [{ claim_id: "chain", claim_type: "cross_layer_chain", coverage: "incomplete", edge_coverage: [{ edge: "client->state", status: "unknown", source_anchor_refs: refs }] }] });
+  assert.notEqual(evidenceFrontierFingerprint(packet(["range-a"])).fingerprint, evidenceFrontierFingerprint(packet(["range-a", "range-b"])).fingerprint);
+  assert.equal(evidenceFrontierFingerprint(packet(["range-a", "range-b"])).fingerprint, evidenceFrontierFingerprint(packet(["range-b", "range-a"])).fingerprint);
+});
+
+test("gate snapshots do not mask repeated semantic review packets", () => {
+  const fx = fixture("gauntlet-progress-kind-");
+  try {
+    captureRunBaselines(fx.runtime.db, fx.runId, [{ key: "primary", path: fx.projectRoot, access: "write" }]);
+    const packet = { base_evidence_hash: "same", claim_coverage: [{ claim_id: "claim", claim_type: "material", coverage: "incomplete", primary_evidence_refs: ["range-a"] }] };
+    recordProgressSnapshot(fx.runtime.db, fx.runId, { cycle: 0, reviewer: { blockers: [] }, reviewEvidence: packet });
+    recordProgressSnapshot(fx.runtime.db, fx.runId, { cycle: 1, gate: { checks: [{ id: "x", required: true, status: "failed" }] } });
+    const status = recordProgressSnapshot(fx.runtime.db, fx.runId, { cycle: 1, reviewer: { blockers: [] }, reviewEvidence: packet });
+    assert.equal(status.latest.progress_kind, "semantic_review");
+    assert.equal(status.duplicate_packet, true);
+    assert.equal(status.stagnating, true);
+  } finally { fx.close(); }
+});
+
+test("utf8Prefix obeys byte limits without replacement characters", () => {
+  for (const value of ["русский текст", "русский ASCII", "🧭🙂 data"]) for (let limit = 0; limit <= Buffer.byteLength(value); limit += 1) {
+    const result = utf8Prefix(value, limit);
+    assert.ok(Buffer.byteLength(result) <= limit);
+    assert.equal(result.includes("�"), false);
+  }
+});
+
+test("NO_VIABLE_STRATEGY cannot fall back to an old targeted route", () => {
+  const oldRoute = [{ key: "client_and_ui_consumers" }];
+  assert.equal(oldRoute.length, 1);
+  assert.deepEqual(recoveryRoute({ decision: "NO_VIABLE_STRATEGY", steps: [] }).steps, []);
+  assert.deepEqual(recoveryRoute({ decision: "TARGETED_VERIFICATION", steps: [] }).steps, []);
+});
+
+test("an exhausted existing step is not a valid recovery selection", () => {
+  assert.equal(validRecoverySelection(["route-a"], ["route-a"]), false);
+  assert.equal(validRecoverySelection(["route-b"], ["route-a"]), true);
+  assert.equal(validRecoverySelection([], []), false);
+});
+
+test("duplicate worker evidence is stored in the trace but appears once in review evidence", () => {
+  const fx = fixture("gauntlet-source-dedup-");
+  try {
+    captureRunBaselines(fx.runtime.db, fx.runId, [{ key: "primary", path: fx.projectRoot, access: "write" }]);
+    const source = { plan_step: "trace", files: [{ path: "src/a.ts", text: "--- lines 1-2 (proof) ---\nconst proof = true;", segments: [{ start_line: 1, end_line: 2, reason: "proof", complete: true }] }] };
+    recordRunEvidence(fx.runtime.db, fx.runId, null, "worker_source", source);
+    recordRunEvidence(fx.runtime.db, fx.runId, null, "worker_source", source);
+    const packet = buildReviewEvidence(fx.runtime.db, fx.runId, { plan: { completion_criteria: [] }, gate: { status: "passed", checks: [] }, workerResults: [{ plan_step: "trace", summary: "proof", evidence: ["src/a.ts:1-2"] }], allowedPaths: [] });
+    assert.equal(fx.runtime.db.prepare("SELECT COUNT(*) count FROM run_evidence WHERE run_id=? AND kind='worker_source'").get(fx.runId).count, 2);
+    assert.equal(packet.source_evidence.length, 1);
+  } finally { fx.close(); }
+});
+
+test("targeted verification results enter the next canonical review package", () => {
+  const fx = fixture("gauntlet-verification-feedback-");
+  try {
+    captureRunBaselines(fx.runtime.db, fx.runId, [{ key: "primary", path: fx.projectRoot, access: "write" }]);
+    recordRunEvidence(fx.runtime.db, fx.runId, null, "targeted_verification_result", { request: { kind: "exact_term", subject: "proof" }, status: "observed", facts: { count: 1 }, evidence_refs: ["scan-a"], bounded: true });
+    const packet = buildReviewEvidence(fx.runtime.db, fx.runId, { plan: { completion_criteria: [] }, gate: { status: "passed", checks: [] }, workerResults: [], allowedPaths: [] });
+    assert.equal(packet.verification.verification_results[0].status, "observed");
+    assert.deepEqual(packet.verification.verification_results[0].evidence_refs, ["scan-a"]);
+  } finally { fx.close(); }
 });
 
 test("typed targeted verification distinguishes observed, missing and unknown", () => {
