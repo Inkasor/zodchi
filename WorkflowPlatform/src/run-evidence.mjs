@@ -232,7 +232,7 @@ function trimStringValues(entries, read, write, bytesToRemove, minimum = 0) {
   return bytesToRemove - remaining;
 }
 
-function compactReviewEvidence(evidence, limit = 40_000) {
+function compactReviewEvidence(evidence, limit = 32_000) {
   const copy = structuredClone(evidence);
   // buildReviewEvidence adds a SHA-256 field after compaction; reserve its JSON envelope here so
   // the object actually delivered to reviewers, not only its pre-hash form, stays under the limit.
@@ -294,6 +294,13 @@ function compactReviewEvidence(evidence, limit = 40_000) {
   if (size() > contentLimit) for (const samples of sampleMaps) for (const category of Object.keys(samples).sort()) { samples[category] = []; copy.evidence_compaction.metadata_reduced = true; }
   if (size() > contentLimit) for (const segment of files.flatMap(file => file.segments ?? [])) { segment.reason = ""; copy.evidence_compaction.metadata_reduced = true; }
   if (size() > contentLimit) for (const file of files) { delete file.supplied_bytes; if (!file.text) delete file.source_text_truncated; copy.evidence_compaction.metadata_reduced = true; }
+  if (size() > contentLimit) for (const file of files) {
+    const scan = file.exact_term_scan, occurrences = scan?.occurrences ?? [];
+    if (!occurrences.length) continue;
+    scan.count_index = Object.fromEntries(occurrences.map(item => [item.term, { count: item.count, matched_lines: item.matched_lines }]));
+    scan.occurrences = occurrences.filter(item => (item.locations ?? []).length).slice(0, 1);
+    copy.evidence_compaction.metadata_reduced = true;
+  }
   excess = excessBytes();
   if (excess && trimStringValues(summaries, item => item.summary ?? item.conclusion, (item, value) => { if (Object.hasOwn(item, "summary")) item.summary = value; else item.conclusion = value; }, excess, 256)) copy.evidence_compaction.metadata_reduced = true;
   const references = summaries.flatMap(item => ["evidence_refs", "evidence"].flatMap(key => (item[key] ?? []).map((value, index) => ({ owner: item, key, index }))));

@@ -470,6 +470,18 @@ function reviewerDecision(runtime, runId, stepId, result) {
 
 function decisionRank(value) { return value === "REJECT" ? 3 : value === "CHANGES_REQUESTED" ? 2 : 1; }
 
+export function reviewerTaskPackage(reviewEvidence, reviewReason, correctionCycles) {
+  return { review_reason: reviewReason, review_evidence: reviewEvidence, correction_cycles: correctionCycles };
+}
+
+export function reviewerPromptContext(classification, responseLanguage) {
+  return {
+    response_language: responseLanguage,
+    evidence_authority: "immutable_review_package",
+    classification: { work_type: classification.work_type, artifact_type: classification.artifact_type, risk: classification.risk, quality_mode: classification.quality_mode }
+  };
+}
+
 async function executeIndependentReview({ runtime, queue, runId, projectId, reviewerRole, policy, level, classification, discovery, responseLanguage, taskRoot, gatewayCall, reviewReason, plan, gate, workerResults, correctionCycles }) {
   const available = new Set(runtime.db.prepare("SELECT role_id FROM role_contracts WHERE project_id=? AND status='active'").all(projectId).map(row => row.role_id));
   const roles = policy.improvement_strategy === "gauntlet"
@@ -482,17 +494,8 @@ async function executeIndependentReview({ runtime, queue, runId, projectId, revi
   runtime.setState(runId, "review_required", { reason: reviewReason });
   const invocations = selectedRoles.map(async roleId => {
     const reviewerContract = loadRoleContract(runtime.db, projectId, roleId, level);
-    const reviewerPackage = {
-      owner_objective: reviewEvidence.owner_objective,
-      canonical_completion: reviewEvidence.canonical_completion,
-      quality_contract: { level: policy.contract.level, version: policy.contract.version },
-      review_reason: reviewReason,
-      review_evidence: reviewEvidence,
-      planner_advisory: { completion_criteria: plan.completion_criteria, authority: "advisory", does_not_override: ["owner_objective", "quality_contract", "registered_gates", "completionBlockers"] },
-      correction_cycles: correctionCycles,
-      gate: reviewEvidence.verification.gate
-    };
-    const reviewer = await invokeRole({ runtime, queue, runId, roleId, level, taskRoot, packageContract: reviewerPackage, context: boundedContext(discovery, roleId, classification, reviewerContract.context_limit_bytes, responseLanguage), schemaKey: "reviewer.v1", parseOptions: {}, gatewayCall });
+    const reviewerPackage = reviewerTaskPackage(reviewEvidence, reviewReason, correctionCycles);
+    const reviewer = await invokeRole({ runtime, queue, runId, roleId, level, taskRoot, packageContract: reviewerPackage, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "reviewer.v1", parseOptions: {}, gatewayCall });
     reviewer.complete({ decision: reviewer.result.decision, base_evidence_hash: reviewEvidence.base_evidence_hash });
     return { role: roleId, invocation: reviewer, result: reviewer.result };
   });
@@ -509,8 +512,8 @@ async function executeIndependentReview({ runtime, queue, runId, projectId, revi
       appendSteps(runtime, runId, [{ key: `judge_${correctionCycles}`, role: "judge", required: true, irreversible: false, max_attempts: 1, schema: "worker.v1", contract: { base_evidence_hash: reviewEvidence.base_evidence_hash } }]);
       queue.enqueueRun(runId);
       const judgeContract = loadRoleContract(runtime.db, projectId, "judge", level);
-      const judgePackage = { objective: "Resolve the independent review conflict. Return status completed and begin summary with PASS, PRIMARY_GAP, TARGETED_VERIFICATION or OWNER_DECISION.", owner_objective: reviewEvidence.owner_objective, canonical_completion: reviewEvidence.canonical_completion, base_evidence: reviewEvidence, opinions: opinions.map(item => ({ role: item.role, result: item.result })), conflicts: opinions.map(item => item.result.decision) };
-      const judge = await invokeRole({ runtime, queue, runId, roleId: "judge", level, taskRoot, packageContract: judgePackage, context: boundedContext(discovery, "judge", classification, judgeContract.context_limit_bytes, responseLanguage), schemaKey: "worker.v1", parseOptions: { packageContract: judgePackage }, gatewayCall });
+      const judgePackage = { objective: "Resolve the independent review conflict. Return status completed and begin summary with PASS, PRIMARY_GAP, TARGETED_VERIFICATION or OWNER_DECISION.", allowed_paths: [], base_evidence: reviewEvidence, opinions: opinions.map(item => ({ role: item.role, result: item.result })), conflicts: opinions.map(item => item.result.decision) };
+      const judge = await invokeRole({ runtime, queue, runId, roleId: "judge", level, taskRoot, packageContract: judgePackage, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "worker.v1", parseOptions: { packageContract: judgePackage }, gatewayCall });
       judge.complete({ outcome: judge.result.summary });
       const outcome = String(judge.result.summary).trim().toUpperCase().split(/[^A-Z_]/)[0];
       if (outcome === "PASS") final = { decision: "PASS", summary: judge.result.summary, blockers: [], evidence_refs: [reviewEvidence.base_evidence_hash], required_actions: [], schema_version: 1 };

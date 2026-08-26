@@ -13,6 +13,9 @@ import { applyRunControlAtBoundary, blockerFingerprint, requestRunControl } from
 import { targetedSteps } from "../src/work-executor.mjs";
 import { callGateway } from "../src/gateway.mjs";
 import { transactionAwaitViolations } from "../src/transaction-guard.mjs";
+import { DEFAULT_QUALITY_CONTRACTS } from "../src/quality-contracts.mjs";
+import { rolePrompt } from "../src/role-contracts.mjs";
+import { reviewerPromptContext, reviewerTaskPackage } from "../src/work-executor.mjs";
 
 const CLASSIFICATION = { kind: "task", domain: "workflow", discipline: "general", risk: "low", level: "L2", quality: "mvp", planning_required: true, human_required: false, document_required: false };
 const temp = prefix => fs.mkdtempSync(path.join(process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir(), prefix));
@@ -89,8 +92,11 @@ test("review evidence compacts repeated TS graph and exact-scan metadata without
     assert.ok(Buffer.byteLength(JSON.stringify(evidence)) <= 40_000);
     assert.equal(evidence.source_evidence.length, 6);
     assert.equal(evidence.source_evidence[5].files[3].path, "src/5-3.ts");
-    assert.equal(evidence.source_evidence[0].files[0].exact_term_scan.occurrences[11].count, 12);
+    assert.equal(evidence.source_evidence[0].files[0].exact_term_scan.count_index["anchor-11"].count, 12);
     assert.equal(evidence.source_evidence[0].code_intelligence.adapters[0].unresolved_call_categories.project_internal_unmapped, 1304);
+    const contract = { role_id: "reviewer", version: "1.0.0", purpose: "Independently review immutable evidence.", boundaries: {}, allowed_tools: [], allowed_skills: [], prompt_template_version: "1.0.0", result_schema_key: "reviewer.v1", context_limit_bytes: 65_536 };
+    const prompt = rolePrompt({ contract, qualityContract: DEFAULT_QUALITY_CONTRACTS.find(item => item.level === "mvp"), packageContract: reviewerTaskPackage(evidence, "project_policy", 0), context: reviewerPromptContext({ work_type: "documentation", artifact_type: "document", risk: "medium", quality_mode: "mvp" }, "ru"), resultSchema: "reviewer.v1" });
+    assert.ok(Buffer.byteLength(prompt) <= contract.context_limit_bytes);
   } finally { fx.close(); }
 });
 
