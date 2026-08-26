@@ -221,7 +221,7 @@ test("a complete-file exact term scan proves that a requested identifier is abse
   assert.deepEqual(absent, { term: "avgCost", count: 0, matched_lines: 0, locations: [], locations_truncated: false });
   assert.equal(present.count, 2000);
   assert.equal(present.matched_lines, 2000);
-  assert.equal(present.locations.length, 16);
+  assert.equal(present.locations.length, 4);
   assert.equal(present.locations_truncated, true);
   db.close(); fs.rmSync(root, { recursive: true, force: true });
 });
@@ -241,6 +241,24 @@ test("delegation routing metadata cannot displace exact domain anchors from work
   assert.match(collected.files[0].text, /мпКалькуляцияЮнитЭкономики/);
   assert.ok(collected.files[0].segments.some(segment => segment.reason === "supplemental_objective_match"));
   assert.equal(collected.files[0].exact_term_scan.occurrences.find(item => item.term === "мпКалькуляцияЮнитЭкономики").count, 1);
+  db.close(); fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("many allowed files share one exact-location evidence budget instead of starving all source text", () => {
+  const { root, producer, db } = fixture("workflow-source-shared-exact-budget-", { sources: ["src/**"] });
+  const paths = [];
+  for (let index = 0; index < 24; index += 1) {
+    const relative = `src/cost-${index}.mjs`;
+    paths.push(relative);
+    fs.writeFileSync(path.join(producer, relative), Array.from({ length: 180 }, (_, line) => `export const avgCost${line} = ${line};`).join("\n"));
+  }
+  const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" });
+  const collected = collectSourceFiles(discovery.roots, paths, sourceScope(discovery.source_scope), 40_000, { query: "avgCost" });
+  assert.equal(collected.files.filter(file => file.status === "read").length, 24);
+  assert.ok(collected.files.every(file => file.status !== "budget_exhausted"));
+  assert.ok(collected.files.reduce((total, file) => total + file.exact_term_scan.occurrences[0].locations.length, 0) <= 96);
+  assert.ok(Buffer.byteLength(JSON.stringify(collected)) < 80_000);
+  assert.ok(collected.bytes > 20_000);
   db.close(); fs.rmSync(root, { recursive: true, force: true });
 });
 
