@@ -4,6 +4,15 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_21_2026_08_26" status="working">
+
+## 0.5.21 — 2026-08-26
+
+- Strategy replan теперь строит каталог зарегистрированных checks с effective quality и artifact scope, а не падает с `QUALITY_LEVEL_INVALID` после валидного решения `REPLAN`.
+- Model-bearing recovery допускается только при оставшемся workflow call budget. Исчерпанный бюджет превращается в ограниченный `NO_VIABLE_STRATEGY` до создания reviewer/replan/source step, поэтому terminal run не оставляет runnable steps.
+
+</section>
+
 <section id="0_5_20_2026_08_26" status="working">
 
 ## 0.5.20 — 2026-08-26
