@@ -4,6 +4,15 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_17_2026_08_26" status="working">
+
+## 0.5.17 — 2026-08-26
+
+- Reviewer admissibility теперь разрешает annotated exact IDs, устойчивые aliases по `plan_step` и aliases analytical conclusions, не принимая неизвестные ссылки. Поэтому повторный review сохраняет каноническое cross-layer противоречие после targeted correction.
+- Run statistics берёт число correction cycles из lifecycle-записи workflow, а не суммирует admission-time metadata Gateway, поэтому live-отчёт показывает фактическое число завершённых циклов.
+
+</section>
+
 <section id="0_5_16_2026_08_26" status="working">
 
 ## 0.5.16 — 2026-08-26

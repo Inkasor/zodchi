@@ -5,7 +5,7 @@ const FORBIDDEN_PATH_SEGMENTS = new Set(["__proto__", "prototype", "constructor"
 function collectReferences(value, references = new Set()) {
   if (Array.isArray(value)) for (const item of value) collectReferences(item, references);
   else if (value && typeof value === "object") for (const [key, item] of Object.entries(value)) {
-    if (/(?:^id$|_id$|_ref$|_refs$|hash$)/i.test(key)) {
+    if (/(?:^id$|_id$|_ref$|_refs$|hash$|^plan_step$)/i.test(key)) {
       for (const candidate of Array.isArray(item) ? item : [item]) if (typeof candidate === "string" && candidate) references.add(candidate);
     }
     collectReferences(item, references);
@@ -39,8 +39,12 @@ function resolvesStructuredEvidence(reference, reviewEvidence) {
       cursor = cursor.find(item => item && typeof item === "object" && ["id", "claim_id", "plan_step", "key", "edge", "scan_id", "range_id"].some(field => item[field] === segment));
       if (cursor === undefined) return false;
     } else {
-      if (!Object.prototype.hasOwnProperty.call(Object(cursor), segment)) return false;
-      cursor = cursor[segment];
+      if (Object.prototype.hasOwnProperty.call(Object(cursor), segment)) cursor = cursor[segment];
+      else {
+        const semanticCatalogs = [cursor.conclusions, cursor.decision_artifacts].filter(Array.isArray);
+        cursor = semanticCatalogs.flat().find(item => item && typeof item === "object" && ["id", "claim_id", "plan_step", "key"].some(field => item[field] === segment));
+        if (cursor === undefined) return false;
+      }
     }
   }
   if (parsed.expected === null) return true;
@@ -48,7 +52,8 @@ function resolvesStructuredEvidence(reference, reviewEvidence) {
 }
 
 function referenceResolves(reference, known, reviewEvidence) {
-  return known.has(reference) || resolvesStructuredEvidence(reference, reviewEvidence);
+  const exactReference = typeof reference === "string" ? reference.split(":", 1)[0] : reference;
+  return known.has(reference) || known.has(exactReference) || resolvesStructuredEvidence(reference, reviewEvidence);
 }
 
 export function blockerAdmissibility(opinions, reviewEvidence) {

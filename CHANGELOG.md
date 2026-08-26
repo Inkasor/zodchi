@@ -4,6 +4,15 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_17_2026_08_26" status="working">
+
+## 0.5.17 — 2026-08-26
+
+- Reviewer admissibility resolves annotated exact IDs, stable `plan_step` aliases and analytical conclusion aliases without accepting unknown references. Repeated review can therefore preserve a canonical cross-layer contradiction after targeted correction.
+- Run statistics take correction-cycle totals from the workflow lifecycle record instead of summing admission-time Gateway metadata, so live reports expose the actual number of completed correction cycles.
+
+</section>
+
 <section id="0_5_16_2026_08_26" status="working">
 
 ## 0.5.16 — 2026-08-26

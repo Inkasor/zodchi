@@ -68,7 +68,9 @@ export function workflowRunStatistics(dbFile, runId) {
       total.input += integer(call.tokens.input); total.cached += integer(call.tokens.cached);
       total.output += integer(call.tokens.output); total.reasoning += integer(call.tokens.reasoning); return total;
     }, { input: 0, cached: 0, output: 0, reasoning: 0 });
-    const correctionCycles = calls.reduce((sum, call) => sum + integer(call.correction_cycles), 0);
+    // The workflow row is the lifecycle authority. Per-call receipts describe admission-time metadata
+    // and may legitimately remain at zero for calls made inside a later correction cycle.
+    const correctionCycles = integer(run.correction_cycles);
     const retryCount = calls.reduce((sum, call) => sum + integer(call.retries), 0) + attempts.filter(item => item.attempt_no > 1).length;
     const storage = storageAudit(db);
     return {

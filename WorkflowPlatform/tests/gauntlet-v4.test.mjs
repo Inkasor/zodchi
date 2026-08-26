@@ -168,6 +168,26 @@ test("structured references resolve symbolic array selectors and deterministic v
   assert.equal(blockerAdmissibility([falsePredicate], evidence)[0].status, "unknown");
 });
 
+test("semantic evidence aliases and annotated exact ids remain resolvable", () => {
+  const evidence = {
+    analytical_evidence: { conclusions: [{ claim_id: "claim_client", plan_step: "canonical_evidence_synthesis", summary: "claims observed" }] },
+    cross_layer_chains: [{ claim_id: "claim_cross_layer", coverage: "incomplete" }]
+  };
+  const opinion = { role: "adversarial_reviewer", result: {
+    decision: "CHANGES_REQUESTED",
+    evidence_refs: [
+      "canonical_evidence_synthesis: claims client transition",
+      "claim_client: transition must remain unknown",
+      "claim_cross_layer: api->client_mapping status=unknown",
+      "review_evidence.analytical_evidence.claim_client"
+    ],
+    blockers: [{ code: "UNSUPPORTED_CLIENT_STATE_EDGE", message: "Narrative and canonical coverage disagree", path: "src/main.jsx" }]
+  } };
+  const result = blockerAdmissibility([opinion], evidence);
+  assert.equal(result[0].status, "supported");
+  assert.equal(result[0].unresolvable_evidence_refs.length, 0);
+});
+
 test("typed targeted verification distinguishes observed, missing and unknown", () => {
   const evidence = { exact_scan_catalog: [{ scan_id: "scan-a", path: "src/a.ts", scope: "complete_file", occurrences: [{ term: "avgCost", count: 2 }, { term: "missingField", count: 0 }] }] };
   const request = (subject, path = "src/a.ts") => ({ kind: "exact_term", subject, from: null, to: null, path, evidence_refs: [] });
