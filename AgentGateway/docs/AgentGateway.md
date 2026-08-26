@@ -1,4 +1,4 @@
-<document id="agent_gateway" status="accepted" authority="zodchi" version="0.3.1" language="en">
+<document id="agent_gateway" status="accepted" authority="zodchi" version="0.5.0" language="en">
   <title>AgentGateway runtime contract</title>
   <purpose>Perform one bounded model call through a configured harness or compatible API and return the result to WorkflowPlatform.</purpose>
   <responsibilities status="accepted">
@@ -7,6 +7,7 @@
     <rule id="receipt_only">Gateway stores normalized technical receipts, token and cache metrics, duration, compact errors, and artifact references; it does not store full prompts or responses.</rule>
     <rule id="workflow_owns_checks">WorkflowPlatform owns project checks, corrections, reviewer policy, and completion state.</rule>
     <rule id="external_local_state">Gateway database, local policy overlay, authentication, and provider state stay outside the replaceable release.</rule>
+    <rule id="process_tree_cancellation">Receipts declare cancellation capability and mode. Process-backed harness cancellation terminates the complete provider process tree; WorkflowPlatform owns the corresponding lease, attempt, and run state.</rule>
   </responsibilities>
   <security status="accepted">
     <rule id="no_shell_interpolation">Harness commands use bounded argument arrays without shell interpolation.</rule>

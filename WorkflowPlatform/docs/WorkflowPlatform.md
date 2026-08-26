@@ -1,4 +1,4 @@
-<document id="workflow_platform" version="0.4.0" status="working" kind="governance" language="en">
+<document id="workflow_platform" version="0.5.0" status="working" kind="governance" language="en">
 <metadata owner="workflow-platform" authority="Zodchi">
 </metadata>
 <section id="documentator_contract" status="accepted">
@@ -51,6 +51,27 @@ Lexical candidates expand through a bounded language adapter: TypeScript Compile
 </rule>
 <rule id="code_search_is_reproducible" status="accepted">
 The `code-search --project &lt;id&gt; --query &lt;text&gt;` command returns the same lexical and language-graph package used during planning, including timing and completeness statistics.
+</rule>
+<section id="evidence_gauntlet" status="accepted">
+Workflow completion is governed by registered deterministic evidence and the canonical completion blockers; planner completion criteria are advisory.
+</section>
+<rule id="owner_objective_is_verbatim" status="accepted">
+Review receives the original owner message verbatim from conversation history together with a measured change, analytical, or mixed evidence package.
+</rule>
+<rule id="run_relative_writes" status="accepted">
+Every writable root is baselined before productive work; committed and working-tree changes are compared with the baseline so a clean final Git status cannot hide an unauthorized run write.
+</rule>
+<rule id="targeted_correction" status="accepted">
+A failed check or primary review gap reruns only the plan steps connected to that evidence. Blocker fingerprints are normalized by the platform and progress snapshots stop a stagnant or diverging loop.
+</rule>
+<rule id="gauntlet_strategy" status="accepted">
+An operational policy selects standard or gauntlet independently of quality. Gauntlet repeats bounded deterministic correction and independent review phases under declared call, time, cycle, cost, and parallelism limits.
+</rule>
+<rule id="post_factum_cost" status="accepted">
+Provider cost is settled from completed receipts. Already admitted parallel calls may cause bounded overshoot; every receipt is retained and no later model call is admitted after exhaustion.
+</rule>
+<rule id="owner_controls" status="accepted">
+The CLI exposes run status, watch, pause, resume, and cancel. Pause applies at a safe unit boundary; cancel terminates the active Gateway process tree and closes its lease and attempt.
 </rule>
 <section id="license" status="accepted">
 WorkflowPlatform is distributed as part of Zodchi under the repository-level MIT License. Copyright 2026 Petr Tsap.
