@@ -122,12 +122,13 @@ test("the primary planned source receives priority and calendar dates do not bec
   fs.writeFileSync(path.join(consumer, "src", "FormModule.bsl"), "Процедура Выгрузить()\n  Сервер.Выгрузить();\nКонецПроцедуры\n");
   const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" });
   const collected = collectSourceFiles(discovery.roots, ["src/ObjectModule.bsl", "consumer/src/FormModule.bsl"], sourceScope(discovery.source_scope), 24_000, {
-    query: "Проверь среднюю себестоимость и схемы около строк 2990–3050, а также историю за 15–22 августа 2026 года"
+    query: "На версии 0.4.8-2026-08-26 и task 01a03a1a-8a72-7493-8723 проверь среднюю себестоимость и схемы около строк 2990–3050, а также историю за 15–22 августа 2026 года"
   });
   assert.ok(collected.files[0].supplied_bytes > collected.files[1].supplied_bytes);
   assert.match(collected.files[0].text, /СредняяСебестоимость/);
   assert.match(collected.files[0].text, /Функция КодСхемыРаботы/);
   assert.equal(collected.files.flatMap(file => file.segments).some(segment => segment.reason === "requested_lines:15-22"), false);
+  assert.equal(collected.files.flatMap(file => file.segments).some(segment => segment.reason === "requested_lines:8-2026" || segment.reason === "requested_lines:7493-8723"), false);
   db.close(); fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -259,6 +260,24 @@ test("many allowed files share one exact-location evidence budget instead of sta
   assert.ok(collected.files.reduce((total, file) => total + file.exact_term_scan.occurrences[0].locations.length, 0) <= 96);
   assert.ok(Buffer.byteLength(JSON.stringify(collected)) < 80_000);
   assert.ok(collected.bytes > 20_000);
+  db.close(); fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("many allowed files spend source bytes on content relevance instead of inventory width", () => {
+  const { root, producer, db } = fixture("workflow-source-ranked-allocation-", { sources: ["src/**"] });
+  const paths = [];
+  for (let index = 0; index < 20; index += 1) {
+    const relative = `src/file-${index}.mjs`;
+    paths.push(relative);
+    const subject = index < 4 ? `export function avgCost${index}(row) {\n${"  const retainedContext = row.value;\n".repeat(120)}  return row.product_unit_economics_by_scheme;\n}\n` : "";
+    fs.writeFileSync(path.join(producer, relative), `${subject}${"const unrelatedValue = 1;\n".repeat(500)}`);
+  }
+  const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" });
+  const collected = collectSourceFiles(discovery.roots, paths, sourceScope(discovery.source_scope), 40_000, { query: "Trace avgCost through product_unit_economics_by_scheme" });
+  const supplied = collected.files.map(file => file.supplied_bytes);
+  assert.ok(Math.min(...supplied.slice(0, 4)) > Math.max(...supplied.slice(12)) * 5);
+  assert.ok(collected.files.slice(0, 4).every(file => file.text.includes("product_unit_economics_by_scheme")));
+  assert.ok(collected.files.every(file => file.status === "read"));
   db.close(); fs.rmSync(root, { recursive: true, force: true });
 });
 
