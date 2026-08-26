@@ -4,6 +4,14 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_15_2026_08_26" status="working">
+
+## 0.5.15 — 2026-08-26
+
+- Factual blocker admissibility теперь безопасно разрешает структурные пути внутри неизменяемого reviewer evidence packet, включая conclusions и cross-layer edge coverage. Детерминированно подтверждённый factual blocker остаётся каноническим и ведёт к targeted correction, а не передаётся модельному Judge как оценочное разногласие.
+
+</section>
+
 <section id="0_5_14_2026_08_26" status="working">
 
 ## 0.5.14 — 2026-08-26

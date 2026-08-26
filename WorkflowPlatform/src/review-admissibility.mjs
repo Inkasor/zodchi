@@ -1,4 +1,6 @@
 const FACTUAL_CODE = /(?:MISSING|ABSENT|NO_|UNKNOWN|FALSE|INCOMPLETE|UNPROVEN|EVIDENCE|EDGE|CHAIN|PATH|GATE|SCAN|SOURCE|PROVENANCE)/i;
+const ABSENCE_CLAIM = /(?:MISSING|ABSENT|NO_|NOT_FOUND|DOES_NOT_EXIST|НЕ\s+(?:НАЙДЕН|СУЩЕСТВУЕТ)|ОТСУТСТВ)/i;
+const FORBIDDEN_PATH_SEGMENTS = new Set(["__proto__", "prototype", "constructor"]);
 
 function collectReferences(value, references = new Set()) {
   if (Array.isArray(value)) for (const item of value) collectReferences(item, references);
@@ -17,6 +19,31 @@ function incompleteEvidence(reviewEvidence) {
   return chains.some(claim => claim.coverage === "incomplete" || (claim.unknown_edges ?? []).length);
 }
 
+function structuredEvidencePath(reference) {
+  if (typeof reference !== "string") return null;
+  const match = reference.match(/^((?:task_package\.)?(?:review_evidence\.)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\.[A-Za-z_][A-Za-z0-9_]*)|(?:\[\d+\]))*)(?=:|$)/);
+  if (!match) return null;
+  let value = match[1];
+  if (value.startsWith("task_package.review_evidence.")) value = value.slice("task_package.review_evidence.".length);
+  else if (value.startsWith("review_evidence.")) value = value.slice("review_evidence.".length);
+  return value.match(/[A-Za-z_][A-Za-z0-9_]*|\d+/g);
+}
+
+function resolvesStructuredEvidence(reference, reviewEvidence) {
+  const segments = structuredEvidencePath(reference);
+  if (!segments?.length || segments.some(segment => FORBIDDEN_PATH_SEGMENTS.has(segment))) return false;
+  let cursor = reviewEvidence;
+  for (const segment of segments) {
+    if (cursor === null || cursor === undefined || !Object.prototype.hasOwnProperty.call(Object(cursor), segment)) return false;
+    cursor = cursor[segment];
+  }
+  return true;
+}
+
+function referenceResolves(reference, known, reviewEvidence) {
+  return known.has(reference) || resolvesStructuredEvidence(reference, reviewEvidence);
+}
+
 export function blockerAdmissibility(opinions, reviewEvidence) {
   const known = collectReferences(reviewEvidence);
   if (reviewEvidence?.base_evidence_hash) known.add(reviewEvidence.base_evidence_hash);
@@ -25,8 +52,8 @@ export function blockerAdmissibility(opinions, reviewEvidence) {
   const boundedOrIncomplete = incompleteEvidence(reviewEvidence);
   return (opinions ?? []).flatMap(opinion => (opinion.result?.blockers ?? []).map((blocker, blockerIndex) => {
     const refs = [...new Set((opinion.result?.evidence_refs ?? []).filter(Boolean))];
-    const resolvable = refs.filter(ref => known.has(ref));
-    const unresolvable = refs.filter(ref => !known.has(ref));
+    const resolvable = refs.filter(ref => referenceResolves(ref, known, reviewEvidence));
+    const unresolvable = refs.filter(ref => !referenceResolves(ref, known, reviewEvidence));
     const factual = FACTUAL_CODE.test(`${blocker.code} ${blocker.message}`);
     let status = "supported", reason = factual ? "factual blocker has resolvable primary evidence" : "evaluative opinion is preserved for typed arbitration";
     if (!blocker?.code || !blocker?.message) { status = "invalid"; reason = "blocker lacks code or message"; }
@@ -34,7 +61,7 @@ export function blockerAdmissibility(opinions, reviewEvidence) {
       status = "contradicted"; reason = "a referenced complete exact scan contains the allegedly absent subject";
     }
     else if (factual && (!resolvable.length || unresolvable.length)) { status = "unknown"; reason = "factual blocker does not resolve entirely to supplied evidence"; }
-    else if (factual && boundedOrIncomplete && /(?:MISSING|ABSENT|NO_|FALSE|UNKNOWN|INCOMPLETE|UNPROVEN|EDGE|CHAIN|PATH)/i.test(`${blocker.code} ${blocker.message}`)) {
+    else if (factual && boundedOrIncomplete && ABSENCE_CLAIM.test(`${blocker.code} ${blocker.message}`)) {
       status = "unknown"; reason = "bounded, truncated or incomplete evidence cannot prove absence";
     }
     return {
@@ -58,4 +85,8 @@ export function admissibleOpinionDecision(opinion, admissibility) {
   if (opinion.result?.decision === "PASS") return "PASS";
   const supported = admissibility.filter(item => item.opinion_role === opinion.role && item.status === "supported");
   return supported.length ? opinion.result.decision : "PASS";
+}
+
+export function hasSupportedFactualBlocker(admissibility) {
+  return (admissibility ?? []).some(item => item.blocker_kind === "factual" && item.status === "supported");
 }

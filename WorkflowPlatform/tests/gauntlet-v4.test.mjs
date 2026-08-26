@@ -17,7 +17,7 @@ import { DEFAULT_QUALITY_CONTRACTS } from "../src/quality-contracts.mjs";
 import { rolePrompt } from "../src/role-contracts.mjs";
 import { reviewerPromptContext, reviewerTaskPackage } from "../src/work-executor.mjs";
 import { completionBlockers } from "../src/state-machine.mjs";
-import { blockerAdmissibility } from "../src/review-admissibility.mjs";
+import { blockerAdmissibility, admissibleOpinionDecision, hasSupportedFactualBlocker } from "../src/review-admissibility.mjs";
 import { executeTargetedVerification } from "../src/targeted-verification.mjs";
 
 const CLASSIFICATION = { kind: "task", domain: "workflow", discipline: "general", risk: "low", level: "L2", quality: "mvp", planning_required: true, human_required: false, document_required: false };
@@ -115,6 +115,36 @@ test("a positive referenced exact scan contradicts an absence blocker", () => {
   const evidence = { exact_scan_catalog: [{ scan_id: "scan-1", occurrences: [{ term: "avgCost", count: 3 }] }] };
   const opinions = [{ role: "reviewer", result: { decision: "REJECT", evidence_refs: ["scan-1"], blockers: [{ code: "AVG_COST_ABSENT", message: "avgCost is absent", path: null }] } }];
   assert.equal(blockerAdmissibility(opinions, evidence)[0].status, "contradicted");
+});
+
+test("structured review packet paths support a factual cross-layer inconsistency blocker", () => {
+  const evidence = {
+    owner_objective: { verbatim: "An observed edge requires transition provenance; otherwise it is unknown." },
+    analytical_evidence: { conclusions: [{ summary: "API response to client mapping is observed locally." }] },
+    cross_layer_chains: [{ edge_coverage: [{ edge: "api->client_mapping", status: "unknown" }] }]
+  };
+  const opinion = { role: "adversarial_reviewer", result: {
+    decision: "CHANGES_REQUESTED",
+    evidence_refs: [
+      "owner_objective.verbatim: owner constraint",
+      "review_evidence.analytical_evidence.conclusions[0]: claimed observed",
+      "task_package.review_evidence.cross_layer_chains[0].edge_coverage[0]: canonical unknown"
+    ],
+    blockers: [{ code: "UNSUPPORTED_API_TO_CLIENT_EDGE", message: "The conclusion claims an observed edge while canonical evidence says unknown.", path: "docs/analysis.md" }]
+  } };
+  const result = blockerAdmissibility([opinion], evidence);
+  assert.equal(result[0].status, "supported");
+  assert.equal(result[0].unresolvable_evidence_refs.length, 0);
+  assert.equal(admissibleOpinionDecision(opinion, result), "CHANGES_REQUESTED");
+  assert.equal(hasSupportedFactualBlocker(result), true);
+});
+
+test("invalid or unsafe structured evidence paths remain unresolved", () => {
+  const evidence = { owner_objective: { verbatim: "objective" } };
+  const opinion = { role: "reviewer", result: { decision: "REJECT", evidence_refs: ["review_evidence.owner_objective.missing", "review_evidence.__proto__.polluted"], blockers: [{ code: "EVIDENCE_INVALID", message: "Evidence is invalid", path: null }] } };
+  const result = blockerAdmissibility([opinion], evidence);
+  assert.equal(result[0].status, "unknown");
+  assert.equal(result[0].unresolvable_evidence_refs.length, 2);
 });
 
 test("typed targeted verification distinguishes observed, missing and unknown", () => {
