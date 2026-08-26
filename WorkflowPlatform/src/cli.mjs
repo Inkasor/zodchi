@@ -45,7 +45,7 @@ else if (process.argv[2] === "code-search") {
   try {
     const discovery = readProjectContext(args.project, runtime.db), scope = sourceScope(discovery.source_scope), query = args.query ?? "";
     const expanded = expandTerms(discovery.roots, scope, query), lexical = searchSources(discovery.roots, scope, expanded.terms);
-    const intelligence = buildCodeIntelligence(discovery.roots, scope, expanded.terms, lexical, { primaryTerms: expanded.code });
+    const intelligence = buildCodeIntelligence(discovery.roots, scope, expanded.terms, lexical, { primaryTerms: expanded.code, contextTerms: expanded.subject });
     console.log(JSON.stringify({ query, derived_from: { request_words: expanded.subject, identifiers: expanded.harvested, explicit_identifiers: expanded.code }, result: mergeGraphMatches(lexical, intelligence) }, null, 2));
   } finally { runtime.db.close(); }
 }

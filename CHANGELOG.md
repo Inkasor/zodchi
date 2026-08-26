@@ -4,6 +4,17 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_4_1_2026_08_26" status="working">
+
+## 0.4.1 — 2026-08-26
+
+- Exact identifiers found near the end of a large source file now displace earlier generic matches instead of disappearing behind the per-file line cap.
+- Long workflow instructions retain enough domain vocabulary for the two-pass bridge; operational wording at the start no longer displaces the actual subject at the end.
+- Planner evidence reserves both exact lexical anchors and the strongest language-graph paths, keeping prior analysis and implementation sources together under one measured byte budget.
+- Global graph detail and repeated excerpts are compacted before relevant files are removed, while a final fallback still guarantees the role prompt stays inside its contract.
+
+</section>
+
 <section id="0_4_0_2026_08_26" status="working">
 
 ## 0.4.0 — 2026-08-26
