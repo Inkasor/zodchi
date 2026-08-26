@@ -4,6 +4,14 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_14_2026_08_26" status="working">
+
+## 0.5.14 — 2026-08-26
+
+- Planner evidence fitting теперь удаляет дублирующие AST transitions и diagnostics до сокращения exact-term path index. Поэтому live Dashboard locator packet сохраняет все доказанные релевантные пути для назначения source collection и не просит владельца повторять платформенный сбор.
+
+</section>
+
 <section id="0_5_13_2026_08_26" status="working">
 
 ## 0.5.13 — 2026-08-26
