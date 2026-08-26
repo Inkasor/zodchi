@@ -175,6 +175,7 @@ test("structured planner-worker-gate-reviewer PASS completes and raw planner pro
   assert.match(env.plannerPrompt, /more than four source paths/);
   assert.match(env.plannerPrompt, /split into sequential read-only investigation steps/);
   assert.match(env.plannerPrompt, /production definitions, their production call sites/);
+  assert.match(env.plannerPrompt, /discovered production symbol names and exact line anchors/);
   assert.match(env.plannerPrompt, /Keep separate mechanisms separate/);
   assert.match(env.workerPrompt, /code_intelligence/);
   assert.match(env.workerPrompt, /compiler_available/);
