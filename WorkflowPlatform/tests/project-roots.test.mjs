@@ -493,7 +493,7 @@ test("TypeScript compiler intelligence resolves JavaScript calls across files", 
   fs.mkdirSync(path.join(producer, "node_modules"), { recursive: true });
   fs.symlinkSync(localTypeScript, path.join(producer, "node_modules", "typescript"), "junction");
   fs.writeFileSync(path.join(producer, "src", "cost.mjs"), `export function calculateAverageCost(unit) { return unit.cost; }\n`);
-  fs.writeFileSync(path.join(producer, "src", "report.mjs"), `import { calculateAverageCost } from "./cost.mjs";\nexport function buildReport(unit) { return calculateAverageCost(unit); }\n`);
+  fs.writeFileSync(path.join(producer, "src", "report.mjs"), `import { calculateAverageCost } from "./cost.mjs";\nimport * as ts from "typescript";\nexport function buildReport(unit, callback) {\n  [unit.cost].map(value => value);\n  ts.createProgram([], {});\n  callback();\n  unit.computeDynamicCost();\n  return calculateAverageCost(unit);\n}\n`);
   const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" }), scope = sourceScope(discovery.source_scope);
   const lexical = searchSources(discovery.roots, scope, ["buildReport"]);
   const graph = buildCodeIntelligence(discovery.roots, scope, ["buildReport"], lexical);
@@ -501,6 +501,13 @@ test("TypeScript compiler intelligence resolves JavaScript calls across files", 
   assert.equal(graph.adapters.some(adapter => adapter.name === "typescript-compiler" && adapter.compiler_available), true);
   assert.equal(graph.edges.some(edge => edge.type === "calls"), true);
   assert.equal(graph.ranked_files.some(file => file.path === "src/cost.mjs"), true);
+  const adapter = graph.adapters.find(item => item.name === "typescript-compiler");
+  assert.equal(Object.values(adapter.unresolved_call_categories).reduce((total, count) => total + count, 0), adapter.unresolved_calls);
+  assert.ok(adapter.unresolved_call_categories.standard_library > 0);
+  assert.ok(adapter.unresolved_call_categories.external_dependency > 0);
+  assert.ok(adapter.unresolved_call_categories.dynamic_or_untyped > 0);
+  assert.ok(adapter.unresolved_call_categories.project_internal_unmapped > 0);
+  assert.ok(adapter.unresolved_call_samples.dynamic_or_untyped.some(item => item.expression.includes("computeDynamicCost")));
   const merged = mergeGraphMatches(lexical, graph);
   assert.equal(merged.files.some(file => file.path === "src/cost.mjs"), true);
 

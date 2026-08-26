@@ -173,6 +173,8 @@ test("structured planner-worker-gate-reviewer PASS completes and raw planner pro
   assert.equal(env.workerPrompt.includes("RAW_PLANNER_PROSE_MARKER"), false);
   assert.match(env.plannerPrompt, /more than four source paths/);
   assert.match(env.plannerPrompt, /split into sequential read-only investigation steps/);
+  assert.match(env.plannerPrompt, /production definitions, their production call sites/);
+  assert.match(env.plannerPrompt, /Keep separate mechanisms separate/);
   assert.match(env.plannerPrompt, /set artifact_keys=\[\] on every read-only investigation step/);
   assert.match(env.plannerPrompt, /only the one final path requested by the owner/);
   const db = openDb(env.dbFile);
