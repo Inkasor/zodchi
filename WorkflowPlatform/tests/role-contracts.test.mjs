@@ -151,6 +151,10 @@ test("role result schemas reject extra fields, path escapes and false reviewer P
   assert.match(workerPrompt, /analyze only the evidence already present/);
   assert.match(workerPrompt, /complete-file exact term scan with count zero is conclusive negative evidence/);
   assert.match(workerPrompt, /do not return blocked or ask for out-of-scope sources/);
+  const reviewerContract = loadRoleContract(db, "project", "reviewer", "mvp");
+  const reviewerPrompt = rolePrompt({ contract: reviewerContract, qualityContract: loadQualityContract(db, "mvp"), packageContract: { plan: { artifacts: [{ type: "document", required: true }] }, worker_results: [{ artifacts: [], changed_paths: [] }] }, context: {}, resultSchema: "reviewer.v1" });
+  assert.match(reviewerPrompt, /before the documentator/);
+  assert.match(reviewerPrompt, /absence from worker artifacts or changed_paths is not a blocker/);
   assert.equal(parseRoleReceipt(receipt("reviewer", reviewerResult("PASS")), "reviewer.v1", {}).decision, "PASS");
   assert.ok(classificationCatalog(db, "project").routes.length >= 2);
   db.close();
