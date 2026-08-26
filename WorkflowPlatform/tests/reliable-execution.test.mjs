@@ -76,6 +76,25 @@ test("checkout is atomic, one task stays sequential and independent tasks can ru
   cleanup(root, runtime);
 });
 
+test("role-aware checkout cannot lease a sibling role and an abandoned phase releases its lease", () => {
+  const { root, runtime, queue } = fixture("workflow-role-aware-lease-");
+  runtime.db.prepare("INSERT OR IGNORE INTO roles(id,name) VALUES('adversarial_reviewer','Test adversarial reviewer role')").run();
+  const runId = plannedRun(runtime, "parallel review", [
+    { key: "review-a", role: "reviewer" },
+    { key: "review-b", role: "adversarial_reviewer" }
+  ]);
+  runtime.db.prepare("UPDATE workflow_steps SET ordinal=1,role_id=CASE step_key WHEN 'review-a' THEN 'reviewer' ELSE 'adversarial_reviewer' END WHERE run_id=?").run(runId);
+  queue.enqueueRun(runId);
+  const lease = queue.checkout({ ownerId: "workflow:adversarial_reviewer", runId, roleId: "adversarial_reviewer" });
+  const leasedStep = runtime.db.prepare("SELECT role_id FROM workflow_steps WHERE id=?").get(lease.stepId);
+  assert.equal(leasedStep.role_id, "adversarial_reviewer");
+  const ids = runtime.db.prepare("SELECT id FROM workflow_steps WHERE run_id=?").all(runId).map(row => row.id);
+  assert.equal(queue.abandonSteps(runId, ids, { reason: "test phase abort" }).length, 2);
+  assert.equal(runtime.db.prepare("SELECT COUNT(*) count FROM leases WHERE released_at IS NULL").get().count, 0);
+  assert.equal(runtime.db.prepare("SELECT COUNT(*) count FROM workflow_steps WHERE run_id=? AND state!='cancelled'").get(runId).count, 0);
+  cleanup(root, runtime);
+});
+
 test("pause/resume preserves the confirmed lifecycle state and cancel revokes active work", () => {
   const { root, runtime, queue } = fixture("workflow-pause-cancel-");
   const runId = plannedRun(runtime, "pause and cancel", [{ key: "worker" }, { key: "reviewer" }]);

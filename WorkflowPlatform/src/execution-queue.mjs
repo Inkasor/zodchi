@@ -136,7 +136,7 @@ export class ExecutionQueue {
     });
   }
 
-  checkout({ ownerId, runId = null, leaseMs = 60_000, at = now() }) {
+  checkout({ ownerId, runId = null, roleId = null, stepKey = null, leaseMs = 60_000, at = now() }) {
     if (!ownerId) throw new Error("LEASE_OWNER_REQUIRED");
     if (!Number.isInteger(leaseMs) || leaseMs < 1) throw new Error("LEASE_DURATION_INVALID");
     return transaction(this.db, () => {
@@ -147,6 +147,8 @@ export class ExecutionQueue {
         WHERE ws.state IN ('ready','retry_scheduled')
           AND (ws.next_attempt_at IS NULL OR ws.next_attempt_at<=?)
           AND (? IS NULL OR ws.run_id=?)
+          AND (? IS NULL OR ws.role_id=?)
+          AND (? IS NULL OR ws.step_key=?)
           AND wr.state IN ('planning','executing','documenting','verifying','review_required','changes_requested','approval_required','documented','retry_scheduled')
           AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.step_id=ws.id AND l.released_at IS NULL)
           AND NOT EXISTS (
@@ -154,7 +156,7 @@ export class ExecutionQueue {
             WHERE previous.run_id=ws.run_id AND previous.ordinal<ws.ordinal
               AND previous.required=1 AND previous.state NOT IN ('completed','documented','cancelled')
           )
-        ORDER BY ws.created_at,ws.run_id,ws.ordinal LIMIT 1`).get(timestamp, runId, runId);
+        ORDER BY ws.created_at,ws.run_id,ws.ordinal LIMIT 1`).get(timestamp, runId, runId, roleId, roleId, stepKey, stepKey);
       if (!step) return null;
       if (step.run_state === "retry_scheduled") pairedState(this.db, step.run_id, step.run_resume_state ?? "executing", timestamp, { reason: "dead-letter retry checked out" }, { clearResume: true });
       if (step.state === "retry_scheduled") entityState(this.db, "workflow_step", step.id, "ready", timestamp, { reason: "retry delay elapsed" });
@@ -251,6 +253,27 @@ export class ExecutionQueue {
   }
 
   recoverExpiredLeases(at = now()) { return transaction(this.db, () => recoverExpiredInternal(this.db, iso(at))); }
+
+  abandonSteps(runId, stepIds, { reason = "phase abandoned", at = now() } = {}) {
+    const ids = [...new Set(stepIds ?? [])];
+    if (!ids.length) return [];
+    return transaction(this.db, () => {
+      const timestamp = iso(at);
+      const abandoned = [];
+      for (const stepId of ids) {
+        const step = this.db.prepare("SELECT * FROM workflow_steps WHERE id=? AND run_id=?").get(stepId, runId);
+        if (!step || TERMINAL_STEP_STATES.has(step.state)) continue;
+        for (const lease of this.db.prepare("SELECT * FROM leases WHERE step_id=? AND released_at IS NULL").all(step.id)) {
+          const attempt = this.db.prepare("SELECT * FROM attempts WHERE lease_id=? ORDER BY ordinal DESC LIMIT 1").get(lease.id);
+          if (attempt && ["pending", "running"].includes(attempt.state)) entityState(this.db, "attempt", attempt.id, "cancelled", timestamp, { reason });
+          this.db.prepare("UPDATE leases SET released_at=?,release_reason='abandoned' WHERE id=?").run(timestamp, lease.id);
+        }
+        if (canTransition("workflow_step", step.state, "cancelled")) entityState(this.db, "workflow_step", step.id, "cancelled", timestamp, { reason });
+        abandoned.push(step.id);
+      }
+      return abandoned;
+    });
+  }
 
   pauseRun(runId, { reason = "paused by operator", at = now() } = {}) {
     return transaction(this.db, () => {
