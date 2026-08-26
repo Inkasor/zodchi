@@ -1,6 +1,6 @@
 {
   "name": "agent-gateway",
-  "version": "0.3.1",
+  "version": "0.5.0",
   "license": "MIT",
   "private": true,
   "type": "module",

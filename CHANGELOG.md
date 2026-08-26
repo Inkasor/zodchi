@@ -4,6 +4,19 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_0_2026_08_26" status="working">
+
+## 0.5.0 — 2026-08-26
+
+- Review now receives the owner's original message verbatim and the platform's canonical completion blockers; planner completion criteria are explicitly advisory.
+- Run evidence distinguishes change, analytical, and mixed work. Writable roots retain a pre-work Git or complete inventory baseline, including initially dirty hashes and committed changes hidden by a clean final status.
+- Operational policies can select a bounded `gauntlet` strategy with targeted correction, independent same-evidence reviewers, deterministic disagreement evidence, progress snapshots, stable blocker fingerprints, and stagnation stops.
+- Cost budgets use post-factum provider receipts with bounded parallel overshoot semantics. Same-ordinal queue phases run concurrently without false `queue_drained` events or async SQLite transactions.
+- Owner commands expose status/watch/pause/resume/cancel. Active cancellation terminates the complete Gateway/provider process tree and late receipts cannot continue a cancelled run.
+- Acceptance coverage A–M exercises verbatim intent, analytical evidence, committed and dirty deltas, targeted replay, cost overshoot, cancellation, pause boundaries, fingerprints, queue phases, transaction safety, and cross-project gate provenance.
+
+</section>
+
 <section id="0_4_4_2026_08_26" status="working">
 
 ## 0.4.4 — 2026-08-26

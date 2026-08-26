@@ -17,6 +17,11 @@
     <step order="5">If the hook changed, ask the person to trust it again in Codex.</step>
   </procedure>
 
+  <operations status="accepted">
+    <rule id="run_observation">Use run-status or run-watch to observe strategy, cycle, active members, gates, primary gap, elapsed time, calls, and cost without reading raw model payloads.</rule>
+    <rule id="run_control">Use run-pause, run-resume, or run-cancel for an existing run; cancellation stops the active process tree and pause takes effect at the next safe unit boundary.</rule>
+  </operations>
+
   <recovery status="accepted">
     <rule id="atomic_installer">The supported installer replaces the program atomically and restores the previous directory on failure.</rule>
     <rule id="no_permanent_backups">Do not leave permanent release duplicates after a successful update.</rule>

@@ -1,4 +1,4 @@
-<document id="zodchi_architecture" status="accepted" authority="zodchi" version="0.4.0-beta.1" language="en">
+<document id="zodchi_architecture" status="accepted" authority="zodchi" version="0.5.0" language="en">
   <title>Zodchi system architecture</title>
 
   <purpose status="accepted">
@@ -29,6 +29,10 @@
     <rule id="human_acceptance">Technical success never implies visual, gameplay, product, business, access, publication, or deployment acceptance.</rule>
     <rule id="conversation_language">Response language comes from an explicit host value when available, then installation preference, then current conversation; the current user language has priority.</rule>
     <rule id="source_truth">Source files remain authoritative; language adapters report coverage, ambiguity, and truncation and return locations rather than replacing source with an inferred summary.</rule>
+    <rule id="completion_truth">The registered completion blockers are the sole canonical completion authority; planner criteria remain advisory.</rule>
+    <rule id="run_evidence">Review compares the verbatim owner objective with run-relative Git or inventory changes, deterministic gates, analytical conclusions, and retained primary source evidence.</rule>
+    <rule id="bounded_gauntlet">A project may explicitly select the Gauntlet improvement strategy: targeted corrections and independent same-evidence reviews repeat only while measurable progress and declared budgets permit.</rule>
+    <rule id="interruptible_execution">Gateway invocations declare cancellation capability; owner cancellation terminates the complete provider process tree, while pause waits for a safe execution boundary.</rule>
   </contracts>
 
   <storage status="accepted">
