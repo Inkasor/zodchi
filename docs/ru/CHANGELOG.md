@@ -4,6 +4,16 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_4_4_2026_08_26" status="working">
+
+## 0.4.4 — 2026-08-26
+
+- Последовательные worker-шаги теперь получают ограниченный структурированный handoff итогов, evidence и artifacts завершённых предыдущих шагов.
+- Шаги синтеза и передачи в documentation больше не теряют цепочку доказательств, когда их собственный allowed path — только ещё не созданный итоговый документ.
+- Handoff предыдущих результатов сообщает retained/total counts и явное усечение в пределах role prompt budget.
+
+</section>
+
 <section id="0_4_3_2026_08_26" status="working">
 
 ## 0.4.3 — 2026-08-26

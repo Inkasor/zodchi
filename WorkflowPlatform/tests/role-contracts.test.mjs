@@ -360,7 +360,7 @@ test("independent plan steps using one role receive independent role call budget
   plan.steps = ["first-analysis", "second-analysis"].map(key => ({
     key, role: "worker", objective: `Complete ${key}`, allowed_paths: [], artifact_keys: [], check_ids: ["check-ok"], required: true, irreversible: false, max_attempts: 1
   }));
-  let workerCalls = 0;
+  let workerCalls = 0, secondPrompt = "";
   const result = await processMessage({
     message: "Run two bounded analysis packages", project: env.project, dbFile: env.dbFile,
     workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, classificationResult: classification(false),
@@ -368,7 +368,8 @@ test("independent plan steps using one role receive independent role call budget
       if (request.role === "planner") return receipt("planner", plan);
       if (request.role === "worker") {
         workerCalls += 1;
-        return receipt("worker", { schema_version: 1, status: "completed", summary: `Completed package ${workerCalls}.`, changed_paths: [], artifacts: [], evidence: [request.taskId], questions: [] }, String(workerCalls));
+        if (workerCalls === 2) secondPrompt = fs.readFileSync(request.taskFile, "utf8");
+        return receipt("worker", { schema_version: 1, status: "completed", summary: `Completed package ${workerCalls}.`, changed_paths: [], artifacts: [], evidence: [`evidence-from-package-${workerCalls}`], questions: [] }, String(workerCalls));
       }
       throw new Error(`unexpected role ${request.role}`);
     },
@@ -376,6 +377,9 @@ test("independent plan steps using one role receive independent role call budget
   });
   assert.equal(workerCalls, 2);
   assert.equal(result.execution.status, "completed");
+  assert.match(secondPrompt, /prior_worker_results/);
+  assert.match(secondPrompt, /Completed package 1\./);
+  assert.match(secondPrompt, /evidence-from-package-1/);
   fs.rmSync(env.root, { recursive: true, force: true });
 });
 
