@@ -4,6 +4,15 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_24_2026_08_26" status="working">
+
+## 0.5.24 — 2026-08-26
+
+- Worker prompts now receive only corpus-scan facts selected by that plan step's objective. Full run-wide scan evidence remains canonical, while unrelated pathless steps no longer inherit every term and partition as mandatory context.
+- Hook isolation is covered explicitly: distinct event keys always create distinct runs even for an identical project and payload; only an exact repeated source/key/payload tuple is idempotent.
+
+</section>
+
 <section id="0_5_23_2026_08_26" status="working">
 
 ## 0.5.23 — 2026-08-26

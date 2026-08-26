@@ -124,12 +124,20 @@ function reviewCodeIntelligenceEvidence(sourceMatches) {
   };
 }
 
-function compactCorpusExactScan(scan) {
+export function compactCorpusExactScan(scan, { intent = null } = {}) {
   if (!scan) return null;
+  const normalizedIntent = intent === null ? null : String(intent).toLowerCase();
+  const occurrences = normalizedIntent === null
+    ? (scan.occurrences ?? [])
+    : (scan.occurrences ?? []).filter(item => normalizedIntent.includes(String(item.term ?? "").toLowerCase()));
+  // A corpus scan is run-wide evidence. A worker receives only the claims its package asks it to
+  // inspect; otherwise one broad owner request makes every unrelated/pathless step carry every
+  // occurrence and every per-partition fact as mandatory context.
+  if (normalizedIntent !== null && occurrences.length === 0) return null;
   return {
-    scan_id: scan.scan_id, scope: scan.scope, match: scan.match, terms: scan.terms,
+    scan_id: scan.scan_id, scope: scan.scope, match: scan.match, terms: occurrences.map(item => item.term),
     completeness: scan.completeness, boundary: scan.boundary,
-    occurrences: (scan.occurrences ?? []).map(item => ({ ...item, locations: (item.locations ?? []).slice(0, 4), locations_truncated: item.locations_truncated || (item.locations ?? []).length > 4 })),
+    occurrences: occurrences.map(item => ({ ...item, locations: (item.locations ?? []).slice(0, 4), locations_truncated: item.locations_truncated || (item.locations ?? []).length > 4 })),
     covered_files_ref: scan.provenance?.inventory_hash ?? null,
     provenance: scan.provenance
   };
@@ -1153,7 +1161,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       plan_inputs: plan.inputs ?? [],
       prior_worker_results: compactPriorWorkerResults(priorWorkerResultsForStep([...workerResults, ...cycleResults], plannedStep.key, correctionReview)),
       code_intelligence: compactCodeIntelligenceEvidence(plannerSourceMatches),
-      corpus_exact_scan: compactCorpusExactScan(corpusExactScan),
+      corpus_exact_scan: compactCorpusExactScan(corpusExactScan, { intent: plannedStep.objective }),
       git_history: collectGitHistory(discovery.roots ?? [], plannedStep.allowed_paths, sourceScope(discovery.source_scope), { enabled: discovery.git?.enabled === true })
     };
     const qualityContract = loadQualityContract(runtime.db, level);

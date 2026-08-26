@@ -10,7 +10,7 @@ import { BudgetManager } from "../src/budget.mjs";
 import { now } from "../src/db.mjs";
 import { buildReviewEvidence, captureRunBaselines, claimCenteredReviewEvidence, recordRunEvidence, runChangeEvidence } from "../src/run-evidence.mjs";
 import { applyRunControlAtBoundary, blockerFingerprint, evidenceFrontierFingerprint, recordProgressSnapshot, requestRunControl, semanticGapFingerprint } from "../src/progress-supervisor.mjs";
-import { consiliumRoles, correctionCallFloor, executeVerificationWithCorpusFallback, invokeReviewerWithSchemaRepair, priorWorkerResultsForStep, recoveryRoute, registeredReplanCatalog, remainingWorkflowCalls, reviewPhaseCallFloor, settleAdmittedReviewInvocations, targetedSteps, validRecoverySelection } from "../src/work-executor.mjs";
+import { compactCorpusExactScan, consiliumRoles, correctionCallFloor, executeVerificationWithCorpusFallback, invokeReviewerWithSchemaRepair, priorWorkerResultsForStep, recoveryRoute, registeredReplanCatalog, remainingWorkflowCalls, reviewPhaseCallFloor, settleAdmittedReviewInvocations, targetedSteps, validRecoverySelection } from "../src/work-executor.mjs";
 import { selectFlowEvidenceAdapter } from "../src/evidence-flow-adapters.mjs";
 import { callGateway } from "../src/gateway.mjs";
 import { transactionAwaitViolations } from "../src/transaction-guard.mjs";
@@ -37,6 +37,21 @@ const TEST_FLOW = {
 };
 const temp = prefix => fs.mkdtempSync(path.join(process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir(), prefix));
 const git = (root, ...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", windowsHide: true });
+
+test("worker corpus packets contain only terms selected by the step intent", () => {
+  const occurrence = term => ({ term, count: 0, locations: [], by_partition: [{ root: "primary", partition: ".bsl", count: 0, completeness: "complete" }] });
+  const scan = {
+    scan_id: "scan-many", scope: "complete_corpus", match: "literal_case_insensitive", completeness: "complete",
+    boundary: { authority: "registered_project_source_scope", enumeration_complete: true },
+    provenance: { inventory_hash: "inventory" },
+    occurrences: [occurrence("avgCost"), occurrence("ЧислоJSON"), occurrence("quality_mode")]
+  };
+  assert.equal(compactCorpusExactScan(scan, { intent: "Подтверди новый run и lifecycle" }), null);
+  const packet = compactCorpusExactScan(scan, { intent: "Докажи полный avgCost scan и BSL partition" });
+  assert.deepEqual(packet.terms, ["avgCost"]);
+  assert.deepEqual(packet.occurrences.map(item => item.term), ["avgCost"]);
+  assert.equal(packet.boundary.enumeration_complete, true);
+});
 
 function fixture(prefix, message = "Точная исходная формулировка владельца — без пересказа.") {
   const root = temp(prefix), projectRoot = path.join(root, "project"), runtime = new Runtime(path.join(root, "workflow.sqlite"));
