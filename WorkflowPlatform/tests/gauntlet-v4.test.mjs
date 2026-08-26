@@ -10,7 +10,8 @@ import { BudgetManager } from "../src/budget.mjs";
 import { now } from "../src/db.mjs";
 import { buildReviewEvidence, captureRunBaselines, claimCenteredReviewEvidence, recordRunEvidence, runChangeEvidence } from "../src/run-evidence.mjs";
 import { applyRunControlAtBoundary, blockerFingerprint, evidenceFrontierFingerprint, recordProgressSnapshot, requestRunControl, semanticGapFingerprint } from "../src/progress-supervisor.mjs";
-import { consiliumRoles, priorWorkerResultsForStep, recoveryRoute, targetedSteps, validRecoverySelection } from "../src/work-executor.mjs";
+import { consiliumRoles, priorWorkerResultsForStep, recoveryRoute, settleAdmittedReviewInvocations, targetedSteps, validRecoverySelection } from "../src/work-executor.mjs";
+import { selectFlowEvidenceAdapter } from "../src/evidence-flow-adapters.mjs";
 import { callGateway } from "../src/gateway.mjs";
 import { transactionAwaitViolations } from "../src/transaction-guard.mjs";
 import { DEFAULT_QUALITY_CONTRACTS } from "../src/quality-contracts.mjs";
@@ -22,6 +23,18 @@ import { executeTargetedVerification } from "../src/targeted-verification.mjs";
 import { utf8Prefix } from "../src/utf8.mjs";
 
 const CLASSIFICATION = { kind: "task", domain: "workflow", discipline: "general", risk: "low", level: "L2", quality: "mvp", planning_required: true, human_required: false, document_required: false };
+const TEST_FLOW = {
+  key: "test.dataflow", claim_type: "cross_layer_chain", subject: "configured material fields", target: "configured consumer",
+  workflow_keys: ["workflow"], status: "active", material_symbols: ["avgCost"], transition: { adapter: "typescript-compiler", method: "typescript_ast" },
+  nodes: [
+    { key: "producer", step_keys: ["producer"], path_hints: [], anchor_terms: ["avgCost"] },
+    { key: "api", step_keys: ["api", "transform"], path_hints: [], anchor_terms: ["res.json", "avgCost"] },
+    { key: "client_mapping", step_keys: ["client"], path_hints: [], anchor_terms: ["avgCost", "response"] },
+    { key: "state_model", step_keys: ["state"], path_hints: [], anchor_terms: ["avgCost", "state", "setModel"] },
+    { key: "ui_consumer", step_keys: ["ui"], path_hints: [], anchor_terms: ["avgCost", "profit", "<div"] }
+  ],
+  required_edges: ["producer->api", "api->client_mapping", "client_mapping->state_model", "state_model->ui_consumer"]
+};
 const temp = prefix => fs.mkdtempSync(path.join(process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir(), prefix));
 const git = (root, ...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", windowsHide: true });
 
@@ -70,7 +83,7 @@ test("claim-centered review packet records primary coverage and an explicit API-
     source("client", "src/main.jsx", "function normalizeServerModelCost(response) { setModel(response); }")
   ];
   const workers = sources.map(item => ({ plan_step: item.plan_step, status: "completed", summary: `${item.plan_step} material claim`, evidence: [`${item.files[0].path}:1-20`] }));
-  const packet = claimCenteredReviewEvidence(workers, sources, "Trace producer through API to UI consumer");
+  const packet = claimCenteredReviewEvidence(workers, sources, TEST_FLOW);
   assert.ok(packet.claims.every(claim => claim.primary_evidence_refs.length >= 1 && claim.coverage === "sufficient"));
   assert.ok(packet.claims.every(claim => !Object.hasOwn(claim, "summary") && !Object.hasOwn(claim, "conclusion") && !Object.hasOwn(claim, "evidence")));
   assert.equal(packet.cross_layer_chains[0].coverage, "incomplete");
@@ -91,7 +104,7 @@ test("matching endpoint fields stay unknown without a concrete assignment or map
     source("ui", "src/View.jsx", "visibleColumns.add('avgCost');")
   ];
   const workers = sources.map(item => ({ plan_step: item.plan_step, status: "completed", summary: item.plan_step, evidence: [`${item.files[0].path}:1-20`] }));
-  const packet = claimCenteredReviewEvidence(workers, sources, "Trace avgCost from API to UI");
+  const packet = claimCenteredReviewEvidence(workers, sources, TEST_FLOW);
   const chain = packet.cross_layer_chains[0];
   assert.equal(chain.coverage, "incomplete");
   assert.equal(chain.observed_edges.length, 0);
@@ -232,7 +245,7 @@ test("generic material claims use canonical semantic state instead of reviewer w
 
 test("worker narrative does not change stable material claim identity", () => {
   const source = { plan_step: "trace", evidence_hash: "source", files: [{ path: "src/a.ts", text: "--- lines 1-2 (proof) ---\nconst proof = true;", segments: [{ start_line: 1, end_line: 2, reason: "proof", complete: true }] }] };
-  const packet = summary => claimCenteredReviewEvidence([{ plan_step: "trace", summary, evidence: ["src/a.ts:1-2"] }], [source], "plain material claim");
+  const packet = summary => claimCenteredReviewEvidence([{ plan_step: "trace", summary, evidence: ["src/a.ts:1-2"] }], [source]);
   assert.equal(packet("first wording").claims[0].claim_id, packet("renamed wording").claims[0].claim_id);
 });
 
@@ -240,6 +253,44 @@ test("evidence frontier distinguishes partial factual progress from stagnation",
   const packet = refs => ({ claim_coverage: [{ claim_id: "chain", claim_type: "cross_layer_chain", coverage: "incomplete", edge_coverage: [{ edge: "client->state", status: "unknown", source_anchor_refs: refs }] }] });
   assert.notEqual(evidenceFrontierFingerprint(packet(["range-a"])).fingerprint, evidenceFrontierFingerprint(packet(["range-a", "range-b"])).fingerprint);
   assert.equal(evidenceFrontierFingerprint(packet(["range-a", "range-b"])).fingerprint, evidenceFrontierFingerprint(packet(["range-b", "range-a"])).fingerprint);
+});
+
+test("frontier-only progress is bounded and never marks verified semantic progress", () => {
+  const fx = fixture("gauntlet-frontier-credit-");
+  try {
+    captureRunBaselines(fx.runtime.db, fx.runId, [{ key: "primary", path: fx.projectRoot, access: "write" }]);
+    const packet = refs => ({ claim_coverage: [{ claim_id: "chain", claim_type: "cross_layer_chain", coverage: "incomplete", edge_coverage: [{ edge: "client->state", status: "unknown", source_anchor_refs: refs }] }] });
+    let status = recordProgressSnapshot(fx.runtime.db, fx.runId, { cycle: 0, reviewer: { blockers: [] }, reviewEvidence: packet(["a"]) });
+    assert.equal(status.stagnating, false);
+    status = recordProgressSnapshot(fx.runtime.db, fx.runId, { cycle: 1, reviewer: { blockers: [] }, reviewEvidence: packet(["a", "b"]) });
+    assert.equal(status.evidence_frontier_progress, true);
+    assert.equal(status.latest.verified_progress, 0);
+    assert.equal(status.stagnating, false);
+    status = recordProgressSnapshot(fx.runtime.db, fx.runId, { cycle: 2, reviewer: { blockers: [] }, reviewEvidence: packet(["a", "b", "c"]) });
+    assert.equal(status.stagnating, false);
+    status = recordProgressSnapshot(fx.runtime.db, fx.runId, { cycle: 3, reviewer: { blockers: [] }, reviewEvidence: packet(["a", "b", "c", "d"]) });
+    assert.equal(status.frontier_only_cycles, 3);
+    assert.equal(status.stagnating, true);
+  } finally { fx.close(); }
+});
+
+test("verification changes only evidence frontier, not claim semantics", () => {
+  const claim = { claim_coverage: [{ claim_id: "claim", claim_type: "material", coverage: "incomplete" }] };
+  const before = { ...claim, verification: { verification_results: [] } };
+  const after = { ...claim, verification: { verification_results: [{ status: "observed", evidence_hash: "verification-a", evidence_refs: ["range-a"] }] } };
+  assert.equal(semanticGapFingerprint(before).fingerprint, semanticGapFingerprint(after).fingerprint);
+  assert.notEqual(evidenceFrontierFingerprint(before).fingerprint, evidenceFrontierFingerprint(after).fingerprint);
+});
+
+test("anonymous claims have order-independent semantic identity and graph refs advance the frontier", () => {
+  const first = { claim_coverage: [
+    { claim_type: "material", subject: "alpha", target: "A", coverage: "incomplete", graph_edge_refs: ["edge-a"] },
+    { claim_type: "material", subject: "beta", target: "B", coverage: "incomplete" }
+  ] };
+  const reordered = { claim_coverage: [first.claim_coverage[1], first.claim_coverage[0]] };
+  assert.equal(semanticGapFingerprint(first).fingerprint, semanticGapFingerprint(reordered).fingerprint);
+  const advanced = structuredClone(first); advanced.claim_coverage[0].graph_edge_refs.push("edge-b");
+  assert.notEqual(evidenceFrontierFingerprint(first).fingerprint, evidenceFrontierFingerprint(advanced).fingerprint);
 });
 
 test("gate snapshots do not mask repeated semantic review packets", () => {
@@ -320,7 +371,7 @@ test("a concrete response-field assignment creates an observed source-derived ed
     source("ui", "src/View.jsx", "return <div>{row.avgCost}</div>;")
   ];
   const workers = sources.map(item => ({ plan_step: item.plan_step, status: "completed", summary: item.plan_step, evidence: [`${item.files[0].path}:1-20`] }));
-  const packet = claimCenteredReviewEvidence(workers, sources, "Trace avgCost from API to UI");
+  const packet = claimCenteredReviewEvidence(workers, sources, TEST_FLOW);
   const edge = packet.cross_layer_chains[0].edge_coverage.find(item => item.edge === "api->client_mapping");
   assert.equal(edge.status, "observed");
   assert.equal(edge.source_anchor_refs.length, 2);
@@ -346,7 +397,7 @@ test("a sufficient cross-layer claim has provenance for every observed edge", ()
   ];
   const sources = rows.map(([plan_step, path, text], index) => ({ plan_step, evidence_hash: `hash-${plan_step}`, code_intelligence: index === 0 ? graph : null, files: [{ path, text: `--- lines 1-20 (edge anchor) ---\n${text}`, segments: [{ start_line: 1, end_line: 20, reason: "edge anchor", complete: true }] }] }));
   const workers = sources.map(item => ({ plan_step: item.plan_step, status: "completed", summary: item.plan_step, evidence: [`${item.files[0].path}:1-20`] }));
-  const chain = claimCenteredReviewEvidence(workers, sources, "Trace producer through API to UI").cross_layer_chains[0];
+  const chain = claimCenteredReviewEvidence(workers, sources, TEST_FLOW).cross_layer_chains[0];
   assert.equal(chain.coverage, "sufficient");
   assert.equal(chain.observed_edges.length, chain.required_edges.length);
   assert.ok(chain.observed_edges.every(edge => edge.provenance_refs.length >= 3));
@@ -585,6 +636,25 @@ test("consilium member cap 1, 2 and 3 changes the actual selected review calls",
   assert.deepEqual(consiliumRoles(available, "reviewer", 2), ["reviewer", "adversarial_reviewer"]);
   assert.deepEqual(consiliumRoles(available, "reviewer", 3), ["reviewer", "adversarial_reviewer", "evidence_reviewer"]);
   assert.equal(consiliumRoles(available, "reviewer", 99).length, 3);
+});
+
+test("parallel review drains every admitted participant before exposing a failure", async () => {
+  let secondSettled = false;
+  const first = Promise.reject(new Error("review-a failed"));
+  const second = new Promise(resolve => setTimeout(() => { secondSettled = true; resolve("review-b completed"); }, 30));
+  const result = await settleAdmittedReviewInvocations([first, second]);
+  assert.equal(secondSettled, true);
+  assert.equal(result.settled[0].status, "rejected");
+  assert.equal(result.settled[1].status, "fulfilled");
+  assert.match(result.rejected.reason.message, /review-a failed/);
+});
+
+test("flow selection is structural and reports none without a workflow registration", () => {
+  const sources = new Map([["source", { code_intelligence: { adapters: [{ name: "typescript-compiler" }] } }]]);
+  assert.equal(selectFlowEvidenceAdapter([TEST_FLOW], "workflow", sources).flow.key, TEST_FLOW.key);
+  const none = selectFlowEvidenceAdapter([TEST_FLOW], "different-workflow", sources);
+  assert.equal(none.status, "none");
+  assert.equal(none.reason, "no_registered_flow_for_workflow");
 });
 
 test("L: model work may overlap outside DatabaseSync transactions and the static guard rejects await in one", async () => {

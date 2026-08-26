@@ -269,9 +269,8 @@ function selectGraph(parts, exactTerms, contextParts, lexical, nodes, edges, lim
     const matching = parts.filter(part => words.some(word => word.includes(part) || part.includes(word)));
     if (matching.length) score(node.id, matching.map(partWeight).sort((left, right) => right - left).slice(0, 3).reduce((total, value) => total + value, 0), "identifier_match");
     if (exactTerms.has(normalized(node.name))) score(node.id, exactTerms.get(normalized(node.name)) + partWeight(normalized(node.name)), "exact_identifier");
-    // Domain wording often names the subsystem rather than a symbol: "выгрузка Dashboard" points at
-    // мпВыгрузкаДанныхВДашборд even though avgCost is introduced only downstream. Reward rare request
-    // parts found in a source path, but keep this below an exact identifier match and cap the effect.
+    // Domain wording often names a subsystem rather than a symbol. Reward rare request parts found in
+    // a source path, but keep this below an exact identifier match and cap the effect.
     const pathWords = identifierParts(node.path);
     const pathMatches = contextParts.filter(part => pathWords.some(word => word.includes(part) || part.includes(word)));
     if (pathMatches.length) score(node.id, Math.min(900, 300 * new Set(pathMatches).size), "request_path_match");
@@ -347,7 +346,7 @@ export function mergeGraphMatches(lexical, intelligence, maxFiles = 40) {
     files.push(item); byPath.set(item.path, item);
   }
   // A graph expansion is supporting evidence, not permission to bury an exact lexical hit. In 0.4.0
-  // an unrelated module with many graph edges displaced the only document containing avgCost. Combine
+  // an unrelated module with many graph edges displaced the only exact-symbol document. Combine
   // exact request identifiers with graph evidence: this interleaves the prior conclusion document with
   // the implementation paths instead of returning forty prose hits or forty graph nodes exclusively.
   const primaryTerms = new Map((intelligence.primary_terms ?? []).map((term, index) => [normalized(term), index]));

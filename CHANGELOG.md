@@ -4,6 +4,17 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_19_2026_08_26" status="working">
+
+## 0.5.19 — 2026-08-26
+
+- Parallel consilium review now cancels outstanding Gateway invocations after one participant fails and drains every admitted participant before any terminal run transition, preventing live leases and post-stop budget spend.
+- Evidence-frontier-only movement is explicitly bounded: it no longer sets verified semantic progress and can defer unchanged claim semantics for at most three consecutive snapshots. Verification results affect the frontier rather than manufacturing semantic change.
+- Generic claim identity is stable without insertion-order IDs, and analytical graph references participate in the deterministic frontier.
+- Cross-layer flows are portable package contracts bound to semantic workflow keys. Platform core no longer selects Dashboard-shaped evidence from owner wording or business literals; projects register their nodes, edges, anchor hints, material symbols and transition capability, while an absent registration is recorded explicitly.
+
+</section>
+
 <section id="0_5_18_2026_08_26" status="working">
 
 ## 0.5.18 — 2026-08-26

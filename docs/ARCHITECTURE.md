@@ -1,4 +1,4 @@
-<document id="zodchi_architecture" status="accepted" authority="zodchi" version="0.5.18" language="en">
+<document id="zodchi_architecture" status="accepted" authority="zodchi" version="0.5.19" language="en">
   <title>Zodchi system architecture</title>
 
   <purpose status="accepted">
@@ -32,6 +32,9 @@
     <rule id="completion_truth">The registered completion blockers are the sole canonical completion authority; planner criteria remain advisory.</rule>
     <rule id="run_evidence">Review compares the verbatim owner objective with run-relative Git or inventory changes, deterministic gates, analytical conclusions, and retained primary source evidence.</rule>
     <rule id="bounded_gauntlet">A project may explicitly select the Gauntlet improvement strategy: targeted corrections and independent same-evidence reviews repeat only while measurable progress and declared budgets permit.</rule>
+    <rule id="bounded_frontier_credit">Evidence-frontier growth may defer stagnation for at most three consecutive snapshots with unchanged claim semantics; it never becomes verified semantic progress.</rule>
+    <rule id="consilium_settlement">A terminal run transition waits for every admitted parallel review participant to settle; one failed participant cancels outstanding Gateway invocations before the parent exposes the failure.</rule>
+    <rule id="registered_evidence_flows">Cross-layer evidence flows belong to portable project packages and bind structurally to semantic workflow keys; platform core contains no project business vocabulary and records an explicit none selection when no flow applies.</rule>
     <rule id="interruptible_execution">Gateway invocations declare cancellation capability; owner cancellation terminates the complete provider process tree, while pause waits for a safe execution boundary.</rule>
   </contracts>
 

@@ -239,14 +239,17 @@ function selectClaimRanges(file, claimText, evidenceRefs) {
   return selected.map(item => item.range);
 }
 
-function chainAnchor(sources, stepPattern, textPattern) {
-  for (const source of [...sources.values()].filter(item => stepPattern.test(item.plan_step ?? ""))) {
-    for (const file of source.files ?? []) {
-      const range = (file.source_ranges ?? []).find(item => textPattern.test(item.text ?? "")) ?? file.source_ranges?.[0];
-      if (range) return { file, range };
-    }
+function chainAnchor(sources, spec) {
+  const stepKeys = new Set(spec.step_keys ?? []), pathHints = (spec.path_hints ?? []).map(normalized), terms = (spec.anchor_terms ?? []).map(term => term.toLowerCase());
+  const candidates = [];
+  for (const source of sources.values()) for (const file of source.files ?? []) for (const range of file.source_ranges ?? []) {
+    const stepMatch = stepKeys.has(source.plan_step), pathMatch = pathHints.some(hint => normalized(file.path).includes(hint));
+    const text = `${range.reason ?? ""}\n${range.text ?? ""}`.toLowerCase();
+    const termMatches = terms.filter(term => text.includes(term)).length;
+    const score = Number(stepMatch) * 8 + Number(pathMatch) * 6 + termMatches * 3;
+    if ((stepMatch || pathMatch) && score > 0 && (!terms.length || termMatches > 0)) candidates.push({ file, range, score });
   }
-  return null;
+  return candidates.sort((left, right) => right.score - left.score || normalized(left.file.path).localeCompare(normalized(right.file.path)) || Number(left.range.start_line) - Number(right.range.start_line))[0] ?? null;
 }
 
 function transitionAnchors(flowAdapter, symbols, files, targetPath, sources) {
@@ -257,7 +260,7 @@ function transitionAnchors(flowAdapter, symbols, files, targetPath, sources) {
   }).filter(Boolean);
 }
 
-export function claimCenteredReviewEvidence(workerResults, sourceEvidence, ownerText = "") {
+export function claimCenteredReviewEvidence(workerResults, sourceEvidence, flowAdapter = null) {
   const compacted = sourceEvidence.map(item => ({ ...item, files: (item.files ?? []).map(compactSourceFile) }));
   const latestResults = new Map(), latestSources = new Map();
   for (const result of workerResults ?? []) latestResults.set(result.plan_step ?? `claim_${latestResults.size + 1}`, result);
@@ -275,7 +278,6 @@ export function claimCenteredReviewEvidence(workerResults, sourceEvidence, owner
     if (!scanCatalog.has(scanId)) scanCatalog.set(scanId, { scan_id: scanId, path: file.path, ...file.exact_term_scan, provenance: { source_snapshot_hashes: sourceHashes(file) } });
     return scanId;
   };
-  const flowAdapter = selectFlowEvidenceAdapter(ownerText, latestSources);
   const chainRequested = Boolean(flowAdapter);
   const requiredChainEdges = flowAdapter?.required_edges ?? [];
   const claims = [], conclusions = [];
@@ -320,10 +322,10 @@ export function claimCenteredReviewEvidence(workerResults, sourceEvidence, owner
     });
     conclusions.push({ claim_id: primaryEvidenceRefs.length && !crossLayerNarrative ? claimId : null, plan_step: planStep, summary: result.summary ?? "", evidence_refs: rawEvidenceRefs.slice(0, 12).map(value => utf8Prefix(value, 320)) });
   }
-  const anchorSpecs = flowAdapter?.anchor_specs ?? [];
-  const anchorDetails = Object.fromEntries(anchorSpecs.map(([name, stepPattern, textPattern]) => {
-    const anchor = chainAnchor(latestSources, stepPattern, textPattern);
-    return [name, anchor ? { ...anchor, range_id: registerRange(anchor.file, anchor.range) } : null];
+  const anchorSpecs = flowAdapter?.nodes ?? [];
+  const anchorDetails = Object.fromEntries(anchorSpecs.map(spec => {
+    const anchor = chainAnchor(latestSources, spec);
+    return [spec.key, anchor ? { ...anchor, range_id: registerRange(anchor.file, anchor.range) } : null];
   }));
   const anchors = Object.fromEntries(Object.entries(anchorDetails).map(([name, value]) => [name, value?.range_id ?? null]));
   const derivedEdgeCatalog = [];
@@ -334,7 +336,7 @@ export function claimCenteredReviewEvidence(workerResults, sourceEvidence, owner
     const graphRefs = graphPath(latestSources, rangeCatalog.get(anchors[from])?.path, rangeCatalog.get(anchors[to])?.path);
     if (anchors[from] && anchors[to] && graphRefs.length) return { edge, status: "observed", graph_edge_refs: graphRefs, source_anchor_refs: sourceAnchorRefs, derived_edge_refs: [], provenance_refs: [...new Set([...sourceAnchorRefs, ...graphRefs])] };
     const symbols = anchors[from] && anchors[to]
-      ? adapterMaterialSymbols(anchorDetails[from].range.text, anchorDetails[to].range.text, ownerText)
+      ? adapterMaterialSymbols(anchorDetails[from].range.text, anchorDetails[to].range.text, flowAdapter)
       : [];
     const transitions = transitionAnchors(flowAdapter, symbols, allFiles, rangeCatalog.get(anchors[to])?.path, latestSources);
     const transitionAnchorRefs = transitions.map(({ file, range }) => registerRange(file, range));
@@ -344,7 +346,7 @@ export function claimCenteredReviewEvidence(workerResults, sourceEvidence, owner
         edge_id: edgeId, from, to, kind: transitions[0].transition.kind, symbols,
         source_anchor_refs: sourceAnchorRefs, transition_anchor_refs: transitionAnchorRefs,
         ast_refs: transitions.map(item => item.transition.id), direction: "from_to", symbol_from: transitions[0].transition.symbol_from, symbol_to: transitions[0].transition.symbol_to,
-        provenance: { method: flowAdapter.transition_method, adapter: flowAdapter.id, source_range_refs: [...new Set([...sourceAnchorRefs, ...transitionAnchorRefs])], ast_refs: transitions.map(item => item.transition.id) }
+        provenance: { method: flowAdapter.transition?.method, adapter: flowAdapter.key, source_range_refs: [...new Set([...sourceAnchorRefs, ...transitionAnchorRefs])], ast_refs: transitions.map(item => item.transition.id) }
       });
       return { edge, status: "observed", graph_edge_refs: [], source_anchor_refs: sourceAnchorRefs, transition_anchor_refs: transitionAnchorRefs, derived_edge_refs: [edgeId], candidate_symbols: symbols, provenance_refs: [...new Set([...sourceAnchorRefs, ...transitionAnchorRefs, edgeId])] };
     }
@@ -372,11 +374,11 @@ export function claimCenteredReviewEvidence(workerResults, sourceEvidence, owner
     derived_edge_catalog: derivedEdgeCatalog,
     source_evidence: claims.length ? selectedSources : [...latestSources.values()],
     cross_layer_chains: chainRequested ? [{
-      claim_id: "claim_cross_layer_producer_to_ui",
-      claim_type: "cross_layer_chain",
-      adapter: flowAdapter.id,
-      subject: "avgCost and profit",
-      target: "UI consumer",
+      claim_id: `claim_flow_${digest(flowAdapter.key).slice(0, 16)}`,
+      claim_type: flowAdapter.claim_type,
+      adapter: flowAdapter.key,
+      subject: flowAdapter.subject,
+      target: flowAdapter.target,
       required_edges: requiredChainEdges,
       observed_edges: chainEdgeCoverage.filter(edge => edge.status === "observed"),
       primary_evidence_refs: [...new Set(Object.values(anchors).filter(Boolean))],
@@ -532,7 +534,7 @@ function compactReviewEvidence(evidence, limit = 72_000) {
 }
 
 export function buildReviewEvidence(db, runId, { plan, gate, workerResults, allowedPaths = [], reviewEvidenceLimit = 72_000 } = {}) {
-  const run = db.prepare("SELECT task_id FROM workflow_runs WHERE id=?").get(runId);
+  const run = db.prepare("SELECT wr.task_id,wr.project_id,wr.workflow_id,w.package_key FROM workflow_runs wr LEFT JOIN workflows w ON w.id=wr.workflow_id WHERE wr.id=?").get(runId);
   if (!run) throw new Error(`RUN_NOT_FOUND: ${runId}`);
   const changes = runChangeEvidence(db, runId, allowedPaths);
   const decisionArtifacts = db.prepare("SELECT kind,structured_json FROM decisions WHERE run_id=? AND active=1 AND kind LIKE 'artifact:%' ORDER BY created_at").all(runId)
@@ -545,11 +547,24 @@ export function buildReviewEvidence(db, runId, { plan, gate, workerResults, allo
   // copy of identical evidence and references it by hash, so retry bookkeeping cannot masquerade as a
   // changed proof packet.
   const sourceEvidence = [...new Map(sourceRows.map(item => [item.evidence_hash, item])).values()];
-  const centered = claimCenteredReviewEvidence(workerResults, sourceEvidence, ownerObjective(db, runId).verbatim);
+  const workflowKey = db.prepare(`SELECT m.semantic_key FROM package_import_mappings m
+    JOIN workflow_import_proposals p ON p.id=m.proposal_id
+    WHERE p.target_project_id=? AND p.status='applied' AND m.entity_type='workflow' AND m.local_id=?
+    ORDER BY p.applied_at DESC LIMIT 1`).get(run.project_id, run.workflow_id)?.semantic_key ?? run.workflow_id;
+  const registeredFlows = db.prepare("SELECT * FROM evidence_flow_adapters WHERE project_id=? AND package_key=? ORDER BY flow_key").all(run.project_id, run.package_key).map(row => ({
+    key: row.flow_key, claim_type: row.claim_type, subject: row.subject, target: row.target,
+    workflow_keys: parse(row.workflow_keys_json, []), nodes: parse(row.nodes_json, []), required_edges: parse(row.required_edges_json, []),
+    material_symbols: parse(row.material_symbols_json, []), transition: { adapter: row.transition_adapter, method: row.transition_method }, status: row.status
+  }));
+  const sourceMap = new Map(sourceEvidence.map((source, index) => [source.plan_step ?? `source_${index + 1}`, source]));
+  const flowSelection = selectFlowEvidenceAdapter(registeredFlows, workflowKey, sourceMap);
+  recordRunEvidence(db, runId, null, "flow_adapter_selection", { status: flowSelection.status, reason: flowSelection.reason, workflow_key: workflowKey, flow_key: flowSelection.flow?.key ?? null });
+  const centered = claimCenteredReviewEvidence(workerResults, sourceEvidence, flowSelection.flow);
   const verificationResults = db.prepare("SELECT evidence_hash,evidence_json FROM run_evidence WHERE run_id=? AND kind='targeted_verification_result' ORDER BY created_at,id").all(runId)
     .map(row => ({ evidence_hash: row.evidence_hash, ...parse(row.evidence_json, {}) }));
   const evidence = {
     schema_version: 1, type, owner_objective: ownerObjective(db, runId),
+    flow_adapter_selection: { status: flowSelection.status, reason: flowSelection.reason, workflow_key: workflowKey, flow_key: flowSelection.flow?.key ?? null },
     canonical_completion: {
       blockers: completionBlockers(db, run.task_id, { excludeReviewDecisions: true }),
       review_reconsideration: "The active decision from the previous review cycle is intentionally excluded because this package supersedes it; all other completion blockers remain canonical."

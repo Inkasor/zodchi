@@ -8,7 +8,7 @@ import { DEFAULT_QUALITY_CONTRACTS, QUALITY_LEVELS, qualityModesThrough } from "
 
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const SEMANTIC_KEY = /^[A-Za-z][A-Za-z0-9._:-]*$/;
-const PACKAGE_KEYS = ["schema_version", "key", "version", "purpose", "prompt_builder_version", "catalogs", "roles", "profiles", "workflows", "state_machine", "routes", "checks", "operational_levels", "documents", "prompt_templates", "test_scenarios"];
+const PACKAGE_KEYS = ["schema_version", "key", "version", "purpose", "prompt_builder_version", "catalogs", "roles", "profiles", "workflows", "state_machine", "routes", "checks", "operational_levels", "evidence_flows", "documents", "prompt_templates", "test_scenarios"];
 const FORBIDDEN_KEYS = new Set(["secret", "password", "api_key", "access_token", "refresh_token", "cookie", "credentials", "model_id", "profile_id", "root_path", "account"]);
 
 function exactObject(value, keys, label) {
@@ -75,12 +75,17 @@ function buildPackage(db, projectId, workflowFilter) {
   });
   const prompts = db.prepare("SELECT * FROM prompt_templates WHERE project_id=? AND package_key=? AND status='active' ORDER BY template_key").all(projectId, packageKey).map(row => ({ key: row.template_key, version: row.version, role_key: row.role_id, result_schema_key: row.result_schema_key, template: row.template_text, content_hash: row.content_hash }));
   const scenarios = db.prepare("SELECT * FROM package_test_scenarios WHERE project_id=? AND package_key=? AND package_version=? ORDER BY scenario_key").all(projectId, packageKey, version).map(row => ({ key: row.scenario_key, input: parseJson(row.input_json, {}), expected: parseJson(row.expected_json, {}), anonymized: Boolean(row.anonymized) }));
+  const evidenceFlows = db.prepare("SELECT * FROM evidence_flow_adapters WHERE project_id=? AND package_key=? ORDER BY flow_key").all(projectId, packageKey).map(row => ({
+    key: row.flow_key, claim_type: row.claim_type, subject: row.subject, target: row.target,
+    workflow_keys: parseJson(row.workflow_keys_json, []), nodes: parseJson(row.nodes_json, []), required_edges: parseJson(row.required_edges_json, []),
+    material_symbols: parseJson(row.material_symbols_json, []), transition: { adapter: row.transition_adapter, method: row.transition_method }, status: row.status
+  }));
   const referencedWorkTypes = [...new Set(routeRows.map(row => row.work_type_id))];
   const referencedArtifacts = [...new Set([...roles.flatMap(role => role.contract.allowed_artifact_types), ...workflows.flatMap(workflow => workflow.steps.flatMap(step => step.artifact_type_keys)), ...[...checkMap.values()].flatMap(check => check.bindings.map(binding => binding.artifact_type_key).filter(Boolean))])];
   const referencedQuality = [...new Set([...workflowRows.map(row => row.default_quality), ...checkRows.map(row => row.quality_mode_id)])];
   const referencedLevels = [...new Set(workflowRows.map(row => row.default_level))];
   const catalog = (table, ids, fields) => ids.sort().map(idValue => { const row = db.prepare(`SELECT ${fields.join(",")} FROM ${table} WHERE id=?`).get(idValue); if (!row) throw new Error(`PACKAGE_DEPENDENCY_MISSING: ${table}:${idValue}`); return { key: idValue, ...Object.fromEntries(fields.filter(field => field !== "id").map(field => [field, row[field]])) }; });
-  return { schema_version: 1, key: packageKey, version, purpose: release?.purpose ?? `Portable workflows for ${project.name}`, prompt_builder_version: release?.prompt_builder_version ?? "1.0.0", catalogs: { work_types: catalog("work_types", referencedWorkTypes, ["id", "name", "category"]), artifact_types: catalog("artifact_types", referencedArtifacts, ["id", "name", "category"]), quality_modes: catalog("quality_modes", referencedQuality, ["id", "name", "ordinal"]), planning_levels: catalog("planning_levels", referencedLevels, ["id", "name", "ordinal"]) }, roles, profiles, workflows, state_machine: stateContract(), routes: routeRows.map(row => ({ work_type_key: row.work_type_id, workflow_key: workflowKeys.get(row.workflow_id), enabled: Boolean(row.enabled), priority: row.priority })), checks: [...checkMap.values()], operational_levels: operationalLevels, documents, prompt_templates: prompts, test_scenarios: scenarios };
+  return { schema_version: 1, key: packageKey, version, purpose: release?.purpose ?? `Portable workflows for ${project.name}`, prompt_builder_version: release?.prompt_builder_version ?? "1.0.0", catalogs: { work_types: catalog("work_types", referencedWorkTypes, ["id", "name", "category"]), artifact_types: catalog("artifact_types", referencedArtifacts, ["id", "name", "category"]), quality_modes: catalog("quality_modes", referencedQuality, ["id", "name", "ordinal"]), planning_levels: catalog("planning_levels", referencedLevels, ["id", "name", "ordinal"]) }, roles, profiles, workflows, state_machine: stateContract(), routes: routeRows.map(row => ({ work_type_key: row.work_type_id, workflow_key: workflowKeys.get(row.workflow_id), enabled: Boolean(row.enabled), priority: row.priority })), checks: [...checkMap.values()], operational_levels: operationalLevels, evidence_flows: evidenceFlows, documents, prompt_templates: prompts, test_scenarios: scenarios };
 }
 
 export function buildWorkflowPackageValue(db, projectId, workflowFilter = null) { return validateWorkflowPackage(buildPackage(db, projectId, workflowFilter)); }
@@ -132,6 +137,26 @@ export function validateWorkflowPackage(value) {
     }
     if (softwarePackage && !policy.required_check_keys.length) throw new Error(`operational_level.${policy.level}: software package requires checks`);
   }
+  array(value.evidence_flows, "evidence_flows"); unique(value.evidence_flows, flow => semanticKey(flow.key, "evidence_flow.key"), "evidence_flows");
+  for (const flow of value.evidence_flows) {
+    exactObject(flow, ["key", "claim_type", "subject", "target", "workflow_keys", "nodes", "required_edges", "material_symbols", "transition", "status"], `evidence_flow.${flow.key}`);
+    semanticKey(flow.claim_type, `evidence_flow.${flow.key}.claim_type`);
+    if (!String(flow.subject).trim() || !String(flow.target).trim() || !["active", "disabled"].includes(flow.status)) throw new Error(`evidence_flow.${flow.key}: invalid metadata`);
+    for (const workflowKey of array(flow.workflow_keys, `evidence_flow.${flow.key}.workflow_keys`)) if (!workflowKeys.has(workflowKey)) throw new Error(`evidence_flow.${flow.key}: missing workflow ${workflowKey}`);
+    unique(array(flow.nodes, `evidence_flow.${flow.key}.nodes`), node => semanticKey(node.key, "evidence_flow.node.key"), `evidence_flow.${flow.key}.nodes`);
+    const nodeKeys = new Set(flow.nodes.map(node => node.key));
+    for (const node of flow.nodes) {
+      exactObject(node, ["key", "step_keys", "path_hints", "anchor_terms"], `evidence_flow.${flow.key}.node.${node.key}`);
+      for (const list of [node.step_keys, node.path_hints, node.anchor_terms]) if (!Array.isArray(list) || list.some(item => typeof item !== "string")) throw new Error(`evidence_flow.${flow.key}.node.${node.key}: string arrays required`);
+    }
+    for (const edge of array(flow.required_edges, `evidence_flow.${flow.key}.required_edges`)) {
+      const [from, to, ...extra] = String(edge).split("->");
+      if (extra.length || !nodeKeys.has(from) || !nodeKeys.has(to)) throw new Error(`evidence_flow.${flow.key}: invalid edge ${edge}`);
+    }
+    if (!Array.isArray(flow.material_symbols) || flow.material_symbols.some(item => typeof item !== "string")) throw new Error(`evidence_flow.${flow.key}: material_symbols must be strings`);
+    exactObject(flow.transition, ["adapter", "method"], `evidence_flow.${flow.key}.transition`);
+    if ((flow.transition.adapter === null) !== (flow.transition.method === null)) throw new Error(`evidence_flow.${flow.key}: transition adapter and method must both be set or null`);
+  }
   array(value.documents, "documents"); unique(value.documents, document => semanticKey(document.key, "document.key"), "documents"); for (const document of value.documents) { exactObject(document, ["key", "path", "root", "type", "authority", "status", "bindings"], `document.${document.key}`);
     if (typeof document.root !== "string" || !document.root) throw new Error(`document.${document.key}: root is required`); if (path.isAbsolute(document.path) || document.path.split(/[\\/]/).includes("..")) throw new Error(`document.${document.key}: unsafe path`); for (const binding of array(document.bindings, "document.bindings")) { exactObject(binding, ["role_key", "read", "write", "purpose", "priority"], "document.binding"); if (!roleKeys.has(binding.role_key)) throw new Error(`document.${document.key}: missing role`); } }
   array(value.prompt_templates, "prompt_templates"); unique(value.prompt_templates, template => semanticKey(template.key, "prompt_template.key"), "prompt_templates"); for (const template of value.prompt_templates) { exactObject(template, ["key", "version", "role_key", "result_schema_key", "template", "content_hash"], `prompt.${template.key}`); if (!roleKeys.has(template.role_key) || !SEMVER.test(template.version) || template.content_hash !== digest(template.template)) throw new Error(`prompt.${template.key}: invalid contract`); }
@@ -145,7 +170,7 @@ export function parseWorkflowPackage(source) { const root = parseLimitedXml(sour
 export function exportWorkflowPackage(dbFile, outputFile, projectId, workflowKey = null) { const db = openDb(dbFile); try { const value = buildWorkflowPackageValue(db, projectId, workflowKey), source = serializeWorkflowPackage(value), resolved = path.resolve(outputFile); fs.mkdirSync(path.dirname(resolved), { recursive: true }); fs.writeFileSync(resolved, source, "utf8"); return { status: "exported", file: resolved, project: projectId, package_key: value.key, version: value.version, package_hash: digest(value), counts: { roles: value.roles.length, profiles: value.profiles.length, workflows: value.workflows.length, checks: value.checks.length, documents: value.documents.length, scenarios: value.test_scenarios.length } }; } finally { db.close(); } }
 export function inspectWorkflowPackage(file) { try { const value = parseWorkflowPackage(fs.readFileSync(file, "utf8")); return { status: "passed", errors: [], package: value, package_hash: digest(value) }; } catch (error) { return { status: "failed", errors: [error.message] }; } }
 
-function targetSnapshot(db, projectId, packageKey) { const specs = [["workflow_package_releases", "project_id=? AND package_key=?", [projectId, packageKey]], ["portable_profile_requirements", "project_id=? AND package_key=?", [projectId, packageKey]], ["workflows", "project_id=?", [projectId]], ["role_contracts", "project_id=?", [projectId]], ["project_checks", "project_id=?", [projectId]], ["project_documents", "project_id=?", [projectId]], ["role_documents", "project_id=?", [projectId]], ["workflow_routes", "project_id=?", [projectId]], ["workflow_step_templates", "project_id=?", [projectId]], ["workflow_transition_templates", "project_id=?", [projectId]], ["workflow_questions", "project_id=?", [projectId]], ["operational_level_policies", "project_id=? AND package_key=?", [projectId, packageKey]], ["operational_level_budget_limits", "project_id=? AND package_key=?", [projectId, packageKey]], ["operational_level_escalation_rules", "project_id=? AND package_key=?", [projectId, packageKey]], ["prompt_templates", "project_id=? AND package_key=?", [projectId, packageKey]], ["package_test_scenarios", "project_id=? AND package_key=?", [projectId, packageKey]]]; return digest(specs.map(([table, where, parameters]) => ({ table, rows: rows(db, `SELECT * FROM ${table} WHERE ${where} ORDER BY rowid`, ...parameters) }))); }
+function targetSnapshot(db, projectId, packageKey) { const specs = [["workflow_package_releases", "project_id=? AND package_key=?", [projectId, packageKey]], ["portable_profile_requirements", "project_id=? AND package_key=?", [projectId, packageKey]], ["evidence_flow_adapters", "project_id=? AND package_key=?", [projectId, packageKey]], ["workflows", "project_id=?", [projectId]], ["role_contracts", "project_id=?", [projectId]], ["project_checks", "project_id=?", [projectId]], ["project_documents", "project_id=?", [projectId]], ["role_documents", "project_id=?", [projectId]], ["workflow_routes", "project_id=?", [projectId]], ["workflow_step_templates", "project_id=?", [projectId]], ["workflow_transition_templates", "project_id=?", [projectId]], ["workflow_questions", "project_id=?", [projectId]], ["operational_level_policies", "project_id=? AND package_key=?", [projectId, packageKey]], ["operational_level_budget_limits", "project_id=? AND package_key=?", [projectId, packageKey]], ["operational_level_escalation_rules", "project_id=? AND package_key=?", [projectId, packageKey]], ["prompt_templates", "project_id=? AND package_key=?", [projectId, packageKey]], ["package_test_scenarios", "project_id=? AND package_key=?", [projectId, packageKey]]]; return digest(specs.map(([table, where, parameters]) => ({ table, rows: rows(db, `SELECT * FROM ${table} WHERE ${where} ORDER BY rowid`, ...parameters) }))); }
 
 function versionCompare(left, right) { const a = left.split("-")[0].split(".").map(Number), b = right.split("-")[0].split(".").map(Number); for (let index = 0; index < 3; index += 1) if (a[index] !== b[index]) return a[index] - b[index]; return 0; }
 function packageDiff(db, projectId, value) {
@@ -153,6 +178,7 @@ function packageDiff(db, projectId, value) {
   for (const [table, list, third] of [["work_types", value.catalogs.work_types, "category"], ["artifact_types", value.catalogs.artifact_types, "category"], ["quality_modes", value.catalogs.quality_modes, "ordinal"], ["planning_levels", value.catalogs.planning_levels, "ordinal"]]) for (const item of list) { const current = db.prepare(`SELECT name,${third} FROM ${table} WHERE id=?`).get(item.key); if (current && (current.name !== item.name || current[third] !== item[third])) throw new Error(`PACKAGE_COLLISION: ${table}:${item.key}`); }
   for (const role of value.roles) { const current = db.prepare("SELECT name FROM roles WHERE id=?").get(role.key); if (current && current.name.toLowerCase() !== role.name.toLowerCase()) throw new Error(`PACKAGE_COLLISION: role:${role.key}`); add("role", role.key, current); add("role_contract", role.key, db.prepare("SELECT 1 FROM role_contracts WHERE project_id=? AND role_id=? AND status='active'").get(projectId, role.key)); }
   for (const check of value.checks) add("check", check.key, null); for (const workflow of value.workflows) add("workflow", workflow.key, null);
+  for (const flow of value.evidence_flows) add("evidence_flow", flow.key, db.prepare("SELECT 1 FROM evidence_flow_adapters WHERE project_id=? AND package_key=? AND flow_key=?").get(projectId, value.key, flow.key));
   for (const document of value.documents) { const collision = db.prepare("SELECT id FROM project_documents WHERE project_id=? AND path=? AND root_key=?").get(projectId, document.path, document.root); if (collision && mappedKey(db, projectId, "document", collision.id) !== document.key) throw new Error(`PACKAGE_COLLISION: document_path:${document.root}/${document.path}`); add("document", document.key, collision); }
   for (const template of value.prompt_templates) add("prompt_template", template.key, null); for (const scenario of value.test_scenarios) add("test_scenario", scenario.key, null);
   const active = activeRelease(db, projectId, value.key); if (active && versionCompare(value.version, active.version) < 0) throw new Error(`PACKAGE_DOWNGRADE_FORBIDDEN: ${active.version} -> ${value.version}`); if (active && versionCompare(value.version, active.version) === 0 && active.manifest_hash !== digest(value)) throw new Error("PACKAGE_VERSION_COLLISION: same version has different content");
@@ -267,6 +293,14 @@ function applyTemplatesAndScenarios(db, proposal, projectId, value) {
   }
 }
 
+function applyEvidenceFlows(db, projectId, value) {
+  db.prepare("DELETE FROM evidence_flow_adapters WHERE project_id=? AND package_key=?").run(projectId, value.key);
+  const insert = db.prepare(`INSERT INTO evidence_flow_adapters(project_id,package_key,flow_key,claim_type,subject,target,workflow_keys_json,nodes_json,required_edges_json,material_symbols_json,transition_adapter,transition_method,status)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  for (const flow of value.evidence_flows) insert.run(projectId, value.key, flow.key, flow.claim_type, flow.subject, flow.target,
+    stableJson(flow.workflow_keys), stableJson(flow.nodes), stableJson(flow.required_edges), stableJson(flow.material_symbols), flow.transition.adapter, flow.transition.method, flow.status);
+}
+
 export function applyWorkflowImport(dbFile, proposalFile, projectId, options = {}) {
   const proposal = JSON.parse(fs.readFileSync(proposalFile, "utf8")), confirmedBy = String(options.confirmedBy ?? "").trim();
   if (!confirmedBy) throw new Error("IMPORT_CONFIRMATION_REQUIRED");
@@ -283,7 +317,7 @@ export function applyWorkflowImport(dbFile, proposalFile, projectId, options = {
     const value = proposal.package;
     db.exec("BEGIN IMMEDIATE");
     try {
-      applyCatalogs(db, value); applyRoles(db, proposal, projectId, value); applyChecks(db, proposal, projectId, value); const workflowMap = applyWorkflows(db, proposal, projectId, value); applyBindingsAndPolicies(db, proposal, projectId, value, workflowMap); applyTemplatesAndScenarios(db, proposal, projectId, value);
+      applyCatalogs(db, value); applyRoles(db, proposal, projectId, value); applyChecks(db, proposal, projectId, value); const workflowMap = applyWorkflows(db, proposal, projectId, value); applyBindingsAndPolicies(db, proposal, projectId, value, workflowMap); applyEvidenceFlows(db, projectId, value); applyTemplatesAndScenarios(db, proposal, projectId, value);
       const prior = activeRelease(db, projectId, value.key); db.prepare("UPDATE workflow_package_releases SET status='superseded' WHERE project_id=? AND package_key=? AND status='active'").run(projectId, value.key);
       const releaseId = mapEntity(db, proposal.id, projectId, value.key, "package_release", value.version);
       db.prepare("INSERT INTO workflow_package_releases(id,project_id,package_key,version,purpose,prompt_builder_version,manifest_hash,parent_version,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)").run(releaseId, projectId, value.key, value.version, value.purpose, value.prompt_builder_version, proposal.package_hash, prior?.version ?? null, "active", now());

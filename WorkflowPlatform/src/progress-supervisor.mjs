@@ -35,7 +35,13 @@ function canonicalClaims(reviewEvidence) {
   const claims = [...(reviewEvidence?.claim_coverage ?? []), ...(reviewEvidence?.cross_layer_chains ?? [])];
   const byId = new Map();
   for (const claim of claims) {
-    const key = String(claim.claim_id ?? `anonymous:${claim.claim_type ?? "material"}:${byId.size}`);
+    const key = String(claim.claim_id ?? `anonymous:${hash({
+      claim_type: claim.claim_type ?? "material",
+      subject: claim.subject ?? null,
+      target: claim.target ?? null,
+      required_edges: refs((claim.required_edges ?? []).map(edge => typeof edge === "string" ? edge : edge.edge)),
+      required_facts: refs(claim.required_facts ?? claim.required_predicates)
+    }).slice(0, 20)}`);
     byId.set(key, { ...(byId.get(key) ?? {}), ...claim, claim_id: key });
   }
   return [...byId.values()].sort((a, b) => a.claim_id.localeCompare(b.claim_id));
@@ -56,11 +62,8 @@ export function semanticGapFingerprint(reviewEvidence) {
     contradictions_present: Boolean((claim.contradicting_evidence_refs ?? []).length),
     edge_statuses: (claim.edge_coverage ?? []).map(edge => ({ edge: edge.edge, status: edge.status ?? "unknown" })).sort((a, b) => String(a.edge).localeCompare(String(b.edge)))
   })).filter(claim => claim.coverage !== "sufficient" || claim.edge_statuses.some(edge => edge.status !== "observed"));
-  const verification = (reviewEvidence?.verification?.verification_results ?? []).map(item => ({
-    request: item.request ?? null, status: item.status ?? "unknown", facts: item.facts ?? null
-  }));
-  const normalized = { claims, verification };
-  return claims.length || verification.length ? { normalized, fingerprint: `semantic:${hash(normalized)}` } : null;
+  const normalized = { claims };
+  return claims.length ? { normalized, fingerprint: `semantic:${hash(normalized)}` } : null;
 }
 
 export function evidenceFrontierFingerprint(reviewEvidence) {
@@ -69,7 +72,7 @@ export function evidenceFrontierFingerprint(reviewEvidence) {
     primary_evidence_refs: refs(claim.primary_evidence_refs),
     contradicting_evidence_refs: refs(claim.contradicting_evidence_refs),
     exact_scan_refs: refs(claim.exact_scan_refs),
-    graph_edges: refs(claim.graph_edges),
+    graph_edge_refs: refs(claim.graph_edge_refs),
     edges: (claim.edge_coverage ?? []).map(edge => ({
       edge: edge.edge,
       source_anchor_refs: refs(edge.source_anchor_refs),
@@ -107,7 +110,6 @@ export function recordProgressSnapshot(db, runId, { cycle = 0, gate = null, revi
   const previous = db.prepare("SELECT * FROM progress_snapshots WHERE run_id=? AND progress_kind=? ORDER BY created_at DESC,id DESC LIMIT 1").get(runId, progressKind);
   const deterministicProgress = Boolean(previous && (
     (semantic?.fingerprint ?? null) !== (previous.semantic_fingerprint ?? null)
-    || (semantic?.fingerprint ?? null) === (previous.semantic_fingerprint ?? null) && frontier?.fingerprint && frontier.fingerprint !== previous.frontier_fingerprint
     || progressKind === "gate" && JSON.stringify((gate?.checks ?? []).map(check => `${check.id}:${check.status}`).sort()) !== previous.gate_vector_json
   ));
   const usage = budgetUsage(db, runId);
@@ -161,9 +163,15 @@ export function progressStatus(db, runId) {
   const duplicatePacket = Boolean(latest?.packet_hash && previous?.packet_hash && latest.packet_hash === previous.packet_hash);
   const sameSemantic = Boolean(latest?.semantic_fingerprint && latest.semantic_fingerprint === previous?.semantic_fingerprint);
   const frontierAdvanced = Boolean(sameSemantic && latest?.frontier_fingerprint && latest.frontier_fingerprint !== previous?.frontier_fingerprint);
+  let sameSemanticSnapshots = 0;
+  if (latest?.semantic_fingerprint) {
+    for (let index = channel.length - 1; index >= 0 && channel[index].semantic_fingerprint === latest.semantic_fingerprint; index -= 1) sameSemanticSnapshots += 1;
+  }
+  const frontierOnlyCycles = Math.max(0, sameSemanticSnapshots - 1);
   return { snapshots: snapshots.length, latest, repeated_blocker_cycles: repeated, blast_radius_diverging: blastDiverging, semantic_gap: semanticGap,
     duplicate_packet: duplicatePacket, semantic_progress: Boolean(previous && !sameSemantic), evidence_frontier_progress: frontierAdvanced,
-    stagnating: duplicatePacket || (sameSemantic && !frontierAdvanced && repeated >= 2) || (!semanticGap && repeated >= 3) || blastDiverging };
+    frontier_only_cycles: frontierOnlyCycles,
+    stagnating: duplicatePacket || (sameSemantic && (frontierOnlyCycles >= 3 || (!frontierAdvanced && frontierOnlyCycles >= 1))) || (!semanticGap && repeated >= 3) || blastDiverging };
 }
 
 export function requestRunControl(db, runId, action, reason = null) {

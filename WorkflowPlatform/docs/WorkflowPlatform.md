@@ -1,4 +1,4 @@
-<document id="workflow_platform" version="0.5.18" status="working" kind="governance" language="en">
+<document id="workflow_platform" version="0.5.19" status="working" kind="governance" language="en">
 <metadata owner="workflow-platform" authority="Zodchi">
 </metadata>
 <section id="documentator_contract" status="accepted">
@@ -54,6 +54,15 @@ A route is exhausted for one semantic gap when neither its canonical semantic st
 </rule>
 <rule id="progress_channels_are_independent" status="accepted">
 Gate and semantic-review snapshots are compared only with earlier snapshots of the same kind; one channel cannot erase stagnation in the other.
+</rule>
+<rule id="frontier_only_progress_is_bounded" status="accepted">
+New deterministic anchors may defer stagnation while claim semantics stay unchanged, but only for three consecutive snapshots and without setting verified semantic progress.
+</rule>
+<rule id="parallel_review_settles_before_terminal_state" status="accepted">
+All admitted consilium participants settle before the run can become terminal; a participant failure cancels outstanding Gateway invocations and the parent waits for their queue lifecycle to close.
+</rule>
+<rule id="evidence_flows_are_package_contracts" status="accepted">
+Evidence-flow nodes, required edges, material symbols and transition capabilities are portable package data bound to semantic workflow keys. Runtime owner wording does not select a flow, and no selection is recorded explicitly.
 </rule>
 <rule id="context_limits_are_utf8_bytes" status="accepted">
 Every context limit is enforced against the final UTF-8 prompt. Fixed prompt floor, mandatory context floor and dynamic context are measured separately and reported with distinct failure categories.
