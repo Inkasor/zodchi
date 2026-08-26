@@ -173,6 +173,8 @@ test("structured planner-worker-gate-reviewer PASS completes and raw planner pro
   assert.equal(env.workerPrompt.includes("RAW_PLANNER_PROSE_MARKER"), false);
   assert.match(env.plannerPrompt, /more than eight source paths/);
   assert.match(env.plannerPrompt, /split into sequential read-only investigation steps/);
+  assert.match(env.plannerPrompt, /set artifact_keys=\[\] on every read-only investigation step/);
+  assert.match(env.plannerPrompt, /only the one final path requested by the owner/);
   const db = openDb(env.dbFile);
   assert.equal(db.prepare("SELECT state FROM workflow_runs WHERE id=?").get(env.result.run_id).state, "completed");
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM workflow_steps WHERE run_id=? AND state='completed'").get(env.result.run_id).count, 4);
