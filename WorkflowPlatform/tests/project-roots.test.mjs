@@ -259,12 +259,16 @@ test("the identifiers in a request find the files that carry them", () => {
   assert.deepEqual(terms, ["avgCost", "620008", "unit.cost"]);
 
   const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" });
-  const found = searchSources(discovery.roots, sourceScope(discovery.source_scope), terms);
+  const found = searchSources(discovery.roots, sourceScope(discovery.source_scope), terms, { indexedTerms: ["avgCost", "unit.cost"] });
   // The file mentioning a term most often comes first, both roots are searched, and a file that mentions
   // nothing does not appear at all.
   assert.deepEqual(found.files.map(file => file.path), ["src/cost.mjs", "consumer/src/view.mjs"]);
   assert.equal(found.files[0].matches.length, 2);
   assert.equal(found.files[0].matches[0].line, 1);
+  assert.deepEqual(found.exact_term_index.find(item => item.term === "avgCost"), {
+    term: "avgCost", matched_files: 2, matched_lines: 3, paths: ["src/cost.mjs", "consumer/src/view.mjs"], paths_truncated: false
+  });
+  assert.equal(found.completeness.file_scan_truncated, false);
 
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
@@ -287,6 +291,8 @@ test("git inventory keeps Cyrillic paths literal and balances a capped inventory
   const found = searchSources([{ key: "primary", path: root, access: "write", primary: true }], sourceScope([]), ["avgCost", "DataPath"], { maxFiles: 2 });
   assert.equal(found.files[0].path, "Конфигурация/ОбщиеМодули/Себестоимость.bsl");
   assert.equal(found.truncated, true);
+  assert.equal(found.completeness.result_files_truncated, true);
+  assert.equal(found.completeness.file_scan_truncated, false);
   fs.rmSync(root, { recursive: true, force: true });
 });
 

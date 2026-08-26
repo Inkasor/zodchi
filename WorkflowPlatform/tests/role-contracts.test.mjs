@@ -298,6 +298,8 @@ test("planner source evidence is fitted to its byte contract and keeps the best 
   assert.ok(Buffer.byteLength(plannerPrompt) <= 24000);
   assert.match(plannerPrompt, /src\/000-relevant\.bsl/);
   assert.match(plannerPrompt, /budget_truncation/);
+  assert.match(plannerPrompt, /exact_term_index/);
+  assert.match(plannerPrompt, /A need for more registered source content is a worker investigation step/);
   assert.doesNotMatch(plannerPrompt, /src\/noise-449\.bsl/);
   fs.rmSync(env.root, { recursive: true, force: true });
 });
