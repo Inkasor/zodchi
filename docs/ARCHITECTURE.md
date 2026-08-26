@@ -1,4 +1,4 @@
-<document id="zodchi_architecture" status="accepted" authority="zodchi" version="0.5.4" language="en">
+<document id="zodchi_architecture" status="accepted" authority="zodchi" version="0.5.5" language="en">
   <title>Zodchi system architecture</title>
 
   <purpose status="accepted">

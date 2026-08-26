@@ -262,12 +262,20 @@ function compactReviewEvidence(evidence, limit = 32_000) {
     execution_project_id: check.execution_project_id ?? null, execution_root: check.execution_root ?? null
   }));
   copy.artifacts = copy.artifacts.slice(0, 100).map(item => ({ ...item, provenance_json: utf8Prefix(item.provenance_json, 2_048) }));
-  copy.source_evidence = copy.source_evidence.map((item, index) => ({
-    step_id: item.step_id ?? null, evidence_hash: item.evidence_hash ?? null, plan_step: item.plan_step ?? null,
-    // Adapter totals are repeated for every worker-source snapshot. One sample set proves the
-    // category examples; subsequent snapshots retain the complete counts without duplicating it.
-    code_intelligence: compactCodeIntelligence(item.code_intelligence, index === 0), files: (item.files ?? []).map(compactSourceFile)
-  }));
+  const intelligenceCatalog = [], intelligenceRefs = new Map();
+  copy.source_evidence = copy.source_evidence.map(item => {
+    const intelligence = compactCodeIntelligence(item.code_intelligence, true), signature = JSON.stringify(intelligence);
+    let intelligenceRef = intelligenceRefs.get(signature);
+    if (!intelligenceRef) {
+      intelligenceRef = `code_intelligence_${intelligenceCatalog.length + 1}`;
+      intelligenceRefs.set(signature, intelligenceRef); intelligenceCatalog.push({ id: intelligenceRef, ...intelligence });
+    }
+    return { step_id: item.step_id ?? null, evidence_hash: item.evidence_hash ?? null, plan_step: item.plan_step ?? null, code_intelligence_ref: intelligenceRef, files: (item.files ?? []).map(compactSourceFile) };
+  });
+  // Worker steps commonly share the planner's same global graph statistics. Store each distinct
+  // graph once and keep per-snapshot references; no evidence is lost when a correction adds another
+  // source snapshot.
+  copy.code_intelligence_catalog = intelligenceCatalog;
   const size = () => Buffer.byteLength(JSON.stringify(copy));
   const excessBytes = () => size() > contentLimit ? size() - contentLimit + 64 : 0;
   const files = copy.source_evidence.flatMap(item => item.files ?? []);
@@ -290,7 +298,7 @@ function compactReviewEvidence(evidence, limit = 32_000) {
   if (size() > contentLimit) for (const file of files) for (const occurrence of (file.exact_term_scan?.occurrences ?? []).slice(1)) {
     occurrence.locations = []; occurrence.locations_truncated = true; copy.evidence_compaction.metadata_reduced = true;
   }
-  const sampleMaps = copy.source_evidence.flatMap(item => item.code_intelligence?.adapters ?? []).map(adapter => adapter.unresolved_call_samples ?? {});
+  const sampleMaps = copy.code_intelligence_catalog.flatMap(item => item.adapters ?? []).map(adapter => adapter.unresolved_call_samples ?? {});
   if (size() > contentLimit) for (const samples of sampleMaps) for (const category of Object.keys(samples).sort()) { samples[category] = []; copy.evidence_compaction.metadata_reduced = true; }
   if (size() > contentLimit) for (const segment of files.flatMap(file => file.segments ?? [])) { segment.reason = ""; copy.evidence_compaction.metadata_reduced = true; }
   if (size() > contentLimit) for (const file of files) { delete file.supplied_bytes; if (!file.text) delete file.source_text_truncated; copy.evidence_compaction.metadata_reduced = true; }
