@@ -4,6 +4,15 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_3_2026_08_26" status="working">
+
+## 0.5.3 — 2026-08-26
+
+- Review evidence compaction now uses bounded linear reduction passes instead of repeatedly serializing the whole envelope for each small metadata trim.
+- The dense 24-file TypeScript regression compacts in a fraction of a second while preserving the 0.5.2 evidence guarantees.
+
+</section>
+
 <section id="0_5_2_2026_08_26" status="working">
 
 ## 0.5.2 — 2026-08-26

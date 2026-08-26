@@ -212,19 +212,31 @@ function compactSourceFile(file) {
   };
 }
 
-function reduceLargestString(entries, key, minimum = 0) {
-  const candidate = entries.filter(item => Buffer.byteLength(String(item?.[key] ?? "")) > minimum)
-    .sort((a, b) => Buffer.byteLength(String(b[key])) - Buffer.byteLength(String(a[key])))[0];
-  if (!candidate) return false;
-  candidate[key] = utf8Prefix(candidate[key], Math.max(minimum, Math.floor(Buffer.byteLength(String(candidate[key])) / 2)));
-  return true;
+function trimStringValues(entries, read, write, bytesToRemove, minimum = 0) {
+  let remaining = Math.max(0, bytesToRemove), candidates = entries.map(entry => ({ entry, bytes: Buffer.byteLength(String(read(entry) ?? "")) })).filter(item => item.bytes > minimum);
+  while (remaining > 0 && candidates.length) {
+    const share = Math.max(1, Math.ceil(remaining / candidates.length));
+    let removedThisRound = 0;
+    for (const candidate of candidates) {
+      const remove = Math.min(candidate.bytes - minimum, share);
+      if (remove <= 0) continue;
+      const target = candidate.bytes - remove;
+      write(candidate.entry, utf8Prefix(read(candidate.entry), target));
+      const actual = candidate.bytes - Buffer.byteLength(String(read(candidate.entry) ?? ""));
+      candidate.bytes -= actual; remaining -= actual; removedThisRound += actual;
+      if (remaining <= 0) break;
+    }
+    if (!removedThisRound) break;
+    candidates = candidates.filter(item => item.bytes > minimum);
+  }
+  return bytesToRemove - remaining;
 }
 
 function compactReviewEvidence(evidence, limit = 40_000) {
   const copy = structuredClone(evidence);
   // buildReviewEvidence adds a SHA-256 field after compaction; reserve its JSON envelope here so
   // the object actually delivered to reviewers, not only its pre-hash form, stays under the limit.
-  const contentLimit = Math.max(0, limit - 160);
+  const contentLimit = Math.max(0, limit - 320);
   copy.evidence_compaction = { limit_bytes: limit, supplied_bytes: 0, source_text_reduced: false, metadata_reduced: false };
   if (copy.change_evidence) {
     copy.change_evidence.run_changed_paths = copy.change_evidence.run_changed_paths.slice(0, 200);
@@ -256,65 +268,40 @@ function compactReviewEvidence(evidence, limit = 40_000) {
     // category examples; subsequent snapshots retain the complete counts without duplicating it.
     code_intelligence: compactCodeIntelligence(item.code_intelligence, index === 0), files: (item.files ?? []).map(compactSourceFile)
   }));
-  // Primary source snippets give way gradually, but each retained file remains named and its
-  // exact-scan/code-intelligence metadata remains available after its text reaches zero.
-  while (Buffer.byteLength(JSON.stringify(copy)) > contentLimit) {
-    const file = copy.source_evidence.flatMap(item => item.files ?? []).sort((a, b) => Buffer.byteLength(String(b.text ?? "")) - Buffer.byteLength(String(a.text ?? "")))[0];
-    if (!file || !file.text) break;
-    file.text = utf8Prefix(file.text, Math.floor(Buffer.byteLength(file.text) / 2)); file.source_text_truncated = true; copy.evidence_compaction.source_text_reduced = true;
-  }
+  const size = () => Buffer.byteLength(JSON.stringify(copy));
+  const excessBytes = () => size() > contentLimit ? size() - contentLimit + 64 : 0;
+  const files = copy.source_evidence.flatMap(item => item.files ?? []);
+  // Primary snippets share the reduction fairly in one measured pass. This avoids repeatedly
+  // serializing a large envelope once per line or byte range.
+  let excess = excessBytes();
+  if (excess && trimStringValues(files, file => file.text, (file, value) => { file.text = value; file.source_text_truncated = true; }, excess)) copy.evidence_compaction.source_text_reduced = true;
   // Real analytical workflows may carry several independent exact scans. Keep every term, count,
   // path and line while reducing duplicated line bodies and prose summaries only as needed.
-  const locations = () => copy.source_evidence.flatMap(item => item.files ?? []).flatMap(file => file.exact_term_scan?.occurrences ?? []).flatMap(item => item.locations ?? []);
-  const summaries = () => [...(copy.analytical_evidence?.conclusions ?? []), ...(copy.analytical_evidence?.decision_artifacts ?? [])];
-  while (Buffer.byteLength(JSON.stringify(copy)) > contentLimit && reduceLargestString(locations(), "text")) copy.evidence_compaction.metadata_reduced = true;
-  while (Buffer.byteLength(JSON.stringify(copy)) > contentLimit) {
-    const occurrence = copy.source_evidence.flatMap(item => item.files ?? []).flatMap(file => file.exact_term_scan?.occurrences ?? [])
-      .filter(item => (item.locations ?? []).length > 1).sort((a, b) => b.locations.length - a.locations.length)[0];
-    if (!occurrence) break;
-    occurrence.locations.pop(); occurrence.locations_truncated = true; copy.evidence_compaction.metadata_reduced = true;
+  const occurrences = files.flatMap(file => file.exact_term_scan?.occurrences ?? []);
+  const locations = occurrences.flatMap(item => item.locations ?? []);
+  const summaries = [...(copy.analytical_evidence?.conclusions ?? []), ...(copy.analytical_evidence?.decision_artifacts ?? [])];
+  excess = excessBytes();
+  if (excess && trimStringValues(locations, item => item.text, (item, value) => { item.text = value; }, excess)) copy.evidence_compaction.metadata_reduced = true;
+  if (size() > contentLimit) for (const occurrence of occurrences) {
+    if ((occurrence.locations ?? []).length > 1) { occurrence.locations = occurrence.locations.slice(0, 1); occurrence.locations_truncated = true; copy.evidence_compaction.metadata_reduced = true; }
   }
   // If many workers scanned the same lexical vocabulary, one located occurrence per file keeps a
   // concrete line anchor while the remaining entries still preserve every term and its full count.
-  for (const file of copy.source_evidence.flatMap(item => item.files ?? [])) {
-    for (const occurrence of (file.exact_term_scan?.occurrences ?? []).slice(1)) {
-      if (Buffer.byteLength(JSON.stringify(copy)) <= contentLimit) break;
-      occurrence.locations = []; occurrence.locations_truncated = true; copy.evidence_compaction.metadata_reduced = true;
-    }
+  if (size() > contentLimit) for (const file of files) for (const occurrence of (file.exact_term_scan?.occurrences ?? []).slice(1)) {
+    occurrence.locations = []; occurrence.locations_truncated = true; copy.evidence_compaction.metadata_reduced = true;
   }
   const sampleMaps = copy.source_evidence.flatMap(item => item.code_intelligence?.adapters ?? []).map(adapter => adapter.unresolved_call_samples ?? {});
-  for (const samples of sampleMaps) {
-    for (const category of Object.keys(samples).sort()) {
-      if (Buffer.byteLength(JSON.stringify(copy)) <= contentLimit) break;
-      samples[category] = []; copy.evidence_compaction.metadata_reduced = true;
-    }
-  }
-  for (const segment of copy.source_evidence.flatMap(item => item.files ?? []).flatMap(file => file.segments ?? [])) {
-    if (Buffer.byteLength(JSON.stringify(copy)) <= contentLimit) break;
-    segment.reason = ""; copy.evidence_compaction.metadata_reduced = true;
-  }
-  for (const file of copy.source_evidence.flatMap(item => item.files ?? [])) {
-    if (Buffer.byteLength(JSON.stringify(copy)) <= contentLimit) break;
-    delete file.supplied_bytes;
-    if (!file.text) delete file.source_text_truncated;
-    copy.evidence_compaction.metadata_reduced = true;
-  }
-  while (Buffer.byteLength(JSON.stringify(copy)) > contentLimit && (reduceLargestString(summaries(), "summary", 256) || reduceLargestString(summaries(), "conclusion", 256))) copy.evidence_compaction.metadata_reduced = true;
-  const references = () => summaries().flatMap(item => ["evidence_refs", "evidence"].flatMap(key => (item[key] ?? []).map((value, index) => ({ owner: item, key, index, value }))));
-  while (Buffer.byteLength(JSON.stringify(copy)) > contentLimit) {
-    const candidate = references().filter(item => Buffer.byteLength(String(item.value)) > 120).sort((a, b) => Buffer.byteLength(String(b.value)) - Buffer.byteLength(String(a.value)))[0];
-    if (!candidate) break;
-    candidate.owner[candidate.key][candidate.index] = utf8Prefix(candidate.value, Math.max(120, Math.floor(Buffer.byteLength(String(candidate.value)) / 2)));
-    copy.evidence_compaction.metadata_reduced = true;
-  }
-  while (Buffer.byteLength(JSON.stringify(copy)) > contentLimit) {
-    const candidate = summaries().flatMap(item => ["evidence_refs", "evidence"].map(key => ({ item, key, values: item[key] ?? [] })))
-      .filter(entry => entry.values.length > 3).sort((a, b) => b.values.length - a.values.length)[0];
-    if (!candidate) break;
-    candidate.values.pop(); copy.evidence_compaction.metadata_reduced = true;
-  }
-  copy.evidence_compaction.supplied_bytes = Buffer.byteLength(JSON.stringify(copy));
-  if (Buffer.byteLength(JSON.stringify(copy)) > contentLimit) throw new Error(`REVIEW_EVIDENCE_BUDGET_EXCEEDED: ${Buffer.byteLength(JSON.stringify(copy))}/${limit}`);
+  if (size() > contentLimit) for (const samples of sampleMaps) for (const category of Object.keys(samples).sort()) { samples[category] = []; copy.evidence_compaction.metadata_reduced = true; }
+  if (size() > contentLimit) for (const segment of files.flatMap(file => file.segments ?? [])) { segment.reason = ""; copy.evidence_compaction.metadata_reduced = true; }
+  if (size() > contentLimit) for (const file of files) { delete file.supplied_bytes; if (!file.text) delete file.source_text_truncated; copy.evidence_compaction.metadata_reduced = true; }
+  excess = excessBytes();
+  if (excess && trimStringValues(summaries, item => item.summary ?? item.conclusion, (item, value) => { if (Object.hasOwn(item, "summary")) item.summary = value; else item.conclusion = value; }, excess, 256)) copy.evidence_compaction.metadata_reduced = true;
+  const references = summaries.flatMap(item => ["evidence_refs", "evidence"].flatMap(key => (item[key] ?? []).map((value, index) => ({ owner: item, key, index }))));
+  excess = excessBytes();
+  if (excess && trimStringValues(references, item => item.owner[item.key][item.index], (item, value) => { item.owner[item.key][item.index] = value; }, excess, 120)) copy.evidence_compaction.metadata_reduced = true;
+  if (size() > contentLimit) for (const item of summaries) for (const key of ["evidence_refs", "evidence"]) if ((item[key] ?? []).length > 3) { item[key] = item[key].slice(0, 3); copy.evidence_compaction.metadata_reduced = true; }
+  copy.evidence_compaction.supplied_bytes = size();
+  if (size() > contentLimit) throw new Error(`REVIEW_EVIDENCE_BUDGET_EXCEEDED: ${size()}/${limit}`);
   return copy;
 }
 
