@@ -23,6 +23,21 @@ test("new role contracts use a measured-prompt allowance above the old 24KB defa
   assert.equal(deliberatelySmall.contract.context_limit_bytes, 24000);
 });
 
+test("package lint enforces the configurable one-to-three consilium contract", () => {
+  const invalid = structuredClone(PACKAGE_DEFINITIONS[0]);
+  invalid.operational_levels.find(item => item.level === "mvp").escalation.max_parallel_consilium_members = 4;
+  assert.throws(() => validateWorkflowPackage(invalid), /max_parallel_consilium_members/);
+
+  const noJudge = structuredClone(PACKAGE_DEFINITIONS[0]);
+  const policy = noJudge.operational_levels.find(item => item.level === "mvp");
+  policy.improvement_strategy = "gauntlet";
+  policy.escalation.max_parallel_consilium_members = 2;
+  noJudge.roles = noJudge.roles.filter(roleValue => roleValue.key !== "judge");
+  noJudge.profiles = noJudge.profiles.filter(profile => profile.role_key !== "judge");
+  noJudge.prompt_templates = noJudge.prompt_templates.filter(template => template.role_key !== "judge");
+  assert.throws(() => validateWorkflowPackage(noJudge), /requires judge/);
+});
+
 test("at least one package is configured and every one is generated and free of local identity", () => {
   assert.equal(PACKAGE_DEFINITIONS.length >= 1, true);
   for (const packageValue of PACKAGE_DEFINITIONS) {

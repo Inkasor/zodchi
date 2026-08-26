@@ -4,6 +4,17 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_13_2026_08_26" status="working">
+
+## 0.5.13 — 2026-08-26
+
+- Planner locator fitting теперь удаляет дублирующие глобальные каталоги terms и adapters, сохраняя лучший ranked source path; при overflow до fail-closed записываются точные размеры компонентов prompt.
+- Semantic correction routing использует language-independent corpus rarity и форму identifier вместо русских/английских stoplists. Эквивалентные gaps на разных языках выбирают один source-bearing step при общем project symbol.
+- Cross-layer evidence изолирован за контрактами TypeScript, BSL и generic flow adapters. Только adapter с deterministic transitions может превратить общий endpoint symbol в observed edge; для BSL без такой capability статус остаётся unknown.
+- Package/runtime validation разрешает от одного до трёх участников consilium и требует активный Judge contract для multi-member Gauntlet.
+
+</section>
+
 <section id="0_5_12_2026_08_26" status="working">
 
 ## 0.5.12 — 2026-08-26

@@ -16,6 +16,7 @@ import { buildReviewEvidence, captureRunBaselines, recordRunEvidence, runChangeE
 import { applyRunControlAtBoundary, pendingRunControl, recordProgressSnapshot } from "./progress-supervisor.mjs";
 import { blockerAdmissibility, admissibleOpinionDecision } from "./review-admissibility.mjs";
 import { executeTargetedVerification } from "./targeted-verification.mjs";
+import { documentTermScore, rankTerms } from "./term-ranking.mjs";
 
 function hashFile(file) { return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"); }
 function parseJson(value, fallback) { try { return JSON.parse(value); } catch { return fallback; } }
@@ -176,6 +177,34 @@ export function fitSourceEvidence(context, limit, measure = promptBytes) {
   // can be reduced without losing where the proven hit lives.
   const best = result.files[0];
   while (refresh() > limit && Array.isArray(best?.matches) && best.matches.length > 1) best.matches.pop();
+  // The locator packet can still overflow after all result files except the best one have gone away.
+  // exact_term_index and code-intelligence summaries are global catalogs, so their independent caps
+  // can dominate a small planner contract even though the one proven path is already sufficient to
+  // assign a source-bearing step. Keep that path and progressively reduce only duplicate catalogs.
+  while (refresh() > limit && Array.isArray(result.exact_term_index) && result.exact_term_index.length > 1) {
+    result.exact_term_index.pop();
+    result.exact_term_index_truncated = true;
+  }
+  const exact = result.exact_term_index?.[0];
+  while (refresh() > limit && Array.isArray(exact?.paths) && exact.paths.length > 1) {
+    exact.paths.pop(); exact.paths_truncated = true; exact.retained_paths = exact.paths.length;
+  }
+  while (refresh() > limit && Array.isArray(intelligence?.edges) && intelligence.edges.length) intelligence.edges.pop();
+  while (refresh() > limit && Array.isArray(intelligence?.nodes) && intelligence.nodes.length) intelligence.nodes.pop();
+  while (refresh() > limit && Array.isArray(intelligence?.ranked_files) && intelligence.ranked_files.length) intelligence.ranked_files.pop();
+  for (const adapter of intelligence?.adapters ?? []) {
+    while (refresh() > limit && Array.isArray(adapter.transitions) && adapter.transitions.length) {
+      adapter.transitions.pop(); adapter.transitions_truncated = true;
+    }
+    while (refresh() > limit && Array.isArray(adapter.diagnostics) && adapter.diagnostics.length) {
+      adapter.diagnostics.pop(); adapter.diagnostics_truncated = true;
+    }
+  }
+  while (refresh() > limit && Array.isArray(result.terms) && result.terms.length > 1) result.terms.pop();
+  for (const key of ["request_words", "identifiers"]) {
+    const values = result.derived_from?.[key];
+    while (refresh() > limit && Array.isArray(values) && values.length > 1) values.pop();
+  }
   return context;
 }
 
@@ -317,7 +346,19 @@ function promptWithinContract(contract, qualityContract, packageContract, contex
   }
   fitWorkerSources(fitted, contract.context_limit_bytes, value => Buffer.byteLength(rolePrompt({ contract, qualityContract, packageContract, context: value, resultSchema: schemaKey })));
   prompt = rolePrompt({ contract, qualityContract, packageContract, context: fitted, resultSchema: schemaKey });
-  if (Buffer.byteLength(prompt) > contract.context_limit_bytes) throw new Error(`ROLE_CONTEXT_BUDGET_EXCEEDED: fixed contract envelope is ${Buffer.byteLength(prompt)}/${contract.context_limit_bytes} bytes`);
+  if (Buffer.byteLength(prompt) > contract.context_limit_bytes) {
+    const error = new Error(`ROLE_CONTEXT_BUDGET_EXCEEDED: fixed contract envelope is ${Buffer.byteLength(prompt)}/${contract.context_limit_bytes} bytes`);
+    error.prompt_metrics = {
+      prompt_bytes: Buffer.byteLength(prompt),
+      context_limit_bytes: contract.context_limit_bytes,
+      project_context_bytes: Buffer.byteLength(JSON.stringify(fitted)),
+      task_package_bytes: Buffer.byteLength(JSON.stringify(packageContract ?? {})),
+      document_bytes: Buffer.byteLength(JSON.stringify(fitted.documents ?? [])),
+      source_inventory_bytes: Buffer.byteLength(JSON.stringify(fitted.source_inventory ?? [])),
+      source_matches_bytes: Buffer.byteLength(JSON.stringify(fitted.source_matches ?? null))
+    };
+    throw error;
+  }
   return prompt;
 }
 
@@ -374,6 +415,12 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
   let prompt;
   try { prompt = promptWithinContract(contract, qualityContract, packageContract, promptContext, schemaKey); }
   catch (error) {
+    recordRunEvidence(runtime.db, runId, step.id, "role_prompt_overflow", {
+      step_key: step.step_key,
+      role_id: roleId,
+      ...(error.prompt_metrics ?? { context_limit_bytes: contract.context_limit_bytes }),
+      error: error.message
+    });
     const failure = queue.fail(lease.token, { category: "context_budget_exceeded", retryable: false });
     throw new Error(`${error.message}: ${JSON.stringify(failure)}`);
   }
@@ -715,11 +762,11 @@ export function targetedSteps(plan, { gate = null, reviewer = null } = {}) {
   // A semantic review gap often has no single file path (for example API -> client mapping -> UI).
   // Route it to the source-bearing plan step whose key/objective best matches that primary intent;
   // never spend the correction on a pathless synthesis step while a searchable source step exists.
-  const semanticTokens = [...new Set(reviewSignals.filter(Boolean).join(" ").toLowerCase().match(/[a-zа-яё_$][a-zа-яё0-9_$.-]{3,}/giu) ?? [])]
-    .filter(token => !new Set(["source", "evidence", "required", "доказ", "переход", "цепоч", "кажд", "собствен"]).has(token));
-  const scored = plan.steps.filter(step => (step.allowed_paths ?? []).length).map(step => {
-    const haystack = `${step.key} ${step.objective ?? ""}`.toLowerCase();
-    return { step, score: semanticTokens.reduce((total, token) => total + (haystack.includes(token) ? 1 : 0), 0) };
+  const sourceSteps = plan.steps.filter(step => (step.allowed_paths ?? []).length);
+  const stepDocuments = sourceSteps.map(step => `${step.key} ${step.objective ?? ""} ${(step.allowed_paths ?? []).join(" ")}`);
+  const rankedTerms = rankTerms(reviewSignals.filter(Boolean).join(" "), stepDocuments);
+  const scored = sourceSteps.map((step, index) => {
+    return { step, score: documentTermScore(stepDocuments[index], rankedTerms) };
   }).filter(item => item.score > 0).sort((left, right) => right.score - left.score);
   if (scored.length && (scored.length === 1 || scored[0].score > scored[1].score)) return { steps: [scored[0].step], confidence: "medium", basis: "unique_semantic_intent_score", unresolved_signals: [] };
   return { steps: [], confidence: scored.length ? "low" : "none", basis: scored.length ? "ambiguous_semantic_intent" : "no_supported_route", unresolved_signals: reviewSignals.filter(Boolean).map(String).slice(0, 12) };

@@ -112,6 +112,9 @@ export function validateWorkflowPackage(value) {
   for (const policy of policies) {
     exactObject(policy, ["level", "improvement_strategy", "budgets", "required_check_keys", "correction_limit", "escalation"], "operational_level");
     if (!["standard", "gauntlet"].includes(policy.improvement_strategy)) throw new Error(`operational_level.${policy.level}: invalid improvement strategy`);
+    const consiliumMembers = policy.escalation?.max_parallel_consilium_members;
+    if (consiliumMembers !== undefined && (!Number.isInteger(consiliumMembers) || consiliumMembers < 1 || consiliumMembers > 3)) throw new Error(`operational_level.${policy.level}: max_parallel_consilium_members must be an integer from 1 to 3`);
+    if (policy.improvement_strategy === "gauntlet" && Number(consiliumMembers ?? 2) > 1 && !roleKeys.has("judge")) throw new Error(`operational_level.${policy.level}: multi-member consilium requires judge`);
     const qualityContract = DEFAULT_QUALITY_CONTRACTS.find(item => item.level === policy.level);
     if (!qualityContract || !Number.isInteger(policy.correction_limit) || policy.correction_limit < 0 || policy.correction_limit !== Number(policy.budgets.correction_cycles)) throw new Error(`operational_level.${policy.level}: invalid correction contract`);
     const budgetKeys = Object.keys(policy.budgets).sort();
