@@ -373,7 +373,7 @@ test("TypeScript compiler intelligence resolves JavaScript calls across files", 
   fs.writeFileSync(path.join(producer, "package.json"), JSON.stringify({ type: "module", dependencies: { typescript: "*" } }));
   let localTypeScript;
   try { localTypeScript = path.dirname(createRequire(import.meta.url).resolve("typescript/package.json")); }
-  catch { fs.rmSync(root, { recursive: true, force: true }); t.skip("TypeScript is supplied by the analyzed project, not bundled with Zodchi"); return; }
+  catch { db.close(); fs.rmSync(root, { recursive: true, force: true }); t.skip("TypeScript is supplied by the analyzed project, not bundled with Zodchi"); return; }
   fs.mkdirSync(path.join(producer, "node_modules"), { recursive: true });
   fs.symlinkSync(localTypeScript, path.join(producer, "node_modules", "typescript"), "junction");
   fs.writeFileSync(path.join(producer, "src", "cost.mjs"), `export function calculateAverageCost(unit) { return unit.cost; }\n`);
