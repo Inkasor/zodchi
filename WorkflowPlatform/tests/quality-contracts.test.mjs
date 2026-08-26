@@ -60,6 +60,28 @@ test("an imported software package has four normalized and checkable quality pol
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("an explicit Gauntlet policy may raise its project-local budget allowance", () => {
+  const root = temporaryRoot("workflow-gauntlet-policy-");
+  const dbFile = path.join(root, "workflow.sqlite"), proposalFile = path.join(root, "proposal.json"), projectRoot = path.join(root, "project-r");
+  fs.mkdirSync(projectRoot);
+  let db = openDb(dbFile);
+  db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('project-r','Project R',?,?)").run(projectRoot, new Date().toISOString());
+  db.close();
+  const packageFile = examplePackageFile(root);
+  proposeWorkflowImport(dbFile, packageFile, proposalFile, "project-r");
+  applyWorkflowImport(dbFile, proposalFile, "project-r", { confirmedBy: "contract-test-owner" });
+  db = openDb(dbFile);
+  db.prepare("UPDATE operational_level_policies SET improvement_strategy='gauntlet',budgets_json=?,correction_limit=4 WHERE project_id='project-r' AND level='mvp'")
+    .run(JSON.stringify({ calls: 20, duration_ms: 7_200_000, correction_cycles: 4, cost_usd: 6 }));
+  const update = db.prepare("UPDATE operational_level_budget_limits SET limit_value=? WHERE project_id='project-r' AND level='mvp' AND metric=?");
+  for (const [metric, limit] of Object.entries({ calls: 20, duration_ms: 7_200_000, correction_cycles: 4, cost_usd: 6 })) update.run(limit, metric);
+  assert.deepEqual(operationalPoliciesLint(db, "project-r"), { kind: "operational_policies", status: "passed", errors: [], projects: 1, packages: 1 });
+  db.prepare("UPDATE operational_level_policies SET improvement_strategy='standard' WHERE project_id='project-r' AND level='mvp'").run();
+  assert.ok(operationalPoliciesLint(db, "project-r").errors.some(error => error.includes("budget exceeds contract")));
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("a workflow's declared quality is a floor the classifier cannot go below", () => {
   assert.equal(floorOperationalLevel("prototype", "mvp"), "mvp");
   assert.equal(floorOperationalLevel("prototype", "production"), "production");

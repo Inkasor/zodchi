@@ -4,6 +4,15 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_1_2026_08_26" status="working">
+
+## 0.5.1 — 2026-08-26
+
+- Исправлена проверка operational policy: явно выбранная стратегия Gauntlet может использовать объявленный проектный бюджет, как и при runtime admission.
+- Добавлена регрессия, подтверждающая, что standard-политики по-прежнему ограничены общим quality contract.
+
+</section>
+
 <section id="0_5_0_2026_08_26" status="working">
 
 ## 0.5.0 — 2026-08-26

@@ -321,7 +321,10 @@ export function operationalPoliciesLint(db, projectId = null) {
       const map = new Map(limits.map(value => [value.metric, Number(value.limit_value)]));
       for (const budget of contract.budgets) {
         if (!map.has(budget.metric)) errors.push(`missing budget: ${item.project_id}:${item.package_key}:${level}:${budget.metric}`);
-        else if (map.get(budget.metric) > Number(budget.limit)) errors.push(`budget exceeds contract: ${item.project_id}:${item.package_key}:${level}:${budget.metric}`);
+        // Standard policies may only tighten the universal quality contract. Gauntlet is an
+        // explicit project-local operating strategy whose declared allowance is the hard bound;
+        // loadOperationalPolicy applies the same distinction at runtime.
+        else if (policy.improvement_strategy !== "gauntlet" && map.get(budget.metric) > Number(budget.limit)) errors.push(`budget exceeds contract: ${item.project_id}:${item.package_key}:${level}:${budget.metric}`);
       }
       let required = [];
       try { required = JSON.parse(policy.required_checks_json); } catch { errors.push(`invalid checks: ${item.project_id}:${item.package_key}:${level}`); }
