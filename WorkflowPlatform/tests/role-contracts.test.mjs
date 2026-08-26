@@ -42,6 +42,7 @@ function fixture(prefix, { document = false } = {}) {
   const dbFile = path.join(root, "workflow.sqlite");
   fs.mkdirSync(path.join(project, "src"), { recursive: true });
   fs.mkdirSync(path.join(project, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(project, "src", "context.mjs"), "export function inspect(value) { return value.dynamicCall(); }\n");
   if (document) fs.writeFileSync(path.join(project, "docs", "control.md"), '<document id="control" status="working"><section id="summary" status="working">old</section></document>');
   const roles = [
     ["planner", "planner.v1", ["code", "document"]], ["worker", "worker.v1", ["code", "document"]],
@@ -175,6 +176,8 @@ test("structured planner-worker-gate-reviewer PASS completes and raw planner pro
   assert.match(env.plannerPrompt, /split into sequential read-only investigation steps/);
   assert.match(env.plannerPrompt, /production definitions, their production call sites/);
   assert.match(env.plannerPrompt, /Keep separate mechanisms separate/);
+  assert.match(env.workerPrompt, /code_intelligence/);
+  assert.match(env.workerPrompt, /compiler_available/);
   assert.match(env.plannerPrompt, /set artifact_keys=\[\] on every read-only investigation step/);
   assert.match(env.plannerPrompt, /only the one final path requested by the owner/);
   const db = openDb(env.dbFile);

@@ -96,6 +96,18 @@ function requireWorkflowApproval(runtime, runId, contract, responseLanguage) {
 
 function promptBytes(value) { return Buffer.byteLength(JSON.stringify(value)); }
 
+function compactCodeIntelligenceEvidence(sourceMatches) {
+  const intelligence = sourceMatches?.code_intelligence;
+  if (!intelligence) return null;
+  return {
+    schema_version: intelligence.schema_version,
+    strategy: intelligence.strategy,
+    adapters: intelligence.adapters,
+    completeness: intelligence.completeness,
+    statistics: intelligence.statistics
+  };
+}
+
 // Search results are already ranked best-first. When their independent collection caps add up to more
 // than a role can receive, discard the least relevant evidence first and keep the highest-ranked path.
 // The inventory is structural context, so counts per area replace hundreds of path/size records; paths
@@ -547,19 +559,21 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     trace_rule: "For an end-to-end behavior trace, prioritize production definitions, their production call sites, persistence boundaries and focused tests. A reference catalog or similarly named future subsystem is supporting evidence only when a resolved graph edge or an exact production call site connects it to the requested runtime behavior. Keep separate mechanisms separate instead of substituting one FBO/FBS/rFBS occurrence for another.",
     clarification_rule: "Ask the owner only for a missing product decision or external fact. A need for more registered source content is a worker investigation step, not an owner clarification."
   };
+  let plannerSourceMatches = null;
+  if (plannerContract) {
+    const scope = sourceScope(discovery.source_scope);
+    const expanded = expandTerms(discovery.roots ?? [], scope, message);
+    const lexical = searchSources(discovery.roots ?? [], scope, expanded.terms, { indexedTerms: expanded.code });
+    const intelligence = buildCodeIntelligence(discovery.roots ?? [], scope, expanded.terms, lexical, { primaryTerms: expanded.code, contextTerms: expanded.subject });
+    plannerSourceMatches = { ...mergeGraphMatches(lexical, intelligence), derived_from: { request_words: expanded.subject, identifiers: expanded.harvested } };
+  }
   const planner = plannerContract && await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: plannerPackage, context: boundedContext(discovery, plannerRole, classification, Math.floor(plannerContract.context_limit_bytes / 2), responseLanguage, {
-      source_inventory: inventorySummary(discovery.sources ?? []),
+    source_inventory: inventorySummary(discovery.sources ?? []),
       // An inventory says what exists; it does not say where the thing the owner asked about lives, and
       // in a project of a thousand files choosing paths by name is guessing. The identifiers are already
       // in the message, so the platform searches the declared scope for them before the planner is called
       // and hands over the files that actually mention them.
-      source_matches: (() => {
-        const scope = sourceScope(discovery.source_scope);
-        const expanded = expandTerms(discovery.roots ?? [], scope, message);
-        const lexical = searchSources(discovery.roots ?? [], scope, expanded.terms, { indexedTerms: expanded.code });
-        const intelligence = buildCodeIntelligence(discovery.roots ?? [], scope, expanded.terms, lexical, { primaryTerms: expanded.code, contextTerms: expanded.subject });
-        return { ...mergeGraphMatches(lexical, intelligence), derived_from: { request_words: expanded.subject, identifiers: expanded.harvested } };
-      })()
+      source_matches: plannerSourceMatches
     }), schemaKey: "planner.v1", parseOptions: { registeredRoles, registeredChecks, registeredArtifactTypes, maxStepAttempts: policy.limits.correction_cycles + 1 }, gatewayCall });
   const plan = planner ? planner.result : derivePlanFromTemplates(runtime, projectId, routeContract, message, registeredChecks, level, classification.document_required, documentatorRole, approvalGranted);
   if (classification.document_required) registerNewPlannedDocument(runtime, projectId, projectRoot, plan, documentatorRole);
@@ -593,6 +607,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     const taskEvidence = {
       plan_inputs: plan.inputs ?? [],
       prior_worker_results: compactPriorWorkerResults([...workerResults, ...cycleResults]),
+      code_intelligence: compactCodeIntelligenceEvidence(plannerSourceMatches),
       git_history: collectGitHistory(discovery.roots ?? [], plannedStep.allowed_paths, sourceScope(discovery.source_scope), { enabled: discovery.git?.enabled === true })
     };
     const qualityContract = loadQualityContract(runtime.db, level);
