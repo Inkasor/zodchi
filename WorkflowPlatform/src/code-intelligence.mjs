@@ -138,7 +138,7 @@ function parseTypeScript(root, files) {
     module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext,
     jsx: ts.JsxEmit.ReactJSX, resolveJsonModule: true
   });
-  const checker = program.getTypeChecker(), nodes = [], edges = [], edgeKeys = new Set(), symbolNodes = new Map(), nodeBySyntax = new Map(), modules = new Map();
+  const checker = program.getTypeChecker(), nodes = [], edges = [], transitions = [], edgeKeys = new Set(), symbolNodes = new Map(), nodeBySyntax = new Map(), modules = new Map();
   const projectSources = program.getSourceFiles().filter(source => fileByAbsolute.has(path.resolve(source.fileName).toLowerCase()));
   const resolveSymbol = symbol => symbol && (symbol.flags & ts.SymbolFlags.Alias) ? (() => { try { return checker.getAliasedSymbol(symbol); } catch { return symbol; } })() : symbol;
   for (const source of projectSources) {
@@ -194,6 +194,19 @@ function parseTypeScript(root, files) {
   };
   for (const source of projectSources) {
     const file = fileByAbsolute.get(path.resolve(source.fileName).toLowerCase());
+    const field = syntax => {
+      if (!syntax) return null;
+      if (ts.isPropertyAccessExpression(syntax)) return { symbol: syntax.name.text, expression: syntax.getText(source) };
+      if (ts.isElementAccessExpression(syntax) && syntax.argumentExpression && (ts.isStringLiteral(syntax.argumentExpression) || ts.isIdentifier(syntax.argumentExpression))) return { symbol: syntax.argumentExpression.text, expression: syntax.getText(source) };
+      if (ts.isIdentifier(syntax)) return { symbol: syntax.text, expression: syntax.getText(source) };
+      return null;
+    };
+    const addTransition = (kind, fromSyntax, toSyntax, syntax) => {
+      const from = field(fromSyntax), to = field(toSyntax);
+      if (!from || !to) return;
+      const line = source.getLineAndCharacterOfPosition(syntax.getStart(source)).line + 1;
+      transitions.push({ id: `ts_transition:${file.path}:${syntax.getStart(source)}:${kind}`, kind, direction: "from_to", symbol_from: from.symbol, symbol_to: to.symbol, expression_from: from.expression, expression_to: to.expression, path: file.path, line, ast_kind: ts.SyntaxKind[syntax.kind], method: "typescript_ast" });
+    };
     const visit = syntax => {
       if (ts.isCallExpression(syntax) || ts.isNewExpression(syntax)) {
         const expression = syntax.expression, symbol = resolveSymbol(checker.getSymbolAtLocation(expression));
@@ -211,11 +224,16 @@ function parseTypeScript(root, files) {
           addEdge(edges, edgeKeys, from, target.id, "references"); resolvedReferences += 1;
         }
       }
+      if (ts.isVariableDeclaration(syntax) && syntax.initializer) addTransition("field_assignment", syntax.initializer, syntax.name, syntax);
+      else if (ts.isBinaryExpression(syntax) && syntax.operatorToken.kind === ts.SyntaxKind.EqualsToken) addTransition("field_assignment", syntax.right, syntax.left, syntax);
+      else if (ts.isPropertyAssignment(syntax)) addTransition("property_mapping", syntax.initializer, syntax.name, syntax);
+      else if (ts.isReturnStatement(syntax) && syntax.expression) addTransition("return_mapping", syntax.expression, { kind: ts.SyntaxKind.Identifier, text: "return", getText: () => "return" }, syntax);
+      else if (ts.isCallExpression(syntax) && /^set[A-Z]/.test(syntax.expression.getText(source))) for (const argument of syntax.arguments) addTransition("argument_flow", argument, syntax.expression, syntax);
       ts.forEachChild(syntax, visit);
     };
     visit(source);
   }
-  return { adapter: "typescript-compiler", nodes, edges, stats: { files: selected.length, compiler_available: true, definitions: symbolNodes.size, resolved_references: resolvedReferences, unresolved_calls: unresolvedCalls, unresolved_call_categories: unresolvedCallCategories, unresolved_call_samples: unresolvedCallSamples, semantic_diagnostics: program.getSemanticDiagnostics().length } };
+  return { adapter: "typescript-compiler", nodes, edges, transitions, stats: { files: selected.length, compiler_available: true, definitions: symbolNodes.size, resolved_references: resolvedReferences, unresolved_calls: unresolvedCalls, unresolved_call_categories: unresolvedCallCategories, unresolved_call_samples: unresolvedCallSamples, semantic_diagnostics: program.getSemanticDiagnostics().length } };
 }
 
 function selectGraph(parts, exactTerms, contextParts, lexical, nodes, edges, limits) {
@@ -310,7 +328,7 @@ export function buildCodeIntelligence(roots, scope, terms, lexical = {}, options
     schema_version: 1,
     strategy: "lexical_to_language_graph",
     primary_terms: [...primary],
-    adapters: adapters.filter(adapter => adapter.stats.files > 0).map(adapter => ({ name: adapter.adapter, ...adapter.stats })),
+    adapters: adapters.filter(adapter => adapter.stats.files > 0).map(adapter => ({ name: adapter.adapter, ...adapter.stats, transitions: (adapter.transitions ?? []).filter(transition => [...parts, ...exactTerms.keys()].some(term => normalized(transition.symbol_from) === term || normalized(transition.symbol_to) === term)).slice(0, 200) })),
     completeness: { eligible_files: collected.eligible, parsed_files: collected.files.length, skipped_large_files: collected.skippedLarge, file_scan_truncated: collected.truncated },
     statistics: { terms: terms?.length ?? 0, identifier_parts: parts.length, graph_nodes: allNodes.length, graph_edges: allEdges.length, returned_nodes: selected.nodes.length, returned_edges: selected.edges.length, duration_ms: Math.round(performance.now() - started) },
     ...selected

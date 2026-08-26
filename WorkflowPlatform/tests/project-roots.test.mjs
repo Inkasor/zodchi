@@ -511,10 +511,10 @@ test("TypeScript compiler intelligence resolves JavaScript calls across files", 
   fs.mkdirSync(path.join(producer, "node_modules"), { recursive: true });
   fs.symlinkSync(localTypeScript, path.join(producer, "node_modules", "typescript"), "junction");
   fs.writeFileSync(path.join(producer, "src", "cost.mjs"), `export function calculateAverageCost(unit) { return unit.cost; }\n`);
-  fs.writeFileSync(path.join(producer, "src", "report.mjs"), `import { calculateAverageCost } from "./cost.mjs";\nimport * as ts from "typescript";\nexport function buildReport(unit, callback) {\n  [unit.cost].map(value => value);\n  ts.createProgram([], {});\n  callback();\n  unit.computeDynamicCost();\n  return calculateAverageCost(unit);\n}\n`);
+  fs.writeFileSync(path.join(producer, "src", "report.mjs"), `import { calculateAverageCost } from "./cost.mjs";\nimport * as ts from "typescript";\nexport function buildReport(unit, callback) {\n  const avgCost = unit.avgCost;\n  [unit.cost].map(value => value);\n  ts.createProgram([], {});\n  callback();\n  unit.computeDynamicCost();\n  return calculateAverageCost(unit);\n}\n`);
   const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" }), scope = sourceScope(discovery.source_scope);
   const lexical = searchSources(discovery.roots, scope, ["buildReport"]);
-  const graph = buildCodeIntelligence(discovery.roots, scope, ["buildReport"], lexical);
+  const graph = buildCodeIntelligence(discovery.roots, scope, ["buildReport", "avgCost"], lexical);
 
   assert.equal(graph.adapters.some(adapter => adapter.name === "typescript-compiler" && adapter.compiler_available), true);
   assert.equal(graph.edges.some(edge => edge.type === "calls"), true);
@@ -526,6 +526,7 @@ test("TypeScript compiler intelligence resolves JavaScript calls across files", 
   assert.ok(adapter.unresolved_call_categories.dynamic_or_untyped > 0);
   assert.ok(adapter.unresolved_call_categories.project_internal_unmapped > 0);
   assert.ok(adapter.unresolved_call_samples.dynamic_or_untyped.some(item => item.expression.includes("computeDynamicCost")));
+  assert.ok(adapter.transitions.some(item => item.method === "typescript_ast" && item.kind === "field_assignment" && item.symbol_from === "avgCost" && item.symbol_to === "avgCost"));
   const merged = mergeGraphMatches(lexical, graph);
   assert.equal(merged.files.some(file => file.path === "src/cost.mjs"), true);
 

@@ -4,6 +4,19 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_12_2026_08_26" status="working">
+
+## 0.5.12 — 2026-08-26
+
+- Typed deterministic verification обрабатывает запросы symbol, exact-term, directed-relation, field-flow, path-change и gate-fact и возвращает `observed`, `missing` или `unknown`; bounded no-find остаётся unknown.
+- Correction routing возвращает steps вместе с confidence, basis и unresolved signals. Substring-сопоставление путей заменено canonical segment boundaries, guessed fallback на первый шаг или synthesis отсутствует.
+- `strategy_review.v1` может выбрать существующий шаг, запросить deterministic verification, bounded planner replan, owner decision или доказать `NO_VIABLE_STRATEGY`; перед stagnation-block выполняется один bounded recovery.
+- TypeScript field continuity выводится из compiler AST transitions с direction, symbols, transition kind и source provenance. Общие identifiers без transition остаются search hints; недоступное BSL transition evidence остаётся unknown.
+- Nullable-правила Judge теперь явные, а каждая ошибка валидации structured result записывает schema, точную ошибку и hash сырого результата без сохранения raw model payload.
+- Gauntlet consilium жёстко ограничен тремя участниками; настройки 1, 2 и 3 выбирают соответственно один, два и три независимых review-вызова.
+
+</section>
+
 <section id="0_5_11_2026_08_26" status="working">
 
 ## 0.5.11 — 2026-08-26

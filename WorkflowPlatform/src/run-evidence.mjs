@@ -172,6 +172,7 @@ function compactCodeIntelligence(value, includeSamples = true) {
   copy.adapters = (value.adapters ?? []).slice(0, 8).map(adapter => ({
     name: adapter.name, files: adapter.files, compiler_available: adapter.compiler_available,
     definitions: adapter.definitions, resolved_references: adapter.resolved_references, unresolved_calls: adapter.unresolved_calls,
+    transitions: (adapter.transitions ?? []).slice(0, 200),
     unresolved_call_categories: adapter.unresolved_call_categories ?? {},
     unresolved_call_samples: includeSamples ? Object.fromEntries(Object.entries(adapter.unresolved_call_samples ?? {}).map(([category, samples]) => [category,
       (samples ?? []).slice(0, 2).map(sample => ({ path: sample.path, line: sample.line, expression: utf8Prefix(sample.expression, 240) }))
@@ -256,20 +257,14 @@ function materialSymbols(left, right, ownerText) {
   )).sort();
 }
 
-function escapedExpression(value) { return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
-
-function directMappingPattern(symbol) {
-  const key = escapedExpression(symbol);
-  return new RegExp(`(?:\\b(?:const|let|var)\\s+[A-Za-z_$][A-Za-z0-9_$]*\\s*=\\s*[^;\\n]{0,320}(?:\\.|\\?\\.)${key}\\b|\\b${key}\\s*:\\s*[^,}\\n]{0,320}(?:\\.|\\?\\.)${key}\\b|(?:\\.|\\?\\.)${key}\\s*=\\s*[^;\\n]{0,320}(?:\\.|\\?\\.)${key}\\b)`, "i");
-}
-
-function transitionAnchors(edge, symbols, files, targetPath) {
-  const candidates = files.filter(file => !targetPath || file.path === targetPath).flatMap(file => (file.source_ranges ?? []).map(range => ({ file, range })));
-  if (edge === "client_mapping->state_model") return candidates.filter(({ range }) =>
-    /set[A-Z][A-Za-z0-9_$]*\s*\([\s\S]{0,500}(?:normalize|map|merge)[A-Z_a-z0-9$]*\s*\(/.test(range.text ?? "")
-  ).slice(0, 2);
-  if (edge === "state_model->ui_consumer") return [];
-  return candidates.filter(({ range }) => symbols.some(symbol => directMappingPattern(symbol).test(range.text ?? ""))).slice(0, 2);
+function transitionAnchors(symbols, files, targetPath, sources) {
+  const transitions = [...sources.values()].flatMap(source => (source.code_intelligence?.adapters ?? []).flatMap(adapter => adapter.name === "typescript-compiler" ? adapter.transitions ?? [] : []));
+  const selected = transitions.filter(transition => (!targetPath || transition.path === targetPath) && symbols.some(symbol => transition.symbol_from === symbol || transition.symbol_to === symbol)).slice(0, 4);
+  return selected.map(transition => {
+    const file = files.find(item => item.path === transition.path);
+    const range = (file?.source_ranges ?? []).find(item => Number(item.start_line) <= transition.line && Number(item.end_line) >= transition.line);
+    return file && range ? { file, range, transition } : null;
+  }).filter(Boolean);
 }
 
 export function claimCenteredReviewEvidence(workerResults, sourceEvidence, ownerText = "") {
@@ -354,14 +349,15 @@ export function claimCenteredReviewEvidence(workerResults, sourceEvidence, owner
     const symbols = anchors[from] && anchors[to]
       ? materialSymbols(anchorDetails[from].range.text, anchorDetails[to].range.text, ownerText)
       : [];
-    const transitions = transitionAnchors(edge, symbols, allFiles, rangeCatalog.get(anchors[to])?.path);
+    const transitions = transitionAnchors(symbols, allFiles, rangeCatalog.get(anchors[to])?.path, latestSources);
     const transitionAnchorRefs = transitions.map(({ file, range }) => registerRange(file, range));
     if (symbols.length && transitionAnchorRefs.length) {
       const edgeId = `derived_edge_${digest(`${edge}\n${sourceAnchorRefs.join("\n")}\n${transitionAnchorRefs.join("\n")}\n${symbols.join("\n")}`).slice(0, 20)}`;
       derivedEdgeCatalog.push({
-        edge_id: edgeId, from, to, kind: "source_transition", symbols,
+        edge_id: edgeId, from, to, kind: transitions[0].transition.kind, symbols,
         source_anchor_refs: sourceAnchorRefs, transition_anchor_refs: transitionAnchorRefs,
-        provenance: { method: "assignment_or_mapping_transition_in_source", source_range_refs: [...new Set([...sourceAnchorRefs, ...transitionAnchorRefs])] }
+        ast_refs: transitions.map(item => item.transition.id), direction: "from_to", symbol_from: transitions[0].transition.symbol_from, symbol_to: transitions[0].transition.symbol_to,
+        provenance: { method: "typescript_ast", source_range_refs: [...new Set([...sourceAnchorRefs, ...transitionAnchorRefs])], ast_refs: transitions.map(item => item.transition.id) }
       });
       return { edge, status: "observed", graph_edge_refs: [], source_anchor_refs: sourceAnchorRefs, transition_anchor_refs: transitionAnchorRefs, derived_edge_refs: [edgeId], candidate_symbols: symbols, provenance_refs: [...new Set([...sourceAnchorRefs, ...transitionAnchorRefs, edgeId])] };
     }

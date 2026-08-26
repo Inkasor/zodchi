@@ -8,7 +8,7 @@ import { onboardProject } from "../src/onboarding.mjs";
 import { openDb } from "../src/db.mjs";
 import { processMessage } from "../src/workflow-app.mjs";
 import { classificationCatalog } from "../src/classifier.mjs";
-import { RESULT_SCHEMA_SHAPES, loadRoleContract, parseRoleReceipt, rolePrompt, validateDocumentatorResult, validateJudgeResult, validatePlannerResult, validateReviewerResult, validateWorkerResult } from "../src/role-contracts.mjs";
+import { RESULT_SCHEMA_SHAPES, loadRoleContract, parseRoleReceipt, rolePrompt, validateDocumentatorResult, validateJudgeResult, validatePlannerResult, validateReviewerResult, validateStrategyReviewResult, validateWorkerResult } from "../src/role-contracts.mjs";
 import { BudgetManager } from "../src/budget.mjs";
 import { loadQualityContract } from "../src/quality-contracts.mjs";
 
@@ -152,6 +152,9 @@ test("role result schemas reject extra fields, path escapes and false reviewer P
   assert.equal(validateJudgeResult(structuredClone(judgePass)).decision, "PASS");
   assert.throws(() => validateJudgeResult({ ...judgePass, decision: "TARGETED_VERIFICATION" }), /decision payload mismatch/);
   assert.throws(() => validateJudgeResult({ ...judgePass, rationale: "PRIMARY_GAP hidden in prose" , extra: true }), /fields mismatch/);
+  const strategy = { schema_version: 1, decision: "SELECT_EXISTING_STEP", rationale: "The bounded source step targets the gap.", selected_step_keys: ["trace"], verification_request: null, replan_intent: null, evidence_refs: ["gap-1"] };
+  assert.deepEqual(validateStrategyReviewResult(structuredClone(strategy), { availableStepKeys: ["trace"] }).selected_step_keys, ["trace"]);
+  assert.throws(() => validateStrategyReviewResult({ ...strategy, selected_step_keys: ["invented"] }, { availableStepKeys: ["trace"] }), /unknown selected step/);
   assert.throws(() => validateDocumentatorResult({ schema_version: 1, status: "proposed", document_id: "unknown", expected_version: null, operation: "create_document", authority: "owner", content: "x", section_id: null, decision_id: null, evidence_id: null, status_value: null, target_tag: null, target_id: null, replacement_id: null }, { allowedDocumentIds: ["control"] }), /document not allowed/);
   assert.throws(() => validateDocumentatorResult({ schema_version: 1, status: "proposed", document_id: "control", expected_version: null, operation: "blocked_write_read_only_sandbox", authority: "owner", content: null, section_id: null, decision_id: null, evidence_id: null, status_value: null, target_tag: null, target_id: null, replacement_id: null }, { allowedDocumentIds: ["control"] }), /invalid operation/);
   assert.match(rolePrompt({ contract, qualityContract: loadQualityContract(db, "mvp"), packageContract: { objective: "x" }, context: {}, resultSchema: "planner.v1" }), /<workflow_role_prompt/);
