@@ -368,10 +368,12 @@ test("BSL intelligence expands lexical evidence through procedures and metadata"
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("TypeScript compiler intelligence resolves JavaScript calls across files", () => {
+test("TypeScript compiler intelligence resolves JavaScript calls across files", t => {
   const { root, producer, db } = fixture("workflow-ts-graph-", { sources: ["src/**"] });
   fs.writeFileSync(path.join(producer, "package.json"), JSON.stringify({ type: "module", dependencies: { typescript: "*" } }));
-  const localTypeScript = path.dirname(createRequire(import.meta.url).resolve("typescript/package.json"));
+  let localTypeScript;
+  try { localTypeScript = path.dirname(createRequire(import.meta.url).resolve("typescript/package.json")); }
+  catch { fs.rmSync(root, { recursive: true, force: true }); t.skip("TypeScript is supplied by the analyzed project, not bundled with Zodchi"); return; }
   fs.mkdirSync(path.join(producer, "node_modules"), { recursive: true });
   fs.symlinkSync(localTypeScript, path.join(producer, "node_modules", "typescript"), "junction");
   fs.writeFileSync(path.join(producer, "src", "cost.mjs"), `export function calculateAverageCost(unit) { return unit.cost; }\n`);
