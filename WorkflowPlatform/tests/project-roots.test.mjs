@@ -499,6 +499,19 @@ test("planner locator fitting removes duplicate adapter catalogs before losing t
   assert.equal(context.source_matches.files[0].matches[0].term, "avgCost");
 });
 
+test("planner fitting preserves proven exact-term paths before duplicate AST transitions", () => {
+  const relevantPaths = Array.from({ length: 18 }, (_, index) => `src/feature-${index}.ts`);
+  const context = { source_matches: {
+    terms: ["avgCost", "profit"], files: relevantPaths.map(pathValue => ({ path: pathValue, matches: [{ line: 1, term: "avgCost", text: "row.avgCost" }] })),
+    exact_term_index: [{ term: "avgCost", matched_files: 18, matched_lines: 42, paths: [...relevantPaths], paths_truncated: false }],
+    code_intelligence: { nodes: [], edges: [], ranked_files: [], adapters: [{ name: "typescript-compiler", transitions: Array.from({ length: 500 }, (_, index) => ({ id: `transition_${index}`, path: relevantPaths[index % relevantPaths.length], kind: "property_mapping", symbol_from: "avgCost", symbol_to: "avgCost", expression_from: `response.items[${index}].avgCost`, expression_to: `model.items[${index}].avgCost` })) }] }
+  } };
+  fitSourceEvidence(context, 65536, value => 30_000 + Buffer.byteLength(JSON.stringify(value)));
+  assert.deepEqual(context.source_matches.exact_term_index[0].paths, relevantPaths);
+  assert.equal(context.source_matches.code_intelligence.adapters[0].transitions_truncated, true);
+  assert.equal(30_000 + Buffer.byteLength(JSON.stringify(context)) <= 65536, true);
+});
+
 test("BSL intelligence expands lexical evidence through procedures and metadata", () => {
   const { root, producer, db } = fixture("workflow-bsl-graph-", { sources: ["src/**"] });
   fs.writeFileSync(path.join(producer, "src", "labels.bsl"), `Процедура СформироватьОтчет()\n  Себестоимость = ПолучитьСебестоимость();\nКонецПроцедуры\n`);

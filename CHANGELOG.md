@@ -4,6 +4,14 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_14_2026_08_26" status="working">
+
+## 0.5.14 — 2026-08-26
+
+- Planner evidence fitting now removes duplicate AST transition and diagnostic catalogs before shortening the exact-term path index. A live Dashboard locator packet therefore retains all proven relevant paths needed to assign source collection instead of asking the owner to repeat platform collection.
+
+</section>
+
 <section id="0_5_13_2026_08_26" status="working">
 
 ## 0.5.13 — 2026-08-26

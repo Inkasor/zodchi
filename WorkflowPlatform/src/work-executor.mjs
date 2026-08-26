@@ -141,6 +141,17 @@ export function fitSourceEvidence(context, limit, measure = promptBytes) {
   while (refresh() > limit && Array.isArray(intelligence?.edges) && intelligence.edges.length) intelligence.edges.pop();
   while (refresh() > limit && Array.isArray(intelligence?.nodes) && intelligence.nodes.length > 8) intelligence.nodes.pop();
   while (refresh() > limit && Array.isArray(intelligence?.ranked_files) && intelligence.ranked_files.length > 8) intelligence.ranked_files.pop();
+  // Adapter transition catalogs are valuable to claim review after source collection, but they are
+  // duplicate global detail in a planner locator packet. Remove them before shortening the compact
+  // exact-term path index: those proven paths are what let the planner assign the next collection.
+  for (const adapter of intelligence?.adapters ?? []) {
+    while (refresh() > limit && Array.isArray(adapter.transitions) && adapter.transitions.length) {
+      adapter.transitions.pop(); adapter.transitions_truncated = true;
+    }
+    while (refresh() > limit && Array.isArray(adapter.diagnostics) && adapter.diagnostics.length) {
+      adapter.diagnostics.pop(); adapter.diagnostics_truncated = true;
+    }
+  }
   for (let index = result.files.length - 1; refresh() > limit && index >= 0; index -= 1) {
     const nodes = result.files[index].graph?.nodes;
     while (refresh() > limit && Array.isArray(nodes) && nodes.length > 2) nodes.pop();
@@ -192,14 +203,6 @@ export function fitSourceEvidence(context, limit, measure = promptBytes) {
   while (refresh() > limit && Array.isArray(intelligence?.edges) && intelligence.edges.length) intelligence.edges.pop();
   while (refresh() > limit && Array.isArray(intelligence?.nodes) && intelligence.nodes.length) intelligence.nodes.pop();
   while (refresh() > limit && Array.isArray(intelligence?.ranked_files) && intelligence.ranked_files.length) intelligence.ranked_files.pop();
-  for (const adapter of intelligence?.adapters ?? []) {
-    while (refresh() > limit && Array.isArray(adapter.transitions) && adapter.transitions.length) {
-      adapter.transitions.pop(); adapter.transitions_truncated = true;
-    }
-    while (refresh() > limit && Array.isArray(adapter.diagnostics) && adapter.diagnostics.length) {
-      adapter.diagnostics.pop(); adapter.diagnostics_truncated = true;
-    }
-  }
   while (refresh() > limit && Array.isArray(result.terms) && result.terms.length > 1) result.terms.pop();
   for (const key of ["request_words", "identifiers"]) {
     const values = result.derived_from?.[key];
