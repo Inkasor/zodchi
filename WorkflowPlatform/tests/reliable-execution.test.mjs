@@ -51,6 +51,17 @@ test("inbox idempotency returns the original run and rejects key reuse with anot
   cleanup(root, runtime);
 });
 
+test("distinct hook event keys always create distinct runs for the same project and payload", () => {
+  const { root, runtime } = fixture("workflow-inbox-distinct-events-");
+  const first = runtime.create("same owner message", { project_id: "project", workflow_id: "workflow", event_source: "codex-hook", event_key: "turn-1" });
+  const second = runtime.create("same owner message", { project_id: "project", workflow_id: "workflow", event_source: "codex-hook", event_key: "turn-2" });
+  assert.notEqual(second, first);
+  assert.equal(runtime.db.prepare("SELECT COUNT(*) AS count FROM tasks").get().count, 2);
+  assert.equal(runtime.db.prepare("SELECT COUNT(*) AS count FROM workflow_runs").get().count, 2);
+  assert.deepEqual(runtime.db.prepare("SELECT event_key FROM inbox_events ORDER BY event_key").all().map(row => row.event_key), ["turn-1", "turn-2"]);
+  cleanup(root, runtime);
+});
+
 test("checkout is atomic, one task stays sequential and independent tasks can run in parallel", () => {
   const { root, dbFile, runtime, queue } = fixture("workflow-lease-");
   const runA = plannedRun(runtime, "A", [{ key: "worker-a" }, { key: "review-a" }]);
