@@ -4,6 +4,15 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_3_2026_08_26" status="working">
+
+## 0.5.3 — 2026-08-26
+
+- Compaction review evidence теперь использует ограниченное число линейных проходов вместо повторной сериализации всего envelope при каждом мелком сокращении metadata.
+- Плотная TypeScript-регрессия на 24 файлах ужимается за доли секунды, сохраняя гарантии evidence из 0.5.2.
+
+</section>
+
 <section id="0_5_2_2026_08_26" status="working">
 
 ## 0.5.2 — 2026-08-26
