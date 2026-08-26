@@ -639,6 +639,19 @@ export async function settleAdmittedReviewInvocations(invocations) {
   return { settled, rejected, values: rejected ? [] : settled.map(item => item.value) };
 }
 
+export function remainingWorkflowCalls(db, runId) {
+  const budget = db.prepare("SELECT used_value,limit_value FROM budgets WHERE scope_type='workflow' AND scope_id=? AND metric='calls'").get(runId);
+  return budget ? Math.max(0, Number(budget.limit_value) - Number(budget.used_value)) : Number.POSITIVE_INFINITY;
+}
+
+export function registeredReplanCatalog(db, projectId, level, artifactType, availableRoles = []) {
+  return {
+    registeredRoles: [...availableRoles],
+    registeredChecks: registeredProjectCheckKeys(db, projectId, level, artifactType),
+    registeredArtifactTypes: db.prepare("SELECT id FROM artifact_types").all().map(row => row.id)
+  };
+}
+
 export async function invokeReviewerWithSchemaRepair({ invoke, packageContract, onRetry = () => {} }) {
   let currentPackage = packageContract;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -775,6 +788,10 @@ async function executeStrategyRecovery({ runtime, queue, runId, projectId, level
   if (!available.has("strategy_reviewer")) return { decision: "NO_VIABLE_STRATEGY", rationale: "strategy_reviewer is not registered", steps: [], executed: false };
   const semanticGap = progress?.latest?.semantic_fingerprint ?? progress?.latest?.primary_gap_fingerprint ?? semanticGapFingerprint(reviewEvidence)?.fingerprint ?? null;
   const exhausted = exhaustedRouteKeys(runtime.db, runId, semanticGap);
+  if (remainingWorkflowCalls(runtime.db, runId) < 1) {
+    recordRunEvidence(runtime.db, runId, null, "strategy_recovery_unavailable", { reason: "workflow_call_budget_exhausted", requested_phase: "strategy_review", remaining_calls: 0, semantic_gap_fingerprint: semanticGap });
+    return { decision: "NO_VIABLE_STRATEGY", rationale: "workflow call budget is exhausted before strategy review", steps: [], executed: false };
+  }
   appendSteps(runtime, runId, [{ key: `strategy_review_${cycle}`, role: "strategy_reviewer", required: true, irreversible: false, max_attempts: 1, schema: "strategy_review.v1", contract: { cycle } }]);
   queue.enqueueRun(runId);
   const strategyPackage = {
@@ -797,23 +814,35 @@ async function executeStrategyRecovery({ runtime, queue, runId, projectId, level
       recordRunEvidence(runtime.db, runId, strategy.step.id, "strategy_selection_rejected", { semantic_gap_fingerprint: semanticGap, selected_step_keys: selected, exhausted_step_keys: exhausted });
       return { decision: "NO_VIABLE_STRATEGY", rationale: "strategy selected a route exhausted for the unchanged semantic gap", steps: [], executed: true };
     }
+    if (remainingWorkflowCalls(runtime.db, runId) < 1) {
+      recordRunEvidence(runtime.db, runId, strategy.step.id, "strategy_recovery_unavailable", { reason: "workflow_call_budget_exhausted", requested_phase: "selected_step", remaining_calls: 0, semantic_gap_fingerprint: semanticGap, selected_step_keys: selected });
+      return { decision: "NO_VIABLE_STRATEGY", rationale: "strategy selected a source step but the workflow call budget is exhausted", steps: [], executed: true };
+    }
     return { ...strategy.result, steps: plan.steps.filter(step => selected.includes(step.key)), executed: true };
   }
   if (strategy.result.decision === "TARGETED_VERIFICATION") {
     const verification = executeTargetedVerification(strategy.result.verification_request, reviewEvidence ?? {});
     recordRunEvidence(runtime.db, runId, strategy.step.id, "targeted_verification_result", verification);
-    if (verification.status !== "unknown") return { ...strategy.result, verification, review_again: true, steps: [], executed: true };
+    if (verification.status !== "unknown") {
+      if (remainingWorkflowCalls(runtime.db, runId) < 1) return { decision: "NO_VIABLE_STRATEGY", rationale: "deterministic verification completed but no workflow call remains for arbitration", verification, steps: [], executed: true };
+      return { ...strategy.result, verification, review_again: true, steps: [], executed: true };
+    }
     const verificationReviewer = { blockers: [{ code: "TARGETED_VERIFICATION_UNKNOWN", message: strategy.result.verification_request.subject, path: strategy.result.verification_request.path }], evidence_refs: verification.evidence_refs, required_actions: [JSON.stringify(strategy.result.verification_request)] };
     const candidate = targetedSteps(plan, { reviewer: verificationReviewer }).steps.filter(step => !exhausted.includes(step.key));
     if (!candidate.length) return { decision: "NO_VIABLE_STRATEGY", rationale: "targeted verification remained unknown and no new source-bearing route can collect the missing proof", verification, steps: [], executed: true };
+    if (remainingWorkflowCalls(runtime.db, runId) < 1) return { decision: "NO_VIABLE_STRATEGY", rationale: "targeted verification remained unknown but the workflow call budget is exhausted", verification, steps: [], executed: true };
     return { ...strategy.result, verification, steps: candidate, executed: true };
   }
   if (strategy.result.decision !== "REPLAN") return { ...strategy.result, steps: [], executed: true };
   const plannerRole = runtime.db.prepare("SELECT role_id FROM role_contracts WHERE project_id=? AND status='active' AND result_schema_key='planner.v1' ORDER BY role_id LIMIT 1").get(projectId)?.role_id;
   if (!plannerRole) return { decision: "NO_VIABLE_STRATEGY", rationale: "bounded replan requested but no planner is registered", steps: [], executed: true };
+  if (remainingWorkflowCalls(runtime.db, runId) < 1) {
+    recordRunEvidence(runtime.db, runId, strategy.step.id, "strategy_recovery_unavailable", { reason: "workflow_call_budget_exhausted", requested_phase: "replan", remaining_calls: 0, semantic_gap_fingerprint: semanticGap });
+    return { decision: "NO_VIABLE_STRATEGY", rationale: "bounded replan requested but the workflow call budget is exhausted", steps: [], executed: true };
+  }
   appendSteps(runtime, runId, [{ key: `strategy_replan_${cycle}`, role: plannerRole, required: true, irreversible: false, max_attempts: 1, schema: "planner.v1", contract: { cycle } }]);
   queue.enqueueRun(runId);
-  const registeredRoles = [...available], registeredChecks = registeredProjectCheckKeys(runtime.db, projectId), registeredArtifactTypes = runtime.db.prepare("SELECT id FROM artifact_types").all().map(row => row.id);
+  const { registeredRoles, registeredChecks, registeredArtifactTypes } = registeredReplanCatalog(runtime.db, projectId, level, classification.artifact_type, available);
   const replanPackage = { objective: strategy.result.replan_intent, previous_plan: plan, primary_gap: reviewer?.blockers?.[0] ?? null, registered_roles: registeredRoles, registered_checks: registeredChecks, registered_artifact_types: registeredArtifactTypes, rule: "Return a bounded replacement plan. Do not execute any step." };
   const planner = await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: replanPackage, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "planner.v1", parseOptions: { registeredRoles, registeredChecks, registeredArtifactTypes, maxStepAttempts: 1 }, gatewayCall });
   planner.complete({ outcome: planner.result.outcome });

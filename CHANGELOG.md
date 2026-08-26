@@ -4,6 +4,15 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_21_2026_08_26" status="working">
+
+## 0.5.21 — 2026-08-26
+
+- Strategy replanning now builds its registered-check catalog with the effective quality and artifact scope instead of failing with `QUALITY_LEVEL_INVALID` after a valid `REPLAN` decision.
+- Model-bearing recovery is admitted only while workflow call budget remains. An exhausted budget becomes a bounded `NO_VIABLE_STRATEGY` outcome before a reviewer, replan or source step is materialized, preventing terminal runs with runnable leftovers.
+
+</section>
+
 <section id="0_5_20_2026_08_26" status="working">
 
 ## 0.5.20 — 2026-08-26

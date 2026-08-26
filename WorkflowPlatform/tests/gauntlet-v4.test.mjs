@@ -10,7 +10,7 @@ import { BudgetManager } from "../src/budget.mjs";
 import { now } from "../src/db.mjs";
 import { buildReviewEvidence, captureRunBaselines, claimCenteredReviewEvidence, recordRunEvidence, runChangeEvidence } from "../src/run-evidence.mjs";
 import { applyRunControlAtBoundary, blockerFingerprint, evidenceFrontierFingerprint, recordProgressSnapshot, requestRunControl, semanticGapFingerprint } from "../src/progress-supervisor.mjs";
-import { consiliumRoles, invokeReviewerWithSchemaRepair, priorWorkerResultsForStep, recoveryRoute, settleAdmittedReviewInvocations, targetedSteps, validRecoverySelection } from "../src/work-executor.mjs";
+import { consiliumRoles, invokeReviewerWithSchemaRepair, priorWorkerResultsForStep, recoveryRoute, registeredReplanCatalog, remainingWorkflowCalls, settleAdmittedReviewInvocations, targetedSteps, validRecoverySelection } from "../src/work-executor.mjs";
 import { selectFlowEvidenceAdapter } from "../src/evidence-flow-adapters.mjs";
 import { callGateway } from "../src/gateway.mjs";
 import { transactionAwaitViolations } from "../src/transaction-guard.mjs";
@@ -556,6 +556,30 @@ test("F: post-factum cost records the overshooting receipt and denies the next c
     assert.equal(settled.overshoot, 0.25);
     assert.equal(fx.runtime.db.prepare("SELECT used_value FROM budgets WHERE scope_id=? AND metric='cost_usd'").get(fx.runId).used_value, 1.25);
     assert.throws(() => fx.budgets.assertModelAdmission(request), /BUDGET_EXHAUSTED/);
+  } finally { fx.close(); }
+});
+
+test("recovery call capacity is measured before another model-bearing step is materialized", () => {
+  const fx = fixture("gauntlet-recovery-capacity-");
+  try {
+    fx.budgets.define({ scopeType: "workflow", scopeId: fx.runId, metric: "calls", limit: 2 });
+    assert.equal(remainingWorkflowCalls(fx.runtime.db, fx.runId), 2);
+    const request = { scopes: [{ type: "workflow", id: fx.runId }], metric: "calls", amount: 1, taskId: fx.runtime.get(fx.runId).task_id, runId: fx.runId, reason: "test" };
+    fx.budgets.consume({ ...request, idempotencyKey: "call-1" });
+    assert.equal(remainingWorkflowCalls(fx.runtime.db, fx.runId), 1);
+    fx.budgets.consume({ ...request, idempotencyKey: "call-2" });
+    assert.equal(remainingWorkflowCalls(fx.runtime.db, fx.runId), 0);
+  } finally { fx.close(); }
+});
+
+test("strategy replan builds its check catalog with the effective quality and artifact scope", () => {
+  const fx = fixture("gauntlet-replan-catalog-");
+  try {
+    const catalog = registeredReplanCatalog(fx.runtime.db, "project", "mvp", "document", ["planner", "researcher"]);
+    assert.deepEqual(catalog.registeredRoles, ["planner", "researcher"]);
+    assert.deepEqual(catalog.registeredChecks, []);
+    assert.ok(catalog.registeredArtifactTypes.includes("document"));
+    assert.throws(() => registeredReplanCatalog(fx.runtime.db, "project", undefined, "document", []), /QUALITY_LEVEL_INVALID/);
   } finally { fx.close(); }
 });
 
