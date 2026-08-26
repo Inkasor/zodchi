@@ -10,7 +10,7 @@ import { BudgetManager } from "../src/budget.mjs";
 import { now } from "../src/db.mjs";
 import { buildReviewEvidence, captureRunBaselines, claimCenteredReviewEvidence, recordRunEvidence, runChangeEvidence } from "../src/run-evidence.mjs";
 import { applyRunControlAtBoundary, blockerFingerprint, evidenceFrontierFingerprint, recordProgressSnapshot, requestRunControl, semanticGapFingerprint } from "../src/progress-supervisor.mjs";
-import { consiliumRoles, priorWorkerResultsForStep, recoveryRoute, settleAdmittedReviewInvocations, targetedSteps, validRecoverySelection } from "../src/work-executor.mjs";
+import { consiliumRoles, invokeReviewerWithSchemaRepair, priorWorkerResultsForStep, recoveryRoute, settleAdmittedReviewInvocations, targetedSteps, validRecoverySelection } from "../src/work-executor.mjs";
 import { selectFlowEvidenceAdapter } from "../src/evidence-flow-adapters.mjs";
 import { callGateway } from "../src/gateway.mjs";
 import { transactionAwaitViolations } from "../src/transaction-guard.mjs";
@@ -647,6 +647,54 @@ test("parallel review drains every admitted participant before exposing a failur
   assert.equal(result.settled[0].status, "rejected");
   assert.equal(result.settled[1].status, "fulfilled");
   assert.match(result.rejected.reason.message, /review-a failed/);
+});
+
+test("reviewer schema contradiction gets one bounded repair before consilium failure", async () => {
+  const packages = [];
+  let calls = 0, retries = 0;
+  const result = await invokeReviewerWithSchemaRepair({
+    packageContract: { review_reason: "project_policy", review_evidence: { base_evidence_hash: "abc" } },
+    invoke: async packageContract => {
+      packages.push(packageContract);
+      calls += 1;
+      if (calls === 1) {
+        const error = new Error("reviewer.v1: PASS cannot contain blockers");
+        error.code = "ROLE_RESULT_SCHEMA_INVALID";
+        error.invalidRoleOutput = '{"decision":"PASS","blockers":[{"code":"gap"}]}';
+        error.queueFailure = { action: "retry_scheduled" };
+        throw error;
+      }
+      return { result: { decision: "CHANGES_REQUESTED" } };
+    },
+    onRetry: () => { retries += 1; }
+  });
+  assert.equal(result.result.decision, "CHANGES_REQUESTED");
+  assert.equal(calls, 2);
+  assert.equal(retries, 1);
+  assert.equal(packages[1].schema_repair.validation_error, "reviewer.v1: PASS cannot contain blockers");
+  assert.match(packages[1].schema_repair.invalid_result, /PASS/);
+});
+
+test("reviewer schema repair is not used for non-schema failures or beyond one retry", async () => {
+  let calls = 0;
+  await assert.rejects(() => invokeReviewerWithSchemaRepair({
+    packageContract: {},
+    invoke: async () => {
+      calls += 1;
+      const error = new Error("reviewer.v1: PASS cannot contain blockers");
+      error.code = "ROLE_RESULT_SCHEMA_INVALID";
+      error.queueFailure = { action: calls === 1 ? "retry_scheduled" : "dead_lettered" };
+      throw error;
+    }
+  }), /PASS cannot contain blockers/);
+  assert.equal(calls, 2);
+
+  calls = 0;
+  await assert.rejects(() => invokeReviewerWithSchemaRepair({
+    packageContract: {},
+    invoke: async () => { calls += 1; throw new Error("BUDGET_EXHAUSTED"); }
+  }), /BUDGET_EXHAUSTED/);
+  assert.equal(calls, 1);
 });
 
 test("flow selection is structural and reports none without a workflow registration", () => {

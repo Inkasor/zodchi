@@ -460,7 +460,14 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
       activeInvocations?.add(gatewayInvocation);
       return controlledGatewayReceipt(runtime, queue, runId, gatewayInvocation).finally(() => activeInvocations?.delete(gatewayInvocation));
     });
-    const result = parseRoleReceipt(receipt, schemaKey, { contract, ...parseOptions });
+    let result;
+    try {
+      result = parseRoleReceipt(receipt, schemaKey, { contract, ...parseOptions });
+    } catch (error) {
+      error.code = "ROLE_RESULT_SCHEMA_INVALID";
+      error.invalidRoleOutput = utf8Prefix(String(receipt.output ?? ""), 16_384);
+      throw error;
+    }
     const usage = receipt.usage ?? {};
     const measured = {
       input_tokens: usage.input_tokens,
@@ -486,7 +493,7 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
       fail: (category, retryable = true) => queue.fail(lease.token, { category, retryable })
     };
   } catch (error) {
-    if (receipt) {
+    if (receipt && error.code === "ROLE_RESULT_SCHEMA_INVALID") {
       try { runtime.linkGateway(runId, { ...receipt, step_id: step.id, attempt_id: lease.attemptId, contract_hash: structuredHash({ role_contract_id: contract.id, package: packageContract }) }); } catch {}
       recordRunEvidence(runtime.db, runId, step.id, "role_result_validation_error", {
         step_key: step.step_key,
@@ -496,7 +503,7 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
         raw_result_hash: crypto.createHash("sha256").update(String(receipt.output ?? "")).digest("hex")
       });
     }
-    try { queue.fail(lease.token, { category: String(error.message).split(":")[0].slice(0, 120), retryable: true }); } catch {}
+    try { error.queueFailure = queue.fail(lease.token, { category: error.code ?? String(error.message).split(":")[0].slice(0, 120), retryable: true }); } catch {}
     throw error;
   }
 }
@@ -551,7 +558,7 @@ function appendCorrectionSteps(runtime, runId, plannerResult, cycle, selectedSte
 }
 
 function appendReviewerSteps(runtime, runId, roles, reason, cycle = 0) {
-  appendSteps(runtime, runId, roles.map((role, index) => ({ key: cycle || index ? `review_${cycle}_${index + 1}` : "review", role, required: true, irreversible: false, max_attempts: 1, schema: "reviewer.v1", contract: { reason, independent_member: index + 1 } })), { sameOrdinal: true });
+  appendSteps(runtime, runId, roles.map((role, index) => ({ key: cycle || index ? `review_${cycle}_${index + 1}` : "review", role, required: true, irreversible: false, max_attempts: 2, schema: "reviewer.v1", contract: { reason, independent_member: index + 1 } })), { sameOrdinal: true });
 }
 
 function appendDocumentatorStep(runtime, runId, roleId, outcome) {
@@ -632,6 +639,28 @@ export async function settleAdmittedReviewInvocations(invocations) {
   return { settled, rejected, values: rejected ? [] : settled.map(item => item.value) };
 }
 
+export async function invokeReviewerWithSchemaRepair({ invoke, packageContract, onRetry = () => {} }) {
+  let currentPackage = packageContract;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try { return await invoke(currentPackage); }
+    catch (error) {
+      const retryScheduled = error.code === "ROLE_RESULT_SCHEMA_INVALID" && error.queueFailure?.action === "retry_scheduled";
+      if (!retryScheduled || attempt === 2) throw error;
+      currentPackage = {
+        ...packageContract,
+        schema_repair: {
+          attempt: attempt + 1,
+          validation_error: String(error.message),
+          invalid_result: error.invalidRoleOutput ?? null,
+          instruction: "Return one corrected reviewer.v1 object. Preserve the evidence-grounded judgment and make decision, blockers and required_actions mutually consistent."
+        }
+      };
+      await onRetry({ attempt: attempt + 1, error, packageContract: currentPackage });
+    }
+  }
+  throw new Error("REVIEWER_SCHEMA_REPAIR_EXHAUSTED");
+}
+
 async function executeIndependentReview({ runtime, queue, runId, projectId, reviewerRole, policy, level, classification, discovery, responseLanguage, taskRoot, gatewayCall, reviewReason, plan, gate, workerResults, correctionCycles }) {
   const available = new Set(runtime.db.prepare("SELECT role_id FROM role_contracts WHERE project_id=? AND status='active'").all(projectId).map(row => row.role_id));
   const roles = policy.improvement_strategy === "gauntlet"
@@ -666,7 +695,16 @@ async function executeIndependentReview({ runtime, queue, runId, projectId, revi
   const invocations = selectedRoles.map(async roleId => {
     try {
       const reviewerPackage = reviewerTaskPackage(reviewEvidence, reviewReason, correctionCycles, Number(policy.limits.correction_cycles) || 0);
-      const reviewer = await invokeRole({ runtime, queue, runId, roleId, level, taskRoot, packageContract: reviewerPackage, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "reviewer.v1", parseOptions: {}, gatewayCall, activeInvocations });
+      const reviewer = await invokeReviewerWithSchemaRepair({
+        packageContract: reviewerPackage,
+        invoke: packageContract => invokeRole({ runtime, queue, runId, roleId, level, taskRoot, packageContract, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "reviewer.v1", parseOptions: {}, gatewayCall, activeInvocations }),
+        onRetry: ({ attempt, error }) => recordRunEvidence(runtime.db, runId, null, "reviewer_schema_repair", {
+          role_id: roleId,
+          attempt,
+          validation_error: String(error.message),
+          prior_result_hash: crypto.createHash("sha256").update(String(error.invalidRoleOutput ?? "")).digest("hex")
+        })
+      });
       reviewer.complete({ decision: reviewer.result.decision, base_evidence_hash: reviewEvidence.base_evidence_hash });
       return { role: roleId, invocation: reviewer, result: reviewer.result };
     } catch (error) {
