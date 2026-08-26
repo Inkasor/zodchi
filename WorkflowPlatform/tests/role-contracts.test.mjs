@@ -147,6 +147,8 @@ test("role result schemas reject extra fields, path escapes and false reviewer P
   assert.throws(() => validateDocumentatorResult({ schema_version: 1, status: "proposed", document_id: "control", expected_version: null, operation: "blocked_write_read_only_sandbox", authority: "owner", content: null, section_id: null, decision_id: null, evidence_id: null, status_value: null, target_tag: null, target_id: null, replacement_id: null }, { allowedDocumentIds: ["control"] }), /invalid operation/);
   assert.match(rolePrompt({ contract, qualityContract: loadQualityContract(db, "mvp"), packageContract: { objective: "x" }, context: {}, resultSchema: "planner.v1" }), /<workflow_role_prompt/);
   const workerPrompt = rolePrompt({ contract: workerContract, qualityContract: loadQualityContract(db, "mvp"), packageContract: { objective: "trace absentIdentifier", allowed_paths: ["src/output.txt"] }, context: {}, resultSchema: "worker.v1" });
+  assert.match(workerPrompt, /No tool calls are authorized/);
+  assert.match(workerPrompt, /analyze only the evidence already present/);
   assert.match(workerPrompt, /complete-file exact term scan with count zero is conclusive negative evidence/);
   assert.match(workerPrompt, /do not return blocked or ask for out-of-scope sources/);
   assert.equal(parseRoleReceipt(receipt("reviewer", reviewerResult("PASS")), "reviewer.v1", {}).decision, "PASS");

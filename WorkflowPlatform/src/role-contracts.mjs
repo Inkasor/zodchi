@@ -135,11 +135,15 @@ export function rolePrompt({ contract, qualityContract, packageContract, context
   const workerCompletionInstruction = resultSchema === "worker.v1"
     ? "Treat the task package allowed_paths as the complete authority boundary, not as a reason to request a broader system. A complete-file exact term scan with count zero is conclusive negative evidence inside that boundary. If it proves that a requested identifier or producer is absent, complete the step with that negative finding and the nearest supported facts; do not return blocked or ask for out-of-scope sources merely because no positive producer exists. Return blocked only when the objective cannot be answered even negatively because authorized evidence is genuinely unavailable or unreadable."
     : null;
+  const toolAuthorityInstruction = contract.allowed_tools.length
+    ? "Only the tools listed in allowed_tools are authorized. The supplied context remains the primary evidence package."
+    : "No tool calls are authorized for this role. Do not invoke shell, search, file-read, file-write or network tools; analyze only the evidence already present in project_context and task_package.";
   return `<workflow_role_prompt schema_version="2" prompt_template_version="${escapeXml(contract.prompt_template_version)}">\n`+
     `  <role_contract id="${escapeXml(contract.role_id)}" version="${escapeXml(contract.version)}">\n`+
     `    <purpose>${escapeXml(contract.purpose)}</purpose>\n`+
     `    <boundaries format="application/json">${escapeXml(stableJson(contract.boundaries))}</boundaries>\n`+
     `    <allowed_tools format="application/json">${escapeXml(stableJson(contract.allowed_tools))}</allowed_tools>\n`+
+    `    <tool_authority>${escapeXml(toolAuthorityInstruction)}</tool_authority>\n`+
     // The role works from the context the platform assembled for it and does not go looking for more:
     // deterministic collection is what makes a run repeatable and its cost bounded. Saying so is not
     // decoration — a role that was only told it had no tools concluded the sources were unreachable and
