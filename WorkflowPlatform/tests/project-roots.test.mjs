@@ -293,6 +293,24 @@ test("a JavaScript evidence window keeps a complete medium-sized enclosing funct
   db.close(); fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("dispersed exact identifiers survive generic helper call chains in one large source", () => {
+  const { root, producer, db } = fixture("workflow-source-dispersed-chain-", { sources: ["src/**"] });
+  const lines = Array.from({ length: 900 }, (_, index) => `const unrelated${index} = ${index};`);
+  lines[20] = "export function bootstrap() { return sqliteExec(sqlString('schema')); }";
+  lines[390] = "const normalized = { avgCost: Number(unit.cost) || 0 };";
+  lines[401] = "const focusedExpected = { avgCost: 3025.24 };";
+  lines[710] = "await sqliteExec(`INSERT INTO dashboard_rows_v2 (avgCost) VALUES (${normalized.avgCost})`);";
+  fs.writeFileSync(path.join(producer, "src", "importer.mjs"), lines.join("\n"));
+  fs.writeFileSync(path.join(producer, "src", "caller.mjs"), `export function callImporter(value) {\n${Array.from({ length: 16 }, (_, index) => `  value.genericHelper${index}();`).join("\n")}\n  return value.importRows();\n}\n`);
+  const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" });
+  const collected = collectSourceFiles(discovery.roots, ["src/importer.mjs", "src/caller.mjs"], sourceScope(discovery.source_scope), 12_000, { query: "Trace unit.cost to avgCost write into dashboard_rows_v2 with focused expected value" });
+  assert.match(collected.files[0].text, /Number\(unit\.cost\)/);
+  assert.match(collected.files[0].text, /avgCost: 3025\.24/);
+  assert.match(collected.files[0].text, /INSERT INTO dashboard_rows_v2/);
+  assert.ok(collected.files[0].segments.some(segment => segment.reason.startsWith("exact_term_anchor:")));
+  db.close(); fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("missing output paths do not reserve source budget", () => {
   const { root, producer, db } = fixture("workflow-source-existing-share-", { sources: ["src/**", "docs/**"] });
   fs.writeFileSync(path.join(producer, "src", "large.bsl"), "ПолезнаяСтрока = 1;\n".repeat(1000));
