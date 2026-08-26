@@ -233,7 +233,9 @@ export function loadOperationalPolicy(db, projectId, workflowId, level) {
     return [item.metric, configured === undefined ? baseline : strategy === "gauntlet" ? configured : Math.min(baseline, configured)];
   }));
   const parallelRule = projectEscalations.find(item => item.event === "max_parallel_consilium_members");
-  const maxParallelConsiliumMembers = Math.max(1, Math.min(3, Number(parallelRule?.threshold) || 2));
+  const configuredConsiliumMembers = parallelRule?.threshold === null || parallelRule?.threshold === undefined ? 2 : Number(parallelRule.threshold);
+  if (!Number.isInteger(configuredConsiliumMembers) || configuredConsiliumMembers < 1 || configuredConsiliumMembers > 3) throw new Error(`CONSILIUM_MEMBER_LIMIT_INVALID: ${projectId}:${contract.level}:${parallelRule?.threshold}`);
+  const maxParallelConsiliumMembers = configuredConsiliumMembers;
   return Object.freeze({ contract, project_id: projectId, package_key: packageKey, limits, required_checks: requiredChecks, project_escalations: projectEscalations, improvement_strategy: strategy, max_parallel_consilium_members: maxParallelConsiliumMembers });
 }
 

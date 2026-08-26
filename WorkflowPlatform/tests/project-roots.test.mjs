@@ -485,6 +485,20 @@ test("source evidence keeps exact lexical and graph anchors under a shared byte 
   assert.equal(Buffer.byteLength(JSON.stringify(context)) <= 4200, true);
 });
 
+test("planner locator fitting removes duplicate adapter catalogs before losing the best path", () => {
+  const context = { source_inventory: [{ root: "primary", access: "write", total_files: 400, truncated: false, directories: { src: 400 }, files: Array.from({ length: 400 }, (_, index) => ({ path: `src/${index}.ts`, bytes: 100 })) }], source_matches: {
+    terms: Array.from({ length: 64 }, (_, index) => `term_${index}`),
+    files: [{ path: "src/relevant.ts", matches: [{ line: 7, term: "avgCost", text: "model.avgCost = response.avgCost" }] }],
+    exact_term_index: Array.from({ length: 24 }, (_, index) => ({ term: `term_${index}`, paths: Array.from({ length: 80 }, (_, pathIndex) => `src/${pathIndex}.ts`) })),
+    derived_from: { request_words: Array.from({ length: 64 }, (_, index) => `request_${index}`), identifiers: Array.from({ length: 64 }, (_, index) => `identifier_${index}`) },
+    code_intelligence: { nodes: [], edges: [], ranked_files: [], adapters: [{ name: "typescript-compiler", transitions: Array.from({ length: 300 }, (_, index) => ({ id: `transition_${index}`, path: "src/relevant.ts", symbol_from: "avgCost", symbol_to: "avgCost", expression_from: "response.avgCost", expression_to: "model.avgCost" })) }] }
+  } };
+  fitSourceEvidence(context, 4096);
+  assert.equal(Buffer.byteLength(JSON.stringify(context)) <= 4096, true);
+  assert.equal(context.source_matches.files[0].path, "src/relevant.ts");
+  assert.equal(context.source_matches.files[0].matches[0].term, "avgCost");
+});
+
 test("BSL intelligence expands lexical evidence through procedures and metadata", () => {
   const { root, producer, db } = fixture("workflow-bsl-graph-", { sources: ["src/**"] });
   fs.writeFileSync(path.join(producer, "src", "labels.bsl"), `Процедура СформироватьОтчет()\n  Себестоимость = ПолучитьСебестоимость();\nКонецПроцедуры\n`);

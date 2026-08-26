@@ -4,6 +4,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { id, now } from "./db.mjs";
 import { completionBlockers } from "./state-machine.mjs";
+import { adapterMaterialSymbols, adapterTransitions, selectFlowEvidenceAdapter } from "./evidence-flow-adapters.mjs";
 
 const IGNORED = new Set([".git", "node_modules", "dist", "build", "coverage", ".next", ".venv", "__pycache__", "tmp", "temp"]);
 
@@ -249,18 +250,8 @@ function chainAnchor(sources, stepPattern, textPattern) {
   return null;
 }
 
-function materialSymbols(left, right, ownerText) {
-  const identifiers = value => new Set(String(value ?? "").match(/[A-Za-z_$][A-Za-z0-9_$]{3,}/g) ?? []);
-  const leftIds = identifiers(left), rightIds = identifiers(right), ownerIds = identifiers(ownerText);
-  return [...leftIds].filter(symbol => rightIds.has(symbol) && (
-    ownerIds.has(symbol) || /cost|profit|order|sale|price|margin|commission/i.test(symbol)
-  )).sort();
-}
-
-function transitionAnchors(symbols, files, targetPath, sources) {
-  const transitions = [...sources.values()].flatMap(source => (source.code_intelligence?.adapters ?? []).flatMap(adapter => adapter.name === "typescript-compiler" ? adapter.transitions ?? [] : []));
-  const selected = transitions.filter(transition => (!targetPath || transition.path === targetPath) && symbols.some(symbol => transition.symbol_from === symbol || transition.symbol_to === symbol)).slice(0, 4);
-  return selected.map(transition => {
+function transitionAnchors(flowAdapter, symbols, files, targetPath, sources) {
+  return adapterTransitions(flowAdapter, symbols, targetPath, sources).map(transition => {
     const file = files.find(item => item.path === transition.path);
     const range = (file?.source_ranges ?? []).find(item => Number(item.start_line) <= transition.line && Number(item.end_line) >= transition.line);
     return file && range ? { file, range, transition } : null;
@@ -285,8 +276,9 @@ export function claimCenteredReviewEvidence(workerResults, sourceEvidence, owner
     if (!scanCatalog.has(scanId)) scanCatalog.set(scanId, { scan_id: scanId, path: file.path, ...file.exact_term_scan, provenance: { source_snapshot_hashes: sourceHashes(file) } });
     return scanId;
   };
-  const chainRequested = /api/i.test(ownerText) && /ui|интерфейс/i.test(ownerText);
-  const requiredChainEdges = ["producer->api", "api->client_mapping", "client_mapping->state_model", "state_model->ui_consumer"];
+  const flowAdapter = selectFlowEvidenceAdapter(ownerText, latestSources);
+  const chainRequested = Boolean(flowAdapter);
+  const requiredChainEdges = flowAdapter?.required_edges ?? [];
   const claims = [], conclusions = [];
   for (const [planStep, result] of latestResults) {
     const rawEvidenceRefs = (result.evidence ?? []).map(String), claimText = `${result.summary ?? ""}\n${rawEvidenceRefs.join("\n")}`;
@@ -327,13 +319,7 @@ export function claimCenteredReviewEvidence(workerResults, sourceEvidence, owner
     });
     conclusions.push({ claim_id: primaryEvidenceRefs.length && !crossLayerNarrative ? claimId : null, plan_step: planStep, summary: result.summary ?? "", evidence_refs: rawEvidenceRefs.slice(0, 12).map(value => utf8Prefix(value, 320)) });
   }
-  const anchorSpecs = chainRequested ? [
-    ["producer", /producer|storage|persist|import|profit/i, /(?:write|insert|update|return|produce|cost|profit)/i],
-    ["api", /(?:^|_)api|contract|response|transform/i, /(?:res\.|response|return|json|contract|cost|profit)/i],
-    ["client_mapping", /client|mapping|fetch/i, /(?:response|payload|data|normalize|map|assign|cost|profit)/i],
-    ["state_model", /state|model/i, /(?:set[A-Z]|useState|store|model|assign|cost|profit)/i],
-    ["ui_consumer", /ui|view|consumer|render/i, /(?:return\s*<|<td|<div|render|display|column|row\.|model\[)/i]
-  ] : [];
+  const anchorSpecs = flowAdapter?.anchor_specs ?? [];
   const anchorDetails = Object.fromEntries(anchorSpecs.map(([name, stepPattern, textPattern]) => {
     const anchor = chainAnchor(latestSources, stepPattern, textPattern);
     return [name, anchor ? { ...anchor, range_id: registerRange(anchor.file, anchor.range) } : null];
@@ -347,9 +333,9 @@ export function claimCenteredReviewEvidence(workerResults, sourceEvidence, owner
     const graphRefs = graphPath(latestSources, rangeCatalog.get(anchors[from])?.path, rangeCatalog.get(anchors[to])?.path);
     if (anchors[from] && anchors[to] && graphRefs.length) return { edge, status: "observed", graph_edge_refs: graphRefs, source_anchor_refs: sourceAnchorRefs, derived_edge_refs: [], provenance_refs: [...new Set([...sourceAnchorRefs, ...graphRefs])] };
     const symbols = anchors[from] && anchors[to]
-      ? materialSymbols(anchorDetails[from].range.text, anchorDetails[to].range.text, ownerText)
+      ? adapterMaterialSymbols(anchorDetails[from].range.text, anchorDetails[to].range.text, ownerText)
       : [];
-    const transitions = transitionAnchors(symbols, allFiles, rangeCatalog.get(anchors[to])?.path, latestSources);
+    const transitions = transitionAnchors(flowAdapter, symbols, allFiles, rangeCatalog.get(anchors[to])?.path, latestSources);
     const transitionAnchorRefs = transitions.map(({ file, range }) => registerRange(file, range));
     if (symbols.length && transitionAnchorRefs.length) {
       const edgeId = `derived_edge_${digest(`${edge}\n${sourceAnchorRefs.join("\n")}\n${transitionAnchorRefs.join("\n")}\n${symbols.join("\n")}`).slice(0, 20)}`;
@@ -357,7 +343,7 @@ export function claimCenteredReviewEvidence(workerResults, sourceEvidence, owner
         edge_id: edgeId, from, to, kind: transitions[0].transition.kind, symbols,
         source_anchor_refs: sourceAnchorRefs, transition_anchor_refs: transitionAnchorRefs,
         ast_refs: transitions.map(item => item.transition.id), direction: "from_to", symbol_from: transitions[0].transition.symbol_from, symbol_to: transitions[0].transition.symbol_to,
-        provenance: { method: "typescript_ast", source_range_refs: [...new Set([...sourceAnchorRefs, ...transitionAnchorRefs])], ast_refs: transitions.map(item => item.transition.id) }
+        provenance: { method: flowAdapter.transition_method, adapter: flowAdapter.id, source_range_refs: [...new Set([...sourceAnchorRefs, ...transitionAnchorRefs])], ast_refs: transitions.map(item => item.transition.id) }
       });
       return { edge, status: "observed", graph_edge_refs: [], source_anchor_refs: sourceAnchorRefs, transition_anchor_refs: transitionAnchorRefs, derived_edge_refs: [edgeId], candidate_symbols: symbols, provenance_refs: [...new Set([...sourceAnchorRefs, ...transitionAnchorRefs, edgeId])] };
     }
@@ -387,6 +373,7 @@ export function claimCenteredReviewEvidence(workerResults, sourceEvidence, owner
     cross_layer_chains: chainRequested ? [{
       claim_id: "claim_cross_layer_producer_to_ui",
       claim_type: "cross_layer_chain",
+      adapter: flowAdapter.id,
       subject: "avgCost and profit",
       target: "UI consumer",
       required_edges: requiredChainEdges,

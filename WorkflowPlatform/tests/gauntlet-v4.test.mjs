@@ -288,6 +288,17 @@ test("a semantic API-to-UI gap targets the client source step instead of pathles
   assert.deepEqual(targetedSteps(plan, { reviewer }).steps.map(item => item.key), ["trace_client_ui"]);
 });
 
+test("semantic routing is language independent when the structured project symbol is the same", () => {
+  const plan = { steps: [
+    { key: "trace_api", objective: "Trace server response contract", allowed_paths: ["server/api.ts"], check_ids: [] },
+    { key: "trace_avgCost_state", objective: "Trace avgCost client mapping and state model", allowed_paths: ["src/state.ts"], check_ids: [] }
+  ] };
+  const route = message => targetedSteps(plan, { reviewer: { blockers: [{ code: "EDGE_UNKNOWN", message, path: null }], evidence_refs: [], required_actions: [message] } });
+  assert.deepEqual(route("Докажи переход avgCost из client mapping в state model").steps.map(item => item.key), ["trace_avgCost_state"]);
+  assert.deepEqual(route("Prove the avgCost transition from client mapping into the state model").steps.map(item => item.key), ["trace_avgCost_state"]);
+  assert.deepEqual(route("Please provide all generally required source evidence and prove avgCost").steps.map(item => item.key), ["trace_avgCost_state"]);
+});
+
 test("targeted path routing respects canonical segment boundaries", () => {
   const plan = { steps: [{ key: "a", allowed_paths: ["src/a"], check_ids: [] }, { key: "ab", allowed_paths: ["src/ab/file.ts"], check_ids: [] }] };
   const reviewer = { blockers: [{ code: "LOCAL", message: "fix source", path: "src/ab/file.ts" }], evidence_refs: [], required_actions: [] };
