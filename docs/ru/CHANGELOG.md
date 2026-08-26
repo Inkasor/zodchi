@@ -4,6 +4,19 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_11_2026_08_26" status="working">
+
+## 0.5.11 — 2026-08-26
+
+- Judge теперь возвращает строго валидируемое решение `judge.v1`; разбор токена из prose-summary и молчаливый fallback к самому строгому мнению reviewer удалены.
+- Неизменяемые мнения reviewer отделены от детерминированной admissibility: фактические blockers получают статус `supported`, `contradicted`, `unknown` или `invalid`; bounded, incomplete и truncated evidence не может доказывать отсутствие.
+- Конфликт consilium без зарегистрированного Judge становится явной ошибкой `CONSILIUM_CONFLICT_WITHOUT_JUDGE` с run evidence, а не скрытым veto.
+- Контракты Reviewer и Judge фиксируют: truncation не означает отсутствие, incomplete collection не означает false, отсутствие пути в bounded graph не означает missing edge.
+- Явный структурный owner/workflow quality floor нельзя незаметно понизить результатом classifier; текстовая подсказка уровень не меняет.
+- Общий identifier на endpoint-ах остаётся только search candidate. Для observed source-derived edge требуется конкретный assignment/mapping transition с provenance.
+
+</section>
+
 <section id="0_5_10_2026_08_26" status="working">
 
 ## 0.5.10 — 2026-08-26

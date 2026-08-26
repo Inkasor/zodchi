@@ -17,6 +17,7 @@ import { DEFAULT_QUALITY_CONTRACTS } from "../src/quality-contracts.mjs";
 import { rolePrompt } from "../src/role-contracts.mjs";
 import { reviewerPromptContext, reviewerTaskPackage } from "../src/work-executor.mjs";
 import { completionBlockers } from "../src/state-machine.mjs";
+import { blockerAdmissibility } from "../src/review-admissibility.mjs";
 
 const CLASSIFICATION = { kind: "task", domain: "workflow", discipline: "general", risk: "low", level: "L2", quality: "mvp", planning_required: true, human_required: false, document_required: false };
 const temp = prefix => fs.mkdtempSync(path.join(process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir(), prefix));
@@ -78,10 +79,47 @@ test("claim-centered review packet records primary coverage and an explicit API-
   assert.ok(packet.source_evidence.flatMap(item => item.files).length < sources.flatMap(item => item.files).length + 1);
 });
 
-test("source-field continuity proves an observed edge only with refs on both role-specific anchors", () => {
+test("matching endpoint fields stay unknown without a concrete assignment or mapping transition", () => {
   const source = (plan_step, path, text) => ({ plan_step, evidence_hash: `hash-${plan_step}`, files: [{ path, text: `--- lines 1-20 (edge anchor) ---\n${text}`, segments: [{ start_line: 1, end_line: 20, reason: "edge anchor", complete: true }] }] });
   const sources = [
-    source("producer", "scripts/import-mp-daily.mjs", "const avgCost = unit.cost;"),
+    source("producer", "scripts/import-mp-daily.mjs", "producerFields.add('avgCost');"),
+    source("api", "scripts/dashboard-query-service.mjs", "responseFields.add('avgCost');"),
+    source("client", "src/client.js", "requestedFields.add('avgCost');"),
+    source("state", "src/state.js", "const [stateFields] = useState(['avgCost']);"),
+    source("ui", "src/View.jsx", "visibleColumns.add('avgCost');")
+  ];
+  const workers = sources.map(item => ({ plan_step: item.plan_step, status: "completed", summary: item.plan_step, evidence: [`${item.files[0].path}:1-20`] }));
+  const packet = claimCenteredReviewEvidence(workers, sources, "Trace avgCost from API to UI");
+  const chain = packet.cross_layer_chains[0];
+  assert.equal(chain.coverage, "incomplete");
+  assert.equal(chain.observed_edges.length, 0);
+  assert.ok(chain.edge_coverage.every(edge => edge.status === "unknown"));
+  assert.ok(chain.edge_coverage.every(edge => edge.candidate_symbols.includes("avgCost")));
+  assert.equal(packet.derived_edge_catalog.length, 0);
+});
+
+test("bounded evidence cannot make an absence blocker factually admissible", () => {
+  const evidence = {
+    base_evidence_hash: "packet-1",
+    evidence_compaction: { source_text_reduced: true, metadata_reduced: false },
+    claim_coverage: [{ claim_type: "cross_layer_chain", coverage: "incomplete", unknown_edges: ["client->state"] }]
+  };
+  const opinions = [{ role: "reviewer", result: { decision: "REJECT", evidence_refs: ["packet-1"], blockers: [{ code: "MISSING_CLIENT_STATE_EDGE", message: "No client to state edge exists", path: null }] } }];
+  const result = blockerAdmissibility(opinions, evidence);
+  assert.equal(result[0].status, "unknown");
+  assert.match(result[0].reason, /cannot prove absence/);
+});
+
+test("a positive referenced exact scan contradicts an absence blocker", () => {
+  const evidence = { exact_scan_catalog: [{ scan_id: "scan-1", occurrences: [{ term: "avgCost", count: 3 }] }] };
+  const opinions = [{ role: "reviewer", result: { decision: "REJECT", evidence_refs: ["scan-1"], blockers: [{ code: "AVG_COST_ABSENT", message: "avgCost is absent", path: null }] } }];
+  assert.equal(blockerAdmissibility(opinions, evidence)[0].status, "contradicted");
+});
+
+test("a concrete response-field assignment creates an observed source-derived edge with transition provenance", () => {
+  const source = (plan_step, path, text) => ({ plan_step, evidence_hash: `hash-${plan_step}`, files: [{ path, text: `--- lines 1-20 (edge anchor) ---\n${text}`, segments: [{ start_line: 1, end_line: 20, reason: "edge anchor", complete: true }] }] });
+  const sources = [
+    source("producer", "scripts/import-mp-daily.mjs", "writeRow({ avgCost });"),
     source("api", "scripts/dashboard-query-service.mjs", "return { avgCost };"),
     source("client", "src/client.js", "const avgCost = response.avgCost;"),
     source("state", "src/state.js", "setModel({ avgCost });"),
@@ -89,12 +127,12 @@ test("source-field continuity proves an observed edge only with refs on both rol
   ];
   const workers = sources.map(item => ({ plan_step: item.plan_step, status: "completed", summary: item.plan_step, evidence: [`${item.files[0].path}:1-20`] }));
   const packet = claimCenteredReviewEvidence(workers, sources, "Trace avgCost from API to UI");
-  const chain = packet.cross_layer_chains[0];
-  assert.equal(chain.coverage, "sufficient");
-  assert.equal(chain.observed_edges.length, chain.required_edges.length);
-  assert.ok(chain.observed_edges.every(edge => edge.source_anchor_refs.length === 2 && edge.derived_edge_refs.length === 1));
-  assert.ok(chain.observed_edges.every(edge => edge.provenance_refs.length === 3));
-  assert.equal(packet.derived_edge_catalog.length, 4);
+  const edge = packet.cross_layer_chains[0].edge_coverage.find(item => item.edge === "api->client_mapping");
+  assert.equal(edge.status, "observed");
+  assert.equal(edge.source_anchor_refs.length, 2);
+  assert.ok(edge.transition_anchor_refs.length >= 1);
+  assert.equal(edge.derived_edge_refs.length, 1);
+  assert.equal(packet.derived_edge_catalog[0].kind, "source_transition");
 });
 
 test("a sufficient cross-layer claim has provenance for every observed edge", () => {

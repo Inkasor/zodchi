@@ -93,6 +93,22 @@ export function floorOperationalLevel(level, workflowQuality) {
   return QUALITY_LEVELS.indexOf(requested) >= QUALITY_LEVELS.indexOf(floor) ? requested : floor;
 }
 
+// The owner may set a machine-readable lower bound without asking the classifier to infer policy from
+// prose. Natural-language mentions deliberately do not count: only this exact structural element does.
+export function ownerQualityFloor(message) {
+  const matches = [...String(message ?? "").matchAll(/<quality_constraint\s+minimum="(prototype|mvp|production|security|security-audit)"\s*\/>/gi)]
+    .map(match => operationalLevel(match[1].toLowerCase()));
+  if (!matches.length) return null;
+  if (new Set(matches).size !== 1) throw new Error("OWNER_QUALITY_CONSTRAINT_CONFLICT");
+  return matches[0];
+}
+
+export function effectiveQualityMode(suggested, ...floors) {
+  let level = operationalLevel(suggested);
+  for (const floor of floors.filter(Boolean)) level = floorOperationalLevel(level, floor);
+  return level === "security-audit" ? "security" : level;
+}
+
 export function qualityModesThrough(level) {
   const normalized = operationalLevel(level);
   const index = QUALITY_LEVELS.indexOf(normalized);
