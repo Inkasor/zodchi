@@ -124,7 +124,7 @@ async function scenario({ prefix, gateStatus = "passed", reviewDecision = "PASS"
     }
     throw new Error(`unexpected role ${request.role}`);
   };
-  const gateRunner = async () => ({ task_id: "gate", project: env.project, level: "mvp", files: document ? ["docs/control.md"] : ["src/output.txt"], status: gateStatus, checks: [{ id: "check-ok", required: true, status: gateStatus }], summary: gateStatus });
+  const gateRunner = async () => ({ task_id: "gate", project: env.project, level: "mvp", files: document ? ["docs/control.md"] : ["src/output.txt"], status: gateStatus, checks: [{ id: "check-ok", name: "Deterministic check", required: true, status: gateStatus, exit_code: 0, duration_ms: 17 }], summary: `${gateStatus}: deterministic check` });
   const result = await processMessage({
     message: message ?? (document ? "Update the registered document" : "Implement bounded output"), project: env.project, dbFile: env.dbFile,
     workflowDefinition: { id: "workflow", authority: "registered test authority", roles: {} }, execute: true,
@@ -646,6 +646,11 @@ test("required document patch applies atomically after reviewer PASS and lint", 
   assert.match(env.documentatorPrompt, /Do not edit or write the filesystem/);
   assert.match(env.documentatorPrompt, /Prepared document evidence/);
   assert.match(env.documentatorPrompt, /registered target/);
+  assert.match(env.documentatorPrompt, /already run/);
+  assert.match(env.documentatorPrompt, /never describe a completed check as future work/);
+  assert.match(env.documentatorPrompt, /Deterministic check/);
+  assert.match(env.documentatorPrompt, /passed: deterministic check/);
+  assert.match(env.documentatorPrompt, /duration_ms&quot;:17/);
   assert.match(fs.readFileSync(path.join(env.project, "docs", "control.md"), "utf8"), /<quality_result[^>]+status="verified"[^>]+evidence="verified"[^>]+decision_status="proposed"/);
   const db = openDb(env.dbFile);
   assert.equal(db.prepare("SELECT version FROM project_documents WHERE id='control'").get().version, 1);

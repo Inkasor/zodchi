@@ -695,11 +695,23 @@ async function documentAndComplete({ runtime, queue, runId, projectId, projectRo
       document_id: target.id, path: target.path, authority: target.authority, expected_version: expectedVersion,
       required_operation: expectedVersion === null ? "create_document" : "update_section_or_supported_operation",
       delivery: "Return a documentator.v1 proposal only; the platform writes and lints the document atomically. Do not edit the filesystem.",
+      verification_delivery: "The gate below has already run. Record its actual status and checks in the document; never describe a completed check as future work.",
       semantic_format: "markdown+xml_semantic",
       plan_hash: structuredHash(plan), reviewer_decision: reviewerResult?.decision ?? "NOT_REQUIRED", quality_outcome: qualityOutcome,
       completion_criteria: plan.completion_criteria,
       document_evidence: workerResults.map((result, index) => ({ step_key: plan.steps[index]?.key ?? `step_${index + 1}`, summary: result.summary, evidence: result.evidence })),
-      gate: { status: gate.status, checks: gate.checks.map(check => ({ id: check.id, status: check.status, required: check.required })) }
+      gate: {
+        status: gate.status,
+        summary: gate.summary ?? null,
+        checks: gate.checks.map(check => ({
+          id: check.id,
+          name: check.name ?? check.id,
+          status: check.status,
+          required: check.required,
+          exit_code: check.exit_code ?? null,
+          duration_ms: check.duration_ms ?? null
+        }))
+      }
     };
     const documentator = await invokeRole({ runtime, queue, runId, roleId: documentatorRole, level, taskRoot, packageContract: documentPackage, context: boundedContext(discovery, documentatorRole, classification, documentatorContract.context_limit_bytes, responseLanguage), schemaKey: "documentator.v1", parseOptions: { allowedDocumentIds: [target.id] }, gatewayCall });
     try { documentation = applyRegisteredPatch({ db: runtime.db, runId, projectId, projectRoot, roleId: documentatorRole, proposal: documentator.result, qualityOutcome }); }
