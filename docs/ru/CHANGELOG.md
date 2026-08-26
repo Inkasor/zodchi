@@ -4,6 +4,16 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_2_2026_08_26" status="working">
+
+## 0.5.2 — 2026-08-26
+
+- Review evidence теперь ужимает повторяющиеся сводки TypeScript-графа и exact-term scan в многошаговом аналитическом run, сохраняя пути, counts термов, категории unresolved, line anchors и provenance gates.
+- Измеряемый envelope резервирует место под итоговый evidence hash, поэтому фактически передаваемый reviewer объект остаётся в пределах 40 КБ.
+- Добавлена регрессия с шестью source snapshots, повторной compiler-метаинформацией, 24 файлами, плотными exact scans и крупными аналитическими выводами.
+
+</section>
+
 <section id="0_5_1_2026_08_26" status="working">
 
 ## 0.5.1 — 2026-08-26

@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_2_2026_08_26" status="working">
+
+## 0.5.2 — 2026-08-26
+
+- Review evidence now compacts repeated TypeScript graph summaries and exact-term scan metadata across multi-step analytical runs while preserving paths, term counts, unresolved categories, line anchors, and gate provenance.
+- The measured envelope reserves space for its final evidence hash, so the object delivered to reviewers remains within 40 KB.
+- Added a regression with six source snapshots, repeated compiler metadata, 24 files, dense exact scans, and large analytical conclusions.
+
+</section>
+
 <section id="0_5_1_2026_08_26" status="working">
 
 ## 0.5.1 — 2026-08-26

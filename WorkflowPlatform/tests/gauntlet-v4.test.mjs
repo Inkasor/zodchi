@@ -78,6 +78,22 @@ test("review evidence compacts large source and gate payloads under its measured
   } finally { fx.close(); }
 });
 
+test("review evidence compacts repeated TS graph and exact-scan metadata without losing paths or counts", () => {
+  const fx = fixture("gauntlet-review-real-metadata-");
+  try {
+    captureRunBaselines(fx.runtime.db, fx.runId, [{ key: "primary", path: fx.projectRoot, access: "write" }]);
+    const code_intelligence = { strategy: "lexical_to_language_graph", adapters: [{ name: "typescript-compiler", files: 102, compiler_available: true, definitions: 12_143, resolved_references: 9_200, unresolved_calls: 15_770, unresolved_call_categories: { standard_library: 8663, external_dependency: 24, dynamic_or_untyped: 5779, project_internal_unmapped: 1304 }, unresolved_call_samples: { dynamic_or_untyped: Array.from({ length: 20 }, (_, index) => ({ path: `scripts/${index}.mjs`, line: index + 1, expression: "dynamicCall".repeat(100) })) }, semantic_diagnostics: 0 }] };
+    for (let step = 0; step < 6; step += 1) recordRunEvidence(fx.runtime.db, fx.runId, null, "worker_source", { plan_step: `trace-${step}`, code_intelligence, files: Array.from({ length: 4 }, (_, file) => ({ path: `src/${step}-${file}.ts`, segments: [{ start_line: 1, end_line: 20, reason: "objective_match", complete: true }], exact_term_scan: { scope: "complete_file", match: "literal_case_insensitive", occurrences: Array.from({ length: 12 }, (_, term) => ({ term: `anchor-${term}`, count: term + 1, matched_lines: term + 1, locations: Array.from({ length: 8 }, (_, line) => ({ line: line + 1, text: "relevant source line ".repeat(50) })), locations_truncated: false })) }, text: "source body ".repeat(1_000), supplied_bytes: 12_000 })) });
+    const workerResults = Array.from({ length: 6 }, (_, index) => ({ plan_step: `trace-${index}`, summary: "evidence-backed conclusion ".repeat(300), evidence: Array.from({ length: 20 }, (_, ref) => `src/${index}-${ref % 4}.ts:${ref + 1} ${"proof ".repeat(100)}`) }));
+    const evidence = buildReviewEvidence(fx.runtime.db, fx.runId, { plan: { completion_criteria: [] }, gate: { status: "passed", checks: [] }, workerResults, allowedPaths: [] });
+    assert.ok(Buffer.byteLength(JSON.stringify(evidence)) <= 40_000);
+    assert.equal(evidence.source_evidence.length, 6);
+    assert.equal(evidence.source_evidence[5].files[3].path, "src/5-3.ts");
+    assert.equal(evidence.source_evidence[0].files[0].exact_term_scan.occurrences[11].count, 12);
+    assert.equal(evidence.source_evidence[0].code_intelligence.adapters[0].unresolved_call_categories.project_internal_unmapped, 1304);
+  } finally { fx.close(); }
+});
+
 test("C-D: committed and initially dirty files remain visible in the run-relative Git delta", () => {
   for (const initiallyDirty of [false, true]) {
     const fx = fixture(`gauntlet-git-${initiallyDirty}-`);

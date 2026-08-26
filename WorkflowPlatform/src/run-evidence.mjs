@@ -173,9 +173,59 @@ function boundedSourceEvidence(value, remaining) {
   return copy;
 }
 
+function compactCodeIntelligence(value, includeSamples = true) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const copy = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (key === "adapters") continue;
+    copy[key] = Array.isArray(item) ? item.slice(0, 100).map(entry => typeof entry === "string" ? utf8Prefix(entry, 240) : entry) : item;
+  }
+  copy.adapters = (value.adapters ?? []).slice(0, 8).map(adapter => ({
+    name: adapter.name, files: adapter.files, compiler_available: adapter.compiler_available,
+    definitions: adapter.definitions, resolved_references: adapter.resolved_references, unresolved_calls: adapter.unresolved_calls,
+    unresolved_call_categories: adapter.unresolved_call_categories ?? {},
+    unresolved_call_samples: includeSamples ? Object.fromEntries(Object.entries(adapter.unresolved_call_samples ?? {}).map(([category, samples]) => [category,
+      (samples ?? []).slice(0, 2).map(sample => ({ path: sample.path, line: sample.line, expression: utf8Prefix(sample.expression, 240) }))
+    ])) : {},
+    semantic_diagnostics: adapter.semantic_diagnostics
+  }));
+  return copy;
+}
+
+function compactSourceFile(file) {
+  const scan = file.exact_term_scan;
+  return {
+    path: file.path,
+    segments: (file.segments ?? []).slice(0, 12).map(segment => ({
+      start_line: segment.start_line, end_line: segment.end_line, reason: utf8Prefix(segment.reason, 160), complete: segment.complete
+    })),
+    ...(scan ? { exact_term_scan: {
+      scope: scan.scope, match: scan.match,
+      occurrences: (scan.occurrences ?? []).slice(0, 40).map(occurrence => ({
+        term: utf8Prefix(occurrence.term, 160), count: occurrence.count, matched_lines: occurrence.matched_lines,
+        locations: (occurrence.locations ?? []).slice(0, 3).map(location => ({ line: location.line, text: utf8Prefix(location.text, 320) })),
+        locations_truncated: Boolean(occurrence.locations_truncated) || (occurrence.locations ?? []).length > 3
+      }))
+    } } : {}),
+    supplied_bytes: file.supplied_bytes,
+    text: String(file.text ?? ""), source_text_truncated: Boolean(file.source_text_truncated)
+  };
+}
+
+function reduceLargestString(entries, key, minimum = 0) {
+  const candidate = entries.filter(item => Buffer.byteLength(String(item?.[key] ?? "")) > minimum)
+    .sort((a, b) => Buffer.byteLength(String(b[key])) - Buffer.byteLength(String(a[key])))[0];
+  if (!candidate) return false;
+  candidate[key] = utf8Prefix(candidate[key], Math.max(minimum, Math.floor(Buffer.byteLength(String(candidate[key])) / 2)));
+  return true;
+}
+
 function compactReviewEvidence(evidence, limit = 40_000) {
   const copy = structuredClone(evidence);
-  copy.evidence_compaction = { limit_bytes: limit, supplied_bytes: 0, source_text_reduced: false };
+  // buildReviewEvidence adds a SHA-256 field after compaction; reserve its JSON envelope here so
+  // the object actually delivered to reviewers, not only its pre-hash form, stays under the limit.
+  const contentLimit = Math.max(0, limit - 160);
+  copy.evidence_compaction = { limit_bytes: limit, supplied_bytes: 0, source_text_reduced: false, metadata_reduced: false };
   if (copy.change_evidence) {
     copy.change_evidence.run_changed_paths = copy.change_evidence.run_changed_paths.slice(0, 200);
     copy.change_evidence.unauthorized_changes = copy.change_evidence.unauthorized_changes.slice(0, 200);
@@ -190,9 +240,9 @@ function compactReviewEvidence(evidence, limit = 40_000) {
   if (copy.analytical_evidence) {
     copy.analytical_evidence.decision_artifacts = copy.analytical_evidence.decision_artifacts.slice(0, 50).map(item => ({
       kind: item.kind, artifact_key: item.artifact_key ?? null, artifact_type: item.artifact_type ?? null, path: item.path ?? null,
-      conclusion: utf8Prefix(item.conclusion ?? item.summary ?? "", 4_096), evidence: (item.evidence ?? item.evidence_refs ?? []).slice(0, 50).map(value => utf8Prefix(value, 500))
+      conclusion: utf8Prefix(item.conclusion ?? item.summary ?? "", 2_048), evidence: (item.evidence ?? item.evidence_refs ?? []).slice(0, 12).map(value => utf8Prefix(value, 320))
     }));
-    copy.analytical_evidence.conclusions = copy.analytical_evidence.conclusions.slice(0, 50).map(item => ({ ...item, summary: utf8Prefix(item.summary, 4_096), evidence_refs: (item.evidence_refs ?? []).slice(0, 50).map(value => utf8Prefix(value, 500)) }));
+    copy.analytical_evidence.conclusions = copy.analytical_evidence.conclusions.slice(0, 50).map(item => ({ ...item, summary: utf8Prefix(item.summary, 2_048), evidence_refs: (item.evidence_refs ?? []).slice(0, 12).map(value => utf8Prefix(value, 320)) }));
   }
   if (copy.verification?.gate?.checks) copy.verification.gate.checks = copy.verification.gate.checks.slice(0, 50).map(check => ({
     id: check.id, name: check.name, required: check.required, status: check.status, exit_code: check.exit_code, duration_ms: check.duration_ms,
@@ -200,16 +250,71 @@ function compactReviewEvidence(evidence, limit = 40_000) {
     execution_project_id: check.execution_project_id ?? null, execution_root: check.execution_root ?? null
   }));
   copy.artifacts = copy.artifacts.slice(0, 100).map(item => ({ ...item, provenance_json: utf8Prefix(item.provenance_json, 2_048) }));
+  copy.source_evidence = copy.source_evidence.map((item, index) => ({
+    step_id: item.step_id ?? null, evidence_hash: item.evidence_hash ?? null, plan_step: item.plan_step ?? null,
+    // Adapter totals are repeated for every worker-source snapshot. One sample set proves the
+    // category examples; subsequent snapshots retain the complete counts without duplicating it.
+    code_intelligence: compactCodeIntelligence(item.code_intelligence, index === 0), files: (item.files ?? []).map(compactSourceFile)
+  }));
   // Primary source snippets give way gradually, but each retained file remains named and its
   // exact-scan/code-intelligence metadata remains available after its text reaches zero.
-  while (Buffer.byteLength(JSON.stringify(copy)) > limit) {
+  while (Buffer.byteLength(JSON.stringify(copy)) > contentLimit) {
     const file = copy.source_evidence.flatMap(item => item.files ?? []).sort((a, b) => Buffer.byteLength(String(b.text ?? "")) - Buffer.byteLength(String(a.text ?? "")))[0];
     if (!file || !file.text) break;
     file.text = utf8Prefix(file.text, Math.floor(Buffer.byteLength(file.text) / 2)); file.source_text_truncated = true; copy.evidence_compaction.source_text_reduced = true;
   }
+  // Real analytical workflows may carry several independent exact scans. Keep every term, count,
+  // path and line while reducing duplicated line bodies and prose summaries only as needed.
+  const locations = () => copy.source_evidence.flatMap(item => item.files ?? []).flatMap(file => file.exact_term_scan?.occurrences ?? []).flatMap(item => item.locations ?? []);
+  const summaries = () => [...(copy.analytical_evidence?.conclusions ?? []), ...(copy.analytical_evidence?.decision_artifacts ?? [])];
+  while (Buffer.byteLength(JSON.stringify(copy)) > contentLimit && reduceLargestString(locations(), "text")) copy.evidence_compaction.metadata_reduced = true;
+  while (Buffer.byteLength(JSON.stringify(copy)) > contentLimit) {
+    const occurrence = copy.source_evidence.flatMap(item => item.files ?? []).flatMap(file => file.exact_term_scan?.occurrences ?? [])
+      .filter(item => (item.locations ?? []).length > 1).sort((a, b) => b.locations.length - a.locations.length)[0];
+    if (!occurrence) break;
+    occurrence.locations.pop(); occurrence.locations_truncated = true; copy.evidence_compaction.metadata_reduced = true;
+  }
+  // If many workers scanned the same lexical vocabulary, one located occurrence per file keeps a
+  // concrete line anchor while the remaining entries still preserve every term and its full count.
+  for (const file of copy.source_evidence.flatMap(item => item.files ?? [])) {
+    for (const occurrence of (file.exact_term_scan?.occurrences ?? []).slice(1)) {
+      if (Buffer.byteLength(JSON.stringify(copy)) <= contentLimit) break;
+      occurrence.locations = []; occurrence.locations_truncated = true; copy.evidence_compaction.metadata_reduced = true;
+    }
+  }
+  const sampleMaps = copy.source_evidence.flatMap(item => item.code_intelligence?.adapters ?? []).map(adapter => adapter.unresolved_call_samples ?? {});
+  for (const samples of sampleMaps) {
+    for (const category of Object.keys(samples).sort()) {
+      if (Buffer.byteLength(JSON.stringify(copy)) <= contentLimit) break;
+      samples[category] = []; copy.evidence_compaction.metadata_reduced = true;
+    }
+  }
+  for (const segment of copy.source_evidence.flatMap(item => item.files ?? []).flatMap(file => file.segments ?? [])) {
+    if (Buffer.byteLength(JSON.stringify(copy)) <= contentLimit) break;
+    segment.reason = ""; copy.evidence_compaction.metadata_reduced = true;
+  }
+  for (const file of copy.source_evidence.flatMap(item => item.files ?? [])) {
+    if (Buffer.byteLength(JSON.stringify(copy)) <= contentLimit) break;
+    delete file.supplied_bytes;
+    if (!file.text) delete file.source_text_truncated;
+    copy.evidence_compaction.metadata_reduced = true;
+  }
+  while (Buffer.byteLength(JSON.stringify(copy)) > contentLimit && (reduceLargestString(summaries(), "summary", 256) || reduceLargestString(summaries(), "conclusion", 256))) copy.evidence_compaction.metadata_reduced = true;
+  const references = () => summaries().flatMap(item => ["evidence_refs", "evidence"].flatMap(key => (item[key] ?? []).map((value, index) => ({ owner: item, key, index, value }))));
+  while (Buffer.byteLength(JSON.stringify(copy)) > contentLimit) {
+    const candidate = references().filter(item => Buffer.byteLength(String(item.value)) > 120).sort((a, b) => Buffer.byteLength(String(b.value)) - Buffer.byteLength(String(a.value)))[0];
+    if (!candidate) break;
+    candidate.owner[candidate.key][candidate.index] = utf8Prefix(candidate.value, Math.max(120, Math.floor(Buffer.byteLength(String(candidate.value)) / 2)));
+    copy.evidence_compaction.metadata_reduced = true;
+  }
+  while (Buffer.byteLength(JSON.stringify(copy)) > contentLimit) {
+    const candidate = summaries().flatMap(item => ["evidence_refs", "evidence"].map(key => ({ item, key, values: item[key] ?? [] })))
+      .filter(entry => entry.values.length > 3).sort((a, b) => b.values.length - a.values.length)[0];
+    if (!candidate) break;
+    candidate.values.pop(); copy.evidence_compaction.metadata_reduced = true;
+  }
   copy.evidence_compaction.supplied_bytes = Buffer.byteLength(JSON.stringify(copy));
-  copy.evidence_compaction.supplied_bytes = Buffer.byteLength(JSON.stringify(copy));
-  if (Buffer.byteLength(JSON.stringify(copy)) > limit) throw new Error(`REVIEW_EVIDENCE_BUDGET_EXCEEDED: ${Buffer.byteLength(JSON.stringify(copy))}/${limit}`);
+  if (Buffer.byteLength(JSON.stringify(copy)) > contentLimit) throw new Error(`REVIEW_EVIDENCE_BUDGET_EXCEEDED: ${Buffer.byteLength(JSON.stringify(copy))}/${limit}`);
   return copy;
 }
 
