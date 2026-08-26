@@ -4,6 +4,16 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_6_2026_08_26" status="working">
+
+## 0.5.6 — 2026-08-26
+
+- Review evidence больше не отбрасывает все source bodies после прежнего общего pre-compaction лимита 24 КБ.
+- Переданный исходный код представлен независимо проверяемыми диапазонами строк; измеряемая compaction сохраняет конкретный фрагмент каждого диапазона и укладывает полный reviewer prompt в контракт.
+- Pathless review gap теперь направляет correction в source-producing шаг, указанный в top-level evidence refs и required actions, а не в pathless synthesis step.
+
+</section>
+
 <section id="0_5_5_2026_08_26" status="working">
 
 ## 0.5.5 — 2026-08-26

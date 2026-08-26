@@ -571,7 +571,14 @@ async function executeGateStep({ runtime, queue, runId, stepKey, projectRoot, le
 export function targetedSteps(plan, { gate = null, reviewer = null } = {}) {
   const failedChecks = new Set((gate?.checks ?? []).filter(check => check.required && check.status !== "passed").map(check => check.id));
   const primary = reviewer?.blockers?.[0] ?? null;
-  const paths = [primary?.path, ...(primary?.evidence_refs ?? []), ...(gate?.checks ?? []).map(check => check.failure_path)].filter(Boolean).map(value => String(value).replaceAll("\\", "/"));
+  const reviewSignals = [
+    primary?.path,
+    ...(reviewer?.evidence_refs ?? []),
+    ...(reviewer?.required_actions ?? []),
+    ...(reviewer?.blockers ?? []).flatMap(blocker => [blocker.path, blocker.message]),
+    ...(gate?.checks ?? []).map(check => check.failure_path)
+  ];
+  const paths = reviewSignals.filter(Boolean).map(value => String(value).replaceAll("\\", "/"));
   const selected = plan.steps.filter(step => {
     if ((step.check_ids ?? []).some(check => failedChecks.has(check))) return true;
     return (step.allowed_paths ?? []).some(allowed => paths.some(value => value === allowed || value.startsWith(`${allowed}/`) || value.includes(allowed)));
