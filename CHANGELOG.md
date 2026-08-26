@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_7_2026_08_26" status="working">
+
+## 0.5.7 — 2026-08-26
+
+- Review evidence allowance is derived from the smallest selected reviewer contract instead of a fixed global byte limit.
+- The configured allowance reserves 30% for role/schema/XML framing, while the final full-prompt measurement remains authoritative.
+- The live 128 KiB Dashboard contract measured 90,057 evidence bytes and a 122,584-byte complete reviewer prompt while retaining 88 source ranges.
+
+</section>
+
 <section id="0_5_6_2026_08_26" status="working">
 
 ## 0.5.6 — 2026-08-26

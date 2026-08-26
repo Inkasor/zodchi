@@ -4,6 +4,16 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_5_7_2026_08_26" status="working">
+
+## 0.5.7 — 2026-08-26
+
+- Allowance для review evidence вычисляется из минимального контракта выбранных reviewer, а не из фиксированного глобального лимита.
+- Настройка оставляет 30% на role/schema/XML framing, при этом окончательной проверкой остаётся измерение полного prompt.
+- На живом Dashboard-контракте 128 КиБ измерены 90 057 байт evidence и полный reviewer prompt 122 584 байта с сохранением 88 source ranges.
+
+</section>
+
 <section id="0_5_6_2026_08_26" status="working">
 
 ## 0.5.6 — 2026-08-26
