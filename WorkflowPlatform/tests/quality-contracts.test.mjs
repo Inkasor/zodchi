@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { openDb } from "../src/db.mjs";
-import { DEFAULT_QUALITY_CONTRACTS, floorOperationalLevel, operationalPoliciesLint, parseQualityContracts, qualityContractsLint, qualityModesThrough, reviewerRequirement, serializeQualityContracts } from "../src/quality-contracts.mjs";
+import { DEFAULT_QUALITY_CONTRACTS, effectiveQualityMode, floorOperationalLevel, operationalPoliciesLint, ownerQualityFloor, parseQualityContracts, qualityContractsLint, qualityModesThrough, reviewerRequirement, serializeQualityContracts } from "../src/quality-contracts.mjs";
 import { applyWorkflowImport, proposeWorkflowImport, serializeWorkflowPackage } from "../src/workflow-package.mjs";
 import * as builders from "../packages/builders.mjs";
 import defineExample from "../packages/example/definitions.mjs";
@@ -93,4 +93,12 @@ test("the floor never lowers a level the classifier raised, and is inert without
   assert.equal(floorOperationalLevel("security-audit", "prototype"), "security-audit");
   assert.equal(floorOperationalLevel("prototype", "prototype"), "prototype");
   assert.equal(floorOperationalLevel("prototype", null), "prototype");
+});
+
+test("an explicit structural owner quality floor overrides a lower classifier suggestion", () => {
+  assert.equal(ownerQualityFloor('<quality_constraint minimum="mvp" />'), "mvp");
+  assert.equal(ownerQualityFloor("please use quality_mode=mvp"), null);
+  assert.equal(effectiveQualityMode("prototype", ownerQualityFloor('<quality_constraint minimum="mvp" />'), "prototype"), "mvp");
+  assert.equal(effectiveQualityMode("production", "mvp", "prototype"), "production");
+  assert.throws(() => ownerQualityFloor('<quality_constraint minimum="mvp" /><quality_constraint minimum="production" />'), /OWNER_QUALITY_CONSTRAINT_CONFLICT/);
 });

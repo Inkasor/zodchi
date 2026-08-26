@@ -238,10 +238,12 @@ function selectClaimRanges(file, claimText, evidenceRefs) {
   return selected.map(item => item.range);
 }
 
-function chainAnchor(files, pathPattern, textPattern) {
-  for (const file of files.filter(item => pathPattern.test(item.path))) {
-    const range = (file.source_ranges ?? []).find(item => textPattern.test(item.text ?? ""));
-    if (range) return { file, range };
+function chainAnchor(sources, stepPattern, textPattern) {
+  for (const source of [...sources.values()].filter(item => stepPattern.test(item.plan_step ?? ""))) {
+    for (const file of source.files ?? []) {
+      const range = (file.source_ranges ?? []).find(item => textPattern.test(item.text ?? "")) ?? file.source_ranges?.[0];
+      if (range) return { file, range };
+    }
   }
   return null;
 }
@@ -252,6 +254,22 @@ function materialSymbols(left, right, ownerText) {
   return [...leftIds].filter(symbol => rightIds.has(symbol) && (
     ownerIds.has(symbol) || /cost|profit|order|sale|price|margin|commission/i.test(symbol)
   )).sort();
+}
+
+function escapedExpression(value) { return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+function directMappingPattern(symbol) {
+  const key = escapedExpression(symbol);
+  return new RegExp(`(?:\\b(?:const|let|var)\\s+[A-Za-z_$][A-Za-z0-9_$]*\\s*=\\s*[^;\\n]{0,320}(?:\\.|\\?\\.)${key}\\b|\\b${key}\\s*:\\s*[^,}\\n]{0,320}(?:\\.|\\?\\.)${key}\\b|(?:\\.|\\?\\.)${key}\\s*=\\s*[^;\\n]{0,320}(?:\\.|\\?\\.)${key}\\b)`, "i");
+}
+
+function transitionAnchors(edge, symbols, files, targetPath) {
+  const candidates = files.filter(file => !targetPath || file.path === targetPath).flatMap(file => (file.source_ranges ?? []).map(range => ({ file, range })));
+  if (edge === "client_mapping->state_model") return candidates.filter(({ range }) =>
+    /set[A-Z][A-Za-z0-9_$]*\s*\([\s\S]{0,500}(?:normalize|map|merge)[A-Z_a-z0-9$]*\s*\(/.test(range.text ?? "")
+  ).slice(0, 2);
+  if (edge === "state_model->ui_consumer") return [];
+  return candidates.filter(({ range }) => symbols.some(symbol => directMappingPattern(symbol).test(range.text ?? ""))).slice(0, 2);
 }
 
 export function claimCenteredReviewEvidence(workerResults, sourceEvidence, ownerText = "") {
@@ -315,14 +333,14 @@ export function claimCenteredReviewEvidence(workerResults, sourceEvidence, owner
     conclusions.push({ claim_id: primaryEvidenceRefs.length && !crossLayerNarrative ? claimId : null, plan_step: planStep, summary: result.summary ?? "", evidence_refs: rawEvidenceRefs.slice(0, 12).map(value => utf8Prefix(value, 320)) });
   }
   const anchorSpecs = chainRequested ? [
-    ["producer", /import-mp-daily|marketplace-scheme-profit|company-profit-from-cost/i, /unit\.?cost|legacyUpdateRow|recalculateCompanyProfitFromCost|avgCost/i],
-    ["api", /dashboard-query-service/i, /buildProductDailyDetails|normalizeSeriesRow|avgCost/i],
-    ["client_mapping", /src\//i, /normalizeServerModelCost|response\.json|fetchJson|avgCost/i],
-    ["state_model", /src\//i, /normalizeServerModels|set[A-Z][A-Za-z0-9_$]*\(|useState|normalizeServerModelCost/i],
-    ["ui_consumer", /src\//i, /rowAvgCost|rowMetricValue|profit|avgCost/i]
+    ["producer", /producer|storage|persist|import|profit/i, /(?:write|insert|update|return|produce|cost|profit)/i],
+    ["api", /(?:^|_)api|contract|response|transform/i, /(?:res\.|response|return|json|contract|cost|profit)/i],
+    ["client_mapping", /client|mapping|fetch/i, /(?:response|payload|data|normalize|map|assign|cost|profit)/i],
+    ["state_model", /state|model/i, /(?:set[A-Z]|useState|store|model|assign|cost|profit)/i],
+    ["ui_consumer", /ui|view|consumer|render/i, /(?:return\s*<|<td|<div|render|display|column|row\.|model\[)/i]
   ] : [];
-  const anchorDetails = Object.fromEntries(anchorSpecs.map(([name, pathPattern, textPattern]) => {
-    const anchor = chainAnchor(allFiles, pathPattern, textPattern);
+  const anchorDetails = Object.fromEntries(anchorSpecs.map(([name, stepPattern, textPattern]) => {
+    const anchor = chainAnchor(latestSources, stepPattern, textPattern);
     return [name, anchor ? { ...anchor, range_id: registerRange(anchor.file, anchor.range) } : null];
   }));
   const anchors = Object.fromEntries(Object.entries(anchorDetails).map(([name, value]) => [name, value?.range_id ?? null]));
@@ -331,26 +349,27 @@ export function claimCenteredReviewEvidence(workerResults, sourceEvidence, owner
     const [from, to] = edge.split("->");
     const endpointRefs = [anchors[from], anchors[to]].filter(Boolean);
     const sourceAnchorRefs = [...new Set(endpointRefs)];
-    if (anchors[from] && anchors[from] === anchors[to]) return { edge, status: "observed", graph_edge_refs: [], source_anchor_refs: sourceAnchorRefs, derived_edge_refs: [], provenance_refs: sourceAnchorRefs };
     const graphRefs = graphPath(latestSources, rangeCatalog.get(anchors[from])?.path, rangeCatalog.get(anchors[to])?.path);
     if (anchors[from] && anchors[to] && graphRefs.length) return { edge, status: "observed", graph_edge_refs: graphRefs, source_anchor_refs: sourceAnchorRefs, derived_edge_refs: [], provenance_refs: [...new Set([...sourceAnchorRefs, ...graphRefs])] };
     const symbols = anchors[from] && anchors[to]
       ? materialSymbols(anchorDetails[from].range.text, anchorDetails[to].range.text, ownerText)
       : [];
-    if (symbols.length) {
-      const edgeId = `derived_edge_${digest(`${edge}\n${sourceAnchorRefs.join("\n")}\n${symbols.join("\n")}`).slice(0, 20)}`;
+    const transitions = transitionAnchors(edge, symbols, allFiles, rangeCatalog.get(anchors[to])?.path);
+    const transitionAnchorRefs = transitions.map(({ file, range }) => registerRange(file, range));
+    if (symbols.length && transitionAnchorRefs.length) {
+      const edgeId = `derived_edge_${digest(`${edge}\n${sourceAnchorRefs.join("\n")}\n${transitionAnchorRefs.join("\n")}\n${symbols.join("\n")}`).slice(0, 20)}`;
       derivedEdgeCatalog.push({
-        edge_id: edgeId, from, to, kind: "source_field_continuity", symbols,
-        source_anchor_refs: sourceAnchorRefs,
-        provenance: { method: "shared_material_identifier_in_role_specific_source_anchors", source_range_refs: sourceAnchorRefs }
+        edge_id: edgeId, from, to, kind: "source_transition", symbols,
+        source_anchor_refs: sourceAnchorRefs, transition_anchor_refs: transitionAnchorRefs,
+        provenance: { method: "assignment_or_mapping_transition_in_source", source_range_refs: [...new Set([...sourceAnchorRefs, ...transitionAnchorRefs])] }
       });
-      return { edge, status: "observed", graph_edge_refs: [], source_anchor_refs: sourceAnchorRefs, derived_edge_refs: [edgeId], provenance_refs: [...sourceAnchorRefs, edgeId] };
+      return { edge, status: "observed", graph_edge_refs: [], source_anchor_refs: sourceAnchorRefs, transition_anchor_refs: transitionAnchorRefs, derived_edge_refs: [edgeId], candidate_symbols: symbols, provenance_refs: [...new Set([...sourceAnchorRefs, ...transitionAnchorRefs, edgeId])] };
     }
     // The selected graph is bounded supporting evidence. Failure to find a path in it is not proof that
     // the project has no path; a deterministic complete negative scan would be required for `missing`.
-    return { edge, status: "unknown", graph_edge_refs: [], source_anchor_refs: sourceAnchorRefs, derived_edge_refs: [], provenance_refs: sourceAnchorRefs };
+    return { edge, status: "unknown", graph_edge_refs: [], source_anchor_refs: sourceAnchorRefs, transition_anchor_refs: [], derived_edge_refs: [], candidate_symbols: symbols, provenance_refs: sourceAnchorRefs };
   });
-  const usedRanges = new Set([...claims.flatMap(claim => claim.primary_evidence_refs), ...Object.values(anchors).filter(Boolean)]);
+  const usedRanges = new Set([...claims.flatMap(claim => claim.primary_evidence_refs), ...Object.values(anchors).filter(Boolean), ...chainEdgeCoverage.flatMap(edge => edge.transition_anchor_refs ?? [])]);
   const selectedSources = [...latestSources.values()].map(item => ({
     step_id: item.step_id ?? null,
     evidence_hash: item.evidence_hash ?? null,

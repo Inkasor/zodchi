@@ -4,7 +4,7 @@ import { escapeXml } from "./limited-xml.mjs";
 import { renderQualityContract, validateQualityContract } from "./quality-contracts.mjs";
 import { languageName, normalizeLanguage } from "./language.mjs";
 
-const RESULT_SCHEMAS = new Set(["planner.v1", "worker.v1", "reviewer.v1", "documentator.v1"]);
+const RESULT_SCHEMAS = new Set(["planner.v1", "worker.v1", "reviewer.v1", "judge.v1", "documentator.v1"]);
 
 // The validator accepts an exact field set, so the prompt has to state that set. Naming the schema and
 // leaving the fields unsaid asks the model to guess a shape that is then rejected for guessing wrong.
@@ -39,6 +39,14 @@ export const RESULT_SCHEMA_SHAPES = Object.freeze({
     blockers: [{ code: "string", message: "string", path: "path relative to the project root, or null" }],
     required_actions: ["string"],
     evidence_refs: ["string"]
+  }),
+  "judge.v1": Object.freeze({
+    schema_version: 1,
+    decision: "PASS | PRIMARY_GAP | TARGETED_VERIFICATION | OWNER_DECISION",
+    rationale: "non-empty string",
+    evidence_refs: ["string"],
+    primary_gap: { kind: "string", message: "string", path: "path relative to the project root, or null", evidence_refs: ["string"], search_intent: "string" },
+    verification_request: { kind: "symbol_reference | exact_term | directed_relation | field_flow | path_change | gate_fact", subject: "string", from: "string or null", to: "string or null", path: "path relative to the project root, or null", evidence_refs: ["string"] }
   }),
   "documentator.v1": Object.freeze({
     schema_version: 1,
@@ -136,7 +144,10 @@ export function rolePrompt({ contract, qualityContract, packageContract, context
     ? "Treat the task package allowed_paths as the complete authority boundary, not as a reason to request a broader system. A complete-file exact term scan with count zero is conclusive negative evidence inside that boundary. Claim a zero count only when that exact term and path are present in exact_term_scan with count zero; an omitted term is unknown, and a positive count must never be summarized as absent. Reconcile every positive and negative exact-scan claim before returning the result. If a scan proves that a requested identifier or producer is absent, complete the step with that negative finding and the nearest supported facts; do not return blocked or ask for out-of-scope sources merely because no positive producer exists. Return blocked only when the objective cannot be answered even negatively because authorized evidence is genuinely unavailable or unreadable."
     : null;
   const reviewerPhaseInstruction = resultSchema === "reviewer.v1"
-    ? "This independent review runs after worker evidence and deterministic gates but before the documentator. Compare the result first with task_package.review_evidence.owner_objective.verbatim and task_package.review_evidence.canonical_completion; planner completion criteria are advisory and never override owner intent, the quality contract, registered gates or completionBlockers. For change evidence, judge the run-relative delta and primary facts, never a builder or worker narrative. For analytical evidence, judge whether the conclusion follows from the supplied primary source ranges and scans. A required final document is intentionally not created yet and its absence from worker artifacts or changed_paths is not a blocker. Final receipt totals, calls, tokens, cache, total duration and this invocation's full prompt measurement are platform-generated after review; their absence from review_evidence is not a blocker and they are supplied to the documentator and final run statistics later. Use CHANGES_REQUESTED for an evidence gap that a targeted correction can still address when task_package.remaining_correction_cycles is positive. Reserve REJECT for a fundamental unsafe, unauthorized or contradictory result that another bounded evidence collection cycle cannot repair."
+    ? "This independent review runs after worker evidence and deterministic gates but before the documentator. Compare the result first with task_package.review_evidence.owner_objective.verbatim and task_package.review_evidence.canonical_completion; planner completion criteria are advisory and never override owner intent, the quality contract, registered gates or completionBlockers. For change evidence, judge the run-relative delta and primary facts, never a builder or worker narrative. For analytical evidence, judge whether the conclusion follows from the supplied primary source ranges and scans. Truncated evidence is not absent evidence, incomplete collection is not a false fact, and failure to find a path in a bounded graph is not proof that the path is missing. A required final document is intentionally not created yet and its absence from worker artifacts or changed_paths is not a blocker. Final receipt totals, calls, tokens, cache, total duration and this invocation's full prompt measurement are platform-generated after review; their absence from review_evidence is not a blocker and they are supplied to the documentator and final run statistics later. Use CHANGES_REQUESTED for an evidence gap that a targeted correction can still address when task_package.remaining_correction_cycles is positive. Reserve REJECT for a fundamental unsafe, unauthorized or contradictory result that another bounded evidence collection cycle cannot repair."
+    : null;
+  const judgeInstruction = resultSchema === "judge.v1"
+    ? "Resolve only the evaluative conflict in the independently recorded opinions after considering task_package.blocker_admissibility. Unsupported, invalid or unknown factual blockers are not vetoes. Truncated evidence is not absence, incomplete collection is not falsehood, and no path in a bounded graph is not a missing edge. Use TARGETED_VERIFICATION for a fact that the deterministic verifier can resolve; use PRIMARY_GAP for an admissible correction gap; use OWNER_DECISION only for a genuine product or authority decision."
     : null;
   const toolAuthorityInstruction = contract.allowed_tools.length
     ? "Only the tools listed in allowed_tools are authorized. The supplied context remains the primary evidence package."
@@ -161,6 +172,7 @@ export function rolePrompt({ contract, qualityContract, packageContract, context
     `    <instruction>Return exactly one JSON object carrying exactly the fields of the shape below: no field missing and no field added. A value written as "a | b" lists the only permitted values; any other value states the type expected there. Do not wrap the object in Markdown and do not expose private reasoning.</instruction>\n`+
     (workerCompletionInstruction ? `    <completion_semantics>${escapeXml(workerCompletionInstruction)}</completion_semantics>\n` : "")+
     (reviewerPhaseInstruction ? `    <review_phase>${escapeXml(reviewerPhaseInstruction)}</review_phase>\n` : "")+
+    (judgeInstruction ? `    <judge_semantics>${escapeXml(judgeInstruction)}</judge_semantics>\n` : "")+
     (documentProposalInstruction ? `    <document_proposal>${escapeXml(documentProposalInstruction)}</document_proposal>\n` : "")+
     `    <shape format="application/json">${escapeXml(stableJson(RESULT_SCHEMA_SHAPES[resultSchema] ?? {}))}</shape>\n`+
     `  </result_contract>\n`+
@@ -244,6 +256,31 @@ export function validateReviewerResult(value) {
   return value;
 }
 
+export function validateJudgeResult(value) {
+  exactObject(value, schemaFields("judge.v1"), "judge.v1");
+  if (value.schema_version !== 1 || !["PASS", "PRIMARY_GAP", "TARGETED_VERIFICATION", "OWNER_DECISION"].includes(value.decision) || typeof value.rationale !== "string" || !value.rationale.trim()) throw new Error("judge.v1: invalid scalar field");
+  strings(value.evidence_refs, "judge.v1.evidence_refs");
+  if (value.primary_gap !== null) {
+    exactObject(value.primary_gap, ["kind", "message", "path", "evidence_refs", "search_intent"], "judge.v1.primary_gap");
+    if (![value.primary_gap.kind, value.primary_gap.message, value.primary_gap.search_intent].every(item => typeof item === "string" && item.trim())) throw new Error("judge.v1.primary_gap: invalid scalar field");
+    value.primary_gap.path = relativePath(value.primary_gap.path, "judge.v1.primary_gap.path", { nullable: true });
+    strings(value.primary_gap.evidence_refs, "judge.v1.primary_gap.evidence_refs");
+  }
+  if (value.verification_request !== null) {
+    exactObject(value.verification_request, ["kind", "subject", "from", "to", "path", "evidence_refs"], "judge.v1.verification_request");
+    if (!["symbol_reference", "exact_term", "directed_relation", "field_flow", "path_change", "gate_fact"].includes(value.verification_request.kind) || typeof value.verification_request.subject !== "string" || !value.verification_request.subject.trim()) throw new Error("judge.v1.verification_request: invalid scalar field");
+    for (const key of ["from", "to"]) if (value.verification_request[key] !== null && (typeof value.verification_request[key] !== "string" || !value.verification_request[key].trim())) throw new Error(`judge.v1.verification_request.${key}: string or null required`);
+    value.verification_request.path = relativePath(value.verification_request.path, "judge.v1.verification_request.path", { nullable: true });
+    strings(value.verification_request.evidence_refs, "judge.v1.verification_request.evidence_refs");
+  }
+  const requiresGap = value.decision === "PRIMARY_GAP";
+  const requiresVerification = value.decision === "TARGETED_VERIFICATION";
+  if (requiresGap !== Boolean(value.primary_gap) || requiresVerification !== Boolean(value.verification_request)) throw new Error("judge.v1: decision payload mismatch");
+  if (!["PRIMARY_GAP"].includes(value.decision) && value.primary_gap !== null) throw new Error("judge.v1: primary_gap only allowed for PRIMARY_GAP");
+  if (!["TARGETED_VERIFICATION"].includes(value.decision) && value.verification_request !== null) throw new Error("judge.v1: verification_request only allowed for TARGETED_VERIFICATION");
+  return value;
+}
+
 export function validateDocumentatorResult(value, { allowedDocumentIds }) {
   exactObject(value, schemaFields("documentator.v1"), "documentator.v1");
   if (value.schema_version !== 1 || value.status !== "proposed" || !allowedDocumentIds.includes(value.document_id)) throw new Error("documentator.v1: document not allowed");
@@ -259,6 +296,7 @@ export function parseRoleReceipt(receipt, schemaKey, options) {
   if (schemaKey === "planner.v1") return validatePlannerResult(value, options);
   if (schemaKey === "worker.v1") return validateWorkerResult(value, options);
   if (schemaKey === "reviewer.v1") return validateReviewerResult(value, options);
+  if (schemaKey === "judge.v1") return validateJudgeResult(value, options);
   if (schemaKey === "documentator.v1") return validateDocumentatorResult(value, options);
   throw new Error(`ROLE_RESULT_SCHEMA_UNKNOWN: ${schemaKey}`);
 }

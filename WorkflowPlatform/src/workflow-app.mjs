@@ -12,7 +12,7 @@ import { id, now } from "./db.mjs";
 import { appendEvent } from "./state-machine.mjs";
 import { resolveWorkflowSettings } from "./paths.mjs";
 import { continueApprovedRun, executeStructuredWork, pausedRunObjective } from "./work-executor.mjs";
-import { chargeDirectReceipt, initializeQualityRun, operationalLevel, reserveDirectModelCall } from "./quality-contracts.mjs";
+import { chargeDirectReceipt, effectiveQualityMode, initializeQualityRun, operationalLevel, ownerQualityFloor, reserveDirectModelCall } from "./quality-contracts.mjs";
 
 export function loadWorkflow(id, workflowsRoot = resolveWorkflowSettings().workflowsRoot) {
   if (!id) throw new Error("workflow id is required");
@@ -188,6 +188,20 @@ export async function processMessage({
         workflow = routedWorkflow;
       }
     }
+    const classifierQualityMode = classification.quality_mode;
+    const requestedQualityFloor = ownerQualityFloor(message);
+    const workflowQualityFloor = classification.reply_mode === "work"
+      ? runtime.db.prepare("SELECT default_quality FROM workflows WHERE id=?").get(workflow)?.default_quality ?? null
+      : null;
+    const effective = effectiveQualityMode(classifierQualityMode, requestedQualityFloor, workflowQualityFloor);
+    classification = Object.freeze({
+      ...classification,
+      quality_mode: effective,
+      quality: effective,
+      classifier_quality_mode: classifierQualityMode,
+      requested_quality_floor: requestedQualityFloor === "security-audit" ? "security" : requestedQualityFloor,
+      workflow_quality_floor: workflowQualityFloor
+    });
     runtime.classify(runId, classification);
     initializeQualityRun(runtime, runId, classification, classifierReceipt);
   } catch (error) {

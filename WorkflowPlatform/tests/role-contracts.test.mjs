@@ -8,7 +8,7 @@ import { onboardProject } from "../src/onboarding.mjs";
 import { openDb } from "../src/db.mjs";
 import { processMessage } from "../src/workflow-app.mjs";
 import { classificationCatalog } from "../src/classifier.mjs";
-import { RESULT_SCHEMA_SHAPES, loadRoleContract, parseRoleReceipt, rolePrompt, validateDocumentatorResult, validatePlannerResult, validateReviewerResult, validateWorkerResult } from "../src/role-contracts.mjs";
+import { RESULT_SCHEMA_SHAPES, loadRoleContract, parseRoleReceipt, rolePrompt, validateDocumentatorResult, validateJudgeResult, validatePlannerResult, validateReviewerResult, validateWorkerResult } from "../src/role-contracts.mjs";
 import { BudgetManager } from "../src/budget.mjs";
 import { loadQualityContract } from "../src/quality-contracts.mjs";
 
@@ -148,6 +148,10 @@ test("role result schemas reject extra fields, path escapes and false reviewer P
   const workerContract = loadRoleContract(db, "project", "worker", "mvp");
   assert.throws(() => validateWorkerResult({ schema_version: 1, status: "completed", summary: "x", changed_paths: ["../outside"], artifacts: [], evidence: [], questions: [] }, { contract: workerContract, packageContract: { allowed_paths: ["src/output.txt"], artifact_keys: [] } }), /relative project path/);
   assert.throws(() => validateReviewerResult({ ...reviewerResult("PASS"), blockers: [{ code: "x", message: "hidden blocker", path: null }] }), /PASS cannot contain blockers/);
+  const judgePass = { schema_version: 1, decision: "PASS", rationale: "The admissible evidence supports completion.", evidence_refs: ["evidence-1"], primary_gap: null, verification_request: null };
+  assert.equal(validateJudgeResult(structuredClone(judgePass)).decision, "PASS");
+  assert.throws(() => validateJudgeResult({ ...judgePass, decision: "TARGETED_VERIFICATION" }), /decision payload mismatch/);
+  assert.throws(() => validateJudgeResult({ ...judgePass, rationale: "PRIMARY_GAP hidden in prose" , extra: true }), /fields mismatch/);
   assert.throws(() => validateDocumentatorResult({ schema_version: 1, status: "proposed", document_id: "unknown", expected_version: null, operation: "create_document", authority: "owner", content: "x", section_id: null, decision_id: null, evidence_id: null, status_value: null, target_tag: null, target_id: null, replacement_id: null }, { allowedDocumentIds: ["control"] }), /document not allowed/);
   assert.throws(() => validateDocumentatorResult({ schema_version: 1, status: "proposed", document_id: "control", expected_version: null, operation: "blocked_write_read_only_sandbox", authority: "owner", content: null, section_id: null, decision_id: null, evidence_id: null, status_value: null, target_tag: null, target_id: null, replacement_id: null }, { allowedDocumentIds: ["control"] }), /invalid operation/);
   assert.match(rolePrompt({ contract, qualityContract: loadQualityContract(db, "mvp"), packageContract: { objective: "x" }, context: {}, resultSchema: "planner.v1" }), /<workflow_role_prompt/);

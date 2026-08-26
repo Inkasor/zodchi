@@ -4,6 +4,19 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_11_2026_08_26" status="working">
+
+## 0.5.11 — 2026-08-26
+
+- Judge now returns a strictly validated `judge.v1` decision; prose token parsing and silent fallback to the strictest reviewer opinion are removed.
+- Raw reviewer opinions remain immutable while deterministic blocker admissibility classifies factual blockers as `supported`, `contradicted`, `unknown` or `invalid`; bounded, incomplete or truncated evidence cannot prove absence.
+- A consilium conflict without a registered Judge is an explicit `CONSILIUM_CONFLICT_WITHOUT_JUDGE` failure with run evidence, never a hidden veto.
+- Reviewer and Judge contracts state that truncation is not absence, incomplete collection is not falsehood, and no path in a bounded graph is not a missing edge.
+- Explicit structural owner and workflow quality floors cannot be silently lowered by classifier output; natural-language hints do not change the floor.
+- Shared endpoint identifiers are search candidates only. An observed source-derived edge requires a concrete assignment or mapping transition and provenance.
+
+</section>
+
 <section id="0_5_10_2026_08_26" status="working">
 
 ## 0.5.10 — 2026-08-26

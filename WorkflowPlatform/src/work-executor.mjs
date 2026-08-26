@@ -14,6 +14,7 @@ import { loadRoleContract, parseRoleReceipt, rolePrompt, structuredHash } from "
 import { consumeCorrectionCycle, documentationOutcome, loadOperationalPolicy, loadQualityContract, operationalLevel, reviewerRequirement } from "./quality-contracts.mjs";
 import { buildReviewEvidence, captureRunBaselines, recordRunEvidence, runChangeEvidence } from "./run-evidence.mjs";
 import { applyRunControlAtBoundary, pendingRunControl, recordProgressSnapshot } from "./progress-supervisor.mjs";
+import { blockerAdmissibility, admissibleOpinionDecision } from "./review-admissibility.mjs";
 
 function hashFile(file) { return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"); }
 function parseJson(value, fallback) { try { return JSON.parse(value); } catch { return fallback; } }
@@ -566,21 +567,28 @@ async function executeIndependentReview({ runtime, queue, runId, projectId, revi
   recordRunEvidence(runtime.db, runId, null, "review_opinions", { base_evidence_hash: reviewEvidence.base_evidence_hash, opinions: opinions.map(item => ({ role: item.role, result: item.result })) });
   const costBudget = runtime.db.prepare("SELECT used_value,limit_value,status FROM budgets WHERE scope_type='workflow' AND scope_id=? AND metric='cost_usd'").get(runId);
   const budgetExhausted = Boolean(costBudget && (costBudget.status === "exhausted" || costBudget.used_value >= costBudget.limit_value));
-  let final = opinions.map(item => item.result).sort((a, b) => decisionRank(b.decision) - decisionRank(a.decision))[0];
-  if (new Set(opinions.map(item => item.result.decision)).size > 1) {
+  const admissibility = blockerAdmissibility(opinions, reviewEvidence);
+  recordRunEvidence(runtime.db, runId, null, "blocker_admissibility", { base_evidence_hash: reviewEvidence.base_evidence_hash, blockers: admissibility });
+  const effectiveOpinions = opinions.map(item => ({ ...item, effective_decision: admissibleOpinionDecision(item, admissibility) }));
+  let final = effectiveOpinions.sort((a, b) => decisionRank(b.effective_decision) - decisionRank(a.effective_decision))[0].result;
+  if (effectiveOpinions.every(item => item.effective_decision === "PASS")) final = { decision: "PASS", summary: "No admissible blocker remains after deterministic factual admissibility.", blockers: [], evidence_refs: [reviewEvidence.base_evidence_hash], required_actions: [], schema_version: 1 };
+  if (new Set(effectiveOpinions.map(item => item.effective_decision)).size > 1) {
     // Factual disagreement is first exposed as deterministic targeted-verification evidence. The current
     // registered gate is immutable evidence; a judge is used only when the project has registered one.
     recordRunEvidence(runtime.db, runId, null, "targeted_verification", { reason: "independent_review_disagreement", gate, base_evidence_hash: reviewEvidence.base_evidence_hash });
     if (available.has("judge")) {
-      appendSteps(runtime, runId, [{ key: `judge_${correctionCycles}`, role: "judge", required: true, irreversible: false, max_attempts: 1, schema: "worker.v1", contract: { base_evidence_hash: reviewEvidence.base_evidence_hash } }]);
+      appendSteps(runtime, runId, [{ key: `judge_${correctionCycles}`, role: "judge", required: true, irreversible: false, max_attempts: 1, schema: "judge.v1", contract: { base_evidence_hash: reviewEvidence.base_evidence_hash } }]);
       queue.enqueueRun(runId);
-      const judgeContract = loadRoleContract(runtime.db, projectId, "judge", level);
-      const judgePackage = { objective: "Resolve the independent review conflict. Return status completed and begin summary with PASS, PRIMARY_GAP, TARGETED_VERIFICATION or OWNER_DECISION.", allowed_paths: [], base_evidence: reviewEvidence, opinions: opinions.map(item => ({ role: item.role, result: item.result })), conflicts: opinions.map(item => item.result.decision) };
-      const judge = await invokeRole({ runtime, queue, runId, roleId: "judge", level, taskRoot, packageContract: judgePackage, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "worker.v1", parseOptions: { packageContract: judgePackage }, gatewayCall });
-      judge.complete({ outcome: judge.result.summary });
-      const outcome = String(judge.result.summary).trim().toUpperCase().split(/[^A-Z_]/)[0];
-      if (outcome === "PASS") final = { decision: "PASS", summary: judge.result.summary, blockers: [], evidence_refs: [reviewEvidence.base_evidence_hash], required_actions: [], schema_version: 1 };
-      else if (outcome === "OWNER_DECISION") final = { decision: "CHANGES_REQUESTED", summary: judge.result.summary, blockers: [{ code: "OWNER_DECISION", message: judge.result.summary, path: null }], evidence_refs: [reviewEvidence.base_evidence_hash], required_actions: [judge.result.summary], schema_version: 1 };
+      const judgePackage = { objective: "Resolve the evaluative conflict after deterministic blocker admissibility.", base_evidence: reviewEvidence, opinions: opinions.map(item => ({ role: item.role, result: item.result })), blocker_admissibility: admissibility, conflicts: effectiveOpinions.map(item => ({ role: item.role, effective_decision: item.effective_decision })) };
+      const judge = await invokeRole({ runtime, queue, runId, roleId: "judge", level, taskRoot, packageContract: judgePackage, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "judge.v1", parseOptions: {}, gatewayCall });
+      judge.complete({ outcome: judge.result.decision });
+      if (judge.result.decision === "PASS") final = { decision: "PASS", summary: judge.result.rationale, blockers: [], evidence_refs: judge.result.evidence_refs, required_actions: [], schema_version: 1 };
+      else if (judge.result.decision === "PRIMARY_GAP") final = { decision: "CHANGES_REQUESTED", summary: judge.result.rationale, blockers: [{ code: judge.result.primary_gap.kind, message: judge.result.primary_gap.message, path: judge.result.primary_gap.path }], evidence_refs: judge.result.primary_gap.evidence_refs, required_actions: [judge.result.primary_gap.search_intent], schema_version: 1 };
+      else if (judge.result.decision === "TARGETED_VERIFICATION") final = { decision: "CHANGES_REQUESTED", summary: judge.result.rationale, blockers: [{ code: "TARGETED_VERIFICATION", message: judge.result.verification_request.subject, path: judge.result.verification_request.path }], evidence_refs: judge.result.verification_request.evidence_refs, required_actions: [JSON.stringify(judge.result.verification_request)], schema_version: 1 };
+      else final = { decision: "CHANGES_REQUESTED", summary: judge.result.rationale, blockers: [{ code: "OWNER_DECISION", message: judge.result.rationale, path: null }], evidence_refs: judge.result.evidence_refs, required_actions: [judge.result.rationale], schema_version: 1 };
+    } else {
+      recordRunEvidence(runtime.db, runId, null, "consilium_conflict_without_judge", { base_evidence_hash: reviewEvidence.base_evidence_hash, opinions: effectiveOpinions.map(item => ({ role: item.role, decision: item.effective_decision })) });
+      throw new Error("CONSILIUM_CONFLICT_WITHOUT_JUDGE");
     }
   }
   const finalStep = opinions.find(item => item.result === final)?.invocation.step.id ?? opinions[0].invocation.step.id;
