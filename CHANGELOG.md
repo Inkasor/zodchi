@@ -4,6 +4,17 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_23_2026_08_26" status="working">
+
+## 0.5.23 — 2026-08-26
+
+- Deterministic exact-term evidence can now cover the complete registered source corpus. The canonical header records authoritative enumeration, scope, completeness, per-extension facts and a machine-independent inventory hash; the covered-file inventory is retained separately in bounded evidence chunks.
+- A corpus-wide negative is accepted only when Git/filesystem enumeration and every scanned partition are complete for the registered project boundary. Truncation, Git fallback, large files or read failures remain explicit incomplete evidence and can never become `missing`.
+- Targeted exact-term verification can materialize a new complete corpus scan for a reviewer-discovered subject without another model call, then feed that result back into canonical review and recovery state.
+- Reviewer and worker prompts receive one compact primary scan reference with aggregate counts and bounded anchors, while the append-only evidence trace retains every covered path and content hash.
+
+</section>
+
 <section id="0_5_22_2026_08_26" status="working">
 
 ## 0.5.22 — 2026-08-26

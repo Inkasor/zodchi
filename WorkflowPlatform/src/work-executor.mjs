@@ -7,7 +7,7 @@ import { BudgetManager, invokeWithinBudget } from "./budget.mjs";
 import { applyRegisteredPatch, documentVersion } from "./documentator.mjs";
 import { registeredProjectCheckKeys, runProjectGate } from "./gates.mjs";
 import { selectProjectContext } from "./document-context.mjs";
-import { collectGitHistory, collectSourceFiles, expandTerms, inventorySummary, searchSources, sourceScope } from "./source-context.mjs";
+import { collectGitHistory, collectSourceFiles, expandTerms, inventorySummary, scanSourceCorpus, searchSources, sourceScope } from "./source-context.mjs";
 import { buildCodeIntelligence, mergeGraphMatches } from "./code-intelligence.mjs";
 import { projectRoots, writableRoots } from "./project-roots.mjs";
 import { loadRoleContract, parseRoleReceipt, rolePrompt, structuredHash } from "./role-contracts.mjs";
@@ -122,6 +122,39 @@ function reviewCodeIntelligenceEvidence(sourceMatches) {
     nodes: (intelligence.nodes ?? []).slice(0, 40).map(node => ({ id: node.id, kind: node.kind, name: node.name, path: node.path, start_line: node.start_line, end_line: node.end_line, reasons: node.reasons ?? [] })),
     edges: (intelligence.edges ?? []).slice(0, 80).map(edge => ({ id: edge.id ?? null, from: edge.from, to: edge.to, type: edge.type }))
   };
+}
+
+function compactCorpusExactScan(scan) {
+  if (!scan) return null;
+  return {
+    scan_id: scan.scan_id, scope: scan.scope, match: scan.match, terms: scan.terms,
+    completeness: scan.completeness, boundary: scan.boundary,
+    occurrences: (scan.occurrences ?? []).map(item => ({ ...item, locations: (item.locations ?? []).slice(0, 4), locations_truncated: item.locations_truncated || (item.locations ?? []).length > 4 })),
+    covered_files_ref: scan.provenance?.inventory_hash ?? null,
+    provenance: scan.provenance
+  };
+}
+
+function recordCorpusExactScan(runtime, runId, stepId, scan) {
+  const { covered_files: coveredFiles = [], ...header } = scan;
+  const chunkSize = 500, chunkCount = Math.ceil(coveredFiles.length / chunkSize);
+  for (let index = 0; index < chunkCount; index += 1) recordRunEvidence(runtime.db, runId, stepId, "corpus_exact_scan_inventory_chunk", {
+    scan_id: scan.scan_id, inventory_hash: scan.provenance?.inventory_hash ?? null,
+    chunk_index: index, chunk_count: chunkCount, files: coveredFiles.slice(index * chunkSize, (index + 1) * chunkSize)
+  });
+  const stored = { ...header, inventory: { hash: scan.provenance?.inventory_hash ?? null, file_count: coveredFiles.length, chunk_count: chunkCount, evidence_kind: "corpus_exact_scan_inventory_chunk" } };
+  recordRunEvidence(runtime.db, runId, stepId, "corpus_exact_scan", stored);
+  return stored;
+}
+
+export function executeVerificationWithCorpusFallback({ request, evidence, discovery, runtime, runId, stepId }) {
+  let verification = executeTargetedVerification(request, evidence ?? {});
+  if (verification.status !== "unknown" || request.path || !["symbol_reference", "exact_term"].includes(request.kind)) return verification;
+  const scan = scanSourceCorpus(discovery.roots ?? [], sourceScope(discovery.source_scope), [request.subject]);
+  const stored = recordCorpusExactScan(runtime, runId, stepId, scan);
+  const augmented = { ...(evidence ?? {}), exact_scan_catalog: [...(evidence?.exact_scan_catalog ?? []), compactCorpusExactScan(stored)] };
+  verification = executeTargetedVerification(request, augmented);
+  return { ...verification, generated_evidence_refs: [scan.scan_id] };
 }
 
 // Search results are already ranked best-first. When their independent collection caps add up to more
@@ -787,7 +820,7 @@ async function executeIndependentReview({ runtime, queue, runId, projectId, revi
       if (judge.result.decision === "PASS") final = { decision: "PASS", summary: judge.result.rationale, blockers: [], evidence_refs: judge.result.evidence_refs, required_actions: [], schema_version: 1 };
       else if (judge.result.decision === "PRIMARY_GAP") final = { decision: "CHANGES_REQUESTED", summary: judge.result.rationale, blockers: [{ code: judge.result.primary_gap.kind, message: judge.result.primary_gap.message, path: judge.result.primary_gap.path }], evidence_refs: judge.result.primary_gap.evidence_refs, required_actions: [judge.result.primary_gap.search_intent], schema_version: 1 };
       else if (judge.result.decision === "TARGETED_VERIFICATION") {
-        const verification = executeTargetedVerification(judge.result.verification_request, reviewEvidence);
+        const verification = executeVerificationWithCorpusFallback({ request: judge.result.verification_request, evidence: reviewEvidence, discovery, runtime, runId, stepId: judge.step.id });
         recordRunEvidence(runtime.db, runId, judge.step.id, "targeted_verification_result", verification);
         final = { decision: "CHANGES_REQUESTED", summary: `${judge.result.rationale} Deterministic verification status: ${verification.status}.`, blockers: [{ code: `TARGETED_VERIFICATION_${verification.status.toUpperCase()}`, message: judge.result.verification_request.subject, path: judge.result.verification_request.path }], evidence_refs: [...new Set([...judge.result.verification_request.evidence_refs, ...verification.evidence_refs])], required_actions: verification.status === "unknown" ? [JSON.stringify(judge.result.verification_request)] : [`Use deterministic verification result ${verification.status}: ${JSON.stringify(verification.facts)}`], schema_version: 1 };
       }
@@ -811,7 +844,7 @@ function exhaustedRouteKeys(db, runId, semanticGap) {
     .flatMap(outcome => outcome.attempted_route_keys ?? []))];
 }
 
-async function executeStrategyRecovery({ runtime, queue, runId, projectId, level, classification, responseLanguage, taskRoot, gatewayCall, plan, gate, reviewer, reviewEvidence, progress, cycle }) {
+async function executeStrategyRecovery({ runtime, queue, runId, projectId, level, classification, discovery, responseLanguage, taskRoot, gatewayCall, plan, gate, reviewer, reviewEvidence, progress, cycle }) {
   const available = new Set(runtime.db.prepare("SELECT role_id FROM role_contracts WHERE project_id=? AND status='active'").all(projectId).map(row => row.role_id));
   if (!available.has("strategy_reviewer")) return { decision: "NO_VIABLE_STRATEGY", rationale: "strategy_reviewer is not registered", steps: [], executed: false };
   const semanticGap = progress?.latest?.semantic_fingerprint ?? progress?.latest?.primary_gap_fingerprint ?? semanticGapFingerprint(reviewEvidence)?.fingerprint ?? null;
@@ -849,7 +882,7 @@ async function executeStrategyRecovery({ runtime, queue, runId, projectId, level
     return { ...strategy.result, steps: plan.steps.filter(step => selected.includes(step.key)), executed: true };
   }
   if (strategy.result.decision === "TARGETED_VERIFICATION") {
-    const verification = executeTargetedVerification(strategy.result.verification_request, reviewEvidence ?? {});
+    const verification = executeVerificationWithCorpusFallback({ request: strategy.result.verification_request, evidence: reviewEvidence ?? {}, discovery, runtime, runId, stepId: strategy.step.id });
     recordRunEvidence(runtime.db, runId, strategy.step.id, "targeted_verification_result", verification);
     if (verification.status !== "unknown") {
       if (remainingWorkflowCalls(runtime.db, runId) < 1) return { decision: "NO_VIABLE_STRATEGY", rationale: "deterministic verification completed but no workflow call remains for arbitration", verification, steps: [], executed: true };
@@ -1036,13 +1069,20 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     trace_rule: "For an end-to-end behavior trace, prioritize production definitions, their production call sites, persistence boundaries and focused tests. Put discovered production symbol names and exact line anchors into the relevant worker objective so collection can retain their complete enclosing functions. A reference catalog or similarly named future subsystem is supporting evidence only when a resolved graph edge or an exact production call site connects it to the requested runtime behavior. Keep separate mechanisms separate instead of substituting one FBO/FBS/rFBS occurrence for another.",
     clarification_rule: "Ask the owner only for a missing product decision or external fact. A need for more registered source content is a worker investigation step, not an owner clarification."
   };
-  let plannerSourceMatches = null;
+  let plannerSourceMatches = null, corpusExactScan = null;
   if (plannerContract) {
     const scope = sourceScope(discovery.source_scope);
     const expanded = expandTerms(discovery.roots ?? [], scope, message);
     const lexical = searchSources(discovery.roots ?? [], scope, expanded.terms, { indexedTerms: expanded.code });
     const intelligence = buildCodeIntelligence(discovery.roots ?? [], scope, expanded.terms, lexical, { primaryTerms: expanded.code, contextTerms: expanded.subject });
     plannerSourceMatches = { ...mergeGraphMatches(lexical, intelligence), derived_from: { request_words: expanded.subject, identifiers: expanded.harvested } };
+    // Corpus-wide claims are expensive primary evidence, so scan only identifiers explicitly supplied
+    // by the owner. Harvested bridge terms remain locator hints; promoting all of them to complete-scan
+    // obligations would bloat every worker and reviewer packet with facts nobody requested.
+    if (expanded.code.length) {
+      corpusExactScan = scanSourceCorpus(discovery.roots ?? [], scope, expanded.code);
+      corpusExactScan = recordCorpusExactScan(runtime, runId, null, corpusExactScan);
+    }
   }
   const planner = plannerContract && await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: plannerPackage, context: boundedContext(discovery, plannerRole, classification, Math.floor(plannerContract.context_limit_bytes / 2), responseLanguage, {
     source_inventory: inventorySummary(discovery.sources ?? []),
@@ -1087,6 +1127,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       plan_inputs: plan.inputs ?? [],
       prior_worker_results: compactPriorWorkerResults(priorWorkerResultsForStep([...workerResults, ...cycleResults], plannedStep.key, correctionReview)),
       code_intelligence: compactCodeIntelligenceEvidence(plannerSourceMatches),
+      corpus_exact_scan: compactCorpusExactScan(corpusExactScan),
       git_history: collectGitHistory(discovery.roots ?? [], plannedStep.allowed_paths, sourceScope(discovery.source_scope), { enabled: discovery.git?.enabled === true })
     };
     const qualityContract = loadQualityContract(runtime.db, level);
@@ -1156,7 +1197,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       let recoveryRouting = null;
       const gateRecoveryKey = recoveryKey("gate", progress);
       if (progress.stagnating && !strategyRecoveries.has(gateRecoveryKey)) {
-        const recovery = await executeStrategyRecovery({ runtime, queue, runId, projectId, level, classification, responseLanguage, taskRoot, gatewayCall, plan, gate, reviewer: null, reviewEvidence: { verification: { gate } }, progress, cycle: correctionCycles });
+        const recovery = await executeStrategyRecovery({ runtime, queue, runId, projectId, level, classification, discovery, responseLanguage, taskRoot, gatewayCall, plan, gate, reviewer: null, reviewEvidence: { verification: { gate } }, progress, cycle: correctionCycles });
         if (recovery.executed) strategyRecoveries.add(gateRecoveryKey);
         if (recovery.plan) { plan = recovery.plan; applyPlannerToDatabase(runtime, runId, plan); }
         const strictRouting = recoveryRoute(recovery), candidate = strictRouting.steps;
@@ -1177,7 +1218,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       if (!routing.steps.length) {
         recordRunEvidence(runtime.db, runId, null, "correction_routing_unresolved", routing);
         if (!strategyRecoveries.has(gateRecoveryKey)) {
-          const recovery = await executeStrategyRecovery({ runtime, queue, runId, projectId, level, classification, responseLanguage, taskRoot, gatewayCall, plan, gate, reviewer: null, reviewEvidence: { verification: { gate } }, progress, cycle: correctionCycles });
+          const recovery = await executeStrategyRecovery({ runtime, queue, runId, projectId, level, classification, discovery, responseLanguage, taskRoot, gatewayCall, plan, gate, reviewer: null, reviewEvidence: { verification: { gate } }, progress, cycle: correctionCycles });
           if (recovery.executed) strategyRecoveries.add(gateRecoveryKey);
           if (recovery.plan) { plan = recovery.plan; applyPlannerToDatabase(runtime, runId, plan); }
           routing = recoveryRoute(recovery);
@@ -1236,7 +1277,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     let recoveryRouting = null;
     const semanticRecoveryKey = recoveryKey("semantic_review", progress);
     if (progress.stagnating && !strategyRecoveries.has(semanticRecoveryKey)) {
-      const recovery = await executeStrategyRecovery({ runtime, queue, runId, projectId, level, classification, responseLanguage, taskRoot, gatewayCall, plan, gate, reviewer: reviewerResult, reviewEvidence: reviewed.review_evidence, progress, cycle: correctionCycles });
+      const recovery = await executeStrategyRecovery({ runtime, queue, runId, projectId, level, classification, discovery, responseLanguage, taskRoot, gatewayCall, plan, gate, reviewer: reviewerResult, reviewEvidence: reviewed.review_evidence, progress, cycle: correctionCycles });
       if (recovery.executed) strategyRecoveries.add(semanticRecoveryKey);
       if (recovery.plan) { plan = recovery.plan; applyPlannerToDatabase(runtime, runId, plan); }
       if (recovery.review_again) continue;
@@ -1257,7 +1298,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     if (!routing.steps.length) {
       recordRunEvidence(runtime.db, runId, null, "correction_routing_unresolved", routing);
       if (!strategyRecoveries.has(semanticRecoveryKey)) {
-        const recovery = await executeStrategyRecovery({ runtime, queue, runId, projectId, level, classification, responseLanguage, taskRoot, gatewayCall, plan, gate, reviewer: reviewerResult, reviewEvidence: reviewed.review_evidence, progress, cycle: correctionCycles });
+        const recovery = await executeStrategyRecovery({ runtime, queue, runId, projectId, level, classification, discovery, responseLanguage, taskRoot, gatewayCall, plan, gate, reviewer: reviewerResult, reviewEvidence: reviewed.review_evidence, progress, cycle: correctionCycles });
         if (recovery.executed) strategyRecoveries.add(semanticRecoveryKey);
         if (recovery.plan) { plan = recovery.plan; applyPlannerToDatabase(runtime, runId, plan); }
         if (recovery.review_again) continue;
