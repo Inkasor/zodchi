@@ -9,8 +9,9 @@
 ## 0.5.6 — 2026-08-26
 
 - Review evidence больше не отбрасывает все source bodies после прежнего общего pre-compaction лимита 24 КБ.
-- Переданный исходный код представлен независимо проверяемыми диапазонами строк; измеряемая compaction сохраняет конкретный фрагмент каждого диапазона и укладывает полный reviewer prompt в контракт.
+- Переданный исходный код представлен независимо проверяемыми диапазонами строк; измеряемая compaction сохраняет не менее 512 байт каждого диапазона и укладывает полный prompt в настроенный reviewer tier 128 КиБ.
 - Pathless review gap теперь направляет correction в source-producing шаг, указанный в top-level evidence refs и required actions, а не в pathless synthesis step.
+- Review-gap correction получает точные blocker, required actions и evidence refs как bounded authority и как intent для повторного source search.
 
 </section>
 

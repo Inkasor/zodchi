@@ -229,7 +229,7 @@ function trimStringValues(entries, read, write, bytesToRemove, minimum = 0) {
   return bytesToRemove - remaining;
 }
 
-function compactReviewEvidence(evidence, limit = 39_500) {
+function compactReviewEvidence(evidence, limit = 72_000) {
   const copy = structuredClone(evidence);
   // buildReviewEvidence adds a SHA-256 field after compaction; reserve its JSON envelope here so
   // the object actually delivered to reviewers, not only its pre-hash form, stays under the limit.
@@ -281,7 +281,7 @@ function compactReviewEvidence(evidence, limit = 39_500) {
   // used to be reduced to empty values before lower-value scan metadata was compacted, leaving a
   // reviewer with paths and counts but no code it could independently inspect.
   let excess = excessBytes();
-  if (excess && trimStringValues(sourceRanges, range => range.text, (range, value) => { range.text = value; range.text_truncated = true; }, excess, 240)) copy.evidence_compaction.source_text_reduced = true;
+  if (excess && trimStringValues(sourceRanges, range => range.text, (range, value) => { range.text = value; range.text_truncated = true; }, excess, 768)) copy.evidence_compaction.source_text_reduced = true;
   // Real analytical workflows may carry several independent exact scans. Keep every term, count,
   // path and line while reducing duplicated line bodies and prose summaries only as needed.
   const occurrences = files.flatMap(file => file.exact_term_scan?.occurrences ?? []);
@@ -317,7 +317,7 @@ function compactReviewEvidence(evidence, limit = 39_500) {
   // JSON escaping and the final compaction counters add a small measured envelope overhead. Pay that
   // from every range fairly while retaining a non-empty inspectable excerpt from each one.
   excess = excessBytes();
-  if (excess && trimStringValues(sourceRanges, range => range.text, (range, value) => { range.text = value; range.text_truncated = true; }, excess, 200)) copy.evidence_compaction.source_text_reduced = true;
+  if (excess && trimStringValues(sourceRanges, range => range.text, (range, value) => { range.text = value; range.text_truncated = true; }, excess, 512)) copy.evidence_compaction.source_text_reduced = true;
   copy.evidence_compaction.supplied_bytes = size();
   if (size() > contentLimit) throw new Error(`REVIEW_EVIDENCE_BUDGET_EXCEEDED: ${size()}/${limit}`);
   return copy;

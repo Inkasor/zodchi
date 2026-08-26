@@ -704,15 +704,16 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   runtime.setState(runId, "executing", { reason: "structured plan authorized" });
   captureRunBaselines(runtime.db, runId, projectRoots(runtime.db, projectId), { sourceScopeNarrowed: sourceScope(discovery.source_scope).narrowed });
   const workerResults = [];
-  const executeWorkers = async (cycle = 0, priorGate = null, selectedSteps = plan.steps) => {
+  const executeWorkers = async (cycle = 0, priorGate = null, selectedSteps = plan.steps, correctionReview = null) => {
     const cycleResults = [];
     for (const plannedStep of selectedSteps) {
     const contract = loadRoleContract(runtime.db, projectId, plannedStep.role, level);
-    const packageContract = { objective: plannedStep.objective, allowed_paths: plannedStep.allowed_paths, artifact_keys: plannedStep.artifact_keys, check_ids: plannedStep.check_ids, plan_hash: structuredHash(plan), correction_cycle: cycle, gate_failures: priorGate?.checks?.filter(check => check.required && check.status !== "passed") ?? [] };
+    const reviewGap = correctionReview ? { blockers: correctionReview.blockers ?? [], required_actions: correctionReview.required_actions ?? [], evidence_refs: correctionReview.evidence_refs ?? [] } : null;
+    const packageContract = { objective: plannedStep.objective, allowed_paths: plannedStep.allowed_paths, artifact_keys: plannedStep.artifact_keys, check_ids: plannedStep.check_ids, plan_hash: structuredHash(plan), correction_cycle: cycle, gate_failures: priorGate?.checks?.filter(check => check.required && check.status !== "passed") ?? [], review_gap: reviewGap };
     // A planner commonly shortens the worker objective and leaves exact paths, identifiers or line
     // ranges in the original request and its evidence inputs. Source selection needs that complete
     // search intent even though the worker's authority remains the narrower package contract.
-    const supplementalSourceQuery = [message, ...(plan.inputs ?? [])].filter(Boolean).join("\n");
+    const supplementalSourceQuery = [message, ...(plan.inputs ?? []), ...(reviewGap?.blockers ?? []).flatMap(blocker => [blocker.code, blocker.message, blocker.path]), ...(reviewGap?.required_actions ?? []), ...(reviewGap?.evidence_refs ?? [])].filter(Boolean).join("\n");
     // Sequential analysis steps build one evidence chain. A later synthesis/handoff step must receive
     // completed worker findings even when its own allowed_paths contains only a not-yet-created output
     // document; rereading files is neither necessary nor a substitute for the earlier conclusions.
@@ -833,7 +834,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     queue.enqueueRun(runId);
     runtime.db.prepare("UPDATE workflow_runs SET cycle=?,updated_at=? WHERE id=?").run(correctionCycles, now(), runId);
     runtime.setState(runId, "executing", { reason: `review-gap correction ${correctionCycles}: ${selected.map(step => step.key).join(",")}` });
-    const corrected = await executeWorkers(correctionCycles, gate, selected);
+    const corrected = await executeWorkers(correctionCycles, gate, selected, reviewerResult);
     if (corrected.stopped) return corrected.stopped;
     gate = await executeGateStep({ runtime, queue, runId, stepKey: `verification_${correctionCycles}`, projectRoot, level, plannerResult: plan, classification, gateRunner, cycle: correctionCycles });
   }
