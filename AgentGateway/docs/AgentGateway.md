@@ -1,4 +1,4 @@
-<document id="agent_gateway" status="accepted" authority="zodchi" version="0.5.0" language="en">
+<document id="agent_gateway" status="accepted" authority="zodchi" version="0.5.1" language="en">
   <title>AgentGateway runtime contract</title>
   <purpose>Perform one bounded model call through a configured harness or compatible API and return the result to WorkflowPlatform.</purpose>
   <responsibilities status="accepted">

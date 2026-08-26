@@ -4,6 +4,15 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_5_1_2026_08_26" status="working">
+
+## 0.5.1 — 2026-08-26
+
+- Fixed operational policy lint so an explicitly selected Gauntlet strategy may use its declared project-local budget allowance, matching runtime admission semantics.
+- Added regression coverage proving standard policies remain bounded by the universal quality contract.
+
+</section>
+
 <section id="0_5_0_2026_08_26" status="working">
 
 ## 0.5.0 — 2026-08-26
