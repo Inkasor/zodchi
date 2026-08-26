@@ -227,6 +227,9 @@ test("registered contract covers decision, documentation, implementation, verifi
     decision({ work_type: "continuation", artifact_type: "none", discipline: "general", planning_required: false, reply_mode: "conversation" })
   ];
   assert.deepEqual(cases.map(item => validateClassificationDecision(item, catalog).work_type), ["decision", "documentation", "implementation", "verification", "asset", "continuation"]);
+  const detailedDocumentContinuation = decision({ work_type: "continuation", artifact_type: "document", discipline: "documentation", document_required: true });
+  assert.equal(validateClassificationDecision(detailedDocumentContinuation, catalog).work_type, "documentation");
+  assert.throws(() => validateClassificationDecision(decision({ work_type: "continuation", artifact_type: "code" }), catalog), /continuation contract/);
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
