@@ -38,6 +38,8 @@ The four canary runs above were produced by `WorkflowPlatform/scripts/run-e2e-ev
 - `WorkflowPlatform/scripts/canary-config.example.json` states the exact configuration shape, with placeholders instead of local paths.
 - Each run writes `summary.json`, one `<project_id>.statistics.json` per project and the canary database `workflow-evidence.sqlite` into its `output_root`. The run identifiers quoted above resolve in that database and nowhere else; they are absent from any installation database by design, because a canary must not run against production state.
 - Whoever repeats a canary keeps its `output_root` next to this record. Without it a quoted run identifier is a claim, not evidence.
+- A canary that has to prove a check the package ships disabled declares it under `checks`. The 1C package binds `bsl_language_server` as required at `mvp` and `production` but leaves it inert, because the analyzer is a local binary and the diagnostics it compares against are the owner's accepted debt. `WorkflowPlatform/scripts/canary-checks.mjs` registers that baseline and binds the analyzer before the run, and writes a `<project_id>.checks.json` receipt naming the baseline identifier, the accepted revision and who confirmed it. Without that step the canary would report a passing gate for a check that never ran.
+- The baseline is a ratchet, not an amnesty: it freezes the diagnostics already present at the accepted revision and fails the gate only on new findings the diagnostic policy classifies as blocking. `confirmed_by` is never defaulted, so a canary cannot manufacture the acceptance it depends on.
 
 </canary_reproduction>
 

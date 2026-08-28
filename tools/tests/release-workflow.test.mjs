@@ -49,6 +49,15 @@ test("the canary configuration template states every key the evidence runner rea
     assert.ok(Object.hasOwn(project, key), `template project omits ${key}`);
     assert.ok(runner.includes(`item.${key}`), `runner no longer reads item.${key}`);
   }
+  // The 1C entry is the only one that has to declare a check: its package ships the analyzer binding
+  // disabled, so a template that stopped naming these keys would silently describe an inert gate.
+  const declared = template.projects.find(item => item.checks);
+  const registration = fs.readFileSync(path.join(root, "WorkflowPlatform", "scripts", "canary-checks.mjs"), "utf8");
+  assert.ok(declared, "no template project declares a check");
+  for (const key of ["executable", "source", "platform_bin", "temp_root", "accepted_revision", "confirmed_by"]) {
+    assert.ok(Object.hasOwn(declared.checks.one_c_bsl, key), `template check omits ${key}`);
+    assert.ok(registration.includes(`declaration.${key}`), `registration no longer reads declaration.${key}`);
+  }
   // A template that carried a real local path would be the leak the release lint exists to stop.
   assert.doesNotMatch(JSON.stringify(template), /\b[A-Za-z]:[\/]/);
 });

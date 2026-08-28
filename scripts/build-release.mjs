@@ -44,7 +44,7 @@ export function buildRelease({ repositoryRoot, output, stageRoot = os.tmpdir(), 
     fs.mkdirSync(stage);
     for (const tree of ["catalogs", "contracts", "migrations", "src", "hooks", "tests", "packages", "presets"]) copyTree(path.join(repository, "WorkflowPlatform"), tree, path.join(stage, "WorkflowPlatform"));
     for (const relative of ["package.json", "config/runtime.example.json", "docs/WorkflowPlatform.md", "docs/ProjectPackages.md"]) copyFile(path.join(repository, "WorkflowPlatform"), relative, path.join(stage, "WorkflowPlatform"));
-    for (const script of ["generate-bsl-diagnostic-catalog.mjs", "generate-packages.mjs", "project-baseline.mjs", "run-e2e-evidence.mjs", "run-hook-evidence.mjs", "run-owner-boundary-evidence.mjs", "run-package-boundary-evidence.mjs"]) copyFile(path.join(repository, "WorkflowPlatform"), `scripts/${script}`, path.join(stage, "WorkflowPlatform"));
+    for (const script of ["canary-checks.mjs", "generate-bsl-diagnostic-catalog.mjs", "generate-packages.mjs", "project-baseline.mjs", "run-e2e-evidence.mjs", "run-hook-evidence.mjs", "run-owner-boundary-evidence.mjs", "run-package-boundary-evidence.mjs"]) copyFile(path.join(repository, "WorkflowPlatform"), `scripts/${script}`, path.join(stage, "WorkflowPlatform"));
     for (const tree of ["migrations", "src", "tests", "docs"]) copyTree(path.join(repository, "AgentGateway"), tree, path.join(stage, "AgentGateway"));
     for (const file of ["package.json", "policy.json", "model-providers.json"]) copyFile(path.join(repository, "AgentGateway"), file, path.join(stage, "AgentGateway"));
     for (const tree of ["configs", "docs", "tools/lib", "tools/tests"]) copyTree(repository, tree, stage);
