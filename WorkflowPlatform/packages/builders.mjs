@@ -224,7 +224,7 @@ function composedPackage(core, ...components) {
   const moduleKeys = new Set(capabilities.map(item => item.key));
   const workTypes = new Set(["conversation", "continuation", "research"]);
   const moduleWorkTypes = {
-    sourceChange: ["implementation", "fix"], dataChange: ["data_change"], contentProduction: ["content", "asset"], release: ["release", "deployment"], incident: ["incident"], externalRuntime: ["testing", "verification"], experiment: ["prototype"]
+    sourceChange: ["implementation", "fix"], dataChange: ["data_change"], contentProduction: ["content", "asset"], release: ["release", "deployment"], incident: ["incident"], externalRuntime: ["testing", "verification"], experiment: ["prototype"], accessManagement: ["access_management"], projectBootstrap: ["project_bootstrap"], documentation: ["documentation"], securityReview: ["security_review"]
   };
   for (const item of capabilities) for (const workType of item.options.workTypes ?? moduleWorkTypes[item.key] ?? []) workTypes.add(workType);
   const artifacts = new Set(["none", "document", "decision"]);
@@ -235,12 +235,15 @@ function composedPackage(core, ...components) {
   if (moduleKeys.has("incident")) artifacts.add("incident_report");
   if (moduleKeys.has("externalRuntime")) artifacts.add("test_report");
   if (moduleKeys.has("experiment")) artifacts.add("prototype");
+  if (moduleKeys.has("accessManagement")) for (const item of ["access_change", "test_report"]) artifacts.add(item);
+  if (moduleKeys.has("projectBootstrap")) for (const item of ["workflow_package", "code", "test_report"]) artifacts.add(item);
+  if (moduleKeys.has("securityReview")) artifacts.add("security_report");
   const allWorkTypes = [...workTypes];
   const allArtifacts = [...artifacts];
   const roles = [
     role("classifier", "Classify only against the package's registered routes; never perform productive work.", allWorkTypes, ["none"], { schema: "classification.v1", corrections: 0, boundaries: { productive_work: false, keyword_routing: false } }),
     role("coordinator", "Turn the owner objective and registered evidence into the smallest executable plan; ask only for missing authority or evidence.", allWorkTypes, allArtifacts.filter(item => item !== "none"), { schema: "planner.v1", tools: [], boundaries: { writes: false, owner_decisions: false } }),
-    role("worker", "Perform the bounded capability work and return evidence for the declared artifacts and checks.", allWorkTypes, allArtifacts.filter(item => item !== "none"), { tools: moduleKeys.has("sourceChange") || moduleKeys.has("contentProduction") ? ["apply_patch"] : ["exec_command"], checks: checks.map(item => item.key), boundaries: { owner_decisions: false, publication: false, production_deploy: false } })
+    role("worker", "Perform the bounded capability work and return evidence for the declared artifacts and checks.", allWorkTypes, allArtifacts.filter(item => item !== "none"), { tools: moduleKeys.has("sourceChange") || moduleKeys.has("contentProduction") || moduleKeys.has("projectBootstrap") || moduleKeys.has("documentation") ? ["apply_patch"] : ["exec_command"], checks: checks.map(item => item.key), boundaries: { owner_decisions: false, publication: false, production_deploy: false } })
   ];
   const reviewed = ["reviewed", "release", "full"].includes(spec.rolePreset);
   const editorial = ["editorial", "full"].includes(spec.rolePreset);
@@ -281,6 +284,24 @@ function composedPackage(core, ...components) {
     } else if (item.key === "experiment") {
       workflows.push(workflow(`${prefix}.experiment`, "Bounded experiment", [step("coordinate", 1, "coordinator", ["document"]), step("experiment", 2, "worker", ["prototype", "test_report"], customChecks)], [question("experiment_answer", "Which hypothesis and observable answer end the experiment?")], { quality: "prototype", level: "L1" }));
       for (const workType of item.options.workTypes ?? moduleWorkTypes.experiment) routes.push(route(workType, `${prefix}.experiment`));
+    } else if (item.key === "accessManagement") {
+      const items = [step("coordinate", 1, "coordinator", ["document"]), step("propose", 2, "worker", ["access_change"]), step("access_approval", 3, null, ["decision"], [], { irreversible: true }), step("apply", 4, "worker", ["access_change"]), step("verify", 5, "worker", ["test_report"], customChecks)];
+      workflows.push(workflow(`${prefix}.access`, "Least-privilege access change", items, [question("access_boundary", "Who needs which exact access, until when, and who authorizes it?")], { quality: "production", level: "L3" }));
+      for (const workType of item.options.workTypes ?? moduleWorkTypes.accessManagement) routes.push(route(workType, `${prefix}.access`));
+    } else if (item.key === "projectBootstrap") {
+      const items = optionalReview([step("coordinate", 1, "coordinator", ["workflow_package"]), step("bootstrap", 2, "worker", ["code", "workflow_package"], customChecks)]);
+      items.push(step("owner_approval", items.length + 1, null, ["decision"], [], { irreversible: true }));
+      workflows.push(workflow(`${prefix}.bootstrap`, "Bounded project bootstrap", items, [question("bootstrap_boundary", "Which project root, runtime and owner authority are in scope?")], { level: "L3" }));
+      for (const workType of item.options.workTypes ?? moduleWorkTypes.projectBootstrap) routes.push(route(workType, `${prefix}.bootstrap`));
+    } else if (item.key === "documentation") {
+      const writer = editorial ? "editor" : "worker";
+      workflows.push(workflow(`${prefix}.documentation`, "Registered documentation update", optionalReview([step("coordinate", 1, "coordinator", ["document"]), step("document", 2, writer, ["document"])]), [question("document_outcome", "Which accepted decision or verified fact should be recorded?")]));
+      for (const workType of item.options.workTypes ?? moduleWorkTypes.documentation) routes.push(route(workType, `${prefix}.documentation`));
+    } else if (item.key === "securityReview") {
+      const reviewer = reviewed ? "reviewer" : "worker";
+      const items = [step("coordinate", 1, "coordinator", ["document"]), step("security_review", 2, reviewer, ["security_report"], customChecks), step("owner_decision", 3, null, ["decision"], [], { irreversible: true })];
+      workflows.push(workflow(`${prefix}.security`, "Read-only security review", items, [question("security_boundary", "Which system, data and threat boundary are in scope?")], { quality: "security", level: "L4" }));
+      for (const workType of item.options.workTypes ?? moduleWorkTypes.securityReview) routes.push(route(workType, `${prefix}.security`));
     }
     scenarios.push(scenario(`${item.key}_route`, { work_type: (item.options.workTypes ?? moduleWorkTypes[item.key])[0] }, { route: workflows.at(-1).key, mechanics: "executable" }));
   }
@@ -288,12 +309,12 @@ function composedPackage(core, ...components) {
   const documents = spec.documents.map(item => document(item.key, item.path, item.type ?? "reference", item.authority ?? spec.key, roleBindings, item.root ?? "primary"));
   return finalize({
     key: spec.key, version: spec.version, purpose: spec.purpose, roles, workflows, routes, checks,
-    operationalLevels: ["prototype", "mvp", "production", "security-audit"].map(level => ({ level, required_check_keys: baselineKeys, escalation: level === "production" ? { owner_approval_for_irreversible: true } : {} })),
+    operationalLevels: ["prototype", "mvp", "production", "security-audit"].map(level => ({ level, escalation: level === "production" ? { owner_approval_for_irreversible: true } : {} })),
     documents, evidenceFlows, resources: spec.resources, domains, disciplines,
     scenarios: [scenario("research_route", { work_type: "research" }, { route: `${prefix}.research`, mechanics: "executable" }), ...scenarios]
   });
 }
 
 
-const { coreLifecycle, sourceChange, dataChange, contentProduction, release: releaseCapability, incident: incidentCapability, externalRuntime, experiment, domainAdapter, composeLifecycle } = packageSdk;
-export { PACKAGE_VERSION, role, addRoleToPackage, checkBinding, commandCheck, capabilityCheck, projectCommandCheck, disabledCheck, secretCheck, securityChecks, withBroadSecretScan, addBinding, completeSoftwareChecks, step, workflow, question, route, binding, document, scenario, finalize, companyWebPackage, coreLifecycle, sourceChange, dataChange, contentProduction, releaseCapability, incidentCapability, externalRuntime, experiment, domainAdapter, composeLifecycle, composedPackage };
+const { coreLifecycle, sourceChange, dataChange, contentProduction, release: releaseCapability, incident: incidentCapability, externalRuntime, experiment, accessManagement, projectBootstrap, documentation: documentationCapability, securityReview, domainAdapter, composeLifecycle } = packageSdk;
+export { PACKAGE_VERSION, role, addRoleToPackage, checkBinding, commandCheck, capabilityCheck, projectCommandCheck, disabledCheck, secretCheck, securityChecks, withBroadSecretScan, addBinding, completeSoftwareChecks, step, workflow, question, route, binding, document, scenario, finalize, companyWebPackage, coreLifecycle, sourceChange, dataChange, contentProduction, releaseCapability, incidentCapability, externalRuntime, experiment, accessManagement, projectBootstrap, documentationCapability, securityReview, domainAdapter, composeLifecycle, composedPackage };
