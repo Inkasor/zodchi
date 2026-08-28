@@ -1,0 +1,7 @@
+interface:
+  display_name: "Zodchi"
+  short_description: "Explicitly route one task through Zodchi"
+  default_prompt: "Run this task through Zodchi."
+policy:
+  allow_implicit_invocation: false
+

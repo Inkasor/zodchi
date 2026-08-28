@@ -1,0 +1,57 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { installClientSkills, removeClientSkills, restoreClientSkills, snapshotClientSkills } from "../skill-installation.mjs";
+
+const repositoryRoot = path.resolve(import.meta.dirname, "..", "..");
+function fixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "zodchi-skills-"));
+  const application = path.join(root, "app"), roots = { "claude-code": path.join(root, "claude"), codex: path.join(root, "codex") };
+  fs.mkdirSync(application); fs.cpSync(path.join(repositoryRoot, "integrations"), path.join(application, "integrations"), { recursive: true });
+  return { root, applicationRoot: application, roots };
+}
+
+test("client skills install explicit commands for both hosts without hooks", () => {
+  const value = fixture();
+  try {
+    const result = installClientSkills(value);
+    assert.equal(result.length, 4);
+    for (const client of ["claude-code", "codex"]) for (const name of ["zodchi", "zod"]) {
+      const directory = path.join(value.roots[client], name), text = fs.readFileSync(path.join(directory, "SKILL.md"), "utf8");
+      assert.match(text, /explicit-invoke\.mjs/);
+      assert.doesNotMatch(text, /__ZODCHI_ROOT__/);
+      assert.equal(JSON.parse(fs.readFileSync(path.join(directory, ".zodchi-skill.json"), "utf8")).owner, "zodchi");
+    }
+    assert.equal(fs.existsSync(path.join(value.roots.codex, "zodchi", "agents", "openai.yaml")), true);
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test("skill updates and rollback restore exact bytes", () => {
+  const value = fixture();
+  try {
+    installClientSkills(value);
+    const snapshots = snapshotClientSkills({ roots: value.roots });
+    const before = fs.readFileSync(path.join(value.roots.codex, "zodchi", "SKILL.md"));
+    installClientSkills(value);
+    fs.writeFileSync(path.join(value.roots.codex, "zodchi", "extra.txt"), "concurrent", "utf8");
+    restoreClientSkills(snapshots);
+    assert.deepEqual(fs.readFileSync(path.join(value.roots.codex, "zodchi", "SKILL.md")), before);
+    assert.equal(fs.existsSync(path.join(value.roots.codex, "zodchi", "extra.txt")), false);
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test("foreign or edited skills are never overwritten or removed", () => {
+  const value = fixture();
+  try {
+    const foreign = path.join(value.roots.codex, "zodchi"); fs.mkdirSync(foreign, { recursive: true }); fs.writeFileSync(path.join(foreign, "SKILL.md"), "foreign", "utf8");
+    assert.throws(() => installClientSkills(value), /SKILL_TARGET_NOT_OWNED/);
+    fs.rmSync(foreign, { recursive: true, force: true });
+    installClientSkills(value);
+    fs.appendFileSync(path.join(value.roots["claude-code"], "zod", "SKILL.md"), "\nchanged\n");
+    const removed = removeClientSkills({ roots: value.roots });
+    assert.equal(removed.find(item => item.client === "claude-code" && item.name === "zod").status, "changed");
+    assert.equal(removed.filter(item => item.status === "removed").length, 3);
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});
