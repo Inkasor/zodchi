@@ -10,6 +10,7 @@ import { selectProjectContext } from "./document-context.mjs";
 import { collectGitHistory, collectSourceFiles, expandTerms, inventorySummary, scanSourceCorpus, searchSources, sourceScope } from "./source-context.mjs";
 import { buildCodeIntelligence, mergeGraphMatches } from "./code-intelligence.mjs";
 import { projectRoots, writableRoots } from "./project-roots.mjs";
+import { normalizeResourceDeclaration } from "./resource-locks.mjs";
 import { loadRoleContract, parseRoleReceipt, rolePrompt, structuredHash } from "./role-contracts.mjs";
 import { consumeCorrectionCycle, documentationOutcome, loadOperationalPolicy, loadQualityContract, operationalLevel, reviewerRequirement } from "./quality-contracts.mjs";
 import { buildReviewEvidence, captureRunBaselines, recordRunEvidence, runChangeEvidence } from "./run-evidence.mjs";
@@ -610,8 +611,8 @@ function appendSteps(runtime, runId, steps, { sameOrdinal = false } = {}) {
     keys.add(step.key);
     const ordinal = sameOrdinal ? existing + 1 : existing + index + 1;
     const stepId = id("step");
-    runtime.db.prepare("INSERT INTO workflow_steps(id,run_id,step_key,ordinal,role_id,state,required,irreversible,idempotency_key,created_at,updated_at,max_attempts,contract_json,result_schema_key) VALUES(?,?,?,?,?,'pending',?,?,?,?,?,?,?,?)")
-      .run(stepId, runId, step.key, ordinal, step.role, step.required ? 1 : 0, step.irreversible ? 1 : 0, `${runId}:${step.key}:${ordinal}`, timestamp, timestamp, step.max_attempts, JSON.stringify(step.contract), step.schema);
+    runtime.db.prepare("INSERT INTO workflow_steps(id,run_id,step_key,ordinal,role_id,state,required,irreversible,idempotency_key,created_at,updated_at,max_attempts,contract_json,result_schema_key,resources_json) VALUES(?,?,?,?,?,'pending',?,?,?,?,?,?,?,?,?)")
+      .run(stepId, runId, step.key, ordinal, step.role, step.required ? 1 : 0, step.irreversible ? 1 : 0, `${runId}:${step.key}:${ordinal}`, timestamp, timestamp, step.max_attempts, JSON.stringify(step.contract), step.schema, JSON.stringify((step.resources ?? []).map(normalizeResourceDeclaration)));
     inserted.push(stepId);
   }
   return inserted;
