@@ -138,6 +138,8 @@ if (contentFindings.length) fail("RELEASE_ARCHIVE_CONTENT_MISMATCH", contentFind
 
 const installed = path.join(work, "installed");
 execFileSync(process.execPath, [path.join(productRoot, "tools", "install.mjs"), "install", "--source", productRoot, "--destination", installed, "--data-root", path.join(work, "installation-data")], { encoding: "utf8", windowsHide: true, stdio: "pipe" });
+const presetLint = JSON.parse(execFileSync(process.execPath, [path.join(installed, "WorkflowPlatform", "src", "cli.mjs"), "preset-lint"], { encoding: "utf8", windowsHide: true }));
+if (presetLint.status !== "passed" || presetLint.presets !== 15) fail("RELEASE_PRESET_CATALOG_INVALID", JSON.stringify(presetLint));
 
 // A real workflow through the real AgentGateway process, with a deterministic provider standing in
 // for the model. It proves delivery, routing, gates and receipts; it proves nothing about model
@@ -198,7 +200,7 @@ const evidence = {
   archive: { name: archiveAsset.name, sha256: archiveHash, checksums_asset: checksumAsset.name, entries: extraction.entries, manifest_files: bundleManifest.files.length },
   release_manifest: releaseManifest,
   product: { version: product.version, components: bundleManifest.components },
-  install: { platform: process.platform, destination: installed },
+  install: { platform: process.platform, destination: installed, presets: presetLint.presets },
   workflow: { provider_mode: "deterministic provider through real AgentGateway process", model_calls: "none", results: workflow.results },
   limits: [
     "model quality is not exercised: the provider is a deterministic fixture",

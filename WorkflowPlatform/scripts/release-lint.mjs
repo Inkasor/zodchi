@@ -85,6 +85,7 @@ const required = [
   "WorkflowPlatform/scripts/run-owner-boundary-evidence.mjs",
   "WorkflowPlatform/scripts/run-package-boundary-evidence.mjs",
   "WorkflowPlatform/packages/catalog.json",
+  "WorkflowPlatform/presets/catalog.json",
   "WorkflowPlatform/packages/definitions.mjs",
   "WorkflowPlatform/packages/builders.mjs",
   "WorkflowPlatform/packages/example/definitions.mjs",
@@ -162,6 +163,12 @@ if (manifest.name !== product.name || manifest.workingName !== false || manifest
 const actualFiles = filesForManifest();
 const listedFiles = Array.isArray(manifest.files) ? manifest.files : [];
 if (JSON.stringify(actualFiles) !== JSON.stringify(listedFiles)) throw new Error("RELEASE_CHECKSUM_MANIFEST_MISMATCH");
+
+const packageCatalog = readJson(path.join(root, "WorkflowPlatform", "packages", "catalog.json"));
+for (const item of packageCatalog.packages ?? []) {
+  const packageFile = path.join(root, "WorkflowPlatform", "packages", item.file ?? "");
+  if (!item.file || !fs.existsSync(packageFile) || !fs.statSync(packageFile).isFile()) throw new Error(`RELEASE_PACKAGE_CATALOG_TARGET_MISSING: ${item.key ?? "unknown"}`);
+}
 
 const forbiddenSegments = /(^|\/)(?:\.git|node_modules|coverage|dist|build|data|receipts|sessions|logs|tmp|temp)(?:\/|$)/i;
 const forbiddenNames = /(^|\/)(?:auth\.json|cookies?(?:\.[^/]*)?|credentials?(?:\.[^/]*)?|\.env(?:\..*)?|.*\.(?:db|sqlite|sqlite3|wal|shm|log|tmp))$/i;
