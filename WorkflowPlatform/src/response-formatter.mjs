@@ -58,6 +58,10 @@ export function workflowMessage(key, language = "en") {
     rejected: ru ? "Независимая проверка отклонила результат. Задача не завершена и не будет продолжена без нового решения." : "The independent review rejected the result. The task is not complete and will not continue without a new decision.",
     changesRequested: ru ? "Результат требует исправлений. Задача не завершена; повтор будет ограничен правилами маршрута." : "The result needs corrections. The task is not complete; any retry is limited by the workflow rules.",
     approvalDeclined: ru ? "Решение записано: действие отклонено, ожидавший его прогон закрыт." : "The decision is recorded: the action was declined and the run waiting for it is closed.",
+    // A request for external evidence is not closed by a message saying the fact is true. Saying so
+    // plainly is the point: otherwise the person believes the run is moving again while it is not.
+    externalEvidencePending: ru ? "Запрос внешнего свидетельства остаётся открытым: его закрывает только доставленный пакет свидетельства, который проходит объявленный контракт. Прогон ждёт." : "The external evidence request stays open: only a delivered evidence packet that satisfies the declared contract closes it. The run is still waiting.",
+    externalEvidenceCancelled: ru ? "Запрос внешнего свидетельства отменён по вашему решению; ожидавший его прогон закрыт." : "The external evidence request was cancelled at your decision, and the run waiting for it is closed.",
     controlledStop: ru ? "Исполнение остановлено в контролируемом состоянии; автоматическое завершение не выполнено." : "Execution stopped in a controlled state; the task was not marked complete automatically.",
     contractRejected: ru ? "Структурированный исполнительный контракт не прошёл проверку. Задача не завершена; повтор или эскалация возможны только по правилам маршрута." : "The structured execution contract failed validation. The task is not complete; retry or escalation is possible only under the workflow rules."
   };

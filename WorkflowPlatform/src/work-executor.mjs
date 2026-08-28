@@ -18,6 +18,7 @@ import { blockerAdmissibility, admissibleOpinionDecision, hasSupportedFactualBlo
 import { executeTargetedVerification } from "./targeted-verification.mjs";
 import { documentTermScore, rankTerms } from "./term-ranking.mjs";
 import { utf8Prefix } from "./utf8.mjs";
+import { openClarification, openExternalEvidenceRequest, quiesceRun } from "./interactions.mjs";
 
 function hashFile(file) { return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"); }
 function parseJson(value, fallback) { try { return JSON.parse(value); } catch { return fallback; } }
@@ -616,17 +617,20 @@ function appendSteps(runtime, runId, steps, { sameOrdinal = false } = {}) {
   return inserted;
 }
 
-function appendExecutionSteps(runtime, runId, plannerResult) {
+// A run holds one step per key, and a replan writes a second set of steps into the same run. They are
+// prefixed the way a correction cycle is, so the superseded attempt stays readable as history instead of
+// colliding with the plan that replaced it.
+function appendExecutionSteps(runtime, runId, plannerResult, keyPrefix = "") {
   appendSteps(runtime, runId, [
-    ...plannerResult.steps.map(step => ({ ...step, schema: "worker.v1", contract: { objective: step.objective, allowed_paths: step.allowed_paths, artifact_keys: step.artifact_keys, check_ids: step.check_ids } })),
-    { key: "verification", role: null, required: true, irreversible: false, max_attempts: 1, schema: "gate.v1", contract: { allowed_paths: plannerResult.allowed_paths, check_ids: plannerResult.checks } }
+    ...plannerResult.steps.map(step => ({ ...step, key: `${keyPrefix}${step.key}`, schema: "worker.v1", contract: { objective: step.objective, allowed_paths: step.allowed_paths, artifact_keys: step.artifact_keys, check_ids: step.check_ids } })),
+    { key: `${keyPrefix}verification`, role: null, required: true, irreversible: false, max_attempts: 1, schema: "gate.v1", contract: { allowed_paths: plannerResult.allowed_paths, check_ids: plannerResult.checks } }
   ]);
 }
 
-function appendCorrectionSteps(runtime, runId, plannerResult, cycle, selectedSteps = plannerResult.steps) {
+function appendCorrectionSteps(runtime, runId, plannerResult, cycle, selectedSteps = plannerResult.steps, keyPrefix = "") {
   appendSteps(runtime, runId, [
-    ...selectedSteps.map(step => ({ key: `correction_${cycle}_${step.key}`, role: step.role, required: true, irreversible: false, max_attempts: 1, schema: "worker.v1", contract: { objective: step.objective, allowed_paths: step.allowed_paths, artifact_keys: step.artifact_keys, check_ids: step.check_ids, correction_cycle: cycle } })),
-    { key: `verification_${cycle}`, role: null, required: true, irreversible: false, max_attempts: 1, schema: "gate.v1", contract: { allowed_paths: plannerResult.allowed_paths, check_ids: plannerResult.checks, correction_cycle: cycle } }
+    ...selectedSteps.map(step => ({ key: `${keyPrefix}correction_${cycle}_${step.key}`, role: step.role, required: true, irreversible: false, max_attempts: 1, schema: "worker.v1", contract: { objective: step.objective, allowed_paths: step.allowed_paths, artifact_keys: step.artifact_keys, check_ids: step.check_ids, correction_cycle: cycle } })),
+    { key: `${keyPrefix}verification_${cycle}`, role: null, required: true, irreversible: false, max_attempts: 1, schema: "gate.v1", contract: { allowed_paths: plannerResult.allowed_paths, check_ids: plannerResult.checks, correction_cycle: cycle } }
   ]);
 }
 
@@ -1024,6 +1028,45 @@ export function targetedSteps(plan, { gate = null, reviewer = null } = {}) {
 // A run stopped for the owner's decision holds everything needed to continue: the classification it was
 // given and the message it was started from. The confirming message classifies as a conversation, so
 // resuming means re-entering the paused run with its own objective, not the objective of the "yes".
+// Two different waits, opened from the one place that knows which one this is. The typed evidence
+// contract names the resource, the provenance and the completeness a delivered packet has to satisfy, so
+// the wait can be closed by evidence rather than by a message that merely says the fact is true.
+function openWorkerWait(runtime, runId, plannedStep, worker) {
+  const taskId = runtime.get(runId).task_id;
+  const stepId = worker.step?.id ?? null;
+  const contract = worker.result.external_evidence_request ?? null;
+  quiesceRun(runtime.db, runId, contract ? "external evidence requested" : "worker clarification opened");
+  if (contract) {
+    openExternalEvidenceRequest(runtime.db, {
+      taskId, runId, stepId, question: worker.result.summary, contract,
+      affectedSteps: [plannedStep.key]
+    });
+    return "external_evidence_required";
+  }
+  if (!worker.result.questions.length) return null;
+  for (const question of worker.result.questions) openClarification(runtime.db, { taskId, runId, stepId, kind: "planner_clarification", question, reason: worker.result.summary, affectedSteps: [plannedStep.key] });
+  return "clarification_required";
+}
+
+// Resuming has to carry the answer, or the run replans against the same missing information and asks the
+// same question again. The objective is the one the run was opened with; the answers settled against it
+// are appended as recorded fact, in the order they were given.
+const LINE = "\n";
+export function resumeObjective(db, runId) {
+  const paused = pausedRunObjective(db, runId);
+  const answered = db.prepare(`SELECT kind,question,answer_json,answered_run_id FROM approvals
+    WHERE run_id=? AND status='approved' AND kind IN ('clarification','planner_clarification','external_evidence') ORDER BY resolved_at,id`).all(runId);
+  if (!answered.length) return paused;
+  const lines = answered.map(item => {
+    const answer = parseJson(item.answer_json, null);
+    const reply = item.kind === "external_evidence"
+      ? `evidence packet ${answer?.evidence?.content_hash ?? "delivered"} from ${answer?.evidence?.resource?.identity ?? "the named resource"}`
+      : db.prepare("SELECT content FROM conversation_messages WHERE run_id=? AND role='user' ORDER BY created_at,id LIMIT 1").get(item.answered_run_id)?.content ?? "answered";
+    return `- ${item.question}${LINE}  ${reply}`;
+  });
+  return { ...paused, message: `${paused.message}${LINE}${LINE}ANSWERED_BEFORE_RESUMING:${LINE}${lines.join(LINE)}` };
+}
+
 export function pausedRunObjective(db, runId) {
   const row = db.prepare("SELECT * FROM classifications WHERE run_id=?").get(runId);
   if (!row) throw new Error(`RUN_HAS_NO_CLASSIFICATION: ${runId}`);
@@ -1058,7 +1101,13 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   const documentatorRole = routeContract?.documentator_role ?? "documentator";
   const plannerContract = plannerRole ? loadRoleContract(runtime.db, projectId, plannerRole, level) : null;
   if (plannerContract?.allowed_work_types.length && !plannerContract.allowed_work_types.includes(classification.work_type) && !plannerContract.allowed_work_types.includes("*")) throw new Error(`ROLE_WORK_TYPE_NOT_ALLOWED: planner:${classification.work_type}`);
-  runtime.plan(runId, { objective: message, authority: definition.authority ?? "registered project documents", steps: plannerContract ? [{ key: "planning", role: plannerRole, max_attempts: plannerContract.max_correction_cycles + 1 }] : [] });
+  // Planning a second time in the same run is a new step, not the old one reopened: the first planning
+  // call happened, produced its questions and is history. A run holds one step per key, so the replan
+  // gets its own, the way a correction cycle does.
+  const planningAttempts = runtime.db.prepare("SELECT COUNT(*) AS count FROM workflow_steps WHERE run_id=? AND (step_key='planning' OR step_key LIKE 'replan!_%' ESCAPE '!')").get(runId).count;
+  const planningKey = planningAttempts ? `replan_${planningAttempts}` : "planning";
+  const stepKeyOf = key => (planningAttempts ? `replan_${planningAttempts}_${key}` : key);
+  runtime.plan(runId, { objective: message, authority: definition.authority ?? "registered project documents", steps: plannerContract ? [{ key: planningKey, role: plannerRole, max_attempts: plannerContract.max_correction_cycles + 1 }] : [] });
   queue.enqueueRun(runId);
   const allRegisteredRoles = runtime.db.prepare("SELECT id FROM roles ORDER BY id").all().map(row => row.id);
   const routeRoles = approvalGranted && routeContract?.worker_roles_after_approval.length ? routeContract.worker_roles_after_approval : routeContract?.worker_roles;
@@ -1133,13 +1182,17 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     planner.complete({ outcome: plan.outcome });
     if (plan.outcome === "questions") {
       const taskId = runtime.get(runId).task_id;
-      for (const question of plan.questions) runtime.db.prepare("INSERT INTO approvals(id,task_id,run_id,kind,question,status,created_at) VALUES(?,?,?,'planner_clarification',?,'pending',?)").run(id("approval"), taskId, runId, question, now());
+      // Nothing may still be holding a lease or half-running while the owner is asked: the question is
+      // being asked precisely because nothing else can move, and the answer may change what those steps
+      // were going to do.
+      quiesceRun(runtime.db, runId, "planner clarification opened");
+      const opened = plan.questions.map(question => openClarification(runtime.db, { taskId, runId, kind: "planner_clarification", question, reason: "the plan cannot be completed without this decision" }));
       runtime.setState(runId, "clarification_required", { reason: "planner needs clarification" });
-      return { status: "clarification_required", questions: plan.questions };
+      return { status: "clarification_required", questions: plan.questions, interaction_ids: opened };
     }
   }
   if (classification.document_required && !plan.artifacts.some(item => item.type === "document" && item.required)) throw new Error("PLAN_REQUIRED_DOCUMENT_ARTIFACT_MISSING");
-  appendExecutionSteps(runtime, runId, plan);
+  appendExecutionSteps(runtime, runId, plan, stepKeyOf(""));
   queue.enqueueRun(runId);
   runtime.setState(runId, "executing", { reason: "structured plan authorized" });
   captureRunBaselines(runtime.db, runId, projectRoots(runtime.db, projectId), { sourceScopeNarrowed: sourceScope(discovery.source_scope).narrowed });
@@ -1196,9 +1249,16 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     }
     if (worker.result.status !== "completed") {
       worker.fail(`worker_${worker.result.status}`, worker.result.status === "failed");
-      const targetState = worker.result.status === "blocked" ? "blocked" : "retry_scheduled";
-      if (runtime.get(runId).state !== targetState) runtime.setState(runId, targetState, { reason: `worker returned ${worker.result.status}` });
-      return { stopped: { status: worker.result.status, planner: plan, workers: [...workerResults, ...cycleResults, worker.result], gate: priorGate, reviewer: null } };
+      // A blocked worker used to end the run with nobody asked for what was missing. It now says which
+      // of the two waits it is in, and the run parks in the state that names it: a fact that lives only
+      // outside the project is asked for as evidence, a missing decision as a question, and a block that
+      // is neither remains a block.
+      const waiting = worker.result.status === "blocked"
+        ? openWorkerWait(runtime, runId, plannedStep, worker)
+        : null;
+      const targetState = waiting ?? (worker.result.status === "blocked" ? "blocked" : "retry_scheduled");
+      if (runtime.get(runId).state !== targetState) runtime.setState(runId, targetState, { reason: waiting ? `worker requires ${waiting}` : `worker returned ${worker.result.status}` });
+      return { stopped: { status: targetState, planner: plan, workers: [...workerResults, ...cycleResults, worker.result], gate: priorGate, reviewer: null } };
     }
     try { verifyWorkerArtifacts(runtime, runId, worker.step.id, projectRoot, plan, plannedStep.artifact_keys, worker.result); }
     catch (error) {
@@ -1220,7 +1280,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   const strategyRecoveries = new Set();
   const recoveryKey = (kind, progress) => `${kind}:${progress?.latest?.semantic_fingerprint ?? progress?.latest?.primary_gap_fingerprint ?? "none"}`;
   const emergencyFuse = Math.min(12, Math.max(0, Number(policy.limits.correction_cycles) || 0));
-  let gate = await executeGateStep({ runtime, queue, runId, stepKey: "verification", projectRoot, level, plannerResult: plan, classification, gateRunner, cycle: 0 });
+  let gate = await executeGateStep({ runtime, queue, runId, stepKey: stepKeyOf("verification"), projectRoot, level, plannerResult: plan, classification, gateRunner, cycle: 0 });
   let reviewerResult = null;
   let reviewRequirement = reviewerRequirement(policy.contract, classification, correctionCycles, policy.project_escalations);
   while (true) {
@@ -1276,13 +1336,13 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       }
       consumeCorrectionCycle(runtime, runId, correctionCycles);
       recordRunEvidence(runtime.db, runId, null, "correction_routing", { ...routing, progress_kind: "gate", semantic_gap_fingerprint: progress.latest?.semantic_fingerprint ?? progress.latest?.primary_gap_fingerprint ?? null, route_keys: selected.map(step => step.key), packet_hash_before: progress.latest?.packet_hash ?? null, semantic_fingerprint_before: progress.latest?.semantic_fingerprint ?? null, frontier_fingerprint_before: progress.latest?.frontier_fingerprint ?? null });
-      appendCorrectionSteps(runtime, runId, plan, correctionCycles, selected);
+      appendCorrectionSteps(runtime, runId, plan, correctionCycles, selected, stepKeyOf(""));
       queue.enqueueRun(runId);
       runtime.db.prepare("UPDATE workflow_runs SET cycle=?,updated_at=? WHERE id=?").run(correctionCycles, now(), runId);
       runtime.setState(runId, "executing", { reason: `targeted correction ${correctionCycles}: ${selected.map(step => step.key).join(",")}` });
       const corrected = await executeWorkers(correctionCycles, gate, selected);
       if (corrected.stopped) return corrected.stopped;
-      gate = await executeGateStep({ runtime, queue, runId, stepKey: `verification_${correctionCycles}`, projectRoot, level, plannerResult: plan, classification, gateRunner, cycle: correctionCycles });
+      gate = await executeGateStep({ runtime, queue, runId, stepKey: stepKeyOf(`verification_${correctionCycles}`), projectRoot, level, plannerResult: plan, classification, gateRunner, cycle: correctionCycles });
       continue;
     }
     // A correction can make review mandatory even when the initial low-risk plan did
@@ -1357,13 +1417,13 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     }
     consumeCorrectionCycle(runtime, runId, correctionCycles);
     recordRunEvidence(runtime.db, runId, null, "correction_routing", { ...routing, progress_kind: "semantic_review", semantic_gap_fingerprint: progress.latest?.semantic_fingerprint ?? progress.latest?.primary_gap_fingerprint ?? null, route_keys: selected.map(step => step.key), packet_hash_before: progress.latest?.packet_hash ?? null, semantic_fingerprint_before: progress.latest?.semantic_fingerprint ?? null, frontier_fingerprint_before: progress.latest?.frontier_fingerprint ?? null });
-    appendCorrectionSteps(runtime, runId, plan, correctionCycles, selected);
+    appendCorrectionSteps(runtime, runId, plan, correctionCycles, selected, stepKeyOf(""));
     queue.enqueueRun(runId);
     runtime.db.prepare("UPDATE workflow_runs SET cycle=?,updated_at=? WHERE id=?").run(correctionCycles, now(), runId);
     runtime.setState(runId, "executing", { reason: `review-gap correction ${correctionCycles}: ${selected.map(step => step.key).join(",")}` });
     const corrected = await executeWorkers(correctionCycles, gate, selected, reviewerResult);
     if (corrected.stopped) return corrected.stopped;
-    gate = await executeGateStep({ runtime, queue, runId, stepKey: `verification_${correctionCycles}`, projectRoot, level, plannerResult: plan, classification, gateRunner, cycle: correctionCycles });
+    gate = await executeGateStep({ runtime, queue, runId, stepKey: stepKeyOf(`verification_${correctionCycles}`), projectRoot, level, plannerResult: plan, classification, gateRunner, cycle: correctionCycles });
   }
   if (routeContract?.approval && !approvalGranted) return { ...requireWorkflowApproval(runtime, runId, routeContract, responseLanguage), planner: plan, workers: workerResults, gate, reviewer: reviewerResult };
   return documentAndComplete({ runtime, queue, runId, projectId, projectRoot, level, classification, discovery, responseLanguage, taskRoot, gatewayCall, policy, plan, gate, reviewerResult, documentatorRole, correctionCycles, workerResults, reviewRequirement });

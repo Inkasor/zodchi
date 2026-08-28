@@ -60,7 +60,9 @@ export function applyMigrations(db, directory = defaultMigrationsDirectory) {
       if (violations.length) throw new Error(`FOREIGN_KEY_VIOLATIONS: ${violations.slice(0, 5).map(row => `${row.table}:${row.rowid}`).join(", ")}`);
       db.exec("COMMIT");
     } catch (error) {
-      db.exec("ROLLBACK");
+      // A migration that never began — the database was busy when BEGIN ran — has nothing to roll back,
+      // and rolling back anyway replaced the real reason with a SQL logic error from the handler itself.
+      if (db.isTransaction) db.exec("ROLLBACK");
       throw new Error(`MIGRATION_FAILED ${migration.name}: ${error.message}`, { cause: error });
     } finally {
       db.exec("PRAGMA foreign_keys=ON");

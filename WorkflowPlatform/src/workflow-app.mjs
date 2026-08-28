@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { utf8Prefix } from "./utf8.mjs";
 import { Runtime, recordLint } from "./runtime.mjs";
+import { ExecutionQueue } from "./execution-queue.mjs";
 import { classificationCatalog, classificationJsonSchema, classifierPrompt, parseClassificationReceipt, resolveWorkflowRoute, validateClassificationDecision } from "./classifier.mjs";
 import { buildPrompt } from "./prompt-builder.mjs";
 import { callGateway } from "./gateway.mjs";
@@ -11,8 +12,9 @@ import { formatClassification, formatQuestions, workflowMessage } from "./respon
 import { languageName, resolveResponseLanguage } from "./language.mjs";
 import { id, now } from "./db.mjs";
 import { appendEvent } from "./state-machine.mjs";
+import { CLARIFICATION_KINDS, EXTERNAL_EVIDENCE_KIND, cancelInteraction, deliverEvidence, expireInteractions, openClarification, readInteraction } from "./interactions.mjs";
 import { resolveWorkflowSettings } from "./paths.mjs";
-import { continueApprovedRun, executeStructuredWork, pausedRunObjective } from "./work-executor.mjs";
+import { continueApprovedRun, executeStructuredWork, pausedRunObjective, resumeObjective } from "./work-executor.mjs";
 import { chargeDirectReceipt, effectiveQualityMode, initializeQualityRun, operationalLevel, ownerQualityFloor, reserveDirectModelCall } from "./quality-contracts.mjs";
 
 export function loadWorkflow(id, workflowsRoot = resolveWorkflowSettings().workflowsRoot) {
@@ -108,6 +110,67 @@ function executionFailure(runtime, runId, error, finish, responseLanguage = "en"
   return finish({ route: "failed", response: workflowMessage("executionFailed", responseLanguage), error: category });
 }
 
+// Where the answer arrives decides how the run continues. A run that had not produced work yet re-enters
+// from its objective, now carrying the answer. A run that already has completed worker results must not:
+// doing so would repeat, and pay for again, every call already made. That run resumes from its recorded
+// plan, gate and review, and only the phases the wait was blocking still run.
+async function resumeWaitingRun({ runtime, waitingRunId, definition, discovery, responseLanguage, taskRoot, gatewayCall, gateRunner }) {
+  const worked = runtime.db.prepare("SELECT COUNT(*) AS count FROM workflow_steps WHERE run_id=? AND state='completed' AND result_schema_key='worker.v1'").get(waitingRunId).count;
+  if (worked) {
+    // Evidence that arrives after the work was done is checked, not re-executed; an answered question
+    // resumes the execution it interrupted. Replanning needs neither, and enters planning on its own.
+    const waiting = runtime.get(waitingRunId).state;
+    if (waiting === "external_evidence_required") runtime.setState(waitingRunId, "verifying", { reason: "external evidence delivered after the work" });
+    else if (waiting === "clarification_required") runtime.setState(waitingRunId, "executing", { reason: "clarification answered after the work" });
+    return continueApprovedRun({ runtime, runId: waitingRunId, discovery, responseLanguage, taskRoot, gatewayCall });
+  }
+  // The steps the wait interrupted were planned against information the run did not have. Replanning
+  // supersedes them, so they are abandoned rather than left in the queue: a step still waiting there
+  // holds up every later phase, and one still runnable would execute the plan the answer replaced.
+  const stale = runtime.db.prepare("SELECT id FROM workflow_steps WHERE run_id=? AND state IN ('pending','ready','blocked','retry_scheduled','changes_requested','approval_required')").all(waitingRunId).map(row => row.id);
+  if (stale.length) {
+    const abandoned = new ExecutionQueue(runtime.db).abandonSteps(waitingRunId, stale, { reason: "replanned after the wait was answered" });
+    // A step the new plan replaced is no longer something the run owes: left marked required it would
+    // block completion for ever, and the run would finish its work and still be unable to say so.
+    for (const stepId of abandoned) runtime.db.prepare("UPDATE workflow_steps SET required=0 WHERE id=?").run(stepId);
+  }
+  const resumed = resumeObjective(runtime.db, waitingRunId);
+  return executeStructuredWork({ runtime, runId: waitingRunId, classification: resumed.classification, definition, discovery, message: resumed.message, responseLanguage, taskRoot, gatewayCall, ...(gateRunner ? { gateRunner } : {}) });
+}
+
+// The owner's side of an external evidence request. The packet is checked against the contract the
+// request declared before anything resumes: a packet from the wrong resource, without a stated origin or
+// covering less than the claim needs leaves the request open, which is the whole point of asking for it.
+export async function deliverExternalEvidencePacket({
+  interactionId, packet, project, dbFile, workflow, workflowDefinition, execute = true,
+  gatewayCall = callGateway, gateRunner = undefined, preferredLanguage = null
+}) {
+  const settings = resolveWorkflowSettings();
+  project ??= settings.project;
+  dbFile ??= settings.databasePath;
+  const runtime = new Runtime(dbFile);
+  try {
+    const registeredProject = runtime.db.prepare("SELECT id,root_path FROM projects WHERE id=? OR lower(root_path)=lower(?) LIMIT 1").get(project, path.resolve(project));
+    if (!registeredProject) throw new Error(`PROJECT_NOT_REGISTERED: ${project}`);
+    const interaction = readInteraction(runtime.db, interactionId);
+    if (!interaction) throw new Error(`INTERACTION_NOT_FOUND: ${interactionId}`);
+    const waitingRunId = interaction.run_id;
+    const waiting = runtime.db.prepare("SELECT id,state,response_language FROM workflow_runs WHERE id=?").get(waitingRunId);
+    if (!waiting) throw new Error(`INTERACTION_RUN_MISSING: ${interactionId}`);
+    const responseLanguage = preferredLanguage ?? waiting.response_language ?? settings.responseLanguage ?? "en";
+    const delivered = deliverEvidence(runtime.db, interactionId, packet, { answeredRunId: waitingRunId });
+    if (!delivered.settled) return { interaction_id: interactionId, delivered: false, already: delivered.status, run_id: waitingRunId };
+    if (!execute) return { interaction_id: interactionId, delivered: true, run_id: waitingRunId, state: waiting.state };
+    const definition = workflowDefinition ?? registryDefinition(runtime.db, registeredProject.id, workflow ?? waiting.workflow_id);
+    const discovery = readProjectContext(registeredProject.id, runtime.db);
+    const taskRoot = path.join(settings.tempRoot, path.basename(registeredProject.root_path).toLowerCase().replaceAll(" ", "-"), waitingRunId);
+    try {
+      const execution = await resumeWaitingRun({ runtime, waitingRunId, definition, discovery, responseLanguage, taskRoot, gatewayCall, gateRunner });
+      return { interaction_id: interactionId, delivered: true, run_id: waitingRunId, response_language: responseLanguage, execution };
+    } finally { fs.rmSync(taskRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
+  } finally { runtime.db.close(); }
+}
+
 export async function processMessage({
   message, project, dbFile, workflow, workflowDefinition, execute = false, eventSource = "user", eventKey = null, eventFields = [],
   classificationResult = null, gatewayCall = callGateway, gateRunner = undefined, preferredLanguage = null, client = "codex"
@@ -155,6 +218,10 @@ export async function processMessage({
   responseLanguage = resolveResponseLanguage({ message, preferredLanguage: preferredLanguage ?? settings.responseLanguage, history: historyContext.history });
   runtime.db.prepare("UPDATE workflow_runs SET response_language=?,updated_at=? WHERE id=?").run(responseLanguage, now(), runId);
   const discovery = readProjectContext(project, runtime.db);
+  // A wait ends by an answer, a cancellation, a supersede or its own declared deadline — never by an
+  // unrelated message arriving. The deadline is the only one of the four that nobody sends, so it is
+  // applied here, before the classifier is shown what is still open.
+  expireInteractions(runtime.db, run.project_id);
   const catalog = classificationCatalog(runtime.db, run.project_id);
   runtime.db.prepare("INSERT INTO conversation_messages(id,project_id,run_id,role,content,created_at,language) VALUES(?,?,?,'user',?,?,?)")
     .run(`${runId}:user`, run.project_id, runId, String(message), now(), responseLanguage);
@@ -209,6 +276,53 @@ export async function processMessage({
     return classificationFailure(runtime, runId, error, finish, responseLanguage);
   }
 
+  const receiptsOf = () => classifierReceipt ? { mode: "executed", receipts: [{ step: "classifier", receipt: classifierReceipt }] } : { mode: "contract-test" };
+  // Every incoming message gets its own run, so intake stays idempotent whatever the message turns out to
+  // be. What that run then does depends on whether it answered something the platform was waiting for —
+  // and an ordinary message that answered nothing stays an ordinary new run rather than being attached to
+  // an older one because it arrived in the same project soon afterwards.
+  const namedInteraction = classification.pending_interaction_id
+    ? runtime.db.prepare("SELECT id,run_id,kind FROM approvals WHERE id=?").get(classification.pending_interaction_id) ?? null
+    : null;
+
+  // A request for external evidence asks for a fact that lives outside everything the platform can read.
+  // It is closed by a delivered packet that satisfies its contract, or by the owner cancelling it —
+  // never by a message asserting the fact, because the claim it guards would then pass unproven.
+  if (namedInteraction?.kind === EXTERNAL_EVIDENCE_KIND) {
+    const waitingRun = runtime.db.prepare("SELECT id,state FROM workflow_runs WHERE id=?").get(namedInteraction.run_id);
+    if (classification.pending_interaction_response === "decline") {
+      cancelInteraction(runtime.db, namedInteraction.id, "owner cancelled the external evidence request", { answeredRunId: runId });
+      if (waitingRun && waitingRun.state === "external_evidence_required") runtime.setState(waitingRun.id, "cancelled", { reason: "owner cancelled the external evidence request" });
+      runtime.setState(runId, "completed", { reason: "evidence request cancellation recorded" });
+      return finish({ route: "external_evidence_cancelled", classification, response: saveAssistant(workflowMessage("externalEvidenceCancelled", responseLanguage)), gateway: receiptsOf() });
+    }
+    runtime.setState(runId, "completed", { reason: "external evidence request remains open" });
+    return finish({ route: "external_evidence_pending", classification, response: saveAssistant(workflowMessage("externalEvidencePending", responseLanguage)), gateway: receiptsOf() });
+  }
+
+  // The answer to a clarification belongs to the run that asked it. Sending that answer through a fresh
+  // run would replan work already done and pay for every model call again, so the intake run records the
+  // delivery and the waiting run continues from where it stopped. A question asked before anything was
+  // planned is the exception: that run was only the question, so it completes and this run does the work.
+  const answeredClarification = namedInteraction && CLARIFICATION_KINDS.has(namedInteraction.kind) && namedInteraction.run_id && namedInteraction.run_id !== runId
+    ? runtime.db.prepare("SELECT id,state FROM workflow_runs WHERE id=? AND state='clarification_required'").get(namedInteraction.run_id) ?? null
+    : null;
+  if (answeredClarification) {
+    const waitingRunId = answeredClarification.id;
+    const planned = runtime.db.prepare("SELECT COUNT(*) AS count FROM workflow_steps WHERE run_id=?").get(waitingRunId).count;
+    if (!planned) runtime.setState(waitingRunId, "completed", { reason: "the question this run asked was answered" });
+    else {
+      runtime.setState(runId, "completed", { reason: "clarification delivered to the waiting run" });
+      try {
+        const execution = await resumeWaitingRun({ runtime, waitingRunId, definition, discovery, responseLanguage, taskRoot: taskDirectory, gatewayCall, gateRunner });
+        return finish({ route: "work", classification, response: saveAssistant(executionMessage(execution, responseLanguage)), execution, gateway: receiptsOf() });
+      } catch (error) {
+        const response = saveAssistant(workflowMessage("contractRejected", responseLanguage));
+        return finish({ route: "execution_failed", classification, response, execution: { status: runtime.get(waitingRunId).state, error: String(error.message).split(":")[0].slice(0, 120) } });
+      }
+    }
+  }
+
   // An owner decision is not a clarification: it authorizes an action that has not happened yet. The run
   // that asked holds the objective and the plan, and the confirming message classifies as a conversation,
   // so a yes continues that run instead of starting a new one. A refusal ends it. Anything else — doubt,
@@ -248,8 +362,7 @@ export async function processMessage({
 
   if (classification.needs_questions) {
     const taskId = runtime.get(runId).task_id;
-    for (const question of classification.questions) runtime.db.prepare("INSERT INTO approvals(id,task_id,run_id,kind,question,status,created_at) VALUES(?,?,?,'clarification',?,'pending',?)")
-      .run(id("approval"), taskId, runId, question, now());
+    for (const question of classification.questions) openClarification(runtime.db, { taskId, runId, kind: "clarification", question, reason: classification.reason });
     runtime.setState(runId, "clarification_required", { reason: "classifier requested missing information" });
     const response = saveAssistant(formatQuestions({ summary: classification.reason, questions: classification.questions, nextStep: responseLanguage === "ru" ? "продолжить по выбранному маршруту" : "continue with the selected workflow", language: responseLanguage }));
     return finish({ route: "clarification", classification, response, gateway: classifierReceipt ? { mode: "executed", receipts: [{ step: "classifier", receipt: classifierReceipt }] } : { mode: "contract-test" } });

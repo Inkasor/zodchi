@@ -118,9 +118,9 @@ async function scenario({ prefix, gateStatus = "passed", reviewDecision = "PASS"
         const file = path.join(env.project, "src", "output.txt");
         fs.writeFileSync(file, "bounded output");
         const hash = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
-        return receipt("worker", { schema_version: 1, status: "completed", summary: "Created output.", changed_paths: ["src/output.txt"], artifacts: [{ key: "code-output", type: "code", path: "src/output.txt", content_hash: hash, status: "created" }], evidence: ["file hash"], questions: [] });
+        return receipt("worker", { schema_version: 1, status: "completed", summary: "Created output.", changed_paths: ["src/output.txt"], artifacts: [{ key: "code-output", type: "code", path: "src/output.txt", content_hash: hash, status: "created" }], evidence: ["file hash"], questions: [], external_evidence_request: null });
       }
-      return receipt("worker", { schema_version: 1, status: "completed", summary: "Prepared document evidence.", changed_paths: [], artifacts: [], evidence: ["registered target"], questions: [] });
+      return receipt("worker", { schema_version: 1, status: "completed", summary: "Prepared document evidence.", changed_paths: [], artifacts: [], evidence: ["registered target"], questions: [], external_evidence_request: null });
     }
     if (request.role === "reviewer") {
       reviewerCalls += 1;
@@ -157,7 +157,7 @@ test("role result schemas reject extra fields, path escapes and false reviewer P
   const checks = ["check-ok"], artifacts = db.prepare("SELECT id FROM artifact_types").all().map(row => row.id);
   assert.throws(() => validatePlannerResult({ ...plannerResult(), extra: true }, { contract, registeredRoles: roles, registeredChecks: checks, registeredArtifactTypes: artifacts }), /fields mismatch/);
   const workerContract = loadRoleContract(db, "project", "worker", "mvp");
-  assert.throws(() => validateWorkerResult({ schema_version: 1, status: "completed", summary: "x", changed_paths: ["../outside"], artifacts: [], evidence: [], questions: [] }, { contract: workerContract, packageContract: { allowed_paths: ["src/output.txt"], artifact_keys: [] } }), /relative project path/);
+  assert.throws(() => validateWorkerResult({ schema_version: 1, status: "completed", summary: "x", changed_paths: ["../outside"], artifacts: [], evidence: [], questions: [], external_evidence_request: null }, { contract: workerContract, packageContract: { allowed_paths: ["src/output.txt"], artifact_keys: [] } }), /relative project path/);
   assert.throws(() => validateReviewerResult({ ...reviewerResult("PASS"), blockers: [{ code: "x", message: "hidden blocker", path: null }] }), /PASS cannot contain blockers/);
   const judgePass = { schema_version: 1, decision: "PASS", rationale: "The admissible evidence supports completion.", evidence_refs: ["evidence-1"], primary_gap: null, verification_request: null };
   assert.equal(validateJudgeResult(structuredClone(judgePass)).decision, "PASS");
@@ -251,7 +251,7 @@ test("a pathless decision artifact is materialized from worker evidence instead 
     workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, classificationResult: classification(false),
     gatewayCall: async request => {
       if (request.role === "planner") return receipt("planner", plan);
-      if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "The entry point is established.", changed_paths: [], artifacts: [], evidence: ["Form calls the server export procedure."], questions: [] });
+      if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "The entry point is established.", changed_paths: [], artifacts: [], evidence: ["Form calls the server export procedure."], questions: [], external_evidence_request: null });
       throw new Error(`unexpected role ${request.role}`);
     },
     gateRunner: async () => ({ task_id: "gate", project: env.project, level: "mvp", files: [], status: "passed", checks: [{ id: "check-ok", required: true, status: "passed" }], summary: "passed" })
@@ -279,7 +279,7 @@ test("final document artifacts stay with the documentator even when a planner as
     workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, classificationResult: classification(true),
     gatewayCall: async request => {
       if (request.role === "planner") return receipt("planner", plan);
-      if (request.role === "worker") { workerPrompt = fs.readFileSync(request.taskFile, "utf8"); return receipt("worker", { schema_version: 1, status: "completed", summary: "Evidence prepared.", changed_paths: [], artifacts: [], evidence: ["bounded source"], questions: [] }); }
+      if (request.role === "worker") { workerPrompt = fs.readFileSync(request.taskFile, "utf8"); return receipt("worker", { schema_version: 1, status: "completed", summary: "Evidence prepared.", changed_paths: [], artifacts: [], evidence: ["bounded source"], questions: [], external_evidence_request: null }); }
       if (request.role === "documentator") { const lookup = openDb(env.dbFile); const documentId = lookup.prepare("SELECT id FROM project_documents WHERE project_id='project' AND path='docs/new-analysis.md'").get().id; lookup.close(); return receipt("documentator", { schema_version: 1, status: "proposed", document_id: documentId, expected_version: null, operation: "create_document", authority: "workflow", content: '<document id="new_analysis" status="working" authority="workflow" version="1.0"><section id="summary" status="working">New analysis</section></document>', section_id: null, decision_id: null, evidence_id: null, status_value: null, target_tag: null, target_id: null, replacement_id: null }); }
       throw new Error(`unexpected role ${request.role}`);
     },
@@ -298,7 +298,7 @@ test("a worker artifact verification failure settles the worker step", async () 
     workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, classificationResult: classification(false),
     gatewayCall: async request => {
       if (request.role === "planner") return receipt("planner", plannerResult());
-      if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "Claimed output.", changed_paths: [], artifacts: [{ key: "code-output", type: "code", path: "src/output.txt", content_hash: null, status: "created" }], evidence: [], questions: [] });
+      if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "Claimed output.", changed_paths: [], artifacts: [{ key: "code-output", type: "code", path: "src/output.txt", content_hash: null, status: "created" }], evidence: [], questions: [], external_evidence_request: null });
       throw new Error(`unexpected role ${request.role}`);
     }
   });
@@ -392,7 +392,7 @@ test("worker prompt fits the final byte contract and receives requested regions 
       if (request.role === "planner") return receipt("planner", plan);
       if (request.role === "worker") {
         workerPrompt = fs.readFileSync(request.taskFile, "utf8");
-        return receipt("worker", { schema_version: 1, status: "blocked", summary: "Fixture stops after context inspection.", changed_paths: [], artifacts: [], evidence: ["prompt captured"], questions: [] });
+        return receipt("worker", { schema_version: 1, status: "blocked", summary: "Fixture stops after context inspection.", changed_paths: [], artifacts: [], evidence: ["prompt captured"], questions: [], external_evidence_request: null });
       }
       throw new Error(`unexpected role ${request.role}`);
     }
@@ -429,7 +429,7 @@ test("independent plan steps using one role receive independent role call budget
       if (request.role === "worker") {
         workerCalls += 1;
         if (workerCalls === 2) secondPrompt = fs.readFileSync(request.taskFile, "utf8");
-        return receipt("worker", { schema_version: 1, status: "completed", summary: `Completed package ${workerCalls}.`, changed_paths: [], artifacts: [], evidence: [`evidence-from-package-${workerCalls}`], questions: [] }, String(workerCalls));
+        return receipt("worker", { schema_version: 1, status: "completed", summary: `Completed package ${workerCalls}.`, changed_paths: [], artifacts: [], evidence: [`evidence-from-package-${workerCalls}`], questions: [], external_evidence_request: null }, String(workerCalls));
       }
       throw new Error(`unexpected role ${request.role}`);
     },
@@ -488,7 +488,7 @@ test("a route that declares its steps without planning runs them without a plann
     workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, classificationResult: classification(false),
     gatewayCall: async request => {
       calls.push(request.role);
-      if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "Inspected.", changed_paths: [], artifacts: [], evidence: ["registered context"], questions: [] });
+      if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "Inspected.", changed_paths: [], artifacts: [], evidence: ["registered context"], questions: [], external_evidence_request: null });
       if (request.role === "reviewer") return receipt("reviewer", reviewerResult("PASS"));
       throw new Error(`unexpected role ${request.role}`);
     },
@@ -543,7 +543,7 @@ async function approvalScenario(prefix, ownerResponse) {
     classificationResult: { ...classification(false), work_type: "conversation", artifact_type: "none", planning_required: false, reply_mode: "conversation", human_response: "Записал.", pending_interaction_id: approval.id, pending_interaction_response: ownerResponse },
     gatewayCall: async request => {
       calls.push(request.role);
-      if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "Applied.", changed_paths: [], artifacts: [], evidence: ["bounded"], questions: [] });
+      if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "Applied.", changed_paths: [], artifacts: [], evidence: ["bounded"], questions: [], external_evidence_request: null });
       throw new Error(`unexpected role ${request.role}`);
     },
     gateRunner: async () => ({ task_id: "gate", project: env.project, level: "mvp", files: [], status: "passed", checks: [{ id: "check-ok", required: true, status: "passed" }], summary: "passed" })
@@ -596,7 +596,7 @@ test("a workflow whose every step is named for verification still has a role to 
     execute: true, classificationResult: classification(false),
     gatewayCall: async request => {
       calls.push(request.role);
-      if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "Проверки выполнены.", changed_paths: [], artifacts: [], evidence: ["gate"], questions: [] });
+      if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "Проверки выполнены.", changed_paths: [], artifacts: [], evidence: ["gate"], questions: [], external_evidence_request: null });
       if (request.role === "reviewer") return receipt("reviewer", reviewerResult("PASS"));
       throw new Error(`unexpected role ${request.role}`);
     },
@@ -618,7 +618,7 @@ test("a decision that follows the work is continued from what was recorded, not 
   const calls = [];
   const gatewayCall = async request => {
     calls.push(request.role);
-    if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "Prepared document evidence.", changed_paths: [], artifacts: [], evidence: ["registered target"], questions: [] });
+    if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "Prepared document evidence.", changed_paths: [], artifacts: [], evidence: ["registered target"], questions: [], external_evidence_request: null });
     if (request.role === "reviewer") return receipt("reviewer", reviewerResult("PASS"));
     if (request.role === "documentator") {
       const file = path.join(env.project, "docs", "control.md");
