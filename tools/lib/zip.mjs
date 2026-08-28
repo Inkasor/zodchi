@@ -19,6 +19,7 @@ function archiveFiles(root) {
   const files = [];
   function visit(directory, relativeDirectory = "") {
     const entries = fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    if (relativeDirectory && entries.length === 0) throw new Error(`ZIP_SOURCE_EMPTY_DIRECTORY_UNSUPPORTED: ${relativeDirectory}`);
     for (const entry of entries) {
       const relative = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
       const absolute = path.join(directory, entry.name);

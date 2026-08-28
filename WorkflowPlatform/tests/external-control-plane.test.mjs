@@ -85,6 +85,16 @@ test("a signed external result is bound to request, run, step and checkpoint wit
   } finally { close(fx); }
 });
 
+test("an oversized external result is rejected at the byte boundary before signature handling", () => {
+  const fx = fixture();
+  try {
+    const created = createExternalControlRequest(fx.db, { projectId: "project", runId: "run", stepId: "step", interactionId: fx.interactionId, executorId: "runtime.test", action: "probe", checkpointHash: "f".repeat(64), payload: { probe: "large" } });
+    const packet = signedResult(created.request, fx.privateKey, { content: "Ж".repeat(600_000) });
+    packet.signature = "not-a-signature";
+    assert.throws(() => acceptExternalControlResult(fx.db, packet), /EXTERNAL_CONTROL_RESULT_PAYLOAD_TOO_LARGE/);
+  } finally { close(fx); }
+});
+
 test("external evidence enters the canonical interaction only after signature and evidence validation", () => {
   const fx = fixture();
   try {

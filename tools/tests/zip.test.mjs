@@ -87,6 +87,14 @@ test("release ZIP bytes ignore source roots, mtimes and Unicode enumeration orde
   }
 });
 
+test("release ZIP rejects empty directories instead of silently dropping them", () => {
+  const root = scratch();
+  try {
+    fs.mkdirSync(path.join(root, "empty"));
+    assert.throws(() => createDeterministicZip(root), /ZIP_SOURCE_EMPTY_DIRECTORY_UNSUPPORTED: empty/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("extraction writes every entry under the destination", () => {
   const destination = scratch();
   const archive = buildZip([{ name: "WorkflowPlatform/src/cli.mjs", content: "export default 1;\n" }]);

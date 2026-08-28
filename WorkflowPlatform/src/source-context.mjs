@@ -43,7 +43,7 @@ function compilePathspecs(scope) {
 // though the scope named exactly its directory, and the answer came back "not found" rather than
 // "not looked at". Where the scope can be expressed as a pathspec it is also pushed into git, so the
 // out-of-scope paths of a 100k-file export are never materialized at all.
-export function listFiles(rootPath, { maxFiles = 20_000, scope = null, readDirectory = fs.readdirSync } = {}) {
+export function listFiles(rootPath, { maxFiles = 20_000, scope = null, readDirectory = fs.readdirSync, runGit = execFileSync } = {}) {
   const gitMetadataPresent = fs.existsSync(path.join(rootPath, ".git"));
   const inScope = scope ? file => scope.matches(file) : () => true;
   const specs = compilePathspecs(scope);
@@ -54,10 +54,10 @@ export function listFiles(rootPath, { maxFiles = 20_000, scope = null, readDirec
     // The bounded filesystem fallback is deliberately non-authoritative: it can find evidence, but it
     // cannot support a corpus-wide negative claim.
     if (scopedWalkRequired) throw Object.assign(new Error("SCOPE_PATHSPEC_NOT_REPRESENTABLE"), { code: "SCOPE_PATHSPEC_NOT_REPRESENTABLE" });
-    const top = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: rootPath, encoding: "utf8", windowsHide: true, timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    const top = runGit("git", ["rev-parse", "--show-toplevel"], { cwd: rootPath, encoding: "utf8", windowsHide: true, timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
     if (!sameDirectory(top, rootPath)) throw Object.assign(new Error("GIT_ROOT_MISMATCH"), { code: "GIT_ROOT_MISMATCH" });
     const pathspec = specs.include;
-    const git = parameters => execFileSync("git", pathspec.length ? [...parameters, "--", ...pathspec] : parameters, { cwd: rootPath, encoding: "utf8", windowsHide: true, timeout: 20_000, maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+    const git = parameters => runGit("git", pathspec.length ? [...parameters, "--", ...pathspec] : parameters, { cwd: rootPath, encoding: "utf8", windowsHide: true, timeout: 20_000, maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
     // NUL output is not quoted by Git. Without it, a Cyrillic path is returned as a quoted sequence of
     // octal bytes under the default core.quotePath setting; the inventory then names a file that does
     // not exist and source search silently skips the actual 1C module.
@@ -107,7 +107,10 @@ export function listFiles(rootPath, { maxFiles = 20_000, scope = null, readDirec
       }
     };
     walk(rootPath, "");
-    const notRepository = !gitMetadataPresent && gitError?.status === 128;
+    // A plain content tree remains an authoritative filesystem corpus when Git is unavailable.
+    // A tree containing .git does not: without Git we cannot reproduce its ignored-file boundary.
+    const gitUnavailable = gitError?.code === "ENOENT";
+    const notRepository = !gitMetadataPresent && (gitError?.status === 128 || gitUnavailable);
     const authoritative = notRepository && !scopedWalkRequired && readErrors === 0;
     return {
       files, source: scopedWalkRequired ? "walk_scope_fallback" : authoritative ? "walk" : "walk_after_git_error", authoritative,
@@ -168,8 +171,10 @@ function balancedInventory(files, limit) {
 // exclude it; this is the shape the release lint already refuses to publish. Everything git ignores is
 // absent already, which is where build output and local state live.
 const SECRET_NAMES = /(^|\/)(?:auth\.json|secrets?(?:\.[^/]*)?|cookies?(?:\.[^/]*)?|credentials?(?:\.[^/]*)?|\.env(?:\..*)?|[^/]*\.(?:pem|key|p12|pfx|crt|db|sqlite|sqlite3|wal|shm|log|dump|bak))$/i;
-const GLOB_DIRECTORY_WILDCARD = " ";
-const GLOB_ANY_WILDCARD = "";
+// Keep sentinels as source escape sequences rather than literal control bytes. Literal NUL/SOH make
+// repository scanners classify this source-boundary implementation as binary and silently skip it.
+const GLOB_DIRECTORY_WILDCARD = "\u0000";
+const GLOB_ANY_WILDCARD = "\u0001";
 
 function patternToExpression(pattern) {
   const escaped = String(pattern).replaceAll("\\", "/").replace(/[.+^${}()|[\]\\]/g, "\\$&");
