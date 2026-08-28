@@ -1,0 +1,274 @@
+{
+  "schema_version": 1,
+  "presets": [
+    {
+      "key": "marketing-manager-activity",
+      "profile_role": "Marketing manager, editor and researcher",
+      "package_keys": ["marketing.content-operations"],
+      "horizontal_bundles": [],
+      "source_scopes": ["**/*.md", "content/**", "research/**"],
+      "adapters": [
+        { "capability": "marketing.rules", "required": true, "evidence_contract": "Project claims and style rules pass before owner acceptance." },
+        { "capability": "marketing.activity-ledger", "required": true, "evidence_contract": "Scheduled, executed and measured states carry provider receipts." }
+      ],
+      "authority": { "default_mode": "change", "live_mutation": "approval_required", "publication": "approval_required" },
+      "resources": [{ "alias": "marketing.state", "kind": "project.worktree", "modes": ["shared", "exclusive"] }],
+      "first_value": { "work_type": "marketing.research", "scenario": "Research one bounded hypothesis, draft under project rules and prepare one scheduled activity.", "expected_outcome": "Terminal run with edited content and a pending or completed activity receipt; correctness remains owner-open." },
+      "public_fixture": { "status": "MECHANICS_ONLY", "proves": ["routing", "editor_step", "activity_state", "owner_gate"], "does_not_prove": ["domain_truth", "product_fit"] },
+      "private_acceptance": { "status": "OWNER_READ_REQUIRED", "owner_required": true, "real_repository_required": true, "expected_contract": "Owner reads the terminal research-to-activity result; acceptance correctness remains open until explicit feedback." },
+      "substitution_metric": "Count project activities whose state no longer has to be reconciled manually between plan, calendar and result.",
+      "migration_notes": ["Import existing text rules and claims once; do not create a role or document per campaign."]
+    },
+    {
+      "key": "web-founder-onboarding",
+      "profile_role": "Business founder operating several Web projects",
+      "package_keys": ["software.web-application"],
+      "horizontal_bundles": [],
+      "source_scopes": ["app/**", "src/**", "config/**", "**/*.rb", "**/*.ts", "**/*.tsx"],
+      "adapters": [{ "capability": "node.package-manager", "required": false, "evidence_contract": "Use registered language checks; Ruby projects declare their own test command without claiming a built-in semantic graph." }],
+      "authority": { "default_mode": "change", "live_mutation": "forbidden", "publication": "approval_required" },
+      "resources": [{ "alias": "project.worktree", "kind": "project.worktree", "modes": ["shared", "exclusive"] }],
+      "first_value": { "work_type": "project_bootstrap", "scenario": "Register one bounded Web project, install an owned hook and complete one known repository task.", "expected_outcome": "Project registration, route, checks and hook transaction finish without editing platform core." },
+      "public_fixture": { "status": "MECHANICS_ONLY", "proves": ["registration", "hook_transaction", "routing", "rollback"], "does_not_prove": ["domain_truth", "product_fit"] },
+      "private_acceptance": { "status": "KNOWN_ANSWER_PRIVATE", "owner_required": true, "real_repository_required": true, "expected_contract": "A bounded known repository task reaches its expected deterministic checks on one selected project." },
+      "substitution_metric": "Number of duplicated per-project workflow rules and manual setup steps removed after onboarding.",
+      "migration_notes": ["Migrate one project first and preserve each repository's local rules and commands."]
+    },
+    {
+      "key": "one-c-live-runtime-diagnosis",
+      "profile_role": "1C development lead diagnosing source and live information-base behavior",
+      "package_keys": ["one-c.development"],
+      "horizontal_bundles": [],
+      "source_scopes": ["**/*.bsl", "**/*.xml"],
+      "adapters": [
+        { "capability": "bsl.language-server", "required": true, "evidence_contract": "Diagnostics are compared with an accepted revision-bound baseline." },
+        { "capability": "one-c.runtime-evidence", "required": true, "evidence_contract": "Live information-base facts return as validated external evidence with resource identity and completeness." }
+      ],
+      "authority": { "default_mode": "read_only", "live_mutation": "approval_required", "publication": "approval_required" },
+      "resources": [{ "alias": "one-c.runtime", "kind": "1c.server", "modes": ["shared", "exclusive"] }],
+      "first_value": { "work_type": "one-c.diagnosis", "scenario": "Diagnose a known issue whose missing fact exists only in a registered test information base.", "expected_outcome": "The same run waits in external_evidence_required, consumes the validated packet and reaches the known diagnosis." },
+      "public_fixture": { "status": "MECHANICS_ONLY", "proves": ["external_evidence_wait", "same_run_resume", "bsl_route"], "does_not_prove": ["domain_truth", "product_fit"] },
+      "private_acceptance": { "status": "KNOWN_ANSWER_PRIVATE", "owner_required": true, "real_repository_required": true, "expected_contract": "A private known diagnosis resumes after test-base evidence without replaying completed model calls." },
+      "substitution_metric": "Count pending diagnosis sessions replaced by typed external-evidence requests that later resume automatically.",
+      "migration_notes": ["Register existing BSL wrappers as project commands before replacing any local process."]
+    },
+    {
+      "key": "data-principal-invariant",
+      "profile_role": "Principal data analyst working with SQL, Python and ClickHouse",
+      "package_keys": ["data.analytics"],
+      "horizontal_bundles": [],
+      "source_scopes": ["**/*.sql", "**/*.py", "models/**", "tests/**"],
+      "adapters": [
+        { "capability": "data.readonly-query", "required": true, "evidence_contract": "Queries execute against an isolated or explicitly read-only boundary." },
+        { "capability": "data.invariant", "required": true, "evidence_contract": "Expected zero-row, count, reconciliation or schema result is recorded deterministically." }
+      ],
+      "authority": { "default_mode": "read_only", "live_mutation": "approval_required", "publication": "forbidden" },
+      "resources": [{ "alias": "data.primary", "kind": "db", "modes": ["shared", "exclusive"] }],
+      "first_value": { "work_type": "data.verification", "scenario": "Run a private known reconciliation invariant and preserve only hashes, metrics and provenance in receipts.", "expected_outcome": "The deterministic invariant reaches the known result without persisting SQL rows or prompts." },
+      "public_fixture": { "status": "MECHANICS_ONLY", "proves": ["read_only_route", "zero_result_gate", "privacy_receipt"], "does_not_prove": ["domain_truth", "product_fit"] },
+      "private_acceptance": { "status": "KNOWN_ANSWER_PRIVATE", "owner_required": true, "real_repository_required": true, "expected_contract": "Private reconciliation result equals the pre-existing known answer on the authorized data copy." },
+      "substitution_metric": "Count manual reconciliation notes replaced by reproducible invariant receipts.",
+      "migration_notes": ["Keep corporate data and query results outside public fixtures and persistent prompts."]
+    },
+    {
+      "key": "one-c-nda-observability",
+      "profile_role": "1C technical director with an established workflow and NDA constraints",
+      "package_keys": ["one-c.development"],
+      "horizontal_bundles": [],
+      "source_scopes": ["**/*.bsl", "**/*.xml", "**/*.md"],
+      "adapters": [
+        { "capability": "bsl.language-server", "required": true, "evidence_contract": "Read-only source diagnostics retain hashes and bounded metrics." },
+        { "capability": "privacy.no-source-persistence", "required": true, "evidence_contract": "Persistent receipts contain no source, prompt or secret samples." }
+      ],
+      "authority": { "default_mode": "read_only", "live_mutation": "forbidden", "publication": "forbidden" },
+      "resources": [{ "alias": "project.worktree", "kind": "project.worktree", "modes": ["shared"] }],
+      "first_value": { "work_type": "one-c.diagnosis", "scenario": "Audit one bounded source question with redacted receipts and measured byte budgets.", "expected_outcome": "Terminal factual report with no persisted source; correctness remains owner-open." },
+      "public_fixture": { "status": "MECHANICS_ONLY", "proves": ["redaction", "byte_metrics", "read_only_route"], "does_not_prove": ["domain_truth", "product_fit"] },
+      "private_acceptance": { "status": "OWNER_READ_REQUIRED", "owner_required": true, "real_repository_required": true, "expected_contract": "Owner reads the terminal NDA-safe audit and decides whether it preserves the established guarantees." },
+      "substitution_metric": "Number of local context-compaction and receipt-redaction mechanisms no longer maintained separately.",
+      "migration_notes": ["Adopt only donor mechanisms that remove maintenance; do not replace the existing workflow wholesale."]
+    },
+    {
+      "key": "web-portfolio-macos",
+      "profile_role": "Founder maintaining several Ruby Web products on macOS",
+      "package_keys": ["software.web-application"],
+      "horizontal_bundles": [],
+      "source_scopes": ["app/**", "config/**", "spec/**", "**/*.rb", "**/*.md"],
+      "adapters": [
+        { "capability": "project.ruby-checks", "required": true, "evidence_contract": "Registered project checks provide the language truth without a claimed built-in Ruby graph." },
+        { "capability": "runtime.macos", "required": true, "evidence_contract": "Install, hook, run and rollback evidence names the exact macOS and tool versions." }
+      ],
+      "authority": { "default_mode": "change", "live_mutation": "forbidden", "publication": "approval_required" },
+      "resources": [{ "alias": "project.worktree", "kind": "project.worktree", "modes": ["shared", "exclusive"] }],
+      "first_value": { "work_type": "implementation", "scenario": "Complete one small repository change with pause and resume on macOS.", "expected_outcome": "Terminal run with visible receipts and no cross-project configuration inheritance; correctness remains owner-open." },
+      "public_fixture": { "status": "MECHANICS_ONLY", "proves": ["macos_paths", "pause_resume", "project_isolation"], "does_not_prove": ["domain_truth", "product_fit"] },
+      "private_acceptance": { "status": "OWNER_READ_REQUIRED", "owner_required": true, "real_repository_required": true, "expected_contract": "Owner reads one real terminal result and evaluates whether the portfolio workflow is useful." },
+      "substitution_metric": "Count duplicated workflow files and manual stop/resume bookkeeping removed across the portfolio.",
+      "migration_notes": ["Start with one repository; preserve project-specific rules instead of centralizing them blindly."]
+    },
+    {
+      "key": "one-c-pure-function-precommit",
+      "profile_role": "1C team lead implementing contract-first pure functions",
+      "package_keys": ["one-c.development"],
+      "horizontal_bundles": [],
+      "source_scopes": ["**/*.bsl", "tests/**", "fixtures/**"],
+      "adapters": [
+        { "capability": "bsl.language-server", "required": true, "evidence_contract": "BSL diagnostics run before commit against a revision-bound baseline." },
+        { "capability": "bsl.test-runner", "required": true, "evidence_contract": "Pure-function fixture result is deterministic and names the tested contract." }
+      ],
+      "authority": { "default_mode": "change", "live_mutation": "forbidden", "publication": "approval_required" },
+      "resources": [{ "alias": "project.worktree", "kind": "project.worktree", "modes": ["shared", "exclusive"] }],
+      "first_value": { "work_type": "one-c.change", "scenario": "Implement one pure BSL function against an anonymized input/output fixture.", "expected_outcome": "The fixture and BSL diagnostics pass before any commit or release approval." },
+      "public_fixture": { "status": "MECHANICS_ONLY", "proves": ["bsl_precommit", "fixture_gate", "bounded_change"], "does_not_prove": ["domain_truth", "product_fit"] },
+      "private_acceptance": { "status": "KNOWN_ANSWER_PRIVATE", "owner_required": true, "real_repository_required": true, "expected_contract": "A contract-first function matches its owner-authored known fixture result." },
+      "substitution_metric": "Count manual pre-commit validation steps replaced by one registered command and receipt.",
+      "migration_notes": ["Keep the human-authored function contract authoritative; automate only execution and evidence."]
+    },
+    {
+      "key": "one-c-large-corpus",
+      "profile_role": "1C developer working with full ERP source exports",
+      "package_keys": ["one-c.development"],
+      "horizontal_bundles": [],
+      "source_scopes": ["**/*.bsl", "**/*.xml"],
+      "adapters": [{ "capability": "corpus.authoritative-scan", "required": true, "evidence_contract": "Enumeration proves scope pushdown, completeness and target visibility beyond legacy limits." }],
+      "authority": { "default_mode": "read_only", "live_mutation": "forbidden", "publication": "forbidden" },
+      "resources": [{ "alias": "project.worktree", "kind": "project.worktree", "modes": ["shared"] }],
+      "first_value": { "work_type": "one-c.diagnosis", "scenario": "Find a relevant module intentionally placed after historical enumeration limits in a large source export.", "expected_outcome": "The module is found and every negative claim retains authoritative per-scope completeness." },
+      "public_fixture": { "status": "MECHANICS_ONLY", "proves": ["scope_pushdown", "large_corpus_target", "completeness"], "does_not_prove": ["domain_truth", "product_fit"] },
+      "private_acceptance": { "status": "KNOWN_ANSWER_PRIVATE", "owner_required": true, "real_repository_required": true, "expected_contract": "The known module in the private ERP export is visible with an honest corpus boundary." },
+      "substitution_metric": "Count manual searches needed after the platform proves complete scoped enumeration.",
+      "migration_notes": ["Do not solve large corpora by raising prompt limits; enumerate authoritatively and select evidence semantically."]
+    },
+    {
+      "key": "one-c-isolated-gui-runtime",
+      "profile_role": "1C platform co-founder with an isolated GUI test runtime",
+      "package_keys": ["one-c.development"],
+      "horizontal_bundles": ["external-control-plane"],
+      "source_scopes": ["**/*.bsl", "**/*.xml", "tests/**"],
+      "adapters": [
+        { "capability": "external-control-plane", "required": true, "evidence_contract": "Executor results are signed and bound to run, step, request and checkpoint hashes." },
+        { "capability": "one-c.gui-test", "required": true, "evidence_contract": "Actions run only in the registered isolated information base and return typed evidence." }
+      ],
+      "authority": { "default_mode": "read_only", "live_mutation": "approval_required", "publication": "forbidden" },
+      "resources": [{ "alias": "one-c.test-runtime", "kind": "1c.file", "modes": ["shared", "exclusive"] }],
+      "first_value": { "work_type": "one-c.functional-test", "scenario": "Send one known isolated GUI test request and return its signed result as canonical evidence.", "expected_outcome": "The original run resumes only after signature, resource and completeness validation." },
+      "public_fixture": { "status": "MECHANICS_ONLY", "proves": ["signed_request_result", "isolated_resource", "evidence_resume"], "does_not_prove": ["domain_truth", "product_fit"] },
+      "private_acceptance": { "status": "KNOWN_ANSWER_PRIVATE", "owner_required": true, "real_repository_required": true, "expected_contract": "The pre-existing isolated test reproduces its known result through the external protocol." },
+      "substitution_metric": "Count manual runtime resume commands replaced by signed request/result delivery.",
+      "migration_notes": ["Keep the existing Runtime and GUI tester external; register it rather than porting it into Zodchi."]
+    },
+    {
+      "key": "infra-devops-generator-safe",
+      "profile_role": "DevOps engineer operating CI, incidents, access and backup systems",
+      "package_keys": ["infra.operations"],
+      "horizontal_bundles": [],
+      "source_scopes": ["**/*.yml", "**/*.yaml", "**/*.json", "**/*.tf", "**/*.md"],
+      "adapters": [
+        { "capability": "infra.health", "required": true, "evidence_contract": "Read-only inventory and health checks run before any proposal." },
+        { "capability": "config-generator.ownership", "required": true, "evidence_contract": "Generated settings retain foreign ownership and use merge or proxy mode." }
+      ],
+      "authority": { "default_mode": "read_only", "live_mutation": "approval_required", "publication": "approval_required" },
+      "resources": [{ "alias": "infra.target", "kind": "project.worktree", "modes": ["shared", "exclusive"] }],
+      "first_value": { "work_type": "infra.inventory", "scenario": "Run read-only incident inventory and produce a bounded proposal without changing generator-owned settings.", "expected_outcome": "Two-step terminal diagnosis with preserved settings ownership and no unapproved action." },
+      "public_fixture": { "status": "MECHANICS_ONLY", "proves": ["read_only_mode", "generator_ownership", "approval_boundary"], "does_not_prove": ["domain_truth", "product_fit"] },
+      "private_acceptance": { "status": "KNOWN_ANSWER_PRIVATE", "owner_required": true, "real_repository_required": true, "expected_contract": "A known read-only investigation reproduces its facts while the existing generator remains authoritative." },
+      "substitution_metric": "Count incident and access handoff stages removed without weakening rollback or health evidence.",
+      "migration_notes": ["Use two base modes; add proposal, dry-run and approval only when risk requires them."]
+    },
+    {
+      "key": "one-c-hash-bound-release",
+      "profile_role": "1C educator and developer with a finite-state delivery pipeline",
+      "package_keys": ["one-c.development"],
+      "horizontal_bundles": [],
+      "source_scopes": ["**/*.bsl", "**/*.xml", "tests/**"],
+      "adapters": [
+        { "capability": "bsl.test-runner", "required": true, "evidence_contract": "The known fixture result and deployment checkpoint are deterministic." },
+        { "capability": "approval.hash-binding", "required": true, "evidence_contract": "Owner approval binds objective, plan, checkpoint and exact action hashes." }
+      ],
+      "authority": { "default_mode": "change", "live_mutation": "approval_required", "publication": "approval_required" },
+      "resources": [{ "alias": "project.worktree", "kind": "project.worktree", "modes": ["shared", "exclusive"] }],
+      "first_value": { "work_type": "one-c.release", "scenario": "Prepare a synthetic known-answer 1C release and invalidate approval after any checkpoint change.", "expected_outcome": "Unchanged action proceeds after approval; changed action creates a replacement approval and does not execute." },
+      "public_fixture": { "status": "MECHANICS_ONLY", "proves": ["approval_hash", "stale_approval_rejection", "release_route"], "does_not_prove": ["domain_truth", "product_fit"] },
+      "private_acceptance": { "status": "KNOWN_ANSWER_PRIVATE", "owner_required": true, "real_repository_required": true, "expected_contract": "The owner's private reference task reaches the pre-existing known result with hash-bound approval." },
+      "substitution_metric": "Count manual approval-state updates replaced while preserving exact scenario binding.",
+      "migration_notes": ["Compare against the existing state machine; replace only coordination work, not its delivery guarantees."]
+    },
+    {
+      "key": "unity-production-pipeline",
+      "profile_role": "Unity founder operating an established production pipeline on macOS",
+      "package_keys": ["game.unity"],
+      "horizontal_bundles": ["external-control-plane"],
+      "source_scopes": ["Assets/**/*.cs", "Packages/**/*.cs", "**/*.asmdef", "**/*.md"],
+      "adapters": [
+        { "capability": "csharp.provider", "required": true, "evidence_contract": "Definitions and references carry an attested Unity solution boundary; incomplete callers remain unknown." },
+        { "capability": "unity.batch", "required": true, "evidence_contract": "Process, memory, PID, project path and process-tree cancellation guards wrap the run." },
+        { "capability": "git.lfs-checkpoint", "required": true, "evidence_contract": "Exact Git checkpoint and LFS hydration precede Unity evidence." }
+      ],
+      "authority": { "default_mode": "read_only", "live_mutation": "approval_required", "publication": "approval_required" },
+      "resources": [{ "alias": "unity.project", "kind": "project.worktree", "modes": ["shared", "exclusive"] }],
+      "first_value": { "work_type": "game.pipeline-audit", "scenario": "Audit one completed iteration read-only and preserve separate scope and milestone verdicts.", "expected_outcome": "Technical findings and owner playtest status remain separate; no write or release action occurs." },
+      "public_fixture": { "status": "MECHANICS_ONLY", "proves": ["unity_guards", "scope_milestone_split", "owner_gate"], "does_not_prove": ["domain_truth", "product_fit"] },
+      "private_acceptance": { "status": "KNOWN_ANSWER_PRIVATE", "owner_required": true, "real_repository_required": true, "expected_contract": "A completed private iteration produces the same accepted technical boundaries before a small write canary." },
+      "substitution_metric": "Frequency of manual iteration-state edits after Zodchi owns coordination while existing Unity guards remain.",
+      "migration_notes": ["Do not replace the production pipeline; attach its guards and receipts as project adapters."]
+    },
+    {
+      "key": "web-game-outreach",
+      "profile_role": "Web-game founder combining design consistency and press outreach",
+      "package_keys": ["game.web", "marketing.content-operations"],
+      "horizontal_bundles": [],
+      "source_scopes": ["src/**", "game/**", "content/**", "research/**", "**/*.md"],
+      "adapters": [
+        { "capability": "browser.evidence", "required": true, "evidence_contract": "Prototype state and screenshots are deterministic and tied to the feature objective." },
+        { "capability": "marketing.dedupe", "required": true, "evidence_contract": "Outreach identities and execution receipts prevent duplicate contact." }
+      ],
+      "authority": { "default_mode": "change", "live_mutation": "approval_required", "publication": "approval_required" },
+      "resources": [
+        { "alias": "project.worktree", "kind": "project.worktree", "modes": ["shared", "exclusive"] },
+        { "alias": "marketing.state", "kind": "project.worktree", "modes": ["shared", "exclusive"] }
+      ],
+      "first_value": { "work_type": "game.build-test", "scenario": "Produce deterministic browser proof for one feature or complete one deduplicated outreach cycle.", "expected_outcome": "Terminal technical or execution evidence is readable by the owner; product correctness remains open." },
+      "public_fixture": { "status": "MECHANICS_ONLY", "proves": ["browser_capture", "design_trace", "outreach_dedupe"], "does_not_prove": ["domain_truth", "product_fit"] },
+      "private_acceptance": { "status": "OWNER_READ_REQUIRED", "owner_required": true, "real_repository_required": true, "expected_contract": "Owner reads one real terminal prototype or outreach result before any domain acceptance claim." },
+      "substitution_metric": "Count repeated manual pipeline and outreach bookkeeping steps removed while preserving design and copy review.",
+      "migration_notes": ["Keep game verdict, content verdict and release verdict as separate gates."]
+    },
+    {
+      "key": "unity-large-repository-diagnosis",
+      "profile_role": "Indie Unity developer maintaining a large risk-sensitive repository",
+      "package_keys": ["game.unity"],
+      "horizontal_bundles": [],
+      "source_scopes": ["Assets/**/*.cs", "Packages/**/*.cs", "**/*.asmdef"],
+      "adapters": [
+        { "capability": "csharp.provider", "required": true, "evidence_contract": "Semantic definitions and references use a complete or explicitly partial Unity project boundary." },
+        { "capability": "corpus.authoritative-scan", "required": true, "evidence_contract": "A target after historical limits remains visible under source scope." }
+      ],
+      "authority": { "default_mode": "read_only", "live_mutation": "approval_required", "publication": "forbidden" },
+      "resources": [{ "alias": "unity.project", "kind": "project.worktree", "modes": ["shared", "exclusive"] }],
+      "first_value": { "work_type": "game.technical-qa", "scenario": "Diagnose a known large-repository defect whose target lies after historical enumeration limits.", "expected_outcome": "The target and semantic references are found without converting a partial boundary into missing." },
+      "public_fixture": { "status": "MECHANICS_ONLY", "proves": ["large_corpus_target", "csharp_boundary", "unknown_preservation"], "does_not_prove": ["domain_truth", "product_fit"] },
+      "private_acceptance": { "status": "KNOWN_ANSWER_PRIVATE", "owner_required": true, "real_repository_required": true, "expected_contract": "A private known defect is reproduced at the expected source locations with bounded risk-oriented evidence." },
+      "substitution_metric": "Growth of manual pending task logs after bounded diagnosis and evidence selection are enabled.",
+      "migration_notes": ["Preserve the existing risk-oriented verification policy and fix only coordination and search limits."]
+    },
+    {
+      "key": "unity-mcp-simulation",
+      "profile_role": "Successful indie Unity developer using MCP and deterministic simulations",
+      "package_keys": ["game.unity"],
+      "horizontal_bundles": [],
+      "source_scopes": ["Assets/**/*.cs", "Packages/**/*.cs", "**/*.asmdef", "**/*.json", "**/*.csv"],
+      "adapters": [
+        { "capability": "csharp.provider", "required": true, "evidence_contract": "Semantic anchors complement the registered MCP graph without claiming caller completeness." },
+        { "capability": "unity.mcp", "required": false, "evidence_contract": "MCP discovery is used first when registered and its version and boundary enter evidence." },
+        { "capability": "simulation.deterministic", "required": true, "evidence_contract": "Seed, inputs, output artifact hashes and run count make the simulation reproducible." }
+      ],
+      "authority": { "default_mode": "read_only", "live_mutation": "approval_required", "publication": "forbidden" },
+      "resources": [{ "alias": "unity.project", "kind": "project.worktree", "modes": ["shared", "exclusive"] }],
+      "first_value": { "work_type": "game.design-research", "scenario": "Analyze one save or lifecycle question using MCP-first discovery or a deterministic balance simulation.", "expected_outcome": "The known simulation or lifecycle evidence is reproducible and any missing caller edge stays unknown." },
+      "public_fixture": { "status": "MECHANICS_ONLY", "proves": ["mcp_registration", "simulation_receipt", "unknown_preservation"], "does_not_prove": ["domain_truth", "product_fit"] },
+      "private_acceptance": { "status": "KNOWN_ANSWER_PRIVATE", "owner_required": true, "real_repository_required": true, "expected_contract": "A private known simulation or lifecycle query reproduces its established result and evidence boundary." },
+      "substitution_metric": "Count manually assembled navigation and simulation evidence artifacts replaced by reproducible receipts.",
+      "migration_notes": ["Use the existing MCP graph as a registered provider; do not make it a mandatory runtime dependency."]
+    }
+  ]
+}
