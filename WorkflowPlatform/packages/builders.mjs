@@ -218,7 +218,7 @@ function composedPackage(core, ...components) {
   const evidenceFlows = [...spec.evidenceFlows, ...adapters.flatMap(item => item.options.evidenceFlows ?? [])];
   const configuredChecks = [...spec.checks, ...adapters.flatMap(item => item.options.checks ?? [])];
   let baseline = secretCheck(`${prefix}_baseline`);
-  baseline = addBinding(addBinding(baseline, "prototype", null), "mvp", null);
+  baseline = addBinding(addBinding(addBinding(baseline, "prototype", null), "mvp", null), "production", "release_package");
   const checks = [baseline, ...configuredChecks.filter(item => item.key !== baseline.key)];
   const baselineKeys = [baseline.key];
   const moduleKeys = new Set(capabilities.map(item => item.key));
