@@ -76,9 +76,15 @@ function runCommand(command, args, cwd, timeoutSeconds) {
   return new Promise(resolve => {
     const windowsScript = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command);
     const executable = windowsScript ? (process.env.ComSpec ?? "cmd.exe") : command;
-    const commandArgs = windowsScript ? ["/d", "/s", "/c", command, ...args] : args;
+    const quote = value => {
+      const text = String(value);
+      if (/[\0\r\n]/.test(text)) throw new Error("COMMAND_ARGUMENT_INVALID");
+      return `"${text.replaceAll("%", "%%").replaceAll('"', '""')}"`;
+    };
+    const commandLine = windowsScript ? `"${[command, ...args].map(quote).join(" ")}"` : null;
+    const commandArgs = windowsScript ? ["/d", "/s", "/c", commandLine] : args;
     try {
-      execFile(executable, commandArgs, { cwd, windowsHide: true, shell: false, timeout: timeoutSeconds * 1000 }, (error, stdout, stderr) => {
+      execFile(executable, commandArgs, { cwd, windowsHide: true, shell: false, windowsVerbatimArguments: windowsScript, timeout: timeoutSeconds * 1000 }, (error, stdout, stderr) => {
         const timedOut = error?.code === "ETIMEDOUT" || error?.killed === true;
         resolve({ status: timedOut ? "timed_out" : error ? "failed" : "passed", exit_code: timedOut ? 124 : typeof error?.code === "number" ? error.code : error ? 1 : 0, error_code: typeof error?.code === "string" ? error.code : null, output: `${stdout ?? ""}\n${stderr ?? ""}` });
       });

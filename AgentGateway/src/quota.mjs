@@ -13,8 +13,8 @@ const policy = loadGatewayPolicy(paths);
 
 function command(file, args) {
   try {
-    const { executable, args: commandArgs } = providerCommandInvocation(file, args);
-    const result = spawnSync(executable, commandArgs, { encoding: "utf8", windowsHide: true });
+    const { executable, args: commandArgs, windowsVerbatimArguments } = providerCommandInvocation(file, args);
+    const result = spawnSync(executable, commandArgs, { encoding: "utf8", windowsHide: true, windowsVerbatimArguments });
     const output = `${result.stdout ?? ""}`.trim();
     const error = `${result.stderr ?? ""}`.trim();
     return { code: result.status ?? 1, output: output || error, error: output ? error : "" };
