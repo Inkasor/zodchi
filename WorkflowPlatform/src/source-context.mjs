@@ -43,11 +43,17 @@ function compilePathspecs(scope) {
 // though the scope named exactly its directory, and the answer came back "not found" rather than
 // "not looked at". Where the scope can be expressed as a pathspec it is also pushed into git, so the
 // out-of-scope paths of a 100k-file export are never materialized at all.
-function listFiles(rootPath, { maxFiles = 20_000, scope = null } = {}) {
+export function listFiles(rootPath, { maxFiles = 20_000, scope = null, readDirectory = fs.readdirSync } = {}) {
   const gitMetadataPresent = fs.existsSync(path.join(rootPath, ".git"));
   const inScope = scope ? file => scope.matches(file) : () => true;
   const specs = compilePathspecs(scope);
+  const scopedWalkRequired = Boolean(scope?.narrowed && !specs.pushdown && specs.reason?.startsWith("pattern_not_representable:"));
   try {
+    // A pattern Git interprets differently must not be replaced by an unscoped `git ls-files` over the
+    // whole corpus. That recreates the 107k-path materialisation the scope pushdown exists to avoid.
+    // The bounded filesystem fallback is deliberately non-authoritative: it can find evidence, but it
+    // cannot support a corpus-wide negative claim.
+    if (scopedWalkRequired) throw Object.assign(new Error("SCOPE_PATHSPEC_NOT_REPRESENTABLE"), { code: "SCOPE_PATHSPEC_NOT_REPRESENTABLE" });
     const top = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: rootPath, encoding: "utf8", windowsHide: true, timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
     if (!sameDirectory(top, rootPath)) throw Object.assign(new Error("GIT_ROOT_MISMATCH"), { code: "GIT_ROOT_MISMATCH" });
     const pathspec = specs.include;
@@ -81,12 +87,17 @@ function listFiles(rootPath, { maxFiles = 20_000, scope = null } = {}) {
     };
   } catch (gitError) {
     const files = [];
-    let matched = 0;
+    let matched = 0, visited = 0, readErrors = 0, walkTruncated = false;
+    const visitLimit = Math.max(maxFiles + 1, maxFiles * 4);
     const walk = (directory, prefix) => {
+      if (walkTruncated) return;
       let entries;
-      try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch { return; }
+      try { entries = readDirectory(directory, { withFileTypes: true }); } catch { readErrors += 1; return; }
       for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name, "en"))) {
+        if (walkTruncated) break;
         if (IGNORED.has(entry.name)) continue;
+        visited += 1;
+        if (visited > visitLimit) { walkTruncated = true; break; }
         const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
         if (entry.isDirectory()) walk(path.join(directory, entry.name), relative);
         else if (entry.isFile() && inScope(relative)) {
@@ -96,13 +107,15 @@ function listFiles(rootPath, { maxFiles = 20_000, scope = null } = {}) {
       }
     };
     walk(rootPath, "");
-    const authoritative = !gitMetadataPresent;
+    const notRepository = !gitMetadataPresent && gitError?.status === 128;
+    const authoritative = notRepository && !scopedWalkRequired && readErrors === 0;
     return {
-      files, source: authoritative ? "walk" : "walk_after_git_error", authoritative,
-      truncated: matched > maxFiles, enumeration_rule: "filesystem_excluding_platform_ignored_names",
+      files, source: scopedWalkRequired ? "walk_scope_fallback" : authoritative ? "walk" : "walk_after_git_error", authoritative,
+      truncated: matched > maxFiles || walkTruncated, enumeration_rule: "bounded_filesystem_excluding_platform_ignored_names",
       matched_files: matched, scope_pushdown: false,
       scope_pushdown_reason: specs.pushdown ? "filesystem_walk_cannot_use_pathspec" : specs.reason,
-      fallback_reason: authoritative ? "not_a_git_repository" : String(gitError?.code ?? gitError?.message ?? "git_enumeration_failed").slice(0, 120)
+      fallback_reason: authoritative ? "not_a_git_repository" : String(gitError?.code ?? gitError?.message ?? "git_enumeration_failed").slice(0, 120),
+      visited_entries: visited, read_errors: readErrors
     };
   }
 }

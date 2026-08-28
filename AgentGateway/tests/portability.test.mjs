@@ -220,6 +220,23 @@ test("an ephemeral home with nothing named withholds every server the owner regi
   }
 });
 
+test("a project MCP server shadows the home server with the same name exactly once", () => {
+  const root = temporaryRoot("agent-gateway-codex-mcp-shadow-");
+  const source = path.join(root, "source"), temp = path.join(root, "temp"), project = path.join(root, "project");
+  fs.mkdirSync(source, { recursive: true }); fs.mkdirSync(path.join(project, ".codex"), { recursive: true });
+  fs.writeFileSync(path.join(source, "config.toml"), '[mcp_servers.shared]\ncommand = "home-command"\n');
+  fs.writeFileSync(path.join(project, ".codex", "config.toml"), '[mcp_servers.shared]\ncommand = "project-command"\n');
+  const environment = createProviderEnvironment("codex", { tempRoot: temp, sourceHome: source, projectRoot: project, profileConfig: { allowedMcpServers: ["shared"] } });
+  try {
+    const config = fs.readFileSync(path.join(environment.directory, "config.toml"), "utf8");
+    assert.equal((config.match(/\[mcp_servers\.shared\]/g) ?? []).length, 1);
+    assert.equal(config.includes('command = "project-command"'), true);
+    assert.equal(config.includes('command = "home-command"'), false);
+    assert.deepEqual(environment.capabilities.mcp_servers.carried, [{ scope: "project", name: "shared" }]);
+    assert.deepEqual(environment.capabilities.mcp_servers.shadowed, [{ scope: "home", name: "shared", by_scope: "project" }]);
+  } finally { environment.cleanup(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("OpenCode carries named servers from its own configuration and Kimi inherits the file it copies", () => {
   const root = temporaryRoot("agent-gateway-mcp-providers-");
   const temp = path.join(root, "temp");

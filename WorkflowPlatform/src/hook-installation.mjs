@@ -55,13 +55,29 @@ function target(harness) {
 
 // A hook belongs to Zodchi when it runs Zodchi's own entry script. That is a fact about the command, not
 // a claim in a file, so it survives the record being deleted and cannot be asserted by anything else.
-function isOurs(hook, script) {
-  const text = [hook?.command, hook?.commandWindows, ...(Array.isArray(hook?.args) ? hook.args : [])].filter(item => typeof item === "string").join(" ");
-  return text.includes(script) || text.includes(HOOK_SCRIPT.replaceAll("\\", "/")) || text.includes(HOOK_SCRIPT.replaceAll("/", "\\"));
+function samePath(left, right) {
+  try {
+    const a = path.resolve(left), b = path.resolve(right);
+    return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+  } catch { return false; }
 }
 
-function ourEntry(entries, script) {
-  return entries.findIndex(entry => (entry?.hooks ?? []).some(hook => isOurs(hook, script)));
+function commandTokens(command) {
+  if (typeof command !== "string") return [];
+  return [...command.matchAll(/"([^"]+)"|'([^']+)'|([^\s]+)/g)].map(match => match[1] ?? match[2] ?? match[3]);
+}
+
+function isOurs(hook, script) {
+  const tokens = [
+    ...commandTokens(hook?.command),
+    ...commandTokens(hook?.commandWindows),
+    ...(Array.isArray(hook?.args) ? hook.args.filter(item => typeof item === "string") : [])
+  ];
+  return tokens.some(token => samePath(token, script));
+}
+
+function ourEntry(entries, script, recordedEntry = null) {
+  return entries.findIndex(entry => (recordedEntry && JSON.stringify(entry) === JSON.stringify(recordedEntry)) || (entry?.hooks ?? []).some(hook => isOurs(hook, script)));
 }
 
 function applyRoot(value, root, deliveryMode) {
@@ -104,10 +120,10 @@ export function planHookInstallation({ projectRoot, harness, root = workflowPlat
   const entry = desired.hooks[EVENT][0];
 
   const existing = readJson(file);
-  const entries = existing?.hooks?.[EVENT] ?? [];
-  const ours = ourEntry(entries, script);
-  const foreign = entries.filter((_, index) => index !== ours).length;
   const record = readJson(ownershipFile(projectRoot, harness));
+  const entries = existing?.hooks?.[EVENT] ?? [];
+  const ours = ourEntry(entries, script, record?.entry ?? null);
+  const foreign = entries.filter((_, index) => index !== ours).length;
 
   const generated = generatedElsewhere(projectRoot, existing);
   const conflicts = [];
@@ -148,7 +164,8 @@ export function applyHookInstallation(plan) {
   if (!existing) document = plan.document;
   else {
     const entries = [...(existing.hooks?.[EVENT] ?? [])];
-    const ours = ourEntry(entries, plan.script);
+    const record = readJson(plan.ownershipFile);
+    const ours = ourEntry(entries, plan.script, record?.entry ?? null);
     if (ours >= 0) entries[ours] = plan.entry;
     else entries.push(plan.entry);
     document = { ...existing, hooks: { ...(existing.hooks ?? {}), [EVENT]: entries } };

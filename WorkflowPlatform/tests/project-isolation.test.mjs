@@ -184,3 +184,20 @@ test("a generated settings file is proxied instead of written into", () => {
   assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).hooks.UserPromptSubmit.length, 1);
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test("a foreign hook with Zodchi's script basename is never claimed or replaced", () => {
+  const root = temporaryRoot("zodchi-hook-same-name-");
+  const file = path.join(root, ".claude", "settings.local.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const foreignScript = path.join(root, "other-product", "hooks", "user-prompt-submit.mjs");
+  const foreign = { hooks: [{ type: "command", command: `node "${foreignScript}"` }] };
+  fs.writeFileSync(file, JSON.stringify({ hooks: { UserPromptSubmit: [foreign] } }, null, 2));
+  const plan = planHookInstallation({ projectRoot: root, harness: "claude-code", configsRoot });
+  assert.equal(plan.status, "install");
+  assert.equal(plan.conflicts.some(item => item.kind === "foreign_hooks"), true);
+  applyHookInstallation(plan);
+  const entries = JSON.parse(fs.readFileSync(file, "utf8")).hooks.UserPromptSubmit;
+  assert.equal(entries.length, 2);
+  assert.deepEqual(entries[0], foreign);
+  fs.rmSync(root, { recursive: true, force: true });
+});

@@ -84,7 +84,8 @@ const publishers = [...new Set(release.assets.map(asset => asset.uploader?.login
 if (!baseline && (publishers.length !== 1 || publishers[0] !== "github-actions[bot]")) fail("RELEASE_PUBLISHER_NOT_CI", publishers.join(", "));
 
 const archive = await download(archiveAsset);
-const checksums = (await download(checksumAsset)).toString("utf8").replace(/^\uFEFF/, "");
+const checksumBytes = await download(checksumAsset);
+const checksums = checksumBytes.toString("utf8").replace(/^\uFEFF/, "");
 const archiveHash = sha256(archive);
 const checksumLine = checksums.split(/\r?\n/).find(line => line.includes(archiveAsset.name));
 if (!checksumLine) fail("RELEASE_CHECKSUM_ENTRY_MISSING", archiveAsset.name);
@@ -96,10 +97,15 @@ let releaseManifest = null;
 const manifestAsset = release.assets.find(asset => asset.name === "zodchi-release-manifest.json");
 if (manifestAsset) {
   releaseManifest = JSON.parse((await download(manifestAsset)).toString("utf8"));
+  if (releaseManifest.schema_version !== 1) fail("RELEASE_MANIFEST_SCHEMA_UNSUPPORTED", String(releaseManifest.schema_version));
   if (releaseManifest.tag !== tag) fail("RELEASE_MANIFEST_TAG_MISMATCH", `${releaseManifest.tag} != ${tag}`);
+  if (releaseManifest.repository !== repository) fail("RELEASE_MANIFEST_REPOSITORY_MISMATCH", `${releaseManifest.repository} != ${repository}`);
+  if (!releaseManifest.commit || !releaseManifest.workflow_run) fail("RELEASE_MANIFEST_PROVENANCE_MISSING", "commit or workflow_run");
   if (releaseManifest.archive?.name !== archiveAsset.name) fail("RELEASE_MANIFEST_ARCHIVE_MISMATCH", releaseManifest.archive?.name ?? "missing");
+  if (releaseManifest.archive?.size !== archiveAsset.size) fail("RELEASE_MANIFEST_ARCHIVE_SIZE_MISMATCH", `${releaseManifest.archive?.size} != ${archiveAsset.size}`);
   if (releaseManifest.archive?.sha256 !== archiveHash) fail("RELEASE_MANIFEST_CHECKSUM_MISMATCH", releaseManifest.archive?.sha256 ?? "missing");
   if (releaseManifest.checksums?.name !== checksumAsset.name) fail("RELEASE_MANIFEST_CHECKSUM_NAME_MISMATCH", releaseManifest.checksums?.name ?? "missing");
+  if (releaseManifest.checksums?.sha256 !== sha256(checksumBytes)) fail("RELEASE_MANIFEST_CHECKSUM_FILE_MISMATCH", releaseManifest.checksums?.sha256 ?? "missing");
 } else if (!baseline) {
   fail("RELEASE_MANIFEST_ASSET_MISSING", "zodchi-release-manifest.json");
 }

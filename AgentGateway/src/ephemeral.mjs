@@ -138,14 +138,19 @@ function jsonIfPresent(file) {
 // name is withheld and said so, never quietly absent.
 function selectMcpServers(sources, allowed) {
   const allowedNames = new Set(allowed ?? []);
-  const carried = [], withheld = [], sections = [];
+  const carried = [], withheld = [], shadowed = [], sections = [];
+  const selected = new Map();
   for (const { scope, text } of sources) {
     for (const [name, lines] of tomlTables(text, MCP_PREFIX)) {
-      if (allowedNames.has(name)) { carried.push({ scope, name }); sections.push(lines.join(LINE)); }
-      else withheld.push({ scope, name });
+      if (selected.has(name)) shadowed.push({ scope: selected.get(name).scope, name, by_scope: scope });
+      selected.set(name, { scope, name, lines });
     }
   }
-  return { carried, withheld, sections };
+  for (const item of selected.values()) {
+    if (allowedNames.has(item.name)) { carried.push({ scope: item.scope, name: item.name }); sections.push(item.lines.join(LINE)); }
+    else withheld.push({ scope: item.scope, name: item.name });
+  }
+  return { carried, withheld, shadowed, sections };
 }
 
 function capabilityReport(provider, { skills, mcp }) {
@@ -153,7 +158,7 @@ function capabilityReport(provider, { skills, mcp }) {
     provider,
     home: "ephemeral",
     skills: Object.freeze({ policy: "allowlist", allowed: Object.freeze(skills.allowed), withheld: Object.freeze(skills.withheld) }),
-    mcp_servers: Object.freeze({ policy: mcp.policy, carried: Object.freeze(mcp.carried ?? []), withheld: Object.freeze(mcp.withheld ?? []) })
+    mcp_servers: Object.freeze({ policy: mcp.policy, carried: Object.freeze(mcp.carried ?? []), withheld: Object.freeze(mcp.withheld ?? []), shadowed: Object.freeze(mcp.shadowed ?? []) })
   });
 }
 
@@ -201,7 +206,7 @@ export function createProviderEnvironment(provider, { tempRoot, sourceHome, sour
       return {
         directory,
         env: { CODEX_HOME: directory, RUST_LOG: "error" },
-        capabilities: capabilityReport(provider, { skills: { allowed: [...allowedSkillFiles], withheld: withheldSkills }, mcp: { policy: "allowlist", carried: mcp.carried, withheld: mcp.withheld } }),
+        capabilities: capabilityReport(provider, { skills: { allowed: [...allowedSkillFiles], withheld: withheldSkills }, mcp: { policy: "allowlist", carried: mcp.carried, withheld: mcp.withheld, shadowed: mcp.shadowed } }),
         cleanup: () => removeDirectory(directory)
       };
     }

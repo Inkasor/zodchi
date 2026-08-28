@@ -180,8 +180,16 @@ export function settleInteraction(db, interactionId, { status, answeredRunId = n
     appendEvent(db, { entityType: "workflow_run", entityId: answeredRunId ?? found.run_id, kind: "interaction_response_duplicate", payload: { interaction_id: interactionId, already: found.status, attempted: status } });
     return { settled: false, status: found.status, first_answered_run_id: found.answered_run_id ?? null };
   }
-  db.prepare("UPDATE approvals SET status=?,resolved_at=?,answered_run_id=?,answer_json=?,decision_id=COALESCE(?,decision_id) WHERE id=? AND status=?")
+  const changed = db.prepare("UPDATE approvals SET status=?,resolved_at=?,answered_run_id=?,answer_json=?,decision_id=COALESCE(?,decision_id) WHERE id=? AND status=?")
     .run(status, now(), answeredRunId, answer === null ? null : JSON.stringify(answer), decisionId, interactionId, OPEN_STATUS);
+  // Another delivery may have won between the read and the conditional write. The predicate is the
+  // concurrency control; ignoring `changes` made the loser emit a second settled event and report that it
+  // owned the answer even though SQLite changed no row.
+  if (changed.changes === 0) {
+    const current = row(db, interactionId);
+    appendEvent(db, { entityType: "workflow_run", entityId: answeredRunId ?? current.run_id, kind: "interaction_response_duplicate", payload: { interaction_id: interactionId, already: current.status, attempted: status } });
+    return { settled: false, status: current.status, first_answered_run_id: current.answered_run_id ?? null };
+  }
   appendEvent(db, { entityType: "workflow_run", entityId: found.run_id, kind: "interaction_settled", payload: { interaction_id: interactionId, interaction_kind: found.kind, status, actor, answered_run_id: answeredRunId } });
   return { settled: true, status, interaction: readInteraction(db, interactionId) };
 }
