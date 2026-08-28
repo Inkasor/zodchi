@@ -28,7 +28,12 @@ export function resolveCommandCapability(capability, { env = process.env, platfo
   if (spec.intrinsic) return Object.freeze({ capability, command: spec.intrinsic({ env, platform, execPath }), source: "runtime" });
   if (capability === "node.package_manager" && env.npm_execpath) {
     const configured = path.resolve(env.npm_execpath);
-    if (fs.existsSync(configured)) return Object.freeze({ capability, command: configured, source: "npm_execpath" });
+    if (fs.existsSync(configured)) {
+      const directlyExecutable = platform === "win32"
+        ? /\.(?:cmd|exe|bat|com)$/i.test(configured)
+        : (fs.statSync(configured).mode & 0o111) !== 0;
+      if (directlyExecutable) return Object.freeze({ capability, command: configured, source: "npm_execpath" });
+    }
   }
   const names = spec.names[platform] ?? spec.names.default;
   // npm is normally adjacent to node even when the parent directory was intentionally omitted from PATH.
