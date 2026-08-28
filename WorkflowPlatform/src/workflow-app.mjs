@@ -15,6 +15,7 @@ import { appendEvent } from "./state-machine.mjs";
 import { CLARIFICATION_KINDS, EXTERNAL_EVIDENCE_KIND, cancelInteraction, deliverEvidence, expireInteractions, openClarification, readInteraction } from "./interactions.mjs";
 import { resolveWorkflowSettings } from "./paths.mjs";
 import { bindProject, bindingEvidence } from "./project-binding.mjs";
+import { inside } from "./project-roots.mjs";
 import { continueApprovedRun, executeStructuredWork, pausedRunObjective, resumeObjective } from "./work-executor.mjs";
 import { chargeDirectReceipt, effectiveQualityMode, initializeQualityRun, operationalLevel, ownerQualityFloor, reserveDirectModelCall } from "./quality-contracts.mjs";
 
@@ -172,23 +173,34 @@ export async function deliverExternalEvidencePacket({
   } finally { runtime.db.close(); }
 }
 
+// A directory belongs to the project registered closest above it: with a project registered inside
+// another, the deeper root is the one that actually owns the file the message came from.
+function registeredRoot(db, candidate) {
+  const resolved = path.resolve(candidate);
+  const containing = db.prepare("SELECT id,root_path FROM projects").all().filter(row => inside(row.root_path, resolved));
+  if (!containing.length) return null;
+  return containing.sort((a, b) => path.resolve(b.root_path).length - path.resolve(a.root_path).length)[0].id;
+}
+
 export async function processMessage({
   message, project, origin = null, dbFile, workflow, workflowDefinition, execute = false, eventSource = "user", eventKey = null, eventFields = [],
   classificationResult = null, gatewayCall = callGateway, gateRunner = undefined, preferredLanguage = null, client = "codex"
 }) {
   const settings = resolveWorkflowSettings();
-  const binding = bindProject({ settings, origin, project });
-  project = binding.project;
   dbFile ??= settings.databasePath;
   workflow ??= settings.workflow ?? workflowDefinition?.id;
-  if (!project) throw new Error("PROJECT_REQUIRED: configure a project during onboarding or pass project explicitly");
   let definition = workflowDefinition ?? null;
   if (!definition && workflow) {
     try { definition = loadWorkflow(workflow, settings.workflowsRoot); }
     catch (error) { if (error?.code !== "ENOENT") throw error; }
   }
-  const projectSlug = path.basename(project).toLowerCase().replaceAll(" ", "-");
   const runtime = new Runtime(dbFile);
+  let binding;
+  try { binding = bindProject({ settings, origin, project, registeredAt: candidate => registeredRoot(runtime.db, candidate) }); }
+  catch (error) { runtime.db.close(); throw error; }
+  project = binding.project;
+  if (!project) { runtime.db.close(); throw new Error("PROJECT_REQUIRED: configure a project during onboarding or pass project explicitly"); }
+  const projectSlug = path.basename(project).toLowerCase().replaceAll(" ", "-");
   const registeredProject = runtime.db.prepare("SELECT id,root_path FROM projects WHERE id=? OR lower(root_path)=lower(?) LIMIT 1").get(project, path.resolve(project));
   if (!registeredProject) { runtime.db.close(); throw new Error(`PROJECT_NOT_REGISTERED: ${project}`); }
   const projectRoot = registeredProject.root_path;

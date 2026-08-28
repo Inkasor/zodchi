@@ -34,15 +34,25 @@ function related(declared, working) {
   return inside(declared, working) || inside(working, declared);
 }
 
-export function bindProject({ settings = {}, origin = null, project = null }) {
+// `project` is a caller naming one in the moment: a `--project` argument typed by a person, or a caller
+// that already resolved which project it means. It must never be filled in from the installation
+// settings on the way here — passing the declaration in as if someone had stated it turns the check
+// below into a check of the declaration against itself, which is how the first version of this let a
+// hook fired in project B answer under project A while reporting the binding as deliberate.
+//
+// `registeredAt` answers whether a directory is itself a registered project. A message from a directory
+// the declaration does not cover is not automatically an error: if that directory is a project of its
+// own, it is the project the message belongs to, and binding it there is both correct and what the
+// person meant. Refusal is for the remaining case, where nothing on record can say whose message it is.
+export function bindProject({ settings = {}, origin = null, project = null, registeredAt = () => null }) {
   const declared = settings.project ? path.resolve(settings.project) : null;
   const working = origin ? path.resolve(origin) : null;
-  // A project named on the command line is a person stating it in the moment, which is the one thing an
-  // inherited environment can never be.
   if (project) return Object.freeze({ project, binding: "named", declared, origin: working });
   if (!working) return Object.freeze({ project: declared, binding: declared ? "installation" : "none", declared, origin: null });
   if (!declared) return Object.freeze({ project: working, binding: "origin", declared: null, origin: working });
   if (related(declared, working)) return Object.freeze({ project: declared, binding: "installation", declared, origin: working });
+  const registered = registeredAt(working);
+  if (registered) return Object.freeze({ project: registered, binding: "origin", declared, origin: working });
   throw new Error(`PROJECT_BINDING_MISMATCH: ${declaredBy(settings, "project")} binds ${declared}, the message came from ${working}`);
 }
 
