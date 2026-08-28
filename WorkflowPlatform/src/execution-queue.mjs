@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { id, now } from "./db.mjs";
 import { appendEvent, canTransition } from "./state-machine.mjs";
+import { acquireStepResources, conflictFor, heldResources, releaseResourcesOfLease, resolveStepResources } from "./resource-locks.mjs";
 
 const TERMINAL_STEP_STATES = new Set(["completed", "documented", "failed", "cancelled"]);
 
@@ -63,7 +64,9 @@ function activateNextPhase(db, runId, at) {
   return steps.map(step => db.prepare("SELECT * FROM workflow_steps WHERE id=?").get(step.id));
 }
 
-const ACTIVE_QUEUE_STATES = ["pending", "ready", "leased", "running", "retry_scheduled"];
+// `unavailable` belongs here: a step that could not name its resource has not run, so a run holding one
+// is not drained and cannot be treated as finished.
+const ACTIVE_QUEUE_STATES = ["pending", "ready", "leased", "running", "retry_scheduled", "unavailable"];
 export function isQueueDrained(db, runId) {
   const placeholders = ACTIVE_QUEUE_STATES.map(() => "?").join(",");
   return !db.prepare(`SELECT 1 FROM workflow_steps WHERE run_id=? AND required=1 AND state IN (${placeholders}) LIMIT 1`).get(runId, ...ACTIVE_QUEUE_STATES);
@@ -97,6 +100,7 @@ function recoverExpiredInternal(db, at) {
     const step = db.prepare("SELECT * FROM workflow_steps WHERE id=?").get(lease.step_id);
     const attempt = db.prepare("SELECT * FROM attempts WHERE lease_id=? ORDER BY ordinal DESC LIMIT 1").get(lease.id);
     db.prepare("UPDATE leases SET released_at=?,release_reason='expired' WHERE id=? AND released_at IS NULL").run(at, lease.id);
+    releaseResourcesOfLease(db, lease.id, "expired", at);
     if (!step || TERMINAL_STEP_STATES.has(step.state)) continue;
     let action = "released";
     if (attempt?.state === "pending") entityState(db, "attempt", attempt.id, "cancelled", at, { reason: "lease expired before attempt start" });
@@ -122,6 +126,11 @@ function recoverExpiredInternal(db, at) {
   for (const runId of new Set(recovered.map(item => db.prepare("SELECT run_id FROM workflow_steps WHERE id=?").get(item.stepId)?.run_id).filter(Boolean))) {
     activateNextPhase(db, runId, at);
   }
+  // A resource lease that outlived its expiry without an execution lease to release it is recovered by the
+  // same rule. Nothing is inferred from how long it has been held: only the expiry it was given.
+  for (const orphan of db.prepare("SELECT id FROM resource_leases WHERE released_at IS NULL AND expires_at<=?").all(at)) {
+    db.prepare("UPDATE resource_leases SET released_at=?,release_reason='expired' WHERE id=? AND released_at IS NULL").run(at, orphan.id);
+  }
   return recovered;
 }
 
@@ -136,15 +145,21 @@ export class ExecutionQueue {
     });
   }
 
-  checkout({ ownerId, runId = null, roleId = null, stepKey = null, leaseMs = 60_000, at = now() }) {
+  // The candidate limit bounds the work one checkout does when many steps are blocked on resources
+  // somebody else holds; it is not a policy about which step runs, only about how far one attempt looks.
+  checkout({ ownerId, runId = null, roleId = null, stepKey = null, leaseMs = 60_000, candidateLimit = 32, at = now() }) {
     if (!ownerId) throw new Error("LEASE_OWNER_REQUIRED");
     if (!Number.isInteger(leaseMs) || leaseMs < 1) throw new Error("LEASE_DURATION_INVALID");
     return transaction(this.db, () => {
       const timestamp = iso(at);
       recoverExpiredInternal(this.db, timestamp);
-      const step = this.db.prepare(`SELECT ws.*,wr.task_id,wr.state AS run_state,wr.resume_state AS run_resume_state
+      // Candidates rather than one row: a step whose resource is held by someone else is skipped, not
+      // waited on, so the worker takes the next thing it can actually do. `unavailable` is a candidate
+      // too — the identity that could not be resolved last time is resolved again here, which is the only
+      // mechanism a step needs to recover once its repository or information base is reachable.
+      const candidates = this.db.prepare(`SELECT ws.*,wr.task_id,wr.state AS run_state,wr.resume_state AS run_resume_state
         FROM workflow_steps ws JOIN workflow_runs wr ON wr.id=ws.run_id
-        WHERE ws.state IN ('ready','retry_scheduled')
+        WHERE ws.state IN ('ready','retry_scheduled','unavailable')
           AND (ws.next_attempt_at IS NULL OR ws.next_attempt_at<=?)
           AND (? IS NULL OR ws.run_id=?)
           AND (? IS NULL OR ws.role_id=?)
@@ -156,15 +171,36 @@ export class ExecutionQueue {
             WHERE previous.run_id=ws.run_id AND previous.ordinal<ws.ordinal
               AND previous.required=1 AND previous.state NOT IN ('completed','documented','cancelled')
           )
-        ORDER BY ws.created_at,ws.run_id,ws.ordinal LIMIT 1`).get(timestamp, runId, runId, roleId, roleId, stepKey, stepKey);
+        ORDER BY ws.created_at,ws.run_id,ws.ordinal LIMIT ?`).all(timestamp, runId, runId, roleId, roleId, stepKey, stepKey, Math.max(1, candidateLimit));
+      let step = null, resources = [], blocked = null;
+      for (const candidate of candidates) {
+        let declared;
+        try { declared = resolveStepResources(candidate); }
+        catch (error) {
+          // Naming the resource is the step's own contract. A step that cannot name it does not get a
+          // lock on the whole project instead: it says which resource it could not resolve and waits.
+          if (error.code !== "RESOURCE_IDENTITY_UNRESOLVED") throw error;
+          if (candidate.state !== "unavailable") entityState(this.db, "workflow_step", candidate.id, "unavailable", timestamp, { reason: error.message });
+          this.db.prepare("UPDATE workflow_steps SET unavailable_reason=? WHERE id=?").run(error.message, candidate.id);
+          continue;
+        }
+        const conflict = declared.map(resource => conflictFor(this.db, resource.identity, resource.declaration.mode, candidate.id)).find(Boolean) ?? null;
+        if (conflict) { blocked ??= conflict; continue; }
+        step = candidate; resources = declared; break;
+      }
       if (!step) return null;
+      if (step.state === "unavailable") {
+        entityState(this.db, "workflow_step", step.id, "ready", timestamp, { reason: "resource identity resolved" });
+        this.db.prepare("UPDATE workflow_steps SET unavailable_reason=NULL WHERE id=?").run(step.id);
+      }
       if (step.run_state === "retry_scheduled") pairedState(this.db, step.run_id, step.run_resume_state ?? "executing", timestamp, { reason: "dead-letter retry checked out" }, { clearResume: true });
       if (step.state === "retry_scheduled") entityState(this.db, "workflow_step", step.id, "ready", timestamp, { reason: "retry delay elapsed" });
       const token = crypto.randomBytes(32).toString("base64url");
       const leaseId = id("lease");
       const expiresAt = iso(Date.parse(timestamp) + leaseMs);
+      const hashedToken = tokenHash(token);
       this.db.prepare("INSERT INTO leases(id,step_id,owner_id,token_hash,acquired_at,expires_at,heartbeat_at) VALUES(?,?,?,?,?,?,?)")
-        .run(leaseId, step.id, ownerId, tokenHash(token), timestamp, expiresAt, timestamp);
+        .run(leaseId, step.id, ownerId, hashedToken, timestamp, expiresAt, timestamp);
       entityState(this.db, "workflow_step", step.id, "leased", timestamp, { owner_id: ownerId, lease_id: leaseId });
       const ordinal = this.db.prepare("SELECT COALESCE(MAX(ordinal),0)+1 AS ordinal FROM attempts WHERE step_id=?").get(step.id).ordinal;
       const attemptId = id("attempt");
@@ -172,7 +208,11 @@ export class ExecutionQueue {
       this.db.prepare("INSERT INTO attempts(id,step_id,ordinal,state,idempotency_key,lease_id,details_json) VALUES(?,?,?,'pending',?,?, '{}')")
         .run(attemptId, step.id, ordinal, attemptKey, leaseId);
       appendEvent(this.db, { entityType: "attempt", entityId: attemptId, kind: "created", payload: { idempotency_key: attemptKey, lease_id: leaseId } });
-      return { token, leaseId, attemptId, attemptNo: ordinal, stepId: step.id, stepKey: step.step_key, runId: step.run_id, taskId: step.task_id, ownerId, expiresAt };
+      // The resource lease carries the execution lease's own token, so one heartbeat extends both and one
+      // release ends both. A resource held after the attempt that took it is a resource nobody will free.
+      const held = acquireStepResources(this.db, { step, resources, runId: step.run_id, ownerId, tokenHash: hashedToken, leaseId, attemptId, acquiredAt: timestamp, expiresAt });
+      if (held.conflict) throw new Error(`RESOURCE_CONFLICT: ${held.conflict.identity}`);
+      return { token, leaseId, attemptId, attemptNo: ordinal, stepId: step.id, stepKey: step.step_key, runId: step.run_id, taskId: step.task_id, ownerId, expiresAt, resources: held.acquired, blockedBy: blocked };
     });
   }
 
@@ -184,6 +224,14 @@ export class ExecutionQueue {
       const step = this.db.prepare("SELECT * FROM workflow_steps WHERE id=?").get(lease.step_id);
       const attempt = this.db.prepare("SELECT * FROM attempts WHERE lease_id=? ORDER BY ordinal DESC LIMIT 1").get(lease.id);
       if (step.state === "running" && attempt?.state === "running") return { stepId: step.id, attemptId: attempt.id, idempotent: true };
+      // A step that declared it writes something must be holding that something before it starts. Without
+      // this the receipt is the only record of the lock, and a step reaching execution by any other path
+      // would write with no lock at all while the record still said it had one.
+      const held = heldResources(this.db, step.id);
+      for (const declaration of JSON.parse(step.resources_json ?? "[]")) {
+        if (declaration?.mode !== "exclusive") continue;
+        if (!held.some(resource => resource.mode === "exclusive")) throw new Error(`RESOURCE_RECEIPT_MISSING: ${step.step_key} declared ${declaration.kind} exclusive`);
+      }
       entityState(this.db, "workflow_step", step.id, "running", timestamp, { lease_id: lease.id });
       entityState(this.db, "attempt", attempt.id, "running", timestamp, { lease_id: lease.id });
       this.db.prepare("UPDATE leases SET heartbeat_at=? WHERE id=?").run(timestamp, lease.id);
@@ -198,6 +246,9 @@ export class ExecutionQueue {
       if (lease.expires_at <= timestamp) throw new Error("LEASE_EXPIRED");
       const expiresAt = iso(Date.parse(timestamp) + leaseMs);
       this.db.prepare("UPDATE leases SET heartbeat_at=?,expires_at=? WHERE id=?").run(timestamp, expiresAt, lease.id);
+      // The resources are held for exactly as long as the attempt holding them, so one heartbeat extends
+      // both. Extending only the execution lease would let a live attempt lose its resource to recovery.
+      this.db.prepare("UPDATE resource_leases SET heartbeat_at=?,expires_at=? WHERE lease_id=? AND released_at IS NULL").run(timestamp, expiresAt, lease.id);
       return { leaseId: lease.id, expiresAt };
     });
   }
@@ -215,10 +266,14 @@ export class ExecutionQueue {
       const step = this.db.prepare("SELECT * FROM workflow_steps WHERE id=?").get(lease.step_id);
       if (step.state !== "running" || attempt?.state !== "running") throw new Error("ATTEMPT_NOT_RUNNING");
       entityState(this.db, "attempt", attempt.id, "succeeded", timestamp, { receipt_id: receiptId });
-      this.db.prepare("UPDATE attempts SET receipt_id=?,details_json=? WHERE id=?").run(receiptId, JSON.stringify(details), attempt.id);
+      // The identities this attempt held belong in its own record. Reading them back from the lease table
+      // works only until the leases are released, which is the next statement.
+      const resources = heldResources(this.db, step.id);
+      this.db.prepare("UPDATE attempts SET receipt_id=?,details_json=? WHERE id=?").run(receiptId, JSON.stringify({ ...details, ...(resources.length ? { resources } : {}) }), attempt.id);
       entityState(this.db, "workflow_step", step.id, "verifying", timestamp, { reason: "attempt succeeded" });
       entityState(this.db, "workflow_step", step.id, "completed", timestamp, { reason: "attempt result confirmed" });
       this.db.prepare("UPDATE leases SET released_at=?,release_reason='completed' WHERE id=?").run(timestamp, lease.id);
+      releaseResourcesOfLease(this.db, lease.id, "completed", timestamp);
       const activated = activateNextPhase(this.db, step.run_id, timestamp);
       if (isQueueDrained(this.db, step.run_id)) {
         const recorded = this.db.prepare("SELECT 1 FROM events WHERE entity_type='workflow_run' AND entity_id=? AND kind='queue_drained' LIMIT 1").get(step.run_id);
@@ -237,8 +292,10 @@ export class ExecutionQueue {
       const attempt = this.db.prepare("SELECT * FROM attempts WHERE lease_id=? ORDER BY ordinal DESC LIMIT 1").get(lease.id);
       if (step.state !== "running" || attempt?.state !== "running") throw new Error("ATTEMPT_NOT_RUNNING");
       entityState(this.db, "attempt", attempt.id, "failed", timestamp, { category });
-      this.db.prepare("UPDATE attempts SET error_category=?,details_json=? WHERE id=?").run(category, JSON.stringify(details), attempt.id);
+      const resources = heldResources(this.db, step.id);
+      this.db.prepare("UPDATE attempts SET error_category=?,details_json=? WHERE id=?").run(category, JSON.stringify({ ...details, ...(resources.length ? { resources } : {}) }), attempt.id);
       this.db.prepare("UPDATE leases SET released_at=?,release_reason='failed' WHERE id=?").run(timestamp, lease.id);
+      releaseResourcesOfLease(this.db, lease.id, "failed", timestamp);
       const attemptCount = this.db.prepare("SELECT COUNT(*) AS count FROM attempts WHERE step_id=?").get(step.id).count;
       if (retryable && !step.irreversible && attemptCount < step.max_attempts) {
         entityState(this.db, "workflow_step", step.id, "retry_scheduled", timestamp, { category, attempt: attemptCount, max_attempts: step.max_attempts });
@@ -267,6 +324,7 @@ export class ExecutionQueue {
           const attempt = this.db.prepare("SELECT * FROM attempts WHERE lease_id=? ORDER BY ordinal DESC LIMIT 1").get(lease.id);
           if (attempt && ["pending", "running"].includes(attempt.state)) entityState(this.db, "attempt", attempt.id, "cancelled", timestamp, { reason });
           this.db.prepare("UPDATE leases SET released_at=?,release_reason='abandoned' WHERE id=?").run(timestamp, lease.id);
+          releaseResourcesOfLease(this.db, lease.id, "abandoned", timestamp);
         }
         if (canTransition("workflow_step", step.state, "cancelled")) entityState(this.db, "workflow_step", step.id, "cancelled", timestamp, { reason });
         abandoned.push(step.id);
@@ -301,6 +359,7 @@ export class ExecutionQueue {
         const attempt = this.db.prepare("SELECT * FROM attempts WHERE lease_id=? ORDER BY ordinal DESC LIMIT 1").get(lease.id);
         if (attempt && ["pending", "running"].includes(attempt.state)) entityState(this.db, "attempt", attempt.id, "cancelled", timestamp, { reason });
         this.db.prepare("UPDATE leases SET released_at=?,release_reason='cancelled' WHERE id=?").run(timestamp, lease.id);
+        releaseResourcesOfLease(this.db, lease.id, "cancelled", timestamp);
       }
       for (const step of this.db.prepare("SELECT * FROM workflow_steps WHERE run_id=? ORDER BY ordinal").all(runId)) {
         if (!TERMINAL_STEP_STATES.has(step.state) && canTransition("workflow_step", step.state, "cancelled")) entityState(this.db, "workflow_step", step.id, "cancelled", timestamp, { reason });

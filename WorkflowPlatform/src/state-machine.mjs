@@ -6,7 +6,7 @@ export const TASK_STATES = Object.freeze([
   "approval_required", "documented", "completed", "cancelled", "rejected", "failed", "paused", "blocked", "retry_scheduled"
 ]);
 export const RUN_STATES = TASK_STATES;
-export const STEP_STATES = Object.freeze(["pending", "ready", "leased", "running", "verifying", "review_required", "changes_requested", "approval_required", "documented", "completed", "failed", "cancelled", "blocked", "retry_scheduled"]);
+export const STEP_STATES = Object.freeze(["pending", "ready", "leased", "running", "verifying", "review_required", "changes_requested", "approval_required", "documented", "completed", "failed", "cancelled", "blocked", "retry_scheduled", "unavailable"]);
 export const ATTEMPT_STATES = Object.freeze(["pending", "running", "succeeded", "failed", "timed_out", "cancelled"]);
 
 const taskTransitions = {
@@ -50,7 +50,7 @@ const taskTransitions = {
 
 const stepTransitions = {
   pending: ["ready", "cancelled", "blocked"],
-  ready: ["leased", "running", "cancelled", "blocked"],
+  ready: ["leased", "running", "unavailable", "cancelled", "blocked"],
   leased: ["running", "ready", "cancelled", "blocked"],
   running: ["verifying", "approval_required", "retry_scheduled", "failed", "cancelled", "blocked"],
   verifying: ["review_required", "changes_requested", "approval_required", "documented", "completed", "retry_scheduled", "failed", "blocked", "cancelled"],
@@ -58,8 +58,12 @@ const stepTransitions = {
   changes_requested: ["ready", "retry_scheduled", "failed", "cancelled"],
   approval_required: ["ready", "documented", "completed", "failed", "cancelled"],
   documented: ["completed", "cancelled"],
-  retry_scheduled: ["ready", "blocked", "cancelled"],
+  retry_scheduled: ["ready", "unavailable", "blocked", "cancelled"],
   blocked: ["retry_scheduled", "ready", "failed", "cancelled"],
+  // A step whose resource nobody can name has not failed and has not run. It costs no attempt, and the
+  // next checkout resolves it again, so a repository that was not mounted yet starts working by itself
+  // once it is. What it must never do is look finished.
+  unavailable: ["ready", "blocked", "cancelled"],
   completed: [], failed: [], cancelled: []
 };
 

@@ -3,6 +3,14 @@ import { openDb, now, id } from "./db.mjs";
 import { validateClassification } from "../contracts/schemas.mjs";
 import { appendEvent, transitionRunAndTask } from "./state-machine.mjs";
 import { CLARIFICATION_KINDS, settleInteraction } from "./interactions.mjs";
+import { normalizeResourceDeclaration } from "./resource-locks.mjs";
+
+// A malformed resource declaration is rejected where it is written, not where it is used: a step created
+// with an unknown kind would otherwise sit in the queue until a worker picked it up and only then say so.
+function declaredResources(resources) {
+  const declared = (resources ?? []).map(normalizeResourceDeclaration);
+  return JSON.stringify(declared);
+}
 
 function roleForStage(stage) {
   if (stage === "planning") return "planner";
@@ -132,8 +140,8 @@ export class Runtime {
         const roleKey = stage.role ?? roleForStage(stepKey);
         const role = roleKey ? this.db.prepare("SELECT id FROM roles WHERE id=?").get(roleKey)?.id ?? null : null;
         const ordinal = planned.ordinal + index + 1;
-        this.db.prepare("INSERT INTO workflow_steps(id,run_id,step_key,ordinal,role_id,state,required,irreversible,idempotency_key,created_at,updated_at,max_attempts) VALUES(?,?,?,?,?,'pending',?,?,?,?,?,?)")
-          .run(id("step"), runId, stepKey, ordinal, role, stage.required === false ? 0 : 1, stage.irreversible ? 1 : 0, `${runId}:${stepKey}:${ordinal}`, timestamp, timestamp, stage.max_attempts ?? 3);
+        this.db.prepare("INSERT INTO workflow_steps(id,run_id,step_key,ordinal,role_id,state,required,irreversible,idempotency_key,created_at,updated_at,max_attempts,resources_json) VALUES(?,?,?,?,?,'pending',?,?,?,?,?,?,?)")
+          .run(id("step"), runId, stepKey, ordinal, role, stage.required === false ? 0 : 1, stage.irreversible ? 1 : 0, `${runId}:${stepKey}:${ordinal}`, timestamp, timestamp, stage.max_attempts ?? 3, declaredResources(stage.resources));
       }
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
