@@ -142,7 +142,7 @@ execFileSync(process.execPath, [path.join(productRoot, "tools", "install.mjs"), 
 // A real workflow through the real AgentGateway process, with a deterministic provider standing in
 // for the model. It proves delivery, routing, gates and receipts; it proves nothing about model
 // quality, and the evidence says so.
-// The registered checks of `example.web-app` run the project's own npm scripts, so the smoke project
+// The registered checks of `software.web-application` run the project's own npm scripts, so the smoke project
 // declares them and they succeed. A project that cannot satisfy its package's gate would make the
 // smoke pass on a red gate, and a red gate looks the same whether the product works or not.
 const projectRoot = path.join(work, "smoke-project");
@@ -167,9 +167,9 @@ fs.writeFileSync(smokeConfig, JSON.stringify({
     project_id: "released-smoke",
     name: "Released package smoke",
     root_path: projectRoot,
-    package_key: "example.web-app",
-    package_file: path.join(installed, "WorkflowPlatform", "packages", "example", "generated", "example.web-app.xml"),
-    workflow_key: "example_web_app.verification"
+    package_key: "software.web-application",
+    package_file: path.join(installed, "WorkflowPlatform", "packages", "example", "generated", "software.web-application.xml"),
+    workflow_key: "software_web_application.runtime"
   }]
 }, null, 2), "utf8");
 

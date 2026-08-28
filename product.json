@@ -25,6 +25,7 @@
     "OpenAI-compatible API"
   ],
   "workflowPackages": [
-    "example.web-app"
+    "software.web-application",
+    "one-c.development"
   ]
 }

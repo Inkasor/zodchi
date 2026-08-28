@@ -5,29 +5,52 @@
 // Point `packageDefinitions` in the runtime configuration at your own file to replace it. That file
 // exports the same default function and receives the same builder module, so it needs no import path.
 export default function definePackages(b) {
-  const { checkBinding, capabilityCheck, completeSoftwareChecks, companyWebPackage, composedPackage, coreLifecycle, domainAdapter, externalRuntime, releaseCapability, sourceChange } = b;
+  const { accessManagement, checkBinding, capabilityCheck, composedPackage, contentProduction, coreLifecycle, dataChange, documentationCapability, domainAdapter, externalRuntime, incidentCapability, projectBootstrap, releaseCapability, securityChecks, securityReview, sourceChange } = b;
 
-  const checks = completeSoftwareChecks([
-    capabilityCheck("example_lint", "Example lint", "node.package_manager", ["run", "lint"], [checkBinding("prototype", null)], 900),
-    capabilityCheck("example_tests", "Example tests", "node.package_manager", ["test"], [checkBinding("mvp", "code")], 1800),
-    capabilityCheck("example_build", "Example production build", "node.package_manager", ["run", "build"], [checkBinding("production", "release_package")], 1800)
-  ], "example_lint", "example");
+  const webChecks = [
+    capabilityCheck("web_lint", "Web application lint", "node.package_manager", ["run", "lint"], [checkBinding("prototype", null), checkBinding("mvp", "code"), checkBinding("production", "release_package")], 900),
+    capabilityCheck("web_tests", "Web application tests", "node.package_manager", ["test"], [checkBinding("mvp", "code"), checkBinding("production", "release_package")], 1800),
+    capabilityCheck("web_build", "Web application production build", "node.package_manager", ["run", "build"], [checkBinding("production", "release_package")], 1800),
+    ...securityChecks("web").filter(item => item.kind !== "secret_scan")
+  ];
 
-  const example = companyWebPackage({
-    key: "example.web-app",
-    version: "3.0.0",
-    purpose: "Example company web workflow: bounded change, reversible data change, verified release, incident, access, security review and traceable content.",
-    checks,
-    content: true,
-    codeChecks: ["example_tests", "example_build"],
-    dataChecks: ["example_tests", "example_build"],
-    releaseChecks: checks.map(item => item.key),
-    documents: [
-      { key: "repo_rules", path: "AGENTS.md", type: "authority", authority: "example" },
-      { key: "readme", path: "README.md", type: "authority", authority: "example" },
-      { key: "package", path: "package.json", type: "reference", authority: "example" }
-    ]
-  });
+  const webPrefix = "software_web_application";
+  const webEvidenceFlow = {
+    key: "typescript.api_to_ui",
+    claim_type: "cross_layer_chain",
+    subject: "server-produced application value",
+    target: "rendered UI consumer",
+    workflow_keys: [`${webPrefix}.change`, `${webPrefix}.runtime`],
+    nodes: [
+      { key: "producer", step_keys: ["work"], path_hints: ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx"], anchor_terms: ["return", "select", "calculate"] },
+      { key: "api", step_keys: ["work"], path_hints: ["**/api/**", "**/routes/**", "**/controllers/**"], anchor_terms: ["json", "response", "schema"] },
+      { key: "client_mapping", step_keys: ["work"], path_hints: ["**/client/**", "**/services/**", "**/api/**"], anchor_terms: ["map", "response", "data"] },
+      { key: "state_model", step_keys: ["work"], path_hints: ["**/store/**", "**/state/**", "**/models/**"], anchor_terms: ["setState", "reducer", "model"] },
+      { key: "ui_consumer", step_keys: ["work"], path_hints: ["**/components/**", "**/pages/**", "**/*.tsx", "**/*.jsx"], anchor_terms: ["render", "props", "row"] }
+    ],
+    required_edges: ["producer->api", "api->client_mapping", "client_mapping->state_model", "state_model->ui_consumer"],
+    material_symbols: [],
+    transition: { adapter: "typescript-compiler", method: "assignment_continuity" },
+    status: "active"
+  };
+  const software = composedPackage(
+    coreLifecycle({
+      key: "software.web-application", version: "1.0.0", purpose: "Portable Web application workflow for bounded source and data changes, evidence-grounded API-to-UI review, incidents, access and approved release.", rolePreset: "full",
+      domains: ["software"], disciplines: ["software"], checks: webChecks,
+      documents: [{ key: "repo_rules", path: "AGENTS.md", type: "authority", authority: "project" }, { key: "readme", path: "README.md", type: "authority", authority: "project" }, { key: "package", path: "package.json", type: "reference", authority: "project" }]
+    }),
+    domainAdapter({ key: "typescript", domains: ["software"], disciplines: ["software"], materialClaims: true, evidenceFlows: [webEvidenceFlow] }),
+    sourceChange({ checkKeys: ["web_lint", "web_tests"] }),
+    dataChange({ checkKeys: ["web_tests"] }),
+    contentProduction({ checkKeys: ["web_lint"] }),
+    releaseCapability({ checkKeys: webChecks.map(item => item.key) }),
+    incidentCapability({ checkKeys: ["web_tests"] }),
+    externalRuntime({ checkKeys: ["web_tests"] }),
+    accessManagement({ checkKeys: ["web_lint"] }),
+    projectBootstrap({ checkKeys: ["web_lint", "web_tests"] }),
+    documentationCapability({ checkKeys: ["web_lint"] }),
+    securityReview({ checkKeys: ["web_gitleaks", "web_osv"] })
+  );
   const bslCheck = {
     key: "bsl_language_server",
     name: "BSL Language Server policy against the accepted diagnostic baseline",
@@ -66,6 +89,6 @@ export default function definePackages(b) {
     externalRuntime({ workTypes: ["one-c.resume", "one-c.diagnosis", "one-c.functional-test"], checkKeys: ["bsl_language_server"] }),
     releaseCapability({ workTypes: ["one-c.release"], checkKeys: ["bsl_language_server"] })
   );
-  const packages = [example, oneC];
-  return { packages, bundles: [] };
+  const packages = [software, oneC];
+  return { packages, bundles: [], aliases: [{ key: "example.web-app", target: "software.web-application", deprecated: true, remove_after: "0.6.x" }] };
 }

@@ -36,7 +36,7 @@
   </owner_boundary>
 
   <example status="accepted">
-    <package>example.web-app</package>
+    <package>software.web-application</package>
     <purpose>The package this repository ships so the format, the builders and the generator can be built, validated and tested without any real project.</purpose>
     <rule id="replaceable">Generate and check your own packages by naming your definition file: npm run packages:generate -- --definitions &lt;file&gt;, or --installation to use the packageDefinitions setting. The repository contract tests always run against the example, because a suite that follows a machine-local setting proves nothing about the product.</rule>
   </example>

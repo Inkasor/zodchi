@@ -65,6 +65,17 @@ test("public catalog versions and files are generated from the package definitio
     assert.equal(parsed.key, item.key);
     assert.equal(parsed.version, item.version);
   }
+  assert.deepEqual(publicCatalog.aliases, [{ key: "example.web-app", target: "software.web-application", deprecated: true, remove_after: "0.6.x" }]);
+});
+
+test("the canonical Web package is SDK-composed and requires anchored API-to-UI transitions", () => {
+  const packageValue = PACKAGE_DEFINITIONS.find(item => item.key === "software.web-application");
+  assert.ok(packageValue);
+  for (const workType of ["implementation", "data_change", "release", "incident", "access_management", "project_bootstrap", "documentation", "security_review"]) assert.equal(packageValue.routes.some(item => item.work_type_key === workType), true, workType);
+  assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["classifier", "coordinator", "editor", "release_operator", "reviewer", "worker"]);
+  const flow = packageValue.evidence_flows.find(item => item.key === "typescript.api_to_ui");
+  assert.deepEqual(flow.required_edges, ["producer->api", "api->client_mapping", "client_mapping->state_model", "state_model->ui_consumer"]);
+  assert.deepEqual(flow.transition, { adapter: "typescript-compiler", method: "assignment_continuity" });
 });
 
 test("an installation catalog is generated and checked from its named definitions", () => {
