@@ -65,4 +65,7 @@ test("package lint rejects purposeless roles and gates without a runner", () => 
   assert.throws(() => validateWorkflowPackage(purposeless), /executable purpose is required/);
   const runnerless = structuredClone(packageValue); runnerless.checks[0].runner = "";
   assert.throws(() => validateWorkflowPackage(runnerless), /executable runner is required/);
+  const duplicateQuality = structuredClone(packageValue);
+  duplicateQuality.checks[0].bindings.push({ quality_mode_key: "mvp", artifact_type_key: "code", required: true });
+  assert.throws(() => validateWorkflowPackage(duplicateQuality), /bindings_by_quality: duplicate mvp/);
 });
