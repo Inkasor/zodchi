@@ -34,6 +34,27 @@
       "support_status": "preview",
       "file": "example/generated/game.unity.xml",
       "owner_acceptance": []
+    },
+    {
+      "key": "data.analytics",
+      "version": "0.1.0",
+      "support_status": "preview",
+      "file": "example/generated/data.analytics.xml",
+      "owner_acceptance": []
+    },
+    {
+      "key": "infra.operations",
+      "version": "0.1.0",
+      "support_status": "preview",
+      "file": "example/generated/infra.operations.xml",
+      "owner_acceptance": []
+    },
+    {
+      "key": "marketing.content-operations",
+      "version": "0.1.0",
+      "support_status": "preview",
+      "file": "example/generated/marketing.content-operations.xml",
+      "owner_acceptance": []
     }
   ],
   "aliases": [
