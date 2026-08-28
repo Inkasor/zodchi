@@ -49,9 +49,13 @@ export function buildRelease({ repositoryRoot, output, stageRoot = os.tmpdir(), 
     for (const file of ["package.json", "policy.json", "model-providers.json"]) copyFile(path.join(repository, "AgentGateway"), file, path.join(stage, "AgentGateway"));
     for (const tree of ["configs", "docs", "tools/lib", "tools/tests"]) copyTree(repository, tree, stage);
     for (const file of ["README.md", "QUICKSTART.md", "ONBOARDING_PROMPT.md", "LICENSE", "CHANGELOG.md", "SECURITY.md", "CONTRIBUTING.md", "THIRD_PARTY_NOTICES.md", "UPDATE.md", "product.json", "package.json"]) copyFile(repository, file, stage);
-    for (const file of ["build-release.mjs", "build-release.ps1", "validate-source.mjs"]) copyFile(repository, `scripts/${file}`, stage, `scripts/${file}`);
+    for (const file of ["build-release.mjs", "build-release-manifest.mjs", "build-release.ps1", "validate-source.mjs"]) copyFile(repository, `scripts/${file}`, stage, `scripts/${file}`);
     for (const file of ["install.mjs", "installation-paths.mjs", "install-or-update.ps1", "install-latest.ps1", "install-latest.mjs", "install-latest.sh", "release-smoke.mjs", "platform-acceptance.mjs"]) copyFile(repository, `tools/${file}`, stage, `tools/${file}`);
-    copyFile(path.join(repository, "WorkflowPlatform"), "scripts/release-lint.mjs", stage, "tools/release-lint.mjs");
+    const sourceReleaseLint = fs.existsSync(path.join(repository, "WorkflowPlatform", "scripts", "release-lint.mjs"))
+      ? path.join(repository, "WorkflowPlatform")
+      : repository;
+    const sourceReleaseLintPath = sourceReleaseLint === repository ? "tools/release-lint.mjs" : "scripts/release-lint.mjs";
+    copyFile(sourceReleaseLint, sourceReleaseLintPath, stage, "tools/release-lint.mjs");
     execFileSync(process.execPath, [path.join(stage, "tools", "release-lint.mjs"), stage, "--write-manifest"], { encoding: "utf8", windowsHide: true, stdio: "pipe" });
     if (fs.existsSync(destination)) {
       if (!replace) throw new Error(`RELEASE_OUTPUT_EXISTS: ${destination}`);
