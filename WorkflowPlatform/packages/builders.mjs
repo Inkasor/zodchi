@@ -1,13 +1,14 @@
 import { ATTEMPT_STATES, RUN_STATES, STEP_STATES, TASK_STATES, ALLOWED_TRANSITIONS } from "../src/state-machine.mjs";
 import { structuredHash } from "../src/role-contracts.mjs";
+import * as packageSdk from "./sdk.mjs";
 
 const PACKAGE_VERSION = "3.0.0";
 const REVIEW_CONTEXT_BYTES = 256 * 1024;
 
 const workTypeCatalog = {
-  conversation: ["Conversation", "dialogue"], continuation: ["Continuation", "dialogue"], clarification: ["Clarification", "dialogue"], task: ["Task", "work"], decision: ["Decision", "work"], research: ["Research", "work"], implementation: ["Implementation", "work"], documentation: ["Documentation", "work"], review: ["Review", "verification"], verification: ["Verification", "verification"], testing: ["Testing", "verification"], planning: ["Planning", "work"], fix: ["Fix", "work"], content: ["Content", "material"], marketing: ["Marketing", "material"], release: ["Release", "work"], deployment: ["Deployment", "work"], data_change: ["Data change", "work"], data_collection: ["Data collection", "work"], incident: ["Incident", "work"], access_management: ["Access management", "work"], project_bootstrap: ["Project bootstrap", "work"], security_review: ["Security review", "verification"], game_design: ["Game design", "game"], narrative: ["Narrative", "game"], map_design: ["Map design", "game"], technical_art: ["Technical art", "material"], art_direction: ["Art direction", "material"], audio: ["Audio", "material"], asset: ["Asset", "material"], prototype: ["Prototype", "work"], producer: ["Producer", "work"], "one-c.resume": ["Resume 1C work", "one-c"], "one-c.diagnosis": ["Diagnose 1C behavior", "one-c"], "one-c.change": ["Change 1C source", "one-c"], "one-c.integration": ["Change a 1C integration", "one-c"], "one-c.module-build": ["Build a 1C module", "one-c"], "one-c.release": ["Release a 1C change", "one-c"], "one-c.functional-test": ["Run a 1C functional test", "one-c"]
+  conversation: ["Conversation", "dialogue"], continuation: ["Continuation", "dialogue"], clarification: ["Clarification", "dialogue"], task: ["Task", "work"], decision: ["Decision", "work"], research: ["Research", "work"], implementation: ["Implementation", "work"], documentation: ["Documentation", "work"], review: ["Review", "verification"], verification: ["Verification", "verification"], testing: ["Testing", "verification"], planning: ["Planning", "work"], fix: ["Fix", "work"], content: ["Content", "material"], marketing: ["Marketing", "material"], release: ["Release", "work"], deployment: ["Deployment", "work"], data_change: ["Data change", "work"], data_collection: ["Data collection", "work"], incident: ["Incident", "work"], access_management: ["Access management", "work"], project_bootstrap: ["Project bootstrap", "work"], security_review: ["Security review", "verification"], game_design: ["Game design", "game"], narrative: ["Narrative", "game"], map_design: ["Map design", "game"], technical_art: ["Technical art", "material"], art_direction: ["Art direction", "material"], audio: ["Audio", "material"], asset: ["Asset", "material"], prototype: ["Prototype", "work"], producer: ["Producer", "work"], "one-c.resume": ["Resume 1C work", "one-c"], "one-c.diagnosis": ["Diagnose 1C behavior", "one-c"], "one-c.change": ["Change 1C source", "one-c"], "one-c.integration": ["Change a 1C integration", "one-c"], "one-c.module-build": ["Build a 1C module", "one-c"], "one-c.release": ["Release a 1C change", "one-c"], "one-c.functional-test": ["Run a 1C functional test", "one-c"], "game.change": ["Bounded game code change", "game"], "game.build-test": ["Game build and test", "game"], "game.technical-qa": ["Game technical QA", "game"], "game.release-readiness": ["Game release readiness", "game"], "game.pipeline-audit": ["Game pipeline audit", "game"], "data.discovery": ["Data discovery", "data"], "data.verification": ["Data verification", "data"], "infra.inventory": ["Infrastructure inventory", "infra"], "infra.backup-restore": ["Backup and restore", "infra"], "marketing.research": ["Marketing research", "marketing"], "marketing.activity": ["Marketing activity", "marketing"]
 };
-const domainCatalog = { software: "Software", "one-c": "1C", "game-development": "Game development", content: "Content", business: "Business", education: "Education", research: "Research", other: "Other" };
+const domainCatalog = { software: "Software", "one-c": "1C", "game-development": "Game development", data: "Data", infrastructure: "Infrastructure", marketing: "Marketing", content: "Content", business: "Business", education: "Education", research: "Research", other: "Other" };
 const disciplineCatalog = { software: "Software", "one-c-development": "1C development", producer: "Producer", game_design: "Game design", content: "Content", marketing: "Marketing", documentation: "Documentation", testing: "Testing", release: "Release", devops: "DevOps", other: "Other" };
 const artifactCatalog = {
   none: ["None", "none"], document: ["Document", "document"], code: ["Code", "code"], prototype: ["Prototype", "code"], visual_asset: ["Visual asset", "material"], audio_asset: ["Audio asset", "material"], content_asset: ["Content asset", "material"], technical_art_spec: ["Technical art specification", "document"], test_report: ["Test report", "document"], decision: ["Decision", "document"], release_package: ["Release package", "package"], data_migration: ["Data migration", "package"], deployment_evidence: ["Deployment evidence", "document"], incident_report: ["Incident report", "document"], access_change: ["Access change", "document"], collection_evidence: ["Collection evidence", "document"], security_report: ["Security report", "document"], workflow_package: ["Workflow package", "package"]
@@ -87,7 +88,7 @@ function normalizeOperationalLevels(levels = [], checks = []) {
     return { level, improvement_strategy: improvementStrategy, budgets: effectiveBudgets, required_check_keys: requested.length ? requested : [...applicable], correction_limit: effectiveBudgets.correction_cycles, escalation: existing.escalation ?? {} };
   });
 }
-function step(key, ordinal, roleKey, artifacts = [], checks = [], options = {}) { return { key, ordinal, role_key: roleKey, required: options.required !== false, irreversible: Boolean(options.irreversible), input_schema_key: options.input ?? "package.v1", output_schema_key: options.output ?? (roleKey?.includes("reviewer") || roleKey === "reviewer" ? "reviewer.v1" : roleKey?.includes("documentator") || roleKey === "documentator" ? "documentator.v1" : roleKey?.includes("planner") || roleKey === "planner" ? "planner.v1" : roleKey ? "worker.v1" : "approval.v1"), artifact_type_keys: artifacts, check_keys: checks, resources: options.resources ?? [], correction: options.correction ?? { max_cycles: roleKey && !roleKey.includes("reviewer") ? 1 : 0 }, escalation: options.escalation ?? { human_required_for_owner_decision: true } }; }
+function step(key, ordinal, roleKey, artifacts = [], checks = [], options = {}) { return { key, ordinal, role_key: roleKey, required: options.required !== false, irreversible: Boolean(options.irreversible), input_schema_key: options.input ?? "package.v1", output_schema_key: options.output ?? (roleKey?.includes("reviewer") || roleKey === "reviewer" ? "reviewer.v1" : roleKey?.includes("documentator") || roleKey === "documentator" || roleKey === "editor" ? "documentator.v1" : roleKey?.includes("planner") || roleKey === "planner" || roleKey === "coordinator" ? "planner.v1" : roleKey ? "worker.v1" : "approval.v1"), artifact_type_keys: artifacts, check_keys: checks, resources: options.resources ?? [], correction: options.correction ?? { max_cycles: roleKey && !roleKey.includes("reviewer") ? 1 : 0 }, escalation: options.escalation ?? { human_required_for_owner_decision: true } }; }
 const transitions = steps => steps.slice(1).map((item, index) => ({ from: steps[index].key, to: item.key, condition: { previous_required_step: "completed" } }));
 function workflow(key, name, steps, questions = [], options = {}) { return { key, name, default_quality: options.quality ?? "mvp", default_level: options.level ?? "L2", status: "active", discovery: { git: true }, history_budget_bytes: options.history ?? 24000, steps, transitions: transitions(steps), questions }; }
 const question = (key, prompt, phase = "planning", required = true) => ({ key, phase, prompt, answer_schema: { type: "string", min_length: 1 }, required });
@@ -207,5 +208,92 @@ function companyWebPackage(spec) {
   });
 }
 
+function composedPackage(core, ...components) {
+  const spec = packageSdk.composeLifecycle(core, ...components);
+  const prefix = spec.key.replaceAll(/[^a-z0-9]+/g, "_");
+  const adapters = spec.capabilities.filter(item => item.key.startsWith("adapter:"));
+  const capabilities = spec.capabilities.filter(item => !item.key.startsWith("adapter:"));
+  const domains = [...new Set([...spec.domains, ...adapters.flatMap(item => item.options.domains ?? [])])];
+  const disciplines = [...new Set([...spec.disciplines, ...adapters.flatMap(item => item.options.disciplines ?? [])])];
+  const evidenceFlows = [...spec.evidenceFlows, ...adapters.flatMap(item => item.options.evidenceFlows ?? [])];
+  const configuredChecks = [...spec.checks, ...adapters.flatMap(item => item.options.checks ?? [])];
+  let baseline = secretCheck(`${prefix}_baseline`);
+  baseline = addBinding(addBinding(baseline, "prototype", null), "mvp", null);
+  const checks = [baseline, ...configuredChecks.filter(item => item.key !== baseline.key)];
+  const baselineKeys = [baseline.key];
+  const moduleKeys = new Set(capabilities.map(item => item.key));
+  const workTypes = new Set(["conversation", "continuation", "research"]);
+  const moduleWorkTypes = {
+    sourceChange: ["implementation", "fix"], dataChange: ["data_change"], contentProduction: ["content", "asset"], release: ["release", "deployment"], incident: ["incident"], externalRuntime: ["testing", "verification"], experiment: ["prototype"]
+  };
+  for (const item of capabilities) for (const workType of item.options.workTypes ?? moduleWorkTypes[item.key] ?? []) workTypes.add(workType);
+  const artifacts = new Set(["none", "document", "decision"]);
+  if (moduleKeys.has("sourceChange")) for (const item of ["code", "test_report"]) artifacts.add(item);
+  if (moduleKeys.has("dataChange")) for (const item of ["data_migration", "test_report"]) artifacts.add(item);
+  if (moduleKeys.has("contentProduction")) for (const item of ["content_asset", "visual_asset", "test_report"]) artifacts.add(item);
+  if (moduleKeys.has("release")) for (const item of ["release_package", "deployment_evidence", "test_report"]) artifacts.add(item);
+  if (moduleKeys.has("incident")) artifacts.add("incident_report");
+  if (moduleKeys.has("externalRuntime")) artifacts.add("test_report");
+  if (moduleKeys.has("experiment")) artifacts.add("prototype");
+  const allWorkTypes = [...workTypes];
+  const allArtifacts = [...artifacts];
+  const roles = [
+    role("classifier", "Classify only against the package's registered routes; never perform productive work.", allWorkTypes, ["none"], { schema: "classification.v1", corrections: 0, boundaries: { productive_work: false, keyword_routing: false } }),
+    role("coordinator", "Turn the owner objective and registered evidence into the smallest executable plan; ask only for missing authority or evidence.", allWorkTypes, allArtifacts.filter(item => item !== "none"), { schema: "planner.v1", tools: [], boundaries: { writes: false, owner_decisions: false } }),
+    role("worker", "Perform the bounded capability work and return evidence for the declared artifacts and checks.", allWorkTypes, allArtifacts.filter(item => item !== "none"), { tools: moduleKeys.has("sourceChange") || moduleKeys.has("contentProduction") ? ["apply_patch"] : ["exec_command"], checks: checks.map(item => item.key), boundaries: { owner_decisions: false, publication: false, production_deploy: false } })
+  ];
+  const reviewed = ["reviewed", "release", "full"].includes(spec.rolePreset);
+  const editorial = ["editorial", "full"].includes(spec.rolePreset);
+  if (reviewed) roles.push(role("reviewer", "Evaluate material claims and check evidence independently; never replace missing evidence with narrative confidence.", allWorkTypes, allArtifacts.filter(item => item !== "none"), { schema: "reviewer.v1", tools: [], boundaries: { writes: false, owner_decisions: false } }));
+  if (editorial) roles.push(role("editor", "Apply project document rules to an already evidenced result without multiplying documents or changing product truth.", ["documentation", "content", "marketing"].filter(item => workTypeCatalog[item]), ["document", "content_asset"], { schema: "documentator.v1", tools: ["apply_patch"], boundaries: { product_truth_changes: false, publication: false } }));
+  if (moduleKeys.has("release")) roles.push(role("release_operator", "Apply only the exact release action bound to owner approval, then return deployment and rollback evidence.", ["release", "deployment"], ["release_package", "deployment_evidence"], { tools: ["exec_command"], checks: checks.map(item => item.key), boundaries: { explicit_approval_required: true, unapproved_scope: false } }));
+  const workflows = [], routes = [], scenarios = [];
+  const optionalReview = items => reviewed ? [...items, step("review", items.length + 1, "reviewer", ["test_report"], baselineKeys)] : items;
+  workflows.push(workflow(`${prefix}.research`, "Bounded research", [step("coordinate", 1, "coordinator", ["document"])], [], { level: "L1", history: 20000 }));
+  for (const workType of ["conversation", "continuation", "research"]) routes.push(route(workType, `${prefix}.research`, workType === "research" ? 90 : 100));
+  for (const item of capabilities) {
+    const customChecks = item.options.checkKeys?.length ? item.options.checkKeys : baselineKeys;
+    if (item.key === "sourceChange") {
+      workflows.push(workflow(`${prefix}.change`, "Bounded source change", optionalReview([step("coordinate", 1, "coordinator", ["document"]), step("work", 2, "worker", ["code"], customChecks)]), [question("expected_result", "Which observable result should change?")]));
+      for (const workType of item.options.workTypes ?? moduleWorkTypes.sourceChange) routes.push(route(workType, `${prefix}.change`));
+    } else if (item.key === "dataChange") {
+      const items = optionalReview([step("coordinate", 1, "coordinator", ["data_migration"]), step("prepare", 2, "worker", ["data_migration", "test_report"], customChecks)]);
+      items.push(step("apply_approval", items.length + 1, null, ["decision"], [], { irreversible: true }));
+      workflows.push(workflow(`${prefix}.data`, "Evidence-bound data change", items, [question("data_boundary", "Which data boundary and invariants are authoritative?")], { quality: "production", level: "L3" }));
+      for (const workType of item.options.workTypes ?? moduleWorkTypes.dataChange) routes.push(route(workType, `${prefix}.data`));
+    } else if (item.key === "contentProduction") {
+      const items = optionalReview([step("coordinate", 1, "coordinator", ["document"]), step("produce", 2, "worker", ["content_asset", "visual_asset"], customChecks)]);
+      if (editorial) items.push(step("edit", items.length + 1, "editor", ["document", "content_asset"]));
+      workflows.push(workflow(`${prefix}.content`, "Project-rule content production", items, [question("content_acceptance", "Which audience, claims and acceptance rules apply?")]));
+      for (const workType of item.options.workTypes ?? moduleWorkTypes.contentProduction) routes.push(route(workType, `${prefix}.content`));
+    } else if (item.key === "release") {
+      const items = optionalReview([step("coordinate", 1, "coordinator", ["release_package"]), step("preflight", 2, "worker", ["test_report"], customChecks)]);
+      items.push(step("release_approval", items.length + 1, null, ["decision"], [], { irreversible: true }));
+      items.push(step("release", items.length + 1, "release_operator", ["release_package", "deployment_evidence"], customChecks));
+      workflows.push(workflow(`${prefix}.release`, "Approved release", items, [question("release_scope", "Which exact revision and target are authorized?")], { quality: "production", level: "L3" }));
+      for (const workType of item.options.workTypes ?? moduleWorkTypes.release) routes.push(route(workType, `${prefix}.release`));
+    } else if (item.key === "incident") {
+      workflows.push(workflow(`${prefix}.incident`, "Incident diagnosis and bounded repair", optionalReview([step("coordinate", 1, "coordinator", ["incident_report"]), step("respond", 2, "worker", ["incident_report", "test_report"], customChecks)]), [question("observed_failure", "What is observed, where, and since when?")], { quality: "production", level: "L3" }));
+      for (const workType of item.options.workTypes ?? moduleWorkTypes.incident) routes.push(route(workType, `${prefix}.incident`));
+    } else if (item.key === "externalRuntime") {
+      workflows.push(workflow(`${prefix}.runtime`, "External runtime evidence", optionalReview([step("coordinate", 1, "coordinator", ["document"]), step("verify", 2, "worker", ["test_report"], customChecks)]), [question("runtime_boundary", "Which registered external runtime and evidence contract are in scope?")], { level: "L2" }));
+      for (const workType of item.options.workTypes ?? moduleWorkTypes.externalRuntime) routes.push(route(workType, `${prefix}.runtime`));
+    } else if (item.key === "experiment") {
+      workflows.push(workflow(`${prefix}.experiment`, "Bounded experiment", [step("coordinate", 1, "coordinator", ["document"]), step("experiment", 2, "worker", ["prototype", "test_report"], customChecks)], [question("experiment_answer", "Which hypothesis and observable answer end the experiment?")], { quality: "prototype", level: "L1" }));
+      for (const workType of item.options.workTypes ?? moduleWorkTypes.experiment) routes.push(route(workType, `${prefix}.experiment`));
+    }
+    scenarios.push(scenario(`${item.key}_route`, { work_type: (item.options.workTypes ?? moduleWorkTypes[item.key])[0] }, { route: workflows.at(-1).key, mechanics: "executable" }));
+  }
+  const roleBindings = roles.map(item => binding(item.key, item.key === "editor", item.key === "editor" ? "accepted project document" : "registered project context", item.key === "editor" ? 20 : 0));
+  const documents = spec.documents.map(item => document(item.key, item.path, item.type ?? "reference", item.authority ?? spec.key, roleBindings, item.root ?? "primary"));
+  return finalize({
+    key: spec.key, version: spec.version, purpose: spec.purpose, roles, workflows, routes, checks,
+    operationalLevels: ["prototype", "mvp", "production", "security-audit"].map(level => ({ level, required_check_keys: baselineKeys, escalation: level === "production" ? { owner_approval_for_irreversible: true } : {} })),
+    documents, evidenceFlows, resources: spec.resources, domains, disciplines,
+    scenarios: [scenario("research_route", { work_type: "research" }, { route: `${prefix}.research`, mechanics: "executable" }), ...scenarios]
+  });
+}
 
-export { PACKAGE_VERSION, role, addRoleToPackage, checkBinding, commandCheck, capabilityCheck, projectCommandCheck, disabledCheck, secretCheck, securityChecks, withBroadSecretScan, addBinding, completeSoftwareChecks, step, workflow, question, route, binding, document, scenario, finalize, companyWebPackage };
+
+const { coreLifecycle, sourceChange, dataChange, contentProduction, release: releaseCapability, incident: incidentCapability, externalRuntime, experiment, domainAdapter, composeLifecycle } = packageSdk;
+export { PACKAGE_VERSION, role, addRoleToPackage, checkBinding, commandCheck, capabilityCheck, projectCommandCheck, disabledCheck, secretCheck, securityChecks, withBroadSecretScan, addBinding, completeSoftwareChecks, step, workflow, question, route, binding, document, scenario, finalize, companyWebPackage, coreLifecycle, sourceChange, dataChange, contentProduction, releaseCapability, incidentCapability, externalRuntime, experiment, domainAdapter, composeLifecycle, composedPackage };
