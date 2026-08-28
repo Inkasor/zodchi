@@ -6,7 +6,7 @@ import { applyWorkflowImport, proposeWorkflowImport } from "../src/workflow-pack
 import { processMessage } from "../src/workflow-app.mjs";
 import { callGateway } from "../src/gateway.mjs";
 import { workflowRunStatistics } from "../src/statistics.mjs";
-import { registerImplicitResources } from "../src/project-resources.mjs";
+import { registerImplicitResources, registerProjectResource } from "../src/project-resources.mjs";
 import { assertProjectBaselineUnchanged, captureProjectBaseline } from "./project-baseline.mjs";
 
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -40,6 +40,7 @@ for (const item of config.projects) {
   proposeWorkflowImport(dbFile, path.resolve(item.package_file), proposalFile, item.project_id);
   applyWorkflowImport(dbFile, proposalFile, item.project_id, { confirmedBy: "checkpoint9-reversible-local-import" });
   db = openDb(dbFile);
+  for (const resource of item.resources ?? []) registerProjectResource(db, { projectId: item.project_id, alias: resource.alias, kind: resource.kind, purpose: resource.purpose ?? "Acceptance-bound local resource", declaration: resource.declaration });
   const workflowId = db.prepare(`SELECT m.local_id FROM package_import_mappings m JOIN workflow_import_proposals p ON p.id=m.proposal_id
     WHERE p.target_project_id=? AND p.package_key=? AND p.status='applied' AND m.entity_type='workflow' AND m.semantic_key=? ORDER BY p.applied_at DESC LIMIT 1`).get(item.project_id, item.package_key, item.workflow_key)?.local_id;
   if (!workflowId) throw new Error(`WORKFLOW_MAPPING_MISSING: ${item.workflow_key}`);
