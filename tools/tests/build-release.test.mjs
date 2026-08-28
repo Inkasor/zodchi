@@ -14,6 +14,7 @@ test("platform-neutral builder produces a lintable archive root that the canonic
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "zodchi-build-test-"));
   try {
     const output = path.join(root, "release"), installed = path.join(root, "installed"), dataRoot = path.join(root, "data");
+    const skillRoots = { "claude-code": path.join(root, "claude-skills"), codex: path.join(root, "codex-skills") };
     const built = buildRelease({ repositoryRoot, output, stageRoot: root });
     assert.equal(built.status, "built");
     const manifest = JSON.parse(fs.readFileSync(path.join(output, "bundle-manifest.json"), "utf8"));
@@ -24,9 +25,10 @@ test("platform-neutral builder produces a lintable archive root that the canonic
     assert.equal(manifest.files.some(item => item.path === "tools/release-lint.mjs"), true);
     assert.equal(manifest.files.some(item => item.path === "scripts/build-release-manifest.mjs"), true);
     assert.equal(manifest.files.some(item => item.path === "scripts/build-release-archive.mjs"), true);
-    const installation = installRelease({ source: output, destination: installed, dataRoot });
+    const installation = installRelease({ source: output, destination: installed, dataRoot, skillRoots });
     assert.equal(installation.status, "installed");
-    assert.equal(fs.existsSync(path.join(installed, "WorkflowPlatform", "hooks", "user-prompt-submit.mjs")), true);
+    assert.equal(fs.existsSync(path.join(installed, "WorkflowPlatform", "scripts", "explicit-invoke.mjs")), true);
+    assert.equal(fs.existsSync(path.join(skillRoots.codex, "zodchi", ".zodchi-skill.json")), true);
     const baseline = await import(pathToFileURL(path.join(installed, "WorkflowPlatform", "scripts", "project-baseline.mjs")).href);
     assert.equal(typeof baseline.captureProjectBaseline, "function");
     const presets = JSON.parse(execFileSync(process.execPath, [path.join(installed, "WorkflowPlatform", "src", "cli.mjs"), "preset-lint"], { encoding: "utf8", windowsHide: true }));
