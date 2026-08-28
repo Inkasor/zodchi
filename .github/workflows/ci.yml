@@ -11,24 +11,24 @@ permissions:
 
 jobs:
   test:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - name: Тесты и линтеры
-        shell: pwsh
-        run: npm.cmd test
+        run: npm test
       - name: Генераторы не оставляют скрытый diff
-        shell: pwsh
         run: |
-          npm.cmd --prefix WorkflowPlatform run packages:generate
+          npm --prefix WorkflowPlatform run packages:generate
           git diff --exit-code -- WorkflowPlatform/contracts/quality-contracts.xml WorkflowPlatform/packages/catalog.json WorkflowPlatform/packages/example/generated
       - name: Проверка релизной сборки
-        shell: pwsh
         run: |
-          $out = Join-Path $env:RUNNER_TEMP 'Zodchi'
-          .\scripts\build-release.ps1 -Output $out -StageRoot $env:RUNNER_TEMP
-          node "$out\tools\release-lint.mjs" $out
-          npm.cmd --prefix $out test
+          node scripts/build-release.mjs --output "${{ runner.temp }}/Zodchi" --stage-root "${{ runner.temp }}"
+          node "${{ runner.temp }}/Zodchi/tools/release-lint.mjs" "${{ runner.temp }}/Zodchi"
+          npm --prefix "${{ runner.temp }}/Zodchi" test
