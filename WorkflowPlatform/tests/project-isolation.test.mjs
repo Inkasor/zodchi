@@ -6,7 +6,7 @@ import test from "node:test";
 import { now, openDb } from "../src/db.mjs";
 import { bindProject, bindingEvidence } from "../src/project-binding.mjs";
 import { parseHookEvent } from "../src/hook-entry.mjs";
-import { applyHookInstallation, hookInstallationStatus, planHookInstallation } from "../src/hook-installation.mjs";
+import { applyHookInstallation, hookInstallationStatus, hookSnapshotHashes, planHookInstallation, removeOwnedHookInstallation, restoreHookInstallation, snapshotHookInstallation } from "../src/hook-installation.mjs";
 import { processMessage } from "../src/workflow-app.mjs";
 import { resolveWorkflowSettings, workflowPlatformRoot } from "../src/paths.mjs";
 
@@ -199,5 +199,43 @@ test("a foreign hook with Zodchi's script basename is never claimed or replaced"
   const entries = JSON.parse(fs.readFileSync(file, "utf8")).hooks.UserPromptSubmit;
   assert.equal(entries.length, 2);
   assert.deepEqual(entries[0], foreign);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("hook update rollback restores exact project bytes and refuses to erase a concurrent edit", () => {
+  const root = temporaryRoot("zodchi-hook-transaction-");
+  const firstRoot = path.join(root, "release-a", "WorkflowPlatform");
+  const secondRoot = path.join(root, "release-b", "WorkflowPlatform");
+  for (const releaseRoot of [firstRoot, secondRoot]) fs.mkdirSync(path.join(releaseRoot, "hooks"), { recursive: true });
+  applyHookInstallation(planHookInstallation({ projectRoot: root, harness: "codex", root: firstRoot, configsRoot }));
+  const snapshot = snapshotHookInstallation({ projectRoot: root, harness: "codex" });
+  const beforeHook = fs.readFileSync(snapshot.file);
+  const beforeMarker = fs.readFileSync(snapshot.marker);
+  applyHookInstallation(planHookInstallation({ projectRoot: root, harness: "codex", root: secondRoot, configsRoot }));
+  const expected = hookSnapshotHashes(snapshot);
+  restoreHookInstallation(snapshot, expected);
+  assert.deepEqual(fs.readFileSync(snapshot.file), beforeHook);
+  assert.deepEqual(fs.readFileSync(snapshot.marker), beforeMarker);
+
+  applyHookInstallation(planHookInstallation({ projectRoot: root, harness: "codex", root: secondRoot, configsRoot }));
+  const changed = hookSnapshotHashes(snapshot);
+  fs.appendFileSync(snapshot.file, "\n");
+  assert.throws(() => restoreHookInstallation(snapshot, changed), /HOOK_ROLLBACK_CONFLICT/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("uninstall removes only the owned hook entry and preserves foreign configuration", () => {
+  const root = temporaryRoot("zodchi-hook-uninstall-");
+  const file = path.join(root, ".claude", "settings.local.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const foreign = { hooks: [{ type: "command", command: "node foreign.mjs" }] };
+  fs.writeFileSync(file, JSON.stringify({ setting: "kept", hooks: { UserPromptSubmit: [foreign] } }, null, 2));
+  applyHookInstallation(planHookInstallation({ projectRoot: root, harness: "claude-code", configsRoot }));
+  const removed = removeOwnedHookInstallation({ projectRoot: root, harness: "claude-code" });
+  assert.equal(removed.status, "removed");
+  const document = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(document.setting, "kept");
+  assert.deepEqual(document.hooks.UserPromptSubmit, [foreign]);
+  assert.equal(fs.existsSync(path.join(root, ".claude", ".zodchi-hook.json")), false);
   fs.rmSync(root, { recursive: true, force: true });
 });

@@ -136,16 +136,8 @@ for (const file of bundleManifest.files) {
 }
 if (contentFindings.length) fail("RELEASE_ARCHIVE_CONTENT_MISMATCH", contentFindings.slice(0, 5).join("; "));
 
-let installed = null;
-if (process.platform === "win32") {
-  const destination = path.join(work, "installed");
-  execFileSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(productRoot, "tools", "install-or-update.ps1"), "-Source", productRoot, "-Destination", destination], { encoding: "utf8", windowsHide: true, stdio: "pipe" });
-  installed = destination;
-} else {
-  // The published installer is still PowerShell-only. Running the extracted tree instead would
-  // report an install that never happened, so the gap stays explicit until 0.6.0 §7.1 lands.
-  fail("INSTALLER_NOT_PORTABLE_YET", process.platform);
-}
+const installed = path.join(work, "installed");
+execFileSync(process.execPath, [path.join(productRoot, "tools", "install.mjs"), "install", "--source", productRoot, "--destination", installed, "--data-root", path.join(work, "installation-data")], { encoding: "utf8", windowsHide: true, stdio: "pipe" });
 
 // A real workflow through the real AgentGateway process, with a deterministic provider standing in
 // for the model. It proves delivery, routing, gates and receipts; it proves nothing about model

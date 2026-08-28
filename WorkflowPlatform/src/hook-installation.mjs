@@ -98,6 +98,47 @@ function ownershipFile(projectRoot, harness) {
   return path.join(projectRoot, target(harness).directory, ".zodchi-hook.json");
 }
 
+function fileSnapshot(file) {
+  return fs.existsSync(file) ? Object.freeze({ exists: true, content: fs.readFileSync(file), hash: hash(fs.readFileSync(file)) }) : Object.freeze({ exists: false, content: null, hash: null });
+}
+
+function restoreFile(file, snapshot) {
+  if (!snapshot.exists) { fs.rmSync(file, { force: true }); return; }
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${crypto.randomUUID()}.rollback`);
+  try { fs.writeFileSync(temporary, snapshot.content, { mode: 0o600 }); fs.renameSync(temporary, file); }
+  catch (error) { fs.rmSync(temporary, { force: true }); throw error; }
+}
+
+// Installation swaps program files and then rewrites every hook that points at that program. These two
+// mutations are one transaction: a failed health check must restore both the release and the exact bytes
+// of every project file. The snapshot deliberately contains no project content beyond the two owned hook
+// files, and restoration can be guarded by the hashes observed immediately after our own write.
+export function snapshotHookInstallation({ projectRoot, harness }) {
+  const spec = target(harness);
+  const file = path.join(projectRoot, spec.directory, spec.file);
+  const marker = ownershipFile(projectRoot, harness);
+  return Object.freeze({ projectRoot: path.resolve(projectRoot), harness, file, marker, hook: fileSnapshot(file), ownership: fileSnapshot(marker) });
+}
+
+export function restoreHookInstallation(snapshot, expectedCurrent = null) {
+  for (const [file, expected] of [[snapshot.file, expectedCurrent?.hook_hash], [snapshot.marker, expectedCurrent?.ownership_hash]]) {
+    if (expected === undefined || expected === null) continue;
+    const actual = fs.existsSync(file) ? hash(fs.readFileSync(file)) : null;
+    if (actual !== expected) throw new Error(`HOOK_ROLLBACK_CONFLICT: ${file}`);
+  }
+  restoreFile(snapshot.file, snapshot.hook);
+  restoreFile(snapshot.marker, snapshot.ownership);
+  return Object.freeze({ status: "restored", harness: snapshot.harness, file: snapshot.file, ownershipFile: snapshot.marker });
+}
+
+export function hookSnapshotHashes(snapshot) {
+  return Object.freeze({
+    hook_hash: fs.existsSync(snapshot.file) ? hash(fs.readFileSync(snapshot.file)) : null,
+    ownership_hash: fs.existsSync(snapshot.marker) ? hash(fs.readFileSync(snapshot.marker)) : null
+  });
+}
+
 // A file some other tool generates is not a file to write into: the next generation run silently removes
 // whatever was added, and the hook stops firing without anyone touching it. Proxy mode is the honest
 // answer there — the entry is handed over for the source of truth instead of written into the output.
@@ -196,4 +237,22 @@ export function hookInstallationStatus({ projectRoot, harness }) {
     changed: owned ? record.file_hash !== hash(fs.readFileSync(file, "utf8")) : false,
     installation_root: record?.installation_root ?? null
   });
+}
+
+export function removeOwnedHookInstallation({ projectRoot, harness }) {
+  const spec = target(harness);
+  const file = path.join(projectRoot, spec.directory, spec.file);
+  const marker = ownershipFile(projectRoot, harness);
+  const record = readJson(marker);
+  if (record?.owner !== OWNER) return Object.freeze({ status: "not_owned", harness, file });
+  const existing = readJson(file);
+  if (existing) {
+    const entries = [...(existing.hooks?.[EVENT] ?? [])];
+    const script = path.join(record.installation_root ?? "", HOOK_SCRIPT);
+    const ours = ourEntry(entries, script, record.entry ?? null);
+    if (ours >= 0) entries.splice(ours, 1);
+    atomicJson(file, { ...existing, hooks: { ...(existing.hooks ?? {}), [EVENT]: entries } });
+  }
+  fs.rmSync(marker, { force: true });
+  return Object.freeze({ status: "removed", harness, file, preserved_foreign_entries: existing?.hooks?.[EVENT]?.length ? Math.max(0, existing.hooks[EVENT].length - 1) : 0 });
 }
