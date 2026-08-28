@@ -28,7 +28,6 @@ test("explicit invocation preserves UTF-8 task bytes and removes the transfer fi
     assert.equal(fs.existsSync(value.messageFile), false);
   } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
 });
-
 test("explicit invocation fails closed for invalid clients, empty messages and oversized files", async () => {
   const value = fixture();
   try {
@@ -39,4 +38,3 @@ test("explicit invocation fails closed for invalid clients, empty messages and o
     await assert.rejects(() => invokeExplicitTask({ client: "claude-code", origin: value.project, messageFile: value.messageFile }), /EXPLICIT_MESSAGE_TOO_LARGE/);
   } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
 });
-

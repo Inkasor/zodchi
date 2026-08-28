@@ -12,7 +12,6 @@ function argsObject(argv) {
   }
   return result;
 }
-
 export async function main(argv = process.argv.slice(2)) {
   const args = argsObject(argv), settings = resolveWorkflowSettings();
   const result = await invokeExplicitTask({
@@ -32,4 +31,3 @@ export async function main(argv = process.argv.slice(2)) {
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
   main().catch(error => { process.stderr.write(`${error.stack ?? error.message}\n`); process.exitCode = 1; });
 }
-

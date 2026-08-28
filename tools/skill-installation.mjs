@@ -17,7 +17,6 @@ export function defaultSkillRoots(home = os.homedir()) {
     codex: path.join(resolved, ".agents", "skills")
   });
 }
-
 function targets(roots) {
   return Object.entries(roots).flatMap(([client, root]) => NAMES.map(name => ({ client, name, root: path.resolve(root), directory: path.join(path.resolve(root), name) })));
 }
@@ -126,4 +125,3 @@ export function removeClientSkills({ roots = defaultSkillRoots() } = {}) {
     return { status: "removed", client: target.client, name: target.name, directory: target.directory };
   }));
 }
-
