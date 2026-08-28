@@ -44,6 +44,12 @@ test("owner acceptance stays separate from technical review", () => {
   assert.deepEqual(packageValue.routes.filter(item => item.work_type_key === "game.visual-acceptance").map(item => item.workflow_key), [flow.key]);
 });
 
+test("capability resources are executable step requirements rather than decorative package metadata", () => {
+  const coreWithResource = coreLifecycle({ key: "sdk.resource", version: "1.0.0", purpose: "Resource fixture", rolePreset: "minimal", domains: ["software"], disciplines: ["software"], resources: [{ alias: "runtime", kind: "project.worktree", purpose: "Exclusive runtime" }] });
+  const packageValue = validateWorkflowPackage(composedPackage(coreWithResource, sourceChange({ resources: [{ alias: "runtime", mode: "exclusive" }] })));
+  assert.deepEqual(packageValue.workflows.find(item => item.key.endsWith(".change")).steps.find(item => item.key === "work").resources, [{ alias: "runtime", mode: "exclusive" }]);
+});
+
 test("package lint rejects purposeless roles and gates without a runner", () => {
   const packageValue = composedPackage(core("minimal"), sourceChange());
   const purposeless = structuredClone(packageValue); purposeless.roles.find(item => item.key === "worker").contract.purpose = "";

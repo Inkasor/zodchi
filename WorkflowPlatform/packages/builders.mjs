@@ -257,55 +257,56 @@ function composedPackage(core, ...components) {
   for (const workType of ["conversation", "continuation", "research"]) routes.push(route(workType, `${prefix}.research`, workType === "research" ? 90 : 100));
   for (const item of capabilities) {
     const customChecks = item.options.checkKeys?.length ? item.options.checkKeys : baselineKeys;
+    const capabilityResources = item.options.resources ?? [];
     if (item.key === "sourceChange") {
-      workflows.push(workflow(`${prefix}.change`, "Bounded source change", optionalReview([step("coordinate", 1, "coordinator", ["document"]), step("work", 2, "worker", ["code"], customChecks)]), [question("expected_result", "Which observable result should change?")]));
+      workflows.push(workflow(`${prefix}.change`, "Bounded source change", optionalReview([step("coordinate", 1, "coordinator", ["document"]), step("work", 2, "worker", ["code"], customChecks, { resources: capabilityResources })]), [question("expected_result", "Which observable result should change?")]));
       for (const workType of item.options.workTypes ?? moduleWorkTypes.sourceChange) routes.push(route(workType, `${prefix}.change`));
     } else if (item.key === "dataChange") {
-      const items = optionalReview([step("coordinate", 1, "coordinator", ["data_migration"]), step("prepare", 2, "worker", ["data_migration", "test_report"], customChecks)]);
+      const items = optionalReview([step("coordinate", 1, "coordinator", ["data_migration"]), step("prepare", 2, "worker", ["data_migration", "test_report"], customChecks, { resources: capabilityResources })]);
       items.push(step("apply_approval", items.length + 1, null, ["decision"], [], { irreversible: true }));
       workflows.push(workflow(`${prefix}.data`, "Evidence-bound data change", items, [question("data_boundary", "Which data boundary and invariants are authoritative?")], { quality: "production", level: "L3" }));
       for (const workType of item.options.workTypes ?? moduleWorkTypes.dataChange) routes.push(route(workType, `${prefix}.data`));
     } else if (item.key === "contentProduction") {
-      const items = optionalReview([step("coordinate", 1, "coordinator", ["document"]), step("produce", 2, "worker", ["content_asset", "visual_asset"], customChecks)]);
+      const items = optionalReview([step("coordinate", 1, "coordinator", ["document"]), step("produce", 2, "worker", ["content_asset", "visual_asset"], customChecks, { resources: capabilityResources })]);
       if (editorial) items.push(step("edit", items.length + 1, "editor", ["document", "content_asset"]));
       workflows.push(workflow(`${prefix}.content`, "Project-rule content production", items, [question("content_acceptance", "Which audience, claims and acceptance rules apply?")]));
       for (const workType of item.options.workTypes ?? moduleWorkTypes.contentProduction) routes.push(route(workType, `${prefix}.content`));
     } else if (item.key === "release") {
-      const items = optionalReview([step("coordinate", 1, "coordinator", ["release_package"]), step("preflight", 2, "worker", ["test_report"], customChecks)]);
+      const items = optionalReview([step("coordinate", 1, "coordinator", ["release_package"]), step("preflight", 2, "worker", ["test_report"], customChecks, { resources: capabilityResources })]);
       items.push(step("release_approval", items.length + 1, null, ["decision"], [], { irreversible: true }));
-      items.push(step("release", items.length + 1, "release_operator", ["release_package", "deployment_evidence"], customChecks));
+      items.push(step("release", items.length + 1, "release_operator", ["release_package", "deployment_evidence"], customChecks, { resources: capabilityResources }));
       workflows.push(workflow(`${prefix}.release`, "Approved release", items, [question("release_scope", "Which exact revision and target are authorized?")], { quality: "production", level: "L3" }));
       for (const workType of item.options.workTypes ?? moduleWorkTypes.release) routes.push(route(workType, `${prefix}.release`));
     } else if (item.key === "incident") {
-      workflows.push(workflow(`${prefix}.incident`, "Incident diagnosis and bounded repair", optionalReview([step("coordinate", 1, "coordinator", ["incident_report"]), step("respond", 2, "worker", ["incident_report", "test_report"], customChecks)]), [question("observed_failure", "What is observed, where, and since when?")], { quality: "production", level: "L3" }));
+      workflows.push(workflow(`${prefix}.incident`, "Incident diagnosis and bounded repair", optionalReview([step("coordinate", 1, "coordinator", ["incident_report"]), step("respond", 2, "worker", ["incident_report", "test_report"], customChecks, { resources: capabilityResources })]), [question("observed_failure", "What is observed, where, and since when?")], { quality: "production", level: "L3" }));
       for (const workType of item.options.workTypes ?? moduleWorkTypes.incident) routes.push(route(workType, `${prefix}.incident`));
     } else if (item.key === "externalRuntime") {
-      workflows.push(workflow(`${prefix}.runtime`, "External runtime evidence", optionalReview([step("coordinate", 1, "coordinator", ["document"]), step("verify", 2, "worker", ["test_report"], customChecks)]), [question("runtime_boundary", "Which registered external runtime and evidence contract are in scope?")], { level: "L2" }));
+      workflows.push(workflow(`${prefix}.runtime`, "External runtime evidence", optionalReview([step("coordinate", 1, "coordinator", ["document"]), step("verify", 2, "worker", ["test_report"], customChecks, { resources: capabilityResources })]), [question("runtime_boundary", "Which registered external runtime and evidence contract are in scope?")], { level: "L2" }));
       for (const workType of item.options.workTypes ?? moduleWorkTypes.externalRuntime) routes.push(route(workType, `${prefix}.runtime`));
     } else if (item.key === "experiment") {
-      workflows.push(workflow(`${prefix}.experiment`, "Bounded experiment", [step("coordinate", 1, "coordinator", ["document"]), step("experiment", 2, "worker", ["prototype", "test_report"], customChecks)], [question("experiment_answer", "Which hypothesis and observable answer end the experiment?")], { quality: "prototype", level: "L1" }));
+      workflows.push(workflow(`${prefix}.experiment`, "Bounded experiment", [step("coordinate", 1, "coordinator", ["document"]), step("experiment", 2, "worker", ["prototype", "test_report"], customChecks, { resources: capabilityResources })], [question("experiment_answer", "Which hypothesis and observable answer end the experiment?")], { quality: "prototype", level: "L1" }));
       for (const workType of item.options.workTypes ?? moduleWorkTypes.experiment) routes.push(route(workType, `${prefix}.experiment`));
     } else if (item.key === "accessManagement") {
-      const items = [step("coordinate", 1, "coordinator", ["document"]), step("propose", 2, "worker", ["access_change"]), step("access_approval", 3, null, ["decision"], [], { irreversible: true }), step("apply", 4, "worker", ["access_change"]), step("verify", 5, "worker", ["test_report"], customChecks)];
+      const items = [step("coordinate", 1, "coordinator", ["document"]), step("propose", 2, "worker", ["access_change"], [], { resources: capabilityResources }), step("access_approval", 3, null, ["decision"], [], { irreversible: true }), step("apply", 4, "worker", ["access_change"], [], { resources: capabilityResources }), step("verify", 5, "worker", ["test_report"], customChecks, { resources: capabilityResources })];
       workflows.push(workflow(`${prefix}.access`, "Least-privilege access change", items, [question("access_boundary", "Who needs which exact access, until when, and who authorizes it?")], { quality: "production", level: "L3" }));
       for (const workType of item.options.workTypes ?? moduleWorkTypes.accessManagement) routes.push(route(workType, `${prefix}.access`));
     } else if (item.key === "projectBootstrap") {
-      const items = optionalReview([step("coordinate", 1, "coordinator", ["workflow_package"]), step("bootstrap", 2, "worker", ["code", "workflow_package"], customChecks)]);
+      const items = optionalReview([step("coordinate", 1, "coordinator", ["workflow_package"]), step("bootstrap", 2, "worker", ["code", "workflow_package"], customChecks, { resources: capabilityResources })]);
       items.push(step("owner_approval", items.length + 1, null, ["decision"], [], { irreversible: true }));
       workflows.push(workflow(`${prefix}.bootstrap`, "Bounded project bootstrap", items, [question("bootstrap_boundary", "Which project root, runtime and owner authority are in scope?")], { level: "L3" }));
       for (const workType of item.options.workTypes ?? moduleWorkTypes.projectBootstrap) routes.push(route(workType, `${prefix}.bootstrap`));
     } else if (item.key === "documentation") {
       const writer = editorial ? "editor" : "worker";
-      workflows.push(workflow(`${prefix}.documentation`, "Registered documentation update", optionalReview([step("coordinate", 1, "coordinator", ["document"]), step("document", 2, writer, ["document"])]), [question("document_outcome", "Which accepted decision or verified fact should be recorded?")]));
+      workflows.push(workflow(`${prefix}.documentation`, "Registered documentation update", optionalReview([step("coordinate", 1, "coordinator", ["document"]), step("document", 2, writer, ["document"], [], { resources: capabilityResources })]), [question("document_outcome", "Which accepted decision or verified fact should be recorded?")]));
       for (const workType of item.options.workTypes ?? moduleWorkTypes.documentation) routes.push(route(workType, `${prefix}.documentation`));
     } else if (item.key === "securityReview") {
       const reviewer = reviewed ? "reviewer" : "worker";
-      const items = [step("coordinate", 1, "coordinator", ["document"]), step("security_review", 2, reviewer, ["security_report"], customChecks), step("owner_decision", 3, null, ["decision"], [], { irreversible: true })];
+      const items = [step("coordinate", 1, "coordinator", ["document"]), step("security_review", 2, reviewer, ["security_report"], customChecks, { resources: capabilityResources }), step("owner_decision", 3, null, ["decision"], [], { irreversible: true })];
       workflows.push(workflow(`${prefix}.security`, "Read-only security review", items, [question("security_boundary", "Which system, data and threat boundary are in scope?")], { quality: "security", level: "L4" }));
       for (const workType of item.options.workTypes ?? moduleWorkTypes.securityReview) routes.push(route(workType, `${prefix}.security`));
     } else if (item.key === "ownerAcceptance") {
       const artifactKeys = item.options.artifactKeys?.length ? item.options.artifactKeys : ["test_report"];
-      const items = optionalReview([step("coordinate", 1, "coordinator", ["document"]), step("evidence", 2, "worker", artifactKeys, customChecks)]);
+      const items = optionalReview([step("coordinate", 1, "coordinator", ["document"]), step("evidence", 2, "worker", artifactKeys, customChecks, { resources: capabilityResources })]);
       items.push(step("owner_acceptance", items.length + 1, null, ["decision"], [], { irreversible: true }));
       workflows.push(workflow(`${prefix}.acceptance`, "Evidence before owner acceptance", items, [question("acceptance_boundary", "Which concrete evidence and owner criteria decide acceptance?")], { quality: item.options.quality ?? "mvp", level: item.options.level ?? "L2" }));
       for (const workType of item.options.workTypes ?? moduleWorkTypes.ownerAcceptance) routes.push(route(workType, `${prefix}.acceptance`));
