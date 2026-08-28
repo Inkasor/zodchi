@@ -20,14 +20,17 @@ if (fs.existsSync(outputRoot)) throw new Error(`EVIDENCE_OUTPUT_ALREADY_EXISTS: 
 fs.mkdirSync(outputRoot, { recursive: true });
 const fakeProvider = path.join(repositoryRoot, "tests", "fixtures", "deterministic-workflow-provider.mjs"), policyFile = path.join(outputRoot, "gateway-policy.json"), providerHome = path.join(outputRoot, "empty-provider-home"), gatewayTemp = path.join(outputRoot, "gateway-temp");
 fs.mkdirSync(providerHome); process.env.CODEX_SOURCE_HOME = providerHome; process.env.AGENT_GATEWAY_TEMP = gatewayTemp;
-const profileKeys = [...new Set(config.projects.flatMap(item => ["classifier", "planner", item.worker_role, "reviewer"].map(role => `${item.package_key}.${role}.mvp`)))];
-const profiles = Object.fromEntries(profileKeys.map(key => [key, { model: "deterministic-contract-v1", reasoningEffort: "low", readOnly: true }]));
-fs.writeFileSync(policyFile, JSON.stringify({ schemaVersion: 1, levels: { prototype: { maxCalls: 2, maxCorrectionCycles: 0, timeoutSec: 60 }, mvp: { maxCalls: 2, maxCorrectionCycles: 1, timeoutSec: 3600 } }, providers: { codex: { command: process.execPath, args: [fakeProvider], profiles } } }, null, 2), "utf8");
-
 let db = openDb(dbFile);
 for (const item of config.projects) db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES(?,?,?,?)").run(item.project_id, item.name, path.resolve(item.root_path), now());
 db.close();
-const results = [];
+
+// Which roles a run needs is decided by routing, not by the scenario's nominal worker, so every role
+// the package registers gets a profile. The assignment also has to declare which portable requirement
+// it fulfils: a contract with declared allowed_profiles refuses an assignment that does not, and the
+// package registers exactly one requirement per role, so the link is read from the import rather than
+// reconstructed from a naming convention.
+const profileKeys = new Set();
+const prepared = [];
 for (const item of config.projects) {
   const proposalFile = path.join(outputRoot, `${item.project_id}.import-proposal.json`);
   proposeWorkflowImport(dbFile, path.resolve(item.package_file), proposalFile, item.project_id);
@@ -36,12 +39,22 @@ for (const item of config.projects) {
   const workflowId = db.prepare(`SELECT m.local_id FROM package_import_mappings m JOIN workflow_import_proposals p ON p.id=m.proposal_id
     WHERE p.target_project_id=? AND p.package_key=? AND p.status='applied' AND m.entity_type='workflow' AND m.semantic_key=? ORDER BY p.applied_at DESC LIMIT 1`).get(item.project_id, item.package_key, item.workflow_key)?.local_id;
   if (!workflowId) throw new Error(`WORKFLOW_MAPPING_MISSING: ${item.workflow_key}`);
-  for (const role of ["planner", item.worker_role, "reviewer"]) {
-    const profileKey = `${item.package_key}.${role}.mvp`;
-    db.prepare("INSERT OR IGNORE INTO profiles(id,provider,name,role_id) VALUES(?,'codex',?,?)").run(profileKey, profileKey, role);
-    db.prepare("INSERT OR REPLACE INTO role_profile_assignments(project_id,role_id,profile_id,operational_level,enabled) VALUES(?,?,?,'mvp',1)").run(item.project_id, role, profileKey);
+  const requirements = db.prepare("SELECT role_id,profile_key FROM portable_profile_requirements WHERE project_id=? AND package_key=?").all(item.project_id, item.package_key);
+  if (!requirements.length) throw new Error(`PACKAGE_PROFILE_REQUIREMENTS_MISSING: ${item.package_key}`);
+  for (const requirement of requirements) {
+    db.prepare("INSERT OR IGNORE INTO profiles(id,provider,name,role_id) VALUES(?,'codex',?,?)").run(requirement.profile_key, requirement.profile_key, requirement.role_id);
+    db.prepare("INSERT OR REPLACE INTO role_profile_assignments(project_id,role_id,profile_id,operational_level,enabled,satisfies_profile_key) VALUES(?,?,?,'mvp',1,?)").run(item.project_id, requirement.role_id, requirement.profile_key, requirement.profile_key);
+    profileKeys.add(requirement.profile_key);
   }
   db.close();
+  prepared.push({ item, workflowId });
+}
+
+const profiles = Object.fromEntries([...profileKeys].map(key => [key, { model: "deterministic-contract-v1", reasoningEffort: "low", readOnly: true }]));
+fs.writeFileSync(policyFile, JSON.stringify({ schemaVersion: 1, levels: { prototype: { maxCalls: 2, maxCorrectionCycles: 0, timeoutSec: 60 }, mvp: { maxCalls: 2, maxCorrectionCycles: 1, timeoutSec: 3600 } }, providers: { codex: { command: process.execPath, args: [fakeProvider], profiles } } }, null, 2), "utf8");
+
+const results = [];
+for (const { item, workflowId } of prepared) {
   const before = status(item.root_path), gateway = request => callGateway({ ...request, gateway: path.resolve(config.gateway_entry), gatewayDatabase: gatewayDb, gatewayPolicy: policyFile });
   const outcome = await processMessage({
     message: "Run the registered read-only technical verification scenario. Do not edit source files and do not make owner acceptance decisions.",
