@@ -12,7 +12,7 @@ const errors = [];
 if (product.name !== "zodchi" || product.displayName !== "Zodchi" || product.workingName !== false) errors.push("invalid public product identity");
 if (rootPackage.name !== product.name || rootPackage.version !== product.version || rootPackage.license !== "MIT") errors.push("root package does not match product.json");
 
-for (const relative of ["ONBOARDING_PROMPT.md", "QUICKSTART.md", "UPDATE.md", "configs/WorkflowPlatformArchitecture.template.md", "docs/ARCHITECTURE.md", "WorkflowPlatform/docs/WorkflowPlatform.md", "WorkflowPlatform/docs/ProjectPackages.md", "WorkflowPlatform/catalogs/README.md", "AgentGateway/docs/AgentGateway.md"]) {
+for (const relative of ["ONBOARDING_PROMPT.md", "QUICKSTART.md", "UPDATE.md", "configs/WorkflowPlatformArchitecture.template.md", "docs/ARCHITECTURE.md", "docs/RELEASE_EVIDENCE_0.6.0-rc.1.md", "WorkflowPlatform/docs/WorkflowPlatform.md", "WorkflowPlatform/docs/ProjectPackages.md", "WorkflowPlatform/catalogs/README.md", "AgentGateway/docs/AgentGateway.md"]) {
   const file = path.join(root, relative);
   const result = documentLint(fs.readFileSync(file, "utf8"), relative);
   if (result.status !== "passed") errors.push(`${relative}: ${result.errors.join("; ")}`);
@@ -38,4 +38,4 @@ if (errors.length) {
   process.stderr.write(`${JSON.stringify({ status: "failed", errors }, null, 2)}\n`);
   process.exit(1);
 }
-process.stdout.write(`${JSON.stringify({ status: "passed", product: product.name, version: product.version, semantic_documents: 9 })}\n`);
+process.stdout.write(`${JSON.stringify({ status: "passed", product: product.name, version: product.version, semantic_documents: 10 })}\n`);

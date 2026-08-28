@@ -4,6 +4,18 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_6_0_rc_1_2026_08_28" status="working">
+
+## 0.6.0-rc.1 — 2026-08-28
+
+- Release и установка теперь fail-closed: один universal archive, проверка checksum и publisher, нативная диагностика до появления Node, транзакционные project hooks и acceptance install/update/rollback/uninstall с platform-aware путями.
+- Core lifecycle разделяет clarification и external evidence, привязывает необратимое approval к точному состоянию действия, изолирует owner messages и project config, защищает канонические shared/exclusive resources и поддерживает privacy-safe receipts вместе с подписанным external control plane.
+- Scope-aware Git enumeration применяет pathspec до лимита; отрицание по всему корпусу требует authoritative boundary; детерминированный evidence/recovery supervision останавливает duplicate review loops и сохраняет UTF-8 byte contracts.
+- Package SDK v4 поставляет support-grade `software.web-application` и `one-c.development`, а также executable previews для Web-игр, Unity, data analytics, infrastructure operations и marketing/content operations. Пятнадцать project presets создают hash-bound import proposals и явную local configuration без изменения core платформы.
+- На Windows механика реальных репозиториев прошла для Unity и marketing/content. Dashboard остаётся blocked его зарегистрированными project checks, 1С — unavailable до регистрации локального BSL baseline, owner/domain acceptance учитывается отдельно, а macOS/Linux acceptance обязателен до финального `0.6.0`.
+
+</section>
+
 <section id="0_5_24_2026_08_26" status="working">
 
 ## 0.5.24 — 2026-08-26
