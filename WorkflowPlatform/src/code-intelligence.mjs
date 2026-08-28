@@ -163,7 +163,17 @@ function oneCMetadataBridges(nodes) {
 }
 
 function loadTypeScript(root) {
-  try { return createRequire(path.join(root, "package.json"))("typescript"); } catch { return null; }
+  try {
+    const candidate = createRequire(path.join(root, "package.json"))("typescript");
+    // TypeScript 7 exposes a version-only CommonJS root and moves compiler APIs behind unstable entry
+    // points. Treating package presence as compiler capability made source discovery dereference
+    // ScriptTarget.Latest and fail the whole run. An incompatible API is unavailable evidence, not an
+    // execution error and never permission to fall back to a semantic claim.
+    const functions = ["createProgram", "isFunctionDeclaration", "forEachChild"];
+    if (functions.some(key => typeof candidate?.[key] !== "function")) return null;
+    if (!candidate.ScriptTarget || !candidate.ModuleKind || !candidate.ModuleResolutionKind || !candidate.JsxEmit) return null;
+    return candidate;
+  } catch { return null; }
 }
 
 function tsDeclarationName(ts, node) {
