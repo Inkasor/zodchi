@@ -176,6 +176,35 @@ test("a second answer to the same question is recorded and does not overwrite th
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("all generated duplicate-delivery orders preserve exactly one canonical interaction answer", () => {
+  const { root, db } = bareFixture("workflow-interaction-delivery-property-");
+  const statuses = ["approved", "rejected", "cancelled", "superseded", "expired"];
+  const orders = [];
+  for (let offset = 0; offset < statuses.length; offset += 1) {
+    const rotated = [...statuses.slice(offset), ...statuses.slice(0, offset)];
+    orders.push(rotated, [...rotated].reverse());
+  }
+
+  for (const [ordinal, order] of orders.entries()) {
+    const interactionId = openClarification(db, { taskId: "task", runId: "waiting", question: `Generated question ${ordinal}` });
+    const results = order.map((status, delivery) => settleInteraction(db, interactionId, {
+      status,
+      answer: { ordinal, delivery, status }
+    }));
+    assert.equal(results.filter(item => item.settled).length, 1, `order ${ordinal} settled more than once`);
+    assert.equal(results[0].settled, true);
+    assert.equal(results.slice(1).every(item => item.settled === false && item.status === order[0]), true);
+    const canonical = readInteraction(db, interactionId);
+    assert.equal(canonical.status, order[0]);
+    assert.deepEqual(canonical.answer, { ordinal, delivery: 0, status: order[0] });
+  }
+
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM events WHERE kind='interaction_settled'").get().count, orders.length);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM events WHERE kind='interaction_response_duplicate'").get().count, orders.length * (statuses.length - 1));
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("an open wait and its contract survive the process that opened it", () => {
   const { root, dbFile, db } = bareFixture("workflow-wait-restart-");
   const interactionId = openExternalEvidenceRequest(db, { taskId: "task", runId: "waiting", question: "Нужен журнал проведения.", contract: contract({ command: "1cv8 ... /DumpEventLog" }), affectedSteps: ["worker"] });

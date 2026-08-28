@@ -32,6 +32,29 @@ test("closed vocabularies classify every allowed and forbidden transition", () =
   }
 });
 
+test("generated state walks never escape a terminal state or invent an unregistered transition", () => {
+  const vocabularies = { task: TASK_STATES, workflow_run: RUN_STATES, workflow_step: STEP_STATES, attempt: ATTEMPT_STATES };
+  const random = seed => {
+    let value = seed >>> 0;
+    return () => ((value = (Math.imul(value, 1_664_525) + 1_013_904_223) >>> 0) / 0x1_0000_0000);
+  };
+
+  for (const [entityType, states] of Object.entries(vocabularies)) {
+    for (let seed = 1; seed <= 64; seed += 1) {
+      const next = random(seed * 97 + entityType.length), initial = states[Math.floor(next() * states.length)];
+      let current = initial, terminalReached = ALLOWED_TRANSITIONS[entityType][current].length === 0;
+      for (let turn = 0; turn < 256; turn += 1) {
+        const proposed = states[Math.floor(next() * states.length)];
+        const registered = ALLOWED_TRANSITIONS[entityType][current].includes(proposed);
+        assert.equal(canTransition(entityType, current, proposed), registered, `${entityType}:${seed}:${turn} ${current} -> ${proposed}`);
+        if (terminalReached) assert.equal(registered, false, `${entityType}:${current} escaped a terminal state`);
+        if (registered) current = proposed;
+        terminalReached ||= ALLOWED_TRANSITIONS[entityType][current].length === 0;
+      }
+    }
+  }
+});
+
 test("paired task/run transition is atomic and forbidden transition records contract errors", () => {
   const { root, runtime } = runtimeFixture();
   const runId = runtime.create("state contract", { project_id: "project", workflow_id: "workflow" });
