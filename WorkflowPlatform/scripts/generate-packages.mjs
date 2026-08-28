@@ -21,7 +21,7 @@ const positional = process.argv[process.argv.indexOf(FLAG) + 1];
 const named = flagged ? flagged.slice(FLAG.length + 1) : process.argv.includes(FLAG) ? positional : null;
 if (process.argv.includes(FLAG) && (!named || named.startsWith("--"))) throw new Error(`PACKAGE_DEFINITIONS_REQUIRED: ${FLAG} needs a file`);
 const source = process.argv.includes("--installation") ? resolveWorkflowSettings().packageDefinitions : named;
-const { packages: PACKAGE_DEFINITIONS, bundles: PACKAGE_BUNDLES, generatedDirectory: outputDirectory, file: packageDefinitionsFile } = await loadPackageDefinitions(source ?? undefined);
+const { packages: PACKAGE_DEFINITIONS, bundles: PACKAGE_BUNDLES, aliases: PACKAGE_ALIASES, generatedDirectory: outputDirectory, file: packageDefinitionsFile } = await loadPackageDefinitions(source ?? undefined);
 const results = [];
 const repositoryDefinitions = path.resolve(packageDefinitionsFile) === path.resolve(repositoryPackageDefinitionsFile);
 // Generated packages live beside the source that declares them, which is outside the repository for a
@@ -54,14 +54,16 @@ const catalogRoot = repositoryDefinitions ? path.join(root, "packages") : path.d
 const catalogFile = path.join(catalogRoot, "catalog.json");
 const previousCatalog = fs.existsSync(catalogFile) ? JSON.parse(fs.readFileSync(catalogFile, "utf8")) : { packages: [] };
 const acceptance = new Map((previousCatalog.packages ?? []).map(item => [item.key, item.owner_acceptance ?? []]));
+for (const alias of PACKAGE_ALIASES) if (!acceptance.has(alias.target) && acceptance.has(alias.key)) acceptance.set(alias.target, acceptance.get(alias.key));
 const catalogValue = {
-  schema_version: 1,
+  schema_version: 2,
   packages: PACKAGE_DEFINITIONS.map(item => ({
     key: item.key,
     version: item.version,
     file: path.relative(catalogRoot, path.join(outputDirectory, `${item.key}.xml`)).replaceAll("\\", "/"),
     owner_acceptance: acceptance.get(item.key) ?? []
-  }))
+  })),
+  aliases: PACKAGE_ALIASES.map(alias => ({ key: alias.key, target: alias.target, deprecated: true, remove_after: alias.remove_after }))
 };
 const catalogSource = `${JSON.stringify(catalogValue, null, 2)}\n`;
 if (checkOnly) {
