@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +16,7 @@ import { role } from "../packages/builders.mjs";
 // environment variable tests whatever that machine happens to point at, which is a different suite on
 // every machine and no suite at all in CI.
 const { packages: PACKAGE_DEFINITIONS, bundles: PACKAGE_BUNDLES, generatedDirectory: generatedPackagesDirectory } = await loadPackageDefinitions();
+const packagesRoot = path.dirname(path.dirname(generatedPackagesDirectory));
 function temporaryRoot(prefix) { const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir(); fs.mkdirSync(parent, { recursive: true }); return fs.mkdtempSync(path.join(parent, prefix)); }
 const generatedFile = key => path.join(generatedPackagesDirectory, `${key}.xml`);
 
@@ -52,6 +54,48 @@ test("at least one package is configured and every one is generated and free of 
     assert.equal(packageValue.workflows.every(workflow => workflow.steps.length && workflow.transitions.length === workflow.steps.length - 1), true);
     assert.equal(packageValue.documents.every(item => !path.isAbsolute(item.path)), true);
   }
+});
+
+test("public catalog versions and files are generated from the package definitions", () => {
+  const publicCatalog = JSON.parse(fs.readFileSync(path.join(packagesRoot, "catalog.json"), "utf8"));
+  assert.deepEqual(publicCatalog.packages.map(item => ({ key: item.key, version: item.version })), PACKAGE_DEFINITIONS.map(item => ({ key: item.key, version: item.version })));
+  for (const item of publicCatalog.packages) {
+    const source = fs.readFileSync(path.join(packagesRoot, item.file), "utf8");
+    const parsed = parseWorkflowPackage(source);
+    assert.equal(parsed.key, item.key);
+    assert.equal(parsed.version, item.version);
+  }
+});
+
+test("an installation catalog is generated and checked from its named definitions", () => {
+  const installation = temporaryRoot("workflow-installation-packages-");
+  const definitionsFile = path.join(installation, "definitions.mjs");
+  const packageValue = structuredClone(PACKAGE_DEFINITIONS[0]);
+  fs.writeFileSync(definitionsFile, `export default () => (${JSON.stringify({ packages: [packageValue], bundles: [] })});\n`, "utf8");
+  const generator = path.resolve(packagesRoot, "..", "scripts", "generate-packages.mjs");
+  const run = (...args) => spawnSync(process.execPath, [generator, ...args, "--definitions", definitionsFile], { encoding: "utf8" });
+
+  const generated = run();
+  assert.equal(generated.status, 0, generated.stderr);
+  const catalogFile = path.join(installation, "catalog.json");
+  const catalog = JSON.parse(fs.readFileSync(catalogFile, "utf8"));
+  assert.deepEqual(catalog.packages.map(item => ({ key: item.key, version: item.version })), [{ key: packageValue.key, version: packageValue.version }]);
+  assert.equal(parseWorkflowPackage(fs.readFileSync(path.join(installation, catalog.packages[0].file), "utf8")).version, packageValue.version);
+  assert.equal(run("--check").status, 0);
+
+  catalog.packages[0].version = "0.0.0-stale";
+  fs.writeFileSync(catalogFile, `${JSON.stringify(catalog, null, 2)}\n`, "utf8");
+  const stale = run("--check");
+  assert.notEqual(stale.status, 0);
+  assert.match(stale.stderr, /INSTALLATION_PACKAGE_CATALOG_STALE/);
+  fs.rmSync(installation, { recursive: true, force: true });
+});
+
+test("the public classifier vocabulary has an explicit 1C domain and seven routes", () => {
+  const catalogs = JSON.parse(fs.readFileSync(path.resolve(packagesRoot, "..", "..", "configs", "catalogs.json"), "utf8"));
+  assert.equal(catalogs.domains.includes("one-c"), true);
+  assert.equal(catalogs.disciplines.includes("one-c-development"), true);
+  assert.equal(catalogs.work_types.filter(item => item.startsWith("one-c.")).length, 7);
 });
 
 test("classification is routed by the model and every declared route reaches a declared workflow", () => {

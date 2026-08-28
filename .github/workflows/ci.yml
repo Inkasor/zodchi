@@ -20,6 +20,11 @@ jobs:
       - name: Тесты и линтеры
         shell: pwsh
         run: npm.cmd test
+      - name: Генераторы не оставляют скрытый diff
+        shell: pwsh
+        run: |
+          npm.cmd --prefix WorkflowPlatform run packages:generate
+          git diff --exit-code -- WorkflowPlatform/contracts/quality-contracts.xml WorkflowPlatform/packages/catalog.json WorkflowPlatform/packages/example/generated
       - name: Проверка релизной сборки
         shell: pwsh
         run: |

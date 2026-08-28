@@ -3,7 +3,7 @@ import { TASK_STATES } from "../src/state-machine.mjs";
 export const LEVELS = ["L0", "L1", "L2", "L3", "L4"];
 export const QUALITY = ["prototype", "mvp", "production", "security"];
 export const STATES = [...TASK_STATES];
-export const CLASSIFICATION_KINDS = ["conversation", "continuation", "clarification", "task", "decision", "research", "implementation", "documentation", "review", "verification", "testing", "planning", "fix", "content", "marketing", "release", "deployment", "data_change", "incident", "access_management", "project_bootstrap", "security_review", "game_design", "narrative", "map_design", "technical_art", "art_direction", "audio", "asset", "prototype", "producer"];
+export const CLASSIFICATION_KINDS = ["conversation", "continuation", "clarification", "task", "decision", "research", "implementation", "documentation", "review", "verification", "testing", "planning", "fix", "content", "marketing", "release", "deployment", "data_change", "incident", "access_management", "project_bootstrap", "security_review", "game_design", "narrative", "map_design", "technical_art", "art_direction", "audio", "asset", "prototype", "producer", "one-c.resume", "one-c.diagnosis", "one-c.change", "one-c.integration", "one-c.module-build", "one-c.release", "one-c.functional-test"];
 export function assertFields(value, fields, name) { for (const field of fields) if (value?.[field] === undefined || value[field] === null || value[field] === "") throw new Error(`${name}: missing ${field}`); return value; }
 // The work types a project accepts are registered, and a package may add its own. This list is what a
 // caller without a registry falls back to, never the authority: a registered work type rejected here

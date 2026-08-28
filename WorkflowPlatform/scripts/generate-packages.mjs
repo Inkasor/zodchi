@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadPackageDefinitions } from "../packages/definitions.mjs";
+import { loadPackageDefinitions, repositoryPackageDefinitionsFile } from "../packages/definitions.mjs";
 import { resolveWorkflowSettings } from "../src/paths.mjs";
 import { serializeWorkflowPackage, validateWorkflowPackage } from "../src/workflow-package.mjs";
 import { inspectWorkflowBundle, serializeWorkflowBundle } from "../src/workflow-bundle.mjs";
@@ -23,6 +23,7 @@ if (process.argv.includes(FLAG) && (!named || named.startsWith("--"))) throw new
 const source = process.argv.includes("--installation") ? resolveWorkflowSettings().packageDefinitions : named;
 const { packages: PACKAGE_DEFINITIONS, bundles: PACKAGE_BUNDLES, generatedDirectory: outputDirectory, file: packageDefinitionsFile } = await loadPackageDefinitions(source ?? undefined);
 const results = [];
+const repositoryDefinitions = path.resolve(packageDefinitionsFile) === path.resolve(repositoryPackageDefinitionsFile);
 // Generated packages live beside the source that declares them, which is outside the repository for a
 // configured installation, so paths are reported relative to that directory rather than to the root.
 const report = file => path.relative(path.dirname(outputDirectory), file).replaceAll("\\", "/");
@@ -46,6 +47,35 @@ for (const packageValue of PACKAGE_DEFINITIONS) {
   }
   results.push({ key: packageValue.key, version: packageValue.version, file: report(file) });
 }
+// A catalog is generated from the same definitions as its XML envelopes. The repository keeps its
+// example definitions one directory below the public catalog; an installation keeps definitions,
+// catalog and generated/ as siblings. In both layouts the definitions are the only version authority.
+const catalogRoot = repositoryDefinitions ? path.join(root, "packages") : path.dirname(packageDefinitionsFile);
+const catalogFile = path.join(catalogRoot, "catalog.json");
+const previousCatalog = fs.existsSync(catalogFile) ? JSON.parse(fs.readFileSync(catalogFile, "utf8")) : { packages: [] };
+const acceptance = new Map((previousCatalog.packages ?? []).map(item => [item.key, item.owner_acceptance ?? []]));
+const catalogValue = {
+  schema_version: 1,
+  packages: PACKAGE_DEFINITIONS.map(item => ({
+    key: item.key,
+    version: item.version,
+    file: path.relative(catalogRoot, path.join(outputDirectory, `${item.key}.xml`)).replaceAll("\\", "/"),
+    owner_acceptance: acceptance.get(item.key) ?? []
+  }))
+};
+const catalogSource = `${JSON.stringify(catalogValue, null, 2)}\n`;
+if (checkOnly) {
+  if (!fs.existsSync(catalogFile) || fs.readFileSync(catalogFile, "utf8") !== catalogSource) {
+    throw new Error(repositoryDefinitions ? "PUBLIC_PACKAGE_CATALOG_STALE" : "INSTALLATION_PACKAGE_CATALOG_STALE");
+  }
+} else {
+  fs.mkdirSync(catalogRoot, { recursive: true });
+  fs.writeFileSync(catalogFile, catalogSource, "utf8");
+}
+const publicCatalog = {
+  file: repositoryDefinitions ? path.relative(root, catalogFile).replaceAll("\\", "/") : report(catalogFile),
+  packages: catalogValue.packages.length
+};
 const bundles = [];
 for (const spec of PACKAGE_BUNDLES) {
   const members = new Set(spec.member_keys);
@@ -71,4 +101,4 @@ for (const spec of PACKAGE_BUNDLES) {
   if (bundleLint.status !== "passed") throw new Error(`GENERATED_WORKFLOW_BUNDLE_INVALID: ${bundleLint.errors.join(", ")}`);
   bundles.push({ key: bundle.key, version: bundle.version, file: report(bundleFile), packages: bundle.packages.length });
 }
-process.stdout.write(`${JSON.stringify({ status: checkOnly ? "checked" : "generated", definitions: path.basename(packageDefinitionsFile), quality_contracts: { file: path.relative(root, qualityContractsFile).replaceAll("\\", "/"), contracts: qualityLint.contracts }, packages: results, bundles })}\n`);
+process.stdout.write(`${JSON.stringify({ status: checkOnly ? "checked" : "generated", definitions: path.basename(packageDefinitionsFile), quality_contracts: { file: path.relative(root, qualityContractsFile).replaceAll("\\", "/"), contracts: qualityLint.contracts }, public_catalog: publicCatalog, packages: results, bundles })}\n`);

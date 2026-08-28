@@ -9,6 +9,7 @@ import { onboardProject } from "../src/onboarding.mjs";
 import { exportWorkflowPackage, inspectWorkflowPackage, parseWorkflowPackage, serializeWorkflowPackage, proposeWorkflowImport, applyWorkflowImport, validateWorkflowPackage } from "../src/workflow-package.mjs";
 import { createExperienceProposal, evaluateExperienceProposal, applyExperienceProposal, recordExperienceObservation } from "../src/experience.mjs";
 import { structuredHash } from "../src/role-contracts.mjs";
+import { registerProjectResource } from "../src/project-resources.mjs";
 
 function temporaryRoot(prefix) { const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir(); fs.mkdirSync(parent, { recursive: true }); return fs.mkdtempSync(path.join(parent, prefix)); }
 const promptHash = text => `sha256:${structuredHash(text)}`;
@@ -22,6 +23,8 @@ function seedSource(root) {
   fs.mkdirSync(path.join(projectRoot, "docs"), { recursive: true }); fs.writeFileSync(path.join(projectRoot, "docs", "Current.md"), "<document id=\"current\"></document>\n", "utf8");
   onboardProject(dbFile, {
     project: { id: "source", name: "Source package", root_path: projectRoot }, workflow: { id: "main", name: "Main", package_key: "demo.package", package_version: "1.0.0", default_quality: "mvp", default_level: "L2", discovery: { git: false } },
+    resources: [{ alias: "runtime.ib", kind: "1c.server", purpose: "Isolated test information base", declaration: { server: "test-host:1541", infobase: "test" } }],
+    domains: [{ id: "software", name: "Software" }], disciplines: [{ id: "software", name: "Software" }],
     work_types: [{ id: "implementation", name: "Implementation", category: "work" }], quality_modes: [{ id: "prototype", name: "Prototype", ordinal: 0 }, { id: "mvp", name: "MVP", ordinal: 1 }, { id: "production", name: "Production", ordinal: 2 }, { id: "security", name: "Security audit", ordinal: 3 }], planning_levels: [{ id: "L2", name: "L2", ordinal: 2 }], artifact_types: [{ id: "code", name: "Code", category: "code" }, { id: "document", name: "Document", category: "document" }],
     roles: ["planner", "worker", "reviewer", "documentator"].map(id => ({ id, name: id[0].toUpperCase() + id.slice(1) })),
     profiles: [{ id: "local-model-profile", provider: "codex", name: "Local model profile", role_id: "worker" }], role_assignments: [{ role_id: "worker", profile_id: "local-model-profile", operational_level: "mvp" }],
@@ -32,7 +35,7 @@ function seedSource(root) {
     role_contracts: [roleContract("planner", "planner.v1", ["code", "document"], ["check.green"]), roleContract("worker", "worker.v1", ["code"], ["check.green"]), roleContract("reviewer", "reviewer.v1", ["code"], ["check.green"]), roleContract("documentator", "documentator.v1", ["document"])],
     workflow_steps: [
       { key: "plan", ordinal: 1, role_id: "planner", input_schema_key: "request.v1", output_schema_key: "planner.v1", artifact_type_keys: [], check_keys: [] },
-      { key: "implement", ordinal: 2, role_id: "worker", input_schema_key: "package.v1", output_schema_key: "worker.v1", artifact_type_keys: ["code"], check_keys: ["check.green"], correction: { max: 1 } },
+      { key: "implement", ordinal: 2, role_id: "worker", input_schema_key: "package.v1", output_schema_key: "worker.v1", artifact_type_keys: ["code"], check_keys: ["check.green"], resources: [{ alias: "runtime.ib", mode: "shared" }], correction: { max: 1 } },
       { key: "review", ordinal: 3, role_id: "reviewer", input_schema_key: "review-input.v1", output_schema_key: "reviewer.v1", artifact_type_keys: ["code"], check_keys: ["check.green"] },
       { key: "document", ordinal: 4, role_id: "documentator", input_schema_key: "document-input.v1", output_schema_key: "documentator.v1", artifact_type_keys: ["document"], check_keys: [] }
     ], workflow_transitions: [{ from: "plan", to: "implement", condition: { outcome: "planned" } }, { from: "implement", to: "review", condition: { gates: "passed" } }, { from: "review", to: "document", condition: { decision: "PASS" } }],
@@ -58,22 +61,31 @@ test("limited package grammar rejects declarations, unknown envelope fields and 
   assert.throws(() => parseWorkflowPackage("<workflow_package key=\"a\" version=\"1.0.0\" schema_version=\"1\"><purpose>&boom;</purpose><payload format=\"application\/json\">{}</payload></workflow_package>"), /ENTITY_FORBIDDEN/);
 });
 
+test("schema v1 packages fail with an explicit migration requirement", () => {
+  assert.throws(() => validateWorkflowPackage({ schema_version: 1 }), /WORKFLOW_PACKAGE_SCHEMA_MIGRATION_REQUIRED: schema_version 1 -> 2/);
+  assert.throws(() => parseWorkflowPackage('<workflow_package key="tj-analyzer.desktop-software" version="1.0.0" schema_version="1"><purpose>Legacy private package contract fixture</purpose><payload format="application/json">{&quot;schema_version&quot;:1}</payload></workflow_package>'), /WORKFLOW_PACKAGE_SCHEMA_MIGRATION_REQUIRED: schema_version 1 -> 2/);
+});
+
 test("complete package exports deterministically without local profile or model identifiers", () => {
   const root = temporaryRoot("workflow-package-export-"), dbFile = seedSource(root), first = path.join(root, "first.xml"), second = path.join(root, "second.xml");
   const one = exportWorkflowPackage(dbFile, first, "source", "demo.package"), two = exportWorkflowPackage(dbFile, second, "source", "demo.package");
   assert.equal(one.package_hash, two.package_hash); assert.equal(fs.readFileSync(first, "utf8"), fs.readFileSync(second, "utf8"));
-  const lint = inspectWorkflowPackage(first); assert.equal(lint.status, "passed"); assert.equal(lint.package.workflows[0].steps.length, 4); assert.equal(lint.package.workflows[0].questions.length, 1); assert.equal(lint.package.state_machine.step_states.includes("changes_requested"), true); assert.equal(lint.package.test_scenarios[0].anonymized, true);
+  const lint = inspectWorkflowPackage(first); assert.equal(lint.status, "passed"); assert.equal(lint.package.schema_version, 2); assert.equal(lint.package.workflows[0].steps.length, 4); assert.equal(lint.package.workflows[0].questions.length, 1); assert.equal(lint.package.state_machine.step_states.includes("changes_requested"), true); assert.equal(lint.package.test_scenarios[0].anonymized, true);
+  assert.deepEqual(lint.package.resources, [{ alias: "runtime.ib", kind: "1c.server", purpose: "Isolated test information base" }]);
+  assert.deepEqual(lint.package.workflows[0].steps.find(step => step.key === "implement").resources, [{ alias: "runtime.ib", mode: "shared" }]);
+  assert.deepEqual(lint.package.catalogs.domains.map(item => item.key), ["software"]);
   const source = fs.readFileSync(first, "utf8"); assert.equal(source.includes("local-model-profile"), false); assert.equal(source.includes("model_id"), false);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
 test("import is proposal-first, hash-bound, confirmed and recreates local technical IDs", () => {
   const root = temporaryRoot("workflow-package-import-"), sourceDb = seedSource(root), targetDb = seedTarget(root), packageFile = path.join(root, "package.xml"), proposalFile = path.join(root, "proposal.json"), roundtrip = path.join(root, "roundtrip.xml");
+  let db = openDb(targetDb); registerProjectResource(db, { projectId: "target", alias: "runtime.ib", kind: "1c.server", purpose: "Local target binding", declaration: { server: "local-host:1541", infobase: "acceptance" } }); db.close();
   const exported = exportWorkflowPackage(sourceDb, packageFile, "source", "demo.package"), proposal = proposeWorkflowImport(targetDb, packageFile, proposalFile, "target");
-  let db = openDb(targetDb); assert.equal(db.prepare("SELECT COUNT(*) count FROM workflows WHERE package_key='demo.package'").get().count, 0); assert.equal(db.prepare("SELECT status FROM workflow_import_proposals WHERE id=?").get(proposal.id).status, "pending"); db.close();
+  db = openDb(targetDb); assert.equal(db.prepare("SELECT COUNT(*) count FROM workflows WHERE package_key='demo.package'").get().count, 0); assert.equal(db.prepare("SELECT status FROM workflow_import_proposals WHERE id=?").get(proposal.id).status, "pending"); db.close();
   assert.throws(() => applyWorkflowImport(targetDb, proposalFile, "target"), /CONFIRMATION_REQUIRED/);
   const applied = applyWorkflowImport(targetDb, proposalFile, "target", { confirmedBy: "owner" }); assert.equal(applied.status, "applied");
-  db = openDb(targetDb); const mapping = db.prepare("SELECT semantic_key,local_id FROM package_import_mappings WHERE proposal_id=? AND entity_type='workflow'").get(proposal.id); assert.equal(mapping.semantic_key, "main"); assert.notEqual(mapping.local_id, "main"); assert.equal(db.prepare("SELECT status FROM workflow_package_releases WHERE project_id='target' AND package_key='demo.package'").get().status, "active"); db.close();
+  db = openDb(targetDb); const mapping = db.prepare("SELECT semantic_key,local_id FROM package_import_mappings WHERE proposal_id=? AND entity_type='workflow'").get(proposal.id); assert.equal(mapping.semantic_key, "main"); assert.notEqual(mapping.local_id, "main"); assert.equal(db.prepare("SELECT status FROM workflow_package_releases WHERE project_id='target' AND package_key='demo.package'").get().status, "active"); assert.deepEqual(JSON.parse(db.prepare("SELECT declaration_json FROM project_resources WHERE project_id='target' AND alias='runtime.ib'").get().declaration_json), { kind: "1c.server", server: "local-host:1541", infobase: "acceptance" }); db.close();
   const exportedAgain = exportWorkflowPackage(targetDb, roundtrip, "target", "demo.package"); assert.equal(exportedAgain.package_hash, exported.package_hash);
   const repeated = proposeWorkflowImport(targetDb, roundtrip, path.join(root, "repeat.json"), "target"); assert.equal(repeated.status, "no_changes"); assert.equal(fs.existsSync(path.join(root, "repeat.json")), false);
   fs.rmSync(root, { recursive: true, force: true });

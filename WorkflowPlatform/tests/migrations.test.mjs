@@ -18,7 +18,7 @@ function temporaryRoot(prefix) {
 test("clean database applies numbered normalized migrations and SQLite safety pragmas", () => {
   const root = temporaryRoot("workflow-migrations-clean-");
   const db = openDb(path.join(root, "workflow.sqlite"));
-  assert.equal(schemaVersion(db), 22);
+  assert.equal(schemaVersion(db), 23);
   assert.equal(db.prepare("PRAGMA foreign_keys").get().foreign_keys, 1);
   assert.equal(db.prepare("PRAGMA journal_mode").get().journal_mode, "wal");
   assert.equal(db.prepare("PRAGMA busy_timeout").get().timeout, 5000);
@@ -26,6 +26,9 @@ test("clean database applies numbered normalized migrations and SQLite safety pr
   for (const table of ["goals", "stages", "tasks", "workflow_runs", "workflow_steps", "attempts", "decisions", "approvals", "artifacts", "events", "budgets", "budget_entries", "leases", "resource_leases", "project_resources", "inbox_events", "dead_letters", "role_contracts", "role_profile_assignments", "workflow_package_releases", "workflow_import_proposals", "package_import_mappings", "experience_observations", "experience_proposals", "experience_evaluations", "check_baselines", "check_baseline_diagnostics", "diagnostic_rules", "diagnostic_rule_tags", "project_diagnostic_policies", "run_root_baselines", "run_evidence", "run_control_requests", "progress_snapshots", "evidence_flow_adapters"]) assert.equal(tables.has(table), true, `missing ${table}`);
   assert.equal(new Set(db.prepare("PRAGMA table_info(gateway_calls)").all().map(row => row.name)).has("model_provider"), true);
   assert.equal(new Set(db.prepare("PRAGMA table_info(workflow_step_templates)").all().map(row => row.name)).has("resources_json"), true);
+  assert.equal(db.prepare("SELECT name FROM domains WHERE id='one-c'").get().name, "1C");
+  assert.equal(db.prepare("SELECT name FROM disciplines WHERE id='one-c-development'").get().name, "1C development");
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM work_types WHERE id LIKE 'one-c.%'").get().count, 7);
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -37,7 +40,7 @@ test("the known pre-publication migration 7 newline checksum remains readable", 
   db.prepare("UPDATE schema_migrations SET checksum=? WHERE version=7").run("8080e01be11bc8882303b50e3d51dc00d1dffcd23c3f08691dee6d7452770c1c");
   db.close();
   db = openDb(file);
-  assert.equal(schemaVersion(db), 22);
+  assert.equal(schemaVersion(db), 23);
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -90,7 +93,9 @@ test("a migration that rebuilds a referenced table survives a database that has 
   fs.mkdirSync(partial);
   // Everything up to the rebuild, so the database can be filled the way a real one is before the
   // rebuilding migration runs against it.
-  for (const name of all.slice(0, -1)) fs.copyFileSync(path.join(migrationsDirectory, name), path.join(partial, name));
+  const rebuildIndex = all.findIndex(name => name.startsWith("015_"));
+  assert.notEqual(rebuildIndex, -1);
+  for (const name of all.slice(0, rebuildIndex)) fs.copyFileSync(path.join(migrationsDirectory, name), path.join(partial, name));
 
   const file = path.join(root, "workflow.sqlite");
   const before = openDb(file, { migrationsDirectory: partial });

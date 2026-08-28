@@ -3,7 +3,7 @@
   "packages": [
     {
       "key": "example.web-app",
-      "version": "2.6.0",
+      "version": "3.0.0",
       "file": "example/generated/example.web-app.xml",
       "owner_acceptance": [
         "content",
