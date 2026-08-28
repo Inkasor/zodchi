@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { buildPrompt } from "./prompt-builder.mjs";
 import { lintFile } from "./lint.mjs";
-import { processMessage } from "./workflow-app.mjs";
+import { deliverExternalEvidencePacket, processMessage } from "./workflow-app.mjs";
 import { onboardProject, registerProject, registerProjectRoot } from "./onboarding.mjs";
 import { exportWorkflowPackage, proposeWorkflowImport, applyWorkflowImport } from "./workflow-package.mjs";
 import { inspectWorkflowBundle } from "./workflow-bundle.mjs";
@@ -16,6 +16,7 @@ import { backupInstallation, restoreInstallation } from "./backup.mjs";
 import { operationalPoliciesLint, qualityContractsLint } from "./quality-contracts.mjs";
 import { configureOneCBslCheck, createOneCBslBaseline } from "./one-c-bsl-check.mjs";
 import { readProjectContext } from "./document-context.mjs";
+import { cancelInteraction, pendingInteractions } from "./interactions.mjs";
 import { expandTerms, searchSources, sourceScope } from "./source-context.mjs";
 import { buildCodeIntelligence, mergeGraphMatches } from "./code-intelligence.mjs";
 import { applyIdleRunControl, requestRunControl, resumeRunControl, runControlStatus } from "./progress-supervisor.mjs";
@@ -32,6 +33,26 @@ else if (process.argv[2] === "one-c-bsl-baseline") { console.log(JSON.stringify(
 else if (process.argv[2] === "one-c-bsl-configure") { console.log(JSON.stringify(configureOneCBslCheck(args.db ?? settings.databasePath, { projectId: args.project, executable: args.executable, platformBin: args["platform-bin"], runner: args.runner, tempRoot: args["temp-root"], catalogFile: args.catalog }), null, 2)); }
 else if (process.argv[2] === "prompt") { console.log(buildPrompt({ role: "planner", stage: "planning", intent: args.intent ?? "", classification: { kind: "task", domain: "workflow", risk: "low", level: "L1", quality: "prototype" }, quality: "prototype", format: "JSON" })); }
 else if (process.argv[2] === "run") { console.log(JSON.stringify(await processMessage({ message: args.message ?? "", project: args.project ?? settings.project, dbFile: args.db ?? settings.databasePath, workflow: args.workflow ?? settings.workflow, eventSource: args["event-source"] ?? "cli", eventKey: args["event-key"] ?? null, preferredLanguage: args.language ?? settings.responseLanguage, execute: args.execute === true }), null, 2)); }
+// The owner's side of the two waits. A question is answered in chat; an external evidence request is not,
+// because the fact it asks for exists only outside anything the platform can read. These commands are how
+// a packet reaches it, and how the owner withdraws a wait they have decided not to satisfy.
+else if (process.argv[2] === "interactions") {
+  const runtime = new Runtime(args.db ?? settings.databasePath);
+  try { console.log(JSON.stringify(pendingInteractions(runtime.db, args.project ?? settings.project), null, 2)); } finally { runtime.db.close(); }
+}
+else if (process.argv[2] === "interaction-cancel") {
+  const runtime = new Runtime(args.db ?? settings.databasePath);
+  try { console.log(JSON.stringify(cancelInteraction(runtime.db, args.interaction, args.reason ?? "cancelled by the owner"), null, 2)); } finally { runtime.db.close(); }
+}
+else if (process.argv[2] === "evidence-deliver") {
+  const result = await deliverExternalEvidencePacket({
+    interactionId: args.interaction, packet: JSON.parse(fs.readFileSync(args.packet, "utf8")),
+    project: args.project ?? settings.project, dbFile: args.db ?? settings.databasePath,
+    preferredLanguage: args.language ?? settings.responseLanguage, execute: args.execute !== false
+  });
+  console.log(JSON.stringify(result, null, 2));
+  process.exitCode = result.delivered ? 0 : 1;
+}
 else if (process.argv[2] === "workflow-export") { console.log(JSON.stringify(exportWorkflowPackage(args.db, args.out, args.project, args.workflow), null, 2)); }
 else if (process.argv[2] === "workflow-import-propose") { console.log(JSON.stringify(proposeWorkflowImport(args.db, args.package, args.proposal, args.project), null, 2)); }
 else if (process.argv[2] === "workflow-import-apply") { console.log(JSON.stringify(applyWorkflowImport(args.db, args.proposal, args.project, { confirmedBy: args["confirmed-by"] }), null, 2)); }

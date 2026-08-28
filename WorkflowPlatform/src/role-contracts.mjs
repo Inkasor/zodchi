@@ -3,6 +3,7 @@ import path from "node:path";
 import { escapeXml } from "./limited-xml.mjs";
 import { renderQualityContract, validateQualityContract } from "./quality-contracts.mjs";
 import { languageName, normalizeLanguage } from "./language.mjs";
+import { validateEvidenceContract } from "./interactions.mjs";
 
 const RESULT_SCHEMAS = new Set(["planner.v1", "worker.v1", "reviewer.v1", "judge.v1", "strategy_review.v1", "documentator.v1"]);
 
@@ -30,7 +31,8 @@ export const RESULT_SCHEMA_SHAPES = Object.freeze({
     changed_paths: ["path from task_package.allowed_paths"],
     artifacts: [{ key: "key from task_package.artifact_keys", type: "registered artifact type", path: "path from task_package.allowed_paths", content_hash: "64 hex characters or null", status: "created | updated | unchanged" }],
     evidence: ["string"],
-    questions: ["string, at most 5"]
+    questions: ["string, at most 5"],
+    external_evidence_request: "null, or the evidence contract when status is blocked on a fact that exists only outside the project"
   }),
   "reviewer.v1": Object.freeze({
     schema_version: 1,
@@ -150,7 +152,7 @@ export function rolePrompt({ contract, qualityContract, packageContract, context
     ? "The role proposes a structured document operation only. Do not edit or write the filesystem and do not use file-editing tools: the platform validates, atomically applies and lints the returned proposal after this invocation. For a missing target whose expected_version is null, use create_document and put the complete new semantic document in content."
     : null;
   const workerCompletionInstruction = resultSchema === "worker.v1"
-    ? "Treat the task package allowed_paths as the complete authority boundary, not as a reason to request a broader system. A complete-file exact term scan with count zero is conclusive negative evidence inside that boundary. Claim a zero count only when that exact term and path are present in exact_term_scan with count zero; an omitted term is unknown, and a positive count must never be summarized as absent. Reconcile every positive and negative exact-scan claim before returning the result. If a scan proves that a requested identifier or producer is absent, complete the step with that negative finding and the nearest supported facts; do not return blocked or ask for out-of-scope sources merely because no positive producer exists. Return blocked only when the objective cannot be answered even negatively because authorized evidence is genuinely unavailable or unreadable."
+    ? "Return external_evidence_request=null unless you are blocked on a fact that exists only in a live information base, a runtime, a device or another system outside the readable project; in that case return status=blocked with an evidence contract naming evidence_kind, resource.kind, resource.identity, expected_provenance.source, expected_completeness.rule and must_cover, the claims it would establish, and command when a project command would collect it. Missing authority or a missing product decision is a question, not evidence. Treat the task package allowed_paths as the complete authority boundary, not as a reason to request a broader system. A complete-file exact term scan with count zero is conclusive negative evidence inside that boundary. Claim a zero count only when that exact term and path are present in exact_term_scan with count zero; an omitted term is unknown, and a positive count must never be summarized as absent. Reconcile every positive and negative exact-scan claim before returning the result. If a scan proves that a requested identifier or producer is absent, complete the step with that negative finding and the nearest supported facts; do not return blocked or ask for out-of-scope sources merely because no positive producer exists. Return blocked only when the objective cannot be answered even negatively because authorized evidence is genuinely unavailable or unreadable."
     : null;
   const reviewerPhaseInstruction = resultSchema === "reviewer.v1"
     ? "This independent review runs after worker evidence and deterministic gates but before the documentator. Compare the result first with task_package.review_evidence.owner_objective.verbatim and task_package.review_evidence.canonical_completion; planner completion criteria are advisory and never override owner intent, the quality contract, registered gates or completionBlockers. For change evidence, judge the run-relative delta and primary facts, never a builder or worker narrative. For analytical evidence, judge whether the conclusion follows from the supplied primary source ranges and scans. Truncated evidence is not absent evidence, incomplete collection is not a false fact, and failure to find a path in a bounded graph is not proof that the path is missing. A required final document is intentionally not created yet and its absence from worker artifacts or changed_paths is not a blocker. Final receipt totals, calls, tokens, cache, total duration and this invocation's full prompt measurement are platform-generated after review; their absence from review_evidence is not a blocker and they are supplied to the documentator and final run statistics later. Use CHANGES_REQUESTED for an evidence gap that a targeted correction can still address when task_package.remaining_correction_cycles is positive. Reserve REJECT for a fundamental unsafe, unauthorized or contradictory result that another bounded evidence collection cycle cannot repair. The decision fields are conditional and must agree: PASS requires blockers=[] and required_actions=[]; CHANGES_REQUESTED or REJECT requires at least one blocker. Never return PASS while describing a blocker or required action. If task_package.schema_repair is present, correct exactly the reported contract contradiction while preserving the evidence-grounded judgment."
@@ -242,6 +244,14 @@ export function validateWorkerResult(value, { contract, packageContract }) {
   value.changed_paths = strings(value.changed_paths, "worker.v1.changed_paths").map(item => relativePath(item, "worker.v1.changed_paths"));
   if (value.changed_paths.some(item => !packageContract.allowed_paths.includes(item))) throw new Error("worker.v1: changed path outside package allowlist");
   strings(value.evidence, "worker.v1.evidence"); strings(value.questions, "worker.v1.questions", 5);
+  // Blocked used to be a dead end: the run stopped and nobody was asked for the thing that was missing.
+  // A blocked worker now says which of the two waits it is in. Questions are for a decision only a person
+  // can make; this contract is for a fact that no readable file contains, and it has to be specific
+  // enough that a delivered packet can be checked against it rather than accepted on its say-so.
+  if (value.external_evidence_request !== null) {
+    if (value.status !== "blocked") throw new Error("worker.v1: external_evidence_request requires status blocked");
+    value.external_evidence_request = validateEvidenceContract(value.external_evidence_request);
+  }
   value.artifacts = value.artifacts.map(item => {
     exactObject(item, ["key", "type", "path", "content_hash", "status"], "worker.v1.artifact");
     if (!packageContract.artifact_keys.includes(item.key) || !contract.allowed_artifact_types.includes(item.type)) throw new Error("worker.v1.artifact: artifact not allowed");

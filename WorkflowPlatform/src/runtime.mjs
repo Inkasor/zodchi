@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { openDb, now, id } from "./db.mjs";
 import { validateClassification } from "../contracts/schemas.mjs";
 import { appendEvent, transitionRunAndTask } from "./state-machine.mjs";
+import { CLARIFICATION_KINDS, settleInteraction } from "./interactions.mjs";
 
 function roleForStage(stage) {
   if (stage === "planning") return "planner";
@@ -83,24 +84,25 @@ export class Runtime {
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
     transitionRunAndTask(this.db, runId, "classified", { reason: "classification decision stored" });
-    this.settleClarifications(runId, value.pending_interaction_ids ?? value.pending_interaction_id ?? null);
+    this.settleAnsweredClarifications(runId, value.pending_interaction_ids ?? value.pending_interaction_id ?? null);
     return value;
   }
 
-  // A clarification is a question asked in chat, and the next message ends its life either way: the
-  // classifier names the interaction the user answered, and everything asked in an earlier run is
-  // superseded. Left pending they accumulate, and the next classifier reads questions the user has
-  // already answered as still open.
+  // A clarification is a question, and a question stays open until it is answered, withdrawn or replaced.
+  // It used to be settled by whatever message arrived next: naming one interaction approved it and every
+  // other pending question in the project was cancelled, answered or not. That is how a question guarding
+  // an unproven claim disappeared without anyone deciding it should.
   // One message routinely answers every question that was asked, so each named interaction is settled
-  // rather than only the first: recording one and cancelling the rest lost the fact that they were
-  // answered at all.
-  settleClarifications(runId, answered = null) {
-    const run = this.get(runId), timestamp = now();
+  // rather than only the first, and the run that carried the answer is recorded on each of them.
+  settleAnsweredClarifications(runId, answered = null) {
     const answeredIds = (answered === null ? [] : [answered].flat()).filter(Boolean);
-    const settle = this.db.prepare("UPDATE approvals SET status='approved',resolved_at=? WHERE id=? AND kind IN ('clarification','planner_clarification') AND status='pending'");
-    for (const answeredId of answeredIds) settle.run(timestamp, answeredId);
-    this.db.prepare(`UPDATE approvals SET status='cancelled',resolved_at=? WHERE kind IN ('clarification','planner_clarification') AND status='pending' AND run_id<>?
-      AND task_id IN (SELECT id FROM tasks WHERE project_id=?)`).run(timestamp, runId, run.project_id);
+    const settled = [];
+    for (const answeredId of answeredIds) {
+      const interaction = this.db.prepare("SELECT id,kind,status FROM approvals WHERE id=?").get(answeredId);
+      if (!interaction || interaction.status !== "pending" || !CLARIFICATION_KINDS.has(interaction.kind)) continue;
+      if (settleInteraction(this.db, answeredId, { status: "approved", answeredRunId: runId, answer: { answered_in_run: runId } }).settled) settled.push(answeredId);
+    }
+    return settled;
   }
 
   plan(runId, plan) {
@@ -111,16 +113,24 @@ export class Runtime {
       // A run stopped for the owner's decision already holds an empty plan: it was opened to record the
       // objective and then paused before anything was planned into it. Resuming plans into that same run,
       // so the placeholder gives way. A plan that already has steps is real history and is never replaced.
-      if (!this.db.prepare("SELECT COUNT(*) AS count FROM workflow_steps WHERE run_id=?").get(runId).count) this.db.prepare("DELETE FROM plans WHERE run_id=?").run(runId);
-      this.db.prepare("INSERT INTO plans(id,run_id,objective,authority,status,created_at) VALUES(?,?,?,?,?,?)").run(planId, runId, plan.objective, plan.authority ?? null, "planned", timestamp);
+      const planned = this.db.prepare("SELECT COALESCE(MAX(ordinal),0) AS ordinal,COUNT(*) AS count FROM workflow_steps WHERE run_id=?").get(runId);
+      if (!planned.count) this.db.prepare("DELETE FROM plans WHERE run_id=?").run(runId);
+      // A run holds one plan. Replanning after an answer records the new objective on that plan and
+      // appends its steps after the ones already run, rather than opening a second plan the run cannot
+      // hold or reopening a step whose work is finished.
+      const existingPlan = this.db.prepare("SELECT id FROM plans WHERE run_id=?").get(runId);
+      const currentPlanId = existingPlan?.id ?? planId;
+      if (existingPlan) this.db.prepare("UPDATE plans SET objective=?,authority=?,status='planned' WHERE id=?").run(plan.objective, plan.authority ?? null, currentPlanId);
+      else this.db.prepare("INSERT INTO plans(id,run_id,objective,authority,status,created_at) VALUES(?,?,?,?,?,?)").run(currentPlanId, runId, plan.objective, plan.authority ?? null, "planned", timestamp);
       for (const [index, stageDefinition] of (plan.steps ?? []).entries()) {
         const stage = typeof stageDefinition === "string" ? { key: stageDefinition } : stageDefinition;
         const stepKey = stage.key ?? stage.stage ?? stage.role;
         if (!stepKey) throw new Error(`plan: step ${index + 1} has no key`);
         const roleKey = stage.role ?? roleForStage(stepKey);
         const role = roleKey ? this.db.prepare("SELECT id FROM roles WHERE id=?").get(roleKey)?.id ?? null : null;
+        const ordinal = planned.ordinal + index + 1;
         this.db.prepare("INSERT INTO workflow_steps(id,run_id,step_key,ordinal,role_id,state,required,irreversible,idempotency_key,created_at,updated_at,max_attempts) VALUES(?,?,?,?,?,'pending',?,?,?,?,?,?)")
-          .run(id("step"), runId, stepKey, index + 1, role, stage.required === false ? 0 : 1, stage.irreversible ? 1 : 0, `${runId}:${stepKey}:${index + 1}`, timestamp, timestamp, stage.max_attempts ?? 3);
+          .run(id("step"), runId, stepKey, ordinal, role, stage.required === false ? 0 : 1, stage.irreversible ? 1 : 0, `${runId}:${stepKey}:${ordinal}`, timestamp, timestamp, stage.max_attempts ?? 3);
       }
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }

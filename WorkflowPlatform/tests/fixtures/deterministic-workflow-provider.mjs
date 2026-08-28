@@ -80,7 +80,7 @@ if (resultSchema === "strategy_review.v1") {
 } else if (resultSchema === "reviewer.v1" || (!resultSchema && role.includes("reviewer"))) {
   result = { schema_version: 1, decision: "PASS", summary: "Registered checks are green and no source path was changed by the bounded worker.", blockers: [], required_actions: [], evidence_refs: ["project-gate:passed", "worker:zero-change"] };
 } else {
-  result = { schema_version: 1, status: "completed", summary: `The bounded ${role} contract completed without source edits or owner decisions.`, changed_paths: [], artifacts: [], evidence: ["zero-path allowlist"], questions: [] };
+  result = { schema_version: 1, status: "completed", summary: `The bounded ${role} contract completed without source edits or owner decisions.`, changed_paths: [], artifacts: [], evidence: ["zero-path allowlist"], questions: [], external_evidence_request: null };
 }
 
 console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 64, cached_input_tokens: 16, output_tokens: 32, reasoning_output_tokens: 4, service_tier: "deterministic-contract" } }));

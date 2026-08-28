@@ -1,7 +1,7 @@
 import { id, now } from "./db.mjs";
 
 export const TASK_STATES = Object.freeze([
-  "received", "discovering", "classifying", "clarification_required", "classified", "classification_failed",
+  "received", "discovering", "classifying", "clarification_required", "external_evidence_required", "classified", "classification_failed",
   "planning", "executing", "documenting", "verifying", "review_required", "changes_requested",
   "approval_required", "documented", "completed", "cancelled", "rejected", "failed", "paused", "blocked", "retry_scheduled"
 ]);
@@ -13,7 +13,18 @@ const taskTransitions = {
   received: ["discovering", "cancelled"],
   discovering: ["classifying", "clarification_required", "failed", "paused", "cancelled"],
   classifying: ["classified", "clarification_required", "classification_failed", "failed", "paused", "cancelled"],
-  clarification_required: ["discovering", "classifying", "rejected", "cancelled"],
+  // A question asked mid-execution is answered back into the run that asked it. Sending it round through
+  // discovery again would replan work that is already done and pay for every model call a second time,
+  // which is why the answer returns to execution, or to planning when the answer changes the plan itself.
+  // A question asked before anything was planned was the whole of that run. Once it is answered the run
+  // has done its job, and the message that carried the answer is the run that does the work, so the
+  // question closes as completed rather than being cancelled as if nobody had answered.
+  clarification_required: ["discovering", "classifying", "planning", "executing", "completed", "rejected", "cancelled"],
+  // A missing external fact is not a missing decision. It is answered by a packet from a live information
+  // base, a runtime or a device, and until one arrives the run waits here rather than in a state that the
+  // next arbitrary message could settle. Verification is a destination of its own: evidence that arrives
+  // after the work was done is checked, not re-executed.
+  external_evidence_required: ["executing", "verifying", "planning", "rejected", "cancelled"],
   // Execution can fail before it has planned anything — a role contract that does not permit the work
   // type, a role with no profile assigned at this level — and a classified run had nowhere to go: the
   // failure was reported to the person while the run stayed classified for ever, neither finished nor
@@ -21,7 +32,7 @@ const taskTransitions = {
   classified: ["clarification_required", "planning", "executing", "documenting", "completed", "failed", "blocked", "paused", "cancelled"],
   classification_failed: ["retry_scheduled", "blocked", "failed", "cancelled"],
   planning: ["executing", "documenting", "clarification_required", "approval_required", "retry_scheduled", "failed", "blocked", "paused", "cancelled"],
-  executing: ["verifying", "documenting", "approval_required", "retry_scheduled", "failed", "blocked", "paused", "cancelled"],
+  executing: ["verifying", "documenting", "clarification_required", "external_evidence_required", "approval_required", "retry_scheduled", "failed", "blocked", "paused", "cancelled"],
   documenting: ["verifying", "documented", "approval_required", "retry_scheduled", "failed", "blocked", "paused", "cancelled"],
   verifying: ["review_required", "changes_requested", "approval_required", "documenting", "documented", "completed", "retry_scheduled", "failed", "blocked", "paused", "cancelled"],
   review_required: ["changes_requested", "approval_required", "documenting", "documented", "completed", "rejected", "failed", "blocked", "paused", "cancelled"],
@@ -30,7 +41,10 @@ const taskTransitions = {
   documented: ["verifying", "review_required", "approval_required", "completed", "blocked", "cancelled"],
   retry_scheduled: ["discovering", "classifying", "planning", "executing", "documenting", "verifying", "blocked", "cancelled"],
   paused: ["discovering", "classifying", "planning", "executing", "documenting", "verifying", "review_required", "approval_required", "blocked", "cancelled"],
-  blocked: ["retry_scheduled", "paused", "failed", "cancelled"],
+  // A blocked run is one that stopped and needs escalation. When the escalation turns out to be a named
+  // wait — a decision only the owner can make, a fact only a live system holds — the run moves to the
+  // state that says so, instead of sitting in a generic block nobody knows what to do with.
+  blocked: ["retry_scheduled", "paused", "clarification_required", "external_evidence_required", "failed", "cancelled"],
   completed: [], cancelled: [], rejected: [], failed: []
 };
 
