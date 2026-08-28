@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { RESOURCE_KINDS, RESOURCE_MODES } from "./resource-locks.mjs";
+import { proposeWorkflowImport } from "./workflow-package.mjs";
 
 const KEY = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
 const ACCEPTANCE = new Set(["KNOWN_ANSWER_PRIVATE", "OWNER_READ_REQUIRED"]);
@@ -81,4 +82,55 @@ export function loadProjectPresetCatalog(file, packageCatalog) {
 
 export function loadDefaultProjectPresetCatalog({ presetFile = defaultProjectPresetCatalogFile, packageFile = defaultPublicPackageCatalogFile } = {}) {
   return loadProjectPresetCatalog(presetFile, JSON.parse(fs.readFileSync(packageFile, "utf8")));
+}
+
+// A preset is deliberately not an alternative package format. Packages are still imported through the
+// hash-bound proposal lifecycle, while the preset records the machine-local capabilities and authorities
+// that cannot be guessed by a public artifact. This command turns all fifteen recipes into executable
+// onboarding work without silently activating a package or fabricating an executable, database or runtime.
+export function proposeProjectPreset({ dbFile, projectId, presetKey, outputDirectory, presetFile = defaultProjectPresetCatalogFile, packageFile = defaultPublicPackageCatalogFile }) {
+  for (const [name, value] of Object.entries({ dbFile, projectId, presetKey, outputDirectory })) if (typeof value !== "string" || !value.trim()) throw new Error(`PRESET_PROPOSAL_ARGUMENT_REQUIRED: ${name}`);
+  const packageCatalog = JSON.parse(fs.readFileSync(path.resolve(packageFile), "utf8"));
+  const catalog = loadProjectPresetCatalog(presetFile, packageCatalog);
+  const preset = catalog.presets.find(item => item.key === presetKey);
+  if (!preset) throw new Error(`PRESET_NOT_FOUND: ${presetKey}`);
+  const packages = new Map(packageCatalog.packages.map(item => [item.key, item]));
+  const proposalRoot = path.resolve(outputDirectory);
+  fs.mkdirSync(proposalRoot, { recursive: true });
+
+  const packageProposals = preset.package_keys.map(packageKey => {
+    const declaration = packages.get(packageKey);
+    const source = path.resolve(path.dirname(path.resolve(packageFile)), declaration.file);
+    const proposalFile = path.join(proposalRoot, `${packageKey}.proposal.json`);
+    const proposal = proposeWorkflowImport(path.resolve(dbFile), source, proposalFile, projectId);
+    return Object.freeze({
+      package_key: packageKey,
+      package_version: declaration.version,
+      support_status: declaration.support_status,
+      status: proposal.status,
+      proposal_file: proposal.status === "no_changes" ? null : proposalFile,
+      proposal_hash: proposal.proposal_hash ?? null
+    });
+  });
+
+  return Object.freeze({
+    schema_version: 1,
+    status: packageProposals.every(item => item.status === "no_changes") ? "configuration_required" : "pending_owner_confirmation",
+    preset_key: preset.key,
+    project_id: projectId,
+    core_edits_required: false,
+    package_proposals: Object.freeze(packageProposals),
+    local_configuration: Object.freeze({
+      source_scopes: preset.source_scopes,
+      adapters: preset.adapters,
+      resources: preset.resources,
+      authority: preset.authority,
+      horizontal_bundles: preset.horizontal_bundles
+    }),
+    first_value: preset.first_value,
+    public_fixture: preset.public_fixture,
+    private_acceptance: preset.private_acceptance,
+    substitution_metric: preset.substitution_metric,
+    migration_notes: preset.migration_notes
+  });
 }

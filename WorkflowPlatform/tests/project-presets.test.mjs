@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
-import { defaultProjectPresetCatalogFile, defaultPublicPackageCatalogFile, loadDefaultProjectPresetCatalog, validateProjectPresetCatalog } from "../src/project-presets.mjs";
+import { openDb, now } from "../src/db.mjs";
+import { defaultProjectPresetCatalogFile, defaultPublicPackageCatalogFile, loadDefaultProjectPresetCatalog, proposeProjectPreset, validateProjectPresetCatalog } from "../src/project-presets.mjs";
 
 const packageCatalog = JSON.parse(fs.readFileSync(defaultPublicPackageCatalogFile, "utf8"));
 
@@ -40,4 +43,24 @@ test("preset lint rejects unknown packages, unrouted scenarios and synthetic dom
   assert.throws(() => validateProjectPresetCatalog(overclaim, packageCatalog), /PRESET_PUBLIC_FIXTURE_OVERCLAIMS/);
   const privatePath = structuredClone(original); privatePath.presets[0].migration_notes = [`Use ${["C:", "Private", "repo"].join("\\")}`];
   assert.throws(() => validateProjectPresetCatalog(privatePath, packageCatalog), /private identity forbidden/);
+});
+
+test("every preset produces owner-reviewable package proposals and local configuration without core edits", () => {
+  const root = fs.mkdtempSync(path.join(process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir(), "workflow-project-presets-"));
+  const dbFile = path.join(root, "workflow.sqlite"), db = openDb(dbFile), catalog = loadDefaultProjectPresetCatalog();
+  for (const preset of catalog.presets) db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES(?,?,?,?)").run(preset.key, preset.profile_role, path.join(root, preset.key), now());
+  db.close();
+
+  for (const preset of catalog.presets) {
+    const plan = proposeProjectPreset({ dbFile, projectId: preset.key, presetKey: preset.key, outputDirectory: path.join(root, "proposals", preset.key) });
+    assert.equal(plan.status, "pending_owner_confirmation");
+    assert.equal(plan.core_edits_required, false);
+    assert.deepEqual(plan.package_proposals.map(item => item.package_key), preset.package_keys);
+    assert.equal(plan.package_proposals.every(item => item.status === "pending" && fs.existsSync(item.proposal_file)), true);
+    assert.deepEqual(plan.local_configuration.source_scopes, preset.source_scopes);
+    assert.deepEqual(plan.local_configuration.adapters, preset.adapters);
+    assert.deepEqual(plan.local_configuration.resources, preset.resources);
+    assert.equal(plan.public_fixture.status, "MECHANICS_ONLY");
+  }
+  fs.rmSync(root, { recursive: true, force: true });
 });
