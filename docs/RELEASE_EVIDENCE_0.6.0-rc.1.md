@@ -10,10 +10,10 @@ This record describes a local release candidate. No tag, push, GitHub Release, p
 
 <automated_verification id="automated_verification" status="verified" evidence="local_deterministic_checks">
 
-- Repository source: tools `25/25`, WorkflowPlatform `322/322`, AgentGateway `26/26`.
+- Repository source: tools `26/26`, WorkflowPlatform `322/322`, AgentGateway `26/26`.
 - Package regeneration/import: all seven package artifacts match their definitions and public catalog; all fifteen presets validate and produce proposal-first local onboarding material.
 - Two independently assembled canonical release roots contain the same 217 manifest entries and identical file hashes; release lint passes.
-- The full suite executed from the assembled release: tools `24 passed, 1 source-only CI test skipped`, WorkflowPlatform `321 passed, 1 skipped`, AgentGateway `26/26`. The product archive intentionally omits its GitHub publishing workflow, while the TypeScript semantic test requires the analyzed project to supply a compatible TypeScript compiler API; both skips are explicit and their runtime boundaries are covered separately.
+- The full suite executed from the assembled release: tools `24 passed, 2 source-only checks skipped`, WorkflowPlatform `321 passed, 1 skipped`, AgentGateway `26/26`. The product archive intentionally omits its GitHub publishing workflow and the canary configuration template, while the TypeScript semantic test requires the analyzed project to supply a compatible TypeScript compiler API; every skip is explicit and its runtime boundary is covered separately.
 - Two archives compressed from the same canonical `Zodchi` root by the pinned Node 24 runtime are byte-identical. This proves deterministic retries under the release runtime; cross-version zlib byte identity is not claimed. The one-command acceptance covers install, owned hook, routed run, update, rollback, hook restoration and uninstall.
 
 </automated_verification>
@@ -30,6 +30,16 @@ All four runs used a deterministic contract provider through the real AgentGatew
 | Marketing/content project | `run_1787932582084_5b933dc8` | `completed`, gate `passed` | 3 calls; 192 input, 48 cached, 96 output, 12 reasoning | Real-repository workflow mechanics passed. Domain quality and owner acceptance remain pending. |
 
 </live_canaries>
+
+<canary_reproduction id="canary_reproduction" status="working">
+
+The four canary runs above were produced by `WorkflowPlatform/scripts/run-e2e-evidence.mjs`, which is shipped and reproducible. Their configurations are not, and cannot be: every entry names an absolute path to a private project root, and the release lint refuses to publish such a path. A run is therefore traceable through its own output directory rather than through this repository.
+
+- `WorkflowPlatform/scripts/canary-config.example.json` states the exact configuration shape, with placeholders instead of local paths.
+- Each run writes `summary.json`, one `<project_id>.statistics.json` per project and the canary database `workflow-evidence.sqlite` into its `output_root`. The run identifiers quoted above resolve in that database and nowhere else; they are absent from any installation database by design, because a canary must not run against production state.
+- Whoever repeats a canary keeps its `output_root` next to this record. Without it a quoted run identifier is a claim, not evidence.
+
+</canary_reproduction>
 
 <legacy_release_preflight id="v0_5_24_checksum_repair" status="verified" evidence="github_release_api_and_downloaded_assets">
 
