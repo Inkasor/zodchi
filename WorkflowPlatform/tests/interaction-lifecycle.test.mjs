@@ -272,7 +272,7 @@ function readyPlan() {
     allowed_paths: ["src/output.txt"], inputs: ["registered context"], checks: ["check-ok"], risks: [],
     artifacts: [{ key: "code-output", type: "code", path: "src/output.txt", required: true }],
     completion_criteria: ["registered gate passes"], questions: [],
-    steps: [{ key: "worker", role: "worker", objective: "Create the bounded output", allowed_paths: ["src/output.txt"], artifact_keys: ["code-output"], check_ids: ["check-ok"], required: true, irreversible: false, max_attempts: 1 }]
+    steps: [{ key: "worker", role: "worker", objective: "Create the bounded output", allowed_paths: ["src/output.txt"], artifact_keys: ["code-output"], check_ids: ["check-ok"], resources: [], required: true, irreversible: false, max_attempts: 1 }]
   };
 }
 

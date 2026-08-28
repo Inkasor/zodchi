@@ -20,9 +20,12 @@ test("relative runtime paths resolve from the installation root", () => {
 });
 
 test("runtime has no implicit project or workflow", async () => {
-  await assert.rejects(() => processMessage({ message: "hello", workflowDefinition: { id: "x" } }), /PROJECT_REQUIRED/);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "workflow-no-route-"));
-  const project = path.join(root, "project"), dbFile = path.join(root, "workflow.sqlite");
+  const project = path.join(root, "project"), dbFile = path.join(root, "workflow.sqlite"), emptyDbFile = path.join(root, "empty.sqlite");
+  // A negative portability test must not open the repository's default mutable database. Besides making
+  // the result depend on a previous run, that hid migration changes behind whichever installation data
+  // happened to be present on the developer machine.
+  await assert.rejects(() => processMessage({ message: "hello", workflowDefinition: { id: "x" }, dbFile: emptyDbFile }), /PROJECT_REQUIRED/);
   fs.mkdirSync(project);
   const db = openDb(dbFile);
   db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('project','Project',?,?)").run(project, now());

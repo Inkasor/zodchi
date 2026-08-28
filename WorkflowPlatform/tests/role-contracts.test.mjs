@@ -75,7 +75,7 @@ function plannerResult({ document = false } = {}) {
     allowed_paths: document ? ["docs/control.md"] : ["src/output.txt"], inputs: ["registered context"], checks: ["check-ok"], risks: [],
     artifacts: [{ key: document ? "control-doc" : "code-output", type: document ? "document" : "code", path: document ? "docs/control.md" : "src/output.txt", required: true }],
     completion_criteria: ["registered gate passes", "reviewer returns PASS"], questions: [],
-    steps: [{ key: "worker", role: "worker", objective: document ? "Prepare evidence for the document update" : "Create the bounded output", allowed_paths: document ? [] : ["src/output.txt"], artifact_keys: document ? [] : ["code-output"], check_ids: ["check-ok"], required: true, irreversible: false, max_attempts: 1 }]
+    steps: [{ key: "worker", role: "worker", objective: document ? "Prepare evidence for the document update" : "Create the bounded output", allowed_paths: document ? [] : ["src/output.txt"], artifact_keys: document ? [] : ["code-output"], check_ids: ["check-ok"], resources: [], required: true, irreversible: false, max_attempts: 1 }]
   };
 }
 
@@ -418,7 +418,7 @@ test("independent plan steps using one role receive independent role call budget
   const plan = plannerResult();
   plan.allowed_paths = []; plan.artifacts = [];
   plan.steps = ["first-analysis", "second-analysis"].map(key => ({
-    key, role: "worker", objective: `Complete ${key}`, allowed_paths: [], artifact_keys: [], check_ids: ["check-ok"], required: true, irreversible: false, max_attempts: 1
+    key, role: "worker", objective: `Complete ${key}`, allowed_paths: [], artifact_keys: [], check_ids: ["check-ok"], resources: [], required: true, irreversible: false, max_attempts: 1
   }));
   let workerCalls = 0, secondPrompt = "";
   const result = await processMessage({

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { openDb, now } from "./db.mjs";
+import { registerImplicitResources, registerProjectResource } from "./project-resources.mjs";
 
 const rows = (db, sql, values) => { const stmt = db.prepare(sql); for (const value of values) stmt.run(...value); };
 
@@ -13,6 +14,7 @@ export function registerProject(dbFile, project) {
     const timestamp = now();
     db.prepare("INSERT OR IGNORE INTO projects(id,name,root_path,created_at) VALUES(?,?,?,?)").run(normalized.id, normalized.name, normalized.root_path, timestamp);
     db.prepare("INSERT OR IGNORE INTO project_roots(project_id,root_key,path,access,is_primary,created_at) VALUES(?,'primary',?,'write',1,?)").run(normalized.id, normalized.root_path, timestamp);
+    registerImplicitResources(db, { projectId: normalized.id, rootPath: normalized.root_path });
     return { status: before ? "already_registered" : "registered", project: normalized };
   } finally { db.close(); }
 }
@@ -61,6 +63,10 @@ export function onboardProject(dbFile, spec) {
     rows(db, "INSERT OR IGNORE INTO project_roots (project_id,root_key,path,access,is_primary,created_at) VALUES (?, ?, ?, ?, ?, ?)",
       [[spec.project.id, "primary", spec.project.root_path, "write", 1, now()],
         ...(spec.project.roots ?? []).map(x => [spec.project.id, x.key, x.path, x.access === "write" ? "write" : "read", 0, now()])]);
+    // Aliases the installation binds to real authorities. The working tree is registered whether or not
+    // anything declared it, because every project has one and a write-capable step holds it.
+    registerImplicitResources(db, { projectId: spec.project.id, rootPath: spec.project.root_path });
+    for (const resource of spec.resources ?? []) registerProjectResource(db, { projectId: spec.project.id, alias: resource.alias, kind: resource.kind, purpose: resource.purpose ?? null, declaration: resource.declaration ?? null });
     rows(db, "INSERT OR IGNORE INTO work_types (id,name,category) VALUES (?, ?, ?)", (spec.work_types ?? []).map(x => [x.id, x.name ?? x.id, x.category ?? "general"]));
     rows(db, "INSERT OR IGNORE INTO workflows (id,name,project_id,package_key,package_version,default_quality,default_level,status,discovery_json,history_budget_bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [[spec.workflow.id, spec.workflow.name ?? spec.workflow.id, spec.project.id, spec.workflow.package_key ?? null, spec.workflow.package_version ?? null, spec.workflow.default_quality ?? "mvp", spec.workflow.default_level ?? "L2", "active", JSON.stringify(spec.workflow.discovery ?? { git: false }), spec.workflow.history_budget_bytes ?? 24000]]);
     rows(db, "INSERT OR IGNORE INTO domains (id,name) VALUES (?, ?)", (spec.domains ?? []).map(x => [x.id, x.name ?? x.id]));

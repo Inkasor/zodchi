@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { id, now } from "./db.mjs";
 import { appendEvent, canTransition } from "./state-machine.mjs";
-import { acquireStepResources, conflictFor, heldResources, releaseResourcesOfLease, resolveStepResources } from "./resource-locks.mjs";
+import { acquireStepResources, conflictFor, heldResources, releaseResourcesOfLease, resolveStepResources, resourceIdentity } from "./resource-locks.mjs";
 
 const TERMINAL_STEP_STATES = new Set(["completed", "documented", "failed", "cancelled"]);
 
@@ -227,10 +227,14 @@ export class ExecutionQueue {
       // A step that declared it writes something must be holding that something before it starts. Without
       // this the receipt is the only record of the lock, and a step reaching execution by any other path
       // would write with no lock at all while the record still said it had one.
-      const held = heldResources(this.db, step.id);
+      const held = new Map(heldResources(this.db, step.id).map(resource => [resource.identity, resource.mode]));
       for (const declaration of JSON.parse(step.resources_json ?? "[]")) {
         if (declaration?.mode !== "exclusive") continue;
-        if (!held.some(resource => resource.mode === "exclusive")) throw new Error(`RESOURCE_RECEIPT_MISSING: ${step.step_key} declared ${declaration.kind} exclusive`);
+        // The lock has to be on the resource this step declared, not on some resource it happens to
+        // hold: a step holding one exclusive lease satisfied every exclusive declaration it made, so a
+        // step declaring a repository and an information base could start holding only one of them.
+        const identity = resourceIdentity(declaration);
+        if (held.get(identity) !== "exclusive") throw new Error(`RESOURCE_RECEIPT_MISSING: ${step.step_key} declared ${identity} exclusive`);
       }
       entityState(this.db, "workflow_step", step.id, "running", timestamp, { lease_id: lease.id });
       entityState(this.db, "attempt", attempt.id, "running", timestamp, { lease_id: lease.id });

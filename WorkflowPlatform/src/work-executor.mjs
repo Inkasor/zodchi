@@ -12,6 +12,7 @@ import { buildCodeIntelligence, mergeGraphMatches } from "./code-intelligence.mj
 import { projectRoots, writableRoots } from "./project-roots.mjs";
 import { normalizeResourceDeclaration } from "./resource-locks.mjs";
 import { loadRoleContract, parseRoleReceipt, rolePrompt, structuredHash } from "./role-contracts.mjs";
+import { WORKTREE_ALIAS, aliasDeclarations, registeredResources as registeredProjectResources } from "./project-resources.mjs";
 import { consumeCorrectionCycle, documentationOutcome, loadOperationalPolicy, loadQualityContract, operationalLevel, reviewerRequirement } from "./quality-contracts.mjs";
 import { buildReviewEvidence, captureRunBaselines, recordRunEvidence, runChangeEvidence } from "./run-evidence.mjs";
 import { applyRunControlAtBoundary, pendingRunControl, recordProgressSnapshot, semanticGapFingerprint } from "./progress-supervisor.mjs";
@@ -73,7 +74,7 @@ function derivePlanFromTemplates(runtime, projectId, contract, message, register
       artifacts.push({ key, type, path: null, required: false });
       return key;
     });
-    return { key: row.step_key, role: row.role_id, objective: message, allowed_paths: [], artifact_keys: keys, check_ids: parseJson(row.check_keys_json, []).filter(check => registeredChecks.includes(check)), required: row.required === 1, irreversible: row.irreversible === 1, max_attempts: (parseJson(row.correction_json, {}).max_cycles ?? 0) + 1 };
+    return { key: row.step_key, role: row.role_id, objective: message, allowed_paths: [], artifact_keys: keys, check_ids: parseJson(row.check_keys_json, []).filter(check => registeredChecks.includes(check)), resources: parseJson(row.resources_json, []), required: row.required === 1, irreversible: row.irreversible === 1, max_attempts: (parseJson(row.correction_json, {}).max_cycles ?? 0) + 1 };
   });
   if (documentRequired) {
     // The documentation phase resolves its target from the plan, so a declared route still has to say
@@ -621,16 +622,37 @@ function appendSteps(runtime, runId, steps, { sameOrdinal = false } = {}) {
 // A run holds one step per key, and a replan writes a second set of steps into the same run. They are
 // prefixed the way a correction cycle is, so the superseded attempt stays readable as history instead of
 // colliding with the plan that replaced it.
-function appendExecutionSteps(runtime, runId, plannerResult, keyPrefix = "") {
+// Which roles are allowed to change files. The working tree of a project is a resource like any other,
+// and a step that writes holds it exclusively whether or not any plan mentioned it: two workers editing
+// one checkout at the same time is the commonest conflict there is, and leaving it to a planner to
+// remember would make the lock optional in exactly the case it matters.
+function writingRoles(db, projectId) {
+  return new Set(db.prepare("SELECT role_id,boundaries_json FROM role_contracts WHERE project_id=? AND status='active'").all(projectId)
+    .filter(row => parseJson(row.boundaries_json, {})?.writes === true).map(row => row.role_id));
+}
+
+// A plan names resources by alias; the authority behind each alias is the installation's, and it is
+// resolved here, once, on the way into the step. A correction or a replan reuses the same planned step,
+// so it carries the same resources: rebuilding the step without them was how a corrected worker came to
+// write with no lock at all while the plan still said which resource it needed.
+function plannedStepResources(db, projectId, writers, step) {
+  const declared = aliasDeclarations(db, projectId, step.resources ?? []);
+  if (!writers.has(step.role) || declared.some(item => item.kind === "project.worktree")) return declared;
+  return [...aliasDeclarations(db, projectId, [{ alias: WORKTREE_ALIAS, mode: "exclusive" }]), ...declared];
+}
+
+function appendExecutionSteps(runtime, runId, projectId, plannerResult, keyPrefix = "") {
+  const writers = writingRoles(runtime.db, projectId);
   appendSteps(runtime, runId, [
-    ...plannerResult.steps.map(step => ({ ...step, key: `${keyPrefix}${step.key}`, schema: "worker.v1", contract: { objective: step.objective, allowed_paths: step.allowed_paths, artifact_keys: step.artifact_keys, check_ids: step.check_ids } })),
+    ...plannerResult.steps.map(step => ({ ...step, key: `${keyPrefix}${step.key}`, schema: "worker.v1", resources: plannedStepResources(runtime.db, projectId, writers, step), contract: { objective: step.objective, allowed_paths: step.allowed_paths, artifact_keys: step.artifact_keys, check_ids: step.check_ids } })),
     { key: `${keyPrefix}verification`, role: null, required: true, irreversible: false, max_attempts: 1, schema: "gate.v1", contract: { allowed_paths: plannerResult.allowed_paths, check_ids: plannerResult.checks } }
   ]);
 }
 
-function appendCorrectionSteps(runtime, runId, plannerResult, cycle, selectedSteps = plannerResult.steps, keyPrefix = "") {
+function appendCorrectionSteps(runtime, runId, projectId, plannerResult, cycle, selectedSteps = plannerResult.steps, keyPrefix = "") {
+  const writers = writingRoles(runtime.db, projectId);
   appendSteps(runtime, runId, [
-    ...selectedSteps.map(step => ({ key: `${keyPrefix}correction_${cycle}_${step.key}`, role: step.role, required: true, irreversible: false, max_attempts: 1, schema: "worker.v1", contract: { objective: step.objective, allowed_paths: step.allowed_paths, artifact_keys: step.artifact_keys, check_ids: step.check_ids, correction_cycle: cycle } })),
+    ...selectedSteps.map(step => ({ key: `${keyPrefix}correction_${cycle}_${step.key}`, role: step.role, required: true, irreversible: false, max_attempts: 1, schema: "worker.v1", resources: plannedStepResources(runtime.db, projectId, writers, step), contract: { objective: step.objective, allowed_paths: step.allowed_paths, artifact_keys: step.artifact_keys, check_ids: step.check_ids, correction_cycle: cycle } })),
     { key: `${keyPrefix}verification_${cycle}`, role: null, required: true, irreversible: false, max_attempts: 1, schema: "gate.v1", contract: { allowed_paths: plannerResult.allowed_paths, check_ids: plannerResult.checks, correction_cycle: cycle } }
   ]);
 }
@@ -639,8 +661,9 @@ function appendReviewerSteps(runtime, runId, roles, reason, cycle = 0) {
   return appendSteps(runtime, runId, roles.map((role, index) => ({ key: cycle || index ? `review_${cycle}_${index + 1}` : "review", role, required: true, irreversible: false, max_attempts: 2, schema: "reviewer.v1", contract: { reason, independent_member: index + 1 } })), { sameOrdinal: true });
 }
 
-function appendDocumentatorStep(runtime, runId, roleId, outcome) {
-  appendSteps(runtime, runId, [{ key: "documentation", role: roleId, required: true, irreversible: false, max_attempts: 1, schema: "documentator.v1", contract: { quality_outcome: outcome } }]);
+function appendDocumentatorStep(runtime, runId, projectId, roleId, outcome) {
+  const resources = aliasDeclarations(runtime.db, projectId, [{ alias: WORKTREE_ALIAS, mode: "exclusive" }]);
+  appendSteps(runtime, runId, [{ key: "documentation", role: roleId, required: true, irreversible: false, max_attempts: 1, schema: "documentator.v1", resources, contract: { quality_outcome: outcome } }]);
 }
 
 function verifyWorkerArtifacts(runtime, runId, stepId, projectRoot, plannerResult, artifactKeys, workerResult) {
@@ -943,8 +966,9 @@ async function executeStrategyRecovery({ runtime, queue, runId, projectId, level
   appendSteps(runtime, runId, [{ key: `strategy_replan_${cycle}`, role: plannerRole, required: true, irreversible: false, max_attempts: 1, schema: "planner.v1", contract: { cycle } }]);
   queue.enqueueRun(runId);
   const { registeredRoles, registeredChecks, registeredArtifactTypes } = registeredReplanCatalog(runtime.db, projectId, level, classification.artifact_type, available);
-  const replanPackage = { objective: strategy.result.replan_intent, previous_plan: plan, primary_gap: reviewer?.blockers?.[0] ?? null, registered_roles: registeredRoles, registered_checks: registeredChecks, registered_artifact_types: registeredArtifactTypes, rule: "Return a bounded replacement plan. Do not execute any step." };
-  const planner = await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: replanPackage, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "planner.v1", parseOptions: { registeredRoles, registeredChecks, registeredArtifactTypes, maxStepAttempts: 1 }, gatewayCall });
+  const resources = registeredProjectResources(runtime.db, projectId);
+  const replanPackage = { objective: strategy.result.replan_intent, previous_plan: plan, primary_gap: reviewer?.blockers?.[0] ?? null, registered_roles: registeredRoles, registered_checks: registeredChecks, registered_artifact_types: registeredArtifactTypes, registered_resources: resources, rule: "Return a bounded replacement plan. Do not execute any step." };
+  const planner = await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: replanPackage, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "planner.v1", parseOptions: { registeredRoles, registeredChecks, registeredArtifactTypes, registeredResources: resources, maxStepAttempts: 1 }, gatewayCall });
   planner.complete({ outcome: planner.result.outcome });
   recordRunEvidence(runtime.db, runId, planner.step.id, "strategy_replan", { prior_plan_hash: structuredHash(plan), replacement_plan_hash: structuredHash(planner.result), intent: strategy.result.replan_intent });
   const replacementRoute = targetedSteps(planner.result, reviewer ? { reviewer } : { gate });
@@ -1145,7 +1169,10 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   // A plan step is rejected when its role is not one the route may execute, so the planner has to be
   // told which roles those are. Checks and artifact types were already named here; the roles were
   // validated against a list the planner never saw, and it filled the gap by naming itself.
-  const plannerPackage = { objective: message, classification: { work_type: classification.work_type, artifact_type: classification.artifact_type, risk: classification.risk, quality_mode: classification.quality_mode }, registered_roles: roleCapabilities, plan_boundary: planBoundary, following_phases: followingPhases, registered_checks: registeredChecks, registered_artifact_types: registeredArtifactTypes };
+  // The aliases a plan may choose from, without the authorities behind them: which host or path an alias
+  // resolves to is the installation's material and is neither the model's business nor safe in a prompt.
+  const registeredStepResources = registeredProjectResources(runtime.db, projectId);
+  const plannerPackage = { objective: message, classification: { work_type: classification.work_type, artifact_type: classification.artifact_type, risk: classification.risk, quality_mode: classification.quality_mode }, registered_roles: roleCapabilities, plan_boundary: planBoundary, following_phases: followingPhases, registered_checks: registeredChecks, registered_artifact_types: registeredArtifactTypes, registered_resources: registeredStepResources };
   plannerPackage.collection_contract = {
     source_matches: "Ranked locator evidence. It is deliberately excerpted and may cap returned result files; use exact_term_index and completeness to distinguish a result cap from an incomplete corpus scan.",
     worker_sources: "After planning, the platform supplies each worker with contents, relevant ranges and complete-file exact-term scan results for its allowed_paths. Workers consume those supplied results and do not rerun shell or file searches. The planner must select paths and assign investigation steps; it must not request full source bodies for itself.",
@@ -1175,7 +1202,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       // in the message, so the platform searches the declared scope for them before the planner is called
       // and hands over the files that actually mention them.
       source_matches: plannerSourceMatches
-    }), schemaKey: "planner.v1", parseOptions: { registeredRoles, registeredChecks, registeredArtifactTypes, maxStepAttempts: policy.limits.correction_cycles + 1 }, gatewayCall });
+    }), schemaKey: "planner.v1", parseOptions: { registeredRoles, registeredChecks, registeredArtifactTypes, registeredResources: registeredStepResources, maxStepAttempts: policy.limits.correction_cycles + 1 }, gatewayCall });
   let plan = planner ? planner.result : derivePlanFromTemplates(runtime, projectId, routeContract, message, registeredChecks, level, classification.document_required, documentatorRole, approvalGranted);
   if (classification.document_required) registerNewPlannedDocument(runtime, projectId, projectRoot, plan, documentatorRole);
   applyPlannerToDatabase(runtime, runId, plan);
@@ -1193,7 +1220,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     }
   }
   if (classification.document_required && !plan.artifacts.some(item => item.type === "document" && item.required)) throw new Error("PLAN_REQUIRED_DOCUMENT_ARTIFACT_MISSING");
-  appendExecutionSteps(runtime, runId, plan, stepKeyOf(""));
+  appendExecutionSteps(runtime, runId, projectId, plan, stepKeyOf(""));
   queue.enqueueRun(runId);
   runtime.setState(runId, "executing", { reason: "structured plan authorized" });
   captureRunBaselines(runtime.db, runId, projectRoots(runtime.db, projectId), { sourceScopeNarrowed: sourceScope(discovery.source_scope).narrowed });
@@ -1337,7 +1364,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       }
       consumeCorrectionCycle(runtime, runId, correctionCycles);
       recordRunEvidence(runtime.db, runId, null, "correction_routing", { ...routing, progress_kind: "gate", semantic_gap_fingerprint: progress.latest?.semantic_fingerprint ?? progress.latest?.primary_gap_fingerprint ?? null, route_keys: selected.map(step => step.key), packet_hash_before: progress.latest?.packet_hash ?? null, semantic_fingerprint_before: progress.latest?.semantic_fingerprint ?? null, frontier_fingerprint_before: progress.latest?.frontier_fingerprint ?? null });
-      appendCorrectionSteps(runtime, runId, plan, correctionCycles, selected, stepKeyOf(""));
+      appendCorrectionSteps(runtime, runId, projectId, plan, correctionCycles, selected, stepKeyOf(""));
       queue.enqueueRun(runId);
       runtime.db.prepare("UPDATE workflow_runs SET cycle=?,updated_at=? WHERE id=?").run(correctionCycles, now(), runId);
       runtime.setState(runId, "executing", { reason: `targeted correction ${correctionCycles}: ${selected.map(step => step.key).join(",")}` });
@@ -1418,7 +1445,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     }
     consumeCorrectionCycle(runtime, runId, correctionCycles);
     recordRunEvidence(runtime.db, runId, null, "correction_routing", { ...routing, progress_kind: "semantic_review", semantic_gap_fingerprint: progress.latest?.semantic_fingerprint ?? progress.latest?.primary_gap_fingerprint ?? null, route_keys: selected.map(step => step.key), packet_hash_before: progress.latest?.packet_hash ?? null, semantic_fingerprint_before: progress.latest?.semantic_fingerprint ?? null, frontier_fingerprint_before: progress.latest?.frontier_fingerprint ?? null });
-    appendCorrectionSteps(runtime, runId, plan, correctionCycles, selected, stepKeyOf(""));
+    appendCorrectionSteps(runtime, runId, projectId, plan, correctionCycles, selected, stepKeyOf(""));
     queue.enqueueRun(runId);
     runtime.db.prepare("UPDATE workflow_runs SET cycle=?,updated_at=? WHERE id=?").run(correctionCycles, now(), runId);
     runtime.setState(runId, "executing", { reason: `review-gap correction ${correctionCycles}: ${selected.map(step => step.key).join(",")}` });
@@ -1437,7 +1464,7 @@ async function documentAndComplete({ runtime, queue, runId, projectId, projectRo
   let documentation = null;
   if (classification.document_required) {
     const qualityOutcome = documentationOutcome(policy.contract, { gateStatus: gate.status, ownerAccepted: ownerAccepted(runtime, runId) });
-    appendDocumentatorStep(runtime, runId, documentatorRole, qualityOutcome);
+    appendDocumentatorStep(runtime, runId, projectId, documentatorRole, qualityOutcome);
     queue.enqueueRun(runId);
     runtime.setState(runId, "documenting", { reason: reviewerResult ? "required documentation after reviewer PASS" : "required documentation after green deterministic gate" });
     const target = writableDocument(runtime, projectId, plan, documentatorRole);

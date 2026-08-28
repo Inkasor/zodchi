@@ -79,37 +79,53 @@ test("canonical identities name the resource, not the path that reached it", () 
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("two worktrees write their own indices in parallel and serialize the refs they share", () => {
-  const root = temporaryRoot("zodchi-resource-worktree-");
+test("two worktrees write their own indices in parallel", () => {
+  const root = temporaryRoot("zodchi-resource-index-");
   const repo = repository(root);
   const second = path.join(root, "worktree");
   git(repo, "worktree", "add", "--quiet", "-b", "side", second);
 
-  // Each worktree writes its own index; both update the one set of refs the family shares.
-  const declarations = directory => [
-    { kind: "repo.index", mode: "exclusive", path: directory },
-    { kind: "repo.refs", mode: "exclusive", path: directory }
-  ];
+  // Two worktrees of one repository have two indices. Locking "the repository" would serialize these two
+  // steps for no reason; the earlier version of this case declared the shared refs as well, so the second
+  // step waited and the parallel index work it was named for was never actually demonstrated.
   const { db } = fixture(root, [
-    { key: "main-tree", ordinal: 1, resources: declarations(repo) },
-    { key: "side-tree", ordinal: 1, resources: declarations(second) }
+    { key: "main-tree", ordinal: 1, resources: [{ kind: "repo.index", mode: "exclusive", path: repo }] },
+    { key: "side-tree", ordinal: 1, resources: [{ kind: "repo.index", mode: "exclusive", path: second }] }
+  ]);
+  const queue = new ExecutionQueue(db);
+
+  const first = queue.checkout({ ownerId: "worker-a" });
+  const parallel = queue.checkout({ ownerId: "worker-b" });
+  assert.equal(first.stepId, "main-tree");
+  assert.equal(parallel.stepId, "side-tree", "an index in another worktree is another resource");
+  assert.notEqual(first.resources[0].identity, parallel.resources[0].identity);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM resource_leases WHERE released_at IS NULL").get().count, 2);
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("every worktree of a repository shares one set of refs, so ref updates serialize", () => {
+  const root = temporaryRoot("zodchi-resource-refs-");
+  const repo = repository(root);
+  const second = path.join(root, "worktree");
+  git(repo, "worktree", "add", "--quiet", "-b", "side", second);
+
+  assert.equal(resourceIdentity({ kind: "repo.refs", mode: "exclusive", path: repo }), resourceIdentity({ kind: "repo.refs", mode: "exclusive", path: second }));
+  const { db } = fixture(root, [
+    { key: "main-tree", ordinal: 1, resources: [{ kind: "repo.refs", mode: "exclusive", path: repo }] },
+    { key: "side-tree", ordinal: 1, resources: [{ kind: "repo.refs", mode: "exclusive", path: second }] }
   ]);
   const queue = new ExecutionQueue(db);
 
   const first = queue.checkout({ ownerId: "worker-a" });
   assert.equal(first.stepId, "main-tree");
-  assert.equal(first.resources.length, 2);
-  const indices = new Set([resourceIdentity({ kind: "repo.index", mode: "exclusive", path: repo }), resourceIdentity({ kind: "repo.index", mode: "exclusive", path: second })]);
-  assert.equal(indices.size, 2, "two worktrees must not share an index");
-  assert.equal(resourceIdentity({ kind: "repo.refs", mode: "exclusive", path: repo }), resourceIdentity({ kind: "repo.refs", mode: "exclusive", path: second }));
-
-  // The second worktree's index is free, but the shared refs are not, so the step waits rather than
-  // racing the ref update.
-  assert.equal(queue.checkout({ ownerId: "worker-b" }), null);
+  // The other worktree is a different checkout and the same refs. Nothing blocks: the step is skipped and
+  // the worker is told which resource it waited on.
+  const blocked = queue.checkout({ ownerId: "worker-b" });
+  assert.equal(blocked, null);
   queue.start(first.token);
   queue.complete(first.token);
-  const second_ = queue.checkout({ ownerId: "worker-b" });
-  assert.equal(second_.stepId, "side-tree");
+  assert.equal(queue.checkout({ ownerId: "worker-b" }).stepId, "side-tree");
   assert.equal(held(db, "main-tree").every(row => row.release_reason === "completed"), true);
   db.close();
   fs.rmSync(root, { recursive: true, force: true });

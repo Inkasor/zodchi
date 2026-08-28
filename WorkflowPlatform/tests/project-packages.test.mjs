@@ -48,6 +48,7 @@ test("at least one package is configured and every one is generated and free of 
     assert.equal(source, serializeWorkflowPackage(packageValue)); assert.equal(parseWorkflowPackage(source).key, packageValue.key);
     assert.equal(/[A-Za-z]:[\\/]/.test(source), false); assert.equal(source.includes("model_id"), false); assert.equal(source.includes("profile_id"), false); assert.equal(source.includes("api_key"), false);
     assert.equal(packageValue.roles.every(role => role.contract.purpose && role.contract.result_schema_key && role.contract.allowed_profile_keys.length), true);
+    assert.equal(packageValue.roles.filter(role => role.contract.allowed_tools.includes("apply_patch")).every(role => role.contract.boundaries.writes === true), true);
     assert.equal(packageValue.workflows.every(workflow => workflow.steps.length && workflow.transitions.length === workflow.steps.length - 1), true);
     assert.equal(packageValue.documents.every(item => !path.isAbsolute(item.path)), true);
   }
@@ -84,7 +85,7 @@ test("an irreversible step is never taken by a role, and deployment is approved 
 // paths by a planner, or it would be turned loose on the whole project.
 test("a workflow whose workers may write declares a planning step", () => {
   for (const packageValue of PACKAGE_DEFINITIONS) {
-    const writes = new Map(packageValue.roles.map(role => [role.key, (role.contract.allowed_tools ?? []).length > 0]));
+    const writes = new Map(packageValue.roles.map(role => [role.key, role.contract.boundaries.writes === true]));
     for (const workflow of packageValue.workflows) {
       const worker = workflow.steps.filter(step => step.role_key && step.output_schema_key === "worker.v1");
       const writing = worker.filter(step => writes.get(step.role_key));
