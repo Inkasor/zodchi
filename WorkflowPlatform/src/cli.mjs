@@ -9,6 +9,7 @@ import { inspectWorkflowBundle } from "./workflow-bundle.mjs";
 import { recordExperienceObservation, createExperienceProposal, evaluateExperienceProposal, applyExperienceProposal } from "./experience.mjs";
 import { resolveWorkflowSettings } from "./paths.mjs";
 import { configureInstallation } from "./installation.mjs";
+import { applyHookInstallation, hookInstallationStatus, planHookInstallation } from "./hook-installation.mjs";
 import { Runtime } from "./runtime.mjs";
 import { ExecutionQueue } from "./execution-queue.mjs";
 import { workflowRunStatistics } from "./statistics.mjs";
@@ -32,7 +33,7 @@ else if (process.argv[2] === "quality-policy-lint") { const runtime = new Runtim
 else if (process.argv[2] === "one-c-bsl-baseline") { console.log(JSON.stringify(createOneCBslBaseline({ dbFile: args.db ?? settings.databasePath, projectId: args.project, executable: args.executable, source: args.source, workspace: args.workspace, platformBin: args["platform-bin"], tempRoot: args["temp-root"], acceptedRevision: args["accepted-revision"], confirmedBy: args["confirmed-by"], minimumSeverity: args["minimum-severity"], timeoutSeconds: args["timeout-seconds"], catalogFile: args.catalog }), null, 2)); }
 else if (process.argv[2] === "one-c-bsl-configure") { console.log(JSON.stringify(configureOneCBslCheck(args.db ?? settings.databasePath, { projectId: args.project, executable: args.executable, platformBin: args["platform-bin"], runner: args.runner, tempRoot: args["temp-root"], catalogFile: args.catalog }), null, 2)); }
 else if (process.argv[2] === "prompt") { console.log(buildPrompt({ role: "planner", stage: "planning", intent: args.intent ?? "", classification: { kind: "task", domain: "workflow", risk: "low", level: "L1", quality: "prototype" }, quality: "prototype", format: "JSON" })); }
-else if (process.argv[2] === "run") { console.log(JSON.stringify(await processMessage({ message: args.message ?? "", project: args.project ?? settings.project, dbFile: args.db ?? settings.databasePath, workflow: args.workflow ?? settings.workflow, eventSource: args["event-source"] ?? "cli", eventKey: args["event-key"] ?? null, preferredLanguage: args.language ?? settings.responseLanguage, execute: args.execute === true }), null, 2)); }
+else if (process.argv[2] === "run") { console.log(JSON.stringify(await processMessage({ message: args.message ?? "", project: args.project ?? null, origin: args.origin ?? null, dbFile: args.db ?? settings.databasePath, workflow: args.workflow ?? settings.workflow, eventSource: args["event-source"] ?? "cli", eventKey: args["event-key"] ?? null, preferredLanguage: args.language ?? settings.responseLanguage, execute: args.execute === true }), null, 2)); }
 // The owner's side of the two waits. A question is answered in chat; an external evidence request is not,
 // because the fact it asks for exists only outside anything the platform can read. These commands are how
 // a packet reaches it, and how the owner withdraws a wait they have decided not to satisfy.
@@ -53,6 +54,14 @@ else if (process.argv[2] === "evidence-deliver") {
   console.log(JSON.stringify(result, null, 2));
   process.exitCode = result.delivered ? 0 : 1;
 }
+// A hook configuration is shared with whatever else the project has configured, so installing one is a
+// planned change rather than a file the onboarding agent writes from a template.
+else if (process.argv[2] === "hook-plan" || process.argv[2] === "hook-install") {
+  const plan = planHookInstallation({ projectRoot: args.project ?? settings.project, harness: args.harness ?? "claude-code", deliveryMode: args["delivery-mode"] ?? settings.deliveryMode ?? null, mode: args.mode ?? null });
+  const result = process.argv[2] === "hook-plan" ? { ...plan, document: undefined } : applyHookInstallation(plan);
+  console.log(JSON.stringify(result, null, 2));
+}
+else if (process.argv[2] === "hook-status") { console.log(JSON.stringify(hookInstallationStatus({ projectRoot: args.project ?? settings.project, harness: args.harness ?? "claude-code" }), null, 2)); }
 else if (process.argv[2] === "workflow-export") { console.log(JSON.stringify(exportWorkflowPackage(args.db, args.out, args.project, args.workflow), null, 2)); }
 else if (process.argv[2] === "workflow-import-propose") { console.log(JSON.stringify(proposeWorkflowImport(args.db, args.package, args.proposal, args.project), null, 2)); }
 else if (process.argv[2] === "workflow-import-apply") { console.log(JSON.stringify(applyWorkflowImport(args.db, args.proposal, args.project, { confirmedBy: args["confirmed-by"] }), null, 2)); }

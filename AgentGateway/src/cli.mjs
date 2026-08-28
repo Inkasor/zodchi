@@ -285,10 +285,17 @@ if (cli["dry-run"] === true) {
 }
 const sourceHome = provider === "codex" ? paths.codexSourceHome : provider === "kimi" ? paths.kimiSourceHome : provider === "opencode" ? paths.opencodeSourceHome : null;
 let result;
+// What the ephemeral home gave the provider, and what it withheld, is part of the call: a role that ran
+// without the server or the skill it needed produced a different result from the same prompt, and the
+// receipt is the only place that difference is ever recorded.
+let environment = null;
 try {
   result = providerConfig.type === "openai-compatible"
     ? await runOpenAICompatible({ profileConfig, prompt, systemPrompt, timeoutSec: limits.timeoutSec, env: process.env })
-    : await withProviderEnvironment(provider, { tempRoot: paths.tempRoot, sourceHome, profileConfig, projectRoot: projectPath }, providerEnvironment => runProcess(providerCommand, commandArgs, prompt, limits.timeoutSec, projectPath, providerEnvironment));
+    : await withProviderEnvironment(provider, { tempRoot: paths.tempRoot, sourceHome, sourceConfig: provider === "opencode" ? paths.opencodeSourceConfig : null, profileConfig, projectRoot: projectPath }, (providerEnvironment, _directory, capabilities) => {
+      environment = capabilities;
+      return runProcess(providerCommand, commandArgs, prompt, limits.timeoutSec, projectPath, providerEnvironment);
+    });
 } catch (error) {
   result = { exitCode: 78, stdout: "", stderr: `ADAPTER_CONFIGURATION_ERROR: ${error.message}`, timedOut: false };
 }
@@ -319,7 +326,8 @@ const receipt = {
   contractHash: crypto.createHash("sha256").update(prompt).digest("hex"),
   resultHash: crypto.createHash("sha256").update(`${result.stdout}\n${result.stderr}`).digest("hex"),
   artifactRef: cli["artifact-ref"] ?? null,
-  decisionRef: cli["decision-ref"] ?? null
+  decisionRef: cli["decision-ref"] ?? null,
+  environment
 };
 if (!Number.isInteger(receipt.attemptNo) || receipt.attemptNo < 1) fail(`ATTEMPT_NUMBER_INVALID: ${receipt.attemptNo}`);
 const storedReceipt = {
@@ -369,7 +377,8 @@ const storedReceipt = {
   contract_hash: receipt.contractHash,
   result_hash: receipt.resultHash,
   artifact_ref: receipt.artifactRef,
-  decision_ref: receipt.decisionRef
+  decision_ref: receipt.decisionRef,
+  environment_json: receipt.environment ? JSON.stringify(receipt.environment) : null
 };
 const storedColumns = Object.keys(storedReceipt);
 database.prepare(`INSERT INTO receipts (${storedColumns.join(",")}) VALUES (${storedColumns.map(() => "?").join(",")})`)

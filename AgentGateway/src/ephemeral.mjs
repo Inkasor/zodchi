@@ -58,11 +58,26 @@ function skillFile(entry) {
   return fs.existsSync(resolved) && fs.statSync(resolved).isDirectory() ? path.join(resolved, "SKILL.md") : resolved;
 }
 
-function repositorySkillFiles(projectRoot) {
+// A project can register skills in more than one place, and a skill the ephemeral home does not disable is
+// a capability the worker silently keeps. `.agents/skills` is the harness-neutral location; `.codex/skills`
+// is where Codex itself looks. Scanning only the first left the second enabled for every role.
+const SKILL_DIRECTORIES = Object.freeze([[".agents", "skills"], [".codex", "skills"]]);
+
+function skillsIn(root, scope) {
+  if (!fs.existsSync(root)) return [];
+  const found = [];
+  for (const item of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!item.isDirectory()) continue;
+    const file = path.join(root, item.name, "SKILL.md");
+    if (fs.existsSync(file)) found.push({ scope, name: item.name, path: path.resolve(file) });
+  }
+  return found;
+}
+
+function projectSkills(projectRoot) {
   if (!projectRoot) return [];
-  const start = path.resolve(projectRoot);
   const ancestors = [];
-  let current = start;
+  let current = path.resolve(projectRoot);
   while (true) {
     ancestors.push(current);
     if (fs.existsSync(path.join(current, ".git"))) break;
@@ -70,21 +85,80 @@ function repositorySkillFiles(projectRoot) {
     if (parent === current) break;
     current = parent;
   }
-  const result = [];
+  const found = new Map();
   for (const directory of ancestors) {
-    const root = path.join(directory, ".agents", "skills");
-    if (!fs.existsSync(root)) continue;
-    for (const item of fs.readdirSync(root, { withFileTypes: true })) {
-      if (!item.isDirectory()) continue;
-      const file = path.join(root, item.name, "SKILL.md");
-      if (fs.existsSync(file)) result.push(path.resolve(file));
+    for (const segments of SKILL_DIRECTORIES) {
+      for (const skill of skillsIn(path.join(directory, ...segments), "project")) if (!found.has(skill.path)) found.set(skill.path, skill);
     }
   }
-  return [...new Set(result)].sort();
+  return [...found.values()].sort((left, right) => left.path.localeCompare(right.path));
 }
 
-export function createProviderEnvironment(provider, { tempRoot, sourceHome, profileConfig = {}, projectRoot = null }) {
-  if (!["codex", "kimi", "opencode"].includes(provider)) return { env: {}, directory: null, cleanup() {} };
+// The ephemeral home replaces the real one wholesale, so every skill the owner installed for themselves
+// disappears from the run. That is the intended isolation, but it changes what the worker can do, and a
+// capability change nobody recorded is indistinguishable from a worker that simply chose not to act.
+function homeSkills(sourceHome) {
+  return sourceHome ? skillsIn(path.join(sourceHome, "skills"), "home") : [];
+}
+
+// Enumerating `[mcp_servers.<name>]` tables is all that is needed here, and a section is copied by slicing
+// its own lines, so no TOML parser has to be shipped to move one verbatim.
+const MCP_PREFIX = "mcp_servers";
+const LINE = "\n";
+
+function tomlTables(text, prefix) {
+  const lines = text.split(/\r?\n/);
+  const tables = new Map();
+  let current = null;
+  for (const line of lines) {
+    const header = /^\s*\[{1,2}\s*([^\]]+?)\s*\]{1,2}\s*$/.exec(line);
+    if (header) {
+      const parts = header[1].split(".").map(part => part.trim().replace(/^"(.*)"$/, "$1"));
+      current = parts[0] === prefix && parts.length > 1 ? parts[1] : null;
+      if (current && !tables.has(current)) tables.set(current, []);
+    }
+    if (current) tables.get(current).push(line);
+  }
+  return tables;
+}
+
+function readIfPresent(file) {
+  return file && fs.existsSync(file) && fs.statSync(file).isFile() ? fs.readFileSync(file, "utf8") : "";
+}
+
+// An unreadable source configuration must not take the call down: the worker still runs, it simply runs
+// without the servers that file would have named, and the empty report says exactly that.
+function jsonIfPresent(file) {
+  const text = readIfPresent(file);
+  if (!text.trim()) return {};
+  try { const value = JSON.parse(text); return value && typeof value === "object" && !Array.isArray(value) ? value : {}; } catch { return {}; }
+}
+
+// The policy is an allowlist by name, and it is explicit in both directions: a server the profile did not
+// name is withheld and said so, never quietly absent.
+function selectMcpServers(sources, allowed) {
+  const allowedNames = new Set(allowed ?? []);
+  const carried = [], withheld = [], sections = [];
+  for (const { scope, text } of sources) {
+    for (const [name, lines] of tomlTables(text, MCP_PREFIX)) {
+      if (allowedNames.has(name)) { carried.push({ scope, name }); sections.push(lines.join(LINE)); }
+      else withheld.push({ scope, name });
+    }
+  }
+  return { carried, withheld, sections };
+}
+
+function capabilityReport(provider, { skills, mcp }) {
+  return Object.freeze({
+    provider,
+    home: "ephemeral",
+    skills: Object.freeze({ policy: "allowlist", allowed: Object.freeze(skills.allowed), withheld: Object.freeze(skills.withheld) }),
+    mcp_servers: Object.freeze({ policy: mcp.policy, carried: Object.freeze(mcp.carried ?? []), withheld: Object.freeze(mcp.withheld ?? []) })
+  });
+}
+
+export function createProviderEnvironment(provider, { tempRoot, sourceHome, sourceConfig = null, profileConfig = {}, projectRoot = null }) {
+  if (!["codex", "kimi", "opencode"].includes(provider)) return { env: {}, directory: null, capabilities: null, cleanup() {} };
   fs.mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
   cleanupConfirmedOrphans(tempRoot);
   const directory = fs.mkdtempSync(path.join(tempRoot, `${provider}-home-`));
@@ -101,8 +175,15 @@ export function createProviderEnvironment(provider, { tempRoot, sourceHome, prof
         const sourceDirectory = fs.statSync(source).isDirectory() ? source : path.dirname(source);
         fs.cpSync(sourceDirectory, path.join(directory, "skills", path.basename(sourceDirectory)), { recursive: true, force: false, errorOnExist: true });
       }
-      const disabledRepositorySkills = repositorySkillFiles(projectRoot).filter(file => !allowedSkillFiles.has(file));
-      const skillOverrides = disabledRepositorySkills.flatMap(file => ["", "[[skills.config]]", `path = ${JSON.stringify(file)}`, "enabled = false"]);
+      const withheldSkills = [...projectSkills(projectRoot), ...homeSkills(sourceHome)].filter(skill => !allowedSkillFiles.has(skill.path));
+      const skillOverrides = withheldSkills.filter(skill => skill.scope === "project").flatMap(skill => ["", "[[skills.config]]", `path = ${JSON.stringify(skill.path)}`, "enabled = false"]);
+      // Whatever the owner registered for Codex stays registered: an ephemeral home that quietly drops
+      // every MCP server changes what the worker can reach without anyone deciding it should, and a role
+      // that cannot reach its server reports the work as impossible instead of as unequipped.
+      const mcp = selectMcpServers([
+        { scope: "home", text: readIfPresent(sourceHome ? path.join(sourceHome, "config.toml") : null) },
+        { scope: "project", text: readIfPresent(projectRoot ? path.join(projectRoot, ".codex", "config.toml") : null) }
+      ], profileConfig.allowedMcpServers);
       fs.writeFileSync(path.join(directory, "config.toml"), [
         ...(profileConfig.model ? [`model = ${JSON.stringify(profileConfig.model)}`] : []),
         `model_reasoning_effort = ${JSON.stringify(profileConfig.reasoningEffort ?? "low")}`,
@@ -114,9 +195,15 @@ export function createProviderEnvironment(provider, { tempRoot, sourceHome, prof
         "plugins = false",
         "remote_plugin = false",
         "[plugins]",
-        ...skillOverrides
+        ...skillOverrides,
+        ...mcp.sections
       ].join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
-      return { directory, env: { CODEX_HOME: directory, RUST_LOG: "error" }, cleanup: () => removeDirectory(directory) };
+      return {
+        directory,
+        env: { CODEX_HOME: directory, RUST_LOG: "error" },
+        capabilities: capabilityReport(provider, { skills: { allowed: [...allowedSkillFiles], withheld: withheldSkills }, mcp: { policy: "allowlist", carried: mcp.carried, withheld: mcp.withheld } }),
+        cleanup: () => removeDirectory(directory)
+      };
     }
     if (provider === "opencode") {
       copyIfPresent(sourceHome, path.join(directory, ".local", "share", "opencode"), "auth.json");
@@ -138,9 +225,20 @@ export function createProviderEnvironment(provider, { tempRoot, sourceHome, prof
           ...Object.fromEntries((profileConfig.allowedSkillNames ?? []).map(name => [name, "allow"]))
         }
       };
+      // OpenCode's configuration lives outside the data directory the ephemeral home replaces, so the
+      // servers the owner registered are readable here and can be carried by name. Whatever the profile
+      // did not name stays out and is recorded as withheld rather than simply vanishing.
+      const declared = jsonIfPresent(sourceConfig).mcp ?? {};
+      const allowedServers = new Set(profileConfig.allowedMcpServers ?? []);
+      const mcp = { carried: [], withheld: [], config: {} };
+      for (const name of Object.keys(declared).sort()) {
+        if (allowedServers.has(name)) { mcp.carried.push({ scope: "home", name }); mcp.config[name] = declared[name]; }
+        else mcp.withheld.push({ scope: "home", name });
+      }
       const inlineConfig = {
         $schema: "https://opencode.ai/config.json",
         plugin: [],
+        mcp: mcp.config,
         permission: permissions,
         agent: {
           gateway: {
@@ -160,6 +258,10 @@ export function createProviderEnvironment(provider, { tempRoot, sourceHome, prof
           OPENCODE_CONFIG_DIR: path.join(directory, ".config", "opencode"),
           OPENCODE_CONFIG_CONTENT: JSON.stringify(inlineConfig)
         },
+        capabilities: capabilityReport(provider, {
+          skills: { allowed: [...(profileConfig.allowedSkillNames ?? [])], withheld: projectSkills(projectRoot) },
+          mcp: { policy: "allowlist", carried: mcp.carried, withheld: mcp.withheld }
+        }),
         cleanup: () => removeDirectory(directory)
       };
     }
@@ -167,7 +269,17 @@ export function createProviderEnvironment(provider, { tempRoot, sourceHome, prof
     const configPath = path.join(directory, "config.toml");
     const config = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "";
     fs.writeFileSync(configPath, `${config.trimEnd()}\n\n[loop_control]\nmax_steps_per_turn = ${profileConfig.maxStepsPerTurn ?? 40}\nreserved_context_size = ${profileConfig.reservedContextSize ?? 50000}\n`, { encoding: "utf8", mode: 0o600 });
-    return { directory, env: { KIMI_CODE_HOME: directory, KIMI_LOOP_MAX_STEPS_PER_TURN: String(profileConfig.maxStepsPerTurn ?? 40) }, cleanup: () => removeDirectory(directory) };
+    // Kimi's whole configuration file is copied, so the servers it registers come along. That is inherited
+    // rather than selected, and the report says so instead of implying an allowlist decided it.
+    return {
+      directory,
+      env: { KIMI_CODE_HOME: directory, KIMI_LOOP_MAX_STEPS_PER_TURN: String(profileConfig.maxStepsPerTurn ?? 40) },
+      capabilities: capabilityReport(provider, {
+        skills: { allowed: [], withheld: homeSkills(sourceHome) },
+        mcp: { policy: "inherited", carried: [...tomlTables(config, MCP_PREFIX).keys()].sort().map(name => ({ scope: "home", name })), withheld: [] }
+      }),
+      cleanup: () => removeDirectory(directory)
+    };
   } catch (error) {
     removeDirectory(directory);
     throw error;
@@ -198,6 +310,6 @@ export function registerProcessCleanup(cleanup) {
 export async function withProviderEnvironment(provider, options, operation) {
   const environment = createProviderEnvironment(provider, options);
   const cleanup = registerProcessCleanup(environment.cleanup);
-  try { return await operation({ ...process.env, ...environment.env }, environment.directory); }
+  try { return await operation({ ...process.env, ...environment.env }, environment.directory, environment.capabilities ?? null); }
   finally { cleanup(); }
 }
