@@ -619,3 +619,107 @@ test("TypeScript compiler intelligence resolves JavaScript calls across files", 
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+// The enumeration cap used to be applied before the scope, which made Git's listing order decide what
+// the scope was allowed to contain. On a repository of thousands of paths a file the scope named
+// directly was never enumerated, and the answer came back as absence rather than as an unread corpus.
+function largeRepositoryFixture(prefix, { noise = 600 } = {}) {
+  const root = temporaryRoot(prefix);
+  fs.mkdirSync(path.join(root, "aaa-noise"), { recursive: true });
+  fs.mkdirSync(path.join(root, "zzz-target"), { recursive: true });
+  for (let index = 0; index < noise; index += 1) fs.writeFileSync(path.join(root, "aaa-noise", `note-${String(index).padStart(5, "0")}.md`), "unrelated project noise\n");
+  fs.writeFileSync(path.join(root, "zzz-target", "Себестоимость.bsl"), "Функция РассчитатьСебестоимость()\n  avgCost = unit.cost;\nКонецФункции\n");
+  execFileSync("git", ["init", "--quiet"], { cwd: root, windowsHide: true });
+  execFileSync("git", ["add", "."], { cwd: root, windowsHide: true });
+  return root;
+}
+
+const primaryRoot = root => [{ key: "primary", path: root, access: "write", primary: true }];
+
+test("a scoped target past the enumeration cap is found instead of reported absent", () => {
+  const root = largeRepositoryFixture("workflow-scope-cap-");
+  const scope = sourceScope(["zzz-target/**"]);
+
+  const found = searchSources(primaryRoot(root), scope, ["avgCost"], { maxEnumeratedFiles: 50, maxOpenedFiles: 50 });
+  assert.equal(found.files.length, 1);
+  assert.equal(found.files[0].path, "zzz-target/Себестоимость.bsl");
+  assert.equal(found.completeness.file_scan_truncated, false);
+  assert.equal(found.completeness.enumeration_complete, true);
+  assert.equal(found.completeness.listings[0].scope_pushdown, true);
+  assert.equal(found.completeness.listings[0].matched_files, 1);
+
+  // The unscoped search over the same repository is genuinely capped, and says so rather than
+  // presenting the first fifty paths as the whole corpus.
+  const wide = searchSources(primaryRoot(root), sourceScope([]), ["avgCost"], { maxEnumeratedFiles: 50, maxOpenedFiles: 50 });
+  assert.equal(wide.completeness.file_scan_truncated, true);
+  assert.equal(wide.completeness.enumeration_complete, false);
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("a scoped corpus scan stays complete where the same scan over the whole repository is truncated", () => {
+  const root = largeRepositoryFixture("workflow-scope-corpus-");
+
+  const scoped = scanSourceCorpus(primaryRoot(root), sourceScope(["zzz-target/**"]), ["avgCost"], { maxFiles: 50 });
+  assert.equal(scoped.completeness, "complete");
+  assert.equal(scoped.boundary.enumeration_complete, true);
+  assert.equal(scoped.boundary.listings[0].scope_pushdown, true);
+  assert.equal(scoped.occurrences[0].count, 1);
+
+  // Absence may be claimed here because the boundary is complete: the term is simply not in scope.
+  const absent = scanSourceCorpus(primaryRoot(root), sourceScope(["zzz-target/**"]), ["НетТакогоТермина"], { maxFiles: 50 });
+  assert.equal(absent.completeness, "complete");
+  assert.equal(absent.occurrences[0].count, 0);
+
+  // The same absence over a truncated corpus is not an absence, and the boundary reports it.
+  const truncated = scanSourceCorpus(primaryRoot(root), sourceScope([]), ["НетТакогоТермина"], { maxFiles: 50 });
+  assert.equal(truncated.completeness, "incomplete");
+  assert.equal(truncated.boundary.enumeration_complete, false);
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("a pattern git glob cannot express is enumerated without pushdown rather than silently narrowed", () => {
+  const root = largeRepositoryFixture("workflow-scope-pushdown-", { noise: 20 });
+  // A character class is a literal for this scope and a class for git, so pushing it down would select
+  // a different set of files. Enumeration falls back to the whole listing and says why.
+  const scope = sourceScope(["zzz-target/[unusual].bsl", "zzz-target/**"]);
+
+  const scan = scanSourceCorpus(primaryRoot(root), scope, ["avgCost"], { maxFiles: 500 });
+  assert.equal(scan.boundary.listings[0].scope_pushdown, false);
+  assert.match(scan.boundary.listings[0].scope_pushdown_reason, /^pattern_not_representable:/);
+  assert.equal(scan.occurrences[0].count, 1);
+  assert.equal(scan.completeness, "complete");
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("a tracked file deleted from the working tree is not enumerated and costs no per-file stat", () => {
+  const root = largeRepositoryFixture("workflow-scope-deleted-", { noise: 5 });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: root, windowsHide: true });
+  execFileSync("git", ["config", "user.name", "Test"], { cwd: root, windowsHide: true });
+  execFileSync("git", ["commit", "--quiet", "-m", "baseline"], { cwd: root, windowsHide: true, stdio: "ignore" });
+  fs.rmSync(path.join(root, "zzz-target", "Себестоимость.bsl"));
+
+  const [inventory] = sourceInventory(primaryRoot(root), sourceScope([]), { maxFilesPerRoot: 100 });
+  assert.equal(inventory.files.some(file => file.path.includes("Себестоимость")), false);
+  assert.equal(inventory.total_files, 5);
+  assert.equal(inventory.enumeration_complete, true);
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("a scope narrowed to one root does not enumerate the other", () => {
+  const first = largeRepositoryFixture("workflow-scope-roots-a-", { noise: 30 });
+  const second = largeRepositoryFixture("workflow-scope-roots-b-", { noise: 30 });
+  const roots = [{ key: "primary", path: first, access: "write", primary: true }, { key: "second", path: second, access: "read", primary: false }];
+
+  const scan = scanSourceCorpus(roots, sourceScope(["zzz-target/**"]), ["avgCost"], { maxFiles: 500 });
+  assert.equal(scan.occurrences[0].count, 2);
+  assert.deepEqual(scan.boundary.listings.map(item => item.matched_files), [1, 1]);
+  assert.equal(scan.boundary.listings.every(item => item.scope_pushdown), true);
+  assert.equal(scan.completeness, "complete");
+
+  fs.rmSync(first, { recursive: true, force: true });
+  fs.rmSync(second, { recursive: true, force: true });
+});
