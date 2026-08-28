@@ -22,7 +22,7 @@ export const RESULT_SCHEMA_SHAPES = Object.freeze({
     artifacts: [{ key: "string", type: "registered artifact type", path: "path relative to the project root, or null", required: true }],
     completion_criteria: ["string"],
     questions: ["string, at most 5; empty when outcome is ready"],
-    steps: [{ key: "string", role: "role id from task_package.registered_roles", objective: "string", allowed_paths: ["subset of the plan allowed_paths"], artifact_keys: ["keys of non-document artifacts this worker creates; final document artifacts belong to the documentator"], check_ids: ["registered check id"], required: true, irreversible: false, max_attempts: 1 }]
+    steps: [{ key: "string", role: "role id from task_package.registered_roles", objective: "string", allowed_paths: ["subset of the plan allowed_paths"], artifact_keys: ["keys of non-document artifacts this worker creates; final document artifacts belong to the documentator"], check_ids: ["registered check id"], resources: [{ alias: "alias from task_package.registered_resources", mode: "shared to read it, exclusive to change it" }], required: true, irreversible: false, max_attempts: 1 }]
   }),
   "worker.v1": Object.freeze({
     schema_version: 1,
@@ -193,7 +193,7 @@ export function rolePrompt({ contract, qualityContract, packageContract, context
     `</workflow_role_prompt>`;
 }
 
-export function validatePlannerResult(value, { contract, registeredRoles = [], registeredChecks = [], registeredArtifactTypes = [], maxStepAttempts = null }) {
+export function validatePlannerResult(value, { contract, registeredRoles = [], registeredChecks = [], registeredArtifactTypes = [], registeredResources = [], maxStepAttempts = null }) {
   exactObject(value, schemaFields("planner.v1"), "planner.v1");
   if (value.schema_version !== 1 || !["ready", "questions"].includes(value.outcome)) throw new Error("planner.v1: invalid version or outcome");
   exactObject(value.scope, ["included", "excluded"], "planner.v1.scope");
@@ -214,7 +214,7 @@ export function validatePlannerResult(value, { contract, registeredRoles = [], r
     return { ...item, path: artifactPath };
   });
   value.steps = value.steps.map(item => {
-    exactObject(item, ["key", "role", "objective", "allowed_paths", "artifact_keys", "check_ids", "required", "irreversible", "max_attempts"], "planner.v1.step");
+    exactObject(item, ["key", "role", "objective", "allowed_paths", "artifact_keys", "check_ids", "resources", "required", "irreversible", "max_attempts"], "planner.v1.step");
     if (!registeredRoles.includes(item.role)) throw new Error(`planner.v1.step: unregistered role ${item.role}`);
     if (typeof item.key !== "string" || !item.key || typeof item.objective !== "string" || !item.objective || typeof item.required !== "boolean" || typeof item.irreversible !== "boolean" || !Number.isInteger(item.max_attempts) || item.max_attempts < 1) throw new Error("planner.v1.step: invalid scalar field");
     if (maxStepAttempts !== null && item.max_attempts > maxStepAttempts) throw new Error(`planner.v1.step: max_attempts exceeds quality contract for ${item.key}`);
@@ -223,6 +223,15 @@ export function validatePlannerResult(value, { contract, registeredRoles = [], r
     const artifactKeys = strings(item.artifact_keys, "planner.v1.step.artifact_keys");
     for (const key of artifactKeys) if (!value.artifacts.some(artifact => artifact.key === key)) throw new Error(`planner.v1.step: unknown artifact ${key}`);
     for (const check of strings(item.check_ids, "planner.v1.step.check_ids")) if (!registeredChecks.includes(check)) throw new Error(`planner.v1.step: unregistered check ${check}`);
+    // A step says which registered resources it touches and how. It names them by alias and never by
+    // path, host or information base: an authority a planner composes is a resource nobody registered,
+    // and a second spelling of one resource is a second lock that does not see the first.
+    if (!Array.isArray(item.resources) || item.resources.length > 16) throw new Error("planner.v1.step.resources: list required");
+    for (const resource of item.resources) {
+      exactObject(resource, ["alias", "mode"], "planner.v1.step.resource");
+      if (!registeredResources.some(registered => registered.alias === resource.alias)) throw new Error(`planner.v1.step.resource: unregistered alias ${resource.alias}`);
+      if (!["shared", "exclusive"].includes(resource.mode)) throw new Error(`planner.v1.step.resource: invalid mode ${resource.mode}`);
+    }
     // The documentator owns final documents after workers and gates complete. A planner sometimes assigns
     // that final key to every analytical step; carrying it forward would require each read-only worker to
     // create the same file. Paths outside a step's own allowlist are equally impossible outputs, so both

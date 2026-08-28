@@ -19,7 +19,17 @@ import { appendEvent } from "./state-machine.mjs";
 // depend on the network, and two steps could then agree to collide or not by accident.
 
 export const RESOURCE_MODES = Object.freeze(["shared", "exclusive"]);
-export const RESOURCE_KINDS = Object.freeze(["repo.index", "repo.refs", "1c.file", "1c.server", "db", "db.clickhouse.cluster"]);
+export const RESOURCE_KINDS = Object.freeze(["project.worktree", "repo.index", "repo.refs", "1c.file", "1c.server", "db", "db.clickhouse.cluster"]);
+
+const RESOURCE_FIELDS = Object.freeze({
+  "project.worktree": ["path"],
+  "repo.index": ["path"],
+  "repo.refs": ["path"],
+  "1c.file": ["path"],
+  "1c.server": ["server", "infobase"],
+  db: ["engine", "host", "database"],
+  "db.clickhouse.cluster": ["cluster"]
+});
 
 const ONE_C_FILE_MARKER = "1Cv8.1CD";
 const ONE_C_DEFAULT_PORT = 1541;
@@ -70,6 +80,10 @@ function lower(kind, value, field) {
 }
 
 const RESOLVERS = Object.freeze({
+  // The working tree a step writes into. Every write-capable step holds this one whether or not a plan
+  // mentioned it: two workers editing one checkout at the same time is the commonest conflict there is,
+  // and it needs no git — a project that is not a repository has a working tree all the same.
+  "project.worktree": declaration => `project.worktree:${canonicalDirectory("project.worktree", declaration.path)}`,
   // Two worktrees of one repository have two indices and share one set of refs, which is why these are
   // separate resources rather than one lock on "the repository". Locking them together would serialise
   // work that never conflicts; locking neither loses the ref update that does.
@@ -103,19 +117,22 @@ export function normalizeResourceDeclaration(declaration) {
   if (!RESOURCE_KINDS.includes(kind)) throw new Error(`RESOURCE_KIND_UNKNOWN: ${kind}`);
   const mode = declaration.mode;
   if (!RESOURCE_MODES.includes(mode)) throw new Error(`RESOURCE_MODE_INVALID: ${kind} declared ${mode}`);
-  return Object.freeze({ ...declaration, kind, mode });
+  const permitted = new Set(["kind", "mode", "alias", ...RESOURCE_FIELDS[kind]]);
+  const unexpected = Object.keys(declaration).filter(field => !permitted.has(field));
+  if (unexpected.length) throw new Error(`RESOURCE_DECLARATION_FIELDS_INVALID: ${kind}: ${unexpected.sort().join(",")}`);
+  const normalized = { kind, mode };
+  if (declaration.alias !== undefined) normalized.alias = String(declaration.alias);
+  for (const field of RESOURCE_FIELDS[kind]) if (declaration[field] !== undefined) normalized[field] = declaration[field];
+  return Object.freeze(normalized);
 }
 
+// An identity is always computed from the authority, never taken from the declaration. Accepting a
+// stated one let the same resource be named two ways — one canonical, one as typed — and two names are
+// two locks that do not see each other, which is the exact failure this whole file exists to prevent.
+// A declaration that cannot be resolved on this machine is `unavailable`, which is honest and recovers
+// by itself; a declaration allowed to name its own identity is wrong quietly and forever.
 export function resourceIdentity(declaration) {
   const normalized = normalizeResourceDeclaration(declaration);
-  // A declaration may state its identity outright — a package that already knows the canonical string
-  // should not have to be on the machine that holds the resource to say so — but it is checked, so a
-  // mistyped authority cannot silently become a resource of its own.
-  if (normalized.identity) {
-    const value = String(normalized.identity);
-    if (!value.startsWith(`${normalized.kind}:`) || value.length <= normalized.kind.length + 1) throw new Error(`RESOURCE_IDENTITY_MALFORMED: ${value}`);
-    return value;
-  }
   return RESOLVERS[normalized.kind](normalized);
 }
 
