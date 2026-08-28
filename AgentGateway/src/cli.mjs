@@ -8,7 +8,7 @@ import { resolveGatewayPaths } from "./paths.mjs";
 import { cleanupConfirmedOrphans, withProviderEnvironment } from "./ephemeral.mjs";
 import { openGatewayDb } from "./db.mjs";
 import { runOpenAICompatible } from "./openai-compatible.mjs";
-import { resolveProviderCommand } from "./command.mjs";
+import { providerCommandInvocation, resolveProviderCommand } from "./command.mjs";
 import { loadGatewayPolicy } from "./policy.mjs";
 import { assertMetadataOnlyReceipt, DEFAULT_PRIVACY_MODE, privacyAttestation } from "./receipt-privacy.mjs";
 
@@ -149,12 +149,7 @@ function readTask(file) {
 
 function runProcess(command, commandArgs, input, timeoutSec, cwd, env = process.env) {
   return new Promise((resolve) => {
-    let executable = command;
-    let args = commandArgs;
-    if (process.platform === "win32" && command === "codex") {
-      executable = process.execPath;
-      args = [path.join(process.env.APPDATA ?? "", "npm", "node_modules", "@openai", "codex", "bin", "codex.js"), ...commandArgs];
-    }
+    const { executable, args } = providerCommandInvocation(command, commandArgs, { env });
     const child = spawn(executable, args, { windowsHide: true, detached: process.platform !== "win32", cwd: cwd || undefined, env, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
