@@ -47,6 +47,7 @@ if (resultSchema === "strategy_review.v1") {
   };
 } else if (role === "classifier") {
   const conversation = input.includes("SCENARIO:conversation"), research = input.includes("SCENARIO:research");
+  const scenario = Object.fromEntries([...input.matchAll(/SCENARIO_([A-Z_]+)=([a-z0-9._-]+)/g)].map(match => [match[1].toLowerCase(), match[2]]));
   result = {
     schema_version: 1, work_type: "implementation", artifact_type: "code", domain: "game-development", discipline: "software",
     risk: "low", planning_level: "L2", quality_mode: "mvp", planning_required: true, human_required: false,
@@ -55,6 +56,13 @@ if (resultSchema === "strategy_review.v1") {
   };
   if (conversation) Object.assign(result, { work_type: "conversation", artifact_type: "none", domain: "general", discipline: "general", planning_level: "L0", planning_required: false, reply_mode: "conversation", reason: "Ordinary conversation requires no productive role.", human_response: "Привет! Workflow Platform отвечает в тот же чат без запуска рабочих ролей." });
   if (research) Object.assign(result, { work_type: "research", artifact_type: "document", domain: "research", discipline: "software", planning_level: "L1", planning_required: false, reply_mode: "research", reason: "Bounded research uses only registered project documents.", human_response: null });
+  if (scenario.work_type) Object.assign(result, {
+    work_type: scenario.work_type,
+    artifact_type: scenario.artifact ?? "test_report",
+    domain: scenario.domain ?? "software",
+    discipline: scenario.discipline ?? "software",
+    reason: "The acceptance scenario explicitly names a route from the package imported into its isolated registry."
+  });
 } else if (role === "researcher") {
   result = "Исследование выполнено только по зарегистрированным документам Project R; файлы не изменялись, worker и reviewer не запускались.";
 } else if (resultSchema === "planner.v1" || (!resultSchema && role === "planner")) {

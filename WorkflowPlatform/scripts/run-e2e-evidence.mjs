@@ -62,7 +62,7 @@ const results = [];
 for (const { item, workflowId } of prepared) {
   const before = status(item.root_path), gateway = request => callGateway({ ...request, gateway: path.resolve(config.gateway_entry), gatewayDatabase: gatewayDb, gatewayPolicy: policyFile });
   const outcome = await processMessage({
-    message: "Run the registered read-only technical verification scenario. Do not edit source files and do not make owner acceptance decisions.",
+    message: item.message ?? "Run the registered read-only technical verification scenario. Do not edit source files and do not make owner acceptance decisions.",
     project: path.resolve(item.root_path), dbFile, workflow: workflowId,
     workflowDefinition: { id: workflowId, authority: "registered project documents", roles: { classifier: { provider: "codex", profile: `${item.package_key}.classifier.mvp`, role: "classifier" } } },
     execute: true, eventSource: "checkpoint9", eventKey: item.project_id, gatewayCall: gateway
@@ -70,7 +70,7 @@ for (const { item, workflowId } of prepared) {
   const after = status(item.root_path);
   if (after !== before) throw new Error(`PROJECT_WORKTREE_CHANGED_DURING_VERIFICATION: ${item.project_id}`);
   const statistics = workflowRunStatistics(dbFile, outcome.run_id);
-  const record = { project_id: item.project_id, package_key: item.package_key, workflow_key: item.workflow_key, source_status_before: before, source_status_after: after, outcome, statistics, owner_acceptance: "pending_separate" };
+  const record = { project_id: item.project_id, package_key: item.package_key, workflow_key: item.workflow_key, requested_scenario: item.message ?? null, source_status_before: before, source_status_after: after, outcome, statistics, owner_acceptance: "pending_separate" };
   fs.writeFileSync(path.join(outputRoot, `${item.project_id}.statistics.json`), JSON.stringify(record, null, 2), "utf8");
   results.push({ project_id: item.project_id, run_id: outcome.run_id, route: outcome.route, execution_status: outcome.execution?.status ?? null, gate_status: outcome.execution?.gate?.status ?? null, final_state: statistics.final_state, calls: statistics.calls.length, tokens: statistics.tokens, worktree_unchanged: true, owner_acceptance: "pending_separate" });
 }
