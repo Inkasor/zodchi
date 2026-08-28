@@ -14,16 +14,24 @@ export function registerProjectResource(db, { projectId, alias, kind, purpose = 
   // without one and normalized against the weaker of the two.
   const stored = declaration ? (({ mode, ...rest }) => rest)(normalizeResourceDeclaration({ ...declaration, kind, mode: "shared" })) : null;
   const timestamp = now();
-  const existing = db.prepare("SELECT id FROM project_resources WHERE project_id=? AND alias=?").get(projectId, alias);
+  const existing = db.prepare("SELECT id,kind,declaration_json FROM project_resources WHERE project_id=? AND alias=?").get(projectId, alias);
   if (existing) {
+    if (existing.kind !== kind) throw new Error(`RESOURCE_ALIAS_KIND_MISMATCH: ${alias}: ${existing.kind} != ${kind}`);
     db.prepare("UPDATE project_resources SET kind=?,purpose=?,declaration_json=?,updated_at=? WHERE id=?")
-      .run(kind, purpose, stored ? JSON.stringify(stored) : null, timestamp, existing.id);
+      .run(kind, purpose, stored ? JSON.stringify(stored) : existing.declaration_json, timestamp, existing.id);
     return existing.id;
   }
   const resourceId = id("resource");
   db.prepare("INSERT INTO project_resources(id,project_id,alias,kind,purpose,declaration_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)")
     .run(resourceId, projectId, alias, kind, purpose, stored ? JSON.stringify(stored) : null, timestamp, timestamp);
   return resourceId;
+}
+
+// A package may require an alias and its kind, but never carries the machine authority behind it. On an
+// existing installation this preserves the binding; on a new one it creates an explicit unbound
+// requirement whose steps remain `unavailable` until the owner supplies the authority.
+export function declareProjectResourceRequirement(db, { projectId, alias, kind, purpose = null }) {
+  return registerProjectResource(db, { projectId, alias, kind, purpose, declaration: null });
 }
 
 export function projectResources(db, projectId) {
