@@ -77,6 +77,23 @@ test("an unavailable advisory check is reported without blocking a gate that has
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("secret scan distinguishes a mask filename from a boundary-delimited credential", async () => {
+  const root = temporaryRoot("workflow-gates-secret-boundary-"), project = path.join(root, "project"), dbFile = path.join(root, "workflow.sqlite"), source = path.join(project, "mask.mjs");
+  fs.mkdirSync(project, { recursive: true });
+  fs.writeFileSync(source, "const file = 'p4-mask-compositor-seed42-overview.png';\n");
+  const db = openDb(dbFile);
+  db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('secret-boundary','Secret boundary',?,?)").run(project, now());
+  db.prepare("INSERT INTO check_definitions(id,name,runner,kind,config_json,timeout_seconds) VALUES('secret','Secret scan','builtin','secret_scan','{}',30)").run();
+  db.prepare("INSERT INTO project_checks(project_id,check_id,quality_mode_id,required) VALUES('secret-boundary','secret','mvp',1)").run();
+  db.close();
+  assert.equal((await runProjectGate(project, "mvp", dbFile, "gate-mask", { allowedPaths: ["mask.mjs"] })).status, "passed");
+  fs.writeFileSync(source, "const token = 'sk-abcdefghijklmnopqrstuvwxyz012345';\n");
+  const blocked = await runProjectGate(project, "mvp", dbFile, "gate-token", { allowedPaths: ["mask.mjs"] });
+  assert.equal(blocked.status, "failed");
+  assert.match(blocked.checks[0].failure, /credential-shaped material/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("a level covered only by unavailable checks is blocked instead of reported as verified", async () => {
   const root = temporaryRoot("workflow-gates-uncovered-"), project = path.join(root, "project"), dbFile = path.join(root, "workflow.sqlite");
   fs.mkdirSync(project, { recursive: true });
