@@ -14,7 +14,7 @@ This record describes a local release candidate. No tag, push, GitHub Release, p
 - Package regeneration/import: all seven package artifacts match their definitions and public catalog; all fifteen presets validate and produce proposal-first local onboarding material.
 - Two independently assembled canonical release roots contain the same 216 manifest entries and identical file hashes; release lint passes.
 - The full suite executed from the assembled release: tools `20/20`, WorkflowPlatform `318 passed, 1 skipped`, AgentGateway `26/26`. The skipped TypeScript semantic test requires the analyzed project to supply a compatible TypeScript compiler API; the unavailable path is covered separately and does not become partial evidence.
-- Two independently compressed archives with the same canonical `Zodchi` root are byte-identical. The one-command acceptance covers install, owned hook, routed run, update, rollback, hook restoration and uninstall.
+- Two archives compressed from the same canonical `Zodchi` root by the pinned Node 24 runtime are byte-identical. This proves deterministic retries under the release runtime; cross-version zlib byte identity is not claimed. The one-command acceptance covers install, owned hook, routed run, update, rollback, hook restoration and uninstall.
 
 </automated_verification>
 
@@ -31,13 +31,24 @@ All four runs used a deterministic contract provider through the real AgentGatew
 
 </live_canaries>
 
+<legacy_release_preflight id="v0_5_24_checksum_repair" status="verified" evidence="github_release_api_and_downloaded_assets">
+
+The required read-only preflight for `v0.5.24` was repeated on 2026-08-28. No release asset was modified by this verification.
+
+- Published archive asset `531240357`, `Zodchi-v0.5.24-windows.zip`, has 485086 bytes and SHA-256 `23470bc95723f85b87cc6ff27393dd92c0db705e7fbaca487f7fc1932ef3fb81`.
+- Legacy checksum asset `531240358`, `SHA256SUMS-0.5.24.txt`, and canonical alias asset `533631561`, `SHA256SUMS.txt`, are byte-identical: SHA-256 `3967cf6f44caea088e4a7c3c723319a48846bf30370367a2e1761bab15c341ae`.
+- Both checksum files name the downloaded archive and contain its exact SHA-256. The canonical alias already existed when this preflight ran, so no repair write was necessary.
+- All three assets were uploaded by `Inkasor`, not CI. This closes only the legacy checksum-repair/preflight item; `v0.5.24` does not become a green CI release.
+
+</legacy_release_preflight>
+
 <release_gates id="remaining_release_gates" status="blocked">
 
 - Run the one-command owner acceptance on the Mac M1 and preserve its machine-readable verdict.
 - Obtain an external macOS repeat where practical; keep Linux support experimental until a live acceptance exists.
 - Register and accept the local 1C BSL diagnostic boundary, then rerun the clean 1C canary.
 - Resolve or explicitly baseline the Dashboard project checks before claiming that canary green.
-- After publication authority is granted: publish only through GitHub Actions, then verify the downloaded asset, checksum, publisher and install/update/rollback path. A local artifact cannot close this gate.
+- After publication authority is granted: publish only through GitHub Actions. The workflow must keep the release as draft through three-OS asset/install/provenance smoke, publish RC tags as prereleases and stable tags as normal releases, repeat smoke against the public release, and restore draft state automatically if that final smoke fails. A local artifact cannot close this gate.
 - Profile-level `OWNER_READ`, domain truth and the donor substitution metric remain open; synthetic fixtures cannot close them.
 
 </release_gates>

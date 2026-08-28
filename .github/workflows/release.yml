@@ -60,17 +60,17 @@ jobs:
           node scripts/build-release-manifest.mjs --archive $archive --checksums SHA256SUMS.txt --tag "${{ github.ref_name }}" --commit "${{ github.sha }}" --release-root $out --out zodchi-release-manifest.json --workflow-run "${{ github.run_id }}" --repository "${{ github.repository }}"
 
       - name: Provenance опубликованного архива
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest@v4
         with:
           subject-path: ${{ env.ARCHIVE_NAME }}
 
-      - name: Публикация GitHub Release
+      - name: Создание draft GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" "$env:ARCHIVE_NAME" SHA256SUMS.txt zodchi-release-manifest.json --title "Zodchi ${{ github.ref_name }}" --prerelease --generate-notes
+        run: gh release create "${{ github.ref_name }}" "$env:ARCHIVE_NAME" SHA256SUMS.txt zodchi-release-manifest.json --title "Zodchi ${{ github.ref_name }}" --draft --generate-notes
 
-  smoke:
+  draft_smoke:
     needs: build
     strategy:
       fail-fast: false
@@ -83,14 +83,70 @@ jobs:
         with:
           node-version: 24
 
-      # Скачивает то, что реально отдаёт GitHub, а не собственный build output: расхождение между
-      # проверенной сборкой и опубликованным ассетом — единственное, чего локальная проверка не видит.
-      - name: Smoke опубликованных ассетов
+      # Draft уже хранит окончательные GitHub assets, но ещё не доступен пользователю. Проверяем их
+      # checksum, Sigstore provenance, установку и полный workflow до публичного перехода.
+      - name: Smoke draft-ассетов
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: node tools/release-smoke.mjs --repository "${{ github.repository }}" --tag "${{ github.ref_name }}" --work "${{ runner.temp }}/release-smoke" --out release-smoke.json
+        run: node tools/release-smoke.mjs --repository "${{ github.repository }}" --tag "${{ github.ref_name }}" --allow-draft --work "${{ runner.temp }}/release-smoke" --out release-smoke.json
 
       - uses: actions/upload-artifact@v4
         with:
-          name: release-smoke-${{ github.ref_name }}
+          name: release-draft-smoke-${{ github.ref_name }}-${{ matrix.os }}
           path: release-smoke.json
+
+  publish:
+    needs: draft_smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Публикация только после green draft smoke
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $isPrerelease = "${{ github.ref_name }}".Substring(1).Contains('-')
+          $prerelease = $isPrerelease.ToString().ToLowerInvariant()
+          $arguments = @('release', 'edit', '${{ github.ref_name }}', '--draft=false', "--prerelease=$prerelease")
+          if (-not $isPrerelease) { $arguments += '--latest' }
+          & gh @arguments
+          if ($LASTEXITCODE -ne 0) { throw 'RELEASE_PUBLISH_FAILED' }
+
+  post_publish_smoke:
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Smoke публично скачиваемых ассетов
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node tools/release-smoke.mjs --repository "${{ github.repository }}" --tag "${{ github.ref_name }}" --work "${{ runner.temp }}/release-smoke" --out release-smoke.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-post-publish-smoke-${{ github.ref_name }}-${{ matrix.os }}
+          path: release-smoke.json
+
+  rollback_failed_publication:
+    needs: post_publish_smoke
+    if: ${{ always() && needs.post_publish_smoke.result != 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Вернуть не прошедший публичный релиз в draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release view "${{ github.ref_name }}" --json tagName 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            gh release edit "${{ github.ref_name }}" --draft=true
+            if ($LASTEXITCODE -ne 0) { throw 'RELEASE_ROLLBACK_TO_DRAFT_FAILED' }
+          } else {
+            $global:LASTEXITCODE = 0
+            Write-Host 'No GitHub Release was created; publication rollback is unnecessary.'
+          }
