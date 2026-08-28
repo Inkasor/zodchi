@@ -15,7 +15,7 @@ permissions:
   attestations: write
 
 env:
-  ARCHIVE_NAME: Zodchi-${{ github.ref_name }}-windows.zip
+  ARCHIVE_NAME: Zodchi-${{ github.ref_name }}.zip
 
 jobs:
   build:
@@ -45,13 +45,13 @@ jobs:
         run: |
           $product = Get-Content -Raw product.json | ConvertFrom-Json
           if ("v$($product.version)" -ne "${{ github.ref_name }}") { throw 'Tag does not match product.json version.' }
-          npm.cmd test
+          npm test
 
       - name: Сборка архива, контрольных сумм и манифеста
         shell: pwsh
         run: |
           $out = Join-Path $env:RUNNER_TEMP 'Zodchi'
-          .\scripts\build-release.ps1 -Output $out -StageRoot $env:RUNNER_TEMP
+          node scripts/build-release.mjs --output $out --stage-root $env:RUNNER_TEMP
           node "$out\tools\release-lint.mjs" $out
           $archive = Join-Path $PWD $env:ARCHIVE_NAME
           Compress-Archive -LiteralPath $out -DestinationPath $archive -CompressionLevel Optimal
@@ -72,7 +72,11 @@ jobs:
 
   smoke:
     needs: build
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -82,10 +86,9 @@ jobs:
       # Скачивает то, что реально отдаёт GitHub, а не собственный build output: расхождение между
       # проверенной сборкой и опубликованным ассетом — единственное, чего локальная проверка не видит.
       - name: Smoke опубликованных ассетов
-        shell: pwsh
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: node tools/release-smoke.mjs --repository "${{ github.repository }}" --tag "${{ github.ref_name }}" --work (Join-Path $env:RUNNER_TEMP 'release-smoke') --out release-smoke.json
+        run: node tools/release-smoke.mjs --repository "${{ github.repository }}" --tag "${{ github.ref_name }}" --work "${{ runner.temp }}/release-smoke" --out release-smoke.json
 
       - uses: actions/upload-artifact@v4
         with:
