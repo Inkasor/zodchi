@@ -38,6 +38,18 @@ test("latest installer accepts exactly one universal CI-published archive", () =
   assert.throws(() => selectReleaseAssets({ assets: [asset("Zodchi-v0.6.0.zip", "human"), asset("SHA256SUMS.txt"), asset("zodchi-release-manifest.json")] }), /INSTALL_RELEASE_NOT_CI_PUBLISHED/);
 });
 
+test("clean install applies an explicitly authorized hook manifest", () => {
+  const root = temporaryRoot(), source = release(path.join(root, "source"), "0.6.0-rc.1"), destination = path.join(root, "installed"), dataRoot = path.join(root, "data"), project = path.join(root, "clean project");
+  try {
+    fs.mkdirSync(project);
+    const healthCheck = candidate => assert.equal(fs.existsSync(path.join(candidate, "release-marker.txt")), true);
+    const installed = installRelease({ source, destination, dataRoot, hooks: [{ projectRoot: project, harness: "codex" }], healthCheck });
+    assert.equal(installed.hook_results.length, 1);
+    assert.equal(fs.existsSync(path.join(project, ".codex", ".zodchi-hook.json")), true);
+    assert.match(fs.readFileSync(path.join(project, ".codex", "hooks.json"), "utf8"), /user-prompt-submit\.mjs/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("update and rollback swap exact releases, migrate owned hooks and preserve data", () => {
   const root = temporaryRoot(), sourceA = release(path.join(root, "a"), "0.5.24"), sourceB = release(path.join(root, "b"), "0.6.0-rc.1"), destination = path.join(root, "installed"), dataRoot = path.join(root, "data"), project = path.join(root, "проект 😀");
   fs.mkdirSync(project); fs.mkdirSync(dataRoot); fs.writeFileSync(path.join(dataRoot, "owner-data.txt"), "preserve me");

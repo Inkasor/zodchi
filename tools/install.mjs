@@ -60,19 +60,22 @@ function defaultHealthCheck(root) {
 }
 
 function registeredHookTargets(databaseFile, explicit = []) {
-  const targets = [...explicit];
+  const unique = new Map();
+  for (const item of explicit) {
+    const projectRoot = path.resolve(item.projectRoot);
+    if (!fs.existsSync(projectRoot) || !fs.statSync(projectRoot).isDirectory()) throw new Error(`INSTALL_HOOK_PROJECT_MISSING: ${projectRoot}`);
+    unique.set(`${projectRoot}\u0000${item.harness}`, { projectRoot, harness: item.harness });
+  }
   if (databaseFile && fs.existsSync(databaseFile)) {
     const db = new DatabaseSync(databaseFile, { readOnly: true });
     try {
       for (const row of db.prepare("SELECT root_path FROM projects ORDER BY id").all()) {
-        for (const harness of ["codex", "claude-code"]) targets.push({ projectRoot: String(row.root_path), harness });
+        for (const harness of ["codex", "claude-code"]) {
+          const item = { projectRoot: path.resolve(String(row.root_path)), harness };
+          if (fs.existsSync(item.projectRoot) && hookInstallationStatus(item).owned) unique.set(`${item.projectRoot}\u0000${harness}`, item);
+        }
       }
     } finally { db.close(); }
-  }
-  const unique = new Map();
-  for (const item of targets) {
-    const key = `${path.resolve(item.projectRoot)}\u0000${item.harness}`;
-    if (fs.existsSync(item.projectRoot) && hookInstallationStatus(item).owned) unique.set(key, { projectRoot: path.resolve(item.projectRoot), harness: item.harness });
   }
   return [...unique.values()];
 }
