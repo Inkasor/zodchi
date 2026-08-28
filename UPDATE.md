@@ -6,7 +6,7 @@
     <rule id="release_is_replaceable">The program directory is replaced as one unit.</rule>
     <rule id="data_is_external">Personal data stays outside the program directory and is never copied into a release.</rule>
     <rule id="verified_release_only">Use a published GitHub Release and verify the archive SHA-256.</rule>
-    <rule id="llm_runs_update">The LLM runs commands; the person confirms the destination and trusts a changed hook.</rule>
+    <rule id="llm_runs_update">The LLM runs commands; the person confirms the destination. The installer updates owned user skills and removes owned legacy project hooks transactionally.</rule>
   </contract>
 
   <procedure status="accepted">
@@ -14,7 +14,7 @@
     <step order="2">When needed, create a supported snapshot of local databases with the backup command.</step>
     <step order="3">Run tools/install-latest.ps1 from a trusted repository with the current destination.</step>
     <step order="4">Verify bundle-manifest.json and run npm test in the installed release.</step>
-    <step order="5">If the hook changed, ask the person to trust it again in Codex.</step>
+    <step order="5">Verify `/zodchi` and `/zod` in each selected host and verify that ordinary messages are not intercepted.</step>
   </procedure>
 
   <operations status="accepted">

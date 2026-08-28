@@ -6,7 +6,6 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { buildRelease } from "../scripts/build-release.mjs";
 import { installRelease, rollbackRelease, uninstallRelease } from "./install.mjs";
-import { hookInstallationStatus } from "../WorkflowPlatform/src/hook-installation.mjs";
 import { resolveCommandCapability } from "../WorkflowPlatform/src/command-resolver.mjs";
 
 function argsObject(argv) {
@@ -77,11 +76,18 @@ function initializeProject(projectRoot) {
   git(projectRoot, "-c", "user.email=acceptance@zodchi.invalid", "-c", "user.name=Zodchi Acceptance", "commit", "--quiet", "-m", "acceptance baseline");
 }
 
-function hookStatus(projectRoot, installedRoot) {
-  const status = hookInstallationStatus({ projectRoot, harness: "codex" });
-  ensure(status.installed && status.owned && !status.changed, "ACCEPTANCE_HOOK_NOT_OWNED");
-  ensure(samePath(status.installation_root, path.join(installedRoot, "WorkflowPlatform", "hooks")), "ACCEPTANCE_HOOK_TARGET_MISMATCH", status.installation_root);
-  return status;
+function skillStatus(roots, installedRoot) {
+  const results = [];
+  for (const client of ["claude-code", "codex"]) for (const name of ["zodchi", "zod"]) {
+    const directory = path.join(roots[client], name), markerFile = path.join(directory, ".zodchi-skill.json"), skillFile = path.join(directory, "SKILL.md");
+    ensure(fs.existsSync(markerFile) && fs.existsSync(skillFile), "ACCEPTANCE_SKILL_MISSING", `${client}:${name}`);
+    const marker = json(markerFile);
+    ensure(marker.owner === "zodchi" && marker.client === client && marker.name === name, "ACCEPTANCE_SKILL_OWNER_INVALID", `${client}:${name}`);
+    ensure(samePath(marker.application_root, installedRoot), "ACCEPTANCE_SKILL_TARGET_MISMATCH", marker.application_root);
+    ensure(fs.readFileSync(skillFile, "utf8").includes("explicit-invoke.mjs"), "ACCEPTANCE_SKILL_COMMAND_MISSING", `${client}:${name}`);
+    results.push({ client, name, directory });
+  }
+  return results;
 }
 
 function runJson(command, parameters) {
@@ -105,14 +111,14 @@ export function runPlatformAcceptance({ repositoryRoot = path.resolve(import.met
     const candidateVersion = json(path.join(candidate, "product.json")).version, baselineVersion = rewriteBaselineVersion(baseline);
 
     const projectRoot = path.join(root, "временный проект 😀"), installed = path.join(root, "installed"), dataRoot = path.join(root, "data");
+    const skillRoots = { "claude-code": path.join(root, "claude-skills"), codex: path.join(root, "codex-skills") };
     initializeProject(projectRoot);
-    const hooks = [{ projectRoot, harness: "codex" }];
-    const installedBaseline = installRelease({ source: baseline, destination: installed, dataRoot, hooks });
-    const initialHook = hookStatus(projectRoot, installed);
+    const installedBaseline = installRelease({ source: baseline, destination: installed, dataRoot, skillRoots });
+    const initialSkills = skillStatus(skillRoots, installed);
 
-    const hookEvidenceRoot = path.join(root, "hook-evidence"), hookConfig = path.join(root, "hook-config.json");
-    writeJson(hookConfig, {
-      output_root: hookEvidenceRoot,
+    const explicitEvidenceRoot = path.join(root, "explicit-evidence"), explicitConfig = path.join(root, "explicit-config.json");
+    writeJson(explicitConfig, {
+      output_root: explicitEvidenceRoot,
       project_id: "platform-acceptance",
       name: "Platform acceptance",
       root_path: projectRoot,
@@ -121,12 +127,12 @@ export function runPlatformAcceptance({ repositoryRoot = path.resolve(import.met
       workflow_key: "software_web_application.runtime",
       gateway_entry: path.join(installed, "AgentGateway", "src", "cli.mjs")
     });
-    const hookRun = runJson(process.execPath, [path.join(installed, "WorkflowPlatform", "scripts", "run-hook-evidence.mjs"), "--config", hookConfig]);
-    ensure(hookRun.worktree_unchanged && hookRun.results?.every(item => item.response_in_same_chat), "ACCEPTANCE_HOOK_RUN_FAILED");
-    const workflowDatabase = path.join(hookEvidenceRoot, "workflow-evidence.sqlite");
+    const explicitRun = runJson(process.execPath, [path.join(installed, "WorkflowPlatform", "scripts", "run-explicit-evidence.mjs"), "--config", explicitConfig]);
+    ensure(explicitRun.worktree_unchanged && explicitRun.results?.every(item => item.response_returned), "ACCEPTANCE_EXPLICIT_RUN_FAILED");
+    const workflowDatabase = path.join(explicitEvidenceRoot, "workflow-evidence.sqlite");
 
-    const updated = installRelease({ source: candidate, destination: installed, dataRoot, workflowDatabase, hooks });
-    const updatedHook = hookStatus(projectRoot, installed);
+    const updated = installRelease({ source: candidate, destination: installed, dataRoot, workflowDatabase, skillRoots });
+    const updatedSkills = skillStatus(skillRoots, installed);
     const workflowEvidenceRoot = path.join(root, "workflow-evidence"), workflowConfig = path.join(root, "workflow-config.json");
     writeJson(workflowConfig, {
       output_root: workflowEvidenceRoot,
@@ -144,13 +150,13 @@ export function runPlatformAcceptance({ repositoryRoot = path.resolve(import.met
     const candidateRun = workflowRun.results?.[0];
     ensure(candidateRun?.final_state === "completed" && candidateRun.gate_status === "passed" && candidateRun.worktree_unchanged, "ACCEPTANCE_CANDIDATE_RUN_FAILED", JSON.stringify(candidateRun ?? null));
 
-    const rolledBack = rollbackRelease({ destination: installed, dataRoot });
-    const rollbackHook = hookStatus(projectRoot, installed);
+    const rolledBack = rollbackRelease({ destination: installed, dataRoot, skillRoots });
+    const rollbackSkills = skillStatus(skillRoots, installed);
     const presetLint = runJson(process.execPath, [path.join(installed, "WorkflowPlatform", "src", "cli.mjs"), "preset-lint"]);
     ensure(presetLint.status === "passed" && presetLint.presets === 15, "ACCEPTANCE_PRESET_CATALOG_FAILED");
-    const uninstalled = uninstallRelease({ destination: installed, dataRoot, hooks });
-    const finalHook = hookInstallationStatus({ projectRoot, harness: "codex" });
-    ensure(!finalHook.owned, "ACCEPTANCE_HOOK_SURVIVED_UNINSTALL");
+    const uninstalled = uninstallRelease({ destination: installed, dataRoot, skillRoots });
+    ensure(uninstalled.skills.every(item => item.status === "removed"), "ACCEPTANCE_SKILL_SURVIVED_UNINSTALL");
+    ensure(!fs.existsSync(path.join(projectRoot, ".codex")) && !fs.existsSync(path.join(projectRoot, ".claude")), "ACCEPTANCE_PROJECT_HOOK_CREATED");
 
     const report = Object.freeze({
       schema_version: 1,
@@ -161,12 +167,12 @@ export function runPlatformAcceptance({ repositoryRoot = path.resolve(import.met
       versions: { baseline: baselineVersion, candidate: candidateVersion },
       lifecycle: {
         install: { status: installedBaseline.status, version: installedBaseline.version },
-        hook: { status: initialHook.installed ? "installed" : "failed", scenarios: hookRun.results.length },
+        explicit_skills: { status: "installed", commands: initialSkills.length, scenarios: explicitRun.results.length },
         run: { final_state: candidateRun.final_state, gate_status: candidateRun.gate_status, calls: candidateRun.calls },
-        update: { status: updated.status, version: updated.version, hook_target_updated: updatedHook.owned },
-        rollback: { status: rolledBack.status, version: rolledBack.version, hook_target_restored: rollbackHook.owned },
+        update: { status: updated.status, version: updated.version, skill_targets_updated: updatedSkills.length },
+        rollback: { status: rolledBack.status, version: rolledBack.version, skill_targets_restored: rollbackSkills.length },
         preset_catalog: presetLint,
-        uninstall: { status: uninstalled.status, hook_removed: !finalHook.owned, user_data_preserved: uninstalled.user_data_preserved }
+        uninstall: { status: uninstalled.status, skills_removed: true, project_hooks_absent: true, user_data_preserved: uninstalled.user_data_preserved }
       },
       limits: [
         "deterministic provider proves platform delivery and gates, not model quality",

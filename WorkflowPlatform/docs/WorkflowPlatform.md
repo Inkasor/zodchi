@@ -19,8 +19,8 @@ A release is assembled from committed sources, validated, and replaced as one un
 <rule id="local_state_is_external" status="accepted">
 Local profiles, model assignments, project registry, run history, and both databases stay outside the release and survive product updates.
 </rule>
-<rule id="project_hooks_use_release" status="accepted">
-Project hooks start WorkflowPlatform from the installed release, never from the development repository.
+<rule id="explicit_skills_use_release" status="accepted">
+User-level `/zodchi` and `/zod` skills start WorkflowPlatform from the installed release; ordinary project-chat messages are not intercepted.
 </rule>
 <rule id="response_language" status="accepted">
 WorkflowPlatform stores the resolved response language and passes it to every user-facing role; schema keys and enum values remain English.

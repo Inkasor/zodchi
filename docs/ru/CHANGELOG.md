@@ -8,11 +8,12 @@
 
 ## 0.6.0-rc.1 — 2026-08-28
 
+- Codex и Claude Code теперь запускают Zodchi явно через пользовательские skills `/zodchi` и `/zod`. Обычные сообщения не перехватываются; install/update удаляют принадлежащие Zodchi старые project hooks, а update/rollback/uninstall транзакционно управляют skills, не перезаписывая чужое или изменённое содержимое.
 - Публикация стала draft-first: три ОС проверяют скачанные GitHub assets и их Sigstore provenance до публикации, затем проверка повторяется для публичного Release, а красный post-publish возвращает его в draft. Stable tag больше не помечается prerelease автоматически.
 - Bootstrap installer требует provenance record точного SHA-256; release smoke дополнительно выполняет криптографический `gh attestation verify` с привязкой к release workflow и commit.
 - Зафиксирован read-only preflight старого `v0.5.24`: canonical и versioned checksum assets совпадают и подтверждают archive hash, но ручной uploader не переобозначен как CI.
 
-- Release и установка теперь fail-closed: один universal archive, проверка checksum и publisher, нативная диагностика до появления Node, транзакционные project hooks и acceptance install/update/rollback/uninstall с platform-aware путями.
+- Release и установка теперь fail-closed: один universal archive, проверка checksum и publisher, нативная диагностика до появления Node и acceptance install/update/rollback/uninstall с platform-aware путями.
 - Core lifecycle разделяет clarification и external evidence, привязывает необратимое approval к точному состоянию действия, изолирует owner messages и project config, защищает канонические shared/exclusive resources и поддерживает privacy-safe receipts вместе с подписанным external control plane.
 - Scope-aware Git enumeration применяет pathspec до лимита; отрицание по всему корпусу требует authoritative boundary; детерминированный evidence/recovery supervision останавливает duplicate review loops и сохраняет UTF-8 byte contracts.
 - Package SDK v4 поставляет support-grade `software.web-application` и `one-c.development`, а также executable previews для Web-игр, Unity, data analytics, infrastructure operations и marketing/content operations. Пятнадцать project presets создают hash-bound import proposals и явную local configuration без изменения core платформы.

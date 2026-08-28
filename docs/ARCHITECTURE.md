@@ -9,11 +9,11 @@
     <component id="workflow_platform" responsibility="workflow">Classifies the request, assembles registered context, selects a route, and manages stages, documents, and deterministic checks.</component>
     <component id="code_intelligence" responsibility="source_retrieval">Maps natural-language evidence to code identifiers, expands them through bounded BSL or TypeScript/JavaScript structure, and returns measured source locations without embeddings.</component>
     <component id="agent_gateway" responsibility="model_calls">Performs one bounded call to the assigned model and stores a technical receipt without the full request or response.</component>
-    <component id="project_hook" responsibility="chat_entry">Passes a new project-chat message to WorkflowPlatform and returns the result to the same chat.</component>
+    <component id="explicit_skill" responsibility="chat_entry">Passes only a task explicitly invoked with `/zodchi` or `/zod` to WorkflowPlatform and returns the result to the same chat.</component>
   </components>
 
   <flow status="accepted">
-    <step id="intake" order="1">Receive the user message and a stable event identifier.</step>
+    <step id="intake" order="1">Receive the explicitly selected user task through an installed host skill and preserve its UTF-8 bytes.</step>
     <step id="context" order="2">Programmatically assemble permitted project facts, registered documents, lexical source evidence, and a bounded language graph.</step>
     <step id="classification" order="3">Determine intent, work type, expected artifact, planning level, and quality mode.</step>
     <step id="dialog_or_route" order="4">Answer or ask a question when execution is unnecessary; otherwise start a registered workflow.</step>

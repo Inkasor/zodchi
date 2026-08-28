@@ -14,7 +14,7 @@ This record describes a local release candidate. No tag, push, GitHub Release, p
 - Package regeneration/import: all seven package artifacts match their definitions and public catalog; all fifteen presets validate and produce proposal-first local onboarding material.
 - Two independently assembled canonical release roots contain the same 217 manifest entries and identical file hashes; release lint passes.
 - The full suite executed from the assembled release: tools `24 passed, 2 source-only checks skipped`, WorkflowPlatform `321 passed, 1 skipped`, AgentGateway `26/26`. The product archive intentionally omits its GitHub publishing workflow and the canary configuration template, while the TypeScript semantic test requires the analyzed project to supply a compatible TypeScript compiler API; every skip is explicit and its runtime boundary is covered separately.
-- Two archives compressed from the same canonical `Zodchi` root by the pinned Node 24 runtime are byte-identical. This proves deterministic retries under the release runtime; cross-version zlib byte identity is not claimed. The one-command acceptance covers install, owned hook, routed run, update, rollback, hook restoration and uninstall.
+- Two archives compressed from the same canonical `Zodchi` root by the pinned Node 24 runtime are byte-identical. This proves deterministic retries under the release runtime; cross-version zlib byte identity is not claimed. The one-command acceptance covers install, explicit skills for both hosts, routed runs, update, rollback, legacy-hook absence and uninstall.
 
 </automated_verification>
 

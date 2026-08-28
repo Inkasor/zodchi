@@ -23,5 +23,5 @@ The one-line bootstrap fetches `install-latest.mjs` from this repository's defau
 
 - A release must not contain personal databases, credentials, authentication files, or user-specific absolute paths.
 - Credentials for compatible APIs are supplied only through environment variables.
-- A person must explicitly trust a project hook in the Codex interface.
+- Ordinary project messages are not intercepted. User-level Zodchi skills run only after `/zodchi` or `/zod`; the installer never overwrites a same-named foreign skill or removes edited managed content.
 - Publication, deployment, access changes, and other irreversible operations require a separate owner decision.
