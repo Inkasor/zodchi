@@ -8,6 +8,7 @@ import { callGateway } from "../src/gateway.mjs";
 import { workflowRunStatistics } from "../src/statistics.mjs";
 import { registerImplicitResources, registerProjectResource } from "../src/project-resources.mjs";
 import { assertProjectBaselineUnchanged, captureProjectBaseline } from "./project-baseline.mjs";
+import { registerCanaryChecks } from "./canary-checks.mjs";
 
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 function argsObject(argv) { const result = {}; for (let i = 0; i < argv.length; i += 1) if (argv[i].startsWith("--")) result[argv[i].slice(2)] = argv[i + 1]?.startsWith("--") || argv[i + 1] === undefined ? true : argv[++i]; return result; }
@@ -52,14 +53,16 @@ for (const item of config.projects) {
     profileKeys.add(requirement.profile_key);
   }
   db.close();
-  prepared.push({ item, workflowId });
+  const checks = registerCanaryChecks(dbFile, item);
+  if (checks) fs.writeFileSync(path.join(outputRoot, `${item.project_id}.checks.json`), JSON.stringify(checks, null, 2), "utf8");
+  prepared.push({ item, workflowId, checks });
 }
 
 const profiles = Object.fromEntries([...profileKeys].map(key => [key, { model: "deterministic-contract-v1", reasoningEffort: "low", readOnly: true }]));
 fs.writeFileSync(policyFile, JSON.stringify({ schemaVersion: 1, levels: { prototype: { maxCalls: 2, maxCorrectionCycles: 0, timeoutSec: 60 }, mvp: { maxCalls: 2, maxCorrectionCycles: 1, timeoutSec: 3600 } }, providers: { codex: { command: process.execPath, args: [fakeProvider], profiles } } }, null, 2), "utf8");
 
 const results = [];
-for (const { item, workflowId } of prepared) {
+for (const { item, workflowId, checks } of prepared) {
   const before = captureProjectBaseline(item.root_path), gateway = request => callGateway({ ...request, gateway: path.resolve(config.gateway_entry), gatewayDatabase: gatewayDb, gatewayPolicy: policyFile });
   const outcome = await processMessage({
     message: item.message ?? "Run the registered read-only technical verification scenario. Do not edit source files and do not make owner acceptance decisions.",
@@ -72,7 +75,7 @@ for (const { item, workflowId } of prepared) {
   const statistics = workflowRunStatistics(dbFile, outcome.run_id);
   const record = { project_id: item.project_id, package_key: item.package_key, workflow_key: item.workflow_key, requested_scenario: item.message ?? null, source_baseline_before: before, source_baseline_after: after, outcome, statistics, owner_acceptance: "pending_separate" };
   fs.writeFileSync(path.join(outputRoot, `${item.project_id}.statistics.json`), JSON.stringify(record, null, 2), "utf8");
-  results.push({ project_id: item.project_id, run_id: outcome.run_id, route: outcome.route, execution_status: outcome.execution?.status ?? null, gate_status: outcome.execution?.gate?.status ?? null, final_state: statistics.final_state, calls: statistics.calls.length, tokens: statistics.tokens, worktree_unchanged: true, owner_acceptance: "pending_separate" });
+  results.push({ project_id: item.project_id, run_id: outcome.run_id, route: outcome.route, execution_status: outcome.execution?.status ?? null, gate_status: outcome.execution?.gate?.status ?? null, final_state: statistics.final_state, calls: statistics.calls.length, tokens: statistics.tokens, worktree_unchanged: true, checks: checks ? { check_id: checks.check_id, kind: checks.kind, baseline_id: checks.baseline.baseline_id, tool_version: checks.baseline.tool_version, accepted_revision: checks.baseline.accepted_revision, confirmed_by: item.checks.one_c_bsl.confirmed_by } : null, owner_acceptance: "pending_separate" });
 }
 const summary = { schema_version: 1, created_at: new Date().toISOString(), provider_mode: "deterministic contract through real AgentGateway process", database: path.basename(dbFile), gateway_database: path.basename(gatewayDb), results };
 fs.writeFileSync(path.join(outputRoot, "summary.json"), JSON.stringify(summary, null, 2), "utf8");

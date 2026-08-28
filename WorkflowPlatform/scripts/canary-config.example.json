@@ -26,9 +26,25 @@
           "alias": "example.infobase",
           "kind": "1c.file",
           "purpose": "Read-only access to the owner's file information base",
-          "declaration": { "path": "<absolute path to the directory containing 1Cv8.1CD>" }
+          "declaration": {
+            "path": "<absolute path to the directory containing 1Cv8.1CD>"
+          }
         }
-      ]
+      ],
+      "checks": {
+        "one_c_bsl": {
+          "_comment": "Present only when the canary must prove the BSL gate. The package ships this check disabled because the analyzer is a local binary and the accepted debt is the owner signature, so the canary registers the baseline and binds the analyzer before the run.",
+          "executable": "<absolute path to the local BSL Language Server executable>",
+          "source": "<absolute path to the exported configuration sources; must be a clean git worktree at accepted_revision>",
+          "workspace": "<optional absolute path; defaults to source>",
+          "platform_bin": "<absolute path to the 1C platform bin directory containing shcntx_*.hbk>",
+          "temp_root": "<absolute path to a directory the analyzer may use for scratch files>",
+          "accepted_revision": "<git revision of source whose diagnostics the owner accepts as the baseline>",
+          "confirmed_by": "<the owner who accepts that debt; never defaulted, never synthesized>",
+          "minimum_severity": "Warning",
+          "timeout_seconds": 1500
+        }
+      }
     }
   ]
 }
