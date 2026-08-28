@@ -73,3 +73,15 @@ test("shared installation keeps mutable configuration and databases outside the 
   assert.equal(path.resolve(workflowRoot, runtime.database), path.join(localDataRoot, "workflow", "workflow.sqlite"));
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test("shared installation defaults to the platform data directory instead of the replaceable release", () => {
+  const root = temporaryRoot("workflow-platform-default-data-");
+  const workflowRoot = path.join(root, "release", "WorkflowPlatform"), gatewayRoot = path.join(root, "release", "AgentGateway"), platformData = path.join(root, "platform-data");
+  fs.mkdirSync(workflowRoot, { recursive: true }); fs.mkdirSync(gatewayRoot, { recursive: true });
+  fs.writeFileSync(path.join(gatewayRoot, "policy.json"), JSON.stringify({ schemaVersion: 1, levels: { prototype: {} }, providers: { codex: { command: "codex", profiles: {} } } }));
+  const result = configureInstallation({ scope: "shared", gatewayProfiles: { codex: { classifier: { model: "fixture", readOnly: true } } } }, { workflowRoot, gatewayRoot, platformPaths: { application: path.join(root, "app"), data: platformData } });
+  assert.equal(result.runtimeFile.startsWith(workflowRoot), false);
+  assert.equal(result.localPolicyFile.startsWith(gatewayRoot), false);
+  assert.equal(result.runtimeFile, path.join(platformData, "config", "runtime.json"));
+  fs.rmSync(root, { recursive: true, force: true });
+});
