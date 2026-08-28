@@ -7,7 +7,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node scripts/validate-source.mjs && npm --prefix WorkflowPlatform test && npm --prefix WorkflowPlatform run packages:check && npm --prefix AgentGateway test",
+    "test": "node scripts/validate-source.mjs && node --test \"tools/tests/**/*.test.mjs\" && npm --prefix WorkflowPlatform test && npm --prefix WorkflowPlatform run packages:check && npm --prefix AgentGateway test",
     "release:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1"
   }
 }
