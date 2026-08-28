@@ -21,7 +21,7 @@ const positional = process.argv[process.argv.indexOf(FLAG) + 1];
 const named = flagged ? flagged.slice(FLAG.length + 1) : process.argv.includes(FLAG) ? positional : null;
 if (process.argv.includes(FLAG) && (!named || named.startsWith("--"))) throw new Error(`PACKAGE_DEFINITIONS_REQUIRED: ${FLAG} needs a file`);
 const source = process.argv.includes("--installation") ? resolveWorkflowSettings().packageDefinitions : named;
-const { packages: PACKAGE_DEFINITIONS, bundles: PACKAGE_BUNDLES, aliases: PACKAGE_ALIASES, generatedDirectory: outputDirectory, file: packageDefinitionsFile } = await loadPackageDefinitions(source ?? undefined);
+const { packages: PACKAGE_DEFINITIONS, bundles: PACKAGE_BUNDLES, aliases: PACKAGE_ALIASES, statuses: PACKAGE_STATUSES, generatedDirectory: outputDirectory, file: packageDefinitionsFile } = await loadPackageDefinitions(source ?? undefined);
 const results = [];
 const repositoryDefinitions = path.resolve(packageDefinitionsFile) === path.resolve(repositoryPackageDefinitionsFile);
 // Generated packages live beside the source that declares them, which is outside the repository for a
@@ -60,6 +60,7 @@ const catalogValue = {
   packages: PACKAGE_DEFINITIONS.map(item => ({
     key: item.key,
     version: item.version,
+    support_status: PACKAGE_STATUSES[item.key] ?? "local",
     file: path.relative(catalogRoot, path.join(outputDirectory, `${item.key}.xml`)).replaceAll("\\", "/"),
     owner_acceptance: acceptance.get(item.key) ?? []
   })),

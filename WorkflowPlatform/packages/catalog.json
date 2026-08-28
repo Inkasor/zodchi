@@ -4,6 +4,7 @@
     {
       "key": "software.web-application",
       "version": "1.0.0",
+      "support_status": "support-grade",
       "file": "example/generated/software.web-application.xml",
       "owner_acceptance": [
         "content",
@@ -16,7 +17,22 @@
     {
       "key": "one-c.development",
       "version": "1.0.0",
+      "support_status": "support-grade",
       "file": "example/generated/one-c.development.xml",
+      "owner_acceptance": []
+    },
+    {
+      "key": "game.web",
+      "version": "0.1.0",
+      "support_status": "preview",
+      "file": "example/generated/game.web.xml",
+      "owner_acceptance": []
+    },
+    {
+      "key": "game.unity",
+      "version": "0.1.0",
+      "support_status": "preview",
+      "file": "example/generated/game.unity.xml",
       "owner_acceptance": []
     }
   ],

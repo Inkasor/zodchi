@@ -66,6 +66,12 @@ test("public catalog versions and files are generated from the package definitio
     assert.equal(parsed.version, item.version);
   }
   assert.deepEqual(publicCatalog.aliases, [{ key: "example.web-app", target: "software.web-application", deprecated: true, remove_after: "0.6.x" }]);
+  assert.deepEqual(Object.fromEntries(publicCatalog.packages.map(item => [item.key, item.support_status])), {
+    "software.web-application": "support-grade",
+    "one-c.development": "support-grade",
+    "game.web": "preview",
+    "game.unity": "preview"
+  });
 });
 
 test("the canonical Web package is SDK-composed and requires anchored API-to-UI transitions", () => {
@@ -130,6 +136,51 @@ test("the support-grade 1C package exposes exactly the seven domain routes and a
   const flow = packageValue.evidence_flows.find(item => item.key === "bsl.source_to_ui");
   assert.deepEqual(flow.required_edges, ["source->calculation", "calculation->structure_attribute", "structure_attribute->form_report"]);
   assert.equal(flow.transition.adapter, "bsl-structural");
+});
+
+test("the Unity preview keeps technical evidence and owner acceptance independent", () => {
+  const packageValue = PACKAGE_DEFINITIONS.find(item => item.key === "game.unity");
+  assert.ok(packageValue);
+  assert.match(packageValue.purpose, /Executable preview/);
+  assert.deepEqual(packageValue.routes.filter(item => item.work_type_key.startsWith("game.")).map(item => item.work_type_key).sort(), [
+    "game.build-test",
+    "game.change",
+    "game.design-research",
+    "game.pipeline-audit",
+    "game.product-acceptance",
+    "game.release-readiness",
+    "game.technical-qa",
+    "game.visual-acceptance"
+  ]);
+  for (const key of ["unity_csharp_boundary", "unity_batch", "unity_checkpoint"]) {
+    const check = packageValue.checks.find(item => item.key === key);
+    assert.equal(check.kind, "disabled");
+    assert.match(check.config.reason, /^requires_local_/);
+  }
+  const flow = packageValue.evidence_flows.find(item => item.key === "csharp.state_to_runtime_consumer");
+  assert.deepEqual(flow.required_edges, ["producer->state_model", "state_model->runtime_consumer"]);
+  assert.deepEqual(flow.transition, { adapter: "csharp-ls", method: "semantic_reference_or_verified_call" });
+  const acceptance = packageValue.workflows.find(item => item.key.endsWith(".acceptance"));
+  assert.deepEqual(packageValue.resources, [{ alias: "unity.project", kind: "project.worktree", purpose: "Explicit single-machine Unity project runtime boundary" }]);
+  assert.deepEqual(packageValue.workflows.find(item => item.key.endsWith(".runtime")).steps.find(item => item.key === "verify").resources, [{ alias: "unity.project", mode: "exclusive" }]);
+  assert.equal(acceptance.steps.at(-1).key, "owner_acceptance");
+  assert.equal(acceptance.steps.at(-1).role_key, null);
+  assert.equal(acceptance.steps.at(-1).irreversible, true);
+});
+
+test("the Web-game preview traces design to browser proof without folding product acceptance into code review", () => {
+  const packageValue = PACKAGE_DEFINITIONS.find(item => item.key === "game.web");
+  assert.ok(packageValue);
+  assert.match(packageValue.purpose, /Executable preview/);
+  for (const workType of ["game.design-research", "game.change", "game.build-test", "game.technical-qa", "game.visual-acceptance", "game.product-acceptance", "game.release-readiness", "game.pipeline-audit", "content", "marketing"]) {
+    assert.equal(packageValue.routes.some(item => item.work_type_key === workType), true, workType);
+  }
+  assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["classifier", "coordinator", "editor", "worker"]);
+  const flow = packageValue.evidence_flows.find(item => item.key === "game.feature_to_browser_proof");
+  assert.deepEqual(flow.required_edges, ["design_decision->technical_task", "technical_task->browser_proof"]);
+  assert.equal(flow.transition.adapter, "registered-browser-evidence");
+  const content = packageValue.workflows.find(item => item.key.endsWith(".content"));
+  assert.equal(content.steps.some(item => item.key === "edit" && item.role_key === "editor"), true);
 });
 
 test("classification is routed by the model and every declared route reaches a declared workflow", () => {
