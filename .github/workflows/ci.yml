@@ -32,3 +32,9 @@ jobs:
           node scripts/build-release.mjs --output "${{ runner.temp }}/Zodchi" --stage-root "${{ runner.temp }}"
           node "${{ runner.temp }}/Zodchi/tools/release-lint.mjs" "${{ runner.temp }}/Zodchi"
           npm --prefix "${{ runner.temp }}/Zodchi" test
+      - name: Install hook run update rollback acceptance
+        run: node tools/platform-acceptance.mjs --work "${{ runner.temp }}/platform-acceptance" --out "${{ runner.temp }}/platform-acceptance.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: platform-acceptance-${{ matrix.os }}
+          path: ${{ runner.temp }}/platform-acceptance.json

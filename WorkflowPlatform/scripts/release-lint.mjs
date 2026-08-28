@@ -114,6 +114,7 @@ const required = [
   "tools/installation-paths.mjs",
   "tools/lib/zip.mjs",
   "tools/release-smoke.mjs",
+  "tools/platform-acceptance.mjs",
   "tools/release-lint.mjs"
 ];
 
