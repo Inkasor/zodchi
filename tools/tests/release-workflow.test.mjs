@@ -4,9 +4,10 @@ import path from "node:path";
 import test from "node:test";
 
 const root = path.resolve(import.meta.dirname, "..", "..");
+const workflowFile = path.join(root, ".github", "workflows", "release.yml");
 
-test("release workflow keeps assets draft until cross-platform provenance smoke passes", () => {
-  const workflow = fs.readFileSync(path.join(root, ".github", "workflows", "release.yml"), "utf8");
+test("release workflow keeps assets draft until cross-platform provenance smoke passes", { skip: !fs.existsSync(workflowFile) && "source-only CI contract is not shipped in the product archive" }, () => {
+  const workflow = fs.readFileSync(workflowFile, "utf8");
   assert.match(workflow, /actions\/attest@v4/);
   assert.match(workflow, /gh release create[^\r\n]+--draft/);
   assert.doesNotMatch(workflow, /gh release create[^\r\n]+--prerelease/);
