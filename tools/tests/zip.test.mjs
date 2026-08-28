@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import zlib from "node:zlib";
-import { extractZip, readZipEntries, readZipEntryContent } from "../lib/zip.mjs";
+import { createDeterministicZip, extractZip, readZipEntries, readZipEntryContent } from "../lib/zip.mjs";
 
 // A minimal writer so the reader is exercised against both storage methods and against deliberately
 // malformed entries. The reader is what stands between a downloaded archive and the filesystem, so the
@@ -66,6 +66,25 @@ test("deflated and stored entries both round-trip", () => {
   assert.equal(entries.length, 2);
   assert.equal(readZipEntryContent(archive, entries[0]).toString("utf8"), "# release\n".repeat(64));
   assert.equal(readZipEntryContent(archive, entries[1]).toString("utf8"), "{\"name\":\"zodchi\"}");
+});
+
+test("release ZIP bytes ignore source roots, mtimes and Unicode enumeration order", () => {
+  const first = scratch(), second = scratch(), extracted = scratch();
+  try {
+    for (const root of [first, second]) {
+      fs.mkdirSync(path.join(root, "данные 😀"), { recursive: true });
+      fs.writeFileSync(path.join(root, "данные 😀", "бета.txt"), "одинаковый результат\n", "utf8");
+      fs.writeFileSync(path.join(root, "alpha.txt"), "alpha\n", "utf8");
+    }
+    fs.utimesSync(path.join(first, "alpha.txt"), new Date("2001-01-01T00:00:00Z"), new Date("2001-01-01T00:00:00Z"));
+    fs.utimesSync(path.join(second, "alpha.txt"), new Date("2026-08-28T12:34:56Z"), new Date("2026-08-28T12:34:56Z"));
+    const one = createDeterministicZip(first), two = createDeterministicZip(second);
+    assert.deepEqual(one, two);
+    extractZip(one, extracted);
+    assert.equal(fs.readFileSync(path.join(extracted, "Zodchi", "данные 😀", "бета.txt"), "utf8"), "одинаковый результат\n");
+  } finally {
+    for (const root of [first, second, extracted]) fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("extraction writes every entry under the destination", () => {

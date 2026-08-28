@@ -23,6 +23,7 @@ test("platform-neutral builder produces a lintable archive root that the canonic
     assert.equal(manifest.files.some(item => item.path === "WorkflowPlatform/scripts/project-baseline.mjs"), true);
     assert.equal(manifest.files.some(item => item.path === "tools/release-lint.mjs"), true);
     assert.equal(manifest.files.some(item => item.path === "scripts/build-release-manifest.mjs"), true);
+    assert.equal(manifest.files.some(item => item.path === "scripts/build-release-archive.mjs"), true);
     const installation = installRelease({ source: output, destination: installed, dataRoot });
     assert.equal(installation.status, "installed");
     assert.equal(fs.existsSync(path.join(installed, "WorkflowPlatform", "hooks", "user-prompt-submit.mjs")), true);
