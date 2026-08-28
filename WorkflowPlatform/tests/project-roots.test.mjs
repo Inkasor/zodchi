@@ -588,6 +588,27 @@ test("BSL intelligence expands lexical evidence through procedures and metadata"
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("data analytics locates SQL and Python evidence without claiming a semantic graph", () => {
+  const { root, producer, db } = fixture("workflow-data-locators-", { sources: ["sql/**", "python/**"] });
+  fs.mkdirSync(path.join(producer, "sql"), { recursive: true });
+  fs.mkdirSync(path.join(producer, "python"), { recursive: true });
+  fs.writeFileSync(path.join(producer, "sql", "unikey_check.sql"), "WITH cleaned_unikey AS (SELECT unikey FROM sales WHERE is_valid = 1)\nSELECT count(*) FROM cleaned_unikey;\n");
+  fs.writeFileSync(path.join(producer, "python", "verify.py"), "def validate_unikey(rows):\n    return [row for row in rows if row['is_valid']]\n\nresult = validate_unikey(source_rows)\n");
+  fs.writeFileSync(path.join(producer, "outside.txt"), "cleaned_unikey validate_unikey must stay outside the declared data scope\n");
+  const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" }), scope = sourceScope(discovery.source_scope);
+  const found = searchSources(discovery.roots, scope, ["cleaned_unikey", "validate_unikey"], { indexedTerms: ["cleaned_unikey", "validate_unikey"] });
+
+  assert.deepEqual(found.files.map(item => item.path).sort(), ["python/verify.py", "sql/unikey_check.sql"]);
+  assert.equal(found.files.every(item => item.matches.every(match => Number.isInteger(match.line) && match.line > 0 && match.text.includes(match.term))), true);
+  assert.equal(found.completeness.enumeration_complete, true);
+  assert.equal(found.completeness.file_scan_truncated, false);
+  assert.deepEqual(found.exact_term_index.map(item => [item.term, item.matched_files]), [["cleaned_unikey", 1], ["validate_unikey", 1]]);
+  assert.equal(found.code_intelligence, undefined);
+
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("TypeScript compiler intelligence resolves JavaScript calls across files", t => {
   const { root, producer, db } = fixture("workflow-ts-graph-", { sources: ["src/**"] });
   fs.writeFileSync(path.join(producer, "package.json"), JSON.stringify({ type: "module", dependencies: { typescript: "*" } }));
