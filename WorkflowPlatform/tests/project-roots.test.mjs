@@ -9,7 +9,7 @@ import { openDb, now } from "../src/db.mjs";
 import { readProjectContext, compactProjectSnapshot } from "../src/document-context.mjs";
 import { applyRegisteredPatch } from "../src/documentator.mjs";
 import { projectRoots, writableRoots } from "../src/project-roots.mjs";
-import { collectGitHistory, collectSourceFiles, expandTerms, scanSourceCorpus, searchSources, searchTerms, sourceInventory, sourceScope } from "../src/source-context.mjs";
+import { collectGitHistory, collectSourceFiles, expandTerms, listFiles, scanSourceCorpus, searchSources, searchTerms, sourceInventory, sourceScope } from "../src/source-context.mjs";
 import { buildCodeIntelligence, mergeGraphMatches } from "../src/code-intelligence.mjs";
 import { fitSourceEvidence } from "../src/work-executor.mjs";
 
@@ -679,18 +679,39 @@ test("a scoped corpus scan stays complete where the same scan over the whole rep
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("a pattern git glob cannot express is enumerated without pushdown rather than silently narrowed", () => {
+test("a pattern git glob cannot express uses a bounded non-authoritative fallback", () => {
   const root = largeRepositoryFixture("workflow-scope-pushdown-", { noise: 20 });
   // A character class is a literal for this scope and a class for git, so pushing it down would select
-  // a different set of files. Enumeration falls back to the whole listing and says why.
+  // a different set of files. The fallback may find positive evidence, but it cannot certify absence.
   const scope = sourceScope(["zzz-target/[unusual].bsl", "zzz-target/**"]);
 
   const scan = scanSourceCorpus(primaryRoot(root), scope, ["avgCost"], { maxFiles: 500 });
   assert.equal(scan.boundary.listings[0].scope_pushdown, false);
+  assert.equal(scan.boundary.listings[0].source, "walk_scope_fallback");
+  assert.equal(scan.boundary.listings[0].authoritative, false);
   assert.match(scan.boundary.listings[0].scope_pushdown_reason, /^pattern_not_representable:/);
   assert.equal(scan.occurrences[0].count, 1);
-  assert.equal(scan.completeness, "complete");
+  assert.equal(scan.completeness, "incomplete");
 
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("an unreadable filesystem branch makes fallback enumeration non-authoritative", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "workflow-scope-read-error-"));
+  fs.mkdirSync(path.join(root, "visible"));
+  fs.mkdirSync(path.join(root, "blocked"));
+  fs.writeFileSync(path.join(root, "visible", "source.bsl"), "avgCost = 1;\n");
+  const listing = listFiles(root, {
+    maxFiles: 50,
+    scope: sourceScope([]),
+    readDirectory(directory, options) {
+      if (path.basename(directory) === "blocked") throw Object.assign(new Error("denied"), { code: "EACCES" });
+      return fs.readdirSync(directory, options);
+    }
+  });
+  assert.equal(listing.authoritative, false);
+  assert.equal(listing.read_errors, 1);
+  assert.equal(listing.files.includes("visible/source.bsl"), true);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
