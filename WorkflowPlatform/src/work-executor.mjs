@@ -21,6 +21,7 @@ import { executeTargetedVerification } from "./targeted-verification.mjs";
 import { documentTermScore, rankTerms } from "./term-ranking.mjs";
 import { utf8Prefix } from "./utf8.mjs";
 import { openClarification, openExternalEvidenceRequest, quiesceRun } from "./interactions.mjs";
+import { currentApprovalBinding } from "./approval-binding.mjs";
 
 function hashFile(file) { return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"); }
 function parseJson(value, fallback) { try { return JSON.parse(value); } catch { return fallback; } }
@@ -97,10 +98,11 @@ function approvalQuestion(contract, responseLanguage) {
 function requireWorkflowApproval(runtime, runId, contract, responseLanguage) {
   const taskId = runtime.get(runId).task_id;
   const question = approvalQuestion(contract, responseLanguage);
-  runtime.db.prepare("INSERT INTO approvals(id,task_id,run_id,kind,question,status,created_at) VALUES(?,?,?,'workflow_approval',?,'pending',?)")
-    .run(id("approval"), taskId, runId, question, now());
+  const binding = currentApprovalBinding(runtime.db, runId, contract.approval.step_key);
+  runtime.db.prepare("INSERT INTO approvals(id,task_id,run_id,kind,question,status,created_at,detail_json,binding_hash,binding_json) VALUES(?,?,?,'workflow_approval',?,'pending',?,?,?,?)")
+    .run(id("approval"), taskId, runId, question, now(), JSON.stringify({ action_step_key: contract.approval.step_key, binding_hash: binding.hash }), binding.hash, JSON.stringify(binding.value));
   runtime.setState(runId, "approval_required", { reason: `workflow approval required: ${contract.approval.step_key}` });
-  return { status: "approval_required", questions: [question], workflow_approval: contract.approval.step_key };
+  return { status: "approval_required", questions: [question], workflow_approval: contract.approval.step_key, approval_binding_hash: binding.hash };
 }
 
 function promptBytes(value) { return Buffer.byteLength(JSON.stringify(value)); }
@@ -582,8 +584,28 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
 
 function applyPlannerToDatabase(runtime, runId, plannerResult) {
   const plan = runtime.db.prepare("SELECT id FROM plans WHERE run_id=?").get(runId);
-  runtime.db.prepare(`UPDATE plans SET schema_version=1,outcome=?,scope_json=?,allowed_paths_json=?,inputs_json=?,checks_json=?,risks_json=?,artifacts_json=?,completion_criteria_json=?,questions_json=?,status=? WHERE id=?`)
-    .run(plannerResult.outcome, JSON.stringify(plannerResult.scope), JSON.stringify(plannerResult.allowed_paths), JSON.stringify(plannerResult.inputs), JSON.stringify(plannerResult.checks), JSON.stringify(plannerResult.risks), JSON.stringify(plannerResult.artifacts), JSON.stringify(plannerResult.completion_criteria), JSON.stringify(plannerResult.questions), plannerResult.outcome === "ready" ? "authorized" : "clarification_required", plan.id);
+  runtime.db.prepare(`UPDATE plans SET schema_version=1,outcome=?,scope_json=?,allowed_paths_json=?,inputs_json=?,checks_json=?,risks_json=?,artifacts_json=?,completion_criteria_json=?,questions_json=?,steps_json=?,status=? WHERE id=?`)
+    .run(plannerResult.outcome, JSON.stringify(plannerResult.scope), JSON.stringify(plannerResult.allowed_paths), JSON.stringify(plannerResult.inputs), JSON.stringify(plannerResult.checks), JSON.stringify(plannerResult.risks), JSON.stringify(plannerResult.artifacts), JSON.stringify(plannerResult.completion_criteria), JSON.stringify(plannerResult.questions), JSON.stringify(plannerResult.steps), plannerResult.outcome === "ready" ? "authorized" : "clarification_required", plan.id);
+}
+
+function storedAuthorizedPlan(db, runId) {
+  const row = db.prepare("SELECT * FROM plans WHERE run_id=? AND status='authorized'").get(runId);
+  if (!row) return null;
+  const steps = parseJson(row.steps_json, []);
+  if (!steps.length) return null;
+  return {
+    schema_version: row.schema_version ?? 1,
+    outcome: row.outcome,
+    scope: parseJson(row.scope_json, { included: [], excluded: [] }),
+    allowed_paths: parseJson(row.allowed_paths_json, []),
+    inputs: parseJson(row.inputs_json, []),
+    checks: parseJson(row.checks_json, []),
+    risks: parseJson(row.risks_json, []),
+    artifacts: parseJson(row.artifacts_json, []),
+    completion_criteria: parseJson(row.completion_criteria_json, []),
+    questions: parseJson(row.questions_json, []),
+    steps
+  };
 }
 
 function registerNewPlannedDocument(runtime, projectId, projectRoot, plannerResult, documentatorRole) {
@@ -1114,10 +1136,8 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   const queue = new ExecutionQueue(runtime.db);
   const routeContract = selectedWorkflowContract(runtime.db, projectId, runtime.get(runId).workflow_id);
   const policy = loadOperationalPolicy(runtime.db, projectId, runtime.get(runId).workflow_id, level);
-  if (routeContract?.approval?.before_productive_work && !approvalGranted) {
-    runtime.plan(runId, { objective: message, authority: definition.authority ?? "registered project documents", steps: [] });
-    return requireWorkflowApproval(runtime, runId, routeContract, responseLanguage);
-  }
+  const approvalBeforeWork = Boolean(routeContract?.approval?.before_productive_work);
+  const preparedPlan = approvalGranted && approvalBeforeWork ? storedAuthorizedPlan(runtime.db, runId) : null;
   // A workflow with no declared shape at all falls back to the platform roles. One that declares its
   // shape and omits planning is a different thing: the plan is what names the steps to execute, so
   // there is nothing to run, and the literal fallback used to report that as a missing role instead.
@@ -1129,13 +1149,15 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   // Planning a second time in the same run is a new step, not the old one reopened: the first planning
   // call happened, produced its questions and is history. A run holds one step per key, so the replan
   // gets its own, the way a correction cycle does.
-  const planningAttempts = runtime.db.prepare("SELECT COUNT(*) AS count FROM workflow_steps WHERE run_id=? AND (step_key='planning' OR step_key LIKE 'replan!_%' ESCAPE '!')").get(runId).count;
+  const planningAttempts = preparedPlan ? 0 : runtime.db.prepare("SELECT COUNT(*) AS count FROM workflow_steps WHERE run_id=? AND (step_key='planning' OR step_key LIKE 'replan!_%' ESCAPE '!')").get(runId).count;
   const planningKey = planningAttempts ? `replan_${planningAttempts}` : "planning";
   const stepKeyOf = key => (planningAttempts ? `replan_${planningAttempts}_${key}` : key);
-  runtime.plan(runId, { objective: message, authority: definition.authority ?? "registered project documents", steps: plannerContract ? [{ key: planningKey, role: plannerRole, max_attempts: plannerContract.max_correction_cycles + 1 }] : [] });
-  queue.enqueueRun(runId);
+  if (!preparedPlan) {
+    runtime.plan(runId, { objective: message, authority: definition.authority ?? "registered project documents", steps: plannerContract ? [{ key: planningKey, role: plannerRole, max_attempts: plannerContract.max_correction_cycles + 1 }] : [] });
+    queue.enqueueRun(runId);
+  }
   const allRegisteredRoles = runtime.db.prepare("SELECT id FROM roles ORDER BY id").all().map(row => row.id);
-  const routeRoles = approvalGranted && routeContract?.worker_roles_after_approval.length ? routeContract.worker_roles_after_approval : routeContract?.worker_roles;
+  const routeRoles = (approvalGranted || approvalBeforeWork) && routeContract?.worker_roles_after_approval.length ? routeContract.worker_roles_after_approval : routeContract?.worker_roles;
   const registeredRoles = routeContract ? routeRoles.filter(role => allRegisteredRoles.includes(role)) : allRegisteredRoles;
   if (!registeredRoles.length) throw new Error(`WORKFLOW_ROUTE_HAS_NO_EXECUTABLE_ROLE: ${runtime.get(runId).workflow_id}`);
   const allRegisteredChecks = registeredProjectCheckKeys(runtime.db, projectId, level, classification.artifact_type);
@@ -1195,7 +1217,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       corpusExactScan = recordCorpusExactScan(runtime, runId, null, corpusExactScan);
     }
   }
-  const planner = plannerContract && await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: plannerPackage, context: boundedContext(discovery, plannerRole, classification, Math.floor(plannerContract.context_limit_bytes / 2), responseLanguage, {
+  const planner = !preparedPlan && plannerContract && await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: plannerPackage, context: boundedContext(discovery, plannerRole, classification, Math.floor(plannerContract.context_limit_bytes / 2), responseLanguage, {
     source_inventory: inventorySummary(discovery.sources ?? []),
       // An inventory says what exists; it does not say where the thing the owner asked about lives, and
       // in a project of a thousand files choosing paths by name is guessing. The identifiers are already
@@ -1203,9 +1225,11 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       // and hands over the files that actually mention them.
       source_matches: plannerSourceMatches
     }), schemaKey: "planner.v1", parseOptions: { registeredRoles, registeredChecks, registeredArtifactTypes, registeredResources: registeredStepResources, maxStepAttempts: policy.limits.correction_cycles + 1 }, gatewayCall });
-  let plan = planner ? planner.result : derivePlanFromTemplates(runtime, projectId, routeContract, message, registeredChecks, level, classification.document_required, documentatorRole, approvalGranted);
-  if (classification.document_required) registerNewPlannedDocument(runtime, projectId, projectRoot, plan, documentatorRole);
-  applyPlannerToDatabase(runtime, runId, plan);
+  let plan = preparedPlan ?? (planner ? planner.result : derivePlanFromTemplates(runtime, projectId, routeContract, message, registeredChecks, level, classification.document_required, documentatorRole, approvalGranted || approvalBeforeWork));
+  if (!preparedPlan) {
+    if (classification.document_required) registerNewPlannedDocument(runtime, projectId, projectRoot, plan, documentatorRole);
+    applyPlannerToDatabase(runtime, runId, plan);
+  }
   if (planner) {
     planner.complete({ outcome: plan.outcome });
     if (plan.outcome === "questions") {
@@ -1220,7 +1244,11 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     }
   }
   if (classification.document_required && !plan.artifacts.some(item => item.type === "document" && item.required)) throw new Error("PLAN_REQUIRED_DOCUMENT_ARTIFACT_MISSING");
-  appendExecutionSteps(runtime, runId, projectId, plan, stepKeyOf(""));
+  if (!preparedPlan) appendExecutionSteps(runtime, runId, projectId, plan, stepKeyOf(""));
+  // Consent is requested only after the exact plan has been persisted. The pending worker and gate steps
+  // are part of the bound checkpoint but are not enqueued, leased or executed until the owner approves
+  // that hash. Resuming reads this plan instead of asking a model to produce a different one after consent.
+  if (approvalBeforeWork && !approvalGranted) return requireWorkflowApproval(runtime, runId, routeContract, responseLanguage);
   queue.enqueueRun(runId);
   runtime.setState(runId, "executing", { reason: "structured plan authorized" });
   captureRunBaselines(runtime.db, runId, projectRoots(runtime.db, projectId), { sourceScopeNarrowed: sourceScope(discovery.source_scope).narrowed });
@@ -1519,6 +1547,7 @@ export function recordedRunResults(db, runId) {
   const steps = db.prepare("SELECT * FROM workflow_steps WHERE run_id=? AND result_schema_key='worker.v1' ORDER BY ordinal").all(runId);
   const planned = steps.filter(step => !step.step_key.startsWith("correction_"));
   if (!planned.length) throw new Error(`RUN_HAS_NO_EXECUTED_STEPS: ${runId}`);
+  const storedSteps = parseJson(row.steps_json, []);
   const plan = {
     schema_version: row.schema_version ?? 1,
     outcome: row.outcome,
@@ -1530,9 +1559,9 @@ export function recordedRunResults(db, runId) {
     artifacts: parseJson(row.artifacts_json, []),
     completion_criteria: parseJson(row.completion_criteria_json, []),
     questions: parseJson(row.questions_json, []),
-    steps: planned.map(step => {
+    steps: storedSteps.length ? storedSteps : planned.map(step => {
       const contract = parseJson(step.contract_json, {});
-      return { key: step.step_key, role: step.role_id, objective: contract.objective ?? row.objective, allowed_paths: contract.allowed_paths ?? [], artifact_keys: contract.artifact_keys ?? [], check_ids: contract.check_ids ?? [], required: step.required === 1, irreversible: step.irreversible === 1, max_attempts: step.max_attempts };
+      return { key: step.step_key, role: step.role_id, objective: contract.objective ?? row.objective, allowed_paths: contract.allowed_paths ?? [], artifact_keys: contract.artifact_keys ?? [], check_ids: contract.check_ids ?? [], resources: [], required: step.required === 1, irreversible: step.irreversible === 1, max_attempts: step.max_attempts };
     })
   };
   const gateRow = db.prepare("SELECT * FROM gates WHERE run_id=? AND kind LIKE 'project_cycle_' || '%' ORDER BY rowid DESC LIMIT 1").get(runId);
