@@ -54,6 +54,7 @@ const required = [
   "WorkflowPlatform/src/workflow-bundle.mjs",
   "WorkflowPlatform/src/limited-xml.mjs",
   "WorkflowPlatform/src/experience.mjs",
+  "WorkflowPlatform/src/explicit-invocation.mjs",
   "WorkflowPlatform/src/package-contracts.mjs",
   "WorkflowPlatform/src/one-c-bsl-check.mjs",
   "WorkflowPlatform/src/paths.mjs",
@@ -79,9 +80,11 @@ const required = [
   "WorkflowPlatform/migrations/016_evidence_gauntlet.sql",
   "WorkflowPlatform/catalogs/bsl-language-server-1.0.7.json",
   "WorkflowPlatform/scripts/generate-bsl-diagnostic-catalog.mjs",
+  "WorkflowPlatform/scripts/explicit-invoke.mjs",
   "WorkflowPlatform/scripts/generate-packages.mjs",
   "WorkflowPlatform/scripts/project-baseline.mjs",
   "WorkflowPlatform/scripts/run-e2e-evidence.mjs",
+  "WorkflowPlatform/scripts/run-explicit-evidence.mjs",
   "WorkflowPlatform/scripts/run-hook-evidence.mjs",
   "WorkflowPlatform/scripts/run-owner-boundary-evidence.mjs",
   "WorkflowPlatform/scripts/run-package-boundary-evidence.mjs",
@@ -115,10 +118,17 @@ const required = [
   "tools/install-latest.sh",
   "tools/install.mjs",
   "tools/installation-paths.mjs",
+  "tools/skill-installation.mjs",
   "tools/lib/zip.mjs",
   "tools/release-smoke.mjs",
   "tools/platform-acceptance.mjs",
-  "tools/release-lint.mjs"
+  "tools/release-lint.mjs",
+  "integrations/claude-code/skills/zodchi/SKILL.md",
+  "integrations/claude-code/skills/zod/SKILL.md",
+  "integrations/codex/skills/zodchi/SKILL.md",
+  "integrations/codex/skills/zodchi/agents/openai.yaml",
+  "integrations/codex/skills/zod/SKILL.md",
+  "integrations/codex/skills/zod/agents/openai.yaml"
 ];
 
 if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) throw new Error(`RELEASE_ROOT_MISSING: ${root}`);

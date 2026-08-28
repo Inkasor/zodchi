@@ -8,6 +8,8 @@ Zodchi turns one ordinary AI chat into a coordinated team for real project work.
 
 You describe the result in your own words. Zodchi decides what kind of work is needed, gives each specialist only the relevant context, runs the appropriate checks, records accepted decisions, and returns a clear answer in the same chat.
 
+Ordinary chat messages stay ordinary. Invoke Zodchi explicitly with `/zodchi <task>` or the shorter `/zod <task>` in Codex or Claude Code. With no arguments, the command may use the immediately preceding substantive request when that choice is unambiguous.
+
 <section id="why_use_it" status="working">
 
 ## Why use it

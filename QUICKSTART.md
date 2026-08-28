@@ -14,9 +14,9 @@
     <step order="3">Verify Node.js 24 or newer and the chat host the person uses: Codex CLI, Claude Code, or both.</step>
     <step order="4">Create a separate personal-data directory outside the program directory.</step>
     <step order="5">Register the project, import the confirmed workflow package, and assign local model profiles.</step>
-    <step order="6">Create the project hook configuration from the release template: .codex/hooks.json for Codex, .claude/settings.local.json for Claude Code. Keep the local settings file out of version control and list it in .worktreeinclude.</step>
-    <step order="7">Ask the person to trust the hook in Codex when Codex is used, then restart the host. Hooks register when a session starts, so a new chat is required.</step>
-    <step order="8">After restart, send an ordinary message and confirm that the run and receipts exist in local databases.</step>
+    <step order="6">Verify that the installer deployed the user-level `zodchi` and `zod` skills for each selected host. Do not create project hooks.</step>
+    <step order="7">Restart or open a new host session when required for skill discovery.</step>
+    <step order="8">Run `/zodchi &lt;safe test task&gt;` and confirm that the run and receipts exist in local databases. Also confirm that an ordinary message does not create a Zodchi run.</step>
   </installation>
 
   <verification status="accepted">

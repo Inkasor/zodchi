@@ -9,7 +9,7 @@ import { inspectWorkflowBundle } from "./workflow-bundle.mjs";
 import { recordExperienceObservation, createExperienceProposal, evaluateExperienceProposal, applyExperienceProposal } from "./experience.mjs";
 import { resolveWorkflowSettings } from "./paths.mjs";
 import { configureInstallation } from "./installation.mjs";
-import { applyHookInstallation, hookInstallationStatus, planHookInstallation } from "./hook-installation.mjs";
+import { hookInstallationStatus, planHookInstallation } from "./hook-installation.mjs";
 import { Runtime } from "./runtime.mjs";
 import { ExecutionQueue } from "./execution-queue.mjs";
 import { workflowRunStatistics } from "./statistics.mjs";
@@ -99,11 +99,11 @@ else if (process.argv[2] === "preset-propose") {
 }
 // A hook configuration is shared with whatever else the project has configured, so installing one is a
 // planned change rather than a file the onboarding agent writes from a template.
-else if (process.argv[2] === "hook-plan" || process.argv[2] === "hook-install") {
+else if (process.argv[2] === "hook-plan") {
   const plan = planHookInstallation({ projectRoot: args.project ?? settings.project, harness: args.harness ?? "claude-code", deliveryMode: args["delivery-mode"] ?? settings.deliveryMode ?? null, mode: args.mode ?? null });
-  const result = process.argv[2] === "hook-plan" ? { ...plan, document: undefined } : applyHookInstallation(plan);
-  console.log(JSON.stringify(result, null, 2));
+  console.log(JSON.stringify({ ...plan, document: undefined, deprecated: true, replacement: "/zodchi or /zod" }, null, 2));
 }
+else if (process.argv[2] === "hook-install") { throw new Error("HOOK_INSTALLATION_DEPRECATED_USE_ZODCHI_SKILL"); }
 else if (process.argv[2] === "hook-status") { console.log(JSON.stringify(hookInstallationStatus({ projectRoot: args.project ?? settings.project, harness: args.harness ?? "claude-code" }), null, 2)); }
 else if (process.argv[2] === "workflow-export") { console.log(JSON.stringify(exportWorkflowPackage(args.db, args.out, args.project, args.workflow), null, 2)); }
 else if (process.argv[2] === "workflow-import-propose") { console.log(JSON.stringify(proposeWorkflowImport(args.db, args.package, args.proposal, args.project), null, 2)); }

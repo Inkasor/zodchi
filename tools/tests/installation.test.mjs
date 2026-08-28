@@ -14,10 +14,12 @@ function release(root, version) {
   fs.mkdirSync(path.join(root, "WorkflowPlatform", "hooks"), { recursive: true });
   fs.copyFileSync(path.join(repositoryRoot, "WorkflowPlatform", "hooks", "user-prompt-submit.mjs"), path.join(root, "WorkflowPlatform", "hooks", "user-prompt-submit.mjs"));
   fs.cpSync(path.join(repositoryRoot, "configs"), path.join(root, "configs"), { recursive: true });
+  fs.cpSync(path.join(repositoryRoot, "integrations"), path.join(root, "integrations"), { recursive: true });
   fs.writeFileSync(path.join(root, "product.json"), JSON.stringify({ version }));
   fs.writeFileSync(path.join(root, "release-marker.txt"), version);
   return root;
 }
+function skillRoots(root) { return { "claude-code": path.join(root, "skills-claude"), codex: path.join(root, "skills-codex") }; }
 
 test("platform defaults keep replaceable application files separate from mutable data", () => {
   const winHome = "C:" + "\\Users\\test";
@@ -45,62 +47,70 @@ test("latest installer requires a repository provenance record for the archive d
   assert.throws(() => requireProvenanceAttestation({ attestations: [{ repository_id: 42, bundle_url: "http:\/\/example.invalid\/bundle.json" }] }, hash), /INSTALL_RELEASE_ATTESTATION_INVALID/);
 });
 
-test("clean install applies an explicitly authorized hook manifest", () => {
+test("clean install deploys explicit client skills and does not install project hooks", () => {
   const root = temporaryRoot(), source = release(path.join(root, "source"), "0.6.0-rc.1"), destination = path.join(root, "installed"), dataRoot = path.join(root, "data"), project = path.join(root, "clean project");
   try {
     fs.mkdirSync(project);
     const healthCheck = candidate => assert.equal(fs.existsSync(path.join(candidate, "release-marker.txt")), true);
-    const installed = installRelease({ source, destination, dataRoot, hooks: [{ projectRoot: project, harness: "codex" }], healthCheck });
-    assert.equal(installed.hook_results.length, 1);
-    assert.equal(fs.existsSync(path.join(project, ".codex", ".zodchi-hook.json")), true);
-    assert.match(fs.readFileSync(path.join(project, ".codex", "hooks.json"), "utf8"), /user-prompt-submit\.mjs/);
+    const roots = skillRoots(root);
+    const installed = installRelease({ source, destination, dataRoot, skillRoots: roots, healthCheck });
+    assert.equal(installed.hook_results.length, 0);
+    assert.equal(installed.skill_results.length, 4);
+    assert.equal(fs.existsSync(path.join(project, ".codex", ".zodchi-hook.json")), false);
+    assert.match(fs.readFileSync(path.join(roots.codex, "zodchi", "SKILL.md"), "utf8"), /explicit-invoke\.mjs/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-test("update and rollback swap exact releases, migrate owned hooks and preserve data", () => {
+test("update removes owned legacy hooks, refreshes skills, rollback keeps hooks absent and preserves data", () => {
   const root = temporaryRoot(), sourceA = release(path.join(root, "a"), "0.5.24"), sourceB = release(path.join(root, "b"), "0.6.0-rc.1"), destination = path.join(root, "installed"), dataRoot = path.join(root, "data"), project = path.join(root, "проект 😀");
   fs.mkdirSync(project); fs.mkdirSync(dataRoot); fs.writeFileSync(path.join(dataRoot, "owner-data.txt"), "preserve me");
-  const healthCheck = candidate => assert.equal(fs.existsSync(path.join(candidate, "release-marker.txt")), true);
-  installRelease({ source: sourceA, destination, dataRoot, healthCheck });
+  const healthCheck = candidate => assert.equal(fs.existsSync(path.join(candidate, "release-marker.txt")), true), roots = skillRoots(root);
+  installRelease({ source: sourceA, destination, dataRoot, skillRoots: roots, healthCheck });
   applyHookInstallation(planHookInstallation({ projectRoot: project, harness: "codex", root: path.join(destination, "WorkflowPlatform"), configsRoot: path.join(destination, "configs") }));
   const hookManifest = [{ projectRoot: project, harness: "codex" }];
-  const updated = installRelease({ source: sourceB, destination, dataRoot, hooks: hookManifest, healthCheck });
+  const updated = installRelease({ source: sourceB, destination, dataRoot, hooks: hookManifest, skillRoots: roots, healthCheck });
   assert.equal(updated.version, "0.6.0-rc.1");
-  assert.match(fs.readFileSync(path.join(project, ".codex", "hooks.json"), "utf8"), /installed/);
+  assert.equal(fs.existsSync(path.join(project, ".codex", ".zodchi-hook.json")), false);
+  assert.match(fs.readFileSync(path.join(roots["claude-code"], "zodchi", "SKILL.md"), "utf8"), /explicit-invoke\.mjs/);
   assert.equal(fs.readFileSync(path.join(dataRoot, "owner-data.txt"), "utf8"), "preserve me");
-  const rolledBack = rollbackRelease({ destination, dataRoot, healthCheck });
+  const rolledBack = rollbackRelease({ destination, dataRoot, skillRoots: roots, healthCheck });
   assert.equal(rolledBack.version, "0.5.24");
   assert.equal(fs.readFileSync(path.join(destination, "release-marker.txt"), "utf8"), "0.5.24");
   assert.equal(fs.readFileSync(path.join(dataRoot, "owner-data.txt"), "utf8"), "preserve me");
+  assert.equal(fs.existsSync(path.join(project, ".codex", ".zodchi-hook.json")), false);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("failed update restores both release and exact hook files", () => {
+test("failed update restores release, exact legacy hook files and exact skill files", () => {
   const root = temporaryRoot(), sourceA = release(path.join(root, "a"), "0.5.24"), sourceB = release(path.join(root, "b"), "0.6.0-rc.1"), destination = path.join(root, "installed"), dataRoot = path.join(root, "data"), project = path.join(root, "project");
   fs.mkdirSync(project);
-  const healthy = candidate => assert.equal(fs.existsSync(path.join(candidate, "release-marker.txt")), true);
-  installRelease({ source: sourceA, destination, dataRoot, healthCheck: healthy });
+  const healthy = candidate => assert.equal(fs.existsSync(path.join(candidate, "release-marker.txt")), true), roots = skillRoots(root);
+  installRelease({ source: sourceA, destination, dataRoot, skillRoots: roots, healthCheck: healthy });
   applyHookInstallation(planHookInstallation({ projectRoot: project, harness: "claude-code", root: path.join(destination, "WorkflowPlatform"), configsRoot: path.join(destination, "configs") }));
   const hookFile = path.join(project, ".claude", "settings.local.json"), markerFile = path.join(project, ".claude", ".zodchi-hook.json");
   const hookBefore = fs.readFileSync(hookFile), markerBefore = fs.readFileSync(markerFile);
+  const skillBefore = fs.readFileSync(path.join(roots.codex, "zodchi", "SKILL.md"));
   let checks = 0;
-  assert.throws(() => installRelease({ source: sourceB, destination, dataRoot, hooks: [{ projectRoot: project, harness: "claude-code" }], healthCheck: candidate => { checks += 1; healthy(candidate); if (checks === 3) throw new Error("POST_SWAP_HEALTH_FAILED"); } }), /POST_SWAP_HEALTH_FAILED/);
+  assert.throws(() => installRelease({ source: sourceB, destination, dataRoot, hooks: [{ projectRoot: project, harness: "claude-code" }], skillRoots: roots, healthCheck: candidate => { checks += 1; healthy(candidate); if (checks === 3) throw new Error("POST_SWAP_HEALTH_FAILED"); } }), /POST_SWAP_HEALTH_FAILED/);
   assert.equal(fs.readFileSync(path.join(destination, "release-marker.txt"), "utf8"), "0.5.24");
   assert.deepEqual(fs.readFileSync(hookFile), hookBefore);
   assert.deepEqual(fs.readFileSync(markerFile), markerBefore);
+  assert.deepEqual(fs.readFileSync(path.join(roots.codex, "zodchi", "SKILL.md")), skillBefore);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("uninstall removes only owned hooks and leaves mutable data recoverable", () => {
+test("uninstall removes owned skills and legacy hooks while leaving mutable data recoverable", () => {
   const root = temporaryRoot(), source = release(path.join(root, "source"), "0.5.24"), destination = path.join(root, "installed"), dataRoot = path.join(root, "data"), project = path.join(root, "project"); fs.mkdirSync(project);
   const healthCheck = candidate => assert.equal(fs.existsSync(path.join(candidate, "release-marker.txt")), true);
-  installRelease({ source, destination, dataRoot, healthCheck });
+  const roots = skillRoots(root);
+  installRelease({ source, destination, dataRoot, skillRoots: roots, healthCheck });
   applyHookInstallation(planHookInstallation({ projectRoot: project, harness: "codex", root: path.join(destination, "WorkflowPlatform"), configsRoot: path.join(destination, "configs") }));
-  const result = uninstallRelease({ destination, dataRoot, hooks: [{ projectRoot: project, harness: "codex" }] });
+  const result = uninstallRelease({ destination, dataRoot, hooks: [{ projectRoot: project, harness: "codex" }], skillRoots: roots });
   assert.equal(result.user_data_preserved, true);
   assert.equal(fs.existsSync(destination), false);
   assert.equal(fs.existsSync(result.recoverable_release), true);
   assert.equal(fs.existsSync(path.join(project, ".codex", ".zodchi-hook.json")), false);
+  assert.equal(result.skills.filter(item => item.status === "removed").length, 4);
   assert.equal(fs.existsSync(path.join(dataRoot, "installation-state.json")), true);
   fs.rmSync(root, { recursive: true, force: true });
 });

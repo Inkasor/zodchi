@@ -6,8 +6,9 @@ import process from "node:process";
 import { execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
-import { applyHookInstallation, hookInstallationStatus, hookSnapshotHashes, planHookInstallation, removeOwnedHookInstallation, restoreHookInstallation, snapshotHookInstallation } from "../WorkflowPlatform/src/hook-installation.mjs";
+import { hookInstallationStatus, hookSnapshotHashes, removeOwnedHookInstallation, restoreHookInstallation, snapshotHookInstallation } from "../WorkflowPlatform/src/hook-installation.mjs";
 import { defaultInstallationPaths } from "./installation-paths.mjs";
+import { defaultSkillRoots, installClientSkills, removeClientSkills, restoreClientSkills, snapshotClientSkills } from "./skill-installation.mjs";
 
 function argsObject(argv) {
   const result = { _: [] };
@@ -80,20 +81,33 @@ function registeredHookTargets(databaseFile, explicit = []) {
   return [...unique.values()];
 }
 
-function migrateOwnedHooks(targets, destination) {
+function removeLegacyHooks(targets) {
   const snapshots = targets.map(snapshotHookInstallation);
   const applied = [];
   try {
-    for (const item of targets) {
-      const result = applyHookInstallation(planHookInstallation({ ...item, root: path.join(destination, "WorkflowPlatform"), configsRoot: path.join(destination, "configs") }));
-      if (result.status === "proxy") throw new Error(`HOOK_TRANSACTION_PROXY_REQUIRED: ${item.projectRoot}:${item.harness}`);
-      applied.push(result);
-    }
+    for (const item of targets) applied.push(removeOwnedHookInstallation(item));
     return { snapshots, applied, current: snapshots.map(hookSnapshotHashes) };
   } catch (error) {
     for (let index = snapshots.length - 1; index >= 0; index -= 1) restoreHookInstallation(snapshots[index]);
     throw error;
   }
+}
+
+function updateClientSkills(applicationRoot, roots) {
+  const snapshots = snapshotClientSkills({ roots });
+  try {
+    const applied = fs.existsSync(path.join(applicationRoot, "integrations"))
+      ? installClientSkills({ applicationRoot, roots })
+      : removeClientSkills({ roots });
+    return { snapshots, applied };
+  } catch (error) {
+    restoreClientSkills(snapshots);
+    throw error;
+  }
+}
+
+function restoreSkillTransaction(transaction) {
+  if (transaction) restoreClientSkills(transaction.snapshots);
 }
 
 function restoreHookTransaction(transaction) {
@@ -120,13 +134,15 @@ export function installRelease(options) {
   const previous = fs.existsSync(destination) ? safeSibling(`${destination}.previous-${crypto.randomUUID()}`, destination, "previous") : null;
   const workflowDatabase = options.workflowDatabase ?? process.env.WORKFLOW_DB ?? path.join(dataRoot, "workflow.sqlite");
   const targets = registeredHookTargets(workflowDatabase, options.hooks ?? []);
-  let oldMoved = false, hookTransaction = null;
+  const skillRoots = options.skillRoots ?? defaultSkillRoots();
+  let oldMoved = false, hookTransaction = null, skillTransaction = null;
   try {
     fs.cpSync(source, stage, { recursive: true, errorOnExist: true, force: false });
     healthCheck(stage);
     if (previous) { fs.renameSync(destination, previous); oldMoved = true; }
     fs.renameSync(stage, destination);
-    hookTransaction = migrateOwnedHooks(targets, destination);
+    hookTransaction = removeLegacyHooks(targets);
+    skillTransaction = updateClientSkills(destination, skillRoots);
     healthCheck(destination);
     const state = {
       schema_version: 1,
@@ -137,12 +153,15 @@ export function installRelease(options) {
       previous_release: previous,
       previous_version: previous ? releaseVersion(previous) : null,
       workflow_database: workflowDatabase,
-      hooks: targets,
+      hooks: [],
+      legacy_hooks_removed: targets,
+      skills: skillTransaction.applied,
       updated_at: new Date().toISOString()
     };
     atomicJson(stateFile, state);
-    return Object.freeze({ ...state, state_file: stateFile, hook_results: hookTransaction.applied });
+    return Object.freeze({ ...state, state_file: stateFile, hook_results: hookTransaction.applied, skill_results: skillTransaction.applied });
   } catch (error) {
+    try { restoreSkillTransaction(skillTransaction); } catch (rollbackError) { error.skillRollbackError = rollbackError; }
     try { restoreHookTransaction(hookTransaction); } catch (rollbackError) { error.hookRollbackError = rollbackError; }
     if (fs.existsSync(destination) && oldMoved) fs.rmSync(destination, { recursive: true, force: true });
     else if (fs.existsSync(destination) && !oldMoved) fs.rmSync(destination, { recursive: true, force: true });
@@ -160,19 +179,22 @@ export function rollbackRelease(options) {
   const previous = safeSibling(state.previous_release, destination, "previous");
   if (!fs.existsSync(destination) || !fs.existsSync(previous)) throw new Error("INSTALL_ROLLBACK_RELEASE_MISSING");
   const healthCheck = options.healthCheck ?? defaultHealthCheck;
+  const skillRoots = options.skillRoots ?? defaultSkillRoots();
   const failed = safeSibling(`${destination}.previous-${crypto.randomUUID()}`, destination, "previous");
-  const targets = registeredHookTargets(state.workflow_database, state.hooks ?? []);
-  let hookTransaction = null, movedCurrent = false, movedPrevious = false;
+  const targets = registeredHookTargets(state.workflow_database, [...(state.hooks ?? []), ...(state.legacy_hooks_removed ?? [])]);
+  let hookTransaction = null, skillTransaction = null, movedCurrent = false, movedPrevious = false;
   try {
     healthCheck(previous);
     fs.renameSync(destination, failed); movedCurrent = true;
     fs.renameSync(previous, destination); movedPrevious = true;
-    hookTransaction = migrateOwnedHooks(targets, destination);
+    hookTransaction = removeLegacyHooks(targets);
+    skillTransaction = updateClientSkills(destination, skillRoots);
     healthCheck(destination);
     const next = { ...state, version: releaseVersion(destination), previous_release: failed, previous_version: releaseVersion(failed), rolled_back_at: new Date().toISOString() };
     atomicJson(stateFile, next);
-    return Object.freeze({ status: "rolled_back", application: destination, version: next.version, previous_release: failed, hook_results: hookTransaction.applied });
+    return Object.freeze({ status: "rolled_back", application: destination, version: next.version, previous_release: failed, hook_results: hookTransaction.applied, skill_results: skillTransaction.applied });
   } catch (error) {
+    try { restoreSkillTransaction(skillTransaction); } catch (rollbackError) { error.skillRollbackError = rollbackError; }
     try { restoreHookTransaction(hookTransaction); } catch (rollbackError) { error.hookRollbackError = rollbackError; }
     if (movedPrevious && fs.existsSync(destination)) fs.renameSync(destination, previous);
     if (movedCurrent && fs.existsSync(failed)) fs.renameSync(failed, destination);
@@ -185,13 +207,14 @@ export function uninstallRelease(options) {
   const stateFile = path.join(dataRoot, "installation-state.json");
   const state = readState(stateFile);
   const destination = specificDirectory(options.destination ?? state?.application, "DESTINATION");
-  const targets = registeredHookTargets(state?.workflow_database, [...(state?.hooks ?? []), ...(options.hooks ?? [])]);
+  const targets = registeredHookTargets(state?.workflow_database, [...(state?.hooks ?? []), ...(state?.legacy_hooks_removed ?? []), ...(options.hooks ?? [])]);
   const hookResults = targets.map(removeOwnedHookInstallation);
+  const skillResults = removeClientSkills({ roots: options.skillRoots ?? defaultSkillRoots() });
   let recoverable = null;
   if (fs.existsSync(destination)) { recoverable = safeSibling(`${destination}.uninstalled-${crypto.randomUUID()}`, destination, "uninstalled"); fs.renameSync(destination, recoverable); }
   const next = { ...(state ?? {}), status: "uninstalled", application: destination, data_root: dataRoot, recoverable_release: recoverable, uninstalled_at: new Date().toISOString() };
   atomicJson(stateFile, next);
-  return Object.freeze({ ...next, state_file: stateFile, hooks: hookResults, user_data_preserved: true });
+  return Object.freeze({ ...next, state_file: stateFile, hooks: hookResults, skills: skillResults, user_data_preserved: true });
 }
 
 function manifestHooks(file) {
@@ -210,7 +233,7 @@ function main() {
   if (command === "install" || command === "update") result = installRelease({ ...common, source: path.resolve(String(cli.source ?? "")) });
   else if (command === "rollback") result = rollbackRelease(common);
   else if (command === "uninstall") result = uninstallRelease(common);
-  else throw new Error("Usage: node tools/install.mjs install|update --source <extracted-release> [--destination <dir>] [--data-root <dir>] [--workflow-db <file>] [--hook-manifest <json>] | rollback | uninstall");
+  else throw new Error("Usage: node tools/install.mjs install|update --source <extracted-release> [--destination <dir>] [--data-root <dir>] [--workflow-db <file>] [--hook-manifest <legacy-removal-json>] | rollback | uninstall");
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
