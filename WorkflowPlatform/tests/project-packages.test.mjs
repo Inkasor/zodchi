@@ -98,6 +98,29 @@ test("the public classifier vocabulary has an explicit 1C domain and seven route
   assert.equal(catalogs.work_types.filter(item => item.startsWith("one-c.")).length, 7);
 });
 
+test("the support-grade 1C package exposes exactly the seven domain routes and a portable evidence contract", () => {
+  const packageValue = PACKAGE_DEFINITIONS.find(item => item.key === "one-c.development");
+  assert.ok(packageValue);
+  assert.deepEqual(packageValue.routes.filter(item => item.work_type_key.startsWith("one-c.")).map(item => item.work_type_key).sort(), [
+    "one-c.change",
+    "one-c.diagnosis",
+    "one-c.functional-test",
+    "one-c.integration",
+    "one-c.module-build",
+    "one-c.release",
+    "one-c.resume"
+  ]);
+  const bsl = packageValue.checks.find(item => item.key === "bsl_language_server");
+  assert.deepEqual({ kind: bsl.kind, runner: bsl.runner, reason: bsl.config.reason }, {
+    kind: "disabled",
+    runner: "requires_local_bsl_language_server",
+    reason: "requires_local_bsl_binding"
+  });
+  const flow = packageValue.evidence_flows.find(item => item.key === "bsl.source_to_ui");
+  assert.deepEqual(flow.required_edges, ["source->calculation", "calculation->structure_attribute", "structure_attribute->form_report"]);
+  assert.equal(flow.transition.adapter, "bsl-structural");
+});
+
 test("classification is routed by the model and every declared route reaches a declared workflow", () => {
   for (const packageValue of PACKAGE_DEFINITIONS) {
     const classifier = packageValue.roles.find(item => item.key === "classifier");

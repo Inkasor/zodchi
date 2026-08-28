@@ -12,6 +12,12 @@
         "deployment",
         "production"
       ]
+    },
+    {
+      "key": "one-c.development",
+      "version": "1.0.0",
+      "file": "example/generated/one-c.development.xml",
+      "owner_acceptance": []
     }
   ]
 }
