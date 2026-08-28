@@ -13,7 +13,7 @@ import defineExample from "../packages/example/definitions.mjs";
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 // The example package is built here rather than read from disk, so these tests do not depend on
 // which definition source the installation configured.
-const examplePackageFile = directory => { const file = path.join(directory, "example.web-app.xml"); fs.writeFileSync(file, serializeWorkflowPackage(defineExample(builders).packages[0]), "utf8"); return file; };
+const examplePackageFile = directory => { const file = path.join(directory, "software.web-application.xml"); fs.writeFileSync(file, serializeWorkflowPackage(defineExample(builders).packages[0]), "utf8"); return file; };
 function temporaryRoot(prefix) { const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir(); fs.mkdirSync(parent, { recursive: true }); return fs.mkdtempSync(path.join(parent, prefix)); }
 
 function setup() {
@@ -25,8 +25,8 @@ function workflowId(db, key) { return db.prepare(`SELECT m.local_id FROM package
 
 test("visual and audio proposals preserve provenance and block completion on separate human acceptance", () => {
   const env = setup(), scenarios = [
-    { key: "visual", workflow: "example_web_app.content", kind: "content", artifact: "visual_asset", uri: "proposal://visual/checkpoint9", approval: "human_visual_acceptance", provenance: { origin: "anonymized_visual_proposal", generation: "not_run", rights_review: "pending", technical_review: "separate" } },
-    { key: "audio", workflow: "example_web_app.content", kind: "asset", artifact: "content_asset", uri: "proposal://audio/checkpoint9", approval: "human_audio_acceptance", provenance: { origin: "anonymized_audio_brief", production: "not_run", integration: "contract_validated", rights_review: "pending" } }
+    { key: "visual", workflow: "software_web_application.content", kind: "content", artifact: "visual_asset", uri: "proposal://visual/checkpoint9", approval: "human_visual_acceptance", provenance: { origin: "anonymized_visual_proposal", generation: "not_run", rights_review: "pending", technical_review: "separate" } },
+    { key: "audio", workflow: "software_web_application.content", kind: "asset", artifact: "content_asset", uri: "proposal://audio/checkpoint9", approval: "human_audio_acceptance", provenance: { origin: "anonymized_audio_brief", production: "not_run", integration: "contract_validated", rights_review: "pending" } }
   ];
   for (const scenario of scenarios) {
     let db = openDb(env.dbFile); const workflow = workflowId(db, scenario.workflow); db.close(); const runtime = new Runtime(env.dbFile), runId = runtime.create(`${scenario.key} bounded proposal`, { project_id: "project", workflow_id: workflow });

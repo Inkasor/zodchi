@@ -2,9 +2,9 @@
   "schema_version": 2,
   "packages": [
     {
-      "key": "example.web-app",
-      "version": "3.0.0",
-      "file": "example/generated/example.web-app.xml",
+      "key": "software.web-application",
+      "version": "1.0.0",
+      "file": "example/generated/software.web-application.xml",
       "owner_acceptance": [
         "content",
         "data",
@@ -20,5 +20,12 @@
       "owner_acceptance": []
     }
   ],
-  "aliases": []
+  "aliases": [
+    {
+      "key": "example.web-app",
+      "target": "software.web-application",
+      "deprecated": true,
+      "remove_after": "0.6.x"
+    }
+  ]
 }
