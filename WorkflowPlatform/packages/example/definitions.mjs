@@ -5,12 +5,12 @@
 // Point `packageDefinitions` in the runtime configuration at your own file to replace it. That file
 // exports the same default function and receives the same builder module, so it needs no import path.
 export default function definePackages(b) {
-  const { checkBinding, commandCheck, completeSoftwareChecks, companyWebPackage } = b;
+  const { checkBinding, capabilityCheck, completeSoftwareChecks, companyWebPackage } = b;
 
   const checks = completeSoftwareChecks([
-    commandCheck("example_lint", "Example lint", "npm.cmd", ["run", "lint"], [checkBinding("prototype", null)], 900),
-    commandCheck("example_tests", "Example tests", "npm.cmd", ["test"], [checkBinding("mvp", "code")], 1800),
-    commandCheck("example_build", "Example production build", "npm.cmd", ["run", "build"], [checkBinding("production", "release_package")], 1800)
+    capabilityCheck("example_lint", "Example lint", "node.package_manager", ["run", "lint"], [checkBinding("prototype", null)], 900),
+    capabilityCheck("example_tests", "Example tests", "node.package_manager", ["test"], [checkBinding("mvp", "code")], 1800),
+    capabilityCheck("example_build", "Example production build", "node.package_manager", ["run", "build"], [checkBinding("production", "release_package")], 1800)
   ], "example_lint", "example");
 
   const packages = [companyWebPackage({

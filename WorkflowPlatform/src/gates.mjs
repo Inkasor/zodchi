@@ -4,6 +4,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { resolveWorkflowSettings } from "./paths.mjs";
 import { qualityModesThrough } from "./quality-contracts.mjs";
+import { resolveCommandConfiguration } from "./command-resolver.mjs";
 
 const CHECKED_ARTIFACTS = new Set(["code", "prototype", "data_migration", "release_package", "deployment_evidence", "security_report", "access_change", "test_report"]);
 const ARTIFACT_CASCADE = Object.freeze({
@@ -137,10 +138,13 @@ async function executeCheck(check, project, allowedPaths, context) {
   if (check.kind === "secret_scan") return secretScan(project, allowedPaths);
   if (check.kind !== "command" && check.kind !== "project_command") return { status: "unavailable", exit_code: 1, failure: `unsupported check kind: ${check.kind}` };
   if (!check.execution_root || !fs.existsSync(check.execution_root)) return { status: "unavailable", exit_code: 1, failure: check.kind === "project_command" ? `registered project is unavailable: ${check.config.project_id ?? "unknown"}` : "project root is unavailable" };
-  if (typeof check.config.command !== "string" || !Array.isArray(check.config.args) || check.config.args.some(arg => typeof arg !== "string")) return { status: "unavailable", exit_code: 1, failure: "invalid command check configuration" };
-  const result = await runCommand(check.config.command, commandArguments(check.config.args, context), check.execution_root, check.timeout_seconds);
-  if (topLevelCommandUnavailable(result, check.config.command)) return { status: "unavailable", exit_code: 1, failure: `required tool is not installed: ${check.config.command}` };
-  return { status: result.status, exit_code: result.exit_code, failure: result.status === "passed" ? null : compactFailure(result.output) };
+  if (!Array.isArray(check.config.args) || check.config.args.some(arg => typeof arg !== "string")) return { status: "unavailable", exit_code: 1, failure: "invalid command check configuration" };
+  let resolved;
+  try { resolved = resolveCommandConfiguration(check.config); }
+  catch (error) { return { status: "unavailable", exit_code: 1, failure: String(error.message), capability: check.config.capability ?? null, resolved_command: null }; }
+  const result = await runCommand(resolved.command, commandArguments(check.config.args, context), check.execution_root, check.timeout_seconds);
+  if (topLevelCommandUnavailable(result, resolved.command)) return { status: "unavailable", exit_code: 1, failure: `required tool is not installed: ${resolved.capability ?? resolved.command}`, capability: resolved.capability, resolved_command: resolved.command };
+  return { status: result.status, exit_code: result.exit_code, failure: result.status === "passed" ? null : compactFailure(result.output), capability: resolved.capability, resolved_command: resolved.command };
 }
 
 export async function runProjectGate(project, level = "mvp", dbFile = resolveWorkflowSettings().databasePath, taskId = `gate-${Date.now()}`, options = {}) {
@@ -157,7 +161,7 @@ export async function runProjectGate(project, level = "mvp", dbFile = resolveWor
   for (const check of configured) {
     const started = Date.now();
     const result = await executeCheck(check, resolvedProject, allowedPaths, { level, artifactType: options.artifactType ?? null });
-    checks.push({ id: check.check_id, name: check.name, required: check.required, inherited_from: check.quality_sources, execution_project_id: check.execution_project_id, execution_root: check.execution_root, status: result.status, exit_code: result.exit_code, duration_ms: Date.now() - started, ...(result.failure ? { failure: result.failure } : {}) });
+    checks.push({ id: check.check_id, name: check.name, required: check.required, inherited_from: check.quality_sources, execution_project_id: check.execution_project_id, execution_root: check.execution_root, status: result.status, exit_code: result.exit_code, duration_ms: Date.now() - started, ...(result.capability ? { command_capability: result.capability } : {}), ...(result.resolved_command ? { resolved_command: result.resolved_command } : {}), ...(result.failure ? { failure: result.failure } : {}) });
   }
   const blocking = checks.filter(check => check.required && check.status !== "passed");
   const status = blocking.some(check => check.status === "failed") ? "failed"
