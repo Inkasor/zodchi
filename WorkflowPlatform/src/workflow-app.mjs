@@ -19,6 +19,7 @@ import { inside } from "./project-roots.mjs";
 import { continueApprovedRun, executeStructuredWork, pausedRunObjective, resumeObjective } from "./work-executor.mjs";
 import { chargeDirectReceipt, effectiveQualityMode, initializeQualityRun, operationalLevel, ownerQualityFloor, reserveDirectModelCall } from "./quality-contracts.mjs";
 import { approveBoundInteraction, assertApprovalStillCurrent } from "./approval-binding.mjs";
+import { acceptExternalControlEvidenceResult } from "./external-control-plane.mjs";
 
 export function loadWorkflow(id, workflowsRoot = resolveWorkflowSettings().workflowsRoot) {
   if (!id) throw new Error("workflow id is required");
@@ -189,6 +190,29 @@ export async function deliverExternalEvidencePacket({
       throw error;
     } finally { fs.rmSync(taskRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
   } finally { runtime.db.close(); }
+}
+
+export async function deliverExternalControlResult({
+  packet, project, dbFile, workflow, workflowDefinition, execute = true,
+  gatewayCall = callGateway, gateRunner = undefined, preferredLanguage = null
+}) {
+  const settings = resolveWorkflowSettings();
+  project ??= settings.project;
+  dbFile ??= settings.databasePath;
+  const runtime = new Runtime(dbFile);
+  let accepted;
+  try {
+    const registeredProject = runtime.db.prepare("SELECT id,root_path FROM projects WHERE id=? OR lower(root_path)=lower(?) LIMIT 1").get(project, path.resolve(project));
+    if (!registeredProject) throw new Error(`PROJECT_NOT_REGISTERED: ${project}`);
+    if (packet?.project_id !== registeredProject.id) throw new Error(`EXTERNAL_CONTROL_PROJECT_MISMATCH: ${packet?.project_id ?? "missing"} != ${registeredProject.id}`);
+    accepted = acceptExternalControlEvidenceResult(runtime.db, packet);
+  } finally { runtime.db.close(); }
+  if (accepted.status !== "completed") return { control: accepted, evidence: null };
+  const evidence = await deliverExternalEvidencePacket({
+    interactionId: accepted.interaction_id, packet: accepted.payload.evidence_packet,
+    project, dbFile, workflow, workflowDefinition, execute, gatewayCall, gateRunner, preferredLanguage
+  });
+  return { control: accepted, evidence };
 }
 
 // A directory belongs to the project registered closest above it: with a project registered inside

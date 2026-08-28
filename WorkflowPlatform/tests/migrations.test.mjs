@@ -18,12 +18,12 @@ function temporaryRoot(prefix) {
 test("clean database applies numbered normalized migrations and SQLite safety pragmas", () => {
   const root = temporaryRoot("workflow-migrations-clean-");
   const db = openDb(path.join(root, "workflow.sqlite"));
-  assert.equal(schemaVersion(db), 24);
+  assert.equal(schemaVersion(db), 25);
   assert.equal(db.prepare("PRAGMA foreign_keys").get().foreign_keys, 1);
   assert.equal(db.prepare("PRAGMA journal_mode").get().journal_mode, "wal");
   assert.equal(db.prepare("PRAGMA busy_timeout").get().timeout, 5000);
   const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => row.name));
-  for (const table of ["goals", "stages", "tasks", "workflow_runs", "workflow_steps", "attempts", "decisions", "approvals", "artifacts", "events", "budgets", "budget_entries", "leases", "resource_leases", "project_resources", "inbox_events", "dead_letters", "role_contracts", "role_profile_assignments", "workflow_package_releases", "workflow_import_proposals", "package_import_mappings", "experience_observations", "experience_proposals", "experience_evaluations", "check_baselines", "check_baseline_diagnostics", "diagnostic_rules", "diagnostic_rule_tags", "project_diagnostic_policies", "run_root_baselines", "run_evidence", "run_control_requests", "progress_snapshots", "evidence_flow_adapters"]) assert.equal(tables.has(table), true, `missing ${table}`);
+  for (const table of ["goals", "stages", "tasks", "workflow_runs", "workflow_steps", "attempts", "decisions", "approvals", "artifacts", "events", "budgets", "budget_entries", "leases", "resource_leases", "project_resources", "inbox_events", "dead_letters", "role_contracts", "role_profile_assignments", "workflow_package_releases", "workflow_import_proposals", "package_import_mappings", "experience_observations", "experience_proposals", "experience_evaluations", "check_baselines", "check_baseline_diagnostics", "diagnostic_rules", "diagnostic_rule_tags", "project_diagnostic_policies", "run_root_baselines", "run_evidence", "run_control_requests", "progress_snapshots", "evidence_flow_adapters", "external_executors", "external_control_requests", "external_control_results"]) assert.equal(tables.has(table), true, `missing ${table}`);
   assert.equal(new Set(db.prepare("PRAGMA table_info(gateway_calls)").all().map(row => row.name)).has("model_provider"), true);
   assert.equal(new Set(db.prepare("PRAGMA table_info(workflow_step_templates)").all().map(row => row.name)).has("resources_json"), true);
   assert.equal(db.prepare("SELECT name FROM domains WHERE id='one-c'").get().name, "1C");
@@ -40,7 +40,7 @@ test("the known pre-publication migration 7 newline checksum remains readable", 
   db.prepare("UPDATE schema_migrations SET checksum=? WHERE version=7").run("8080e01be11bc8882303b50e3d51dc00d1dffcd23c3f08691dee6d7452770c1c");
   db.close();
   db = openDb(file);
-  assert.equal(schemaVersion(db), 24);
+  assert.equal(schemaVersion(db), 25);
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
