@@ -41,7 +41,11 @@ export function parseHookEvent(event = {}, { env = process.env, argv = [], setti
     eventSource: claude ? "claude-code-hook" : "codex-hook",
     message: message ? String(message) : null,
     eventKey,
-    project: settings.project ?? event.cwd ?? event.project ?? null,
+    // Where the message came from and which project the installation declares are two different facts,
+    // and collapsing them is what let one project's configuration answer another project's message. Both
+    // travel, and the binding is decided once, by `bindProject`.
+    project: settings.project ?? null,
+    origin: event.cwd ?? event.project ?? null,
     eventFields: hookEventFields(event),
     deliveryMode: resolveDeliveryMode(flagged ? flagged.slice(DELIVERY_FLAG.length) : settings.deliveryMode, claude ? "claude-code" : "codex"),
     preferredLanguage: event.language ?? event.locale ?? event.user_language ?? event.userLocale ?? settings.responseLanguage ?? null

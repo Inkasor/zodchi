@@ -16,6 +16,7 @@ process.env.WORKFLOW_INTERNAL = "1";
 const result = await processMessage({
   message: entry.message,
   project: entry.project,
+  origin: entry.origin,
   dbFile: settings.databasePath,
   workflow: settings.workflow,
   eventSource: entry.eventSource,

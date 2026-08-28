@@ -14,6 +14,7 @@ import { id, now } from "./db.mjs";
 import { appendEvent } from "./state-machine.mjs";
 import { CLARIFICATION_KINDS, EXTERNAL_EVIDENCE_KIND, cancelInteraction, deliverEvidence, expireInteractions, openClarification, readInteraction } from "./interactions.mjs";
 import { resolveWorkflowSettings } from "./paths.mjs";
+import { bindProject, bindingEvidence } from "./project-binding.mjs";
 import { continueApprovedRun, executeStructuredWork, pausedRunObjective, resumeObjective } from "./work-executor.mjs";
 import { chargeDirectReceipt, effectiveQualityMode, initializeQualityRun, operationalLevel, ownerQualityFloor, reserveDirectModelCall } from "./quality-contracts.mjs";
 
@@ -172,11 +173,12 @@ export async function deliverExternalEvidencePacket({
 }
 
 export async function processMessage({
-  message, project, dbFile, workflow, workflowDefinition, execute = false, eventSource = "user", eventKey = null, eventFields = [],
+  message, project, origin = null, dbFile, workflow, workflowDefinition, execute = false, eventSource = "user", eventKey = null, eventFields = [],
   classificationResult = null, gatewayCall = callGateway, gateRunner = undefined, preferredLanguage = null, client = "codex"
 }) {
   const settings = resolveWorkflowSettings();
-  project ??= settings.project;
+  const binding = bindProject({ settings, origin, project });
+  project = binding.project;
   dbFile ??= settings.databasePath;
   workflow ??= settings.workflow ?? workflowDefinition?.id;
   if (!project) throw new Error("PROJECT_REQUIRED: configure a project during onboarding or pass project explicitly");
@@ -194,7 +196,7 @@ export async function processMessage({
   workflow ??= definition?.id ?? runtime.db.prepare(`SELECT w.id FROM workflow_routes wr JOIN workflows w ON w.id=wr.workflow_id
     WHERE wr.project_id=? AND wr.enabled=1 AND w.status='active' ORDER BY wr.priority DESC,w.id LIMIT 1`).get(project)?.id;
   if (!workflow) { runtime.db.close(); throw new Error(`WORKFLOW_NOT_REGISTERED: ${project}`); }
-  const accepted = runtime.accept(message, { project_id: project, workflow_id: workflow, client, event_source: eventSource, event_key: eventKey, event_fields: eventFields });
+  const accepted = runtime.accept(message, { project_id: project, workflow_id: workflow, client, event_source: eventSource, event_key: eventKey, event_fields: eventFields, binding: bindingEvidence(binding, settings) });
   const runId = accepted.runId;
   const run = runtime.get(runId);
   let responseLanguage = resolveResponseLanguage({ message, preferredLanguage: preferredLanguage ?? settings.responseLanguage });

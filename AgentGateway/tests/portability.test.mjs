@@ -142,3 +142,105 @@ test("provider wrapper cleans homes after success, timeout result and error", as
   assert.equal(fs.existsSync(errorDirectory), false);
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test("Codex ephemeral home disables project skills registered under .codex as well", () => {
+  const root = temporaryRoot("agent-gateway-codex-skills-");
+  const source = path.join(root, "source"), temp = path.join(root, "temp"), project = path.join(root, "project");
+  const codexSkill = path.join(project, ".codex", "skills", "codex-only");
+  const agentSkill = path.join(project, ".agents", "skills", "agent-only");
+  fs.mkdirSync(path.join(project, ".git"), { recursive: true });
+  fs.mkdirSync(path.join(source, "skills", "owner-skill"), { recursive: true });
+  fs.mkdirSync(codexSkill, { recursive: true }); fs.mkdirSync(agentSkill, { recursive: true });
+  fs.writeFileSync(path.join(codexSkill, "SKILL.md"), "codex");
+  fs.writeFileSync(path.join(agentSkill, "SKILL.md"), "agent");
+  fs.writeFileSync(path.join(source, "skills", "owner-skill", "SKILL.md"), "owner");
+  const environment = createProviderEnvironment("codex", { tempRoot: temp, sourceHome: source, projectRoot: project, profileConfig: {} });
+  try {
+    const config = fs.readFileSync(path.join(environment.directory, "config.toml"), "utf8");
+    // A project skill Codex would have loaded from its own directory used to stay enabled, because only
+    // the harness-neutral location was scanned.
+    assert.ok(config.includes(JSON.stringify(path.join(codexSkill, "SKILL.md"))));
+    assert.ok(config.includes(JSON.stringify(path.join(agentSkill, "SKILL.md"))));
+    const withheld = environment.capabilities.skills.withheld;
+    assert.deepEqual(withheld.map(item => item.name).sort(), ["agent-only", "codex-only", "owner-skill"]);
+    // The owner's own skills disappear with the home they lived in. That is the isolation working, and it
+    // is recorded rather than left to be discovered from a worker that could not do the work.
+    assert.deepEqual(withheld.filter(item => item.scope === "home").map(item => item.name), ["owner-skill"]);
+  } finally {
+    environment.cleanup(); fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Codex ephemeral home carries only the MCP servers the profile named and records the rest", () => {
+  const root = temporaryRoot("agent-gateway-codex-mcp-");
+  const source = path.join(root, "source"), temp = path.join(root, "temp"), project = path.join(root, "project");
+  fs.mkdirSync(source, { recursive: true }); fs.mkdirSync(path.join(project, ".codex"), { recursive: true });
+  fs.writeFileSync(path.join(source, "config.toml"), [
+    'model = "owner-model"',
+    "[mcp_servers.registry]",
+    'command = "node"',
+    'args = ["registry.mjs"]',
+    "[mcp_servers.registry.env]",
+    'TOKEN_ENV = "REGISTRY_TOKEN"',
+    "[mcp_servers.personal]",
+    'command = "node"'
+  ].join("\n"));
+  fs.writeFileSync(path.join(project, ".codex", "config.toml"), ["[mcp_servers.project-index]", 'command = "node"'].join("\n"));
+  const environment = createProviderEnvironment("codex", { tempRoot: temp, sourceHome: source, projectRoot: project, profileConfig: { allowedMcpServers: ["registry", "project-index"] } });
+  try {
+    const config = fs.readFileSync(path.join(environment.directory, "config.toml"), "utf8");
+    assert.match(config, /\[mcp_servers\.registry\]/);
+    // The whole table travels, sub-tables included, or the carried server arrives without its environment.
+    assert.match(config, /\[mcp_servers\.registry\.env\]/);
+    assert.match(config, /\[mcp_servers\.project-index\]/);
+    assert.equal(config.includes("[mcp_servers.personal]"), false);
+    // The owner's own model is not carried with it: the profile decides the model, the allowlist decides
+    // only the servers.
+    assert.equal(config.includes("owner-model"), false);
+    assert.deepEqual(environment.capabilities.mcp_servers.carried.map(item => item.name).sort(), ["project-index", "registry"]);
+    assert.deepEqual(environment.capabilities.mcp_servers.withheld, [{ scope: "home", name: "personal" }]);
+    assert.equal(environment.capabilities.mcp_servers.policy, "allowlist");
+  } finally {
+    environment.cleanup(); fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an ephemeral home with nothing named withholds every server the owner registered", () => {
+  const root = temporaryRoot("agent-gateway-codex-mcp-none-");
+  const source = path.join(root, "source"), temp = path.join(root, "temp");
+  fs.mkdirSync(source, { recursive: true });
+  fs.writeFileSync(path.join(source, "config.toml"), ["[mcp_servers.one]", 'command = "node"', "[mcp_servers.two]", 'command = "node"'].join("\n"));
+  const environment = createProviderEnvironment("codex", { tempRoot: temp, sourceHome: source, profileConfig: {} });
+  try {
+    assert.deepEqual(environment.capabilities.mcp_servers.carried, []);
+    assert.deepEqual(environment.capabilities.mcp_servers.withheld.map(item => item.name), ["one", "two"]);
+    assert.equal(fs.readFileSync(path.join(environment.directory, "config.toml"), "utf8").includes("mcp_servers"), false);
+  } finally {
+    environment.cleanup(); fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("OpenCode carries named servers from its own configuration and Kimi inherits the file it copies", () => {
+  const root = temporaryRoot("agent-gateway-mcp-providers-");
+  const temp = path.join(root, "temp");
+  const opencodeHome = path.join(root, "opencode-home"), opencodeConfig = path.join(root, "opencode.json");
+  fs.mkdirSync(opencodeHome, { recursive: true });
+  fs.writeFileSync(opencodeConfig, JSON.stringify({ mcp: { allowed: { type: "local" }, withheld: { type: "local" } } }));
+  const opencode = createProviderEnvironment("opencode", { tempRoot: temp, sourceHome: opencodeHome, sourceConfig: opencodeConfig, profileConfig: { allowedMcpServers: ["allowed"] } });
+  try {
+    const config = JSON.parse(opencode.env.OPENCODE_CONFIG_CONTENT);
+    assert.deepEqual(Object.keys(config.mcp), ["allowed"]);
+    assert.deepEqual(opencode.capabilities.mcp_servers.withheld, [{ scope: "home", name: "withheld" }]);
+  } finally { opencode.cleanup(); }
+
+  const kimiHome = path.join(root, "kimi-home");
+  fs.mkdirSync(kimiHome, { recursive: true });
+  fs.writeFileSync(path.join(kimiHome, "config.toml"), ["[model]", "[mcp_servers.inherited]", 'command = "node"'].join("\n"));
+  const kimi = createProviderEnvironment("kimi", { tempRoot: temp, sourceHome: kimiHome, profileConfig: {} });
+  try {
+    // Kimi's whole configuration file is copied, so its servers come along. The report says inherited
+    // rather than implying an allowlist chose them.
+    assert.equal(kimi.capabilities.mcp_servers.policy, "inherited");
+    assert.deepEqual(kimi.capabilities.mcp_servers.carried, [{ scope: "home", name: "inherited" }]);
+  } finally { kimi.cleanup(); fs.rmSync(root, { recursive: true, force: true }); }
+});
