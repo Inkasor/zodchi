@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { id, now } from "./db.mjs";
 import { appendEvent, canTransition } from "./state-machine.mjs";
 
@@ -122,22 +123,50 @@ export function openExternalEvidenceRequest(db, { taskId, runId, stepId = null, 
   return open(db, { taskId, runId, stepId, kind: EXTERNAL_EVIDENCE_KIND, question: question.trim(), detail: validateEvidenceContract(contract), affectedSteps, expiresAt });
 }
 
+// Evidence has to arrive with the thing it is evidence of. A packet that only states a hash states a
+// number: there is nothing to compute it from, so any 64 hex digits pass and the record proves only that
+// someone typed a hash. The content travels with the packet and the hash is derived from it here, which
+// is also why it is bounded — evidence too large to carry is evidence that has to be reduced to what the
+// claim needs before it can be checked at all.
+const EVIDENCE_CONTENT_LIMIT = 1_048_576;
+
 // A packet closes the request only when it is a packet about the thing that was asked for. Every check
 // here names a way a wrong packet would otherwise be accepted as the right one.
 export function validateEvidencePacket(contract, packet) {
   const refuse = field => { throw new Error(`EXTERNAL_EVIDENCE_PACKET_INVALID: ${field}`); };
   if (!packet || typeof packet !== "object" || Array.isArray(packet)) refuse("packet");
+  // The kind is what the request asked for. A log export answering a request for a configuration dump is
+  // about the same information base by the same person and still not the fact that was asked for.
+  if (packet.evidence_kind !== contract.evidence_kind) refuse("evidence_kind");
   if (packet.resource?.kind !== contract.resource.kind || packet.resource?.identity !== contract.resource.identity) refuse("resource");
   if (typeof packet.provenance?.source !== "string" || packet.provenance.source !== contract.expected_provenance.source) refuse("provenance.source");
+  // Who collected it is part of the provenance the contract declared: the same export taken by the owner
+  // and taken by an automated job carry different authority, and only the stated collector says which.
+  if ((packet.provenance?.collected_by ?? null) !== contract.expected_provenance.collected_by) refuse("provenance.collected_by");
   if (contract.expected_provenance.at_or_after) {
     const collected = Date.parse(packet.collected_at ?? "");
     if (!Number.isFinite(collected) || collected < Date.parse(contract.expected_provenance.at_or_after)) refuse("collected_at");
   }
+  // The rule is how the packet says it is complete. Covering the named items under a different rule is a
+  // different statement about coverage, and accepting it would settle the request on the wrong one.
+  if (packet.completeness?.rule !== contract.expected_completeness.rule) refuse("completeness.rule");
   const covered = new Set((packet.completeness?.covered ?? []).map(String));
   const uncovered = contract.expected_completeness.must_cover.filter(item => !covered.has(item));
   if (uncovered.length) throw new Error(`EXTERNAL_EVIDENCE_PACKET_INCOMPLETE: ${uncovered.slice(0, 5).join(",")}`);
-  if (typeof packet.content_hash !== "string" || !/^[0-9a-f]{64}$/.test(packet.content_hash)) refuse("content_hash");
-  return Object.freeze({ ...packet, resource: { ...packet.resource }, provenance: { ...packet.provenance }, completeness: { ...packet.completeness, covered: [...covered] } });
+  // The claims are what the request was allowed to prove. A packet that stands for fewer of them settles
+  // a request whose remaining claims nothing downstream ever established.
+  const claimed = new Set((packet.claims ?? []).map(String));
+  const unsupported = contract.claims.filter(item => !claimed.has(item));
+  if (unsupported.length) throw new Error(`EXTERNAL_EVIDENCE_PACKET_INCOMPLETE: ${unsupported.slice(0, 5).map(item => `claim:${item}`).join(",")}`);
+  if (typeof packet.content !== "string" || !packet.content.length) refuse("content");
+  if (Buffer.byteLength(packet.content, "utf8") > EVIDENCE_CONTENT_LIMIT) refuse("content_too_large");
+  const contentHash = crypto.createHash("sha256").update(packet.content, "utf8").digest("hex");
+  if (packet.content_hash !== undefined && packet.content_hash !== null && packet.content_hash !== contentHash) refuse("content_hash");
+  return Object.freeze({
+    ...packet, content_hash: contentHash, claims: [...claimed],
+    resource: { ...packet.resource }, provenance: { ...packet.provenance },
+    completeness: { ...packet.completeness, covered: [...covered] }
+  });
 }
 
 // Settling is idempotent on purpose. A duplicate answer is a normal thing to receive — the same message
