@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { openDb, now, id } from "../src/db.mjs";
 import { Runtime } from "../src/runtime.mjs";
@@ -9,10 +8,10 @@ import { callGateway } from "../src/gateway.mjs";
 import { loadRoleContract, parseRoleReceipt, rolePrompt } from "../src/role-contracts.mjs";
 import { workflowRunStatistics } from "../src/statistics.mjs";
 import { registerImplicitResources } from "../src/project-resources.mjs";
+import { assertProjectBaselineUnchanged, captureProjectBaseline } from "./project-baseline.mjs";
 
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 function argsObject(argv) { const result = {}; for (let i = 0; i < argv.length; i += 1) if (argv[i].startsWith("--")) result[argv[i].slice(2)] = argv[i + 1]?.startsWith("--") || argv[i + 1] === undefined ? true : argv[++i]; return result; }
-function status(root) { return execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: root, encoding: "utf8", windowsHide: true }).replaceAll("\\", "/"); }
 const args = argsObject(process.argv.slice(2)); if (!args.config) throw new Error("Usage: node scripts/run-owner-boundary-evidence.mjs --config <json>");
 const config = JSON.parse(fs.readFileSync(path.resolve(args.config), "utf8")), outputRoot = path.resolve(config.output_root), dbFile = path.join(outputRoot, "workflow-evidence.sqlite"), gatewayDb = path.join(outputRoot, "gateway-evidence.sqlite");
 if (fs.existsSync(outputRoot)) throw new Error(`EVIDENCE_OUTPUT_ALREADY_EXISTS: ${outputRoot}`); fs.mkdirSync(outputRoot, { recursive: true });
@@ -22,7 +21,7 @@ const profileKeys = [...new Set(config.projects.flatMap(project => project.scena
 fs.writeFileSync(policyFile, JSON.stringify({ schemaVersion: 1, levels: { mvp: { maxCalls: 3, maxCorrectionCycles: 0, timeoutSec: 120 } }, providers: { codex: { command: process.execPath, args: [fakeProvider], profiles } } }, null, 2));
 const results = [];
 for (const project of config.projects) {
-  const before = status(project.root_path), proposalFile = path.join(outputRoot, `${project.project_id}.proposal.json`); proposeWorkflowImport(dbFile, path.resolve(project.package_file), proposalFile, project.project_id); applyWorkflowImport(dbFile, proposalFile, project.project_id, { confirmedBy: "checkpoint9-reversible-local-import" });
+  const before = captureProjectBaseline(project.root_path), proposalFile = path.join(outputRoot, `${project.project_id}.proposal.json`); proposeWorkflowImport(dbFile, path.resolve(project.package_file), proposalFile, project.project_id); applyWorkflowImport(dbFile, proposalFile, project.project_id, { confirmedBy: "checkpoint9-reversible-local-import" });
   db = openDb(dbFile); for (const role of [...new Set(project.scenarios.flatMap(scenario => scenario.roles))]) { const key = `${project.package_key}.${role}.mvp`; db.prepare("INSERT OR IGNORE INTO profiles(id,provider,name,role_id) VALUES(?,'codex',?,?)").run(key, key, role); db.prepare("INSERT OR REPLACE INTO role_profile_assignments(project_id,role_id,profile_id,operational_level,enabled) VALUES(?,?,?,'mvp',1)").run(project.project_id, role, key); } db.close();
   for (const scenario of project.scenarios) {
     db = openDb(dbFile); const workflowId = db.prepare(`SELECT m.local_id FROM package_import_mappings m JOIN workflow_import_proposals p ON p.id=m.proposal_id WHERE p.target_project_id=? AND p.status='applied' AND m.entity_type='workflow' AND m.semantic_key=?`).get(project.project_id, scenario.workflow_key)?.local_id; db.close();
@@ -42,6 +41,6 @@ for (const project of config.projects) {
     runtime.db.prepare("INSERT INTO approvals(id,task_id,run_id,kind,question,status,created_at) VALUES(?,?,?,'owner_acceptance',?,'pending',?)").run(id("approval"), taskId, runId, scenario.owner_question, timestamp); runtime.setState(runId, "approval_required", { reason: "owner acceptance remains separate" }); runtime.db.close();
     const statistics = workflowRunStatistics(dbFile, runId); fs.writeFileSync(path.join(outputRoot, `${project.project_id}-${scenario.key}.statistics.json`), JSON.stringify({ project_id: project.project_id, scenario: scenario.key, run_id: runId, owner_acceptance: "pending_separate", statistics }, null, 2)); results.push({ project_id: project.project_id, scenario: scenario.key, run_id: runId, final_state: statistics.final_state, calls: statistics.calls.map(call => call.role), artifact_status: statistics.artifacts[0].status, owner_acceptance: "pending_separate" });
   }
-  const after = status(project.root_path); if (after !== before) throw new Error(`PROJECT_WORKTREE_CHANGED_DURING_OWNER_BOUNDARY: ${project.project_id}`);
+  const after = captureProjectBaseline(project.root_path); assertProjectBaselineUnchanged(before, after, project.project_id);
 }
 const summary = { schema_version: 1, created_at: new Date().toISOString(), worktrees_unchanged: true, results }; fs.writeFileSync(path.join(outputRoot, "summary.json"), JSON.stringify(summary, null, 2)); console.log(JSON.stringify(summary, null, 2));

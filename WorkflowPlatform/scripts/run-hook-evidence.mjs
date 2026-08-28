@@ -1,15 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { openDb, now } from "../src/db.mjs";
 import { applyWorkflowImport, proposeWorkflowImport } from "../src/workflow-package.mjs";
 import { workflowRunStatistics } from "../src/statistics.mjs";
 import { registerImplicitResources } from "../src/project-resources.mjs";
+import { assertProjectBaselineUnchanged, captureProjectBaseline } from "./project-baseline.mjs";
 
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 function argsObject(argv) { const result = {}; for (let i = 0; i < argv.length; i += 1) if (argv[i].startsWith("--")) result[argv[i].slice(2)] = argv[i + 1]?.startsWith("--") || argv[i + 1] === undefined ? true : argv[++i]; return result; }
-function status(root) { return execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: root, encoding: "utf8", windowsHide: true }).replaceAll("\\", "/"); }
 const args = argsObject(process.argv.slice(2)); if (!args.config) throw new Error("Usage: node scripts/run-hook-evidence.mjs --config <json>");
 const config = JSON.parse(fs.readFileSync(path.resolve(args.config), "utf8")), outputRoot = path.resolve(config.output_root), dbFile = path.join(outputRoot, "workflow-evidence.sqlite"), gatewayDb = path.join(outputRoot, "gateway-evidence.sqlite");
 if (fs.existsSync(outputRoot)) throw new Error(`EVIDENCE_OUTPUT_ALREADY_EXISTS: ${outputRoot}`); fs.mkdirSync(outputRoot, { recursive: true });
@@ -27,7 +27,7 @@ db.close();
 const fakeProvider = path.join(repositoryRoot, "tests", "fixtures", "deterministic-workflow-provider.mjs"), policyFile = path.join(outputRoot, "gateway-policy.json"), providerHome = path.join(outputRoot, "empty-provider-home"); fs.mkdirSync(providerHome);
 const profiles = Object.fromEntries(requirements.map(requirement => [requirement.profile_key, { model: "deterministic-contract-v1", reasoningEffort: "low", readOnly: true }]));
 fs.writeFileSync(policyFile, JSON.stringify({ schemaVersion: 1, levels: { prototype: { maxCalls: 2, maxCorrectionCycles: 0, timeoutSec: 60 }, mvp: { maxCalls: 3, maxCorrectionCycles: 1, timeoutSec: 3600 } }, providers: { codex: { command: process.execPath, args: [fakeProvider], profiles } } }, null, 2));
-const before = status(config.root_path), baseEnv = { ...process.env, WORKFLOW_DB: dbFile, WORKFLOW_PROJECT: path.resolve(config.root_path), WORKFLOW_ID: workflowId, WORKFLOW_TEMP: path.join(outputRoot, "workflow-temp"), AGENT_GATEWAY_ENTRY: path.resolve(config.gateway_entry), AGENT_GATEWAY_POLICY: policyFile, AGENT_GATEWAY_DB: gatewayDb, AGENT_GATEWAY_TEMP: path.join(outputRoot, "gateway-temp"), CODEX_SOURCE_HOME: providerHome };
+const before = captureProjectBaseline(config.root_path), baseEnv = { ...process.env, WORKFLOW_DB: dbFile, WORKFLOW_PROJECT: path.resolve(config.root_path), WORKFLOW_ID: workflowId, WORKFLOW_TEMP: path.join(outputRoot, "workflow-temp"), AGENT_GATEWAY_ENTRY: path.resolve(config.gateway_entry), AGENT_GATEWAY_POLICY: policyFile, AGENT_GATEWAY_DB: gatewayDb, AGENT_GATEWAY_TEMP: path.join(outputRoot, "gateway-temp"), CODEX_SOURCE_HOME: providerHome };
 const scenarios = [{ key: "conversation", client: "codex", event: "hook-conversation", message: "SCENARIO:conversation Привет!" }, { key: "research", client: "codex", event: "hook-research", message: "SCENARIO:research Кратко проверь зарегистрированный технический контекст Project R." }, { key: "claude-conversation", client: "claude-code", event: "550e8400-e29b-41d4-a716-446655440000", message: "SCENARIO:conversation Привет!" }], results = [];
 function hookInput(scenario, cwd) { return scenario.client === "claude-code" ? { session_id: "hook-evidence-session", prompt_id: scenario.event, transcript_path: "", permission_mode: "default", hook_event_name: "UserPromptSubmit", cwd, prompt: scenario.message } : { session_id: "hook-evidence-session", turn_id: scenario.event, model: "hook-evidence-model", transcript_path: "", permission_mode: "read-only", hook_event_name: "UserPromptSubmit", cwd, prompt: scenario.message }; }
 function hookSource(scenario) { return scenario.client === "claude-code" ? "claude-code-hook" : "codex-hook"; }
@@ -40,5 +40,5 @@ for (const scenario of scenarios) {
   const statistics = workflowRunStatistics(dbFile, runId), record = { scenario: scenario.key, run_id: runId, hook_output: hook, statistics };
   fs.writeFileSync(path.join(outputRoot, `${scenario.key}.statistics.json`), JSON.stringify(record, null, 2)); results.push({ scenario: scenario.key, client: recordedClient, run_id: runId, final_state: statistics.final_state, calls: statistics.calls.map(call => call.role), response_in_same_chat: Boolean(hook.additionalContext) });
 }
-const after = status(config.root_path); if (after !== before) throw new Error("PROJECT_WORKTREE_CHANGED_DURING_HOOK_EVIDENCE");
+const after = captureProjectBaseline(config.root_path); assertProjectBaselineUnchanged(before, after, config.project_id);
 const summary = { schema_version: 1, created_at: new Date().toISOString(), project_id: config.project_id, worktree_unchanged: true, results }; fs.writeFileSync(path.join(outputRoot, "summary.json"), JSON.stringify(summary, null, 2)); console.log(JSON.stringify(summary, null, 2));
