@@ -57,14 +57,41 @@ test("a project named on the command line is explicit, and an unconfigured insta
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("the hook reports where the message came from separately from what the installation declares", () => {
-  const harnessCwd = path.join(os.tmpdir(), "zodchi-harness-cwd");
-  const configured = path.join(os.tmpdir(), "zodchi-configured");
-  const event = { prompt_id: "p-1", cwd: harnessCwd, user_input: "hello" };
+test("the real hook path refuses a message from another project instead of restating the declaration", async () => {
+  const root = temporaryRoot("zodchi-hook-binding-");
+  const configured = path.join(root, "configured"), other = path.join(root, "other");
+  const dbFile = path.join(root, "workflow.sqlite");
+  fs.mkdirSync(configured); fs.mkdirSync(other);
+  const db = openDb(dbFile);
+  db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('configured','Configured',?,?)").run(configured, now());
+  db.close();
+
+  // A hook event carries where the message came from. It must not carry the installation's declaration:
+  // handing that on as the caller's own project made the binding check compare the declaration with
+  // itself, so a hook inheriting project A's configuration answered project B's message as project A.
+  const event = { prompt_id: "p-1", cwd: other, user_input: "hello" };
   const entry = parseHookEvent(event, { env: {}, argv: [], settings: { project: configured } });
-  assert.equal(entry.project, configured);
-  assert.equal(entry.origin, harnessCwd);
-  assert.equal(parseHookEvent(event, { env: {}, argv: [], settings: {} }).project, null);
+  assert.equal(entry.project, undefined);
+  assert.equal(entry.origin, other);
+
+  const declared = resolveWorkflowSettings().project;
+  try {
+    process.env.WORKFLOW_PROJECT = configured;
+    // Exactly the call `hooks/user-prompt-submit.mjs` makes, with exactly the fields it passes.
+    await assert.rejects(() => processMessage({ message: entry.message, origin: entry.origin, dbFile, eventSource: entry.eventSource, eventKey: entry.eventKey, eventFields: entry.eventFields, client: entry.client }), /PROJECT_BINDING_MISMATCH/);
+    const opened = openDb(dbFile);
+    assert.equal(opened.prepare("SELECT COUNT(*) AS count FROM workflow_runs").get().count, 0);
+
+    // A directory the declaration does not cover is not automatically nobody's: registered as a project
+    // of its own, it is the project the message belongs to, and the run is charged there.
+    opened.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('other','Other',?,?)").run(other, now());
+    opened.close();
+    await assert.rejects(() => processMessage({ message: entry.message, origin: entry.origin, dbFile }), /WORKFLOW_NOT_REGISTERED: other/);
+  } finally {
+    delete process.env.WORKFLOW_PROJECT;
+    assert.equal(resolveWorkflowSettings().project, declared);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("a message from an unrelated directory never reaches the configured project's database", async () => {

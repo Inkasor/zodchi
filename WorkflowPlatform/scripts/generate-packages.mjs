@@ -1,15 +1,27 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PACKAGE_BUNDLES, PACKAGE_DEFINITIONS, generatedPackagesDirectory, packageDefinitionsFile } from "../packages/definitions.mjs";
+import { loadPackageDefinitions } from "../packages/definitions.mjs";
+import { resolveWorkflowSettings } from "../src/paths.mjs";
 import { serializeWorkflowPackage, validateWorkflowPackage } from "../src/workflow-package.mjs";
 import { inspectWorkflowBundle, serializeWorkflowBundle } from "../src/workflow-bundle.mjs";
 import { structuredHash } from "../src/role-contracts.mjs";
 import { DEFAULT_QUALITY_CONTRACTS, qualityContractsLint, serializeQualityContracts } from "../src/quality-contracts.mjs";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const outputDirectory = generatedPackagesDirectory;
 const checkOnly = process.argv.includes("--check");
+
+// Which definitions this run works on is stated on the command line, never inherited. With no argument
+// it is the example this repository ships, so `packages:check` verifies the repository against itself on
+// any machine and in CI. An installation generates its own packages by naming its file, or by asking for
+// the one its configuration declares.
+const FLAG = "--definitions";
+const flagged = process.argv.find(item => item.startsWith(`${FLAG}=`));
+const positional = process.argv[process.argv.indexOf(FLAG) + 1];
+const named = flagged ? flagged.slice(FLAG.length + 1) : process.argv.includes(FLAG) ? positional : null;
+if (process.argv.includes(FLAG) && (!named || named.startsWith("--"))) throw new Error(`PACKAGE_DEFINITIONS_REQUIRED: ${FLAG} needs a file`);
+const source = process.argv.includes("--installation") ? resolveWorkflowSettings().packageDefinitions : named;
+const { packages: PACKAGE_DEFINITIONS, bundles: PACKAGE_BUNDLES, generatedDirectory: outputDirectory, file: packageDefinitionsFile } = await loadPackageDefinitions(source ?? undefined);
 const results = [];
 // Generated packages live beside the source that declares them, which is outside the repository for a
 // configured installation, so paths are reported relative to that directory rather than to the root.

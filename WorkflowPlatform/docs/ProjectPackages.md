@@ -3,7 +3,8 @@
   <purpose>Define what a portable workflow package is, where its source lives, and the boundaries every package must keep.</purpose>
 
   <package_source status="accepted">
-    <rule id="definitions_are_local">A package definition describes a real project: its documents, checks, thresholds and approval boundaries. That is an installation's own material, so the source file is chosen by the packageDefinitions setting and this repository ships only the builders and one example.</rule>
+    <rule id="definitions_are_local">A package definition describes a real project: its documents, checks, thresholds and approval boundaries. That is an installation's own material, so the source file is a parameter and this repository ships only the builders and one example.</rule>
+    <rule id="source_is_stated">The definition source is named by the caller and never inherited from the environment. With no argument the repository example is used, so packages:check verifies this repository against itself on any machine; an installation names its own file with --definitions, or --installation to use the file its packageDefinitions setting declares. A generation run that follows an exported variable checks whichever installation that shell was configured for, which is a different check on every machine and no check at all in CI.</rule>
     <rule id="definition_shape">A definition file default-exports a function that receives the builder module and returns packages and bundles. It therefore needs no import path of its own and can live anywhere.</rule>
     <rule id="generated_beside_source">Generated packages are written to a generated directory beside their definition source, are produced by npm run packages:generate, and are verified by npm run packages:check.</rule>
     <rule id="import_is_confirmed">A package may be imported only through a proposed diff bound to the package hash, followed by a confirmed apply naming the person who confirmed it.</rule>
@@ -37,6 +38,6 @@
   <example status="accepted">
     <package>example.web-app</package>
     <purpose>The package this repository ships so the format, the builders and the generator can be built, validated and tested without any real project.</purpose>
-    <rule id="replaceable">Point packageDefinitions at your own file to replace the example. The contract tests then run against your packages instead.</rule>
+    <rule id="replaceable">Generate and check your own packages by naming your definition file: npm run packages:generate -- --definitions &lt;file&gt;, or --installation to use the packageDefinitions setting. The repository contract tests always run against the example, because a suite that follows a machine-local setting proves nothing about the product.</rule>
   </example>
 </document>

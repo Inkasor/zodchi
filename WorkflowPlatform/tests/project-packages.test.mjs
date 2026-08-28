@@ -6,13 +6,15 @@ import test from "node:test";
 import { openDb } from "../src/db.mjs";
 import { applyWorkflowImport, parseWorkflowPackage, proposeWorkflowImport, serializeWorkflowPackage, validateWorkflowPackage } from "../src/workflow-package.mjs";
 import { inspectWorkflowBundle, parseWorkflowBundle } from "../src/workflow-bundle.mjs";
-import { PACKAGE_BUNDLES, PACKAGE_DEFINITIONS, generatedPackagesDirectory } from "../packages/definitions.mjs";
+import { loadPackageDefinitions } from "../packages/definitions.mjs";
 import { role } from "../packages/builders.mjs";
 
-// Package definitions are an installation's own material and the configured source may be private, so
+// Package definitions are an installation's own material and a configured source may be private, so
 // these tests assert the contract every package must satisfy rather than the content of any one
-// project. Whatever `packageDefinitions` points at is what they run against; by default that is the
-// example this repository ships.
+// project. They run against the example this repository ships and nothing else: a test that follows an
+// environment variable tests whatever that machine happens to point at, which is a different suite on
+// every machine and no suite at all in CI.
+const { packages: PACKAGE_DEFINITIONS, bundles: PACKAGE_BUNDLES, generatedDirectory: generatedPackagesDirectory } = await loadPackageDefinitions();
 function temporaryRoot(prefix) { const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir(); fs.mkdirSync(parent, { recursive: true }); return fs.mkdtempSync(path.join(parent, prefix)); }
 const generatedFile = key => path.join(generatedPackagesDirectory, `${key}.xml`);
 

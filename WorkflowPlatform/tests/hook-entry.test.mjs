@@ -64,11 +64,12 @@ test("a stale Codex environment variable never overrides a Claude Code event", (
 });
 
 // What the installation declares used to win outright over where the message came from, which is exactly
-// how a configuration inherited from one project answered another project's message. Both facts travel
-// now; `bindProject` decides between them and refuses when they cannot both be true.
-test("the declared project and the working directory the message came from both travel", () => {
+// how a configuration inherited from one project answered another project's message. The event states
+// the origin and nothing else about which project it belongs to; carrying the declaration back out of
+// here would hand it to `bindProject` as the caller's own answer and defeat the comparison entirely.
+test("a hook event states the working directory the message came from and not the declared project", () => {
   const entry = parseHookEvent(claudeEvent, { env: {}, argv: [], settings: { project: "registered-project", responseLanguage: "ru" } });
-  assert.equal(entry.project, "registered-project");
+  assert.equal(entry.project, undefined);
   assert.equal(entry.origin, projectRoot);
   assert.equal(entry.preferredLanguage, "ru");
 });

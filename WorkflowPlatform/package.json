@@ -8,8 +8,9 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test",
+    "test": "node --import ./tests/hermetic.mjs --test",
     "lint": "node src/cli.mjs lint",
+    "packages:generate": "node scripts/generate-packages.mjs",
     "packages:check": "node scripts/generate-packages.mjs --check"
   }
 }

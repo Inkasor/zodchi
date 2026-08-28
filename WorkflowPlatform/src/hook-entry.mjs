@@ -41,10 +41,11 @@ export function parseHookEvent(event = {}, { env = process.env, argv = [], setti
     eventSource: claude ? "claude-code-hook" : "codex-hook",
     message: message ? String(message) : null,
     eventKey,
-    // Where the message came from and which project the installation declares are two different facts,
-    // and collapsing them is what let one project's configuration answer another project's message. Both
-    // travel, and the binding is decided once, by `bindProject`.
-    project: settings.project ?? null,
+    // A hook event states where the message came from and nothing else about which project it belongs
+    // to. The installation's own declaration is already in the settings, and reading it here to pass it
+    // on as if the caller had named it would launder an inherited value into a deliberate one: the
+    // binding check would then compare the declaration with itself and pass for any working directory.
+    // The declaration and the origin are compared once, by `bindProject`, and this is the origin.
     origin: event.cwd ?? event.project ?? null,
     eventFields: hookEventFields(event),
     deliveryMode: resolveDeliveryMode(flagged ? flagged.slice(DELIVERY_FLAG.length) : settings.deliveryMode, claude ? "claude-code" : "codex"),
