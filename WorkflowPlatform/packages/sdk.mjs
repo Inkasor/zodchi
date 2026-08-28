@@ -26,6 +26,8 @@ export const projectBootstrap = spec => capability("projectBootstrap", spec);
 export const documentation = spec => capability("documentation", spec);
 export const securityReview = spec => capability("securityReview", spec);
 export const ownerAcceptance = spec => capability("ownerAcceptance", spec);
+export const backupRestore = spec => capability("backupRestore", spec);
+export const activityOperations = spec => capability("activityOperations", spec);
 export function domainAdapter(spec) {
   if (!spec?.key) throw new Error("PACKAGE_SDK_ADAPTER_KEY_REQUIRED");
   if (spec.materialClaims && !(spec.evidenceFlows?.length)) throw new Error(`PACKAGE_SDK_EVIDENCE_POLICY_REQUIRED: ${spec.key}`);

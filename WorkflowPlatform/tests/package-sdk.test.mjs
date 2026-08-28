@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { composedPackage, contentProduction, coreLifecycle, domainAdapter, ownerAcceptance, releaseCapability, sourceChange } from "../packages/builders.mjs";
+import { activityOperations, backupRestore, composedPackage, contentProduction, coreLifecycle, domainAdapter, ownerAcceptance, releaseCapability, sourceChange } from "../packages/builders.mjs";
 import { structuredHash } from "../src/role-contracts.mjs";
 import { validateWorkflowPackage } from "../src/workflow-package.mjs";
 
@@ -48,6 +48,15 @@ test("capability resources are executable step requirements rather than decorati
   const coreWithResource = coreLifecycle({ key: "sdk.resource", version: "1.0.0", purpose: "Resource fixture", rolePreset: "minimal", domains: ["software"], disciplines: ["software"], resources: [{ alias: "runtime", kind: "project.worktree", purpose: "Exclusive runtime" }] });
   const packageValue = validateWorkflowPackage(composedPackage(coreWithResource, sourceChange({ resources: [{ alias: "runtime", mode: "exclusive" }] })));
   assert.deepEqual(packageValue.workflows.find(item => item.key.endsWith(".change")).steps.find(item => item.key === "work").resources, [{ alias: "runtime", mode: "exclusive" }]);
+});
+
+test("backup restore and activity execution require approval before external action", () => {
+  const backup = validateWorkflowPackage(composedPackage(core("minimal"), backupRestore()));
+  assert.deepEqual(backup.workflows.find(item => item.key.endsWith(".backup_restore")).steps.map(item => item.key), ["coordinate", "verify_backup", "restore_approval", "restore", "verify_health"]);
+  const activity = validateWorkflowPackage(composedPackage(core("editorial"), contentProduction({ ownerAcceptance: true }), activityOperations()));
+  assert.deepEqual(activity.workflows.find(item => item.key.endsWith(".content")).steps.map(item => item.key), ["coordinate", "produce", "edit", "owner_acceptance"]);
+  assert.deepEqual(activity.workflows.find(item => item.key.endsWith(".activity")).steps.map(item => item.key), ["coordinate", "schedule", "execution_approval", "execute", "measure"]);
+  assert.deepEqual(activity.roles.find(item => item.key === "worker").contract.allowed_tools.sort(), ["apply_patch", "exec_command"]);
 });
 
 test("package lint rejects purposeless roles and gates without a runner", () => {
