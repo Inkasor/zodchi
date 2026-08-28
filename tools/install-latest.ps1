@@ -16,7 +16,7 @@ try {
     $releases = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$Repository/releases?per_page=20"
     $release = $releases | Where-Object { -not $_.draft } | Select-Object -First 1
     if (-not $release) { throw "No published release found for $Repository" }
-    $archiveAssets = @($release.assets | Where-Object { $_.name -match '^Zodchi-v.+-windows\.zip$' })
+    $archiveAssets = @($release.assets | Where-Object { $_.name -match '^Zodchi-v.+\.zip$' -and $_.name -notmatch '-windows\.zip$' })
     $checksumsAssets = @($release.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' })
     $manifestAssets = @($release.assets | Where-Object { $_.name -eq 'zodchi-release-manifest.json' })
     if ($archiveAssets.Count -ne 1 -or $checksumsAssets.Count -ne 1 -or $manifestAssets.Count -ne 1) { throw "Release assets are incomplete or ambiguous: $($release.tag_name)" }

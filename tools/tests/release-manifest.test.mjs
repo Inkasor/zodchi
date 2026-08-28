@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 
 const generator = path.join(import.meta.dirname, "..", "..", "scripts", "build-release-manifest.mjs");
 
-function fixture({ tag = "v9.9.9", version = "9.9.9", archiveName = "Zodchi-v9.9.9-windows.zip", checksumName = archiveName, checksumHash = null } = {}) {
+function fixture({ tag = "v9.9.9", version = "9.9.9", archiveName = "Zodchi-v9.9.9.zip", checksumName = archiveName, checksumHash = null } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "zodchi-manifest-test-"));
   const releaseRoot = path.join(root, "Zodchi");
   fs.mkdirSync(releaseRoot);
@@ -34,7 +34,7 @@ test("a consistent asset set produces a manifest naming the archive and its chec
   run(context);
   const manifest = JSON.parse(fs.readFileSync(context.out, "utf8"));
   assert.equal(manifest.tag, "v9.9.9");
-  assert.equal(manifest.archive.name, "Zodchi-v9.9.9-windows.zip");
+  assert.equal(manifest.archive.name, "Zodchi-v9.9.9.zip");
   assert.equal(manifest.checksums.name, "SHA256SUMS.txt");
   assert.equal(manifest.archive.sha256, crypto.createHash("sha256").update(fs.readFileSync(context.archive)).digest("hex"));
   fs.rmSync(context.root, { recursive: true, force: true });

@@ -8,6 +8,6 @@
   },
   "scripts": {
     "test": "node scripts/validate-source.mjs && node --test \"tools/tests/**/*.test.mjs\" && npm --prefix WorkflowPlatform test && npm --prefix WorkflowPlatform run packages:check && npm --prefix AgentGateway test",
-    "release:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1"
+    "release:build": "node scripts/build-release.mjs"
   }
 }

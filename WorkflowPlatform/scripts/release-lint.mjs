@@ -102,9 +102,16 @@ const required = [
   "AgentGateway/migrations/001_gateway_receipts.sql",
   "AgentGateway/migrations/003_model_harnesses.sql",
   "scripts/build-release.ps1",
+  "scripts/build-release.mjs",
   "scripts/validate-source.mjs",
   "tools/install-or-update.ps1",
   "tools/install-latest.ps1",
+  "tools/install-latest.mjs",
+  "tools/install-latest.sh",
+  "tools/install.mjs",
+  "tools/installation-paths.mjs",
+  "tools/lib/zip.mjs",
+  "tools/release-smoke.mjs",
   "tools/release-lint.mjs"
 ];
 
