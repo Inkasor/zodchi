@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { openDb, now } from "../src/db.mjs";
 import { applyWorkflowImport, proposeWorkflowImport } from "../src/workflow-package.mjs";
@@ -8,10 +7,10 @@ import { processMessage } from "../src/workflow-app.mjs";
 import { callGateway } from "../src/gateway.mjs";
 import { workflowRunStatistics } from "../src/statistics.mjs";
 import { registerImplicitResources } from "../src/project-resources.mjs";
+import { assertProjectBaselineUnchanged, captureProjectBaseline } from "./project-baseline.mjs";
 
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 function argsObject(argv) { const result = {}; for (let i = 0; i < argv.length; i += 1) if (argv[i].startsWith("--")) result[argv[i].slice(2)] = argv[i + 1]?.startsWith("--") || argv[i + 1] === undefined ? true : argv[++i]; return result; }
-function status(root) { return execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: root, encoding: "utf8", windowsHide: true }).replaceAll("\\", "/"); }
 function json(file) { return JSON.parse(fs.readFileSync(file, "utf8")); }
 
 const args = argsObject(process.argv.slice(2));
@@ -60,17 +59,17 @@ fs.writeFileSync(policyFile, JSON.stringify({ schemaVersion: 1, levels: { protot
 
 const results = [];
 for (const { item, workflowId } of prepared) {
-  const before = status(item.root_path), gateway = request => callGateway({ ...request, gateway: path.resolve(config.gateway_entry), gatewayDatabase: gatewayDb, gatewayPolicy: policyFile });
+  const before = captureProjectBaseline(item.root_path), gateway = request => callGateway({ ...request, gateway: path.resolve(config.gateway_entry), gatewayDatabase: gatewayDb, gatewayPolicy: policyFile });
   const outcome = await processMessage({
     message: item.message ?? "Run the registered read-only technical verification scenario. Do not edit source files and do not make owner acceptance decisions.",
     project: path.resolve(item.root_path), dbFile, workflow: workflowId,
     workflowDefinition: { id: workflowId, authority: "registered project documents", roles: { classifier: { provider: "codex", profile: `${item.package_key}.classifier.mvp`, role: "classifier" } } },
     execute: true, eventSource: "checkpoint9", eventKey: item.project_id, gatewayCall: gateway
   });
-  const after = status(item.root_path);
-  if (after !== before) throw new Error(`PROJECT_WORKTREE_CHANGED_DURING_VERIFICATION: ${item.project_id}`);
+  const after = captureProjectBaseline(item.root_path);
+  assertProjectBaselineUnchanged(before, after, item.project_id);
   const statistics = workflowRunStatistics(dbFile, outcome.run_id);
-  const record = { project_id: item.project_id, package_key: item.package_key, workflow_key: item.workflow_key, requested_scenario: item.message ?? null, source_status_before: before, source_status_after: after, outcome, statistics, owner_acceptance: "pending_separate" };
+  const record = { project_id: item.project_id, package_key: item.package_key, workflow_key: item.workflow_key, requested_scenario: item.message ?? null, source_baseline_before: before, source_baseline_after: after, outcome, statistics, owner_acceptance: "pending_separate" };
   fs.writeFileSync(path.join(outputRoot, `${item.project_id}.statistics.json`), JSON.stringify(record, null, 2), "utf8");
   results.push({ project_id: item.project_id, run_id: outcome.run_id, route: outcome.route, execution_status: outcome.execution?.status ?? null, gate_status: outcome.execution?.gate?.status ?? null, final_state: statistics.final_state, calls: statistics.calls.length, tokens: statistics.tokens, worktree_unchanged: true, owner_acceptance: "pending_separate" });
 }

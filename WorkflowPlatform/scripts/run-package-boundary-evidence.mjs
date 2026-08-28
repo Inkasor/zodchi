@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { openDb, now, id } from "../src/db.mjs";
 import { Runtime } from "../src/runtime.mjs";
@@ -10,10 +9,10 @@ import { loadRoleContract, parseRoleReceipt, rolePrompt } from "../src/role-cont
 import { runProjectGate } from "../src/gates.mjs";
 import { workflowRunStatistics } from "../src/statistics.mjs";
 import { registerImplicitResources } from "../src/project-resources.mjs";
+import { assertProjectBaselineUnchanged, captureProjectBaseline } from "./project-baseline.mjs";
 
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 function argsObject(argv) { const result = {}; for (let i = 0; i < argv.length; i += 1) if (argv[i].startsWith("--")) result[argv[i].slice(2)] = argv[i + 1]?.startsWith("--") || argv[i + 1] === undefined ? true : argv[++i]; return result; }
-function status(root) { return execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: root, encoding: "utf8", windowsHide: true }).replaceAll("\\", "/"); }
 
 const args = argsObject(process.argv.slice(2)); if (!args.config) throw new Error("Usage: node scripts/run-package-boundary-evidence.mjs --config <json>");
 const config = JSON.parse(fs.readFileSync(path.resolve(args.config), "utf8")), outputRoot = path.resolve(config.output_root), dbFile = path.join(outputRoot, "workflow-evidence.sqlite"), gatewayDb = path.join(outputRoot, "gateway-evidence.sqlite");
@@ -25,7 +24,7 @@ fs.writeFileSync(policyFile, JSON.stringify({ schemaVersion: 1, levels: { mvp: {
 let db = openDb(dbFile); for (const item of config.projects) { const rootPath = path.resolve(item.root_path); db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES(?,?,?,?)").run(item.project_id, item.name, rootPath, now()); registerImplicitResources(db, { projectId: item.project_id, rootPath }); } db.close();
 const summaries = [];
 for (const item of config.projects) {
-  const before = status(item.root_path), proposalFile = path.join(outputRoot, `${item.project_id}.import-proposal.json`);
+  const before = captureProjectBaseline(item.root_path), proposalFile = path.join(outputRoot, `${item.project_id}.import-proposal.json`);
   proposeWorkflowImport(dbFile, path.resolve(item.package_file), proposalFile, item.project_id); applyWorkflowImport(dbFile, proposalFile, item.project_id, { confirmedBy: "checkpoint9-reversible-local-import" });
   db = openDb(dbFile);
   const workflowId = db.prepare(`SELECT m.local_id FROM package_import_mappings m JOIN workflow_import_proposals p ON p.id=m.proposal_id WHERE p.target_project_id=? AND p.package_key=? AND p.status='applied' AND m.entity_type='workflow' AND m.semantic_key=? ORDER BY p.applied_at DESC LIMIT 1`).get(item.project_id, item.package_key, item.workflow_key)?.local_id;
@@ -55,7 +54,7 @@ for (const item of config.projects) {
   const resumed = new Runtime(dbFile); resumed.recordGate(runId, gate, "project", true); resumed.setState(runId, "verifying");
   if (item.owner_gate) { const taskId = resumed.get(runId).task_id; resumed.db.prepare("INSERT INTO approvals(id,task_id,run_id,kind,question,status,created_at) VALUES(?,?,?,'owner_decision',?,'pending',?)").run(id("approval"), taskId, runId, item.owner_question, now()); resumed.setState(runId, "approval_required", { reason: "owner decision remains separate" }); }
   else if (gate.status === "passed") resumed.setState(runId, "completed", { reason: "registered package boundary checks passed" }); else resumed.setState(runId, "blocked", { reason: "required consumer compatibility check unavailable" });
-  resumed.db.close(); const after = status(item.root_path); if (after !== before) throw new Error(`PROJECT_WORKTREE_CHANGED_DURING_VERIFICATION: ${item.project_id}`);
+  resumed.db.close(); const after = captureProjectBaseline(item.root_path); assertProjectBaselineUnchanged(before, after, item.project_id);
   const statistics = workflowRunStatistics(dbFile, runId), result = { project_id: item.project_id, run_id: runId, package_key: item.package_key, workflow_key: item.workflow_key, gate_status: gate.status, final_state: statistics.final_state, calls: statistics.calls.length, checks: statistics.gates[0].checks, worktree_unchanged: true, consumer_roots_registered_locally: Boolean(item.consumer_roots), owner_acceptance: item.owner_gate ? "pending_separate" : "not_applicable", statistics };
   fs.writeFileSync(path.join(outputRoot, `${item.project_id}.statistics.json`), JSON.stringify(result, null, 2)); summaries.push({ project_id: item.project_id, run_id: runId, gate_status: gate.status, final_state: statistics.final_state, calls: statistics.calls.length, worktree_unchanged: true, owner_acceptance: result.owner_acceptance });
 }
