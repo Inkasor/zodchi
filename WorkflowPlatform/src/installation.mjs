@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { resolveWorkflowSettings } from "./paths.mjs";
 import { normalizeLanguage } from "./language.mjs";
+import { platformInstallationPaths } from "./platform-paths.mjs";
 
 function assertNoSecretFields(value, trail = []) {
   if (!value || typeof value !== "object") return;
@@ -48,7 +49,7 @@ export function configureInstallation(spec, options = {}) {
   }
   if (!Object.values(localPolicy.providers).some(provider => Object.keys(provider.profiles ?? {}).length)) throw new Error("INSTALLATION_PROFILE_REQUIRED: assign at least one local provider profile");
 
-  const localDataRoot = spec.localDataRoot ? path.resolve(spec.localDataRoot) : null;
+  const localDataRoot = spec.localDataRoot ? path.resolve(spec.localDataRoot) : shared ? path.resolve((options.platformPaths ?? platformInstallationPaths()).data) : null;
   const workflowDataRoot = options.workflowDataRoot ?? (localDataRoot ? path.join(localDataRoot, "workflow") : path.join(workflowRoot, spec.dataRoot ?? "data"));
   const gatewayDataRoot = options.gatewayDataRoot ?? (localDataRoot ? path.join(localDataRoot, "gateway") : path.join(gatewayRoot, "data"));
   const localPolicyFile = options.localPolicyFile ?? path.join(gatewayDataRoot, "policy.local.json");
