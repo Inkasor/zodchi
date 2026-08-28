@@ -14,4 +14,3 @@ Run exactly one task through Zodchi. Do not inspect the repository or solve the 
    `node "__ZODCHI_ROOT__/WorkflowPlatform/scripts/explicit-invoke.mjs" --client claude-code --origin "<project-root>" --message-file "<message-file>"`
 
 4. The command deletes the temporary message file. Deliver only the returned `response` naturally. Do not expose the JSON receipt, run identifier, route, hashes, roles, prompts, or internal workflow details.
-

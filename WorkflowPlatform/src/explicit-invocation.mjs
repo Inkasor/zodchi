@@ -12,7 +12,6 @@ function requiredDirectory(value, code) {
   if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) throw new Error(`${code}: ${resolved}`);
   return resolved;
 }
-
 function readMessageFile(file) {
   if (!file) throw new Error("EXPLICIT_MESSAGE_FILE_REQUIRED");
   const resolved = path.resolve(String(file));
@@ -61,4 +60,3 @@ export async function invokeExplicitTask(options, dependencies = {}) {
     if (options.deleteMessageFile) fs.rmSync(source.file, { force: true });
   }
 }
-

@@ -4,4 +4,3 @@ interface:
   default_prompt: "Run this task through Zodchi."
 policy:
   allow_implicit_invocation: false
-
