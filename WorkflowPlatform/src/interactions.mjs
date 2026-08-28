@@ -194,12 +194,12 @@ export function settleInteraction(db, interactionId, { status, answeredRunId = n
   return { settled: true, status, interaction: readInteraction(db, interactionId) };
 }
 
-export function deliverEvidence(db, interactionId, packet, { answeredRunId = null } = {}) {
+export function deliverEvidence(db, interactionId, packet, { answeredRunId = null, actor = "owner" } = {}) {
   const interaction = readInteraction(db, interactionId);
   if (!interaction) throw new Error(`INTERACTION_NOT_FOUND: ${interactionId}`);
   if (interaction.kind !== EXTERNAL_EVIDENCE_KIND) throw new Error(`INTERACTION_KIND_UNEXPECTED: ${interaction.kind}`);
   const validated = validateEvidencePacket(interaction.detail, packet);
-  return settleInteraction(db, interactionId, { status: "approved", answeredRunId, answer: { evidence: validated }, actor: "owner" });
+  return settleInteraction(db, interactionId, { status: "approved", answeredRunId, answer: { evidence: validated }, actor });
 }
 
 export function cancelInteraction(db, interactionId, reason, { actor = "owner", answeredRunId = null } = {}) {
