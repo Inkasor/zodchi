@@ -195,6 +195,7 @@ export function exportWorkflowPackage(dbFile, outputFile, projectId, workflowKey
 export function inspectWorkflowPackage(file) { try { const value = parseWorkflowPackage(fs.readFileSync(file, "utf8")); return { status: "passed", errors: [], package: value, package_hash: digest(value) }; } catch (error) { return { status: "failed", errors: [error.message] }; } }
 
 function targetSnapshot(db, projectId, packageKey) { const specs = [["workflow_package_releases", "project_id=? AND package_key=?", [projectId, packageKey]], ["portable_profile_requirements", "project_id=? AND package_key=?", [projectId, packageKey]], ["project_resources", "project_id=?", [projectId]], ["evidence_flow_adapters", "project_id=? AND package_key=?", [projectId, packageKey]], ["workflows", "project_id=?", [projectId]], ["role_contracts", "project_id=?", [projectId]], ["project_checks", "project_id=?", [projectId]], ["project_documents", "project_id=?", [projectId]], ["role_documents", "project_id=?", [projectId]], ["workflow_routes", "project_id=?", [projectId]], ["workflow_step_templates", "project_id=?", [projectId]], ["workflow_transition_templates", "project_id=?", [projectId]], ["workflow_questions", "project_id=?", [projectId]], ["operational_level_policies", "project_id=? AND package_key=?", [projectId, packageKey]], ["operational_level_budget_limits", "project_id=? AND package_key=?", [projectId, packageKey]], ["operational_level_escalation_rules", "project_id=? AND package_key=?", [projectId, packageKey]], ["prompt_templates", "project_id=? AND package_key=?", [projectId, packageKey]], ["package_test_scenarios", "project_id=? AND package_key=?", [projectId, packageKey]]]; return digest(specs.map(([table, where, parameters]) => ({ table, rows: rows(db, `SELECT * FROM ${table} WHERE ${where} ORDER BY rowid`, ...parameters) }))); }
+function proposalTargetSnapshot(db, projectId, packageKey, migrationFrom = null) { return digest([targetSnapshot(db, projectId, packageKey), migrationFrom ? targetSnapshot(db, projectId, migrationFrom) : null]); }
 
 function versionCompare(left, right) { const a = left.split("-")[0].split(".").map(Number), b = right.split("-")[0].split(".").map(Number); for (let index = 0; index < 3; index += 1) if (a[index] !== b[index]) return a[index] - b[index]; return 0; }
 function packageDiff(db, projectId, value) {
@@ -209,10 +210,21 @@ function packageDiff(db, projectId, value) {
   return { summary: changes.reduce((summary, item) => ({ ...summary, [item.action]: (summary[item.action] ?? 0) + 1 }), {}), already_active: Boolean(active && versionCompare(value.version, active.version) === 0 && active.manifest_hash === digest(value)), changes };
 }
 
-export function proposeWorkflowImport(dbFile, packageFile, proposalFile, projectId) { const packageSource = fs.readFileSync(packageFile, "utf8"), lint = inspectWorkflowPackage(packageFile); if (lint.status !== "passed") return { status: "rejected", lint }; const db = openDb(dbFile); try { if (!db.prepare("SELECT 1 FROM projects WHERE id=?").get(projectId)) throw new Error(`IMPORT_TARGET_PROJECT_NOT_FOUND: ${projectId}`); const diff = packageDiff(db, projectId, lint.package); if (diff.already_active) return { status: "no_changes", target_project_id: projectId, package_key: lint.package.key, package_version: lint.package.version, package_hash: lint.package_hash, diff }; const core = { schema_version: 1, id: `import_${structuredHash([projectId, lint.package_hash, Date.now()]).slice(0, 20)}`, status: "pending", target_project_id: projectId, package_file: path.resolve(packageFile), package_file_hash: digest(packageSource), package_key: lint.package.key, package_version: lint.package.version, package_hash: lint.package_hash, target_snapshot_hash: targetSnapshot(db, projectId, lint.package.key), diff, package: lint.package, created_at: now() }; const proposal = { ...core, proposal_hash: digest(core) }; db.prepare("INSERT INTO workflow_import_proposals(id,target_project_id,package_key,package_version,package_hash,target_snapshot_hash,proposal_hash,diff_json,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)").run(proposal.id, projectId, proposal.package_key, proposal.package_version, proposal.package_hash, proposal.target_snapshot_hash, proposal.proposal_hash, stableJson(diff), "pending", proposal.created_at); atomicJson(proposalFile, proposal); return proposal; } finally { db.close(); } }
+export function proposeWorkflowImport(dbFile, packageFile, proposalFile, projectId, options = {}) { const packageSource = fs.readFileSync(packageFile, "utf8"), lint = inspectWorkflowPackage(packageFile); if (lint.status !== "passed") return { status: "rejected", lint }; const migrationFrom = options.migrationFrom ? String(options.migrationFrom) : null; const db = openDb(dbFile); try { if (!db.prepare("SELECT 1 FROM projects WHERE id=?").get(projectId)) throw new Error(`IMPORT_TARGET_PROJECT_NOT_FOUND: ${projectId}`); if (migrationFrom) { if (migrationFrom === lint.package.key) throw new Error("PACKAGE_MIGRATION_IDENTITY_INVALID"); if (!activeRelease(db, projectId, migrationFrom)) throw new Error(`PACKAGE_MIGRATION_SOURCE_NOT_ACTIVE: ${migrationFrom}`); } const diff = packageDiff(db, projectId, lint.package); if (migrationFrom) diff.migration = { from: migrationFrom, to: lint.package.key }; if (diff.already_active) return { status: "no_changes", target_project_id: projectId, package_key: lint.package.key, package_version: lint.package.version, package_hash: lint.package_hash, diff }; const core = { schema_version: 1, id: `import_${structuredHash([projectId, lint.package_hash, migrationFrom, Date.now()]).slice(0, 20)}`, status: "pending", target_project_id: projectId, package_file: path.resolve(packageFile), package_file_hash: digest(packageSource), package_key: lint.package.key, package_version: lint.package.version, package_hash: lint.package_hash, target_snapshot_hash: proposalTargetSnapshot(db, projectId, lint.package.key, migrationFrom), diff, package: lint.package, ...(migrationFrom ? { migration_from: migrationFrom } : {}), created_at: now() }; const proposal = { ...core, proposal_hash: digest(core) }; db.prepare("INSERT INTO workflow_import_proposals(id,target_project_id,package_key,package_version,package_hash,target_snapshot_hash,proposal_hash,diff_json,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)").run(proposal.id, projectId, proposal.package_key, proposal.package_version, proposal.package_hash, proposal.target_snapshot_hash, proposal.proposal_hash, stableJson(diff), "pending", proposal.created_at); atomicJson(proposalFile, proposal); return proposal; } finally { db.close(); } }
+
+export function proposeWorkflowMigration(dbFile, packageFile, proposalFile, projectId, fromPackageKey) {
+  if (!fromPackageKey) throw new Error("PACKAGE_MIGRATION_SOURCE_REQUIRED");
+  return proposeWorkflowImport(dbFile, packageFile, proposalFile, projectId, { migrationFrom: fromPackageKey });
+}
 
 function technicalId(projectId, packageKey, type, itemKey) { return `imp_${type}_${structuredHash([projectId, packageKey, itemKey]).slice(0, 20)}`; }
-function mapEntity(db, proposalId, projectId, packageKey, type, itemKey) { const value = technicalId(projectId, packageKey, type, itemKey); db.prepare("INSERT OR REPLACE INTO package_import_mappings(proposal_id,entity_type,semantic_key,local_id) VALUES(?,?,?,?)").run(proposalId, type, itemKey, value); return value; }
+function mapEntity(db, proposal, projectId, packageKey, type, itemKey) {
+  const migrated = proposal.migration_from && type !== "package_release" ? db.prepare(`SELECT m.local_id FROM package_import_mappings m JOIN workflow_import_proposals p ON p.id=m.proposal_id
+    WHERE p.target_project_id=? AND p.package_key=? AND p.status='applied' AND m.entity_type=? AND m.semantic_key=? ORDER BY p.applied_at DESC LIMIT 1`).get(projectId, proposal.migration_from, type, itemKey)?.local_id : null;
+  const value = migrated ?? technicalId(projectId, packageKey, type, itemKey);
+  db.prepare("INSERT OR REPLACE INTO package_import_mappings(proposal_id,entity_type,semantic_key,local_id) VALUES(?,?,?,?)").run(proposal.id, type, itemKey, value);
+  return value;
+}
 
 function applyCatalogs(db, value) {
   for (const item of value.catalogs.domains) db.prepare("INSERT INTO domains(id,name) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name").run(item.key, item.name);
@@ -231,7 +243,7 @@ function applyRoles(db, proposal, projectId, value) {
   for (const role of value.roles) db.prepare("INSERT INTO roles(id,name) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name").run(role.key, role.name);
   for (const role of value.roles) {
     db.prepare("UPDATE role_contracts SET status='superseded' WHERE project_id=? AND role_id=? AND status='active'").run(projectId, role.key);
-    const contractId = mapEntity(db, proposal.id, projectId, value.key, "role_contract", role.key), c = role.contract;
+    const contractId = mapEntity(db, proposal, projectId, value.key, "role_contract", role.key), c = role.contract;
     db.prepare(`INSERT INTO role_contracts(id,project_id,role_id,version,purpose,boundaries_json,allowed_work_types_json,allowed_artifact_types_json,allowed_tools_json,allowed_skills_json,required_checks_json,allowed_transitions_json,allowed_profiles_json,context_limit_bytes,max_calls,max_correction_cycles,timeout_seconds,result_schema_key,prompt_template_version,escalation_json,status)
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET version=excluded.version,purpose=excluded.purpose,boundaries_json=excluded.boundaries_json,allowed_work_types_json=excluded.allowed_work_types_json,allowed_artifact_types_json=excluded.allowed_artifact_types_json,allowed_tools_json=excluded.allowed_tools_json,allowed_skills_json=excluded.allowed_skills_json,required_checks_json=excluded.required_checks_json,allowed_transitions_json=excluded.allowed_transitions_json,allowed_profiles_json=excluded.allowed_profiles_json,context_limit_bytes=excluded.context_limit_bytes,max_calls=excluded.max_calls,max_correction_cycles=excluded.max_correction_cycles,timeout_seconds=excluded.timeout_seconds,result_schema_key=excluded.result_schema_key,prompt_template_version=excluded.prompt_template_version,escalation_json=excluded.escalation_json,status='active'`)
       .run(contractId, projectId, role.key, c.version, c.purpose, stableJson(c.boundaries), stableJson(c.allowed_work_types), stableJson(c.allowed_artifact_types), stableJson(c.allowed_tools), stableJson(c.allowed_skills), stableJson(c.required_checks), stableJson(c.allowed_transitions), stableJson(c.allowed_profile_keys), c.context_limit_bytes, c.max_calls, c.max_correction_cycles, c.timeout_seconds, c.result_schema_key, c.prompt_template_version, stableJson(c.escalation), "active");
@@ -251,7 +263,7 @@ function applyChecks(db, proposal, projectId, value) {
     db.prepare("DELETE FROM project_checks WHERE project_id=? AND check_id=?").run(projectId, prior.local_id);
   }
   for (const check of value.checks) {
-    const checkId = mapEntity(db, proposal.id, projectId, value.key, "check", check.key); checkMap.set(check.key, checkId);
+    const checkId = mapEntity(db, proposal, projectId, value.key, "check", check.key); checkMap.set(check.key, checkId);
     const existing = db.prepare("SELECT kind FROM check_definitions WHERE id=?").get(checkId);
     // A disabled portable check is an installation hook, not an instruction to erase machine-local
     // executable paths. Once the owner has bound that hook to a real runner, package upgrades may still
@@ -268,7 +280,7 @@ function applyChecks(db, proposal, projectId, value) {
 function applyWorkflows(db, proposal, projectId, value) {
   const workflowMap = new Map();
   for (const workflow of value.workflows) {
-    const workflowId = mapEntity(db, proposal.id, projectId, value.key, "workflow", workflow.key); workflowMap.set(workflow.key, workflowId);
+    const workflowId = mapEntity(db, proposal, projectId, value.key, "workflow", workflow.key); workflowMap.set(workflow.key, workflowId);
     db.prepare(`INSERT INTO workflows(id,name,project_id,package_key,package_version,default_quality,default_level,status,discovery_json,history_budget_bytes) VALUES(?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET name=excluded.name,package_key=excluded.package_key,package_version=excluded.package_version,default_quality=excluded.default_quality,default_level=excluded.default_level,status=excluded.status,discovery_json=excluded.discovery_json,history_budget_bytes=excluded.history_budget_bytes`)
       .run(workflowId, workflow.name, projectId, value.key, value.version, workflow.default_quality, workflow.default_level, workflow.status, stableJson(workflow.discovery), workflow.history_budget_bytes);
@@ -288,7 +300,7 @@ function applyBindingsAndPolicies(db, proposal, projectId, value, workflowMap) {
   db.prepare("DELETE FROM workflow_routes WHERE project_id=? AND workflow_id IN (SELECT id FROM workflows WHERE project_id=? AND package_key=?)").run(projectId, projectId, value.key);
   for (const route of value.routes) db.prepare("INSERT INTO workflow_routes(project_id,work_type_id,workflow_id,enabled,priority) VALUES(?,?,?,?,?)").run(projectId, route.work_type_key, workflowMap.get(route.workflow_key), Number(route.enabled), route.priority);
   for (const document of value.documents) {
-    const documentId = mapEntity(db, proposal.id, projectId, value.key, "document", document.key);
+    const documentId = mapEntity(db, proposal, projectId, value.key, "document", document.key);
     db.prepare("INSERT INTO project_documents(id,project_id,path,root_key,document_type,authority,status,active) VALUES(?,?,?,?,?,?,?,1) ON CONFLICT(id) DO UPDATE SET path=excluded.path,root_key=excluded.root_key,document_type=excluded.document_type,authority=excluded.authority,status=excluded.status,active=1").run(documentId, projectId, document.path, document.root, document.type, document.authority, document.status);
     db.prepare("DELETE FROM role_documents WHERE project_id=? AND document_id=?").run(projectId, documentId);
     for (const binding of document.bindings) db.prepare("INSERT INTO role_documents(project_id,role_id,document_id,read_access,write_access,purpose,priority) VALUES(?,?,?,?,?,?,?)").run(projectId, binding.role_key, documentId, Number(binding.read), Number(binding.write), binding.purpose, binding.priority);
@@ -313,8 +325,8 @@ function applyBindingsAndPolicies(db, proposal, projectId, value, workflowMap) {
 function applyTemplatesAndScenarios(db, proposal, projectId, value) {
   for (const template of value.prompt_templates) {
     db.prepare("UPDATE prompt_templates SET status='superseded' WHERE project_id=? AND package_key=? AND template_key=? AND status='active'").run(projectId, value.key, template.key);
-    const promptId = mapEntity(db, proposal.id, projectId, value.key, "prompt_template", template.key);
-    db.prepare("INSERT INTO prompt_templates(id,project_id,package_key,template_key,version,role_id,result_schema_key,template_text,content_hash,status) VALUES(?,?,?,?,?,?,?,?,?,'active') ON CONFLICT(id) DO UPDATE SET version=excluded.version,role_id=excluded.role_id,result_schema_key=excluded.result_schema_key,template_text=excluded.template_text,content_hash=excluded.content_hash,status='active'").run(promptId, projectId, value.key, template.key, template.version, template.role_key, template.result_schema_key, template.template, template.content_hash);
+    const promptId = mapEntity(db, proposal, projectId, value.key, "prompt_template", template.key);
+    db.prepare("INSERT INTO prompt_templates(id,project_id,package_key,template_key,version,role_id,result_schema_key,template_text,content_hash,status) VALUES(?,?,?,?,?,?,?,?,?,'active') ON CONFLICT(id) DO UPDATE SET package_key=excluded.package_key,version=excluded.version,role_id=excluded.role_id,result_schema_key=excluded.result_schema_key,template_text=excluded.template_text,content_hash=excluded.content_hash,status='active'").run(promptId, projectId, value.key, template.key, template.version, template.role_key, template.result_schema_key, template.template, template.content_hash);
   }
   for (const scenario of value.test_scenarios) {
     const scenarioId = technicalId(projectId, value.key, "scenario", `${value.version}:${scenario.key}`);
@@ -331,6 +343,36 @@ function applyEvidenceFlows(db, projectId, value) {
     stableJson(flow.workflow_keys), stableJson(flow.nodes), stableJson(flow.required_edges), stableJson(flow.material_symbols), flow.transition.adapter, flow.transition.method, flow.status);
 }
 
+function retireMigratedPackage(db, proposal, projectId) {
+  const oldKey = proposal.migration_from;
+  if (!oldKey) return;
+  const newMappings = new Set(db.prepare("SELECT entity_type,local_id FROM package_import_mappings WHERE proposal_id=?").all(proposal.id).map(item => `${item.entity_type}:${item.local_id}`));
+  const oldMappings = db.prepare(`SELECT DISTINCT m.entity_type,m.local_id FROM package_import_mappings m JOIN workflow_import_proposals p ON p.id=m.proposal_id
+    WHERE p.target_project_id=? AND p.package_key=? AND p.status='applied'`).all(projectId, oldKey);
+  for (const item of oldMappings) {
+    if (newMappings.has(`${item.entity_type}:${item.local_id}`)) continue;
+    if (item.entity_type === "workflow") {
+      db.prepare("DELETE FROM workflow_routes WHERE project_id=? AND workflow_id=?").run(projectId, item.local_id);
+      db.prepare("UPDATE workflows SET status='retired' WHERE id=? AND project_id=? AND package_key=?").run(item.local_id, projectId, oldKey);
+    } else if (item.entity_type === "role_contract") db.prepare("UPDATE role_contracts SET status='superseded' WHERE id=? AND project_id=?").run(item.local_id, projectId);
+    else if (item.entity_type === "check") {
+      db.prepare("DELETE FROM project_diagnostic_policies WHERE project_id=? AND check_id=?").run(projectId, item.local_id);
+      db.prepare("DELETE FROM project_checks WHERE project_id=? AND check_id=?").run(projectId, item.local_id);
+    } else if (item.entity_type === "document") {
+      db.prepare("DELETE FROM role_documents WHERE project_id=? AND document_id=?").run(projectId, item.local_id);
+      db.prepare("UPDATE project_documents SET active=0 WHERE id=? AND project_id=?").run(item.local_id, projectId);
+    }
+  }
+  db.prepare("DELETE FROM portable_profile_requirements WHERE project_id=? AND package_key=?").run(projectId, oldKey);
+  db.prepare("DELETE FROM evidence_flow_adapters WHERE project_id=? AND package_key=?").run(projectId, oldKey);
+  db.prepare("DELETE FROM operational_level_escalation_rules WHERE project_id=? AND package_key=?").run(projectId, oldKey);
+  db.prepare("DELETE FROM operational_level_budget_limits WHERE project_id=? AND package_key=?").run(projectId, oldKey);
+  db.prepare("DELETE FROM operational_level_policies WHERE project_id=? AND package_key=?").run(projectId, oldKey);
+  db.prepare("UPDATE prompt_templates SET status='superseded' WHERE project_id=? AND package_key=? AND status='active'").run(projectId, oldKey);
+  db.prepare("DELETE FROM package_test_scenarios WHERE project_id=? AND package_key=?").run(projectId, oldKey);
+  db.prepare("UPDATE workflow_package_releases SET status='superseded' WHERE project_id=? AND package_key=? AND status='active'").run(projectId, oldKey);
+}
+
 export function applyWorkflowImport(dbFile, proposalFile, projectId, options = {}) {
   const proposal = JSON.parse(fs.readFileSync(proposalFile, "utf8")), confirmedBy = String(options.confirmedBy ?? "").trim();
   if (!confirmedBy) throw new Error("IMPORT_CONFIRMATION_REQUIRED");
@@ -343,13 +385,13 @@ export function applyWorkflowImport(dbFile, proposalFile, projectId, options = {
   try {
     const record = db.prepare("SELECT * FROM workflow_import_proposals WHERE id=?").get(proposal.id);
     if (!record || record.status !== "pending" || record.proposal_hash !== proposal.proposal_hash) throw new Error("IMPORT_PROPOSAL_NOT_PENDING");
-    if (targetSnapshot(db, projectId, proposal.package_key) !== proposal.target_snapshot_hash) { db.prepare("UPDATE workflow_import_proposals SET status='stale' WHERE id=?").run(proposal.id); proposal.status = "stale"; atomicJson(proposalFile, proposal); throw new Error("IMPORT_TARGET_CHANGED"); }
+    if (proposalTargetSnapshot(db, projectId, proposal.package_key, proposal.migration_from ?? null) !== proposal.target_snapshot_hash) { db.prepare("UPDATE workflow_import_proposals SET status='stale' WHERE id=?").run(proposal.id); proposal.status = "stale"; atomicJson(proposalFile, proposal); throw new Error("IMPORT_TARGET_CHANGED"); }
     const value = proposal.package;
     db.exec("BEGIN IMMEDIATE");
     try {
-      applyCatalogs(db, value); applyResources(db, projectId, value); applyRoles(db, proposal, projectId, value); applyChecks(db, proposal, projectId, value); const workflowMap = applyWorkflows(db, proposal, projectId, value); applyBindingsAndPolicies(db, proposal, projectId, value, workflowMap); applyEvidenceFlows(db, projectId, value); applyTemplatesAndScenarios(db, proposal, projectId, value);
+      applyCatalogs(db, value); applyResources(db, projectId, value); applyRoles(db, proposal, projectId, value); applyChecks(db, proposal, projectId, value); const workflowMap = applyWorkflows(db, proposal, projectId, value); applyBindingsAndPolicies(db, proposal, projectId, value, workflowMap); applyEvidenceFlows(db, projectId, value); applyTemplatesAndScenarios(db, proposal, projectId, value); retireMigratedPackage(db, proposal, projectId);
       const prior = activeRelease(db, projectId, value.key); db.prepare("UPDATE workflow_package_releases SET status='superseded' WHERE project_id=? AND package_key=? AND status='active'").run(projectId, value.key);
-      const releaseId = mapEntity(db, proposal.id, projectId, value.key, "package_release", value.version);
+      const releaseId = mapEntity(db, proposal, projectId, value.key, "package_release", value.version);
       db.prepare("INSERT INTO workflow_package_releases(id,project_id,package_key,version,purpose,prompt_builder_version,manifest_hash,parent_version,status,created_at,domain_keys_json,discipline_keys_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").run(releaseId, projectId, value.key, value.version, value.purpose, value.prompt_builder_version, proposal.package_hash, prior?.version ?? null, "active", now(), stableJson(value.catalogs.domains.map(item => item.key)), stableJson(value.catalogs.disciplines.map(item => item.key)));
       const appliedAt = now(); db.prepare("UPDATE workflow_import_proposals SET status='applied',confirmed_by=?,applied_at=? WHERE id=?").run(confirmedBy, appliedAt, proposal.id); db.exec("COMMIT"); proposal.status = "applied"; proposal.confirmed_by = confirmedBy; proposal.applied_at = appliedAt;
     } catch (error) { db.exec("ROLLBACK"); throw error; }

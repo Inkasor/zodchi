@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { openDb } from "../src/db.mjs";
 import { onboardProject } from "../src/onboarding.mjs";
-import { exportWorkflowPackage, inspectWorkflowPackage, parseWorkflowPackage, serializeWorkflowPackage, proposeWorkflowImport, applyWorkflowImport, validateWorkflowPackage } from "../src/workflow-package.mjs";
+import { exportWorkflowPackage, inspectWorkflowPackage, parseWorkflowPackage, serializeWorkflowPackage, proposeWorkflowImport, proposeWorkflowMigration, applyWorkflowImport, validateWorkflowPackage } from "../src/workflow-package.mjs";
 import { createExperienceProposal, evaluateExperienceProposal, applyExperienceProposal, recordExperienceObservation } from "../src/experience.mjs";
 import { structuredHash } from "../src/role-contracts.mjs";
 import { registerProjectResource } from "../src/project-resources.mjs";
@@ -127,6 +127,35 @@ test("package upgrade preserves a machine-local runner bound to a disabled porta
   const definition = db.prepare("SELECT name,runner,kind,config_json,timeout_seconds FROM check_definitions WHERE id=?").get(checkId);
   assert.deepEqual({ ...definition, config_json: JSON.parse(definition.config_json) }, { name: "Local BSL LS", runner: "one_c_bsl_policy", kind: "command", config_json: localConfig, timeout_seconds: 1800 });
   assert.equal(db.prepare("SELECT COUNT(*) count FROM project_checks WHERE project_id='target' AND check_id=? AND required=1").get(checkId).count, 4);
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("an explicit package-key migration reuses local entities and retires the old router atomically", () => {
+  const root = temporaryRoot("workflow-package-key-migration-"), sourceDb = seedSource(root), targetDb = seedTarget(root);
+  const oldPackage = path.join(root, "old.xml"), oldProposal = path.join(root, "old.json");
+  exportWorkflowPackage(sourceDb, oldPackage, "source", "demo.package");
+  const imported = proposeWorkflowImport(targetDb, oldPackage, oldProposal, "target");
+  applyWorkflowImport(targetDb, oldProposal, "target", { confirmedBy: "owner" });
+  let db = openDb(targetDb);
+  const oldWorkflowId = db.prepare("SELECT local_id FROM package_import_mappings WHERE proposal_id=? AND entity_type='workflow' AND semantic_key='main'").get(imported.id).local_id;
+  db.close();
+
+  const successor = parseWorkflowPackage(fs.readFileSync(oldPackage, "utf8"));
+  successor.key = "demo.successor"; successor.version = "2.0.0"; successor.purpose = "Canonical successor package";
+  const successorFile = path.join(root, "successor.xml"), migrationFile = path.join(root, "migration.json");
+  fs.writeFileSync(successorFile, serializeWorkflowPackage(successor), "utf8");
+  const proposal = proposeWorkflowMigration(targetDb, successorFile, migrationFile, "target", "demo.package");
+  assert.deepEqual(proposal.diff.migration, { from: "demo.package", to: "demo.successor" });
+  assert.throws(() => applyWorkflowImport(targetDb, migrationFile, "target"), /CONFIRMATION_REQUIRED/);
+  applyWorkflowImport(targetDb, migrationFile, "target", { confirmedBy: "owner" });
+
+  db = openDb(targetDb);
+  assert.equal(db.prepare("SELECT status FROM workflow_package_releases WHERE project_id='target' AND package_key='demo.package'").get().status, "superseded");
+  assert.equal(db.prepare("SELECT status FROM workflow_package_releases WHERE project_id='target' AND package_key='demo.successor'").get().status, "active");
+  assert.deepEqual({ ...db.prepare("SELECT id,package_key,status FROM workflows WHERE id=?").get(oldWorkflowId) }, { id: oldWorkflowId, package_key: "demo.successor", status: "active" });
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM workflow_routes r JOIN workflows w ON w.id=r.workflow_id WHERE r.project_id='target' AND w.package_key='demo.package'").get().count, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM portable_profile_requirements WHERE project_id='target' AND package_key='demo.package'").get().count, 0);
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
