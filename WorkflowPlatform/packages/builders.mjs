@@ -40,6 +40,7 @@ function addRoleToPackage(packageValue, item) {
 }
 const checkBinding = (quality, artifact, required = true) => ({ quality_mode_key: quality, artifact_type_key: artifact, required });
 const commandCheck = (key, name, command, args, bindings, timeout = 900) => ({ key, name, runner: key, kind: "command", config: { command, args }, timeout_seconds: timeout, bindings });
+const capabilityCheck = (key, name, capability, args, bindings, timeout = 900) => ({ key, name, runner: key, kind: "command", config: { capability, args }, timeout_seconds: timeout, bindings });
 const projectCommandCheck = (key, name, projectId, command, args, bindings, timeout = 900) => ({ key, name, runner: key, kind: "project_command", config: { project_id: projectId, command, args }, timeout_seconds: timeout, bindings });
 // A disabled check is declared so its absence stays visible, but it never blocks: it cannot pass, and
 // gate coverage is measured by the executable required checks instead.
@@ -50,8 +51,8 @@ const secretCheck = key => ({ key: `${key}_secret_scan`, name: "Secret scan", ru
 // moment a project publishes code would be the one moment nothing looks for a leaked secret.
 const securityChecks = key => [
   addBinding(secretCheck(key), "production", "release_package"),
-  commandCheck(`${key}_gitleaks`, "Gitleaks: history and working tree", "gitleaks.exe", ["detect", "--source", ".", "--redact", "--no-banner"], [checkBinding("security", "security_report"), checkBinding("production", "release_package")], 900),
-  commandCheck(`${key}_osv`, "OSV: known dependency vulnerabilities", "osv-scanner.exe", ["scan", "source", "-r", "."], [checkBinding("security", "security_report"), checkBinding("production", "release_package")], 1800)
+  capabilityCheck(`${key}_gitleaks`, "Gitleaks: history and working tree", "security.gitleaks", ["detect", "--source", ".", "--redact", "--no-banner"], [checkBinding("security", "security_report"), checkBinding("production", "release_package")], 900),
+  capabilityCheck(`${key}_osv`, "OSV: known dependency vulnerabilities", "security.osv_scanner", ["scan", "source", "-r", "."], [checkBinding("security", "security_report"), checkBinding("production", "release_package")], 1800)
 ];
 // Packages whose own tooling is not bound locally still need one executable gate, and a secret scan
 // over the changed files is one every project can run.
@@ -207,4 +208,4 @@ function companyWebPackage(spec) {
 }
 
 
-export { PACKAGE_VERSION, role, addRoleToPackage, checkBinding, commandCheck, projectCommandCheck, disabledCheck, secretCheck, securityChecks, withBroadSecretScan, addBinding, completeSoftwareChecks, step, workflow, question, route, binding, document, scenario, finalize, companyWebPackage };
+export { PACKAGE_VERSION, role, addRoleToPackage, checkBinding, commandCheck, capabilityCheck, projectCommandCheck, disabledCheck, secretCheck, securityChecks, withBroadSecretScan, addBinding, completeSoftwareChecks, step, workflow, question, route, binding, document, scenario, finalize, companyWebPackage };
