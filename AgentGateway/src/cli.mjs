@@ -10,6 +10,7 @@ import { openGatewayDb } from "./db.mjs";
 import { runOpenAICompatible } from "./openai-compatible.mjs";
 import { resolveProviderCommand } from "./command.mjs";
 import { loadGatewayPolicy } from "./policy.mjs";
+import { assertMetadataOnlyReceipt, DEFAULT_PRIVACY_MODE, privacyAttestation } from "./receipt-privacy.mjs";
 
 const paths = resolveGatewayPaths();
 const root = paths.root;
@@ -216,6 +217,8 @@ const profile = cli.profile ?? null;
 if (!profile) fail("PROFILE_REQUIRED: all provider calls must use a named subscription profile");
 const profileConfig = providerConfig.profiles?.[profile] ?? {};
 if (!providerConfig.profiles?.[profile]) fail(`Unknown profile '${profile}' for provider '${provider}'`);
+const privacyMode = String(cli["privacy-mode"] ?? DEFAULT_PRIVACY_MODE);
+if (privacyMode !== DEFAULT_PRIVACY_MODE) fail(`RECEIPT_PRIVACY_MODE_UNSUPPORTED: ${privacyMode}`);
 
 const task = readTask(cli["task-file"]);
 const database = openGatewayDb(databasePath);
@@ -327,6 +330,8 @@ const receipt = {
   resultHash: crypto.createHash("sha256").update(`${result.stdout}\n${result.stderr}`).digest("hex"),
   artifactRef: cli["artifact-ref"] ?? null,
   decisionRef: cli["decision-ref"] ?? null,
+  privacyMode,
+  persistenceAttestation: privacyAttestation(privacyMode),
   environment
 };
 if (!Number.isInteger(receipt.attemptNo) || receipt.attemptNo < 1) fail(`ATTEMPT_NUMBER_INVALID: ${receipt.attemptNo}`);
@@ -378,8 +383,11 @@ const storedReceipt = {
   result_hash: receipt.resultHash,
   artifact_ref: receipt.artifactRef,
   decision_ref: receipt.decisionRef,
-  environment_json: receipt.environment ? JSON.stringify(receipt.environment) : null
+  environment_json: receipt.environment ? JSON.stringify(receipt.environment) : null,
+  privacy_mode: receipt.privacyMode,
+  persistence_attestation_json: JSON.stringify(receipt.persistenceAttestation)
 };
+assertMetadataOnlyReceipt(storedReceipt, { prompt, stdout: result.stdout, stderr: result.stderr });
 const storedColumns = Object.keys(storedReceipt);
 database.prepare(`INSERT INTO receipts (${storedColumns.join(",")}) VALUES (${storedColumns.map(() => "?").join(",")})`)
   .run(...Object.values(storedReceipt));
