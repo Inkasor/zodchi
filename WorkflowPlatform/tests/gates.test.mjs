@@ -87,7 +87,8 @@ test("secret scan distinguishes a mask filename from a boundary-delimited creden
   db.prepare("INSERT INTO project_checks(project_id,check_id,quality_mode_id,required) VALUES('secret-boundary','secret','mvp',1)").run();
   db.close();
   assert.equal((await runProjectGate(project, "mvp", dbFile, "gate-mask", { allowedPaths: ["mask.mjs"] })).status, "passed");
-  fs.writeFileSync(source, "const token = 'sk-abcdefghijklmnopqrstuvwxyz012345';\n");
+  const credential = ["s", "k-", "abcdefghijklmnopqrstuvwxyz012345"].join("");
+  fs.writeFileSync(source, `const token = '${credential}';\n`);
   const blocked = await runProjectGate(project, "mvp", dbFile, "gate-token", { allowedPaths: ["mask.mjs"] });
   assert.equal(blocked.status, "failed");
   assert.match(blocked.checks[0].failure, /credential-shaped material/);
