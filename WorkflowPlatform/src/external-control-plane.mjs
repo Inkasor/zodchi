@@ -133,9 +133,13 @@ export function acceptExternalControlResult(db, packet) {
   if (!found) throw new Error(`EXTERNAL_CONTROL_REQUEST_NOT_FOUND: ${packet.request_id}`);
   if (packet.request_hash !== found.request_hash || packet.project_id !== found.project_id || packet.run_id !== found.run_id || packet.step_id !== found.step_id || packet.executor_id !== found.executor_id || packet.checkpoint_hash !== found.checkpoint_hash) throw new Error("EXTERNAL_CONTROL_RESULT_BINDING_MISMATCH");
   requireHash(packet.payload_hash, "payload_hash");
+  // Reject oversized untrusted input before canonical serialization and hashing duplicate the work.
+  // JSON serialization is still necessary to measure the wire-shaped payload, but no cryptographic
+  // or database work happens until the hard boundary is known to fit.
+  const payloadJson = JSON.stringify(packet.payload);
+  if (Buffer.byteLength(payloadJson, "utf8") > 1_048_576) throw new Error("EXTERNAL_CONTROL_RESULT_PAYLOAD_TOO_LARGE");
   const payloadHash = structuredHash(packet.payload);
   if (payloadHash !== packet.payload_hash) throw new Error("EXTERNAL_CONTROL_RESULT_PAYLOAD_HASH_MISMATCH");
-  if (Buffer.byteLength(JSON.stringify(packet.payload), "utf8") > 1_048_576) throw new Error("EXTERNAL_CONTROL_RESULT_PAYLOAD_TOO_LARGE");
   const executor = executorRow(db, found.project_id, found.executor_id);
   if (!executor || packet.key_id !== found.executor_key_id || packet.key_id !== executor.key_id) throw new Error("EXTERNAL_CONTROL_RESULT_EXECUTOR_MISMATCH");
   const core = resultCore(packet, payloadHash), resultHash = structuredHash(core);

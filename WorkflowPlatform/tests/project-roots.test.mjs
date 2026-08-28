@@ -752,6 +752,34 @@ test("an unreadable filesystem branch makes fallback enumeration non-authoritati
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("a plain non-Git corpus remains authoritative when the Git executable is unavailable", () => {
+  const root = temporaryRoot("workflow-no-git-corpus-");
+  fs.writeFileSync(path.join(root, "brief.md"), "No repository is required for content work.\n");
+  const listing = listFiles(root, {
+    maxFiles: 50,
+    scope: sourceScope([]),
+    runGit() { throw Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" }); }
+  });
+  assert.equal(listing.source, "walk");
+  assert.equal(listing.authoritative, true);
+  assert.equal(listing.files.includes("brief.md"), true);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("a Git working tree is non-authoritative when Git cannot establish its ignored boundary", () => {
+  const root = temporaryRoot("workflow-missing-git-boundary-");
+  fs.mkdirSync(path.join(root, ".git"));
+  fs.writeFileSync(path.join(root, "brief.md"), "Tracked status is unknown.\n");
+  const listing = listFiles(root, {
+    maxFiles: 50,
+    scope: sourceScope([]),
+    runGit() { throw Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" }); }
+  });
+  assert.equal(listing.source, "walk_after_git_error");
+  assert.equal(listing.authoritative, false);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("a tracked file deleted from the working tree is not enumerated and costs no per-file stat", () => {
   const root = largeRepositoryFixture("workflow-scope-deleted-", { noise: 5 });
   execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: root, windowsHide: true });

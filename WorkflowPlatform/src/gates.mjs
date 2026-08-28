@@ -107,7 +107,7 @@ function compactFailure(text, max = 2200) {
 
 function secretScan(project, allowedPaths) {
   const findings = [];
-  const patterns = [/(?:^|[^A-Za-z0-9])(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{16,}|AKIA[A-Z0-9]{16})/, /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/];
+  const patterns = [/(?:^|[^A-Za-z0-9])(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{16,}|AKIA[A-Z0-9]{16})/m, /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/m];
   let candidates = allowedPaths;
   if (!candidates.length) {
     try {
