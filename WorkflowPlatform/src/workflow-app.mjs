@@ -18,6 +18,7 @@ import { bindProject, bindingEvidence } from "./project-binding.mjs";
 import { inside } from "./project-roots.mjs";
 import { continueApprovedRun, executeStructuredWork, pausedRunObjective, resumeObjective } from "./work-executor.mjs";
 import { chargeDirectReceipt, effectiveQualityMode, initializeQualityRun, operationalLevel, ownerQualityFloor, reserveDirectModelCall } from "./quality-contracts.mjs";
+import { approveBoundInteraction, assertApprovalStillCurrent } from "./approval-binding.mjs";
 
 export function loadWorkflow(id, workflowsRoot = resolveWorkflowSettings().workflowsRoot) {
   if (!id) throw new Error("workflow id is required");
@@ -371,7 +372,15 @@ export async function processMessage({
       const response = saveAssistant(workflowMessage("approvalDeclined", responseLanguage));
       return finish({ route: "owner_decision", classification, response, gateway: receipts });
     }
-    runtime.db.prepare("UPDATE approvals SET status='approved',resolved_at=? WHERE id=?").run(now(), ownerDecision.id);
+    const approval = approveBoundInteraction(runtime.db, ownerDecision.id, { answeredRunId: runId });
+    if (!approval.approved) {
+      runtime.setState(runId, "completed", { reason: approval.stale ? "stale approval replaced with a decision for the current state" : "duplicate owner decision recorded" });
+      const response = saveAssistant(workflowMessage(approval.stale ? "approvalStale" : "contractRejected", responseLanguage));
+      return finish({ route: approval.stale ? "owner_decision_stale" : "owner_decision", classification, response, gateway: receipts, approval });
+    }
+    // This is the action boundary. The transaction above checked the binding while recording consent;
+    // checking once more before dispatch makes any intervening mutation fail closed as well.
+    assertApprovalStillCurrent(runtime.db, ownerDecision.id);
     // Where the decision sits decides how the run continues. A decision before the work re-enters the run
     // from its objective, because nothing has been done yet. A decision after the work must not: doing so
     // would repeat, and pay for again, every step already completed. That run resumes from its recorded

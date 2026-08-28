@@ -523,7 +523,7 @@ test("a declared route whose worker may write is refused without a planning step
 
 // A person asked to authorize an action can also be neither agreeing nor refusing. Reading that as a
 // yes takes an action they were still deciding about, so doubt leaves the decision exactly where it was.
-async function approvalScenario(prefix, ownerResponse) {
+async function approvalScenario(prefix, ownerResponse, beforeDecision = null) {
   const env = fixture(prefix);
   const db = openDb(env.dbFile);
   db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow',?,?,?,1,?,'package.v1',?,'[]','[\"check-ok\"]','{}','{}')").run("owner_approval", 1, null, 1, "approval.v1");
@@ -537,6 +537,7 @@ async function approvalScenario(prefix, ownerResponse) {
   const opened = openDb(env.dbFile);
   const approval = opened.prepare("SELECT id FROM approvals WHERE run_id=? AND status='pending'").get(first.run_id);
   opened.close();
+  if (beforeDecision) beforeDecision(env.dbFile, approval.id);
   const calls = [];
   const second = await processMessage({
     message: "ответ владельца", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true,
@@ -549,7 +550,8 @@ async function approvalScenario(prefix, ownerResponse) {
     gateRunner: async () => ({ task_id: "gate", project: env.project, level: "mvp", files: [], status: "passed", checks: [{ id: "check-ok", required: true, status: "passed" }], summary: "passed" })
   });
   const db2 = openDb(env.dbFile);
-  const state = { approval: db2.prepare("SELECT status FROM approvals WHERE id=?").get(approval.id).status, run: db2.prepare("SELECT state FROM workflow_runs WHERE id=?").get(first.run_id).state };
+  const approvalRow = db2.prepare("SELECT status,binding_hash,binding_json,superseded_by FROM approvals WHERE id=?").get(approval.id);
+  const state = { approval: approvalRow.status, binding_hash: approvalRow.binding_hash, binding_json: approvalRow.binding_json, superseded_by: approvalRow.superseded_by, run: db2.prepare("SELECT state FROM workflow_runs WHERE id=?").get(first.run_id).state };
   db2.close();
   return { env, first, second, calls, state };
 }
@@ -561,6 +563,8 @@ test("an unambiguous yes continues the waiting run instead of starting a new one
   assert.equal(second.execution.status, "completed");
   assert.equal(calls.includes("worker"), true);
   assert.equal(state.run, "completed");
+  assert.match(state.binding_hash, /^[0-9a-f]{64}$/);
+  assert.equal(JSON.parse(state.binding_json).action.step_key, "owner_approval");
   assert.notEqual(second.run_id, first.run_id);
   fs.rmSync(env.root, { recursive: true, force: true });
 });
@@ -581,6 +585,23 @@ test("doubt is neither consent nor refusal: the decision stays open and nothing 
   assert.deepEqual(calls, []);
   assert.equal(second.route, "conversation");
   assert.notEqual(second.run_id, first.run_id);
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
+test("approval is superseded when its exact plan changes before the action boundary", async () => {
+  const mutatePlan = dbFile => {
+    const db = openDb(dbFile);
+    db.prepare("UPDATE plans SET risks_json='[\"new production radius\"]' WHERE status='authorized'").run();
+    db.close();
+  };
+  const { env, second, calls, state } = await approvalScenario("workflow-owner-stale-binding-", "approve", mutatePlan);
+  assert.equal(second.route, "owner_decision_stale");
+  assert.equal(state.approval, "superseded");
+  assert.equal(state.run, "approval_required");
+  assert.deepEqual(calls, []);
+  const verified = openDb(env.dbFile);
+  assert.equal(verified.prepare("SELECT COUNT(*) count FROM approvals WHERE id=? AND status='pending'").get(state.superseded_by).count, 1);
+  verified.close();
   fs.rmSync(env.root, { recursive: true, force: true });
 });
 
@@ -661,24 +682,31 @@ test("a decision that follows the work is continued from what was recorded, not 
   fs.rmSync(env.root, { recursive: true, force: true });
 });
 
-test("a routed irreversible approval blocks productive roles before any Gateway call", async () => {
+test("a routed irreversible approval binds an exact plan before any productive role", async () => {
   const env = fixture("workflow-routed-approval-");
   const db = openDb(env.dbFile);
   db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow','plan',1,'planner',1,0,'package.v1','planner.v1','[]','[]','{}','{}')").run();
   db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow','owner_approval',2,NULL,1,1,'package.v1','approval.v1','[\"decision\"]','[]','{}','{}')").run();
   db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow','deploy',3,'worker',1,0,'package.v1','worker.v1','[\"code\"]','[\"check-ok\"]','{}','{}')").run();
   db.close();
-  let calls = 0;
+  const calls = [];
   const result = await processMessage({
     message: "Разверни изменение", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} },
-    execute: true, classificationResult: classification(false), gatewayCall: async () => { calls += 1; throw new Error("must not be called"); }
+    execute: true, classificationResult: classification(false), gatewayCall: async request => {
+      calls.push(request.role);
+      if (request.role === "planner") return receipt("planner", plannerResult());
+      throw new Error(`productive role ran before approval: ${request.role}`);
+    }
   });
-  assert.equal(calls, 0);
+  assert.deepEqual(calls, ["planner"]);
   assert.equal(result.execution.status, "approval_required");
   assert.match(result.response, /отдельного решения владельца/i);
   const verified = openDb(env.dbFile);
   assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(result.run_id).state, "approval_required");
-  assert.equal(verified.prepare("SELECT COUNT(*) count FROM approvals WHERE run_id=? AND status='pending'").get(result.run_id).count, 1);
+  const approval = verified.prepare("SELECT binding_hash,binding_json FROM approvals WHERE run_id=? AND status='pending'").get(result.run_id);
+  assert.match(approval.binding_hash, /^[0-9a-f]{64}$/);
+  assert.equal(JSON.parse(approval.binding_json).plan.steps.length, 1);
+  assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflow_steps WHERE run_id=? AND role_id='worker' AND state='pending'").get(result.run_id).count, 1);
   verified.close();
   fs.rmSync(env.root, { recursive: true, force: true });
 });
