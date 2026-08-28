@@ -54,7 +54,7 @@ jobs:
           node scripts/build-release.mjs --output $out --stage-root $env:RUNNER_TEMP
           node "$out\tools\release-lint.mjs" $out
           $archive = Join-Path $PWD $env:ARCHIVE_NAME
-          Compress-Archive -LiteralPath $out -DestinationPath $archive -CompressionLevel Optimal
+          node scripts/build-release-archive.mjs --root $out --out $archive
           $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $env:ARCHIVE_NAME" | Set-Content -LiteralPath SHA256SUMS.txt -Encoding utf8NoBOM
           node scripts/build-release-manifest.mjs --archive $archive --checksums SHA256SUMS.txt --tag "${{ github.ref_name }}" --commit "${{ github.sha }}" --release-root $out --out zodchi-release-manifest.json --workflow-run "${{ github.run_id }}" --repository "${{ github.repository }}"

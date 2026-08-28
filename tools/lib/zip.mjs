@@ -11,6 +11,82 @@ const CENTRAL_FILE_HEADER = 0x02014b50;
 const LOCAL_FILE_HEADER = 0x04034b50;
 const ZIP64_LOCATOR = 0x07064b50;
 const MAX_COMMENT = 0xffff;
+const UTF8_FLAG = 0x0800;
+const CANONICAL_DOS_TIME = 0;
+const CANONICAL_DOS_DATE = ((2000 - 1980) << 9) | (1 << 5) | 1;
+
+function archiveFiles(root) {
+  const files = [];
+  function visit(directory, relativeDirectory = "") {
+    const entries = fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    for (const entry of entries) {
+      const relative = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+      const absolute = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) throw new Error(`ZIP_SOURCE_SYMLINK_UNSUPPORTED: ${relative}`);
+      if (entry.isDirectory()) visit(absolute, relative);
+      else if (entry.isFile()) files.push({ relative, absolute });
+      else throw new Error(`ZIP_SOURCE_ENTRY_UNSUPPORTED: ${relative}`);
+    }
+  }
+  visit(root);
+  return files;
+}
+
+// Release archives are content-addressed artifacts, so filesystem mtimes and directory enumeration
+// order cannot participate in their bytes. Fixed DOS timestamps and sorted UTF-8 names make the same
+// release root produce the same ZIP on every retry using the pinned Node runtime.
+export function createDeterministicZip(root, { rootName = "Zodchi" } = {}) {
+  const source = path.resolve(root);
+  if (!fs.existsSync(source) || !fs.statSync(source).isDirectory()) throw new Error(`ZIP_SOURCE_ROOT_MISSING: ${source}`);
+  if (!/^[A-Za-z0-9._-]+$/.test(rootName)) throw new Error(`ZIP_ROOT_NAME_INVALID: ${rootName}`);
+  const files = archiveFiles(source);
+  if (files.length > 0xffff) throw new Error(`ZIP64_REQUIRED: ${files.length} entries`);
+  const locals = [], central = [];
+  let offset = 0;
+  for (const file of files) {
+    const name = Buffer.from(`${rootName}/${file.relative}`, "utf8"), content = fs.readFileSync(file.absolute);
+    const payload = zlib.deflateRawSync(content, { level: 9 }), crc = zlib.crc32(content);
+    if (name.length > 0xffff || payload.length > 0xffffffff || content.length > 0xffffffff || offset > 0xffffffff) throw new Error(`ZIP64_REQUIRED: ${file.relative}`);
+
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(LOCAL_FILE_HEADER, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(UTF8_FLAG, 6);
+    local.writeUInt16LE(8, 8);
+    local.writeUInt16LE(CANONICAL_DOS_TIME, 10);
+    local.writeUInt16LE(CANONICAL_DOS_DATE, 12);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(payload.length, 18);
+    local.writeUInt32LE(content.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    locals.push(local, name, payload);
+
+    const header = Buffer.alloc(46);
+    header.writeUInt32LE(CENTRAL_FILE_HEADER, 0);
+    header.writeUInt16LE(20, 4);
+    header.writeUInt16LE(20, 6);
+    header.writeUInt16LE(UTF8_FLAG, 8);
+    header.writeUInt16LE(8, 10);
+    header.writeUInt16LE(CANONICAL_DOS_TIME, 12);
+    header.writeUInt16LE(CANONICAL_DOS_DATE, 14);
+    header.writeUInt32LE(crc, 16);
+    header.writeUInt32LE(payload.length, 20);
+    header.writeUInt32LE(content.length, 24);
+    header.writeUInt16LE(name.length, 28);
+    header.writeUInt32LE(offset, 42);
+    central.push(header, name);
+    offset += local.length + name.length + payload.length;
+  }
+  const body = Buffer.concat(locals), directory = Buffer.concat(central);
+  if (body.length > 0xffffffff || directory.length > 0xffffffff) throw new Error("ZIP64_REQUIRED: archive size");
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(END_OF_CENTRAL_DIRECTORY, 0);
+  end.writeUInt16LE(files.length, 8);
+  end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(body.length, 16);
+  return Buffer.concat([body, directory, end]);
+}
 
 function locateEndOfCentralDirectory(buffer) {
   const earliest = Math.max(0, buffer.length - MAX_COMMENT - 22);
