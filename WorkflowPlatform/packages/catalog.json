@@ -5,6 +5,25 @@
       "key": "software.web-application",
       "version": "1.0.0",
       "support_status": "support-grade",
+      "work_types": [
+        "access_management",
+        "asset",
+        "content",
+        "continuation",
+        "conversation",
+        "data_change",
+        "deployment",
+        "documentation",
+        "fix",
+        "implementation",
+        "incident",
+        "project_bootstrap",
+        "release",
+        "research",
+        "security_review",
+        "testing",
+        "verification"
+      ],
       "file": "example/generated/software.web-application.xml",
       "owner_acceptance": [
         "content",
@@ -18,6 +37,18 @@
       "key": "one-c.development",
       "version": "1.0.0",
       "support_status": "support-grade",
+      "work_types": [
+        "continuation",
+        "conversation",
+        "one-c.change",
+        "one-c.diagnosis",
+        "one-c.functional-test",
+        "one-c.integration",
+        "one-c.module-build",
+        "one-c.release",
+        "one-c.resume",
+        "research"
+      ],
       "file": "example/generated/one-c.development.xml",
       "owner_acceptance": []
     },
@@ -25,6 +56,21 @@
       "key": "game.web",
       "version": "0.1.0",
       "support_status": "preview",
+      "work_types": [
+        "content",
+        "continuation",
+        "conversation",
+        "game.build-test",
+        "game.change",
+        "game.design-research",
+        "game.pipeline-audit",
+        "game.product-acceptance",
+        "game.release-readiness",
+        "game.technical-qa",
+        "game.visual-acceptance",
+        "marketing",
+        "research"
+      ],
       "file": "example/generated/game.web.xml",
       "owner_acceptance": []
     },
@@ -32,6 +78,19 @@
       "key": "game.unity",
       "version": "0.1.0",
       "support_status": "preview",
+      "work_types": [
+        "continuation",
+        "conversation",
+        "game.build-test",
+        "game.change",
+        "game.design-research",
+        "game.pipeline-audit",
+        "game.product-acceptance",
+        "game.release-readiness",
+        "game.technical-qa",
+        "game.visual-acceptance",
+        "research"
+      ],
       "file": "example/generated/game.unity.xml",
       "owner_acceptance": []
     },
@@ -39,6 +98,15 @@
       "key": "data.analytics",
       "version": "0.1.0",
       "support_status": "preview",
+      "work_types": [
+        "continuation",
+        "conversation",
+        "data.discovery",
+        "data.verification",
+        "data_change",
+        "documentation",
+        "research"
+      ],
       "file": "example/generated/data.analytics.xml",
       "owner_acceptance": []
     },
@@ -46,6 +114,19 @@
       "key": "infra.operations",
       "version": "0.1.0",
       "support_status": "preview",
+      "work_types": [
+        "access_management",
+        "continuation",
+        "conversation",
+        "deployment",
+        "fix",
+        "implementation",
+        "incident",
+        "infra.backup-restore",
+        "infra.inventory",
+        "release",
+        "research"
+      ],
       "file": "example/generated/infra.operations.xml",
       "owner_acceptance": []
     },
@@ -53,6 +134,16 @@
       "key": "marketing.content-operations",
       "version": "0.1.0",
       "support_status": "preview",
+      "work_types": [
+        "content",
+        "continuation",
+        "conversation",
+        "documentation",
+        "marketing",
+        "marketing.activity",
+        "marketing.research",
+        "research"
+      ],
       "file": "example/generated/marketing.content-operations.xml",
       "owner_acceptance": []
     }

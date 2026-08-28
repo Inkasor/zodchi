@@ -23,6 +23,7 @@ import { buildCodeIntelligence, mergeGraphMatches } from "./code-intelligence.mj
 import { runCSharpProvider } from "./csharp-provider.mjs";
 import { applyIdleRunControl, requestRunControl, resumeRunControl, runControlStatus } from "./progress-supervisor.mjs";
 import { createExternalControlRequest, pendingExternalControlRequests, registerExternalExecutor, requestExternalControlCancellation } from "./external-control-plane.mjs";
+import { loadDefaultProjectPresetCatalog } from "./project-presets.mjs";
 const args = Object.fromEntries(process.argv.slice(3).reduce((a, v, i, x) => { if (v.startsWith("--")) { const next = x[i + 1]; a.push([v.slice(2), next === undefined || next.startsWith("--") ? true : next]); } return a; }, []));
 const settings = resolveWorkflowSettings();
 if (process.argv[2] === "configure") { console.log(JSON.stringify(configureInstallation(JSON.parse(fs.readFileSync(args.config, "utf8"))), null, 2)); }
@@ -76,6 +77,15 @@ else if (process.argv[2] === "external-control-deliver") {
   const result = await deliverExternalControlResult({ packet: JSON.parse(fs.readFileSync(args.packet, "utf8")), project: args.project ?? settings.project, dbFile: args.db ?? settings.databasePath, preferredLanguage: args.language ?? settings.responseLanguage, execute: args.execute !== false });
   console.log(JSON.stringify(result, null, 2));
   process.exitCode = result.control?.status === "completed" && result.evidence?.delivered ? 0 : 1;
+}
+else if (process.argv[2] === "preset-lint" || process.argv[2] === "preset-inspect") {
+  const catalog = loadDefaultProjectPresetCatalog({ presetFile: args.presets, packageFile: args.packages });
+  if (process.argv[2] === "preset-lint") console.log(JSON.stringify({ status: "passed", presets: catalog.presets.length }, null, 2));
+  else {
+    const preset = catalog.presets.find(item => item.key === args.preset);
+    if (!preset) throw new Error(`PRESET_NOT_FOUND: ${args.preset}`);
+    console.log(JSON.stringify(preset, null, 2));
+  }
 }
 // A hook configuration is shared with whatever else the project has configured, so installing one is a
 // planned change rather than a file the onboarding agent writes from a template.
@@ -136,4 +146,4 @@ else if (["queue-recover", "run-pause", "run-resume", "run-cancel", "dead-letter
     else console.log(JSON.stringify(queue.retryDeadLetter(args["dead-letter"], { approved: args.approved === true, actor: args.actor ?? "CLI operator" }), null, 2));
   } finally { runtime.db.close(); }
 }
-else console.log("Usage: node src/cli.mjs configure --config <file> | register-project --id <id> --name <name> --root <absolute-path> | onboard | lint | quality-contracts-lint | quality-policy-lint [--project <id>] | one-c-bsl-baseline --db <db> --project <id> --executable <file> --source <directory> --platform-bin <directory> --accepted-revision <sha> --confirmed-by <owner> --temp-root <directory> | one-c-bsl-configure --db <db> --project <id> --executable <file> --platform-bin <directory> --runner <file> --temp-root <directory> | prompt | run [--event-key <id>] | code-search --db <db> --project <id> --query <text> | csharp-provider --config <json> | external-executor-register | external-control-create|pending|cancel|deliver | run-statistics|run-status|run-watch --db <db> --run <id> | backup --db <workflow-db> --gateway-db <gateway-db> --out <directory> | restore --backup <directory> --db <new-workflow-db> --gateway-db <new-gateway-db> | queue-recover | run-pause --run <id> | run-resume --run <id> | run-cancel --run <id> | dead-letter-retry --dead-letter <id> [--approved] | workflow-export --db <db> --out <file> --project <id> | workflow-import-propose --db <db> --package <file> --proposal <file> --project <id> | workflow-migration-propose --db <db> --package <file> --proposal <file> --project <id> --from <package-key> | workflow-import-apply --db <db> --proposal <file> --project <id> --confirmed-by <owner> | workflow-bundle-inspect --bundle <file> | experience-record|experience-propose --db <db> --input <json> | experience-evaluate --db <db> --proposal <id> --results <json> | experience-apply --db <db> --proposal <id> --confirmed-by <owner>");
+else console.log("Usage: node src/cli.mjs configure --config <file> | register-project --id <id> --name <name> --root <absolute-path> | onboard | lint | quality-contracts-lint | quality-policy-lint [--project <id>] | one-c-bsl-baseline --db <db> --project <id> --executable <file> --source <directory> --platform-bin <directory> --accepted-revision <sha> --confirmed-by <owner> --temp-root <directory> | one-c-bsl-configure --db <db> --project <id> --executable <file> --platform-bin <directory> --runner <file> --temp-root <directory> | prompt | run [--event-key <id>] | code-search --db <db> --project <id> --query <text> | csharp-provider --config <json> | external-executor-register | external-control-create|pending|cancel|deliver | preset-lint | preset-inspect --preset <key> | run-statistics|run-status|run-watch --db <db> --run <id> | backup --db <workflow-db> --gateway-db <gateway-db> --out <directory> | restore --backup <directory> --db <new-workflow-db> --gateway-db <new-gateway-db> | queue-recover | run-pause --run <id> | run-resume --run <id> | run-cancel --run <id> | dead-letter-retry --dead-letter <id> [--approved] | workflow-export --db <db> --out <file> --project <id> | workflow-import-propose --db <db> --package <file> --proposal <file> --project <id> | workflow-migration-propose --db <db> --package <file> --proposal <file> --project <id> --from <package-key> | workflow-import-apply --db <db> --proposal <file> --project <id> --confirmed-by <owner> | workflow-bundle-inspect --bundle <file> | experience-record|experience-propose --db <db> --input <json> | experience-evaluate --db <db> --proposal <id> --results <json> | experience-apply --db <db> --proposal <id> --confirmed-by <owner>");

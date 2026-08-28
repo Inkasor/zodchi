@@ -61,6 +61,7 @@ const catalogValue = {
     key: item.key,
     version: item.version,
     support_status: PACKAGE_STATUSES[item.key] ?? "local",
+    work_types: [...new Set(item.routes.filter(route => route.enabled).map(route => route.work_type_key))].sort(),
     file: path.relative(catalogRoot, path.join(outputDirectory, `${item.key}.xml`)).replaceAll("\\", "/"),
     owner_acceptance: acceptance.get(item.key) ?? []
   })),
