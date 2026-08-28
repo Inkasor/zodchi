@@ -21,6 +21,10 @@ export const release = spec => capability("release", spec);
 export const incident = spec => capability("incident", spec);
 export const externalRuntime = spec => capability("externalRuntime", spec);
 export const experiment = spec => capability("experiment", spec);
+export const accessManagement = spec => capability("accessManagement", spec);
+export const projectBootstrap = spec => capability("projectBootstrap", spec);
+export const documentation = spec => capability("documentation", spec);
+export const securityReview = spec => capability("securityReview", spec);
 export function domainAdapter(spec) {
   if (!spec?.key) throw new Error("PACKAGE_SDK_ADAPTER_KEY_REQUIRED");
   if (spec.materialClaims && !(spec.evidenceFlows?.length)) throw new Error(`PACKAGE_SDK_EVIDENCE_POLICY_REQUIRED: ${spec.key}`);
