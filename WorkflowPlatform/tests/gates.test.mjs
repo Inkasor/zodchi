@@ -120,9 +120,9 @@ test("quality gates cascade lower-level checks and de-duplicate repeated binding
 
 test("Windows command checks execute cmd wrappers without shell fallback", { skip: process.platform !== "win32" }, async () => {
   const root = temporaryRoot("workflow-gates-windows-cmd-"), project = path.join(root, "project"), dbFile = path.join(root, "workflow.sqlite");
-  fs.mkdirSync(project); const db = openDb(dbFile), timestamp = new Date().toISOString();
+  fs.mkdirSync(project); const command = path.join(root, "command with spaces.cmd"); fs.writeFileSync(command, "@echo off\r\nif \"%~1\"==\"ok\" (exit /b 0) else (exit /b 9)\r\n"); const db = openDb(dbFile), timestamp = new Date().toISOString();
   db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('cmd-project','Cmd Project',?,?)").run(project, timestamp);
-  db.prepare("INSERT INTO check_definitions(id,name,runner,kind,config_json,timeout_seconds) VALUES('npm-version','npm version','npm-version','command','{\"command\":\"npm.cmd\",\"args\":[\"--version\"]}',30)").run();
+  db.prepare("INSERT INTO check_definitions(id,name,runner,kind,config_json,timeout_seconds) VALUES('npm-version','npm version','npm-version','command',?,30)").run(JSON.stringify({ command, args: ["ok"] }));
   db.prepare("INSERT INTO project_checks(project_id,check_id,quality_mode_id,required,artifact_type_id) VALUES('cmd-project','npm-version','mvp',1,'code')").run(); db.close();
   const result = await runProjectGate(project, "mvp", dbFile, "cmd-gate", { artifactType: "code", allowedPaths: [] });
   assert.equal(result.status, "passed"); assert.equal(result.checks[0].exit_code, 0);

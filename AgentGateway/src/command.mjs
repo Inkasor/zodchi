@@ -23,6 +23,14 @@ export function resolveProviderCommand(providerConfig, { platform = process.plat
 }
 
 export function providerCommandInvocation(command, args, { platform = process.platform, env = process.env } = {}) {
-  if (platform === "win32" && /\.(?:cmd|bat)$/i.test(command)) return Object.freeze({ executable: env.ComSpec ?? env.COMSPEC ?? "cmd.exe", args: ["/d", "/s", "/c", command, ...args] });
-  return Object.freeze({ executable: command, args: [...args] });
+  if (platform === "win32" && /\.(?:cmd|bat)$/i.test(command)) {
+    const quote = value => {
+      const text = String(value);
+      if (/[\0\r\n]/.test(text)) throw new Error("PROVIDER_COMMAND_ARGUMENT_INVALID");
+      return `"${text.replaceAll("%", "%%").replaceAll('"', '""')}"`;
+    };
+    const commandLine = `"${[command, ...args].map(quote).join(" ")}"`;
+    return Object.freeze({ executable: env.ComSpec ?? env.COMSPEC ?? "cmd.exe", args: ["/d", "/s", "/c", commandLine], windowsVerbatimArguments: true });
+  }
+  return Object.freeze({ executable: command, args: [...args], windowsVerbatimArguments: false });
 }

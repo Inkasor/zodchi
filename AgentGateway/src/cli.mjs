@@ -149,8 +149,8 @@ function readTask(file) {
 
 function runProcess(command, commandArgs, input, timeoutSec, cwd, env = process.env) {
   return new Promise((resolve) => {
-    const { executable, args } = providerCommandInvocation(command, commandArgs, { env });
-    const child = spawn(executable, args, { windowsHide: true, detached: process.platform !== "win32", cwd: cwd || undefined, env, stdio: ["pipe", "pipe", "pipe"] });
+    const { executable, args, windowsVerbatimArguments } = providerCommandInvocation(command, commandArgs, { env });
+    const child = spawn(executable, args, { windowsHide: true, windowsVerbatimArguments, detached: process.platform !== "win32", cwd: cwd || undefined, env, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
