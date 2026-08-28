@@ -11,7 +11,7 @@ const workTypeCatalog = {
 const domainCatalog = { software: "Software", "one-c": "1C", "game-development": "Game development", data: "Data", infrastructure: "Infrastructure", marketing: "Marketing", content: "Content", business: "Business", education: "Education", research: "Research", other: "Other" };
 const disciplineCatalog = { software: "Software", "one-c-development": "1C development", producer: "Producer", game_design: "Game design", data_engineering: "Data engineering", technical_art: "Technical art", art_direction: "Art direction", audio: "Audio", content: "Content", marketing: "Marketing", documentation: "Documentation", testing: "Testing", release: "Release", devops: "DevOps", security: "Security", access_administration: "Access administration", other: "Other" };
 const artifactCatalog = {
-  none: ["None", "none"], document: ["Document", "document"], code: ["Code", "code"], prototype: ["Prototype", "code"], visual_asset: ["Visual asset", "material"], audio_asset: ["Audio asset", "material"], content_asset: ["Content asset", "material"], technical_art_spec: ["Technical art specification", "document"], test_report: ["Test report", "document"], decision: ["Decision", "document"], release_package: ["Release package", "package"], data_migration: ["Data migration", "package"], deployment_evidence: ["Deployment evidence", "document"], incident_report: ["Incident report", "document"], access_change: ["Access change", "document"], collection_evidence: ["Collection evidence", "document"], security_report: ["Security report", "document"], workflow_package: ["Workflow package", "package"]
+  none: ["None", "none"], document: ["Document", "document"], code: ["Code", "code"], prototype: ["Prototype", "code"], visual_asset: ["Visual asset", "material"], audio_asset: ["Audio asset", "material"], content_asset: ["Content asset", "material"], technical_art_spec: ["Technical art specification", "document"], test_report: ["Test report", "document"], decision: ["Decision", "document"], release_package: ["Release package", "package"], data_migration: ["Data migration", "package"], deployment_evidence: ["Deployment evidence", "document"], incident_report: ["Incident report", "document"], access_change: ["Access change", "document"], collection_evidence: ["Collection evidence", "document"], security_report: ["Security report", "document"], workflow_package: ["Workflow package", "package"], backup_evidence: ["Backup and restore evidence", "document"], activity_record: ["Activity state record", "document"]
 };
 const qualityCatalog = { prototype: ["Prototype", 0], mvp: ["MVP", 1], production: ["Production", 2], security: ["Security audit", 3] };
 const levelCatalog = { L0: ["L0", 0], L1: ["L1", 1], L2: ["L2", 2], L3: ["L3", 3], L4: ["L4", 4] };
@@ -224,7 +224,7 @@ function composedPackage(core, ...components) {
   const moduleKeys = new Set(capabilities.map(item => item.key));
   const workTypes = new Set(["conversation", "continuation", "research"]);
   const moduleWorkTypes = {
-    sourceChange: ["implementation", "fix"], dataChange: ["data_change"], contentProduction: ["content", "asset"], release: ["release", "deployment"], incident: ["incident"], externalRuntime: ["testing", "verification"], experiment: ["prototype"], accessManagement: ["access_management"], projectBootstrap: ["project_bootstrap"], documentation: ["documentation"], securityReview: ["security_review"], ownerAcceptance: ["review"]
+    sourceChange: ["implementation", "fix"], dataChange: ["data_change"], contentProduction: ["content", "asset"], release: ["release", "deployment"], incident: ["incident"], externalRuntime: ["testing", "verification"], experiment: ["prototype"], accessManagement: ["access_management"], projectBootstrap: ["project_bootstrap"], documentation: ["documentation"], securityReview: ["security_review"], ownerAcceptance: ["review"], backupRestore: ["infra.backup-restore"], activityOperations: ["marketing.activity"]
   };
   for (const item of capabilities) for (const workType of item.options.workTypes ?? moduleWorkTypes[item.key] ?? []) workTypes.add(workType);
   const artifacts = new Set(["none", "document", "decision"]);
@@ -239,12 +239,14 @@ function composedPackage(core, ...components) {
   if (moduleKeys.has("projectBootstrap")) for (const item of ["workflow_package", "code", "test_report"]) artifacts.add(item);
   if (moduleKeys.has("securityReview")) artifacts.add("security_report");
   if (moduleKeys.has("ownerAcceptance")) for (const item of ["test_report", "visual_asset"]) artifacts.add(item);
+  if (moduleKeys.has("backupRestore")) for (const item of ["backup_evidence", "test_report"]) artifacts.add(item);
+  if (moduleKeys.has("activityOperations")) for (const item of ["activity_record", "test_report"]) artifacts.add(item);
   const allWorkTypes = [...workTypes];
   const allArtifacts = [...artifacts];
   const roles = [
     role("classifier", "Classify only against the package's registered routes; never perform productive work.", allWorkTypes, ["none"], { schema: "classification.v1", corrections: 0, boundaries: { productive_work: false, keyword_routing: false } }),
     role("coordinator", "Turn the owner objective and registered evidence into the smallest executable plan; ask only for missing authority or evidence.", allWorkTypes, allArtifacts.filter(item => item !== "none"), { schema: "planner.v1", tools: [], boundaries: { writes: false, owner_decisions: false } }),
-    role("worker", "Perform the bounded capability work and return evidence for the declared artifacts and checks.", allWorkTypes, allArtifacts.filter(item => item !== "none"), { tools: moduleKeys.has("sourceChange") || moduleKeys.has("contentProduction") || moduleKeys.has("projectBootstrap") || moduleKeys.has("documentation") ? ["apply_patch"] : ["exec_command"], checks: checks.map(item => item.key), boundaries: { owner_decisions: false, publication: false, production_deploy: false } })
+    role("worker", "Perform the bounded capability work and return evidence for the declared artifacts and checks.", allWorkTypes, allArtifacts.filter(item => item !== "none"), { tools: [...new Set([...(moduleKeys.has("sourceChange") || moduleKeys.has("dataChange") || moduleKeys.has("contentProduction") || moduleKeys.has("projectBootstrap") || moduleKeys.has("documentation") || moduleKeys.has("activityOperations") ? ["apply_patch"] : []), ...(moduleKeys.has("externalRuntime") || moduleKeys.has("incident") || moduleKeys.has("accessManagement") || moduleKeys.has("backupRestore") || moduleKeys.has("activityOperations") ? ["exec_command"] : [])])], checks: checks.map(item => item.key), boundaries: { owner_decisions: false, publication: false, production_deploy: false } })
   ];
   const reviewed = ["reviewed", "release", "full"].includes(spec.rolePreset);
   const editorial = ["editorial", "full"].includes(spec.rolePreset);
@@ -269,6 +271,7 @@ function composedPackage(core, ...components) {
     } else if (item.key === "contentProduction") {
       const items = optionalReview([step("coordinate", 1, "coordinator", ["document"]), step("produce", 2, "worker", ["content_asset", "visual_asset"], customChecks, { resources: capabilityResources })]);
       if (editorial) items.push(step("edit", items.length + 1, "editor", ["document", "content_asset"]));
+      if (item.options.ownerAcceptance) items.push(step("owner_acceptance", items.length + 1, null, ["decision"], [], { irreversible: true }));
       workflows.push(workflow(`${prefix}.content`, "Project-rule content production", items, [question("content_acceptance", "Which audience, claims and acceptance rules apply?")]));
       for (const workType of item.options.workTypes ?? moduleWorkTypes.contentProduction) routes.push(route(workType, `${prefix}.content`));
     } else if (item.key === "release") {
@@ -310,6 +313,16 @@ function composedPackage(core, ...components) {
       items.push(step("owner_acceptance", items.length + 1, null, ["decision"], [], { irreversible: true }));
       workflows.push(workflow(`${prefix}.acceptance`, "Evidence before owner acceptance", items, [question("acceptance_boundary", "Which concrete evidence and owner criteria decide acceptance?")], { quality: item.options.quality ?? "mvp", level: item.options.level ?? "L2" }));
       for (const workType of item.options.workTypes ?? moduleWorkTypes.ownerAcceptance) routes.push(route(workType, `${prefix}.acceptance`));
+    } else if (item.key === "backupRestore") {
+      const readResources = item.options.readResources ?? capabilityResources;
+      const items = [step("coordinate", 1, "coordinator", ["document"]), step("verify_backup", 2, "worker", ["backup_evidence"], customChecks, { resources: readResources }), step("restore_approval", 3, null, ["decision"], [], { irreversible: true }), step("restore", 4, "worker", ["backup_evidence"], customChecks, { resources: capabilityResources }), step("verify_health", 5, "worker", ["test_report"], customChecks, { resources: readResources })];
+      workflows.push(workflow(`${prefix}.backup_restore`, "Verified backup and approved restore", items, [question("restore_boundary", "Which exact backup, target resource, rollback and health criteria authorize restore?")], { quality: "production", level: "L3" }));
+      for (const workType of item.options.workTypes ?? moduleWorkTypes.backupRestore) routes.push(route(workType, `${prefix}.backup_restore`));
+    } else if (item.key === "activityOperations") {
+      const readResources = item.options.readResources ?? capabilityResources;
+      const items = [step("coordinate", 1, "coordinator", ["document"]), step("schedule", 2, "worker", ["activity_record"], customChecks, { resources: capabilityResources }), step("execution_approval", 3, null, ["decision"], [], { irreversible: true }), step("execute", 4, "worker", ["activity_record"], customChecks, { resources: capabilityResources }), step("measure", 5, "worker", ["test_report", "activity_record"], customChecks, { resources: readResources })];
+      workflows.push(workflow(`${prefix}.activity`, "Planned, scheduled, executed and measured activity", items, [question("activity_boundary", "Which channel, schedule, claim set, owner authority and measurement close this activity?")], { level: "L2" }));
+      for (const workType of item.options.workTypes ?? moduleWorkTypes.activityOperations) routes.push(route(workType, `${prefix}.activity`));
     }
     scenarios.push(scenario(`${item.key}_route`, { work_type: (item.options.workTypes ?? moduleWorkTypes[item.key])[0] }, { route: workflows.at(-1).key, mechanics: "executable" }));
   }
@@ -324,5 +337,5 @@ function composedPackage(core, ...components) {
 }
 
 
-const { coreLifecycle, sourceChange, dataChange, contentProduction, release: releaseCapability, incident: incidentCapability, externalRuntime, experiment, accessManagement, projectBootstrap, documentation: documentationCapability, securityReview, ownerAcceptance, domainAdapter, composeLifecycle } = packageSdk;
-export { PACKAGE_VERSION, role, addRoleToPackage, checkBinding, commandCheck, capabilityCheck, projectCommandCheck, disabledCheck, secretCheck, securityChecks, withBroadSecretScan, addBinding, completeSoftwareChecks, step, workflow, question, route, binding, document, scenario, finalize, companyWebPackage, coreLifecycle, sourceChange, dataChange, contentProduction, releaseCapability, incidentCapability, externalRuntime, experiment, accessManagement, projectBootstrap, documentationCapability, securityReview, ownerAcceptance, domainAdapter, composeLifecycle, composedPackage };
+const { coreLifecycle, sourceChange, dataChange, contentProduction, release: releaseCapability, incident: incidentCapability, externalRuntime, experiment, accessManagement, projectBootstrap, documentation: documentationCapability, securityReview, ownerAcceptance, backupRestore, activityOperations, domainAdapter, composeLifecycle } = packageSdk;
+export { PACKAGE_VERSION, role, addRoleToPackage, checkBinding, commandCheck, capabilityCheck, projectCommandCheck, disabledCheck, secretCheck, securityChecks, withBroadSecretScan, addBinding, completeSoftwareChecks, step, workflow, question, route, binding, document, scenario, finalize, companyWebPackage, coreLifecycle, sourceChange, dataChange, contentProduction, releaseCapability, incidentCapability, externalRuntime, experiment, accessManagement, projectBootstrap, documentationCapability, securityReview, ownerAcceptance, backupRestore, activityOperations, domainAdapter, composeLifecycle, composedPackage };
