@@ -10,10 +10,10 @@ This record describes a local release candidate. No tag, push, GitHub Release, p
 
 <automated_verification id="automated_verification" status="verified" evidence="local_deterministic_checks">
 
-- Repository source: tools `19/19`, WorkflowPlatform `319/319`, AgentGateway `26/26`.
+- Repository source: tools `20/20`, WorkflowPlatform `319/319`, AgentGateway `26/26`.
 - Package regeneration/import: all seven package artifacts match their definitions and public catalog; all fifteen presets validate and produce proposal-first local onboarding material.
-- Two independently assembled canonical release roots contain the same 215 manifest entries and identical file hashes; release lint passes.
-- The full suite executed from the assembled release: tools `19/19`, WorkflowPlatform `318 passed, 1 skipped`, AgentGateway `26/26`. The skipped TypeScript semantic test requires the analyzed project to supply a compatible TypeScript compiler API; the unavailable path is covered separately and does not become partial evidence.
+- Two independently assembled canonical release roots contain the same 216 manifest entries and identical file hashes; release lint passes.
+- The full suite executed from the assembled release: tools `20/20`, WorkflowPlatform `318 passed, 1 skipped`, AgentGateway `26/26`. The skipped TypeScript semantic test requires the analyzed project to supply a compatible TypeScript compiler API; the unavailable path is covered separately and does not become partial evidence.
 - Two independently compressed archives with the same canonical `Zodchi` root are byte-identical. The one-command acceptance covers install, owned hook, routed run, update, rollback, hook restoration and uninstall.
 
 </automated_verification>
