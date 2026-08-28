@@ -5,7 +5,7 @@
 // Point `packageDefinitions` in the runtime configuration at your own file to replace it. That file
 // exports the same default function and receives the same builder module, so it needs no import path.
 export default function definePackages(b) {
-  const { accessManagement, checkBinding, capabilityCheck, composedPackage, contentProduction, coreLifecycle, dataChange, disabledCheck, documentationCapability, domainAdapter, experiment, externalRuntime, incidentCapability, ownerAcceptance, projectBootstrap, releaseCapability, securityChecks, securityReview, sourceChange } = b;
+  const { accessManagement, activityOperations, backupRestore, checkBinding, capabilityCheck, composedPackage, contentProduction, coreLifecycle, dataChange, disabledCheck, documentationCapability, domainAdapter, experiment, externalRuntime, incidentCapability, ownerAcceptance, projectBootstrap, releaseCapability, securityChecks, securityReview, sourceChange } = b;
 
   const webChecks = [
     capabilityCheck("web_lint", "Web application lint", "node.package_manager", ["run", "lint"], [checkBinding("prototype", null), checkBinding("mvp", "code"), checkBinding("production", "release_package")], 900),
@@ -162,11 +162,128 @@ export default function definePackages(b) {
     ownerAcceptance({ workTypes: ["game.visual-acceptance", "game.product-acceptance", "game.release-readiness"], artifactKeys: ["visual_asset", "test_report"], checkKeys: ["game_web_browser_proof"] })
   );
 
-  const packages = [software, oneC, gameWeb, unity];
+  const dataChecks = [
+    disabledCheck("data_readonly_query", "Registered read-only SQL or Python execution", "requires_local_data_query_binding", [checkBinding("mvp", "test_report")]),
+    disabledCheck("data_invariant", "Deterministic row-count, reconciliation or schema invariant", "requires_local_data_invariant_binding", [checkBinding("mvp", "test_report"), checkBinding("production", "data_migration")]),
+    disabledCheck("data_backup", "Backup or isolated-copy evidence before live mutation", "requires_local_data_backup_binding", [checkBinding("production", "data_migration")])
+  ];
+  const dataPrefix = "data_analytics";
+  const dataEvidenceFlow = {
+    key: "data.query_to_invariant",
+    claim_type: "data_invariant",
+    subject: "bounded query or transformation",
+    target: "deterministic invariant result",
+    workflow_keys: [`${dataPrefix}.runtime`, `${dataPrefix}.data`],
+    nodes: [
+      { key: "query_definition", step_keys: ["coordinate", "prepare", "verify"], path_hints: ["**/*.sql", "**/*.py"], anchor_terms: ["SELECT", "WITH", "assert", "reconcile"] },
+      { key: "isolated_execution", step_keys: ["prepare", "verify"], path_hints: ["**/fixtures/**", "**/tests/**", "**/*.sql", "**/*.py"], anchor_terms: ["fixture", "temporary", "readonly", "transaction"] },
+      { key: "invariant_result", step_keys: ["prepare", "verify"], path_hints: ["**/artifacts/**", "**/reports/**", "**/tests/**"], anchor_terms: ["0 rows", "count", "schema", "reconciliation"] }
+    ],
+    required_edges: ["query_definition->isolated_execution", "isolated_execution->invariant_result"],
+    material_symbols: [],
+    transition: { adapter: "registered-data-check", method: "query_hash_and_result_provenance" },
+    status: "active"
+  };
+  const dataAnalytics = composedPackage(
+    coreLifecycle({
+      key: "data.analytics", version: "0.1.0", purpose: "Executable preview for read-only data discovery, deterministic invariants and approval-bound migration preparation without persisting source rows or prompts.", rolePreset: "reviewed",
+      domains: ["data"], disciplines: ["data_engineering", "software", "testing"], checks: dataChecks,
+      resources: [{ alias: "data.primary", kind: "db", purpose: "Registered database or isolated analytical copy" }],
+      documents: [{ key: "project_rules", path: "AGENTS.md", type: "authority", authority: "project" }, { key: "data_contract", path: "DATA_CONTRACT.md", type: "authority", authority: "project" }]
+    }),
+    domainAdapter({ key: "sql-python", domains: ["data"], disciplines: ["data_engineering"], materialClaims: true, evidenceFlows: [dataEvidenceFlow] }),
+    externalRuntime({ workTypes: ["data.discovery", "data.verification"], checkKeys: ["data_readonly_query", "data_invariant"], resources: [{ alias: "data.primary", mode: "shared" }] }),
+    dataChange({ workTypes: ["data_change"], checkKeys: ["data_invariant", "data_backup"], resources: [{ alias: "data.primary", mode: "exclusive" }] }),
+    documentationCapability({ checkKeys: ["data_invariant"] })
+  );
+
+  const infraChecks = [
+    disabledCheck("infra_health", "Registered infrastructure health and read-only inventory", "requires_local_infra_health_binding", [checkBinding("mvp", "test_report"), checkBinding("production", "deployment_evidence")]),
+    disabledCheck("infra_backup_restore", "Backup and restore drill with target verification", "requires_local_backup_restore_binding", [checkBinding("production", null)]),
+    disabledCheck("infra_delivery", "Registered CI or deployment verification", "requires_local_delivery_binding", [checkBinding("production", "release_package")])
+  ];
+  const infraPrefix = "infra_operations";
+  const infraEvidenceFlow = {
+    key: "infra.change_to_health",
+    claim_type: "operational_change_trace",
+    subject: "registered infrastructure target and proposed change",
+    target: "post-change health evidence",
+    workflow_keys: [`${infraPrefix}.backup_restore`, `${infraPrefix}.release`, `${infraPrefix}.access`],
+    nodes: [
+      { key: "observed_state", step_keys: ["coordinate", "verify_backup", "propose", "preflight"], path_hints: ["**/*.yml", "**/*.yaml", "**/*.tf", "**/*.json", "**/*.md"], anchor_terms: ["health", "inventory", "backup", "access"] },
+      { key: "approved_action", step_keys: ["restore_approval", "release_approval", "access_approval"], path_hints: ["**/artifacts/**", "**/plans/**"], anchor_terms: ["approval", "hash", "target", "rollback"] },
+      { key: "applied_action", step_keys: ["restore", "release", "apply"], path_hints: ["**/artifacts/**", "**/receipts/**"], anchor_terms: ["applied", "deployed", "restored"] },
+      { key: "health_result", step_keys: ["verify_health", "verify"], path_hints: ["**/artifacts/**", "**/reports/**"], anchor_terms: ["healthy", "ready", "restored", "passed"] }
+    ],
+    required_edges: ["observed_state->approved_action", "approved_action->applied_action", "applied_action->health_result"],
+    material_symbols: [],
+    transition: { adapter: "registered-infra-command", method: "action_hash_and_receipt_provenance" },
+    status: "active"
+  };
+  const infra = composedPackage(
+    coreLifecycle({
+      key: "infra.operations", version: "0.1.0", purpose: "Executable preview for read-only operations, incident diagnosis and approval-bound access, restore and delivery changes with redacted receipts.", rolePreset: "minimal",
+      domains: ["infrastructure"], disciplines: ["devops", "security", "access_administration"], checks: infraChecks,
+      resources: [{ alias: "infra.target", kind: "project.worktree", purpose: "Registered infrastructure configuration and local execution boundary" }],
+      documents: [{ key: "project_rules", path: "AGENTS.md", type: "authority", authority: "project" }, { key: "infrastructure", path: "infrastructure.md", type: "reference", authority: "project" }]
+    }),
+    domainAdapter({ key: "infra-command", domains: ["infrastructure"], disciplines: ["devops"], materialClaims: true, evidenceFlows: [infraEvidenceFlow] }),
+    externalRuntime({ workTypes: ["infra.inventory"], checkKeys: ["infra_health"], resources: [{ alias: "infra.target", mode: "shared" }] }),
+    incidentCapability({ workTypes: ["incident"], checkKeys: ["infra_health"], resources: [{ alias: "infra.target", mode: "shared" }] }),
+    sourceChange({ workTypes: ["implementation", "fix"], checkKeys: ["infra_health"], resources: [{ alias: "infra.target", mode: "exclusive" }] }),
+    accessManagement({ workTypes: ["access_management"], checkKeys: ["infra_health"], resources: [{ alias: "infra.target", mode: "exclusive" }] }),
+    backupRestore({ workTypes: ["infra.backup-restore"], checkKeys: ["infra_backup_restore", "infra_health"], resources: [{ alias: "infra.target", mode: "exclusive" }], readResources: [{ alias: "infra.target", mode: "shared" }] }),
+    releaseCapability({ workTypes: ["release", "deployment"], checkKeys: ["infra_delivery", "infra_health"], resources: [{ alias: "infra.target", mode: "exclusive" }] })
+  );
+
+  const marketingChecks = [
+    disabledCheck("marketing_rules", "Project claims, style and document rules", "requires_local_marketing_rules_binding", [checkBinding("mvp", "content_asset")]),
+    disabledCheck("marketing_dedupe", "Outreach target and activity deduplication", "requires_local_marketing_dedupe_binding", [checkBinding("mvp", null)]),
+    disabledCheck("marketing_activity_receipt", "Scheduled, executed and measured activity receipt", "requires_local_activity_provider_binding", [checkBinding("mvp", null)])
+  ];
+  const marketingPrefix = "marketing_content_operations";
+  const marketingEvidenceFlow = {
+    key: "marketing.claim_to_measured_activity",
+    claim_type: "activity_execution_trace",
+    subject: "project-grounded marketing claim",
+    target: "measured activity result",
+    workflow_keys: [`${marketingPrefix}.content`, `${marketingPrefix}.activity`],
+    nodes: [
+      { key: "claim", step_keys: ["coordinate", "produce"], path_hints: ["CLAIMS.md", "**/research/**", "**/*.md"], anchor_terms: ["claim", "source", "proof", "hypothesis"] },
+      { key: "edited_content", step_keys: ["produce", "edit", "owner_acceptance"], path_hints: ["**/content/**", "**/drafts/**", "**/*.md"], anchor_terms: ["draft", "editor", "accepted"] },
+      { key: "scheduled_activity", step_keys: ["schedule", "execution_approval"], path_hints: ["ACTIVITY_STATE.md", "**/calendar/**"], anchor_terms: ["planned", "scheduled", "channel"] },
+      { key: "execution_receipt", step_keys: ["execute"], path_hints: ["ACTIVITY_STATE.md", "**/receipts/**"], anchor_terms: ["executed", "message_id", "published"] },
+      { key: "measurement", step_keys: ["measure"], path_hints: ["ACTIVITY_STATE.md", "**/reports/**"], anchor_terms: ["measured", "response", "conversion", "result"] }
+    ],
+    required_edges: ["claim->edited_content", "edited_content->scheduled_activity", "scheduled_activity->execution_receipt", "execution_receipt->measurement"],
+    material_symbols: [],
+    transition: { adapter: "registered-activity-ledger", method: "claim_and_activity_receipt_provenance" },
+    status: "active"
+  };
+  const marketing = composedPackage(
+    coreLifecycle({
+      key: "marketing.content-operations", version: "0.1.0", purpose: "Executable preview for grounded research, edited content and planned-to-measured marketing activity without multiplying permanent roles or documents.", rolePreset: "editorial",
+      domains: ["marketing", "content"], disciplines: ["marketing", "content", "documentation"], checks: marketingChecks,
+      resources: [{ alias: "marketing.state", kind: "project.worktree", purpose: "Canonical project claims, content and activity-state boundary" }],
+      documents: [
+        { key: "project_truth", path: "PROJECT_TRUTH.md", type: "authority", authority: "project" },
+        { key: "working_rules", path: "WORKING_RULES.md", type: "authority", authority: "project" },
+        { key: "claims", path: "CLAIMS.md", type: "working", authority: "project" },
+        { key: "activity_state", path: "ACTIVITY_STATE.md", type: "working", authority: "project" }
+      ]
+    }),
+    domainAdapter({ key: "marketing-activity", domains: ["marketing", "content"], disciplines: ["marketing", "content"], materialClaims: true, evidenceFlows: [marketingEvidenceFlow] }),
+    experiment({ workTypes: ["marketing.research"], checkKeys: ["marketing_rules"], resources: [{ alias: "marketing.state", mode: "shared" }] }),
+    contentProduction({ workTypes: ["content", "marketing"], checkKeys: ["marketing_rules", "marketing_dedupe"], ownerAcceptance: true, resources: [{ alias: "marketing.state", mode: "exclusive" }] }),
+    activityOperations({ workTypes: ["marketing.activity"], checkKeys: ["marketing_activity_receipt", "marketing_dedupe"], resources: [{ alias: "marketing.state", mode: "exclusive" }], readResources: [{ alias: "marketing.state", mode: "shared" }] }),
+    documentationCapability({ workTypes: ["documentation"], checkKeys: ["marketing_rules"], resources: [{ alias: "marketing.state", mode: "exclusive" }] })
+  );
+
+  const packages = [software, oneC, gameWeb, unity, dataAnalytics, infra, marketing];
   return {
     packages,
     bundles: [],
     aliases: [{ key: "example.web-app", target: "software.web-application", deprecated: true, remove_after: "0.6.x" }],
-    statuses: { "software.web-application": "support-grade", "one-c.development": "support-grade", "game.web": "preview", "game.unity": "preview" }
+    statuses: { "software.web-application": "support-grade", "one-c.development": "support-grade", "game.web": "preview", "game.unity": "preview", "data.analytics": "preview", "infra.operations": "preview", "marketing.content-operations": "preview" }
   };
 }

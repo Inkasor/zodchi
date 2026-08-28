@@ -70,7 +70,10 @@ test("public catalog versions and files are generated from the package definitio
     "software.web-application": "support-grade",
     "one-c.development": "support-grade",
     "game.web": "preview",
-    "game.unity": "preview"
+    "game.unity": "preview",
+    "data.analytics": "preview",
+    "infra.operations": "preview",
+    "marketing.content-operations": "preview"
   });
 });
 
@@ -181,6 +184,43 @@ test("the Web-game preview traces design to browser proof without folding produc
   assert.equal(flow.transition.adapter, "registered-browser-evidence");
   const content = packageValue.workflows.find(item => item.key.endsWith(".content"));
   assert.equal(content.steps.some(item => item.key === "edit" && item.role_key === "editor"), true);
+});
+
+test("the data preview separates read-only evidence from approval-bound mutation preparation", () => {
+  const packageValue = PACKAGE_DEFINITIONS.find(item => item.key === "data.analytics");
+  assert.ok(packageValue);
+  for (const workType of ["data.discovery", "data.verification", "data_change"]) assert.equal(packageValue.routes.some(item => item.work_type_key === workType), true, workType);
+  assert.deepEqual(packageValue.resources, [{ alias: "data.primary", kind: "db", purpose: "Registered database or isolated analytical copy" }]);
+  assert.deepEqual(packageValue.workflows.find(item => item.key.endsWith(".runtime")).steps.find(item => item.key === "verify").resources, [{ alias: "data.primary", mode: "shared" }]);
+  const change = packageValue.workflows.find(item => item.key.endsWith(".data"));
+  assert.deepEqual(change.steps.find(item => item.key === "prepare").resources, [{ alias: "data.primary", mode: "exclusive" }]);
+  assert.equal(change.steps.at(-1).key, "apply_approval");
+  assert.equal(change.steps.at(-1).role_key, null);
+  const flow = packageValue.evidence_flows.find(item => item.key === "data.query_to_invariant");
+  assert.deepEqual(flow.required_edges, ["query_definition->isolated_execution", "isolated_execution->invariant_result"]);
+});
+
+test("the infrastructure preview has a two-step read-only route and approval-bound risky routes", () => {
+  const packageValue = PACKAGE_DEFINITIONS.find(item => item.key === "infra.operations");
+  assert.ok(packageValue);
+  for (const workType of ["infra.inventory", "infra.backup-restore", "incident", "access_management", "release", "deployment", "implementation", "fix"]) assert.equal(packageValue.routes.some(item => item.work_type_key === workType), true, workType);
+  assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["classifier", "coordinator", "release_operator", "worker"]);
+  assert.deepEqual(packageValue.workflows.find(item => item.key.endsWith(".runtime")).steps.map(item => item.key), ["coordinate", "verify"]);
+  const restore = packageValue.workflows.find(item => item.key.endsWith(".backup_restore"));
+  assert.deepEqual(restore.steps.map(item => item.key), ["coordinate", "verify_backup", "restore_approval", "restore", "verify_health"]);
+  assert.equal(restore.steps.findIndex(item => item.key === "restore_approval") < restore.steps.findIndex(item => item.key === "restore"), true);
+  assert.equal(restore.steps.find(item => item.key === "restore_approval").role_key, null);
+});
+
+test("the marketing preview keeps four semantic records and connects edited claims to measured execution", () => {
+  const packageValue = PACKAGE_DEFINITIONS.find(item => item.key === "marketing.content-operations");
+  assert.ok(packageValue);
+  assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["classifier", "coordinator", "editor", "worker"]);
+  assert.deepEqual(packageValue.documents.map(item => item.key).sort(), ["activity_state", "claims", "project_truth", "working_rules"]);
+  assert.deepEqual(packageValue.workflows.find(item => item.key.endsWith(".content")).steps.map(item => item.key), ["coordinate", "produce", "edit", "owner_acceptance"]);
+  assert.deepEqual(packageValue.workflows.find(item => item.key.endsWith(".activity")).steps.map(item => item.key), ["coordinate", "schedule", "execution_approval", "execute", "measure"]);
+  const flow = packageValue.evidence_flows.find(item => item.key === "marketing.claim_to_measured_activity");
+  assert.deepEqual(flow.required_edges, ["claim->edited_content", "edited_content->scheduled_activity", "scheduled_activity->execution_receipt", "execution_receipt->measurement"]);
 });
 
 test("classification is routed by the model and every declared route reaches a declared workflow", () => {
