@@ -1,9 +1,8 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import path from "node:path";
 import { resolveGatewayPaths } from "./paths.mjs";
 import { openGatewayDb } from "./db.mjs";
-import { resolveProviderCommand } from "./command.mjs";
+import { providerCommandInvocation, resolveProviderCommand } from "./command.mjs";
 import { loadGatewayPolicy } from "./policy.mjs";
 
 const paths = resolveGatewayPaths();
@@ -14,10 +13,7 @@ const policy = loadGatewayPolicy(paths);
 
 function command(file, args) {
   try {
-    const executable = file === "codex" ? process.execPath : file;
-    const commandArgs = file === "codex"
-      ? [path.join(process.env.APPDATA ?? "", "npm", "node_modules", "@openai", "codex", "bin", "codex.js"), ...args]
-      : args;
+    const { executable, args: commandArgs } = providerCommandInvocation(file, args);
     const result = spawnSync(executable, commandArgs, { encoding: "utf8", windowsHide: true });
     const output = `${result.stdout ?? ""}`.trim();
     const error = `${result.stderr ?? ""}`.trim();

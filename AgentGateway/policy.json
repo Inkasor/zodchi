@@ -44,7 +44,7 @@
       "outputSchemaArg": "--output-schema"
     },
     "claude": {
-      "command": "claude.exe",
+      "command": "claude",
       "args": [
         "-p",
         "{prompt}",
