@@ -44,6 +44,14 @@ export function selectReleaseAssets(release) {
   return { archive, checksums, manifest };
 }
 
+export function requireProvenanceAttestation(response, archiveHash) {
+  const attestations = response?.attestations;
+  if (!Array.isArray(attestations) || attestations.length === 0) throw new Error(`INSTALL_RELEASE_ATTESTATION_MISSING: sha256:${archiveHash}`);
+  const usable = attestations.filter(item => Number.isInteger(item?.repository_id) && typeof item?.bundle_url === "string" && item.bundle_url.startsWith("https://"));
+  if (usable.length === 0) throw new Error(`INSTALL_RELEASE_ATTESTATION_INVALID: sha256:${archiveHash}`);
+  return { subject_digest: `sha256:${archiveHash}`, records: usable.length };
+}
+
 function productRoots(directory) {
   const result = [];
   const walk = current => { for (const entry of fs.readdirSync(current, { withFileTypes: true })) { const full = path.join(current, entry.name); if (entry.isDirectory()) walk(full); else if (entry.name === "product.json" && fs.existsSync(path.join(current, "bundle-manifest.json"))) result.push(current); } };
@@ -68,6 +76,10 @@ export async function installLatest({ repository = "Inkasor/zodchi", destination
     if (!/^[0-9a-f]{64}$/.test(expected ?? "") || expected !== sha256(archive)) throw new Error("INSTALL_RELEASE_CHECKSUM_MISMATCH");
     const workflow = await requestJson(`https://api.github.com/repos/${repository}/actions/runs/${manifest.workflow_run}`);
     if (workflow.status !== "completed" || workflow.conclusion !== "success" || workflow.head_sha !== manifest.commit) throw new Error("INSTALL_RELEASE_WORKFLOW_NOT_GREEN");
+    // The workflow's smoke performs cryptographic Sigstore verification. The bootstrap installer also
+    // requires the exact archive digest to remain registered in GitHub's repository attestation API;
+    // it does not silently downgrade when GitHub CLI is not installed on a fresh machine.
+    requireProvenanceAttestation(await requestJson(`https://api.github.com/repos/${repository}/attestations/sha256:${sha256(archive)}?predicate_type=provenance`), sha256(archive));
     const extracted = path.join(scratch, "extracted"); extractZip(archive, extracted);
     const roots = productRoots(extracted); if (roots.length !== 1) throw new Error(`INSTALL_PRODUCT_ROOT_AMBIGUOUS: ${roots.length}`);
     const installer = path.join(roots[0], "tools", "install.mjs");

@@ -21,12 +21,13 @@ function parseArguments(argv) {
 }
 
 const options = parseArguments(process.argv.slice(2));
-if (!options.repository || !options.tag) throw new Error("Usage: node tools/release-smoke.mjs --repository <owner/name> --tag <vX.Y.Z> [--work <dir>] [--out <file>] [--baseline]");
+if (!options.repository || !options.tag) throw new Error("Usage: node tools/release-smoke.mjs --repository <owner/name> --tag <vX.Y.Z> [--work <dir>] [--out <file>] [--baseline] [--allow-draft]");
 
 // `--baseline` verifies a release published before 0.6.0 made CI the only publisher. It relaxes
 // naming, manifest and publisher requirements, never checksum, extraction or the workflow run, and
 // stamps the evidence so a relaxed pass can never be read as a release-grade one.
 const baseline = options.baseline === true;
+const allowDraft = options["allow-draft"] === true;
 const repository = String(options.repository);
 const tag = String(options.tag);
 const work = path.resolve(options.work ? String(options.work) : fs.mkdtempSync(path.join(os.tmpdir(), "zodchi-smoke-")));
@@ -70,7 +71,7 @@ function productRoots(directory) {
 
 fs.mkdirSync(work, { recursive: true });
 const release = await api(`https://api.github.com/repos/${repository}/releases/tags/${tag}`);
-if (release.draft) fail("RELEASE_IS_DRAFT", tag);
+if (release.draft && !allowDraft) fail("RELEASE_IS_DRAFT", tag);
 
 const archiveAsset = release.assets.find(asset => /^Zodchi-v.+\.zip$/.test(asset.name));
 if (!archiveAsset) fail("RELEASE_ARCHIVE_ASSET_MISSING", tag);
@@ -84,6 +85,8 @@ const publishers = [...new Set(release.assets.map(asset => asset.uploader?.login
 if (!baseline && (publishers.length !== 1 || publishers[0] !== "github-actions[bot]")) fail("RELEASE_PUBLISHER_NOT_CI", publishers.join(", "));
 
 const archive = await download(archiveAsset);
+const archiveFile = path.join(work, archiveAsset.name);
+fs.writeFileSync(archiveFile, archive);
 const checksumBytes = await download(checksumAsset);
 const checksums = checksumBytes.toString("utf8").replace(/^\uFEFF/, "");
 const archiveHash = sha256(archive);
@@ -108,6 +111,30 @@ if (manifestAsset) {
   if (releaseManifest.checksums?.sha256 !== sha256(checksumBytes)) fail("RELEASE_MANIFEST_CHECKSUM_FILE_MISMATCH", releaseManifest.checksums?.sha256 ?? "missing");
 } else if (!baseline) {
   fail("RELEASE_MANIFEST_ASSET_MISSING", "zodchi-release-manifest.json");
+}
+
+// The uploader and successful workflow checks prove who controlled the GitHub objects. This separate
+// Sigstore verification proves that the downloaded archive bytes were attested by this repository's
+// release workflow and bind to the exact source commit in the release manifest.
+let attestation = null;
+if (!baseline) {
+  let verified;
+  try {
+    verified = JSON.parse(execFileSync("gh", [
+      "attestation", "verify", archiveFile,
+      "--repo", repository,
+      "--signer-workflow", `${repository}/.github/workflows/release.yml`,
+      "--source-digest", releaseManifest.commit,
+      "--format", "json"
+    ], {
+      encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, GH_TOKEN: process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN ?? "" }
+    }));
+  } catch (error) {
+    fail("RELEASE_ATTESTATION_INVALID", String(error.stderr ?? error.message).trim());
+  }
+  if (!Array.isArray(verified) || verified.length === 0) fail("RELEASE_ATTESTATION_MISSING", archiveAsset.name);
+  attestation = { verified: true, count: verified.length, signer_workflow: `${repository}/.github/workflows/release.yml`, source_digest: releaseManifest.commit };
 }
 
 const extracted = path.join(work, "extracted");
@@ -195,10 +222,11 @@ const evidence = {
   checked_at: new Date().toISOString(),
   repository,
   tag,
-  release: { id: release.id, published_at: release.published_at, publishers },
+  release: { id: release.id, draft: release.draft, published_at: release.published_at, publishers },
   assets: release.assets.map(asset => ({ id: asset.id, name: asset.name, size: asset.size, uploader: asset.uploader?.login ?? null })),
   archive: { name: archiveAsset.name, sha256: archiveHash, checksums_asset: checksumAsset.name, entries: extraction.entries, manifest_files: bundleManifest.files.length },
   release_manifest: releaseManifest,
+  attestation,
   product: { version: product.version, components: bundleManifest.components },
   install: { platform: process.platform, destination: installed, presets: presetLint.presets },
   workflow: { provider_mode: "deterministic provider through real AgentGateway process", model_calls: "none", results: workflow.results },

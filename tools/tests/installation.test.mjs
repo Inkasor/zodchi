@@ -6,7 +6,7 @@ import test from "node:test";
 import { applyHookInstallation, planHookInstallation } from "../../WorkflowPlatform/src/hook-installation.mjs";
 import { defaultInstallationPaths } from "../installation-paths.mjs";
 import { installRelease, rollbackRelease, uninstallRelease } from "../install.mjs";
-import { selectReleaseAssets } from "../install-latest.mjs";
+import { requireProvenanceAttestation, selectReleaseAssets } from "../install-latest.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "..", "..");
 function temporaryRoot() { return fs.mkdtempSync(path.join(os.tmpdir(), "zodchi-installer-")); }
@@ -36,6 +36,13 @@ test("latest installer accepts exactly one universal CI-published archive", () =
   assert.equal(selected.archive.name, "Zodchi-v0.6.0.zip");
   assert.throws(() => selectReleaseAssets({ assets: [asset("Zodchi-v0.6.0-windows.zip"), asset("SHA256SUMS.txt"), asset("zodchi-release-manifest.json")] }), /INSTALL_RELEASE_ASSET_AMBIGUOUS/);
   assert.throws(() => selectReleaseAssets({ assets: [asset("Zodchi-v0.6.0.zip", "human"), asset("SHA256SUMS.txt"), asset("zodchi-release-manifest.json")] }), /INSTALL_RELEASE_NOT_CI_PUBLISHED/);
+});
+
+test("latest installer requires a repository provenance record for the archive digest", () => {
+  const hash = "a".repeat(64);
+  assert.deepEqual(requireProvenanceAttestation({ attestations: [{ repository_id: 42, bundle_url: "https://example.invalid/bundle.json" }] }, hash), { subject_digest: `sha256:${hash}`, records: 1 });
+  assert.throws(() => requireProvenanceAttestation({ attestations: [] }, hash), /INSTALL_RELEASE_ATTESTATION_MISSING/);
+  assert.throws(() => requireProvenanceAttestation({ attestations: [{ repository_id: 42, bundle_url: "http:\/\/example.invalid\/bundle.json" }] }, hash), /INSTALL_RELEASE_ATTESTATION_INVALID/);
 });
 
 test("clean install applies an explicitly authorized hook manifest", () => {
