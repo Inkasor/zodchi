@@ -641,6 +641,22 @@ test("TypeScript compiler intelligence resolves JavaScript calls across files", 
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("a version-only TypeScript package is unavailable evidence instead of a crashed run", () => {
+  const { root, producer, db } = fixture("workflow-ts-incompatible-", { sources: ["src/**"] });
+  const dependency = path.join(producer, "node_modules", "typescript"); fs.mkdirSync(dependency, { recursive: true });
+  fs.writeFileSync(path.join(dependency, "package.json"), JSON.stringify({ name: "typescript", version: "7.0.2", main: "version.cjs" }));
+  fs.writeFileSync(path.join(dependency, "version.cjs"), "module.exports = { version: '7.0.2', versionMajorMinor: '7.0' };\n");
+  fs.writeFileSync(path.join(producer, "src", "feature.ts"), "export function verifyFeature() { return true; }\n");
+  const discovery = readProjectContext("integration", db, [], { workflowId: "workflow" }), scope = sourceScope(discovery.source_scope);
+  const lexical = searchSources(discovery.roots, scope, ["verifyFeature"]), graph = buildCodeIntelligence(discovery.roots, scope, ["verifyFeature"], lexical);
+  const adapter = graph.adapters.find(item => item.name === "typescript-unavailable");
+  assert.ok(adapter);
+  assert.equal(adapter.compiler_available, false);
+  assert.equal(graph.nodes.some(item => item.language === "typescript"), false);
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 // The enumeration cap used to be applied before the scope, which made Git's listing order decide what
 // the scope was allowed to contain. On a repository of thousands of paths a file the scope named
 // directly was never enumerated, and the answer came back as absence rather than as an unread corpus.
