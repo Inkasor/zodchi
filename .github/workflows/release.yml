@@ -9,16 +9,20 @@ on:
     tags:
       - "v*"
 
+# Каждая job объявляет собственные права. Общий по workflow набор оставлен минимальным,
+# чтобы публикующие права не наследовались джобами, которые только читают.
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 env:
   ARCHIVE_NAME: Zodchi-${{ github.ref_name }}.zip
 
 jobs:
   build:
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -71,6 +75,9 @@ jobs:
         run: gh release create "${{ github.ref_name }}" "$env:ARCHIVE_NAME" SHA256SUMS.txt zodchi-release-manifest.json --title "Zodchi ${{ github.ref_name }}" --draft --generate-notes
 
   draft_smoke:
+    permissions:
+      contents: read
+      attestations: read
     needs: build
     strategy:
       fail-fast: false
@@ -96,6 +103,8 @@ jobs:
           path: release-smoke.json
 
   publish:
+    permissions:
+      contents: write
     needs: draft_smoke
     runs-on: ubuntu-latest
     steps:
@@ -112,6 +121,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'RELEASE_PUBLISH_FAILED' }
 
   post_publish_smoke:
+    permissions:
+      contents: read
+      attestations: read
     needs: publish
     strategy:
       fail-fast: false
@@ -133,6 +145,8 @@ jobs:
           path: release-smoke.json
 
   rollback_failed_publication:
+    permissions:
+      contents: write
     needs: post_publish_smoke
     if: ${{ always() && needs.post_publish_smoke.result != 'success' }}
     runs-on: ubuntu-latest

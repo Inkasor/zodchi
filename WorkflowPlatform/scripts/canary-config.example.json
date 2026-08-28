@@ -1,0 +1,24 @@
+{
+  "_comment": "Shape of the --config file for scripts/run-e2e-evidence.mjs. Every path is an absolute local path on the owner's machine, so a real canary configuration is never committed: it would put a private project root into the public repository. Copy this file outside the repository, fill the placeholders and keep the result next to the run it produced, so the run identifiers in the release evidence stay resolvable.",
+  "output_root": "<absolute path to an empty directory; the runner refuses to reuse one>",
+  "gateway_entry": "<absolute path to AgentGateway/src/cli.mjs of the installation under test>",
+  "projects": [
+    {
+      "project_id": "example-canary",
+      "name": "Example canary project",
+      "root_path": "<absolute path to the real repository this canary runs against>",
+      "package_key": "software.web-application",
+      "package_file": "<absolute path to WorkflowPlatform/packages/example/generated/software.web-application.xml>",
+      "workflow_key": "software_web_application.runtime",
+      "message": "Run the registered read-only technical verification scenario. Do not edit source files and do not make owner acceptance decisions.",
+      "resources": [
+        {
+          "alias": "example.infobase",
+          "kind": "1c.file",
+          "purpose": "Read-only access to the owner's file information base",
+          "declaration": { "path": "<absolute path to the directory containing 1Cv8.1CD>" }
+        }
+      ]
+    }
+  ]
+}

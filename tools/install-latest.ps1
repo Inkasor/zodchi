@@ -53,7 +53,7 @@ try {
     $workflow = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$Repository/actions/runs/$($manifest.workflow_run)"
     if ($workflow.status -ne 'completed' -or $workflow.conclusion -ne 'success') { throw "Release workflow did not complete successfully: $($manifest.workflow_run)" }
     if ($workflow.head_sha -ne $manifest.commit) { throw 'Release workflow commit differs from the release manifest.' }
-    $attestations = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$Repository/attestations/sha256:$actual`?predicate_type=provenance"
+    $attestations = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$Repository/attestations/sha256:$($actual)?predicate_type=provenance"
     if (-not $attestations.attestations -or @($attestations.attestations).Count -eq 0) { throw "Published archive has no GitHub provenance attestation: sha256:$actual" }
 
     $expanded = Join-Path $scratch 'expanded'
