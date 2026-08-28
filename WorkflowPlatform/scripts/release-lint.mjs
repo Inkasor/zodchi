@@ -185,7 +185,7 @@ for (const item of actualFiles) {
   const text = fs.readFileSync(path.join(root, item.path), "utf8");
   if (/\b[A-Za-z]:[\\/]/.test(text) || /\/(?:home|Users)\/[A-Za-z0-9._-]+\//.test(text)) findings.push(`${item.path}: absolute user or drive path`);
   if (/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(text)) findings.push(`${item.path}: private key material`);
-  if (/(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{16,}|AKIA[A-Z0-9]{16})/.test(text)) findings.push(`${item.path}: credential-shaped value`);
+  if (/(?:^|[^A-Za-z0-9])(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{16,}|AKIA[A-Z0-9]{16})/.test(text)) findings.push(`${item.path}: credential-shaped value`);
   if (/(?:api[_-]?key|client_secret|password|access_token)\s*[=:]\s*["'][^"']{12,}["']/i.test(text)) findings.push(`${item.path}: secret-shaped assignment`);
 }
 
