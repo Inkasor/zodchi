@@ -39,9 +39,19 @@ function resolveReportPath(value) {
   return fileURLToPath(value);
 }
 
+// The analyzer canonicalizes the source root it reports while echoing each file path in the form it was
+// given, so a source reached through a link is described by both spellings at once: a Windows junction
+// under a user profile, or the /var to /private/var link every macOS temporary directory sits behind.
+// Comparing the two spellings literally would reject the analyzer's own output as foreign, so both sides
+// are resolved to the real path first. A path that cannot be resolved is left as it is: the containment
+// check below is what refuses it, and it must refuse rather than throw somewhere less legible.
+function realPath(value) {
+  try { return fs.realpathSync.native(value); } catch { return value; }
+}
+
 function relativeDiagnosticPath(filePath, sourceRoot) {
-  const resolved = resolveReportPath(filePath);
-  const relative = path.relative(path.resolve(sourceRoot), resolved).replaceAll("\\", "/");
+  const resolved = realPath(resolveReportPath(filePath));
+  const relative = path.relative(realPath(path.resolve(sourceRoot)), resolved).replaceAll("\\", "/");
   if (!relative || relative.startsWith("../") || path.isAbsolute(relative)) throw new Error(`ONE_C_BSL_REPORT_OUTSIDE_SOURCE: ${filePath}`);
   return relative;
 }

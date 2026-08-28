@@ -62,3 +62,26 @@ test("1C BSL configuration activates only the registered project check", () => {
   const config = JSON.parse(check.config_json); assert.equal(config.command, process.execPath); assert.equal(config.args.includes("--platform-bin"), true); assert.equal(config.args.includes(dbFile), true); assert.equal(config.args.includes("one-c"), true); assert.equal(config.args.includes("{{quality_level}}"), true);
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test("BSL diagnostics survive a source root reached through a link", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "one-c-bsl-link-"));
+  try {
+    const real = path.join(root, "real"), link = path.join(root, "link");
+    fs.mkdirSync(real);
+    fs.writeFileSync(path.join(real, "Module.bsl"), "Процедура Пример()\nКонецПроцедуры\n", "utf8");
+    fs.symlinkSync(real, link, "junction");
+    const diagnostic = { code: "ParseError", severity: "Error", message: "broken" };
+
+    // The analyzer reports the canonical root and the path it was handed, in either order depending on
+    // which spelling the caller used. Both have to describe the same file.
+    const canonical = buildDiagnosticSnapshot({ sourceDir: real, fileinfos: [{ path: pathToFileURL(path.join(link, "Module.bsl")).href, diagnostics: [diagnostic] }] });
+    const linked = buildDiagnosticSnapshot({ sourceDir: link, fileinfos: [{ path: pathToFileURL(path.join(real, "Module.bsl")).href, diagnostics: [diagnostic] }] });
+    assert.deepEqual(canonical.diagnostics.map(item => item.path), ["Module.bsl"]);
+    assert.deepEqual(linked.diagnostics.map(item => item.path), ["Module.bsl"]);
+
+    // Containment is still refused: a link is not a way out of the analyzed source.
+    assert.throws(() => buildDiagnosticSnapshot({ sourceDir: real, fileinfos: [{ path: pathToFileURL(path.join(root, "Outside.bsl")).href, diagnostics: [diagnostic] }] }), /ONE_C_BSL_REPORT_OUTSIDE_SOURCE/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
