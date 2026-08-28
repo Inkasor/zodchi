@@ -1,0 +1,7 @@
+interface:
+  display_name: "Zod"
+  short_description: "Short explicit alias for Zodchi"
+  default_prompt: "Run this task through Zodchi."
+policy:
+  allow_implicit_invocation: false
+
