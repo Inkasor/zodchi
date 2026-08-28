@@ -8,6 +8,7 @@ import { applyWorkflowImport, proposeWorkflowImport } from "../src/workflow-pack
 import { callGateway } from "../src/gateway.mjs";
 import { loadRoleContract, parseRoleReceipt, rolePrompt } from "../src/role-contracts.mjs";
 import { workflowRunStatistics } from "../src/statistics.mjs";
+import { registerImplicitResources } from "../src/project-resources.mjs";
 
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 function argsObject(argv) { const result = {}; for (let i = 0; i < argv.length; i += 1) if (argv[i].startsWith("--")) result[argv[i].slice(2)] = argv[i + 1]?.startsWith("--") || argv[i + 1] === undefined ? true : argv[++i]; return result; }
@@ -15,7 +16,7 @@ function status(root) { return execFileSync("git", ["status", "--porcelain=v1", 
 const args = argsObject(process.argv.slice(2)); if (!args.config) throw new Error("Usage: node scripts/run-owner-boundary-evidence.mjs --config <json>");
 const config = JSON.parse(fs.readFileSync(path.resolve(args.config), "utf8")), outputRoot = path.resolve(config.output_root), dbFile = path.join(outputRoot, "workflow-evidence.sqlite"), gatewayDb = path.join(outputRoot, "gateway-evidence.sqlite");
 if (fs.existsSync(outputRoot)) throw new Error(`EVIDENCE_OUTPUT_ALREADY_EXISTS: ${outputRoot}`); fs.mkdirSync(outputRoot, { recursive: true });
-let db = openDb(dbFile); for (const project of config.projects) db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES(?,?,?,?)").run(project.project_id, project.name, path.resolve(project.root_path), now()); db.close();
+let db = openDb(dbFile); for (const project of config.projects) { const rootPath = path.resolve(project.root_path); db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES(?,?,?,?)").run(project.project_id, project.name, rootPath, now()); registerImplicitResources(db, { projectId: project.project_id, rootPath }); } db.close();
 const fakeProvider = path.join(repositoryRoot, "tests", "fixtures", "deterministic-workflow-provider.mjs"), policyFile = path.join(outputRoot, "gateway-policy.json"), providerHome = path.join(outputRoot, "empty-provider-home"); fs.mkdirSync(providerHome); process.env.CODEX_SOURCE_HOME = providerHome; process.env.AGENT_GATEWAY_TEMP = path.join(outputRoot, "gateway-temp");
 const profileKeys = [...new Set(config.projects.flatMap(project => project.scenarios.flatMap(scenario => scenario.roles.map(role => `${project.package_key}.${role}.mvp`))))], profiles = Object.fromEntries(profileKeys.map(key => [key, { model: "deterministic-contract-v1", reasoningEffort: "low", readOnly: true }]));
 fs.writeFileSync(policyFile, JSON.stringify({ schemaVersion: 1, levels: { mvp: { maxCalls: 3, maxCorrectionCycles: 0, timeoutSec: 120 } }, providers: { codex: { command: process.execPath, args: [fakeProvider], profiles } } }, null, 2));

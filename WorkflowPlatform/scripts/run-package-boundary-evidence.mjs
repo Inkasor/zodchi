@@ -9,6 +9,7 @@ import { callGateway } from "../src/gateway.mjs";
 import { loadRoleContract, parseRoleReceipt, rolePrompt } from "../src/role-contracts.mjs";
 import { runProjectGate } from "../src/gates.mjs";
 import { workflowRunStatistics } from "../src/statistics.mjs";
+import { registerImplicitResources } from "../src/project-resources.mjs";
 
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 function argsObject(argv) { const result = {}; for (let i = 0; i < argv.length; i += 1) if (argv[i].startsWith("--")) result[argv[i].slice(2)] = argv[i + 1]?.startsWith("--") || argv[i + 1] === undefined ? true : argv[++i]; return result; }
@@ -21,7 +22,7 @@ const fakeProvider = path.join(repositoryRoot, "tests", "fixtures", "determinist
 process.env.CODEX_SOURCE_HOME = providerHome; process.env.AGENT_GATEWAY_TEMP = path.join(outputRoot, "gateway-temp");
 const profileKeys = [...new Set(config.projects.flatMap(item => item.roles.map(role => `${item.package_key}.${role}.mvp`)))], profiles = Object.fromEntries(profileKeys.map(key => [key, { model: "deterministic-contract-v1", reasoningEffort: "low", readOnly: true }]));
 fs.writeFileSync(policyFile, JSON.stringify({ schemaVersion: 1, levels: { mvp: { maxCalls: 2, maxCorrectionCycles: 1, timeoutSec: 3600 } }, providers: { codex: { command: process.execPath, args: [fakeProvider], profiles } } }, null, 2));
-let db = openDb(dbFile); for (const item of config.projects) db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES(?,?,?,?)").run(item.project_id, item.name, path.resolve(item.root_path), now()); db.close();
+let db = openDb(dbFile); for (const item of config.projects) { const rootPath = path.resolve(item.root_path); db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES(?,?,?,?)").run(item.project_id, item.name, rootPath, now()); registerImplicitResources(db, { projectId: item.project_id, rootPath }); } db.close();
 const summaries = [];
 for (const item of config.projects) {
   const before = status(item.root_path), proposalFile = path.join(outputRoot, `${item.project_id}.import-proposal.json`);

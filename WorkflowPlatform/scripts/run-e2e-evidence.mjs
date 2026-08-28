@@ -7,6 +7,7 @@ import { applyWorkflowImport, proposeWorkflowImport } from "../src/workflow-pack
 import { processMessage } from "../src/workflow-app.mjs";
 import { callGateway } from "../src/gateway.mjs";
 import { workflowRunStatistics } from "../src/statistics.mjs";
+import { registerImplicitResources } from "../src/project-resources.mjs";
 
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 function argsObject(argv) { const result = {}; for (let i = 0; i < argv.length; i += 1) if (argv[i].startsWith("--")) result[argv[i].slice(2)] = argv[i + 1]?.startsWith("--") || argv[i + 1] === undefined ? true : argv[++i]; return result; }
@@ -21,7 +22,11 @@ fs.mkdirSync(outputRoot, { recursive: true });
 const fakeProvider = path.join(repositoryRoot, "tests", "fixtures", "deterministic-workflow-provider.mjs"), policyFile = path.join(outputRoot, "gateway-policy.json"), providerHome = path.join(outputRoot, "empty-provider-home"), gatewayTemp = path.join(outputRoot, "gateway-temp");
 fs.mkdirSync(providerHome); process.env.CODEX_SOURCE_HOME = providerHome; process.env.AGENT_GATEWAY_TEMP = gatewayTemp;
 let db = openDb(dbFile);
-for (const item of config.projects) db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES(?,?,?,?)").run(item.project_id, item.name, path.resolve(item.root_path), now());
+for (const item of config.projects) {
+  const rootPath = path.resolve(item.root_path);
+  db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES(?,?,?,?)").run(item.project_id, item.name, rootPath, now());
+  registerImplicitResources(db, { projectId: item.project_id, rootPath });
+}
 db.close();
 
 // Which roles a run needs is decided by routing, not by the scenario's nominal worker, so every role

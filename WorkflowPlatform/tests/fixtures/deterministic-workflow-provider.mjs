@@ -75,7 +75,7 @@ if (resultSchema === "strategy_review.v1") {
     schema_version: 1, outcome: "ready", scope: { included: ["read-only technical verification"], excluded: ["source edits", "owner acceptance", "publication"] },
     allowed_paths: [], inputs: ["registered project documents", "current working tree"], checks, risks: ["existing dirty worktree is preserved"], artifacts: [],
     completion_criteria: ["all registered required checks pass", "reviewer returns PASS"], questions: [],
-    steps: [{ key: "verify_project", role: workerRole, objective: "Perform no edits; provide structured evidence so registered checks can verify the current project.", allowed_paths: [], artifact_keys: [], check_ids: checks, required: true, irreversible: false, max_attempts: 1 }]
+    steps: [{ key: "verify_project", role: workerRole, objective: "Perform no edits; provide structured evidence so registered checks can verify the current project.", allowed_paths: [], artifact_keys: [], check_ids: checks, resources: [], required: true, irreversible: false, max_attempts: 1 }]
   };
 } else if (resultSchema === "reviewer.v1" || (!resultSchema && role.includes("reviewer"))) {
   result = { schema_version: 1, decision: "PASS", summary: "Registered checks are green and no source path was changed by the bounded worker.", blockers: [], required_actions: [], evidence_refs: ["project-gate:passed", "worker:zero-change"] };
