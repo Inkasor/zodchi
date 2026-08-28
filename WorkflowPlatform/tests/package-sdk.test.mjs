@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { composedPackage, contentProduction, coreLifecycle, domainAdapter, releaseCapability, sourceChange } from "../packages/builders.mjs";
+import { composedPackage, contentProduction, coreLifecycle, domainAdapter, ownerAcceptance, releaseCapability, sourceChange } from "../packages/builders.mjs";
 import { structuredHash } from "../src/role-contracts.mjs";
 import { validateWorkflowPackage } from "../src/workflow-package.mjs";
 
@@ -30,6 +30,18 @@ test("composition order is deterministic and material adapters require an eviden
   const b = composedPackage(core("reviewed"), releaseCapability(), sourceChange());
   assert.equal(structuredHash(a), structuredHash(b));
   assert.throws(() => domainAdapter({ key: "material", materialClaims: true }), /PACKAGE_SDK_EVIDENCE_POLICY_REQUIRED/);
+});
+
+test("owner acceptance stays separate from technical review", () => {
+  const packageValue = validateWorkflowPackage(composedPackage(
+    core("reviewed"),
+    ownerAcceptance({ workTypes: ["game.visual-acceptance"], artifactKeys: ["visual_asset", "test_report"] })
+  ));
+  const flow = packageValue.workflows.find(item => item.key.endsWith(".acceptance"));
+  assert.deepEqual(flow.steps.map(item => item.key), ["coordinate", "evidence", "review", "owner_acceptance"]);
+  assert.equal(flow.steps.at(-1).role_key, null);
+  assert.equal(flow.steps.at(-1).irreversible, true);
+  assert.deepEqual(packageValue.routes.filter(item => item.work_type_key === "game.visual-acceptance").map(item => item.workflow_key), [flow.key]);
 });
 
 test("package lint rejects purposeless roles and gates without a runner", () => {
