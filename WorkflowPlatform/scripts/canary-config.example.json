@@ -1,15 +1,25 @@
 {
-  "_comment": "Shape of the --config file for scripts/run-e2e-evidence.mjs. Every path is an absolute local path on the owner's machine, so a real canary configuration is never committed: it would put a private project root into the public repository. Copy this file outside the repository, fill the placeholders and keep the result next to the run it produced, so the run identifiers in the release evidence stay resolvable.",
+  "_comment": "Shape of the --config file for scripts/run-e2e-evidence.mjs. Every path is an absolute local path on the owner's machine, so a real canary configuration is never committed: it would put a private project root into the public repository. Copy this file outside the repository, fill the placeholders and keep the result next to the run it produced, so the run identifiers in the release evidence stay resolvable. The two entries below are independent examples of the same shape, not one configuration: a canary normally names a single project.",
   "output_root": "<absolute path to an empty directory; the runner refuses to reuse one>",
   "gateway_entry": "<absolute path to AgentGateway/src/cli.mjs of the installation under test>",
   "projects": [
     {
-      "project_id": "example-canary",
-      "name": "Example canary project",
+      "project_id": "example-web-canary",
+      "name": "Example web application canary",
       "root_path": "<absolute path to the real repository this canary runs against>",
       "package_key": "software.web-application",
       "package_file": "<absolute path to WorkflowPlatform/packages/example/generated/software.web-application.xml>",
       "workflow_key": "software_web_application.runtime",
+      "message": "Run the registered read-only technical verification scenario. Do not edit source files and do not make owner acceptance decisions.",
+      "resources": []
+    },
+    {
+      "project_id": "example-one-c-canary",
+      "name": "Example 1C development canary",
+      "root_path": "<absolute path to the exported 1C configuration sources this canary runs against>",
+      "package_key": "one-c.development",
+      "package_file": "<absolute path to WorkflowPlatform/packages/example/generated/one-c.development.xml>",
+      "workflow_key": "one_c_development.runtime",
       "message": "Run the registered read-only technical verification scenario. Do not edit source files and do not make owner acceptance decisions.",
       "resources": [
         {
