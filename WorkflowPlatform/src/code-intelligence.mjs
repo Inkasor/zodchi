@@ -3,10 +3,11 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 
-const SOURCE_EXTENSIONS = new Set([".bsl", ".os", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
+const SOURCE_EXTENSIONS = new Set([".bsl", ".os", ".xml", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
 const IGNORED = new Set([".git", "node_modules", "dist", "build", "coverage", ".next", ".venv", "__pycache__", "vendor", "tmp", "temp"]);
 const BSL_EXTENSIONS = new Set([".bsl", ".os"]);
 const TS_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
+const ONE_C_XML_TYPES = new Map(Object.entries({ configuration: "configuration", subsystem: "subsystem", commonmodule: "module", document: "document", catalog: "catalog", informationregister: "information_register", accumulationregister: "accumulation_register", report: "report", dataprocessor: "data_processor", form: "form", attribute: "attribute", requisite: "attribute", command: "command", tabularsection: "tabular_section" }));
 
 function listedFiles(root) {
   try {
@@ -111,6 +112,54 @@ function parseBsl(files) {
     addEdge(edges, edgeKeys, call.from, targets[0].id, "calls", { path: call.path, line: call.line });
   }
   return { adapter: "bsl-structural", nodes, edges, stats: { files: files.filter(item => BSL_EXTENSIONS.has(item.extension)).length, definitions: nodes.filter(item => ["function", "procedure"].includes(item.kind)).length, metadata_nodes: metadata.size, ambiguous_calls: ambiguousCalls } };
+}
+
+function localXmlName(value) { return String(value ?? "").split(":").at(-1).toLowerCase(); }
+
+function parseOneCXml(files) {
+  const nodes = [], edges = [], edgeKeys = new Set();
+  let recognizedFiles = 0;
+  for (const file of files.filter(item => item.extension === ".xml")) {
+    if (!/(?:MetaDataObject|Configuration|CommonModule|Document|Catalog|InformationRegister|AccumulationRegister|DataProcessor|Report|Form|Attribute|Command)/i.test(file.text)) continue;
+    recognizedFiles += 1;
+    const lines = file.text.split(/\r?\n/), fileId = `one-c-xml:${file.path}:file`, stack = [];
+    nodes.push({ id: fileId, language: "one-c-xml", kind: "metadata_file", name: path.basename(file.path), path: file.path, start_line: 1, end_line: lines.length });
+    for (let index = 0; index < lines.length; index += 1) {
+      for (const tag of lines[index].matchAll(/<\s*(\/?)\s*([A-Za-z_][A-Za-z0-9_.:-]*)([^>]*)>/g)) {
+        const kind = ONE_C_XML_TYPES.get(localXmlName(tag[2]));
+        if (!kind) continue;
+        if (tag[1]) {
+          while (stack.length) { const popped = stack.pop(); if (popped.kind === kind) break; }
+          continue;
+        }
+        const attributes = tag[3] ?? "";
+        const attributeName = attributes.match(/\b(?:name|Name)\s*=\s*["']([^"']+)["']/)?.[1];
+        const nearby = lines.slice(index, Math.min(lines.length, index + 8)).join("\n");
+        const childName = nearby.match(/<\s*(?:[A-Za-z_][A-Za-z0-9_.-]*:)?Name\s*>\s*([^<\r\n]+?)\s*<\/\s*(?:[A-Za-z_][A-Za-z0-9_.-]*:)?Name\s*>/i)?.[1];
+        const name = String(attributeName ?? childName ?? `${kind}@${index + 1}`).trim();
+        const id = `one-c-xml:${file.path}:${index + 1}:${kind}:${name}`;
+        const node = { id, language: "one-c-xml", kind, name, path: file.path, start_line: index + 1, end_line: index + 1 };
+        nodes.push(node);
+        addEdge(edges, edgeKeys, stack.at(-1)?.id ?? fileId, id, "contains_metadata", { path: file.path, line: index + 1 });
+        if (!/\/\s*>$/.test(tag[0])) stack.push({ id, kind });
+      }
+    }
+  }
+  return { adapter: "one-c-xml-metadata", nodes, edges, stats: { files: recognizedFiles, definitions: nodes.filter(item => item.kind !== "metadata_file").length } };
+}
+
+function oneCMetadataBridges(nodes) {
+  const edges = [], seen = new Set(), xmlByName = new Map();
+  for (const node of nodes.filter(item => item.language === "one-c-xml" && item.kind !== "metadata_file")) {
+    const key = normalized(node.name); const values = xmlByName.get(key) ?? []; values.push(node); xmlByName.set(key, values);
+  }
+  for (const node of nodes.filter(item => item.language === "bsl" && item.kind === "metadata")) {
+    const symbol = normalized(String(node.name).split(".").at(-1));
+    const targets = xmlByName.get(symbol) ?? [];
+    if (targets.length !== 1) continue;
+    addEdge(edges, seen, node.id, targets[0].id, "resolves_metadata", { source: { path: node.path, line: node.start_line }, target: { path: targets[0].path, line: targets[0].start_line } });
+  }
+  return edges;
 }
 
 function loadTypeScript(root) {
@@ -313,9 +362,9 @@ function selectGraph(parts, exactTerms, contextParts, lexical, nodes, edges, lim
 export function buildCodeIntelligence(roots, scope, terms, lexical = {}, options = {}) {
   const started = performance.now();
   const limits = { maxFiles: options.maxFiles ?? 3000, maxFileBytes: options.maxFileBytes ?? 1024 * 1024, maxNodes: options.maxNodes ?? 40, maxEdges: options.maxEdges ?? 80, maxRankedFiles: options.maxRankedFiles ?? 24, depth: options.depth ?? 2 };
-  const collected = collectFiles(roots, scope, limits), adapters = [parseBsl(collected.files)];
+  const collected = collectFiles(roots, scope, limits), adapters = [parseBsl(collected.files), parseOneCXml(collected.files)];
   for (const root of roots) adapters.push(parseTypeScript(root, collected.files));
-  const allNodes = adapters.flatMap(adapter => adapter.nodes), allEdges = adapters.flatMap(adapter => adapter.edges);
+  const allNodes = adapters.flatMap(adapter => adapter.nodes), allEdges = [...adapters.flatMap(adapter => adapter.edges), ...oneCMetadataBridges(allNodes)];
   const parts = [...new Set((terms ?? []).flatMap(identifierParts))];
   const contextParts = [...new Set((options.contextTerms ?? []).flatMap(identifierParts))];
   const primary = new Set((options.primaryTerms ?? []).map(normalized));
