@@ -157,18 +157,35 @@ export async function deliverExternalEvidencePacket({
     const interaction = readInteraction(runtime.db, interactionId);
     if (!interaction) throw new Error(`INTERACTION_NOT_FOUND: ${interactionId}`);
     const waitingRunId = interaction.run_id;
-    const waiting = runtime.db.prepare("SELECT id,state,response_language FROM workflow_runs WHERE id=?").get(waitingRunId);
+    // The named project and the interaction were checked separately and never against each other, so a
+    // delivery naming one project settled another project's request, resumed its run and charged its
+    // budget on the strength of being a registered project at all. The chain from the interaction to a
+    // project is followed here and has to arrive at exactly the project the caller named.
+    const waiting = runtime.db.prepare(`SELECT r.id,r.state,r.response_language,r.workflow_id,r.project_id,t.project_id AS task_project_id
+      FROM workflow_runs r JOIN tasks t ON t.id=r.task_id WHERE r.id=?`).get(waitingRunId);
     if (!waiting) throw new Error(`INTERACTION_RUN_MISSING: ${interactionId}`);
+    if (waiting.project_id !== waiting.task_project_id) throw new Error(`INTERACTION_PROJECT_INCONSISTENT: ${interactionId}`);
+    if (waiting.project_id !== registeredProject.id) throw new Error(`INTERACTION_PROJECT_MISMATCH: ${interactionId} belongs to ${waiting.project_id}, not ${registeredProject.id}`);
     const responseLanguage = preferredLanguage ?? waiting.response_language ?? settings.responseLanguage ?? "en";
     const delivered = deliverEvidence(runtime.db, interactionId, packet, { answeredRunId: waitingRunId });
-    if (!delivered.settled) return { interaction_id: interactionId, delivered: false, already: delivered.status, run_id: waitingRunId };
+    // Settling records that the answer arrived and was checked; continuing the run is a separate act that
+    // can fail on its own. Reporting a second delivery as a duplicate and stopping there left a run whose
+    // first resume failed waiting for evidence it already had, with no way left to deliver it. A repeat
+    // delivery of an answered request continues the run from the answer already on record.
+    if (!delivered.settled && !(delivered.status === "approved" && waiting.state === "external_evidence_required")) {
+      return { interaction_id: interactionId, delivered: false, already: delivered.status, run_id: waitingRunId };
+    }
     if (!execute) return { interaction_id: interactionId, delivered: true, run_id: waitingRunId, state: waiting.state };
     const definition = workflowDefinition ?? registryDefinition(runtime.db, registeredProject.id, workflow ?? waiting.workflow_id);
     const discovery = readProjectContext(registeredProject.id, runtime.db);
     const taskRoot = path.join(settings.tempRoot, path.basename(registeredProject.root_path).toLowerCase().replaceAll(" ", "-"), waitingRunId);
     try {
       const execution = await resumeWaitingRun({ runtime, waitingRunId, definition, discovery, responseLanguage, taskRoot, gatewayCall, gateRunner });
-      return { interaction_id: interactionId, delivered: true, run_id: waitingRunId, response_language: responseLanguage, execution };
+      return { interaction_id: interactionId, delivered: true, resumed: delivered.settled ? "delivered" : "retried", run_id: waitingRunId, response_language: responseLanguage, execution };
+    } catch (error) {
+      // The run stays where it was, holding an answered request, so the same delivery can be sent again.
+      appendEvent(runtime.db, { entityType: "workflow_run", entityId: waitingRunId, kind: "external_evidence_resume_failed", payload: { interaction_id: interactionId, error: String(error?.message ?? error).slice(0, 200) } });
+      throw error;
     } finally { fs.rmSync(taskRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
   } finally { runtime.db.close(); }
 }

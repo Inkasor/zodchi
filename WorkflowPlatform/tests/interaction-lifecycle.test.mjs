@@ -77,13 +77,18 @@ function contract(overrides = {}) {
   };
 }
 
+const EVIDENCE_CONTENT = "000123 -> register:stock +4; register:settlements -4\n";
+const EVIDENCE_HASH = crypto.createHash("sha256").update(EVIDENCE_CONTENT, "utf8").digest("hex");
+
 function packet(overrides = {}) {
   return {
+    evidence_kind: "posting_log",
     resource: { kind: "one_c_infobase", identity: "srvr=erp-prod;ref=trade" },
-    provenance: { source: "1c_event_log" },
-    completeness: { covered: ["register:stock", "register:settlements"] },
+    provenance: { source: "1c_event_log", collected_by: "owner" },
+    completeness: { rule: "every posting of document 000123 in the period", covered: ["register:stock", "register:settlements"] },
+    claims: ["the posting writes both registers"],
     collected_at: new Date().toISOString(),
-    content_hash: "a".repeat(64),
+    content: EVIDENCE_CONTENT,
     ...overrides
   };
 }
@@ -104,12 +109,22 @@ test("only a packet that satisfies the declared contract closes an evidence requ
   // A packet from another information base is about a different fact, and a packet that covers one of
   // two registers proves half a claim. Both leave the request open rather than closing it on trust.
   assert.throws(() => deliverEvidence(db, interactionId, packet({ resource: { kind: "one_c_infobase", identity: "srvr=erp-test;ref=trade" } })), /EXTERNAL_EVIDENCE_PACKET_INVALID: resource/);
-  assert.throws(() => deliverEvidence(db, interactionId, packet({ completeness: { covered: ["register:stock"] } })), /EXTERNAL_EVIDENCE_PACKET_INCOMPLETE: register:settlements/);
+  assert.throws(() => deliverEvidence(db, interactionId, packet({ completeness: { rule: "every posting of document 000123 in the period", covered: ["register:stock"] } })), /EXTERNAL_EVIDENCE_PACKET_INCOMPLETE: register:settlements/);
   assert.equal(readInteraction(db, interactionId).status, "pending");
+
+  // A packet about another kind of fact, taken by someone the contract did not name, or standing for
+  // fewer claims than the request was allowed to prove, is not the answer to this request.
+  assert.throws(() => deliverEvidence(db, interactionId, packet({ evidence_kind: "configuration_dump" })), /EXTERNAL_EVIDENCE_PACKET_INVALID: evidence_kind/);
+  assert.throws(() => deliverEvidence(db, interactionId, packet({ provenance: { source: "1c_event_log", collected_by: "nightly_job" } })), /EXTERNAL_EVIDENCE_PACKET_INVALID: provenance\.collected_by/);
+  assert.throws(() => deliverEvidence(db, interactionId, packet({ claims: [] })), /EXTERNAL_EVIDENCE_PACKET_INCOMPLETE: claim:the posting writes both registers/);
+  // A stated hash with nothing to compute it from proves only that someone typed a hash.
+  assert.throws(() => deliverEvidence(db, interactionId, packet({ content: undefined, content_hash: "a".repeat(64) })), /EXTERNAL_EVIDENCE_PACKET_INVALID: content/);
+  assert.throws(() => deliverEvidence(db, interactionId, packet({ content_hash: "a".repeat(64) })), /EXTERNAL_EVIDENCE_PACKET_INVALID: content_hash/);
 
   const delivered = deliverEvidence(db, interactionId, packet(), { answeredRunId: "waiting" });
   assert.equal(delivered.settled, true);
-  assert.equal(readInteraction(db, interactionId).answer.evidence.content_hash, "a".repeat(64));
+  // The hash is derived from the content that arrived with the packet, not taken on the packet's word.
+  assert.equal(readInteraction(db, interactionId).answer.evidence.content_hash, EVIDENCE_HASH);
 
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
@@ -358,6 +373,86 @@ test("a worker blocked on an external fact parks the run and asks for evidence, 
   assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM leases WHERE released_at IS NULL").get().count, 0);
   verified.close();
 
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
+// The blocked half of the flow above, without the resume: two cases need a run parked on an open
+// evidence request and nothing else.
+async function parkedOnEvidence(prefix) {
+  const env = fixture(prefix);
+  const gatewayCall = async request => {
+    if (request.role === "planner") return receipt("planner", readyPlan());
+    if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "blocked", summary: "Нужен журнал проведения.", changed_paths: [], artifacts: [], evidence: [], questions: [], external_evidence_request: contract() });
+    return receipt(request.role, {});
+  };
+  const gateRunner = async () => ({ status: "passed", checks: [] });
+  const blocked = await processMessage({ message: "Проверь проведение документа", project: env.project, dbFile: env.dbFile, execute: true, classificationResult: classification(), gatewayCall, gateRunner });
+  assert.equal(blocked.execution.status, "external_evidence_required");
+  const db = openDb(env.dbFile);
+  const interactionId = db.prepare("SELECT id FROM approvals WHERE status='pending' AND kind='external_evidence'").get().id;
+  db.close();
+  return { env, runId: blocked.run_id, interactionId };
+}
+
+test("a delivery answers only the requests of the project it names", async () => {
+  const { env, interactionId } = await parkedOnEvidence("workflow-evidence-project-");
+  const other = path.join(env.root, "other-project");
+  fs.mkdirSync(other, { recursive: true });
+  const db = openDb(env.dbFile);
+  db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('other','Other',?,?)").run(other, now());
+  db.close();
+
+  // Being a registered project was the whole check: the named project and the interaction were verified
+  // separately and never against each other, so a delivery naming one project settled another project's
+  // request, resumed its run and charged its budget. The chain from the interaction to a project has to
+  // arrive at exactly the project the caller named.
+  await assert.rejects(() => deliverExternalEvidencePacket({ interactionId, packet: packet(), project: other, dbFile: env.dbFile, execute: false }), /INTERACTION_PROJECT_MISMATCH/);
+  const verified = openDb(env.dbFile);
+  assert.equal(verified.prepare("SELECT status FROM approvals WHERE id=?").get(interactionId).status, "pending");
+  verified.close();
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
+test("a resume that fails after the answer was recorded leaves the delivery repeatable", async () => {
+  const { env, runId, interactionId } = await parkedOnEvidence("workflow-evidence-retry-");
+  let workerCalls = 0;
+  const gatewayCall = async request => {
+    if (request.role === "planner") return receipt("planner", readyPlan());
+    if (request.role === "worker") {
+      workerCalls += 1;
+      const file = path.join(env.project, "src", "output.txt");
+      fs.writeFileSync(file, "bounded output");
+      const hash = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+      return receipt("worker", { schema_version: 1, status: "completed", summary: "Проверено по журналу.", changed_paths: ["src/output.txt"], artifacts: [{ key: "code-output", type: "code", path: "src/output.txt", content_hash: hash, status: "created" }], evidence: ["evidence packet"], questions: [], external_evidence_request: null });
+    }
+    return receipt("reviewer", { schema_version: 1, decision: "PASS", summary: "All criteria passed.", blockers: [], required_actions: [], evidence_refs: ["gate:passed"] });
+  };
+  const gateRunner = async () => ({ status: "passed", checks: [] });
+
+  // The failure is injected between settling the answer and continuing the run, which is exactly the
+  // window the old order left open: the request was closed first, so a resume that then failed turned
+  // every later delivery into a duplicate and the run waited for evidence it already had, for ever.
+  const broken = openDb(env.dbFile);
+  const classificationRow = broken.prepare("SELECT * FROM classifications WHERE run_id=?").get(runId);
+  broken.prepare("DELETE FROM classifications WHERE run_id=?").run(runId);
+  broken.close();
+
+  await assert.rejects(() => deliverExternalEvidencePacket({ interactionId, packet: packet(), project: env.project, dbFile: env.dbFile, gatewayCall, gateRunner }), /RUN_HAS_NO_CLASSIFICATION/);
+
+  const stopped = openDb(env.dbFile);
+  assert.equal(stopped.prepare("SELECT status FROM approvals WHERE id=?").get(interactionId).status, "approved");
+  assert.equal(stopped.prepare("SELECT state FROM workflow_runs WHERE id=?").get(runId).state, "external_evidence_required");
+  assert.equal(stopped.prepare("SELECT COUNT(*) AS count FROM events WHERE entity_id=? AND kind='external_evidence_resume_failed'").get(runId).count, 1);
+  const columns = Object.keys(classificationRow);
+  stopped.prepare(`INSERT INTO classifications(${columns.join(",")}) VALUES(${columns.map(() => "?").join(",")})`).run(...columns.map(name => classificationRow[name]));
+  stopped.close();
+
+  // The same packet, delivered again, continues the run from the answer already on record.
+  const resumed = await deliverExternalEvidencePacket({ interactionId, packet: packet(), project: env.project, dbFile: env.dbFile, gatewayCall, gateRunner });
+  assert.equal(resumed.delivered, true);
+  assert.equal(resumed.resumed, "retried");
+  assert.equal(resumed.execution.status, "completed");
+  assert.equal(workerCalls, 1);
   fs.rmSync(env.root, { recursive: true, force: true });
 });
 
