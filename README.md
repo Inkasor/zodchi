@@ -41,7 +41,7 @@ Open a new chat in Codex or Claude Code and send it this repository link with th
 
 Keep that setup chat. You can later use it to add projects, change models, create roles, and customize workflows.
 
-Zodchi is currently a Windows-first public beta. Codex and Claude Code are supported chat entry points. Other model harnesses can already be used as workers when they are installed and configured locally.
+The 0.6 release candidate uses one cross-platform archive and targets Windows and macOS; Linux installation is experimental until live external acceptance. Windows is locally accepted, while macOS owner acceptance remains a release gate. Codex and Claude Code are supported chat entry points. Other model harnesses can be used as workers when installed and configured locally.
 
 </section>
 

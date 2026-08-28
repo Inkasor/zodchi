@@ -4,6 +4,18 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_6_0_rc_1_2026_08_28" status="working">
+
+## 0.6.0-rc.1 — 2026-08-28
+
+- Release and installation are fail-closed: one universal archive, checksum and publisher verification, native pre-Node bootstrap diagnostics, transactional project hooks, and install/update/rollback/uninstall acceptance across platform-aware paths.
+- Core lifecycle now separates clarification from external evidence, binds irreversible approval to exact action state, isolates owner messages and project configuration, protects canonical shared/exclusive resources, and supports privacy-safe receipts plus a signed external control plane.
+- Scope-aware Git enumeration applies pathspecs before limits, complete-corpus negatives require authoritative boundaries, and deterministic evidence/recovery supervision prevents duplicate review loops while preserving UTF-8 byte contracts.
+- Package SDK v4 ships support-grade `software.web-application` and `one-c.development`, plus executable previews for Web games, Unity, data analytics, infrastructure operations, and marketing/content operations. Fifteen project presets generate hash-bound import proposals and explicit local configuration without changing platform core.
+- Windows real-repository mechanics are green for Unity and marketing/content. Dashboard remains blocked by its registered project checks, 1C remains unavailable until its local BSL baseline is registered, owner/domain acceptance is separate, and macOS/Linux acceptance is still required before final `0.6.0`.
+
+</section>
+
 <section id="0_5_24_2026_08_26" status="working">
 
 ## 0.5.24 — 2026-08-26

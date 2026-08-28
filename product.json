@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "name": "zodchi",
   "displayName": "Zodchi",
-  "version": "0.5.24",
+  "version": "0.6.0-rc.1",
   "workingName": false,
-  "releaseChannel": "beta",
+  "releaseChannel": "rc",
   "components": [
     "WorkflowPlatform",
     "AgentGateway"
@@ -27,5 +27,12 @@
   "workflowPackages": [
     "software.web-application",
     "one-c.development"
+  ],
+  "previewWorkflowPackages": [
+    "game.web",
+    "game.unity",
+    "data.analytics",
+    "infra.operations",
+    "marketing.content-operations"
   ]
 }

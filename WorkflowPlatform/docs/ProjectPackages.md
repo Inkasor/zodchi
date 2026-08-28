@@ -40,4 +40,17 @@
     <purpose>The package this repository ships so the format, the builders and the generator can be built, validated and tested without any real project.</purpose>
     <rule id="replaceable">Generate and check your own packages by naming your definition file: npm run packages:generate -- --definitions &lt;file&gt;, or --installation to use the packageDefinitions setting. The repository contract tests always run against the example, because a suite that follows a machine-local setting proves nothing about the product.</rule>
   </example>
+
+  <public_catalog status="accepted">
+    <rule id="support_status_is_explicit">The public catalog labels `software.web-application` and `one-c.development` support-grade. `game.web`, `game.unity`, `data.analytics`, `infra.operations` and `marketing.content-operations` are executable previews: they run, but defects found there do not block a release until external acceptance promotes that package.</rule>
+    <rule id="preview_does_not_imply_truth">A synthetic preview result proves mechanics only. It cannot close domain truth, product fit, visual acceptance, gameplay acceptance or any owner decision.</rule>
+    <rule id="deprecated_alias_is_migrated">`example.web-app` is a deprecated alias of `software.web-application`. Existing projects receive a hash-bound migration proposal rather than a silent package replacement.</rule>
+  </public_catalog>
+
+  <project_presets status="accepted">
+    <rule id="preset_is_not_a_package">A project preset maps one observed working profile to public packages, source scopes, adapter requirements, resources, authority and a first-value scenario. It does not copy a workflow or modify platform core.</rule>
+    <rule id="preset_is_proposal_first">Run `preset-lint` to validate the shipped catalog, `preset-inspect --preset &lt;key&gt;` to read one recipe, and `preset-propose --db &lt;db&gt; --project &lt;id&gt; --preset &lt;key&gt; --out &lt;directory&gt;` to create hash-bound package import proposals. Applying a proposal remains a separate confirmed action.</rule>
+    <rule id="local_capabilities_are_not_invented">A proposal reports required local adapters, resource aliases and authority boundaries. It never fabricates an executable, information base, database, calendar, external runtime or owner acceptance.</rule>
+    <rule id="profile_coverage_is_measured">Every public fixture is `MECHANICS_ONLY`. Real-repository and owner-read requirements remain open until their named acceptance is performed, and value is measured by manual coordination work actually removed while domain guards remain.</rule>
+  </project_presets>
 </document>
