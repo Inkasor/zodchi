@@ -1,4 +1,4 @@
-<document id="zodchi_update" status="accepted" authority="zodchi" version="0.3.0-beta.4" language="en">
+<document id="zodchi_update" status="accepted" authority="zodchi" version="0.6.0-rc.1" language="en">
   <title>LLM-operated Zodchi update</title>
   <purpose>Replace the program safely while preserving personal projects, settings, databases, and run history.</purpose>
 
@@ -12,7 +12,7 @@
   <procedure status="accepted">
     <step order="1">Inspect the installed version and external data path.</step>
     <step order="2">When needed, create a supported snapshot of local databases with the backup command.</step>
-    <step order="3">Run tools/install-latest.ps1 from a trusted repository with the current destination.</step>
+    <step order="3">Run the trusted platform bootstrap with the current destination: `tools/install-latest.ps1` on Windows or `tools/install-latest.sh` on macOS/Linux. It must reject a release whose workflow, publisher, provenance, manifest, checksum, or archive disagree.</step>
     <step order="4">Verify bundle-manifest.json and run npm test in the installed release.</step>
     <step order="5">Verify `/zodchi` and `/zod` in each selected host and verify that ordinary messages are not intercepted.</step>
   </procedure>
@@ -31,6 +31,7 @@
 
   <recovery status="accepted">
     <rule id="atomic_installer">The supported installer replaces the program atomically and restores the previous directory on failure.</rule>
+    <rule id="rollback_keeps_explicit_entry">Rollback restores installer-owned skills to the compatible application root and never resurrects a removed legacy hook.</rule>
     <rule id="no_permanent_backups">Do not leave permanent release duplicates after a successful update.</rule>
   </recovery>
 </document>

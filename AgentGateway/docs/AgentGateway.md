@@ -1,4 +1,4 @@
-<document id="agent_gateway" status="accepted" authority="zodchi" version="0.5.23" language="en">
+<document id="agent_gateway" status="accepted" authority="zodchi" version="0.6.0-rc.1" language="en">
   <title>AgentGateway runtime contract</title>
   <purpose>Perform one bounded model call through a configured harness or compatible API and return the result to WorkflowPlatform.</purpose>
   <responsibilities status="accepted">
@@ -8,10 +8,13 @@
     <rule id="workflow_owns_checks">WorkflowPlatform owns project checks, corrections, reviewer policy, and completion state.</rule>
     <rule id="external_local_state">Gateway database, local policy overlay, authentication, and provider state stay outside the replaceable release.</rule>
     <rule id="process_tree_cancellation">Receipts declare cancellation capability and mode. Process-backed harness cancellation terminates the complete provider process tree; WorkflowPlatform owns the corresponding lease, attempt, and run state.</rule>
+    <rule id="parallel_settlement">A parallel review group waits for every admitted invocation to settle. On participant failure, outstanding calls are cancelled and closed before WorkflowPlatform exposes a terminal state or calculates final budget use.</rule>
+    <rule id="receipt_linkage">Every completed or failed call with a receipt is linked to its run before role-result validation evidence is recorded; schema repair cannot erase the original call or spend.</rule>
   </responsibilities>
   <security status="accepted">
     <rule id="no_shell_interpolation">Harness commands use bounded argument arrays without shell interpolation.</rule>
     <rule id="environment_credentials">Compatible API credentials are read from named environment variables and never written to product configuration.</rule>
+    <rule id="receipt_privacy">Persistent storage contains normalized receipt metadata, hashes, usage, duration, status, compact errors, and artifact references only. Full prompts, responses, transcripts, source bodies, and credential samples are forbidden.</rule>
   </security>
   <section id="license" status="accepted">AgentGateway is distributed as part of Zodchi under the repository-level MIT License. Copyright 2026 Petr Tsap.</section>
 </document>

@@ -1,4 +1,4 @@
-<document id="workflow_platform" version="0.5.23" status="working" kind="governance" language="en">
+<document id="workflow_platform" version="0.6.0-rc.1" status="accepted" kind="governance" language="en">
 <metadata owner="workflow-platform" authority="Zodchi">
 </metadata>
 <section id="documentator_contract" status="accepted">
@@ -22,6 +22,12 @@ Local profiles, model assignments, project registry, run history, and both datab
 <rule id="explicit_skills_use_release" status="accepted">
 User-level `/zodchi` and `/zod` skills start WorkflowPlatform from the installed release; ordinary project-chat messages are not intercepted.
 </rule>
+<rule id="explicit_task_transport" status="accepted">
+The selected task is written as strict UTF-8 to a fresh file and passed by path. User text is never interpolated into a shell command, and the receipt binds the exact source SHA-256.
+</rule>
+<rule id="new_explicit_message_is_new_run" status="accepted">
+Every explicit owner invocation creates a new run. Only exact redelivery of the same source, event key, and payload is idempotent; clarification, external-evidence, pause, and control continuations use their own structural request identifiers.
+</rule>
 <rule id="response_language" status="accepted">
 WorkflowPlatform stores the resolved response language and passes it to every user-facing role; schema keys and enum values remain English.
 </rule>
@@ -34,11 +40,17 @@ A document on a read-only root is never offered as writable and a write to it is
 <rule id="only_writable_roots_reach_the_provider" status="accepted">
 A model invocation receives the writable roots and never a read-only one; what a role reads was collected into the prompt before the call.
 </rule>
+<rule id="project_binding_uses_origin" status="accepted">
+The host event supplies only its origin directory. WorkflowPlatform binds that origin to the registered project root and refuses mismatched inherited configuration, so one project's environment cannot silently route another project's task.
+</rule>
 <section id="context_collection" status="accepted">
 The platform reads the project and assembles the context; a role works from what it was given and does not open files itself.
 </section>
 <rule id="collection_covers_the_project" status="accepted">
 Source collection covers the project's tracked and unignored files; a declared source scope narrows that, and a credential-shaped or dump-shaped name is never collected.
+</rule>
+<rule id="scope_is_pushed_into_enumeration" status="accepted">
+Git pathspecs apply before file limits and stat calls. Enumeration source, authority, ignore rule, truncation, per-root and per-partition completeness are evidence; corpus-wide missing requires a complete registered source boundary.
 </rule>
 <rule id="collection_searches_before_planning" status="accepted">
 Collection searches the declared scope for the identifiers carried by the request and supplies the matching files to the planner.
@@ -96,6 +108,39 @@ Provider cost is settled from completed receipts. Already admitted parallel call
 </rule>
 <rule id="owner_controls" status="accepted">
 The CLI exposes run status, watch, pause, resume, and cancel. Pause applies at a safe unit boundary; cancel terminates the active Gateway process tree and closes its lease and attempt.
+</rule>
+<section id="interaction_lifecycle" status="accepted">
+Clarification and external evidence are different waits inside the same run.
+</section>
+<rule id="clarification_requires_owner_authority" status="accepted">
+`clarification_required` carries a typed owner question. A validated answer continues that run; an ordinary unrelated explicit task creates a new run.
+</rule>
+<rule id="external_evidence_requires_packet" status="accepted">
+`external_evidence_required` names the missing fact, collector, resource, completeness rule, and expected claims. Delivery is accepted only when project, run, step, request, packet content, and hashes match.
+</rule>
+<section id="resource_locks" status="accepted">
+Steps coordinate the actual repositories, information bases, databases, and other mutable authorities they touch rather than locking a project root by default.
+</section>
+<rule id="resource_alias_resolution" status="accepted">
+Portable plans carry registered aliases and shared/exclusive modes; only the platform resolves canonical identity. Unknown identity produces `unavailable` without consuming an attempt.
+</rule>
+<rule id="ordered_multi_resource_lease" status="accepted">
+Multiple resources are acquired atomically in canonical sorted order, renewed by heartbeat, included in the attempt receipt, and released on every terminal or recovery transition.
+</rule>
+<section id="approval_and_external_control" status="accepted">
+Authority and external execution remain structurally outside model judgment.
+</section>
+<rule id="approval_hash_binding" status="accepted">
+An owner approval binds the objective, plan, checkpoint, and exact action hashes. Any changed bound value makes it stale and prevents execution.
+</rule>
+<rule id="signed_external_control" status="accepted">
+Registered external executors use Ed25519 request/result envelopes with unique request IDs, bounded payloads, idempotent delivery, explicit cancellation, and provenance. A result becomes canonical evidence only after validation.
+</rule>
+<section id="owner_acceptance" status="accepted">
+Technical completion, reading, and domain acceptance are independent records.
+</section>
+<rule id="owner_read_record" status="accepted">
+Only `source=owner_explicit` may create the append-only record bound to project, terminal run, preset, active package version, reviewed artifact SHA-256, and owner identity. `review_status=read` leaves domain status open.
 </rule>
 <section id="license" status="accepted">
 WorkflowPlatform is distributed as part of Zodchi under the repository-level MIT License. Copyright 2026 Petr Tsap.

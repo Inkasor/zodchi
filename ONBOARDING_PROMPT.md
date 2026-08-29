@@ -1,4 +1,4 @@
-<document id="zodchi_onboarding" status="accepted" authority="zodchi" version="0.3.0-beta.4" language="en">
+<document id="zodchi_onboarding" status="accepted" authority="zodchi" version="0.6.0-rc.1" language="en">
   <title>Initial Zodchi setup</title>
   <purpose>Instructions for the LLM that installs and configures Zodchi. Use the person's actual conversation language, explain things plainly, and never ask them to fill internal fields.</purpose>
 
@@ -15,7 +15,7 @@
     <rule id="repository_link_is_enough">When the person supplies only the repository URL, read this file and continue independently. Do not require a manual download or command entry.</rule>
     <step order="1" id="obtain_installer">If no local repository exists, clone https://github.com/Inkasor/zodchi into a disposable directory, read the documentation, and use its supported tools.</step>
     <step order="2" id="choose_mode">Determine whether the person wants to use Zodchi or develop Zodchi. If this is unclear and affects paths, ask one plain question.</step>
-    <step order="3" id="install_mode">For ordinary use, install the latest published GitHub Release with tools/install-latest.ps1. Do not use main-branch sources as the installed program.</step>
+    <step order="3" id="install_mode">For ordinary use, install the latest published GitHub Release with `tools/install-latest.ps1` on Windows or `tools/install-latest.sh` on macOS/Linux. Do not use main-branch sources as the installed program, and do not accept assets that fail publisher, workflow, provenance, manifest, or checksum validation.</step>
     <step order="4" id="development_mode">For product development, clone the repository into a permanent development directory; still build and install the working release into a separate replaceable directory.</step>
     <step order="5" id="separate_data">Keep personal databases and settings in a third permanent directory outside both source and installed program.</step>
     <rule id="development_project_layout">In a Codex project for Zodchi development, use the source repository as the primary folder. The installed release and local data may be secondary folders for delivery verification and analytics. Edit code only in sources, update the release through the builder, and change data through supported commands.</rule>
@@ -25,7 +25,7 @@
     <check id="workflow_platform_path">Locate WorkflowPlatform inside the installed Zodchi release.</check>
     <check id="agent_gateway_path">Locate AgentGateway inside the installed Zodchi release.</check>
     <check id="model_provider_catalog">Read AgentGateway/model-providers.json and propose only implemented harness-provider combinations.</check>
-    <check id="node_runtime">Verify Node.js and package.json.</check>
+    <check id="node_runtime">Verify Node.js 24 or newer and package.json. The bootstrap diagnoses a missing runtime but does not install system Node without separate owner authority.</check>
     <check id="codex_cli">Locate Codex CLI and run codex --version.</check>
     <check id="opencode_desktop_cli">When OpenCode is selected, verify Desktop and CLI independently. OpenCode Desktop does not imply an opencode command. If the CLI is absent, install the official opencode-ai package, run opencode --version, and then perform a safe Gateway smoke call.</check>
     <check id="codex_project_config">Locate the Codex project configuration and .codex directory.</check>
@@ -54,8 +54,9 @@
     <step order="15" id="registered_checks">Register only checks relevant to the project, artifact type, and quality mode. Do not infer commands automatically from a programming language or package.json.</step>
     <step order="16" id="portable_package_contract">Define semantic package key/version/purpose, full step graph and transitions, human questions, schemas, quality policies, prompt-template versions, and anonymized scenarios. Exclude local profiles, model IDs, absolute paths, and secrets.</step>
     <step order="17" id="import_confirmation">Before importing, run workflow-import-propose, show a compact diff, and run workflow-import-apply with confirmed-by only after explicit confirmation.</step>
-    <step order="18" id="starter_package_selection">Show packages from WorkflowPlatform/packages/catalog.json. Do not import a package or assign local profiles/check commands until the person confirms the project and diff.</step>
-    <step order="19" id="company_bundle_validation">For a company bundle, first run workflow-bundle-inspect on WorkflowPlatform/packages/generated/company-workflows.xml. Propose only the project package matching the current project. Do not copy unrelated projects.</step>
+    <step order="18" id="starter_package_selection">Show packages from WorkflowPlatform/packages/catalog.json with their support status. Do not import a package or assign local profiles/check commands until the person confirms the project and diff. A preview package proves executable mechanics, not domain truth or product fit.</step>
+    <step order="19" id="preset_selection">When a shipped recipe matches the project, inspect it with `preset-inspect` and create a proposal with `preset-propose`. Show its package keys, source scopes, required adapters, resource aliases, authority boundaries, first-value scenario, fixture boundary, private acceptance contract, and substitution metric. Never treat the profile description as a statement made by that person.</step>
+    <step order="20" id="local_capability_binding">Bind every required local adapter, project command, external runtime, database, information base, calendar, or resource alias explicitly. If a required capability or canonical resource identity is absent, report `unavailable`; never invent it or silently weaken the package.</step>
   </project_onboarding>
 
   <chat_entry_skill status="accepted">
@@ -77,6 +78,13 @@
     <rule id="local_profiles">Concrete harnesses, providers, profiles, and models go only into local policy.local.json after confirmation.</rule>
   </databases>
 
+  <owner_and_external_evidence status="accepted">
+    <rule id="clarification_is_authority">Use `clarification_required` only when the owner must decide or clarify authority; the explicit answer resumes the same run and is not interpreted as a new task.</rule>
+    <rule id="external_evidence_is_fact">Use `external_evidence_required` when a fact must come from a registered runtime, information base, database, or operator. Resume only after the packet matches the run, request, project, resource, collector, completeness rule, claims, and hashes.</rule>
+    <rule id="approval_is_hash_bound">Approval of an irreversible action binds the owner objective, plan, checkpoint, and exact action. Any changed bound input requires a new approval.</rule>
+    <rule id="owner_read_is_not_acceptance">Record `OWNER_READ` only from an explicit owner action bound to the terminal run, preset, active package version, and artifact SHA-256. It means read, not accepted.</rule>
+  </owner_and_external_evidence>
+
   <safety status="accepted">
     <rule id="no_foreign_data">Never copy unrelated projects, documents, databases, credentials, or history.</rule>
     <rule id="no_silent_writes">Never change documents or assign ownership without confirmation.</rule>
@@ -85,6 +93,8 @@
     <rule id="structured_role_results">Planner, worker, reviewer, and documentator return their exact schemas. Reviewer PASS does not replace deterministic gates or human acceptance.</rule>
     <rule id="experience_confirmation">Evaluate experience proposals on anonymized scenarios and never apply them automatically. Owner confirmation creates a new package version.</rule>
     <rule id="foreign_skill_safety">Never overwrite a same-named skill without a valid Zodchi ownership record, and never remove an owned skill whose managed content was edited.</rule>
+    <rule id="canonical_resource_safety">A write-capable step names registered resource aliases. WorkflowPlatform resolves canonical identities and ordered shared/exclusive leases; an unknown identity is unavailable, not an unprotected write.</rule>
+    <rule id="private_receipts">Persist technical receipts, hashes, usage, timing, compact errors, and artifact references only. Do not persist full prompts, responses, transcripts, or source bodies.</rule>
   </safety>
 
   <output status="accepted">
@@ -92,6 +102,8 @@
     <field id="registered_project">Registered project.</field>
     <field id="found_documents">Discovered documents.</field>
     <field id="proposed_roles">Proposed roles and owners.</field>
+    <field id="selected_package_and_preset">Confirmed package, support status, optional preset, and proposal hash.</field>
+    <field id="local_capabilities">Required adapters, commands, resource aliases, and any unavailable dependency.</field>
     <field id="human_actions">Decisions requiring confirmation.</field>
     <field id="test_instruction">First safe test.</field>
     <rule id="human_response">Do not show SQL, JSON, or internal identifiers unless requested.</rule>
