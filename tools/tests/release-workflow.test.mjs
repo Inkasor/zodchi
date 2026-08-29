@@ -45,10 +45,11 @@ test("the canary configuration template states every key the evidence runner rea
     assert.ok(runner.includes(`config.${key}`), `runner no longer reads config.${key}`);
   }
   const [project] = template.projects;
-  for (const key of ["project_id", "name", "root_path", "package_key", "package_file", "workflow_key"]) {
+  for (const key of ["project_id", "name", "root_path", "package_key", "package_file", "workflow_key", "classification"]) {
     assert.ok(Object.hasOwn(project, key), `template project omits ${key}`);
     assert.ok(runner.includes(`item.${key}`), `runner no longer reads item.${key}`);
   }
+  assert.deepEqual(Object.keys(project.classification).sort(), ["artifact_type", "discipline", "domain", "work_type"]);
   // The 1C entry is the only one that has to declare a check: its package ships the analyzer binding
   // disabled, so a template that stopped naming these keys would silently describe an inert gate.
   const declared = template.projects.find(item => item.checks);
