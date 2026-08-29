@@ -6,7 +6,7 @@ import test from "node:test";
 import { execFileSync } from "node:child_process";
 import { applyHookInstallation, planHookInstallation } from "../../WorkflowPlatform/src/hook-installation.mjs";
 import { defaultInstallationPaths } from "../installation-paths.mjs";
-import { installRelease, rollbackRelease, uninstallRelease } from "../install.mjs";
+import { ensureDirectory, installRelease, rollbackRelease, uninstallRelease } from "../install.mjs";
 import { requireProvenanceAttestation, selectReleaseAssets } from "../install-latest.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "..", "..");
@@ -21,6 +21,11 @@ function release(root, version) {
   return root;
 }
 function skillRoots(root) { return { "claude-code": path.join(root, "skills-claude"), codex: path.join(root, "skills-codex") }; }
+
+test("an existing filesystem root is a valid parent for a specific installation directory", () => {
+  const filesystemRoot = path.parse(process.cwd()).root;
+  assert.equal(ensureDirectory(filesystemRoot, "DESTINATION_PARENT"), filesystemRoot);
+});
 
 test("platform defaults keep replaceable application files separate from mutable data", () => {
   const winHome = "C:" + "\\Users\\test";

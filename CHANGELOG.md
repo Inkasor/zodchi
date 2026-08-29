@@ -4,6 +4,14 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_6_1_2026_08_29" status="working">
+
+## 0.6.1 — 2026-08-29
+
+- The Windows installer now accepts a top-level `Zodchi` application directory on an existing volume without trying to recreate the drive root and failing with `EPERM`.
+
+</section>
+
 <section id="0_6_0_2026_08_29" status="working">
 
 ## 0.6.0 — 2026-08-29

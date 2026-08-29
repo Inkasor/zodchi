@@ -1,4 +1,4 @@
-<document id="workflow_platform_architecture" status="proposed" authority="workflow-platform" version="0.6.0" language="en">
+<document id="workflow_platform_architecture" status="proposed" authority="workflow-platform" version="0.6.1" language="en">
   <title>Zodchi project configuration</title>
   <purpose>Template for the onboarding LLM. Replace TODO values only with verified project facts.</purpose>
 
