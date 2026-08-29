@@ -13,6 +13,8 @@
 - Core lifecycle now separates clarification from external evidence, binds irreversible approval to exact action state, isolates owner messages and project configuration, protects canonical shared/exclusive resources, and supports privacy-safe receipts plus a signed external control plane.
 - Scope-aware Git enumeration applies pathspecs before limits, complete-corpus negatives require authoritative boundaries, and deterministic evidence/recovery supervision prevents duplicate review loops while preserving UTF-8 byte contracts.
 - Package SDK v4 ships support-grade `software.web-application` and `one-c.development`, plus executable previews for Web games, Unity, data analytics, infrastructure operations, and marketing/content operations. Fifteen project presets generate hash-bound import proposals and explicit local configuration without changing platform core.
+- `OWNER_READ` now has an append-only machine-readable record bound to a terminal run, preset, active package version and reviewed artifact SHA-256. Reading remains separate from domain acceptance, and a model cannot create the record for the owner.
+- Version 0.6.0 ships all fifteen recipes and selected canaries. Remaining real-repository pilots and manual-coordination substitution measurements move to the explicit 0.6.x pilot programme and are not presented as profile coverage.
 - Windows real-repository mechanics are green for Unity and marketing/content. Dashboard remains blocked by its registered project checks, 1C remains unavailable until its local BSL baseline is registered, owner/domain acceptance is separate, and macOS/Linux acceptance is still required before final `0.6.0`.
 
 </section>

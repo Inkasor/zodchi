@@ -17,6 +17,8 @@
 - Core lifecycle разделяет clarification и external evidence, привязывает необратимое approval к точному состоянию действия, изолирует owner messages и project config, защищает канонические shared/exclusive resources и поддерживает privacy-safe receipts вместе с подписанным external control plane.
 - Scope-aware Git enumeration применяет pathspec до лимита; отрицание по всему корпусу требует authoritative boundary; детерминированный evidence/recovery supervision останавливает duplicate review loops и сохраняет UTF-8 byte contracts.
 - Package SDK v4 поставляет support-grade `software.web-application` и `one-c.development`, а также executable previews для Web-игр, Unity, data analytics, infrastructure operations и marketing/content operations. Пятнадцать project presets создают hash-bound import proposals и явную local configuration без изменения core платформы.
+- `OWNER_READ` теперь имеет отдельный append-only machine-readable record: он связан с terminal run, preset, активной версией пакета и SHA-256 прочитанного артефакта. Сам факт чтения не превращается в domain acceptance, а модель не может создать такую запись за владельца.
+- В 0.6.0 входят все 15 recipes и выбранные canaries; остальные real-repository pilot runs и измерение замещения ручной координации перенесены в прозрачную программу 0.6.x и не выдаются за готовое profile coverage.
 - На Windows механика реальных репозиториев прошла для Unity и marketing/content. Dashboard остаётся blocked его зарегистрированными project checks, 1С — unavailable до регистрации локального BSL baseline, owner/domain acceptance учитывается отдельно, а macOS/Linux acceptance обязателен до финального `0.6.0`.
 
 </section>
