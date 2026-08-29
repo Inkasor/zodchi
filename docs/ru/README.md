@@ -1,4 +1,4 @@
-<document id="zodchi_readme_ru" status="working" authority="zodchi" version="1.0" language="ru" format="markdown+xml_semantic">
+<document id="zodchi_readme_ru" status="accepted" authority="zodchi" version="0.6.0-rc.1" language="ru" format="markdown+xml_semantic">
 
 # Zodchi
 
@@ -10,7 +10,7 @@ Zodchi превращает один обычный чат с моделью в 
 
 Обычные сообщения остаются обычными сообщениями. Для явного запуска используйте `/zodchi <задача>` или короткую форму `/zod <задача>` в Codex и Claude Code. Команда без аргументов может взять непосредственно предшествующий содержательный запрос, только если это однозначно.
 
-<section id="zachem_eto_nuzhno" status="working">
+<section id="zachem_eto_nuzhno" status="accepted">
 
 ## Зачем это нужно
 
@@ -23,7 +23,7 @@ Zodchi превращает один обычный чат с моделью в 
 
 </section>
 
-<section id="chto_mozhno_delat" status="working">
+<section id="chto_mozhno_delat" status="accepted">
 
 ## Что можно делать
 
@@ -33,7 +33,7 @@ Zodchi может организовать разработку программ
 
 </section>
 
-<section id="nachalo_raboty_odnim_soobscheniem" status="working">
+<section id="nachalo_raboty_odnim_soobscheniem" status="accepted">
 
 ## Начало работы — одним сообщением
 
@@ -43,17 +43,31 @@ Zodchi может организовать разработку программ
 
 Сохраните этот настроечный чат. В нём потом можно добавлять проекты, менять модели, создавать роли и настраивать рабочие процессы под себя.
 
-Release candidate 0.6 использует один кроссплатформенный архив и нацелен на Windows и macOS; установка на Linux остаётся экспериментальной до живого внешнего acceptance. Windows принят локально, а owner acceptance на macOS остаётся обязательным release gate. Поддерживаемый вход работает через Codex и Claude Code. Другие агентские программы можно подключать как исполнителей, если они установлены и настроены локально.
+Zodchi требует Node.js 24 или новее. Release candidate 0.6 использует один кроссплатформенный архив и нацелен на Windows и macOS. Полный жизненный цикл прошёл на Windows и на независимой машине с macOS 15 `arm64`; Linux проходит CI, но остаётся экспериментальным до живого внешнего acceptance. Поддерживаемый вход работает через Codex и Claude Code. Другие агентские программы можно подключать как исполнителей, если они установлены и настроены локально.
 
 </section>
 
-<section id="dlya_razrabotchikov" status="working">
+<section id="pakety_i_recepty" status="accepted">
+
+## Пакеты и рецепты 0.6
+
+Полностью поддерживаются два пакета: `software.web-application` и `one-c.development`. Ещё пять поставляются как исполняемые preview: `game.web`, `game.unity`, `data.analytics`, `infra.operations` и `marketing.content-operations`. Preview означает, что workflow запускается и его механический контракт проверен; это не обещание предметной, игровой, продуктовой, визуальной или пользовательской приёмки.
+
+Пятнадцать устанавливаемых project recipes связывают наблюдавшиеся способы работы с пакетами, нужными локальными адаптерами, границами исходников, блокировками ресурсов, полномочиями, первым полезным сценарием и планом приёмки. Рецепт можно посмотреть командой `preset-inspect`, а `preset-propose` создаёт привязанное к хешу предложение. Импорт и любые действия во внешнем мире остаются отдельными подтверждаемыми операциями.
+
+Подробнее: [переносимые пакеты](../../WorkflowPlatform/docs/ProjectPackages.md) и [доказательства выпуска 0.6](../RELEASE_EVIDENCE_0.6.0-rc.1.md).
+
+</section>
+
+<section id="dlya_razrabotchikov" status="accepted">
 
 ## Для разработчиков
 
 В репозитории находятся исходники `WorkflowPlatform` и `AgentGateway`. Документы для людей доступны на русском и английском. Машинные инструкции установки, обновления, архитектуры и настройки используют компактный семантический английский:
 
 - [Архитектура](../ARCHITECTURE.md)
+- [Быстрый старт](../../QUICKSTART.md)
+- [Пакеты и presets](../../WorkflowPlatform/docs/ProjectPackages.md)
 - [Участие в разработке](CONTRIBUTING.md) ([английская версия](../../CONTRIBUTING.md))
 - [Безопасность](SECURITY.md) ([английская версия](../../SECURITY.md))
 - [История изменений](CHANGELOG.md) ([английская версия](../../CHANGELOG.md))

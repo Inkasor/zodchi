@@ -14,8 +14,9 @@
 - Scope-aware Git enumeration applies pathspecs before limits, complete-corpus negatives require authoritative boundaries, and deterministic evidence/recovery supervision prevents duplicate review loops while preserving UTF-8 byte contracts.
 - Package SDK v4 ships support-grade `software.web-application` and `one-c.development`, plus executable previews for Web games, Unity, data analytics, infrastructure operations, and marketing/content operations. Fifteen project presets generate hash-bound import proposals and explicit local configuration without changing platform core.
 - `OWNER_READ` now has an append-only machine-readable record bound to a terminal run, preset, active package version and reviewed artifact SHA-256. Reading remains separate from domain acceptance, and a model cannot create the record for the owner.
+- Human and machine documentation now describe the implemented 0.6 contracts rather than the completed development plan; semantic/documentator lint covers all fourteen semantic source documents.
 - Version 0.6.0 ships all fifteen recipes and selected canaries. Remaining real-repository pilots and manual-coordination substitution measurements move to the explicit 0.6.x pilot programme and are not presented as profile coverage.
-- Windows real-repository mechanics are green for Unity, marketing/content and a clean 1C checkout. The 1C gate uses the owner-accepted revision as a BSL debt ratchet and blocks only new policy-critical signatures. Dashboard remains blocked by its registered project checks, owner/domain acceptance is separate, and macOS acceptance is still required before final `0.6.0`; Linux remains experimental.
+- Windows real-repository mechanics are green for Dashboard Web/TypeScript, Unity, marketing/content and a clean 1C checkout. The 1C gate uses the owner-accepted revision as a BSL debt ratchet and blocks only new policy-critical signatures. An independent macOS 15 `arm64` machine passed the complete install/explicit-run/update/rollback/uninstall acceptance. Owner/domain acceptance stays separate, and Linux remains experimental until a live external acceptance exists.
 
 </section>
 

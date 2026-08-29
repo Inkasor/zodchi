@@ -18,8 +18,9 @@
 - Scope-aware Git enumeration применяет pathspec до лимита; отрицание по всему корпусу требует authoritative boundary; детерминированный evidence/recovery supervision останавливает duplicate review loops и сохраняет UTF-8 byte contracts.
 - Package SDK v4 поставляет support-grade `software.web-application` и `one-c.development`, а также executable previews для Web-игр, Unity, data analytics, infrastructure operations и marketing/content operations. Пятнадцать project presets создают hash-bound import proposals и явную local configuration без изменения core платформы.
 - `OWNER_READ` теперь имеет отдельный append-only machine-readable record: он связан с terminal run, preset, активной версией пакета и SHA-256 прочитанного артефакта. Сам факт чтения не превращается в domain acceptance, а модель не может создать такую запись за владельца.
+- Документы для людей и машин теперь описывают реализованные контракты 0.6 вместо выполненного плана; semantic/documentator lint проверяет все четырнадцать семантических source documents.
 - В 0.6.0 входят все 15 recipes и выбранные canaries; остальные real-repository pilot runs и измерение замещения ручной координации перенесены в прозрачную программу 0.6.x и не выдаются за готовое profile coverage.
-- На Windows механика реальных репозиториев прошла для Unity, marketing/content и чистого 1С checkout. 1С-gate использует принятую владельцем ревизию как храповик BSL-долга и блокирует только новые policy-critical сигнатуры. Dashboard остаётся blocked его зарегистрированными project checks, owner/domain acceptance учитывается отдельно, macOS acceptance обязателен до финального `0.6.0`, а Linux остаётся experimental.
+- На Windows механика реальных репозиториев прошла для Dashboard Web/TypeScript, Unity, marketing/content и чистого 1С checkout. 1С-gate использует принятую владельцем ревизию как храповик BSL-долга и блокирует только новые policy-critical сигнатуры. Независимая машина с macOS 15 `arm64` прошла полный acceptance install/explicit-run/update/rollback/uninstall. Owner/domain acceptance учитывается отдельно, а Linux остаётся experimental до живого внешнего acceptance.
 
 </section>
 
