@@ -1,4 +1,4 @@
-<document id="zodchi_onboarding" status="accepted" authority="zodchi" version="0.6.0-rc.1" language="en">
+<document id="zodchi_onboarding" status="accepted" authority="zodchi" version="0.6.0" language="en">
   <title>Initial Zodchi setup</title>
   <purpose>Instructions for the LLM that installs and configures Zodchi. Use the person's actual conversation language, explain things plainly, and never ask them to fill internal fields.</purpose>
 

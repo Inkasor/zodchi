@@ -1,4 +1,4 @@
-<document id="zodchi_readme" status="accepted" authority="zodchi" version="0.6.0-rc.1" language="en" format="markdown+xml_semantic">
+<document id="zodchi_readme" status="accepted" authority="zodchi" version="0.6.0" language="en" format="markdown+xml_semantic">
 
 # Zodchi
 
@@ -55,7 +55,7 @@ Two packages are support-grade: `software.web-application` and `one-c.developmen
 
 Fifteen installable project recipes connect observed working patterns to these packages, required local adapters, source scopes, resource locks, authority boundaries, a first-value scenario, and an acceptance plan. Inspect a recipe with `preset-inspect`; create a hash-bound proposal with `preset-propose`. Import and any live action remain separate confirmed operations.
 
-See [Portable project packages](WorkflowPlatform/docs/ProjectPackages.md) and the [0.6 release evidence](docs/RELEASE_EVIDENCE_0.6.0-rc.1.md).
+See [Portable project packages](WorkflowPlatform/docs/ProjectPackages.md) and the [0.6 release evidence](docs/RELEASE_EVIDENCE_0.6.0.md).
 
 </section>
 

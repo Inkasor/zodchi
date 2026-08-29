@@ -1,4 +1,4 @@
-<document id="zodchi_update" status="accepted" authority="zodchi" version="0.6.0-rc.1" language="en">
+<document id="zodchi_update" status="accepted" authority="zodchi" version="0.6.0" language="en">
   <title>LLM-operated Zodchi update</title>
   <purpose>Replace the program safely while preserving personal projects, settings, databases, and run history.</purpose>
 
