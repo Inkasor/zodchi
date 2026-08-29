@@ -10,6 +10,12 @@
       "package_key": "software.web-application",
       "package_file": "<absolute path to WorkflowPlatform/packages/example/generated/software.web-application.xml>",
       "workflow_key": "software_web_application.runtime",
+      "classification": {
+        "work_type": "verification",
+        "artifact_type": "test_report",
+        "domain": "software",
+        "discipline": "software"
+      },
       "message": "Run the registered read-only technical verification scenario. Do not edit source files and do not make owner acceptance decisions.",
       "resources": []
     },
@@ -20,6 +26,12 @@
       "package_key": "one-c.development",
       "package_file": "<absolute path to WorkflowPlatform/packages/example/generated/one-c.development.xml>",
       "workflow_key": "one_c_development.runtime",
+      "classification": {
+        "work_type": "one-c.resume",
+        "artifact_type": "test_report",
+        "domain": "one-c",
+        "discipline": "one-c-development"
+      },
       "message": "Run the registered read-only technical verification scenario. Do not edit source files and do not make owner acceptance decisions.",
       "resources": [
         {
