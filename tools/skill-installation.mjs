@@ -123,13 +123,16 @@ export function installClientSkills({ applicationRoot, roots = defaultSkillRoots
 }
 
 export function removeClientSkills({ applicationRoot, roots = defaultSkillRoots() } = {}) {
-  const application = applicationRoot === undefined ? undefined : path.resolve(applicationRoot);
+  // Removal without a named installation would delete the commands of whichever installation happens
+  // to own them, so the caller has to say on whose behalf it is removing them.
+  if (typeof applicationRoot !== "string" || !applicationRoot.trim()) throw new Error("SKILL_APPLICATION_ROOT_REQUIRED");
+  const application = path.resolve(applicationRoot);
   return Object.freeze(targets(roots).map(target => {
     safeTarget(target);
     if (!fs.existsSync(target.directory)) return { status: "absent", client: target.client, name: target.name, directory: target.directory };
     const marker = readJson(markerFile(target.directory));
     if (marker?.owner !== OWNER) return { status: "not_owned", client: target.client, name: target.name, directory: target.directory };
-    if (application !== undefined && !sameInstallation(marker.application_root, application)) return { status: "different_installation", client: target.client, name: target.name, directory: target.directory, application_root: marker.application_root ?? null };
+    if (!sameInstallation(marker.application_root, application)) return { status: "different_installation", client: target.client, name: target.name, directory: target.directory, application_root: marker.application_root ?? null };
     if (JSON.stringify(managedHashes(target.directory)) !== JSON.stringify(marker.managed_hashes ?? {})) return { status: "changed", client: target.client, name: target.name, directory: target.directory };
     fs.rmSync(target.directory, { recursive: true, force: true });
     return { status: "removed", client: target.client, name: target.name, directory: target.directory };

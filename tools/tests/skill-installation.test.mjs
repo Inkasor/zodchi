@@ -50,7 +50,8 @@ test("foreign or edited skills are never overwritten or removed", () => {
     fs.rmSync(foreign, { recursive: true, force: true });
     installClientSkills(value);
     fs.appendFileSync(path.join(value.roots["claude-code"], "zod", "SKILL.md"), "\nchanged\n");
-    const removed = removeClientSkills({ roots: value.roots });
+    assert.throws(() => removeClientSkills({ roots: value.roots }), /SKILL_APPLICATION_ROOT_REQUIRED/);
+    const removed = removeClientSkills({ applicationRoot: value.applicationRoot, roots: value.roots });
     assert.equal(removed.find(item => item.client === "claude-code" && item.name === "zod").status, "changed");
     assert.equal(removed.filter(item => item.status === "removed").length, 3);
   } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
@@ -71,5 +72,20 @@ test("skills owned by another installation are never taken over or removed", () 
     assert.equal(fs.existsSync(path.join(directory, "SKILL.md")), true);
     const removed = removeClientSkills({ applicationRoot: other, roots: value.roots });
     assert.equal(removed.filter(item => item.status === "removed").length, 4);
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});
+
+// Removal has to say on whose behalf it removes. A call that omits the installation would otherwise
+// bypass the ownership check entirely and delete whatever it found.
+test("removal without a named installation fails closed and changes nothing", () => {
+  const value = fixture();
+  try {
+    installClientSkills(value);
+    const before = Object.fromEntries(Object.entries(value.roots).flatMap(([client, root]) => ["zodchi", "zod"].map(name => [`${client}:${name}`, fs.readFileSync(path.join(root, name, "SKILL.md"))])));
+    for (const invalid of [undefined, { roots: value.roots }, { applicationRoot: "", roots: value.roots }]) assert.throws(() => removeClientSkills(invalid), /SKILL_APPLICATION_ROOT_REQUIRED/);
+    for (const [key, content] of Object.entries(before)) {
+      const [client, name] = key.split(":");
+      assert.deepEqual(fs.readFileSync(path.join(value.roots[client], name, "SKILL.md")), content, key);
+    }
   } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
 });
