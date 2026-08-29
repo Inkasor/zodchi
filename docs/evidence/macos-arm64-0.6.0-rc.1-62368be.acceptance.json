@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "acceptance_class": "MECHANICS_ONLY",
+  "checked_at": "2026-08-29T07:16:27.404Z",
+  "preflight": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "node": {
+      "command": "/usr/local/bin/node",
+      "version": "24.20.0"
+    },
+    "npm": {
+      "command": "/usr/local/bin/npm",
+      "source": "node_directory"
+    },
+    "git": {
+      "command": "git",
+      "status": 0,
+      "version": "git version 2.39.5 (Apple Git-154)"
+    },
+    "model_auth": "not_exercised: deterministic local provider",
+    "optional_domain_adapters": "not_required_for_platform_acceptance"
+  },
+  "versions": {
+    "baseline": "0.6.0-rc.1.acceptance-base",
+    "candidate": "0.6.0-rc.1"
+  },
+  "lifecycle": {
+    "install": {
+      "status": "installed",
+      "version": "0.6.0-rc.1.acceptance-base"
+    },
+    "explicit_skills": {
+      "status": "installed",
+      "commands": 4,
+      "scenarios": 2
+    },
+    "run": {
+      "final_state": "completed",
+      "gate_status": "passed",
+      "calls": 3
+    },
+    "update": {
+      "status": "installed",
+      "version": "0.6.0-rc.1",
+      "skill_targets_updated": 4
+    },
+    "rollback": {
+      "status": "rolled_back",
+      "version": "0.6.0-rc.1.acceptance-base",
+      "skill_targets_restored": 4
+    },
+    "preset_catalog": {
+      "status": "passed",
+      "presets": 15
+    },
+    "uninstall": {
+      "status": "uninstalled",
+      "skills_removed": true,
+      "project_hooks_absent": true,
+      "user_data_preserved": true
+    }
+  },
+  "limits": [
+    "deterministic provider proves platform delivery and gates, not model quality",
+    "synthetic repository proves mechanics, not domain truth or product fit",
+    "macOS owner acceptance is proven only when this report is produced on the owner's Mac"
+  ]
+}
