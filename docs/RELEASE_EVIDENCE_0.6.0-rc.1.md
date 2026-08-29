@@ -4,16 +4,17 @@
 
 <scope id="candidate_scope" status="working">
 
-This record describes a pushed development branch and local release candidate. No pull request, candidate tag, GitHub Release, publication smoke or installed-production update has been performed. A completed workflow is not owner or domain acceptance.
+This record describes pull request #87 and a local release candidate. No candidate tag, GitHub Release, publication smoke or installed-production update has been performed. A completed workflow is not owner or domain acceptance.
 
 </scope>
 
 <automated_verification id="automated_verification" status="verified" evidence="local_deterministic_checks">
 
-- Repository source at `6e2edc3`: tools `33/33`, WorkflowPlatform `329/329`, AgentGateway `26/26`; no failures or skips.
+- Repository source at code-bearing revision `53f56bf`: tools `33/33`, WorkflowPlatform `329/329`, AgentGateway `26/26`; no failures or skips.
 - Package regeneration/import: all seven package artifacts match their definitions and public catalog; all fifteen presets validate and produce proposal-first local onboarding material.
 - Two independently assembled canonical release roots contain the same 217 manifest entries and identical file hashes; release lint passes.
-- The full suite executed from the assembled release at `66b0c80`: tools `31/33` with two source-only checks skipped, WorkflowPlatform `328/329` with one skipped, AgentGateway `26/26`, and packages `7/7`. The product archive intentionally omits its GitHub publishing workflow and the canary configuration template, while the TypeScript semantic test requires the analyzed project to supply a compatible TypeScript compiler API; every skip is explicit and its runtime boundary is covered separately.
+- The full suite executed from the assembled release at code-bearing revision `53f56bf`: on Windows, tools `31/33` with two source-only checks skipped, WorkflowPlatform `328/329` with one skipped, AgentGateway `26/26`, and packages `7/7`. The product archive intentionally omits its GitHub publishing workflow and the canary configuration template, while the TypeScript semantic test requires the analyzed project to supply a compatible TypeScript compiler API; every skip is explicit and its runtime boundary is covered separately. The macOS and Linux variants passed in CI with their documented platform-only skips.
+- Pull request #87 CI run `33237685662` passed on `macos-latest`, `ubuntu-latest` and `windows-latest`, including source tests, generator cleanliness, assembled-release tests and the explicit-skill install/run/update/rollback acceptance. The first macOS attempts exposed and then closed a path-alias-sensitive test and a same-millisecond progress-snapshot ordering defect; neither failure was waived.
 - Two archives compressed from the same canonical `Zodchi` root by the pinned Node 24 runtime are byte-identical. This proves deterministic retries under the release runtime; cross-version zlib byte identity is not claimed. The one-command acceptance covers install, explicit skills for both hosts, routed runs, update, rollback, legacy-hook absence and uninstall.
 
 </automated_verification>
