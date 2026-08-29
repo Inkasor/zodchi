@@ -107,7 +107,7 @@ export function recordProgressSnapshot(db, runId, { cycle = 0, gate = null, revi
   const primary = semantic ?? (reviewer?.blockers?.[0] ? blockerFingerprint(reviewer.blockers[0]) : null);
   const progressKind = reviewEvidence || reviewer ? "semantic_review" : "gate";
   const packetHash = reviewEvidence?.base_evidence_hash ?? null;
-  const previous = db.prepare("SELECT * FROM progress_snapshots WHERE run_id=? AND progress_kind=? ORDER BY created_at DESC,id DESC LIMIT 1").get(runId, progressKind);
+  const previous = db.prepare("SELECT * FROM progress_snapshots WHERE run_id=? AND progress_kind=? ORDER BY created_at DESC,rowid DESC LIMIT 1").get(runId, progressKind);
   const deterministicProgress = Boolean(previous && (
     (semantic?.fingerprint ?? null) !== (previous.semantic_fingerprint ?? null)
     || progressKind === "gate" && JSON.stringify((gate?.checks ?? []).map(check => `${check.id}:${check.status}`).sort()) !== previous.gate_vector_json
@@ -142,7 +142,7 @@ export function recordProgressSnapshot(db, runId, { cycle = 0, gate = null, revi
 }
 
 export function progressStatus(db, runId) {
-  const snapshots = db.prepare("SELECT * FROM progress_snapshots WHERE run_id=? ORDER BY created_at,id").all(runId).map(row => ({
+  const snapshots = db.prepare("SELECT * FROM progress_snapshots WHERE run_id=? ORDER BY created_at,rowid").all(runId).map(row => ({
     ...row, gate_vector: parse(row.gate_vector_json, []), failure_fingerprints: parse(row.failure_fingerprints_json, []),
     changed_scope: parse(row.changed_scope_json, []), unauthorized_changes: parse(row.unauthorized_changes_json, [])
   }));
