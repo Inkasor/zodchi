@@ -23,6 +23,13 @@ function targets(roots) {
 
 function readJson(file) { return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null; }
 
+// Two installations sharing one home share these four directories. The marker records which one
+// wrote them, so neither may quietly take the other's commands over or delete them: an explicit
+// command that silently starts pointing at a different installation is worse than a refusal.
+function sameInstallation(recorded, application) {
+  return typeof recorded === "string" && path.relative(path.resolve(recorded), application) === "";
+}
+
 function walk(directory) {
   if (!fs.existsSync(directory)) return [];
   const result = [];
@@ -38,10 +45,11 @@ function managedHashes(directory) {
   return Object.fromEntries(walk(directory).filter(file => path.resolve(file) !== path.resolve(markerFile(directory))).map(file => [path.relative(directory, file).replaceAll("\\", "/"), sha256(fs.readFileSync(file))]));
 }
 
-function validateOwned(target) {
+function validateOwned(target, application) {
   if (!fs.existsSync(target.directory)) return;
   const marker = readJson(markerFile(target.directory));
   if (marker?.owner !== OWNER || marker.client !== target.client || marker.name !== target.name) throw new Error(`SKILL_TARGET_NOT_OWNED: ${target.directory}`);
+  if (!sameInstallation(marker.application_root, application)) throw new Error(`SKILL_OWNED_BY_OTHER_INSTALLATION: ${target.directory}: ${marker.application_root}`);
   if (JSON.stringify(managedHashes(target.directory)) !== JSON.stringify(marker.managed_hashes ?? {})) throw new Error(`SKILL_OWNED_CONTENT_CHANGED: ${target.directory}`);
 }
 
@@ -80,7 +88,7 @@ function renderSource(source, destination, applicationRoot) {
 
 export function installClientSkills({ applicationRoot, roots = defaultSkillRoots() }) {
   const application = path.resolve(applicationRoot), all = targets(roots);
-  for (const target of all) validateOwned(target);
+  for (const target of all) validateOwned(target, application);
   const applied = [];
   for (const target of all) {
     safeTarget(target);
@@ -114,12 +122,14 @@ export function installClientSkills({ applicationRoot, roots = defaultSkillRoots
   return Object.freeze(applied);
 }
 
-export function removeClientSkills({ roots = defaultSkillRoots() } = {}) {
+export function removeClientSkills({ applicationRoot, roots = defaultSkillRoots() } = {}) {
+  const application = applicationRoot === undefined ? undefined : path.resolve(applicationRoot);
   return Object.freeze(targets(roots).map(target => {
     safeTarget(target);
     if (!fs.existsSync(target.directory)) return { status: "absent", client: target.client, name: target.name, directory: target.directory };
     const marker = readJson(markerFile(target.directory));
     if (marker?.owner !== OWNER) return { status: "not_owned", client: target.client, name: target.name, directory: target.directory };
+    if (application !== undefined && !sameInstallation(marker.application_root, application)) return { status: "different_installation", client: target.client, name: target.name, directory: target.directory, application_root: marker.application_root ?? null };
     if (JSON.stringify(managedHashes(target.directory)) !== JSON.stringify(marker.managed_hashes ?? {})) return { status: "changed", client: target.client, name: target.name, directory: target.directory };
     fs.rmSync(target.directory, { recursive: true, force: true });
     return { status: "removed", client: target.client, name: target.name, directory: target.directory };

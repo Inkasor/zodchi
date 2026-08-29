@@ -55,3 +55,21 @@ test("foreign or edited skills are never overwritten or removed", () => {
     assert.equal(removed.filter(item => item.status === "removed").length, 3);
   } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
 });
+
+// Two installations may share one home. Neither may take the other's explicit commands over, and
+// neither may delete them: a command that silently starts pointing elsewhere is worse than a refusal.
+test("skills owned by another installation are never taken over or removed", () => {
+  const value = fixture(), other = path.join(value.root, "other-app");
+  try {
+    fs.cpSync(value.applicationRoot, other, { recursive: true });
+    installClientSkills({ applicationRoot: other, roots: value.roots });
+    const directory = path.join(value.roots.codex, "zodchi"), before = fs.readFileSync(path.join(directory, "SKILL.md"));
+    assert.throws(() => installClientSkills(value), /SKILL_OWNED_BY_OTHER_INSTALLATION/);
+    assert.deepEqual(fs.readFileSync(path.join(directory, "SKILL.md")), before);
+    const kept = removeClientSkills({ applicationRoot: value.applicationRoot, roots: value.roots });
+    assert.equal(kept.filter(item => item.status === "different_installation").length, 4);
+    assert.equal(fs.existsSync(path.join(directory, "SKILL.md")), true);
+    const removed = removeClientSkills({ applicationRoot: other, roots: value.roots });
+    assert.equal(removed.filter(item => item.status === "removed").length, 4);
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});

@@ -118,6 +118,24 @@ test("failed update restores release, exact legacy hook files and exact skill fi
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+// A second installation in the same home must not be able to disarm the first one's explicit
+// commands, neither by installing over them nor by uninstalling itself.
+test("a second installation neither takes over nor removes the first one's explicit commands", () => {
+  const root = temporaryRoot(), source = release(path.join(root, "source"), "0.6.0-rc.1"), roots = skillRoots(root);
+  const healthCheck = candidate => assert.equal(fs.existsSync(path.join(candidate, "release-marker.txt")), true);
+  const first = path.join(root, "first"), second = path.join(root, "second");
+  try {
+    installRelease({ source, destination: first, dataRoot: path.join(root, "data-1"), skillRoots: roots, healthCheck });
+    const skill = path.join(roots.codex, "zodchi", "SKILL.md"), before = fs.readFileSync(skill);
+    assert.throws(() => installRelease({ source, destination: second, dataRoot: path.join(root, "data-2"), skillRoots: roots, healthCheck }), /SKILL_OWNED_BY_OTHER_INSTALLATION/);
+    assert.deepEqual(fs.readFileSync(skill), before);
+    const uninstalled = uninstallRelease({ destination: second, dataRoot: path.join(root, "data-2"), skillRoots: roots });
+    assert.equal(uninstalled.skills.every(item => item.status === "different_installation"), true);
+    assert.deepEqual(fs.readFileSync(skill), before);
+    assert.equal(uninstallRelease({ destination: first, dataRoot: path.join(root, "data-1"), skillRoots: roots }).skills.every(item => item.status === "removed"), true);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("uninstall removes owned skills and legacy hooks while leaving mutable data recoverable", () => {
   const root = temporaryRoot(), source = release(path.join(root, "source"), "0.5.24"), destination = path.join(root, "installed"), dataRoot = path.join(root, "data"), project = path.join(root, "project"); fs.mkdirSync(project);
   const healthCheck = candidate => assert.equal(fs.existsSync(path.join(candidate, "release-marker.txt")), true);

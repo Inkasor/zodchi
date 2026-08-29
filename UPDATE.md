@@ -22,6 +22,13 @@
     <rule id="run_control">Use run-pause, run-resume, or run-cancel for an existing run; cancellation stops the active process tree and pause takes effect at the next safe unit boundary.</rule>
   </operations>
 
+  <skill_conflicts status="accepted">
+    <rule id="fail_closed">An update that cannot install an explicit command fails and restores the previous state. A partially installed entry point would leave the product half working, so the conflict is reported instead of skipped.</rule>
+    <rule id="foreign_entry">SKILL_TARGET_NOT_OWNED names a skill directory Zodchi did not write. The owner renames or removes that directory and repeats the update.</rule>
+    <rule id="edited_entry">SKILL_OWNED_CONTENT_CHANGED names an owned skill whose files were edited by hand. The owner keeps the edit elsewhere or removes the directory and repeats the update.</rule>
+    <rule id="other_installation">SKILL_OWNED_BY_OTHER_INSTALLATION names the installation that owns the commands. Installation never takes them over and uninstallation never removes them, reporting different_installation instead. Retiring that installation is a separate, explicitly confirmed act.</rule>
+  </skill_conflicts>
+
   <recovery status="accepted">
     <rule id="atomic_installer">The supported installer replaces the program atomically and restores the previous directory on failure.</rule>
     <rule id="no_permanent_backups">Do not leave permanent release duplicates after a successful update.</rule>
