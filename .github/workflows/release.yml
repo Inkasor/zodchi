@@ -75,8 +75,11 @@ jobs:
         run: gh release create "${{ github.ref_name }}" "$env:ARCHIVE_NAME" SHA256SUMS.txt zodchi-release-manifest.json --title "Zodchi ${{ github.ref_name }}" --draft --generate-notes
 
   draft_smoke:
+    # GitHub hides draft releases from tokens without push access, including from the
+    # release-by-tag and release-list APIs. This job does not publish; write scope is the
+    # minimum GitHub permission that lets an independent matrix job read the draft assets.
     permissions:
-      contents: read
+      contents: write
       attestations: read
     needs: build
     strategy:
