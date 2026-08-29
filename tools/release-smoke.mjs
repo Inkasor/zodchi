@@ -40,10 +40,25 @@ function headers(accept) {
   return value;
 }
 
-async function api(url) {
+async function api(url, { allowNotFound = false } = {}) {
   const response = await fetch(url, { headers: headers("application/vnd.github+json") });
+  if (allowNotFound && response.status === 404) return null;
   if (!response.ok) fail("RELEASE_API_FAILED", `${response.status} ${url}`);
   return response.json();
+}
+
+async function releaseForTag() {
+  const taggedUrl = `https://api.github.com/repos/${repository}/releases/tags/${tag}`;
+  const tagged = await api(taggedUrl, { allowNotFound: allowDraft });
+  if (tagged) return tagged;
+
+  // GitHub's release-by-tag endpoint intentionally hides draft releases, even from the
+  // authenticated workflow that created them. The repository release listing includes drafts.
+  // Use that fallback only for the explicit pre-publication smoke path and require one exact tag.
+  const releases = await api(`https://api.github.com/repos/${repository}/releases?per_page=100`);
+  const matching = releases.filter(candidate => candidate.draft === true && candidate.tag_name === tag);
+  if (matching.length !== 1) fail("DRAFT_RELEASE_NOT_UNIQUE", `${tag}: found ${matching.length}`);
+  return matching[0];
 }
 
 async function download(asset) {
@@ -70,7 +85,7 @@ function productRoots(directory) {
 }
 
 fs.mkdirSync(work, { recursive: true });
-const release = await api(`https://api.github.com/repos/${repository}/releases/tags/${tag}`);
+const release = await releaseForTag();
 if (release.draft && !allowDraft) fail("RELEASE_IS_DRAFT", tag);
 
 const archiveAsset = release.assets.find(asset => /^Zodchi-v.+\.zip$/.test(asset.name));
@@ -210,7 +225,14 @@ fs.writeFileSync(smokeConfig, JSON.stringify({
     root_path: projectRoot,
     package_key: "software.web-application",
     package_file: path.join(installed, "WorkflowPlatform", "packages", "example", "generated", "software.web-application.xml"),
-    workflow_key: "software_web_application.runtime"
+    workflow_key: "software_web_application.runtime",
+    classification: {
+      work_type: "verification",
+      artifact_type: "test_report",
+      domain: "software",
+      discipline: "software"
+    },
+    message: "Run the registered read-only technical verification scenario. Do not edit source files and do not make owner acceptance decisions."
   }]
 }, null, 2), "utf8");
 

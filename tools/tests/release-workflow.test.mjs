@@ -27,6 +27,22 @@ test("release smoke cryptographically binds the archive to workflow and source c
   assert.match(smoke, /"--source-digest", releaseManifest\.commit/);
 });
 
+test("draft smoke resolves the exact draft through the authenticated release listing", () => {
+  const smoke = fs.readFileSync(path.join(root, "tools", "release-smoke.mjs"), "utf8");
+  assert.match(smoke, /releases\?per_page=100/);
+  assert.match(smoke, /candidate\.draft === true && candidate\.tag_name === tag/);
+  assert.match(smoke, /DRAFT_RELEASE_NOT_UNIQUE/);
+});
+
+test("release smoke declares the structural route that its evidence runner requires", () => {
+  const smoke = fs.readFileSync(path.join(root, "tools", "release-smoke.mjs"), "utf8");
+  for (const field of ["work_type", "artifact_type", "domain", "discipline"]) {
+    assert.match(smoke, new RegExp(`${field}:`), `release smoke omits classification.${field}`);
+  }
+  assert.match(smoke, /work_type: "verification"/);
+  assert.match(smoke, /workflow_key: "software_web_application\.runtime"/);
+});
+
 test("source scope implementation contains no literal control-byte sentinels", () => {
   const source = fs.readFileSync(path.join(root, "WorkflowPlatform", "src", "source-context.mjs"));
   assert.equal(source.includes(0), false);
