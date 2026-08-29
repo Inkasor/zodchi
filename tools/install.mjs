@@ -224,16 +224,30 @@ function manifestHooks(file) {
   return value;
 }
 
+// A release smoke or acceptance run installs into a throwaway directory. Without this the run would
+// repoint the operator's real explicit commands at that directory and leave them dangling once it is
+// deleted, so an isolated installation must be able to name its own skill roots.
+function manifestSkillRoots(file) {
+  if (!file) return undefined;
+  const value = JSON.parse(fs.readFileSync(path.resolve(String(file)), "utf8"));
+  const roots = {};
+  for (const client of Object.keys(defaultSkillRoots())) {
+    if (typeof value?.[client] !== "string" || !value[client].trim()) throw new Error(`INSTALL_SKILL_ROOTS_INVALID: ${client}`);
+    roots[client] = path.resolve(value[client]);
+  }
+  return roots;
+}
+
 function main() {
   const cli = argsObject(process.argv.slice(2));
   const command = cli._[0];
   const defaults = defaultInstallationPaths();
-  const common = { destination: path.resolve(String(cli.destination ?? defaults.application)), dataRoot: path.resolve(String(cli["data-root"] ?? defaults.data)), workflowDatabase: cli["workflow-db"] ? path.resolve(String(cli["workflow-db"])) : undefined, hooks: manifestHooks(cli["hook-manifest"]) };
+  const common = { destination: path.resolve(String(cli.destination ?? defaults.application)), dataRoot: path.resolve(String(cli["data-root"] ?? defaults.data)), workflowDatabase: cli["workflow-db"] ? path.resolve(String(cli["workflow-db"])) : undefined, hooks: manifestHooks(cli["hook-manifest"]), skillRoots: manifestSkillRoots(cli["skill-roots"]) };
   let result;
   if (command === "install" || command === "update") result = installRelease({ ...common, source: path.resolve(String(cli.source ?? "")) });
   else if (command === "rollback") result = rollbackRelease(common);
   else if (command === "uninstall") result = uninstallRelease(common);
-  else throw new Error("Usage: node tools/install.mjs install|update --source <extracted-release> [--destination <dir>] [--data-root <dir>] [--workflow-db <file>] [--hook-manifest <legacy-removal-json>] | rollback | uninstall");
+  else throw new Error("Usage: node tools/install.mjs install|update --source <extracted-release> [--destination <dir>] [--data-root <dir>] [--workflow-db <file>] [--hook-manifest <legacy-removal-json>] [--skill-roots <json>] | rollback | uninstall");
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 

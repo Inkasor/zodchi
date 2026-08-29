@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
 import { applyHookInstallation, planHookInstallation } from "../../WorkflowPlatform/src/hook-installation.mjs";
 import { defaultInstallationPaths } from "../installation-paths.mjs";
 import { installRelease, rollbackRelease, uninstallRelease } from "../install.mjs";
@@ -45,6 +46,24 @@ test("latest installer requires a repository provenance record for the archive d
   assert.deepEqual(requireProvenanceAttestation({ attestations: [{ repository_id: 42, bundle_url: "https://example.invalid/bundle.json" }] }, hash), { subject_digest: `sha256:${hash}`, records: 1 });
   assert.throws(() => requireProvenanceAttestation({ attestations: [] }, hash), /INSTALL_RELEASE_ATTESTATION_MISSING/);
   assert.throws(() => requireProvenanceAttestation({ attestations: [{ repository_id: 42, bundle_url: "http:\/\/example.invalid\/bundle.json" }] }, hash), /INSTALL_RELEASE_ATTESTATION_INVALID/);
+});
+
+// An isolated installation (release smoke, acceptance) must be able to keep the explicit commands
+// inside its own throwaway directory. Without the flag such a run rewrites the operator's real
+// `/zodchi` and `/zod` to point at a path it deletes when it finishes.
+test("the installer command line can direct client skills away from the operator home", () => {
+  const root = temporaryRoot(), source = release(path.join(root, "source"), "0.6.0-rc.1"), roots = skillRoots(root);
+  const installer = path.join(repositoryRoot, "tools", "install.mjs"), rootsFile = path.join(root, "skill-roots.json");
+  const run = (destination, dataRoot) => execFileSync(process.execPath, [installer, "install", "--source", source, "--destination", path.join(root, destination), "--data-root", path.join(root, dataRoot), "--skill-roots", rootsFile], { encoding: "utf8", windowsHide: true, stdio: "pipe" });
+  try {
+    fs.mkdirSync(path.join(source, "tools"), { recursive: true });
+    fs.writeFileSync(path.join(source, "tools", "release-lint.mjs"), "process.exitCode = 0;\n", "utf8");
+    fs.writeFileSync(rootsFile, `${JSON.stringify(roots, null, 2)}\n`, "utf8");
+    run("installed", "data");
+    for (const client of ["claude-code", "codex"]) for (const name of ["zodchi", "zod"]) assert.equal(fs.existsSync(path.join(roots[client], name, "SKILL.md")), true, `${client}:${name}`);
+    fs.writeFileSync(rootsFile, `${JSON.stringify({ codex: roots.codex }, null, 2)}\n`, "utf8");
+    assert.throws(() => run("installed-2", "data-2"), /INSTALL_SKILL_ROOTS_INVALID/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test("clean install deploys explicit client skills and does not install project hooks", () => {
