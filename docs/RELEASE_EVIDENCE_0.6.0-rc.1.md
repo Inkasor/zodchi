@@ -14,7 +14,7 @@ This record describes pull request #87 and a local release candidate. No candida
 - Package regeneration/import: all seven package artifacts match their definitions and public catalog; all fifteen presets validate and produce proposal-first local onboarding material.
 - Two independently assembled canonical release roots contain the same 217 manifest entries and identical file hashes; release lint passes.
 - The full suite executed from the assembled release at code-bearing revision `53f56bf`: on Windows, tools `31/33` with two source-only checks skipped, WorkflowPlatform `328/329` with one skipped, AgentGateway `26/26`, and packages `7/7`. The product archive intentionally omits its GitHub publishing workflow and the canary configuration template, while the TypeScript semantic test requires the analyzed project to supply a compatible TypeScript compiler API; every skip is explicit and its runtime boundary is covered separately. The macOS and Linux variants passed in CI with their documented platform-only skips.
-- Pull request #87 CI run `33237881103` passed on exact revision `45c3a6c975e2113c6dac5d81efaed72b30c84f09` on `macos-latest`, `ubuntu-latest` and `windows-latest`, including source tests, generator cleanliness, assembled-release tests and the explicit-skill install/run/update/rollback acceptance. The first macOS attempts exposed and then closed a path-alias-sensitive test and a same-millisecond progress-snapshot ordering defect; neither failure was waived.
+- Pull request #87 CI run `33239708525` passed on exact revision `62368be0f9f711910af9a73601d3250d5dae33ab` on `macos-latest`, `ubuntu-latest` and `windows-latest`, including source tests, generator cleanliness, assembled-release tests and the explicit-skill install/run/update/rollback acceptance. The first macOS attempts exposed and then closed a path-alias-sensitive test and a same-millisecond progress-snapshot ordering defect; neither failure was waived.
 - Two archives compressed from the same canonical `Zodchi` root by the pinned Node 24 runtime are byte-identical. This proves deterministic retries under the release runtime; cross-version zlib byte identity is not claimed. The one-command acceptance covers install, explicit skills for both hosts, routed runs, update, rollback, legacy-hook absence and uninstall.
 
 </automated_verification>
@@ -48,6 +48,17 @@ The four canary runs above were produced by `WorkflowPlatform/scripts/run-e2e-ev
 
 </canary_reproduction>
 
+<external_macos_acceptance id="fedor_danilov_macos_arm64" status="verified" evidence="external_acceptance_report">
+
+Fedor Danilov's independent machine accepted archive `Zodchi-0.6.0-rc.1-explicit-62368be.zip`, SHA-256 `c71e74f3366ff471446b65c5473c5475fdedfd5c0b27f18daa1be011f1e5ccfa`, on macOS `15.7.7` / `arm64`, Node `24.20.0`, npm `11.19.0` and Apple Git `2.39.5`. Both top-level commands returned zero: `NPM_TEST_STATUS=0`, `ACCEPTANCE_STATUS=0`.
+
+- Source validation passed with ten semantic documents; package verification matched seven public packages.
+- Tools: 33 tests, 31 passed, two expected source-only skips. WorkflowPlatform: 329 tests, 327 passed, two expected platform/provider skips. AgentGateway: 26 tests, 25 passed, one expected Windows-wrapper skip. There were no failures or additional skips.
+- The machine-readable verdict is preserved at `docs/evidence/macos-arm64-0.6.0-rc.1-62368be.acceptance.json`: install, four explicit skills/two scenarios, routed run, update, rollback, fifteen-preset catalog and uninstall all passed; legacy project hooks remained absent and user data was preserved.
+- The temporary work directory was removed only after both top-level checks and the structured verdict passed. This is expected successful cleanup. The result is `MECHANICS_ONLY`: it proves external macOS delivery mechanics, not model or domain quality, and does not substitute for the owner's optional Mac confirmation.
+
+</external_macos_acceptance>
+
 <legacy_release_preflight id="v0_5_24_checksum_repair" status="verified" evidence="github_release_api_and_downloaded_assets">
 
 The required read-only preflight for `v0.5.24` was repeated on 2026-08-28. No release asset was modified by this verification.
@@ -61,7 +72,7 @@ The required read-only preflight for `v0.5.24` was repeated on 2026-08-28. No re
 
 <release_gates id="remaining_release_gates" status="blocked">
 
-- Run the updated explicit-skill acceptance archive with Fedor Danilov first and preserve its machine-readable verdict; after any fixes, repeat the final candidate on the owner's Mac M1. Keep Linux support experimental until a live acceptance exists.
+- External macOS `arm64` acceptance by Fedor Danilov is green and its machine-readable verdict is preserved. Repeat the final candidate on the owner's Mac M1 for owner confirmation; keep Linux support experimental until a live acceptance exists.
 - After publication authority is granted: publish only through GitHub Actions. The workflow must keep the release as draft through three-OS asset/install/provenance smoke, publish RC tags as prereleases and stable tags as normal releases, repeat smoke against the public release, and restore draft state automatically if that final smoke fails. A local artifact cannot close this gate.
 - All fifteen installable recipes are part of 0.6.0. Remaining profile-level `OWNER_READ`, domain truth and donor substitution measurements are explicitly scheduled for the 0.6.x pilot programme; synthetic fixtures do not close them and their absence is no longer a 0.6.0 release gate.
 
