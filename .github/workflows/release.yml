@@ -118,7 +118,7 @@ jobs:
         run: |
           $isPrerelease = "${{ github.ref_name }}".Substring(1).Contains('-')
           $prerelease = $isPrerelease.ToString().ToLowerInvariant()
-          $arguments = @('release', 'edit', '${{ github.ref_name }}', '--draft=false', "--prerelease=$prerelease")
+          $arguments = @('release', 'edit', '${{ github.ref_name }}', '--repo', '${{ github.repository }}', '--draft=false', "--prerelease=$prerelease")
           if (-not $isPrerelease) { $arguments += '--latest' }
           & gh @arguments
           if ($LASTEXITCODE -ne 0) { throw 'RELEASE_PUBLISH_FAILED' }
@@ -159,9 +159,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
-          gh release view "${{ github.ref_name }}" --json tagName 2>$null | Out-Null
+          gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" --json tagName 2>$null | Out-Null
           if ($LASTEXITCODE -eq 0) {
-            gh release edit "${{ github.ref_name }}" --draft=true
+            gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --draft=true
             if ($LASTEXITCODE -ne 0) { throw 'RELEASE_ROLLBACK_TO_DRAFT_FAILED' }
           } else {
             $global:LASTEXITCODE = 0
