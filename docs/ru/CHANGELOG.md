@@ -4,9 +4,9 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
-<section id="0_6_0_rc_1_2026_08_28" status="working">
+<section id="0_6_0_2026_08_29" status="working">
 
-## 0.6.0-rc.1 — 2026-08-28
+## 0.6.0 — 2026-08-29
 
 - Codex и Claude Code теперь запускают Zodchi явно через пользовательские skills `/zodchi` и `/zod`. Обычные сообщения не перехватываются; install/update удаляют принадлежащие Zodchi старые project hooks, а update/rollback/uninstall транзакционно управляют skills, не перезаписывая чужое или изменённое содержимое.
 - Публикация стала draft-first: три ОС проверяют скачанные GitHub assets и их Sigstore provenance до публикации, затем проверка повторяется для публичного Release, а красный post-publish возвращает его в draft. Stable tag больше не помечается prerelease автоматически.

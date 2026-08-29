@@ -20,7 +20,7 @@ const semanticDocuments = [
   "UPDATE.md",
   "configs/WorkflowPlatformArchitecture.template.md",
   "docs/ARCHITECTURE.md",
-  "docs/RELEASE_EVIDENCE_0.6.0-rc.1.md",
+  "docs/RELEASE_EVIDENCE_0.6.0.md",
   "docs/ru/README.md",
   "docs/ru/CHANGELOG.md",
   "WorkflowPlatform/docs/WorkflowPlatform.md",

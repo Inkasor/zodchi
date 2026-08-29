@@ -1,10 +1,10 @@
-<document id="zodchi_release_evidence_0_6_0_rc_1" status="working" authority="zodchi" version="0.6.0-rc.1" language="en" format="markdown+xml_semantic">
+<document id="zodchi_release_evidence_0_6_0" status="working" authority="zodchi" version="0.6.0" language="en" format="markdown+xml_semantic">
 
-# Zodchi 0.6.0-rc.1 release evidence
+# Zodchi 0.6.0 release evidence
 
-<scope id="candidate_scope" status="working">
+<scope id="stable_release_scope" status="working">
 
-This record describes pull request #87 and a local release candidate. No candidate tag, GitHub Release, publication smoke or installed-production update has been performed. A completed workflow is not owner or domain acceptance.
+This record describes pull request #87 and the evidence accepted for stable `0.6.0`. The owner authorized publication on 2026-08-29 without another owner-Mac rerun. No stable tag, GitHub Release, publication smoke or installed-production update had been performed when this immutable release input was prepared. A completed workflow is not owner or domain acceptance.
 
 </scope>
 
@@ -70,9 +70,9 @@ The required read-only preflight for `v0.5.24` was repeated on 2026-08-28. No re
 
 </legacy_release_preflight>
 
-<release_gates id="remaining_release_gates" status="blocked">
+<release_gates id="remaining_release_gates" status="working">
 
-- External macOS `arm64` acceptance by Fedor Danilov is green and its machine-readable verdict is preserved. Repeat the final candidate on the owner's Mac M1 for owner confirmation; keep Linux support experimental until a live acceptance exists.
+- External macOS `arm64` acceptance by Fedor Danilov is green and its machine-readable verdict is preserved. On 2026-08-29 the owner explicitly authorized stable publication without repeating the candidate on the owner's Mac M1. This decision removes that rerun as a `0.6.0` publication gate; it does not turn mechanics-only evidence into owner, model or domain acceptance. Keep Linux support experimental until a live acceptance exists.
 - After publication authority is granted: publish only through GitHub Actions. The workflow must keep the release as draft through three-OS asset/install/provenance smoke, publish RC tags as prereleases and stable tags as normal releases, repeat smoke against the public release, and restore draft state automatically if that final smoke fails. A local artifact cannot close this gate.
 - All fifteen installable recipes are part of 0.6.0. Remaining profile-level `OWNER_READ`, domain truth and donor substitution measurements are explicitly scheduled for the 0.6.x pilot programme; synthetic fixtures do not close them and their absence is no longer a 0.6.0 release gate.
 

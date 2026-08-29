@@ -4,9 +4,9 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
-<section id="0_6_0_rc_1_2026_08_28" status="working">
+<section id="0_6_0_2026_08_29" status="working">
 
-## 0.6.0-rc.1 — 2026-08-28
+## 0.6.0 — 2026-08-29
 
 - Codex and Claude Code now invoke Zodchi explicitly through user-level `/zodchi` and `/zod` skills. Ordinary messages are not intercepted; install/update remove owned legacy project hooks, and update/rollback/uninstall manage skills transactionally without overwriting foreign or edited content.
 - Release and installation are fail-closed: one universal archive, checksum and publisher verification, native pre-Node bootstrap diagnostics, and install/update/rollback/uninstall acceptance across platform-aware paths.

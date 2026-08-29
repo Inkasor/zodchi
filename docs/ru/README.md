@@ -1,4 +1,4 @@
-<document id="zodchi_readme_ru" status="accepted" authority="zodchi" version="0.6.0-rc.1" language="ru" format="markdown+xml_semantic">
+<document id="zodchi_readme_ru" status="accepted" authority="zodchi" version="0.6.0" language="ru" format="markdown+xml_semantic">
 
 # Zodchi
 
@@ -55,7 +55,7 @@ Zodchi требует Node.js 24 или новее. Release candidate 0.6 исп
 
 Пятнадцать устанавливаемых project recipes связывают наблюдавшиеся способы работы с пакетами, нужными локальными адаптерами, границами исходников, блокировками ресурсов, полномочиями, первым полезным сценарием и планом приёмки. Рецепт можно посмотреть командой `preset-inspect`, а `preset-propose` создаёт привязанное к хешу предложение. Импорт и любые действия во внешнем мире остаются отдельными подтверждаемыми операциями.
 
-Подробнее: [переносимые пакеты](../../WorkflowPlatform/docs/ProjectPackages.md) и [доказательства выпуска 0.6](../RELEASE_EVIDENCE_0.6.0-rc.1.md).
+Подробнее: [переносимые пакеты](../../WorkflowPlatform/docs/ProjectPackages.md) и [доказательства выпуска 0.6](../RELEASE_EVIDENCE_0.6.0.md).
 
 </section>
 
