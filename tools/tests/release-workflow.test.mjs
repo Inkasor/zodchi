@@ -17,8 +17,9 @@ test("release workflow keeps assets draft until cross-platform provenance smoke 
   assert.match(workflow, /needs: draft_smoke/);
   assert.match(workflow, /Contains\('-'\)/);
   assert.match(workflow, /--prerelease=\$prerelease/);
+  assert.match(workflow, /release', 'edit'[^\r\n]+--repo[^\r\n]+github\.repository/);
   assert.match(workflow, /needs: post_publish_smoke/);
-  assert.match(workflow, /gh release edit[^\r\n]+--draft=true/);
+  assert.match(workflow, /gh release edit[^\r\n]+--repo[^\r\n]+--draft=true/);
   assert.match(workflow, /No GitHub Release was created/);
 });
 
