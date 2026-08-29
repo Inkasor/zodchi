@@ -1,4 +1,4 @@
-<document id="zodchi_architecture" status="accepted" authority="zodchi" version="0.5.23" language="en">
+<document id="zodchi_architecture" status="accepted" authority="zodchi" version="0.6.0-rc.1" language="en">
   <title>Zodchi system architecture</title>
 
   <purpose status="accepted">
@@ -7,9 +7,12 @@
 
   <components status="accepted">
     <component id="workflow_platform" responsibility="workflow">Classifies the request, assembles registered context, selects a route, and manages stages, documents, and deterministic checks.</component>
-    <component id="code_intelligence" responsibility="source_retrieval">Maps natural-language evidence to code identifiers, expands them through bounded BSL or TypeScript/JavaScript structure, and returns measured source locations without embeddings.</component>
+    <component id="code_intelligence" responsibility="source_retrieval">Maps natural-language evidence to code identifiers, expands them through bounded BSL or TypeScript/JavaScript structure, and can query a registered external C# LSP provider over an attested Unity solution boundary. It returns measured source locations without embeddings.</component>
     <component id="agent_gateway" responsibility="model_calls">Performs one bounded call to the assigned model and stores a technical receipt without the full request or response.</component>
     <component id="explicit_skill" responsibility="chat_entry">Passes only a task explicitly invoked with `/zodchi` or `/zod` to WorkflowPlatform and returns the result to the same chat.</component>
+    <component id="package_sdk" responsibility="portable_workflows">Composes versioned roles, workflow graphs, checks, evidence flows, authority, resources, schemas, and quality contracts into deterministic portable packages.</component>
+    <component id="project_presets" responsibility="onboarding_recipes">Map observed working patterns to public packages, source scopes, local capabilities, authority boundaries, first-value scenarios, and explicit acceptance plans without copying private project data.</component>
+    <component id="external_control_plane" responsibility="external_runtime">Exchanges signed, hash-bound requests and results with registered external executors while WorkflowPlatform retains run, resource, cancellation, and completion authority.</component>
   </components>
 
   <flow status="accepted">
@@ -17,8 +20,9 @@
     <step id="context" order="2">Programmatically assemble permitted project facts, registered documents, lexical source evidence, and a bounded language graph.</step>
     <step id="classification" order="3">Determine intent, work type, expected artifact, planning level, and quality mode.</step>
     <step id="dialog_or_route" order="4">Answer or ask a question when execution is unnecessary; otherwise start a registered workflow.</step>
-    <step id="execution" order="5">Run planning, execution, checks, correction, review, and documentation according to the selected contracts.</step>
-    <step id="response" order="6">Return a concise human result, material limitations, and the next required action in the conversation language.</step>
+    <step id="execution" order="5">Run planning, resource acquisition, execution, checks, correction, review, and documentation according to the selected contracts.</step>
+    <step id="interaction" order="6">When authority or external fact is missing, enter the matching typed wait state and resume the same run only from a validated answer or evidence packet.</step>
+    <step id="response" order="7">Return a concise human result, material limitations, and the next required action in the conversation language.</step>
   </flow>
 
   <contracts status="accepted">
@@ -36,11 +40,18 @@
     <rule id="consilium_settlement">A terminal run transition waits for every admitted parallel review participant to settle; one failed participant cancels outstanding Gateway invocations before the parent exposes the failure.</rule>
     <rule id="registered_evidence_flows">Cross-layer evidence flows belong to portable project packages and bind structurally to semantic workflow keys; platform core contains no project business vocabulary and records an explicit none selection when no flow applies.</rule>
     <rule id="interruptible_execution">Gateway invocations declare cancellation capability; owner cancellation terminates the complete provider process tree, while pause waits for a safe execution boundary.</rule>
+    <rule id="typed_wait_states">`clarification_required` asks the owner for authority or meaning; `external_evidence_required` asks a registered collector or runtime for facts. They have different validation and neither creates an implicit replacement run.</rule>
+    <rule id="resource_identity">Write-capable steps refer to registered resource aliases. The platform resolves canonical identities, acquires multiple shared/exclusive leases in a fixed order, renews them with the attempt lease, and reports an unresolved identity as unavailable.</rule>
+    <rule id="approval_binding">An irreversible approval is valid only for the exact objective, plan, checkpoint, and action hashes it names. Changed state invalidates the approval before execution.</rule>
+    <rule id="owner_record_boundary">A technical PASS and `OWNER_READ` are separate append-only facts. Only an explicit owner action may record reading or acceptance, and reading does not imply domain acceptance.</rule>
+    <rule id="support_status_boundary">Support-grade packages are release-blocking within their declared contract. Preview packages are executable but their domain defects and owner/private pilots do not block 0.6.0 until promotion.</rule>
   </contracts>
 
   <storage status="accepted">
     <rule id="replaceable_release">The program release is replaced as one unit and is not a user-state store.</rule>
     <rule id="external_local_data">Projects, local model assignments, databases, run history, and credentials stay outside the release.</rule>
     <rule id="portable_packages">Portable workflows use semantic keys and contain no secrets, absolute paths, or local identifiers.</rule>
+    <rule id="privacy_safe_receipts">Persistent model receipts contain normalized usage, hashes, duration, status, compact errors, and artifact references; full prompts, outputs, transcripts, and source bodies are not stored.</rule>
+    <rule id="replaceable_archive">One cross-platform archive is assembled deterministically under pinned Node 24, published only by the release workflow, and installed only after publisher, workflow, provenance, manifest, checksum, and archive agreement.</rule>
   </storage>
 </document>
