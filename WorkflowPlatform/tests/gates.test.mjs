@@ -169,11 +169,12 @@ test("an inner ENOENT test failure is not mistaken for a missing check runner", 
 test("project command resolves its execution root from the project registry", async () => {
   const root = temporaryRoot("workflow-gates-linked-project-"), project = path.join(root, "project"), consumer = path.join(root, "consumer"), dbFile = path.join(root, "workflow.sqlite");
   fs.mkdirSync(project); fs.mkdirSync(consumer);
+  fs.writeFileSync(path.join(consumer, "registered-project.marker"), "consumer\n", "utf8");
   const db = openDb(dbFile), timestamp = new Date().toISOString();
   db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('source','Source',?,?)").run(project, timestamp);
   db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('consumer','Consumer',?,?)").run(consumer, timestamp);
   db.prepare("INSERT INTO check_definitions(id,name,runner,kind,config_json,timeout_seconds) VALUES('linked','Linked','linked','project_command',?,30)")
-    .run(JSON.stringify({ project_id: "consumer", command: process.execPath, args: ["-e", "process.exit(process.cwd() === process.argv[1] ? 0 : 1)", consumer] }));
+    .run(JSON.stringify({ project_id: "consumer", command: process.execPath, args: ["-e", "process.exit(require('node:fs').existsSync('registered-project.marker') ? 0 : 1)"] }));
   db.prepare("INSERT INTO project_checks(project_id,check_id,quality_mode_id,required,artifact_type_id) VALUES('source','linked','mvp',1,'code')").run();
   db.close();
   const result = await runProjectGate(project, "mvp", dbFile, "linked-gate", { artifactType: "code", allowedPaths: [] });
