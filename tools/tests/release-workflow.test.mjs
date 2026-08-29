@@ -12,6 +12,8 @@ test("release workflow keeps assets draft until cross-platform provenance smoke 
   assert.match(workflow, /gh release create[^\r\n]+--draft/);
   assert.doesNotMatch(workflow, /gh release create[^\r\n]+--prerelease/);
   assert.match(workflow, /--allow-draft/);
+  assert.match(workflow, /draft_smoke:[\s\S]*?permissions:\s*\r?\n\s*contents: write/);
+  assert.match(workflow, /post_publish_smoke:[\s\S]*?permissions:\s*\r?\n\s*contents: read/);
   assert.match(workflow, /needs: draft_smoke/);
   assert.match(workflow, /Contains\('-'\)/);
   assert.match(workflow, /--prerelease=\$prerelease/);
