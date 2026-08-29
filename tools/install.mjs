@@ -28,6 +28,16 @@ function atomicJson(file, value) {
   catch (error) { fs.rmSync(temporary, { force: true }); throw error; }
 }
 
+export function ensureDirectory(directory, label = "DIRECTORY") {
+  const resolved = path.resolve(directory);
+  if (fs.existsSync(resolved)) {
+    if (!fs.statSync(resolved).isDirectory()) throw new Error(`${label}_NOT_DIRECTORY: ${resolved}`);
+    return resolved;
+  }
+  fs.mkdirSync(resolved, { recursive: true });
+  return resolved;
+}
+
 function specificDirectory(value, label) {
   const resolved = path.resolve(value);
   if (resolved === path.parse(resolved).root) throw new Error(`${label}_MUST_BE_SPECIFIC_DIRECTORY: ${resolved}`);
@@ -128,8 +138,8 @@ export function installRelease(options) {
   const version = releaseVersion(source);
   const healthCheck = options.healthCheck ?? defaultHealthCheck;
   healthCheck(source);
-  fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.mkdirSync(dataRoot, { recursive: true });
+  ensureDirectory(path.dirname(destination), "DESTINATION_PARENT");
+  ensureDirectory(dataRoot, "DATA_ROOT");
   const stage = safeSibling(`${destination}.stage-${crypto.randomUUID()}`, destination, "stage");
   const previous = fs.existsSync(destination) ? safeSibling(`${destination}.previous-${crypto.randomUUID()}`, destination, "previous") : null;
   const workflowDatabase = options.workflowDatabase ?? process.env.WORKFLOW_DB ?? path.join(dataRoot, "workflow.sqlite");
