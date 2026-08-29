@@ -28,8 +28,8 @@
       "adapters": [{ "capability": "node.package-manager", "required": false, "evidence_contract": "Use registered language checks; Ruby projects declare their own test command without claiming a built-in semantic graph." }],
       "authority": { "default_mode": "change", "live_mutation": "forbidden", "publication": "approval_required" },
       "resources": [{ "alias": "project.worktree", "kind": "project.worktree", "modes": ["shared", "exclusive"] }],
-      "first_value": { "work_type": "project_bootstrap", "scenario": "Register one bounded Web project, install an owned hook and complete one known repository task.", "expected_outcome": "Project registration, route, checks and hook transaction finish without editing platform core." },
-      "public_fixture": { "status": "MECHANICS_ONLY", "proves": ["registration", "hook_transaction", "routing", "rollback"], "does_not_prove": ["domain_truth", "product_fit"] },
+      "first_value": { "work_type": "project_bootstrap", "scenario": "Register one bounded Web project, verify owned explicit user skills and complete one known repository task.", "expected_outcome": "Project registration, route, checks and explicit invocation finish without editing platform core or intercepting ordinary messages." },
+      "public_fixture": { "status": "MECHANICS_ONLY", "proves": ["registration", "explicit_skill_transaction", "ordinary_message_non_interception", "routing", "rollback"], "does_not_prove": ["domain_truth", "product_fit"] },
       "private_acceptance": { "status": "KNOWN_ANSWER_PRIVATE", "owner_required": true, "real_repository_required": true, "expected_contract": "A bounded known repository task reaches its expected deterministic checks on one selected project." },
       "substitution_metric": "Number of duplicated per-project workflow rules and manual setup steps removed after onboarding.",
       "migration_notes": ["Migrate one project first and preserve each repository's local rules and commands."]
@@ -96,7 +96,7 @@
       "source_scopes": ["app/**", "config/**", "spec/**", "**/*.rb", "**/*.md"],
       "adapters": [
         { "capability": "project.ruby-checks", "required": true, "evidence_contract": "Registered project checks provide the language truth without a claimed built-in Ruby graph." },
-        { "capability": "runtime.macos", "required": true, "evidence_contract": "Install, hook, run and rollback evidence names the exact macOS and tool versions." }
+        { "capability": "runtime.macos", "required": true, "evidence_contract": "Install, explicit run, update, rollback and uninstall evidence names the exact macOS and tool versions and proves ordinary messages are not intercepted." }
       ],
       "authority": { "default_mode": "change", "live_mutation": "forbidden", "publication": "approval_required" },
       "resources": [{ "alias": "project.worktree", "kind": "project.worktree", "modes": ["shared", "exclusive"] }],
