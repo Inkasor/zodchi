@@ -52,6 +52,7 @@ for (const item of config.projects) {
   const workflowId = db.prepare(`SELECT m.local_id FROM package_import_mappings m JOIN workflow_import_proposals p ON p.id=m.proposal_id
     WHERE p.target_project_id=? AND p.package_key=? AND p.status='applied' AND m.entity_type='workflow' AND m.semantic_key=? ORDER BY p.applied_at DESC LIMIT 1`).get(item.project_id, item.package_key, item.workflow_key)?.local_id;
   if (!workflowId) throw new Error(`WORKFLOW_MAPPING_MISSING: ${item.workflow_key}`);
+  deterministicScenarioMessage(item);
   const routed = db.prepare("SELECT 1 FROM workflow_routes WHERE project_id=? AND workflow_id=? AND work_type_id=? AND enabled=1").get(item.project_id, workflowId, item.classification?.work_type);
   if (!routed) throw new Error(`CANARY_CLASSIFICATION_ROUTE_MISMATCH: ${item.project_id}: ${item.classification?.work_type ?? "missing"}: ${item.workflow_key}`);
   const requirements = db.prepare("SELECT role_id,profile_key FROM portable_profile_requirements WHERE project_id=? AND package_key=?").all(item.project_id, item.package_key);

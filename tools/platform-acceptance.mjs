@@ -143,7 +143,8 @@ export function runPlatformAcceptance({ repositoryRoot = path.resolve(import.met
         root_path: projectRoot,
         package_key: "software.web-application",
         package_file: path.join(installed, "WorkflowPlatform", "packages", "example", "generated", "software.web-application.xml"),
-        workflow_key: "software_web_application.runtime"
+        workflow_key: "software_web_application.runtime",
+        classification: { work_type: "verification", artifact_type: "test_report", domain: "software", discipline: "software" }
       }]
     });
     const workflowRun = runJson(process.execPath, [path.join(installed, "WorkflowPlatform", "scripts", "run-e2e-evidence.mjs"), "--config", workflowConfig]);
