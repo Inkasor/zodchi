@@ -98,7 +98,7 @@ function updateClientSkills(applicationRoot, roots) {
   try {
     const applied = fs.existsSync(path.join(applicationRoot, "integrations"))
       ? installClientSkills({ applicationRoot, roots })
-      : removeClientSkills({ roots });
+      : removeClientSkills({ applicationRoot, roots });
     return { snapshots, applied };
   } catch (error) {
     restoreClientSkills(snapshots);
@@ -209,7 +209,7 @@ export function uninstallRelease(options) {
   const destination = specificDirectory(options.destination ?? state?.application, "DESTINATION");
   const targets = registeredHookTargets(state?.workflow_database, [...(state?.hooks ?? []), ...(state?.legacy_hooks_removed ?? []), ...(options.hooks ?? [])]);
   const hookResults = targets.map(removeOwnedHookInstallation);
-  const skillResults = removeClientSkills({ roots: options.skillRoots ?? defaultSkillRoots() });
+  const skillResults = removeClientSkills({ applicationRoot: destination, roots: options.skillRoots ?? defaultSkillRoots() });
   let recoverable = null;
   if (fs.existsSync(destination)) { recoverable = safeSibling(`${destination}.uninstalled-${crypto.randomUUID()}`, destination, "uninstalled"); fs.renameSync(destination, recoverable); }
   const next = { ...(state ?? {}), status: "uninstalled", application: destination, data_root: dataRoot, recoverable_release: recoverable, uninstalled_at: new Date().toISOString() };
