@@ -5,7 +5,7 @@
   <system id="workflow_platform" status="accepted">
     <component id="workflow_platform_component" role="semantic_runtime">Owns intent, context, classification, routes, checks, and documents.</component>
     <component id="agent_gateway" role="model_gateway">Starts providers, profiles, and models. AgentGateway never selects a semantic route.</component>
-    <component id="chat_entry_skill" role="entrypoint">The user explicitly sends a selected task from Codex or Claude Code through `/zodchi` or `/zod`.</component>
+    <component id="chat_entry_skill" role="entrypoint">The user explicitly sends a selected task from Codex or Claude Code through `/zodchi`.</component>
     <component id="workflow_database" role="state_store">Stores projects, documents, roles, runs, decisions, and check results.</component>
   </system>
 
@@ -62,7 +62,14 @@
     <contract_rule id="portable_role_contract">Purpose, boundaries, work and artifact types, documents, tools, skills, checks, transitions, limits, result schema, and escalation belong in a portable versioned role contract.</contract_rule>
     <assignment_rule id="local_profile_assignment">Concrete profile and model ID are local assignments, not part of a portable role contract.</assignment_rule>
     <assignment_rule id="harness_provider_separation">Harness and model provider are independent fields; one model may be called through different harnesses or a compatible API.</assignment_rule>
+    <assignment_rule id="coordinator_is_planner">Coordinator is the planning and orchestration role. It decomposes and routes work but does not replace the worker that changes artifacts.</assignment_rule>
   </roles>
+
+  <review_strategy status="proposed">
+    <rule id="owner_selects_strategy">TODO: effective standard or gauntlet strategy for each package and quality level, including owner override or inherited package policy.</rule>
+    <rule id="standard_review">Standard invokes one primary reviewer only when the quality contract requires independent review.</rule>
+    <rule id="gauntlet_review">Gauntlet admits a bounded primary plus specialist reviewer consilium. Judge is conditional on disagreement; strategy reviewer is conditional on correction stagnation.</rule>
+  </review_strategy>
 
   <structured_execution status="accepted">
     <rule id="planner_schema">Planner returns either a strict plan or questions before authorization; a worker receives only a normalized package.</rule>
@@ -131,8 +138,8 @@
   </quality_modes>
 
   <chat_entry_skill status="proposed">
-    <command harness="codex">/zodchi or /zod</command>
-    <command harness="claude-code">/zodchi or /zod</command>
+    <command harness="codex">/zodchi</command>
+    <command harness="claude-code">/zodchi</command>
     <ordinary_messages>not intercepted</ordinary_messages>
     <verification>Verify the host version, one explicit task, the workflow_runs record with the expected client value, and the absence of a run for an ordinary message.</verification>
   </chat_entry_skill>

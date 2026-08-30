@@ -8,7 +8,7 @@ Zodchi turns one ordinary AI chat into a coordinated team for real project work.
 
 You describe the result in your own words. Zodchi decides what kind of work is needed, gives each specialist only the relevant context, runs the appropriate checks, records accepted decisions, and returns a clear answer in the same chat.
 
-Ordinary chat messages stay ordinary. Invoke Zodchi explicitly with `/zodchi <task>` or the shorter `/zod <task>` in Codex or Claude Code. With no arguments, the command may use the immediately preceding substantive request when that choice is unambiguous.
+Ordinary chat messages stay ordinary. Invoke Zodchi explicitly with `/zodchi <task>` in Codex or Claude Code. With no arguments, the command may use the immediately preceding substantive request when that choice is unambiguous.
 
 <section id="why_use_it" status="accepted">
 
@@ -64,6 +64,21 @@ node WorkflowPlatform/src/cli.mjs document-unregister --db <workflow.sqlite> --p
 
 Projects may also register their own semantic status and evidence-type keys with `document-status-register` and `document-evidence-register`; those keys do not leak into other projects.
 
+The setup chat is the canonical administration place: it discovers documents, presents a proposal, waits for owner confirmation, and then runs these registry commands. A project `/zodchi` run can analyze current documents and recommend a change, but 0.6.2 does not yet turn a later natural-language confirmation inside that run into an automatic registry transaction. Apply the confirmed proposal in the setup chat. Unregistering a document only removes control metadata; it never deletes the file.
+
+Prefer the portable global status vocabulary when it expresses the same meaning. A project-local status is appropriate only for a real project concept that should not become a rule for every other project. It gives the linter exact local vocabulary without polluting or weakening the global contract.
+
+Gauntlet is an owner-selected review strategy, not a synonym for quality mode. List the package default, owner override, and effective value, then set or reset it without rebuilding the package:
+
+```powershell
+node WorkflowPlatform/src/cli.mjs strategy-list --db <workflow.sqlite> --project <project-id>
+node WorkflowPlatform/src/cli.mjs strategy-set --db <workflow.sqlite> --project <project-id> --package <package-key> --level mvp --strategy standard --confirmed-by <owner>
+node WorkflowPlatform/src/cli.mjs strategy-set --db <workflow.sqlite> --project <project-id> --package <package-key> --level mvp --strategy gauntlet --confirmed-by <owner>
+node WorkflowPlatform/src/cli.mjs strategy-set --db <workflow.sqlite> --project <project-id> --package <package-key> --level mvp --strategy inherit
+```
+
+`standard` uses the ordinary reviewer path when the quality contract requires review. `gauntlet` admits a bounded consilium: the primary reviewer plus configured specialist reviewers; a judge runs only when their conclusions disagree, and a strategy reviewer runs only after correction stagnates. Prototype work normally has no reviewer, low-risk MVP may skip review, and production/security review remains governed by the quality contract.
+
 See [Portable project packages](WorkflowPlatform/docs/ProjectPackages.md) and the [0.6 release evidence](docs/RELEASE_EVIDENCE_0.6.0.md).
 
 </section>
@@ -72,7 +87,7 @@ See [Portable project packages](WorkflowPlatform/docs/ProjectPackages.md) and th
 
 ## For developers
 
-The repository contains the source for `WorkflowPlatform` and `AgentGateway`. Human documentation is available in English and Russian. Machine-operated setup, update, architecture, and configuration contracts use concise semantic English:
+The repository contains the source for `WorkflowPlatform` and `AgentGateway`. This README is human-facing, although its semantic wrapper is also linted by machines. Human documentation is available in English and Russian. Machine-operated setup, update, architecture, and configuration contracts use concise semantic English:
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Quick start](QUICKSTART.md)

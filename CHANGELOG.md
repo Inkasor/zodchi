@@ -14,6 +14,8 @@
 - Reviewed package levels include bounded provider-neutral consilium roles for local Codex, Claude, Kimi, or other supported profile assignments.
 - Atomic release and explicit-skill replacement retries transient Windows `EPERM`/`EACCES` rename failures without weakening ownership checks.
 - Projects composed from multiple packages reuse the same canonical versioned role contract instead of failing on duplicate package provenance.
+- The ambiguous `/zod` alias is retired; install/update safely removes only the unchanged alias owned by the same installation, leaving `/zodchi` as the single explicit command.
+- Owners can inspect and override `standard` or `gauntlet` review strategy per project, package, and quality level without rebuilding the package; onboarding now inventories and confirms harness/provider/model choices.
 
 </section>
 
@@ -29,7 +31,7 @@
 
 ## 0.6.0 — 2026-08-29
 
-- Codex and Claude Code now invoke Zodchi explicitly through user-level `/zodchi` and `/zod` skills. Ordinary messages are not intercepted; install/update remove owned legacy project hooks, and update/rollback/uninstall manage skills transactionally without overwriting foreign or edited content.
+- Codex and Claude Code introduced explicit user-level `/zodchi` and `/zod` skills. Ordinary messages are not intercepted; install/update remove owned legacy project hooks, and update/rollback/uninstall manage skills transactionally without overwriting foreign or edited content. The short alias was retired in 0.6.2.
 - Release and installation are fail-closed: one universal archive, checksum and publisher verification, native pre-Node bootstrap diagnostics, and install/update/rollback/uninstall acceptance across platform-aware paths.
 - Core lifecycle now separates clarification from external evidence, binds irreversible approval to exact action state, isolates owner messages and project configuration, protects canonical shared/exclusive resources, and supports privacy-safe receipts plus a signed external control plane.
 - Scope-aware Git enumeration applies pathspecs before limits, complete-corpus negatives require authoritative boundaries, and deterministic evidence/recovery supervision prevents duplicate review loops while preserving UTF-8 byte contracts.

@@ -5,7 +5,9 @@ import path from "node:path";
 
 const OWNER = "zodchi";
 const PLACEHOLDER = "__ZODCHI_ROOT__";
-const NAMES = Object.freeze(["zodchi", "zod"]);
+const ACTIVE_NAMES = Object.freeze(["zodchi"]);
+const LEGACY_NAMES = Object.freeze(["zod"]);
+const MANAGED_NAMES = Object.freeze([...ACTIVE_NAMES, ...LEGACY_NAMES]);
 
 const sha256 = value => crypto.createHash("sha256").update(value).digest("hex");
 const markerFile = directory => path.join(directory, ".zodchi-skill.json");
@@ -28,13 +30,13 @@ export function defaultSkillRoots(home = os.homedir()) {
     codex: path.join(resolved, ".agents", "skills")
   });
 }
-function targets(roots) {
-  return Object.entries(roots).flatMap(([client, root]) => NAMES.map(name => ({ client, name, root: path.resolve(root), directory: path.join(path.resolve(root), name) })));
+function targets(roots, names = ACTIVE_NAMES) {
+  return Object.entries(roots).flatMap(([client, root]) => names.map(name => ({ client, name, root: path.resolve(root), directory: path.join(path.resolve(root), name) })));
 }
 
 function readJson(file) { return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null; }
 
-// Two installations sharing one home share these four directories. The marker records which one
+// Two installations sharing one home share these command directories. The marker records which one
 // wrote them, so neither may quietly take the other's commands over or delete them: an explicit
 // command that silently starts pointing at a different installation is worse than a refusal.
 function sameInstallation(recorded, application) {
@@ -65,7 +67,7 @@ function validateOwned(target, application) {
 }
 
 function safeTarget(target) {
-  if (!NAMES.includes(path.basename(target.directory)) || path.resolve(path.dirname(target.directory)) !== path.resolve(target.root)) throw new Error(`SKILL_TARGET_UNSAFE: ${target.directory}`);
+  if (!MANAGED_NAMES.includes(path.basename(target.directory)) || path.resolve(path.dirname(target.directory)) !== path.resolve(target.root)) throw new Error(`SKILL_TARGET_UNSAFE: ${target.directory}`);
 }
 
 function snapshotDirectory(directory) {
@@ -74,7 +76,8 @@ function snapshotDirectory(directory) {
 }
 
 export function snapshotClientSkills({ roots = defaultSkillRoots() } = {}) {
-  return Object.freeze(targets(roots).map(target => Object.freeze({ ...target, snapshot: snapshotDirectory(target.directory) })));
+  // Include retired aliases so a failed update can restore the exact pre-update command set.
+  return Object.freeze(targets(roots, MANAGED_NAMES).map(target => Object.freeze({ ...target, snapshot: snapshotDirectory(target.directory) })));
 }
 
 export function restoreClientSkills(snapshots) {
@@ -130,6 +133,17 @@ export function installClientSkills({ applicationRoot, roots = defaultSkillRoots
       throw error;
     }
   }
+  // `/zod` was shipped before 0.6.2. Remove only an unchanged alias owned by this exact
+  // installation; a foreign, edited, or differently-owned directory is user data and stays put.
+  for (const target of targets(roots, LEGACY_NAMES)) {
+    safeTarget(target);
+    if (!fs.existsSync(target.directory)) continue;
+    const marker = readJson(markerFile(target.directory));
+    if (marker?.owner !== OWNER || marker.client !== target.client || marker.name !== target.name) continue;
+    if (!sameInstallation(marker.application_root, application)) continue;
+    if (JSON.stringify(managedHashes(target.directory)) !== JSON.stringify(marker.managed_hashes ?? {})) continue;
+    fs.rmSync(target.directory, { recursive: true, force: true });
+  }
   return Object.freeze(applied);
 }
 
@@ -138,7 +152,7 @@ export function removeClientSkills({ applicationRoot, roots = defaultSkillRoots(
   // to own them, so the caller has to say on whose behalf it is removing them.
   if (typeof applicationRoot !== "string" || !applicationRoot.trim()) throw new Error("SKILL_APPLICATION_ROOT_REQUIRED");
   const application = path.resolve(applicationRoot);
-  return Object.freeze(targets(roots).map(target => {
+  return Object.freeze(targets(roots, MANAGED_NAMES).map(target => {
     safeTarget(target);
     if (!fs.existsSync(target.directory)) return { status: "absent", client: target.client, name: target.name, directory: target.directory };
     const marker = readJson(markerFile(target.directory));

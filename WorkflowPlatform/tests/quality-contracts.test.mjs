@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { openDb } from "../src/db.mjs";
-import { DEFAULT_QUALITY_CONTRACTS, effectiveQualityMode, floorOperationalLevel, operationalPoliciesLint, ownerQualityFloor, parseQualityContracts, qualityContractsLint, qualityModesThrough, reviewerRequirement, serializeQualityContracts } from "../src/quality-contracts.mjs";
+import { DEFAULT_QUALITY_CONTRACTS, effectiveQualityMode, floorOperationalLevel, listImprovementStrategies, loadOperationalPolicy, operationalPoliciesLint, ownerQualityFloor, parseQualityContracts, qualityContractsLint, qualityModesThrough, reviewerRequirement, serializeQualityContracts, setImprovementStrategy } from "../src/quality-contracts.mjs";
 import { applyWorkflowImport, proposeWorkflowImport, serializeWorkflowPackage } from "../src/workflow-package.mjs";
 import * as builders from "../packages/builders.mjs";
 import defineExample from "../packages/example/definitions.mjs";
@@ -78,6 +78,34 @@ test("an explicit Gauntlet policy may raise its project-local budget allowance",
   assert.deepEqual(operationalPoliciesLint(db, "project-r"), { kind: "operational_policies", status: "passed", errors: [], projects: 1, packages: 1 });
   db.prepare("UPDATE operational_level_policies SET improvement_strategy='standard' WHERE project_id='project-r' AND level='mvp'").run();
   assert.ok(operationalPoliciesLint(db, "project-r").errors.some(error => error.includes("budget exceeds contract")));
+  db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("an owner can override and restore a package strategy without rebuilding the package", () => {
+  const root = temporaryRoot("workflow-owner-strategy-");
+  const dbFile = path.join(root, "workflow.sqlite"), proposalFile = path.join(root, "proposal.json"), projectRoot = path.join(root, "project-r");
+  fs.mkdirSync(projectRoot);
+  let db = openDb(dbFile);
+  db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('project-r','Project R',?,?)").run(projectRoot, new Date().toISOString());
+  db.close();
+  const packageFile = examplePackageFile(root);
+  proposeWorkflowImport(dbFile, packageFile, proposalFile, "project-r");
+  applyWorkflowImport(dbFile, proposalFile, "project-r", { confirmedBy: "contract-test-owner" });
+  db = openDb(dbFile);
+  const workflowId = db.prepare("SELECT id FROM workflows WHERE project_id='project-r' LIMIT 1").get().id;
+  const packageKey = db.prepare("SELECT package_key FROM workflows WHERE id=?").get(workflowId).package_key;
+  assert.equal(setImprovementStrategy(db, { projectId: "project-r", packageKey, level: "mvp", strategy: "standard", confirmedBy: "owner" }).effective_strategy, "standard");
+  assert.equal(loadOperationalPolicy(db, "project-r", workflowId, "mvp").improvement_strategy, "standard");
+  assert.equal(listImprovementStrategies(db, "project-r").find(item => item.package_key === packageKey && item.level === "mvp").owner_override, "standard");
+  const imported = db.prepare("SELECT * FROM operational_level_policies WHERE project_id='project-r' AND package_key=? AND level='mvp'").get(packageKey);
+  db.prepare("DELETE FROM operational_level_policies WHERE project_id='project-r' AND package_key=? AND level='mvp'").run(packageKey);
+  db.prepare(`INSERT INTO operational_level_policies(project_id,package_key,level,budgets_json,required_checks_json,correction_limit,escalation_json,improvement_strategy)
+    VALUES(?,?,?,?,?,?,?,?)`).run(imported.project_id, imported.package_key, imported.level, imported.budgets_json, imported.required_checks_json, imported.correction_limit, imported.escalation_json, imported.improvement_strategy);
+  assert.equal(loadOperationalPolicy(db, "project-r", workflowId, "mvp").improvement_strategy, "standard");
+  assert.equal(setImprovementStrategy(db, { projectId: "project-r", packageKey, level: "mvp", strategy: "inherit" }).owner_override, null);
+  assert.equal(loadOperationalPolicy(db, "project-r", workflowId, "mvp").improvement_strategy, "gauntlet");
+  assert.throws(() => setImprovementStrategy(db, { projectId: "project-r", packageKey, level: "mvp", strategy: "gauntlet" }), /STRATEGY_CONFIRMATION_REQUIRED/);
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });

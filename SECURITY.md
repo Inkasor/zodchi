@@ -23,7 +23,7 @@ The one-line bootstrap fetches `install-latest.mjs` from this repository's defau
 
 - A release must not contain personal databases, credentials, authentication files, or user-specific absolute paths.
 - Credentials for compatible APIs are supplied only through environment variables.
-- Ordinary project messages are not intercepted. User-level Zodchi skills run only after `/zodchi` or `/zod`; the installer never overwrites a same-named foreign skill, never removes edited managed content, and never takes over or deletes commands owned by another installation.
+- Ordinary project messages are not intercepted. The user-level Zodchi skill runs only after `/zodchi`; the installer never overwrites a same-named foreign skill, never removes edited managed content, and never takes over or deletes commands owned by another installation. Update removes the retired `/zod` alias only when it is unchanged and owned by that exact installation.
 - Persistent Gateway receipts contain usage, hashes, timing, status, compact errors, and artifact references, not full prompts, responses, transcripts, or source bodies. Project-specific privacy policy may narrow persistence further.
 - Write-capable steps declare canonical resources and acquire ordered shared/exclusive leases. An identity that cannot be established is `unavailable`; it never falls back to a global project lock or an unprotected write.
 - External executors use signed, hash-bound request/result packets. An irreversible approval binds the objective, plan, checkpoint, and exact action state; changing any bound input invalidates the approval.

@@ -55,7 +55,7 @@ test("latest installer requires a repository provenance record for the archive d
 
 // An isolated installation (release smoke, acceptance) must be able to keep the explicit commands
 // inside its own throwaway directory. Without the flag such a run rewrites the operator's real
-// `/zodchi` and `/zod` to point at a path it deletes when it finishes.
+// `/zodchi` to point at a path it deletes when it finishes.
 test("the installer command line can direct client skills away from the operator home", () => {
   const root = temporaryRoot(), source = release(path.join(root, "source"), "0.6.0-rc.1"), roots = skillRoots(root);
   const installer = path.join(repositoryRoot, "tools", "install.mjs"), rootsFile = path.join(root, "skill-roots.json");
@@ -65,7 +65,7 @@ test("the installer command line can direct client skills away from the operator
     fs.writeFileSync(path.join(source, "tools", "release-lint.mjs"), "process.exitCode = 0;\n", "utf8");
     fs.writeFileSync(rootsFile, `${JSON.stringify(roots, null, 2)}\n`, "utf8");
     run("installed", "data");
-    for (const client of ["claude-code", "codex"]) for (const name of ["zodchi", "zod"]) assert.equal(fs.existsSync(path.join(roots[client], name, "SKILL.md")), true, `${client}:${name}`);
+    for (const client of ["claude-code", "codex"]) assert.equal(fs.existsSync(path.join(roots[client], "zodchi", "SKILL.md")), true, client);
     fs.writeFileSync(rootsFile, `${JSON.stringify({ codex: roots.codex }, null, 2)}\n`, "utf8");
     assert.throws(() => run("installed-2", "data-2"), /INSTALL_SKILL_ROOTS_INVALID/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
@@ -79,7 +79,7 @@ test("clean install deploys explicit client skills and does not install project 
     const roots = skillRoots(root);
     const installed = installRelease({ source, destination, dataRoot, skillRoots: roots, healthCheck });
     assert.equal(installed.hook_results.length, 0);
-    assert.equal(installed.skill_results.length, 4);
+    assert.equal(installed.skill_results.length, 2);
     assert.equal(fs.existsSync(path.join(project, ".codex", ".zodchi-hook.json")), false);
     assert.match(fs.readFileSync(path.join(roots.codex, "zodchi", "SKILL.md"), "utf8"), /explicit-invoke\.mjs/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
@@ -135,9 +135,9 @@ test("a second installation neither takes over nor removes the first one's expli
     assert.throws(() => installRelease({ source, destination: second, dataRoot: path.join(root, "data-2"), skillRoots: roots, healthCheck }), /SKILL_OWNED_BY_OTHER_INSTALLATION/);
     assert.deepEqual(fs.readFileSync(skill), before);
     const uninstalled = uninstallRelease({ destination: second, dataRoot: path.join(root, "data-2"), skillRoots: roots });
-    assert.equal(uninstalled.skills.every(item => item.status === "different_installation"), true);
+    assert.equal(uninstalled.skills.filter(item => item.name === "zodchi").every(item => item.status === "different_installation"), true);
     assert.deepEqual(fs.readFileSync(skill), before);
-    assert.equal(uninstallRelease({ destination: first, dataRoot: path.join(root, "data-1"), skillRoots: roots }).skills.every(item => item.status === "removed"), true);
+    assert.equal(uninstallRelease({ destination: first, dataRoot: path.join(root, "data-1"), skillRoots: roots }).skills.filter(item => item.name === "zodchi").every(item => item.status === "removed"), true);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -152,7 +152,7 @@ test("uninstall removes owned skills and legacy hooks while leaving mutable data
   assert.equal(fs.existsSync(destination), false);
   assert.equal(fs.existsSync(result.recoverable_release), true);
   assert.equal(fs.existsSync(path.join(project, ".codex", ".zodchi-hook.json")), false);
-  assert.equal(result.skills.filter(item => item.status === "removed").length, 4);
+    assert.equal(result.skills.filter(item => item.status === "removed").length, 2);
   assert.equal(fs.existsSync(path.join(dataRoot, "installation-state.json")), true);
   fs.rmSync(root, { recursive: true, force: true });
 });
