@@ -21,7 +21,11 @@ function fixture() {
 test("activation status accepts only the exact active client session", () => {
   const value = fixture();
   try {
+    const evidenceFiles = [value.file, `${value.file}-wal`, `${value.file}-shm`];
+    const snapshot = () => evidenceFiles.map(file => fs.existsSync(file) ? { file, size: fs.statSync(file).size, mtimeMs: fs.statSync(file).mtimeMs } : { file, missing: true });
+    const before = snapshot();
     assert.deepEqual(activationStatus({ dbFile: value.file, client: "codex", sessionId: "active-session" }), { status: "active" });
+    assert.deepEqual(snapshot(), before);
     assert.deepEqual(activationStatus({ dbFile: value.file, client: "codex", sessionId: "other-session" }), { status: "inactive", reason: "session_not_found" });
     assert.deepEqual(activationStatus({ dbFile: value.file, client: "codex", sessionId: "" }), { status: "inactive", reason: "session_id_missing" });
     const db = openDb(value.file); endChatSession(db, { client: "codex", sessionId: "active-session" }); db.close();
@@ -43,4 +47,3 @@ test("the Codex verifier reads the current session identity from the host enviro
     assert.deepEqual(JSON.parse(inactive.stdout), { status: "inactive", reason: "session_not_found" });
   } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
 });
-

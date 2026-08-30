@@ -1,5 +1,8 @@
+import fs from "node:fs";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { pathToFileURL } from "node:url";
 import { CHAT_CLIENTS, chatSession } from "./chat-session.mjs";
-import { openDb } from "./db.mjs";
 
 function required(value, code) {
   const text = String(value ?? "").trim();
@@ -15,7 +18,13 @@ export function activationStatus({ dbFile, client, sessionId }) {
 
   let db;
   try {
-    db = openDb(required(dbFile, "DATABASE_PATH_REQUIRED"));
+    const file = path.resolve(required(dbFile, "DATABASE_PATH_REQUIRED"));
+    if (!fs.existsSync(file)) return Object.freeze({ status: "unavailable", reason: "database_unavailable" });
+    // This command runs inside the Codex tool sandbox. It must not create WAL files, apply
+    // migrations, or otherwise require write access to installation data outside the project.
+    const databaseUrl = pathToFileURL(file); databaseUrl.searchParams.set("immutable", "1");
+    db = new DatabaseSync(databaseUrl, { readOnly: true });
+    db.exec("PRAGMA query_only=ON; PRAGMA busy_timeout=5000");
     const session = chatSession(db, { client: normalizedClient, sessionId: normalizedSession });
     return session?.state === "active"
       ? Object.freeze({ status: "active" })
@@ -26,4 +35,3 @@ export function activationStatus({ dbFile, client, sessionId }) {
     db?.close();
   }
 }
-

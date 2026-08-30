@@ -4,6 +4,15 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_6_8_2026_08_30" status="working">
+
+## 0.6.8 — 2026-08-30
+
+- Проверка активации Codex теперь открывает каноническую workflow database строго для чтения и работает внутри проектной sandbox, не пытаясь создать SQLite WAL-файлы в данных установки.
+- Тест verifier доказывает, что проверка точной сессии не меняет timestamp базы и не создаёт sidecar-файлы.
+
+</section>
+
 <section id="0_6_7_2026_08_30" status="working">
 
 ## 0.6.7 — 2026-08-30
