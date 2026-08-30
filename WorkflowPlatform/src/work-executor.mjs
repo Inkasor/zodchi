@@ -859,23 +859,33 @@ export function registeredReplanCatalog(db, projectId, level, artifactType, avai
   };
 }
 
+function retryableReviewerTransportError(error) {
+  if (error?.queueFailure?.action !== "retry_scheduled") return false;
+  if (["RUN_CANCELLED", "GATEWAY_INVOCATION_CANCELLED"].includes(error?.code)) return false;
+  if (["EAGAIN", "EBUSY", "ETXTBSY", "EMFILE", "ENFILE", "SQLITE_BUSY", "SQLITE_LOCKED"].includes(error?.code)) return true;
+  return /^Gateway exited before receipt \([^)]*\):/i.test(String(error?.message ?? ""));
+}
+
 export async function invokeReviewerWithSchemaRepair({ invoke, packageContract, onRetry = () => {} }) {
   let currentPackage = packageContract;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try { return await invoke(currentPackage); }
     catch (error) {
-      const retryScheduled = error.code === "ROLE_RESULT_SCHEMA_INVALID" && error.queueFailure?.action === "retry_scheduled";
-      if (!retryScheduled || attempt === 2) throw error;
-      currentPackage = {
-        ...packageContract,
-        schema_repair: {
-          attempt: attempt + 1,
-          validation_error: String(error.message),
-          invalid_result: error.invalidRoleOutput ?? null,
-          instruction: "Return one corrected reviewer.v1 object. Preserve the evidence-grounded judgment and make decision, blockers and required_actions mutually consistent."
-        }
-      };
-      await onRetry({ attempt: attempt + 1, error, packageContract: currentPackage });
+      const schemaRepair = error.code === "ROLE_RESULT_SCHEMA_INVALID" && error.queueFailure?.action === "retry_scheduled";
+      const transportRetry = retryableReviewerTransportError(error);
+      if ((!schemaRepair && !transportRetry) || attempt === 2) throw error;
+      if (schemaRepair) {
+        currentPackage = {
+          ...packageContract,
+          schema_repair: {
+            attempt: attempt + 1,
+            validation_error: String(error.message),
+            invalid_result: error.invalidRoleOutput ?? null,
+            instruction: "Return one corrected reviewer.v1 object. Preserve the evidence-grounded judgment and make decision, blockers and required_actions mutually consistent."
+          }
+        };
+      }
+      await onRetry({ attempt: attempt + 1, error, packageContract: currentPackage, kind: schemaRepair ? "schema_repair" : "transport_retry" });
     }
   }
   throw new Error("REVIEWER_SCHEMA_REPAIR_EXHAUSTED");
@@ -928,11 +938,15 @@ async function executeIndependentReview({ runtime, queue, runId, projectId, revi
       const reviewer = await invokeReviewerWithSchemaRepair({
         packageContract: reviewerPackage,
         invoke: packageContract => invokeRole({ runtime, queue, runId, roleId, level, taskRoot, packageContract, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "reviewer.v1", parseOptions: {}, gatewayCall, activeInvocations }),
-        onRetry: ({ attempt, error }) => recordRunEvidence(runtime.db, runId, null, "reviewer_schema_repair", {
+        onRetry: ({ attempt, error, kind }) => recordRunEvidence(runtime.db, runId, null, kind === "schema_repair" ? "reviewer_schema_repair" : "reviewer_transport_retry", kind === "schema_repair" ? {
           role_id: roleId,
           attempt,
           validation_error: String(error.message),
           prior_result_hash: crypto.createHash("sha256").update(String(error.invalidRoleOutput ?? "")).digest("hex")
+        } : {
+          role_id: roleId,
+          attempt,
+          error_category: error.code ?? String(error.message).split(":")[0].slice(0, 120)
         })
       });
       reviewer.complete({ decision: reviewer.result.decision, base_evidence_hash: reviewEvidence.base_evidence_hash });

@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_6_9_2026_08_30" status="working">
+
+## 0.6.9 — 2026-08-30
+
+- An admitted reviewer now receives one bounded retry when AgentGateway fails before producing a receipt; cancellation, budget failures and ordinary model outcomes are never replayed by this path.
+- Transport retries are recorded separately from reviewer schema repair, preserving the reason for the second attempt.
+- Acceptance failures now include the bounded workflow execution category instead of reporting only the final state and call count.
+
+</section>
+
 <section id="0_6_8_2026_08_30" status="working">
 
 ## 0.6.8 — 2026-08-30
