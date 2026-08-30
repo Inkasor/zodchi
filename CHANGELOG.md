@@ -10,6 +10,7 @@
 
 - Published-release smoke validates Windows session-hook targets structurally instead of searching escaped JSON text.
 - Update preserves the workflow database registered by the installed release and safely treats an existing unmigrated database as having no legacy project hooks.
+- The human README is shorter and uses plain language; internal architecture and contributor documents remain in the repository without turning the front page into a documentation index.
 
 </section>
 
