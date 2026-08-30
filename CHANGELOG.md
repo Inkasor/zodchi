@@ -11,6 +11,7 @@
 - Codex no longer depends on consuming `UserPromptSubmit.additionalContext` to receive a prepared Zodchi result: the invoked skill keeps a standing per-turn relay rule and reads the result for the exact active `CODEX_SESSION_ID` before any project work.
 - The read-only relay binds each active chat to its exact workflow run, refuses stale or cross-session results, and does not create SQLite sidecars or modify the database from the project sandbox.
 - Claude Code keeps native hook-context delivery and now carries the same standing prohibition against independently repeating work after `/zodchi` activation.
+- The release builder stages beside its destination by default, preserving atomic rename when the Windows system temp directory and repository are on different drives.
 
 </section>
 

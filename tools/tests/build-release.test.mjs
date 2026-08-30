@@ -15,8 +15,10 @@ test("platform-neutral builder produces a lintable archive root that the canonic
   try {
     const output = path.join(root, "release"), installed = path.join(root, "installed"), dataRoot = path.join(root, "data");
     const skillRoots = { "claude-code": path.join(root, "claude-skills"), codex: path.join(root, "codex-skills") };
-    const built = buildRelease({ repositoryRoot, output, stageRoot: root });
+    const built = buildRelease({ repositoryRoot, output });
     assert.equal(built.status, "built");
+    assert.equal(fs.existsSync(path.join(root, ".zodchi-stage")), true);
+    assert.deepEqual(fs.readdirSync(path.join(root, ".zodchi-stage")), []);
     const manifest = JSON.parse(fs.readFileSync(path.join(output, "bundle-manifest.json"), "utf8"));
     assert.equal(manifest.files.some(item => item.path === "tools/install.mjs"), true);
     assert.equal(manifest.files.some(item => item.path === "WorkflowPlatform/src/command-resolver.mjs"), true);
