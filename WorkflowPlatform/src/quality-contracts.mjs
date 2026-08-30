@@ -223,7 +223,8 @@ export function loadOperationalPolicy(db, projectId, workflowId, level) {
   const projectEscalations = db.prepare("SELECT event_key AS event,action_key AS action,threshold_value AS threshold,ordinal FROM operational_level_escalation_rules WHERE project_id=? AND package_key=? AND level=? ORDER BY ordinal").all(projectId, packageKey, contract.level);
   let requiredChecks = [];
   try { requiredChecks = row ? JSON.parse(row.required_checks_json) : []; } catch { throw new Error(`OPERATIONAL_POLICY_CHECKS_INVALID: ${projectId}:${contract.level}`); }
-  const strategy = row?.improvement_strategy ?? "standard";
+  const ownerOverride = db.prepare("SELECT improvement_strategy FROM project_strategy_overrides WHERE project_id=? AND package_key=? AND level=?").get(projectId, packageKey, contract.level);
+  const strategy = ownerOverride?.improvement_strategy ?? row?.improvement_strategy ?? "standard";
   if (!["standard", "gauntlet"].includes(strategy)) throw new Error(`IMPROVEMENT_STRATEGY_INVALID: ${projectId}:${contract.level}:${strategy}`);
   // Standard is intentionally bounded by the global quality contract. Gauntlet is an
   // explicitly selected operating strategy and may raise a project-local allowance;
@@ -237,6 +238,38 @@ export function loadOperationalPolicy(db, projectId, workflowId, level) {
   if (!Number.isInteger(configuredConsiliumMembers) || configuredConsiliumMembers < 1 || configuredConsiliumMembers > 3) throw new Error(`CONSILIUM_MEMBER_LIMIT_INVALID: ${projectId}:${contract.level}:${parallelRule?.threshold}`);
   const maxParallelConsiliumMembers = configuredConsiliumMembers;
   return Object.freeze({ contract, project_id: projectId, package_key: packageKey, limits, required_checks: requiredChecks, project_escalations: projectEscalations, improvement_strategy: strategy, max_parallel_consilium_members: maxParallelConsiliumMembers });
+}
+
+export function listImprovementStrategies(db, projectId) {
+  if (!projectId) throw new Error("PROJECT_REQUIRED");
+  return Object.freeze(db.prepare(`SELECT p.project_id,p.package_key,p.level,
+      p.improvement_strategy package_strategy,o.improvement_strategy owner_override,
+      COALESCE(o.improvement_strategy,p.improvement_strategy) effective_strategy,
+      o.confirmed_by,o.updated_at
+    FROM operational_level_policies p
+    LEFT JOIN project_strategy_overrides o
+      ON o.project_id=p.project_id AND o.package_key=p.package_key AND o.level=p.level
+    WHERE p.project_id=? ORDER BY p.package_key,
+      CASE p.level WHEN 'prototype' THEN 0 WHEN 'mvp' THEN 1 WHEN 'production' THEN 2 ELSE 3 END`).all(projectId));
+}
+
+export function setImprovementStrategy(db, { projectId, packageKey, level, strategy, confirmedBy }) {
+  if (!projectId || !packageKey) throw new Error("PROJECT_AND_PACKAGE_REQUIRED");
+  const normalizedLevel = operationalLevel(level);
+  if (!db.prepare("SELECT 1 FROM operational_level_policies WHERE project_id=? AND package_key=? AND level=?").get(projectId, packageKey, normalizedLevel)) {
+    throw new Error(`OPERATIONAL_POLICY_NOT_REGISTERED: ${projectId}:${packageKey}:${normalizedLevel}`);
+  }
+  if (strategy === "inherit") {
+    db.prepare("DELETE FROM project_strategy_overrides WHERE project_id=? AND package_key=? AND level=?").run(projectId, packageKey, normalizedLevel);
+  } else {
+    if (!["standard", "gauntlet"].includes(strategy)) throw new Error(`IMPROVEMENT_STRATEGY_INVALID: ${strategy}`);
+    if (typeof confirmedBy !== "string" || !confirmedBy.trim()) throw new Error("STRATEGY_CONFIRMATION_REQUIRED");
+    db.prepare(`INSERT INTO project_strategy_overrides(project_id,package_key,level,improvement_strategy,confirmed_by,updated_at)
+      VALUES(?,?,?,?,?,?) ON CONFLICT(project_id,package_key,level) DO UPDATE SET
+      improvement_strategy=excluded.improvement_strategy,confirmed_by=excluded.confirmed_by,updated_at=excluded.updated_at`)
+      .run(projectId, packageKey, normalizedLevel, strategy, confirmedBy.trim(), new Date().toISOString());
+  }
+  return listImprovementStrategies(db, projectId).find(item => item.package_key === packageKey && item.level === normalizedLevel);
 }
 
 function directBudgetRequest(runtime, runId, metric, amount, key, reason) {
@@ -353,6 +386,8 @@ export function operationalPoliciesLint(db, projectId = null) {
         const localId = mappedCheckId(db, item.project_id, semanticKey);
         if (!db.prepare(`SELECT 1 FROM project_checks WHERE project_id=? AND check_id=? AND quality_mode_id IN (${placeholders}) AND required=1`).get(item.project_id, localId, ...inheritedQualities)) errors.push(`check not bound: ${item.project_id}:${item.package_key}:${level}:${semanticKey}`);
       }
+      const ownerOverride = db.prepare("SELECT improvement_strategy,confirmed_by FROM project_strategy_overrides WHERE project_id=? AND package_key=? AND level=?").get(item.project_id, item.package_key, level);
+      if (ownerOverride && (!["standard", "gauntlet"].includes(ownerOverride.improvement_strategy) || !String(ownerOverride.confirmed_by ?? "").trim())) errors.push(`invalid owner strategy override: ${item.project_id}:${item.package_key}:${level}`);
     }
   }
   return { kind: "operational_policies", status: errors.length ? "failed" : "passed", errors, projects: new Set(packages.map(item => item.project_id)).size, packages: packages.length };

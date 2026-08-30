@@ -14,7 +14,7 @@ import { Runtime } from "./runtime.mjs";
 import { ExecutionQueue } from "./execution-queue.mjs";
 import { workflowRunStatistics } from "./statistics.mjs";
 import { backupInstallation, restoreInstallation } from "./backup.mjs";
-import { operationalPoliciesLint, qualityContractsLint } from "./quality-contracts.mjs";
+import { listImprovementStrategies, operationalPoliciesLint, qualityContractsLint, setImprovementStrategy } from "./quality-contracts.mjs";
 import { configureOneCBslCheck, createOneCBslBaseline } from "./one-c-bsl-check.mjs";
 import { readProjectContext } from "./document-context.mjs";
 import { cancelInteraction, pendingInteractions } from "./interactions.mjs";
@@ -38,6 +38,8 @@ else if (process.argv[2] === "document-status-register" || process.argv[2] === "
 else if (process.argv[2] === "lint") { const r = lintFile(args.file ?? path.resolve("docs/WorkflowPlatform.md")); console.log(JSON.stringify(r)); process.exitCode = r.status === "passed" ? 0 : 1; }
 else if (process.argv[2] === "quality-contracts-lint") { const file = args.file ?? path.resolve("contracts/quality-contracts.xml"); const r = qualityContractsLint(fs.readFileSync(file, "utf8")); console.log(JSON.stringify(r)); process.exitCode = r.status === "passed" ? 0 : 1; }
 else if (process.argv[2] === "quality-policy-lint") { const runtime = new Runtime(args.db ?? settings.databasePath); try { const r = operationalPoliciesLint(runtime.db, args.project ?? null); console.log(JSON.stringify(r, null, 2)); process.exitCode = r.status === "passed" ? 0 : 1; } finally { runtime.db.close(); } }
+else if (process.argv[2] === "strategy-list") { const runtime = new Runtime(args.db ?? settings.databasePath); try { console.log(JSON.stringify(listImprovementStrategies(runtime.db, args.project), null, 2)); } finally { runtime.db.close(); } }
+else if (process.argv[2] === "strategy-set") { const runtime = new Runtime(args.db ?? settings.databasePath); try { console.log(JSON.stringify(setImprovementStrategy(runtime.db, { projectId: args.project, packageKey: args.package, level: args.level, strategy: args.strategy, confirmedBy: args["confirmed-by"] }), null, 2)); } finally { runtime.db.close(); } }
 else if (process.argv[2] === "one-c-bsl-baseline") { console.log(JSON.stringify(createOneCBslBaseline({ dbFile: args.db ?? settings.databasePath, projectId: args.project, executable: args.executable, source: args.source, workspace: args.workspace, platformBin: args["platform-bin"], tempRoot: args["temp-root"], acceptedRevision: args["accepted-revision"], confirmedBy: args["confirmed-by"], minimumSeverity: args["minimum-severity"], timeoutSeconds: args["timeout-seconds"], catalogFile: args.catalog }), null, 2)); }
 else if (process.argv[2] === "one-c-bsl-configure") { console.log(JSON.stringify(configureOneCBslCheck(args.db ?? settings.databasePath, { projectId: args.project, executable: args.executable, platformBin: args["platform-bin"], runner: args.runner, tempRoot: args["temp-root"], catalogFile: args.catalog }), null, 2)); }
 else if (process.argv[2] === "prompt") { console.log(buildPrompt({ role: "planner", stage: "planning", intent: args.intent ?? "", classification: { kind: "task", domain: "workflow", risk: "low", level: "L1", quality: "prototype" }, quality: "prototype", format: "JSON" })); }
@@ -106,7 +108,7 @@ else if (process.argv[2] === "preset-propose") {
 // planned change rather than a file the onboarding agent writes from a template.
 else if (process.argv[2] === "hook-plan") {
   const plan = planHookInstallation({ projectRoot: args.project ?? settings.project, harness: args.harness ?? "claude-code", deliveryMode: args["delivery-mode"] ?? settings.deliveryMode ?? null, mode: args.mode ?? null });
-  console.log(JSON.stringify({ ...plan, document: undefined, deprecated: true, replacement: "/zodchi or /zod" }, null, 2));
+  console.log(JSON.stringify({ ...plan, document: undefined, deprecated: true, replacement: "/zodchi" }, null, 2));
 }
 else if (process.argv[2] === "hook-install") { throw new Error("HOOK_INSTALLATION_DEPRECATED_USE_ZODCHI_SKILL"); }
 else if (process.argv[2] === "hook-status") { console.log(JSON.stringify(hookInstallationStatus({ projectRoot: args.project ?? settings.project, harness: args.harness ?? "claude-code" }), null, 2)); }
@@ -161,4 +163,4 @@ else if (["queue-recover", "run-pause", "run-resume", "run-cancel", "dead-letter
     else console.log(JSON.stringify(queue.retryDeadLetter(args["dead-letter"], { approved: args.approved === true, actor: args.actor ?? "CLI operator" }), null, 2));
   } finally { runtime.db.close(); }
 }
-else console.log("Usage: node src/cli.mjs configure --config <file> | register-project | register-root | document-list | document-register | document-unregister | document-status-register | document-evidence-register | onboard | lint | quality-contracts-lint | quality-policy-lint | one-c-bsl-baseline | one-c-bsl-configure | prompt | run | interactions | evidence-deliver | external-control-create|pending|cancel|deliver | preset-lint|inspect|propose | run-statistics|status|watch | backup | restore | queue-recover | run-pause|resume|cancel | dead-letter-retry | workflow-export | workflow-import-propose|apply | workflow-migration-propose | workflow-bundle-inspect | experience-record|propose|evaluate|apply");
+else console.log("Usage: node src/cli.mjs configure --config <file> | register-project | register-root | document-list | document-register | document-unregister | document-status-register | document-evidence-register | strategy-list | strategy-set | onboard | lint | quality-contracts-lint | quality-policy-lint | one-c-bsl-baseline | one-c-bsl-configure | prompt | run | interactions | evidence-deliver | external-control-create|pending|cancel|deliver | preset-lint|inspect|propose | run-statistics|status|watch | backup | restore | queue-recover | run-pause|resume|cancel | dead-letter-retry | workflow-export | workflow-import-propose|apply | workflow-migration-propose | workflow-bundle-inspect | experience-record|propose|evaluate|apply");

@@ -29,8 +29,9 @@
     <check id="codex_cli">Locate Codex CLI and run codex --version.</check>
     <check id="opencode_desktop_cli">When OpenCode is selected, verify Desktop and CLI independently. OpenCode Desktop does not imply an opencode command. If the CLI is absent, install the official opencode-ai package, run opencode --version, and then perform a safe Gateway smoke call.</check>
     <check id="codex_project_config">Locate the Codex project configuration and .codex directory.</check>
-    <check id="provider_access">Verify configured provider access through a safe Gateway call.</check>
-    <check id="harness_access">Verify the selected harness separately: Codex, Claude Code, Kimi, OpenCode, Cursor, or a direct compatible API. A program name is not a model-provider name.</check>
+    <check id="installed_harness_inventory">Inspect Codex, Claude Code, Kimi, OpenCode, Cursor, and configured compatible APIs separately. Record verified version and authentication as available, unauthenticated, unavailable, or unverified; never infer access from an installed desktop application.</check>
+    <check id="provider_access">Verify configured provider access through a safe Gateway call only after the owner permits that provider.</check>
+    <check id="harness_access">Verify each selected harness separately. A chat entry host, an agent harness, a model provider, and a model ID are four different facts.</check>
     <check id="existing_data">Never copy another person's databases, credentials, history, or receipts.</check>
   </preflight>
 
@@ -39,15 +40,16 @@
     <step order="2" id="register_project">Register the project, root path, domain, and disciplines in Workflow DB.</step>
     <step order="3" id="load_catalogs">Load catalogs from configs/catalogs.json.</step>
     <step order="4" id="discover_documents">Discover existing project documents and explain which ones could be useful as controlled context. A package filename is never a requirement and absence is not a gap until the owner selects that document.</step>
-    <step order="5" id="propose_ownership">Propose zero or more controlled documents, their lint mode, project-local status/evidence vocabulary, owners, and role read/write access. The person may keep no controlled documents.</step>
+    <step order="5" id="propose_ownership">Propose zero or more controlled documents, their lint mode, owners, and role read/write access. Prefer global semantic statuses and evidence types; propose a project-local key only when its meaning is genuinely project-specific. The person may keep no controlled documents.</step>
     <step order="6" id="confirm_ownership">Never assign ownership silently. Wait for the person's confirmation.</step>
     <step order="7" id="write_registry">After confirmation, use document-register and the project vocabulary commands to write project_documents and role_documents to Workflow DB. Adding or removing one controlled document must not require rebuilding the workflow package.</step>
     <step order="8" id="confirm_routes">Propose mappings from registered work_types to workflow_routes and wait for owner confirmation; never select a product route silently.</step>
     <step order="9" id="write_routes">Write only confirmed workflow_routes. The classifier must not use a route absent from the registry.</step>
     <step order="10" id="architecture_document">Copy configs/WorkflowPlatformArchitecture.template.md into a local project-onboarding document and fill only verified values.</step>
-    <step order="11" id="local_assignments">Create a local installation config from configs/installation.example.json using confirmed assignments. Never include tokens, cookies, passwords, or authentication files.</step>
+    <step order="11" id="local_assignments">Show the verified harness/provider/model inventory, ask which systems the owner permits Zodchi to use, and ask about cost, privacy, and role preferences that cannot be inferred. Propose the smallest role assignment that satisfies the selected workflows; do not enable every available model merely because it is installed. Create a local installation config from configs/installation.example.json only from confirmed assignments. Never include tokens, cookies, passwords, or authentication files.</step>
     <rule id="separate_harness_and_model_provider">For each local profile, record harness, model provider, and model ID separately. For a compatible API, store only baseUrl and the apiKeyEnv variable name, never the key value.</rule>
     <rule id="tool_roles_need_harness">Assign roles that need files, terminal, or tools to an agent harness. Use a direct compatible API only for bounded work over supplied context.</rule>
+    <rule id="selected_provider_smoke">Run one safe smoke for every selected provider/profile. Keep a failed or unverified profile unavailable and explain the exact boundary instead of silently replacing it.</rule>
     <step order="12" id="configure_installation">Run `node WorkflowPlatform/src/cli.mjs configure --config &lt;local-installation-config&gt;`. A shared installation uses scope=shared and a localDataRoot outside the release. The command creates external runtime.json, a local policy overlay containing only profiles, and both database paths. Do not modify release adapters or universal policy.</step>
     <step order="13" id="configure_runtime_environment">On Windows, persist the returned WORKFLOW_PLATFORM_CONFIG as a user environment variable and explain that the chat host may require a restart. Installed user skills must reference WorkflowPlatform in the installed release, not the development repository.</step>
     <step order="14" id="role_contracts">Propose portable versioned role contracts separately from local profile/model assignments. Define boundaries, artifacts, documents, tools/skills, checks, transitions, limits, result schema, and escalation for each role; never put a local model in the contract.</step>
@@ -57,12 +59,13 @@
     <step order="18" id="starter_package_selection">Show packages from WorkflowPlatform/packages/catalog.json with their support status. Do not import a package or assign local profiles/check commands until the person confirms the project and diff. A preview package proves executable mechanics, not domain truth or product fit.</step>
     <step order="19" id="preset_selection">When a shipped recipe matches the project, inspect it with `preset-inspect` and create a proposal with `preset-propose`. Show its package keys, source scopes, required adapters, resource aliases, authority boundaries, first-value scenario, fixture boundary, private acceptance contract, and substitution metric. Never treat the profile description as a statement made by that person.</step>
     <step order="20" id="local_capability_binding">Bind every required local adapter, project command, external runtime, database, information base, calendar, or resource alias explicitly. If a required capability or canonical resource identity is absent, report `unavailable`; never invent it or silently weaken the package.</step>
+    <step order="21" id="review_strategy_selection">Run strategy-list for the project and explain the effective strategy for each active package and quality level. Ask the owner whether reviewed work should use standard review or bounded Gauntlet. Apply a confirmed choice with strategy-set; use inherit to return to package policy. Do not equate quality mode with review strategy.</step>
   </project_onboarding>
 
   <chat_entry_skill status="accepted">
-    <rule id="explicit_only">Ordinary messages remain ordinary host-chat messages. Zodchi runs only after `/zodchi` or its short alias `/zod` is invoked explicitly.</rule>
+    <rule id="explicit_only">Ordinary messages remain ordinary host-chat messages. Zodchi runs only after `/zodchi` is invoked explicitly.</rule>
     <step order="1" id="select_entry">Ask which chat entry point the person uses. Install user skills only for supported selected hosts.</step>
-    <step order="2" id="verify_installation">Verify the owned `zodchi` and `zod` skill directories and their ownership records. They must reference the installed release, never the development repository.</step>
+    <step order="2" id="verify_installation">Verify the owned `zodchi` skill directory and its ownership record in each selected host. It must reference the installed release, never the development repository. Remove only an unchanged legacy `zod` alias owned by this exact installation.</step>
     <step order="3" id="verify_explicit_run">Invoke `/zodchi &lt;safe test task&gt;` and confirm a workflow_runs record with the expected client value.</step>
     <step order="4" id="verify_non_interception">Send or inspect an ordinary host message and confirm that it did not create a Zodchi run.</step>
     <rule id="exact_task_bytes">The skill writes the selected task to a fresh UTF-8 file and passes only the file path to the runtime. Never interpolate task text into a shell command.</rule>

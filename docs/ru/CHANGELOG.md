@@ -14,6 +14,8 @@
 - Проверяемые уровни пакетов получили ограниченные provider-neutral роли консилиума для локальной привязки Codex, Claude, Kimi или других поддерживаемых профилей.
 - Атомарная замена релиза и явных skills повторяет временные ошибки Windows `EPERM`/`EACCES` без ослабления проверок владения.
 - Проекты из нескольких пакетов переиспользуют один канонический versioned role contract и не падают из-за повторного package provenance.
+- Неоднозначный alias `/zod` снят; install/update безопасно удаляет только неизменённый alias той же установки, а единственной явной командой остаётся `/zodchi`.
+- Владелец может посмотреть и переопределить стратегию review `standard`/`gauntlet` для проекта, пакета и quality level без пересборки пакета; онбординг теперь инвентаризирует и подтверждает harness/provider/model assignments.
 
 </section>
 
@@ -29,7 +31,7 @@
 
 ## 0.6.0 — 2026-08-29
 
-- Codex и Claude Code теперь запускают Zodchi явно через пользовательские skills `/zodchi` и `/zod`. Обычные сообщения не перехватываются; install/update удаляют принадлежащие Zodchi старые project hooks, а update/rollback/uninstall транзакционно управляют skills, не перезаписывая чужое или изменённое содержимое.
+- Codex и Claude Code получили явные пользовательские skills `/zodchi` и `/zod`. Обычные сообщения не перехватываются; install/update удаляют принадлежащие Zodchi старые project hooks, а update/rollback/uninstall транзакционно управляют skills, не перезаписывая чужое или изменённое содержимое. Короткий alias снят в 0.6.2.
 - Публикация стала draft-first: три ОС проверяют скачанные GitHub assets и их Sigstore provenance до публикации, затем проверка повторяется для публичного Release, а красный post-publish возвращает его в draft. Stable tag больше не помечается prerelease автоматически.
 - Bootstrap installer требует provenance record точного SHA-256; release smoke дополнительно выполняет криптографический `gh attestation verify` с привязкой к release workflow и commit.
 - Зафиксирован read-only preflight старого `v0.5.24`: canonical и versioned checksum assets совпадают и подтверждают archive hash, но ручной uploader не переобозначен как CI.

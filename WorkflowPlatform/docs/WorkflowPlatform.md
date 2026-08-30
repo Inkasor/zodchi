@@ -20,7 +20,7 @@ A release is assembled from committed sources, validated, and replaced as one un
 Local profiles, model assignments, project registry, run history, and both databases stay outside the release and survive product updates.
 </rule>
 <rule id="explicit_skills_use_release" status="accepted">
-User-level `/zodchi` and `/zod` skills start WorkflowPlatform from the installed release; ordinary project-chat messages are not intercepted.
+The user-level `/zodchi` skill starts WorkflowPlatform from the installed release; ordinary project-chat messages are not intercepted.
 </rule>
 <rule id="explicit_task_transport" status="accepted">
 The selected task is written as strict UTF-8 to a fresh file and passed by path. User text is never interpolated into a shell command, and the receipt binds the exact source SHA-256.

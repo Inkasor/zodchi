@@ -124,11 +124,8 @@ const required = [
   "tools/platform-acceptance.mjs",
   "tools/release-lint.mjs",
   "integrations/claude-code/skills/zodchi/SKILL.md",
-  "integrations/claude-code/skills/zod/SKILL.md",
   "integrations/codex/skills/zodchi/SKILL.md",
-  "integrations/codex/skills/zodchi/agents/openai.yaml",
-  "integrations/codex/skills/zod/SKILL.md",
-  "integrations/codex/skills/zod/agents/openai.yaml"
+  "integrations/codex/skills/zodchi/agents/openai.yaml"
 ];
 
 if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) throw new Error(`RELEASE_ROOT_MISSING: ${root}`);

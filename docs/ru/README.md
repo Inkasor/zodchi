@@ -8,7 +8,7 @@ Zodchi превращает один обычный чат с моделью в 
 
 Вы своими словами описываете, что хотите получить. Zodchi определяет вид работы, передаёт каждому специалисту только нужный контекст, запускает подходящие проверки, фиксирует принятые решения и возвращает понятный ответ в тот же чат.
 
-Обычные сообщения остаются обычными сообщениями. Для явного запуска используйте `/zodchi <задача>` или короткую форму `/zod <задача>` в Codex и Claude Code. Команда без аргументов может взять непосредственно предшествующий содержательный запрос, только если это однозначно.
+Обычные сообщения остаются обычными сообщениями. Для явного запуска используйте `/zodchi <задача>` в Codex или Claude Code. Команда без аргументов может взять непосредственно предшествующий содержательный запрос, только если это однозначно.
 
 <section id="zachem_eto_nuzhno" status="accepted">
 
@@ -55,6 +55,27 @@ Zodchi требует Node.js 24 или новее. Release candidate 0.6 исп
 
 Пятнадцать устанавливаемых project recipes связывают наблюдавшиеся способы работы с пакетами, нужными локальными адаптерами, границами исходников, блокировками ресурсов, полномочиями, первым полезным сценарием и планом приёмки. Рецепт можно посмотреть командой `preset-inspect`, а `preset-propose` создаёт привязанное к хешу предложение. Импорт и любые действия во внешнем мире остаются отдельными подтверждаемыми операциями.
 
+Пакеты не навязывают GDD, инфраструктурные, маркетинговые или другие шаблонные файлы. В настроечном чате Zodchi анализирует существующие документы, предлагает, что контролировать, ждёт решения владельца и только затем регистрирует выбранное. Там же позже проще всего добавлять и снимать документы с контроля. Проектный запуск `/zodchi` умеет проанализировать документы и предложить изменение, но в 0.6.2 подтверждение обычным текстом внутри такого run ещё не превращается автоматически в транзакцию реестра: подтверждённое предложение применяет настроечный чат. Снятие с контроля никогда не удаляет файл.
+
+```powershell
+node WorkflowPlatform/src/cli.mjs document-list --db <workflow.sqlite> --project <project-id>
+node WorkflowPlatform/src/cli.mjs document-register --db <workflow.sqlite> --project <project-id> --root primary --path docs/Decisions.md --type decision-log --authority owner --read-roles classifier,coordinator,worker,reviewer --write-roles editor
+node WorkflowPlatform/src/cli.mjs document-unregister --db <workflow.sqlite> --project <project-id> --root primary --path docs/Decisions.md
+```
+
+Если смысл уже выражается глобальным статусом Zodchi, следует использовать его. Проектный статус нужен для настоящего локального понятия: он разрешает линтеру точный словарь одного проекта, не превращая его термин в правило для всех остальных.
+
+Gauntlet — отдельная выбираемая владельцем стратегия review, а не название quality mode. `strategy-list` показывает package default, локальный override и эффективное значение. `strategy-set` переключает `standard`/`gauntlet`; значение `inherit` удаляет override и возвращает политику пакета. Изменение не требует пересборки пакета и сохраняется отдельно от него.
+
+```powershell
+node WorkflowPlatform/src/cli.mjs strategy-list --db <workflow.sqlite> --project <project-id>
+node WorkflowPlatform/src/cli.mjs strategy-set --db <workflow.sqlite> --project <project-id> --package <package-key> --level mvp --strategy standard --confirmed-by <владелец>
+node WorkflowPlatform/src/cli.mjs strategy-set --db <workflow.sqlite> --project <project-id> --package <package-key> --level mvp --strategy gauntlet --confirmed-by <владелец>
+node WorkflowPlatform/src/cli.mjs strategy-set --db <workflow.sqlite> --project <project-id> --package <package-key> --level mvp --strategy inherit
+```
+
+В режиме `standard` вызывается обычный reviewer, только когда этого требует quality contract. В `gauntlet` допускается ограниченный консилиум: основной reviewer и настроенные специализированные reviewers. Judge вызывается только при расхождении выводов, strategy reviewer — только после застоя correction. Prototype обычно обходится без reviewer, а low-risk MVP может пройти без независимого review.
+
 Подробнее: [переносимые пакеты](../../WorkflowPlatform/docs/ProjectPackages.md) и [доказательства выпуска 0.6](../RELEASE_EVIDENCE_0.6.0.md).
 
 </section>
@@ -63,7 +84,7 @@ Zodchi требует Node.js 24 или новее. Release candidate 0.6 исп
 
 ## Для разработчиков
 
-В репозитории находятся исходники `WorkflowPlatform` и `AgentGateway`. Документы для людей доступны на русском и английском. Машинные инструкции установки, обновления, архитектуры и настройки используют компактный семантический английский:
+В репозитории находятся исходники `WorkflowPlatform` и `AgentGateway`. Этот README написан прежде всего для людей, хотя его семантическая оболочка также проверяется машинным линтером. Документы для людей доступны на русском и английском. Машинные инструкции установки, обновления, архитектуры и настройки используют компактный семантический английский:
 
 - [Архитектура](../ARCHITECTURE.md)
 - [Быстрый старт](../../QUICKSTART.md)

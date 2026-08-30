@@ -179,14 +179,14 @@ for (const file of bundleManifest.files) {
 if (contentFindings.length) fail("RELEASE_ARCHIVE_CONTENT_MISMATCH", contentFindings.slice(0, 5).join("; "));
 
 const installed = path.join(work, "installed");
-// The installation owns the operator's explicit `/zodchi` and `/zod` commands. This smoke installs
+// The installation owns the operator's explicit `/zodchi` command. This smoke installs
 // into a directory it deletes afterwards, so it must keep its skill roots inside the same throwaway
 // work directory: otherwise it would repoint the real commands at a path that stops existing.
 const smokeSkillRoots = { "claude-code": path.join(work, "client-skills", "claude-code"), codex: path.join(work, "client-skills", "codex") };
 const skillRootsFile = path.join(work, "skill-roots.json");
 fs.writeFileSync(skillRootsFile, `${JSON.stringify(smokeSkillRoots, null, 2)}\n`, "utf8");
 execFileSync(process.execPath, [path.join(productRoot, "tools", "install.mjs"), "install", "--source", productRoot, "--destination", installed, "--data-root", path.join(work, "installation-data"), "--skill-roots", skillRootsFile], { encoding: "utf8", windowsHide: true, stdio: "pipe" });
-for (const [client, root] of Object.entries(smokeSkillRoots)) for (const name of ["zodchi", "zod"]) {
+for (const [client, root] of Object.entries(smokeSkillRoots)) for (const name of ["zodchi"]) {
   const skillFile = path.join(root, name, "SKILL.md");
   if (!fs.existsSync(skillFile)) fail("RELEASE_SKILL_NOT_INSTALLED", `${client}:${name}`);
   const text = fs.readFileSync(skillFile, "utf8");

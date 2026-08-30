@@ -15,10 +15,10 @@ test("one command proves install explicit run update rollback and uninstall mech
     assert.equal(report.acceptance_class, "MECHANICS_ONLY");
     assert.equal(report.lifecycle.run.final_state, "completed");
     assert.equal(report.lifecycle.run.gate_status, "passed");
-    assert.equal(report.lifecycle.explicit_skills.commands, 4);
+    assert.equal(report.lifecycle.explicit_skills.commands, 2);
     assert.equal(report.lifecycle.explicit_skills.scenarios, 2);
-    assert.equal(report.lifecycle.update.skill_targets_updated, 4);
-    assert.equal(report.lifecycle.rollback.skill_targets_restored, 4);
+    assert.equal(report.lifecycle.update.skill_targets_updated, 2);
+    assert.equal(report.lifecycle.rollback.skill_targets_restored, 2);
     assert.equal(report.lifecycle.uninstall.skills_removed, true);
     assert.equal(report.lifecycle.uninstall.project_hooks_absent, true);
     assert.equal(report.lifecycle.preset_catalog.presets, 15);

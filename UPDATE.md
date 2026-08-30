@@ -14,7 +14,7 @@
     <step order="2">When needed, create a supported snapshot of local databases with the backup command.</step>
     <step order="3">Run the trusted platform bootstrap with the current destination: `tools/install-latest.ps1` on Windows or `tools/install-latest.sh` on macOS/Linux. It must reject a release whose workflow, publisher, provenance, manifest, checksum, or archive disagree.</step>
     <step order="4">Verify bundle-manifest.json and run npm test in the installed release.</step>
-    <step order="5">Verify `/zodchi` and `/zod` in each selected host and verify that ordinary messages are not intercepted.</step>
+    <step order="5">Verify `/zodchi` in each selected host, verify that the retired owned `/zod` alias is absent, and verify that ordinary messages are not intercepted.</step>
   </procedure>
 
   <operations status="accepted">

@@ -78,7 +78,7 @@ function initializeProject(projectRoot) {
 
 function skillStatus(roots, installedRoot) {
   const results = [];
-  for (const client of ["claude-code", "codex"]) for (const name of ["zodchi", "zod"]) {
+  for (const client of ["claude-code", "codex"]) for (const name of ["zodchi"]) {
     const directory = path.join(roots[client], name), markerFile = path.join(directory, ".zodchi-skill.json"), skillFile = path.join(directory, "SKILL.md");
     ensure(fs.existsSync(markerFile) && fs.existsSync(skillFile), "ACCEPTANCE_SKILL_MISSING", `${client}:${name}`);
     const marker = json(markerFile);
@@ -156,7 +156,7 @@ export function runPlatformAcceptance({ repositoryRoot = path.resolve(import.met
     const presetLint = runJson(process.execPath, [path.join(installed, "WorkflowPlatform", "src", "cli.mjs"), "preset-lint"]);
     ensure(presetLint.status === "passed" && presetLint.presets === 15, "ACCEPTANCE_PRESET_CATALOG_FAILED");
     const uninstalled = uninstallRelease({ destination: installed, dataRoot, skillRoots });
-    ensure(uninstalled.skills.every(item => item.status === "removed"), "ACCEPTANCE_SKILL_SURVIVED_UNINSTALL");
+    ensure(uninstalled.skills.filter(item => item.name === "zodchi").every(item => item.status === "removed"), "ACCEPTANCE_SKILL_SURVIVED_UNINSTALL");
     ensure(!fs.existsSync(path.join(projectRoot, ".codex")) && !fs.existsSync(path.join(projectRoot, ".claude")), "ACCEPTANCE_PROJECT_HOOK_CREATED");
 
     const report = Object.freeze({
