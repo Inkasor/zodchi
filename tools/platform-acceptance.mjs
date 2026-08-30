@@ -132,6 +132,7 @@ function sessionActivationStatus({ files, skillRoots, installedRoot, workflowDat
     const end = installedHook(files, client, "SessionEnd", installedRoot);
     const submitParameters = sessionHookParameters({ applicationRoot: installedRoot, client, event: "UserPromptSubmit", skillRoots });
     const endParameters = sessionHookParameters({ applicationRoot: installedRoot, client, event: "SessionEnd", skillRoots });
+    ensure(submitParameters.includes("advisory") && !submitParameters.includes("final"), "ACCEPTANCE_SESSION_DELIVERY_MODE_INVALID", client);
     const baseEvent = { hook_event_name: "UserPromptSubmit", session_id: sessionId, cwd: projectRoot };
     const ordinary = client === "codex"
       ? { ...baseEvent, turn_id: `${sessionId}:ordinary`, prompt: "ordinary chat" }

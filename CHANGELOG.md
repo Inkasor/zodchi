@@ -4,6 +4,17 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_6_10_2026_08_30" status="working">
+
+## 0.6.10 — 2026-08-30
+
+- Installed Codex and Claude Code session hooks now deliver prepared Zodchi results through a normal non-blocking assistant turn instead of rendering successful work as a rejected user message.
+- The bounded delivery context permits no tools or independent work: the host emits only the result already prepared by Zodchi.
+- A quoted execution-profile card followed by an ordinary confirmation such as `do it` consumes the original pending task once, instead of classifying the card again and overwriting the pending work.
+- Platform acceptance verifies the non-blocking installed delivery mode for both clients.
+
+</section>
+
 <section id="0_6_9_2026_08_30" status="working">
 
 ## 0.6.9 — 2026-08-30

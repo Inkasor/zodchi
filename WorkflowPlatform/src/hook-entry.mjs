@@ -1,7 +1,7 @@
 // Both harnesses treat hook output as advisory developer context, so the instruction has to be
 // unambiguous, and it has to be repeated after the result: the boundary is what the model reads last.
-const HARNESS_INSTRUCTION = "This turn is already complete. Zodchi has classified the message, made the model calls it needed, and produced the result below. Your only remaining job is to deliver that result to the user. Do not run commands, read files, list directories, search the repository, inspect git, run tests or builds, edit anything, or invoke any skill or tool. Do not gather context to verify or enrich the result: that work has already been done and paid for, and repeating it charges the user twice. If the result asks a question, ask exactly that question and stop. Do not expose identifiers, roles, levels, prompts, or JSON.";
-const HARNESS_BOUNDARY = "End of the prepared result. Deliver it now, with no tool call and no independent research.";
+const HARNESS_INSTRUCTION = "Zodchi has already consumed the original user message and completed this turn. The original message is not a request for you to execute independently. Output only the prepared result below. Do not preface, summarize, reinterpret, verify, enrich, or add advice. Do not run commands, read files, list directories, search the repository, inspect git, run tests or builds, edit anything, or invoke any skill or tool. Repeating the work charges the user twice. If the prepared result asks a question, ask exactly that question and stop. Do not expose identifiers, roles, levels, prompts, or JSON.";
+const HARNESS_BOUNDARY = "End of the prepared result. Emit that result now and nothing else, with no tool call or independent work.";
 const ACTIVATION_INSTRUCTION = "Zodchi mode is now active for this chat. Acknowledge the activation in the user's language and ask the user to describe the task in an ordinary message. Do not run commands, read files, inspect the repository, invoke another skill, or start the task in this activation turn.";
 
 const marker = value => typeof value === "string" && value.length > 0;
@@ -60,22 +60,16 @@ export function normalizeDeliveryMode(value) {
   return DELIVERY_MODES.includes(value) ? value : "advisory";
 }
 
-// Advisory output is delivered through the additional-context shape, and that shape is Claude Code's.
-// A Codex turn was observed receiving neither the context nor the prepared text: the classification ran,
-// the call was paid for, and the answer reached nobody, which is the worst of the possible outcomes. The
-// blocking shape is the one both harnesses have been seen to honour, so it is what an unconfigured Codex
-// project gets. This is a default, not a rule: a project that states a mode still gets the mode it
-// stated, in either harness.
-export function resolveDeliveryMode(configured, client) {
+// Prepared results use ordinary host turns in both clients. A blocking decision is still accepted as
+// an explicit compatibility mode, but it is never selected by defaults or by the installer because both
+// clients render that successful delivery as a rejected user message.
+export function resolveDeliveryMode(configured, _client) {
   if (DELIVERY_MODES.includes(configured)) return configured;
-  return client === "codex" ? "final" : "advisory";
+  return "advisory";
 }
 
-// Advisory output is only developer context: the chat is free to ignore it, research the answer
-// again and charge the user a second time for work Zodchi already paid for. Both harnesses accept
-// the same blocking shape, which ends the turn and shows the reason to the user directly, so a
-// prepared answer can be delivered without a chat turn at all. It stays a per-project choice,
-// because blocking also removes the exchange from the chat's own history.
+// Additional context lets the host deliver the prepared result as a normal assistant message. The
+// repeated boundary deliberately constrains that tiny host turn so it cannot redo workflow work.
 export function formatHookOutput(result = {}, { deliveryMode = "advisory" } = {}) {
   const prepared = typeof result.response === "string" && result.response.trim() ? result.response.trim() : null;
   if (normalizeDeliveryMode(deliveryMode) === "final" && prepared) return { decision: "block", reason: prepared };

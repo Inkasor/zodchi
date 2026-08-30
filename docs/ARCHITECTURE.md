@@ -1,4 +1,4 @@
-<document id="zodchi_architecture" status="accepted" authority="zodchi" version="0.6.9" language="en">
+<document id="zodchi_architecture" status="accepted" authority="zodchi" version="0.6.10" language="en">
   <title>Zodchi system architecture</title>
 
   <purpose status="accepted">
@@ -38,7 +38,7 @@
     <rule id="run_evidence">Review compares the verbatim owner objective with run-relative Git or inventory changes, deterministic gates, analytical conclusions, and retained primary source evidence.</rule>
     <rule id="orthogonal_run_profile">Every implementation run fixes four independent axes: quality, execution, verification, and planning. Reflection derives from execution and review admission derives from quality.</rule>
     <rule id="bounded_gauntlet">Gauntlet is a verification loop: targeted trials repeat while measurable evidence progresses and safety boundaries permit; reviewer admission remains a separate quality decision.</rule>
-    <rule id="session_isolation">The conditional client router keys activation by client and session id, refuses project rebinding, and emits no output before explicit activation. Activation itself is advisory so Codex and Claude Code can acknowledge it normally; only a prepared workflow result may end the host turn with a blocking final delivery. Because Codex may omit advisory hook context, its managed skill verifies the exact current `CODEX_SESSION_ID` against the canonical database before acknowledging activation; it never substitutes a recent or project-wide session.</rule>
+    <rule id="session_isolation">The conditional client router keys activation by client and session id, refuses project rebinding, and emits no output before explicit activation. Activation and prepared results use non-blocking additional context so Codex and Claude Code render ordinary assistant messages; the bounded delivery instruction forbids tools and independent work. Because Codex may omit activation context, its managed skill verifies the exact current `CODEX_SESSION_ID` against the canonical database before acknowledging activation; it never substitutes a recent or project-wide session.</rule>
     <rule id="bounded_frontier_credit">Evidence-frontier growth may defer stagnation for at most three consecutive snapshots with unchanged claim semantics; it never becomes verified semantic progress.</rule>
     <rule id="consilium_settlement">A terminal run transition waits for every admitted parallel review participant to settle; one failed participant cancels outstanding Gateway invocations before the parent exposes the failure.</rule>
     <rule id="provider_neutral_consilium">Portable packages declare review capabilities without model providers. Local installation policy may bind primary, adversarial, evidence, judge, and strategy roles to different providers; concrete models and credentials never enter the package.</rule>

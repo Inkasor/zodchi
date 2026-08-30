@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { installSessionHooks, removeSessionHooks, restoreSessionHooks, sessionHookDocumentUsesScript, snapshotSessionHooks } from "../session-hook-installation.mjs";
+import { installSessionHooks, removeSessionHooks, restoreSessionHooks, sessionHookDocumentUsesScript, sessionHookParameters, snapshotSessionHooks } from "../session-hook-installation.mjs";
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "zodchi-session-hooks-")), application = path.join(root, "application");
@@ -35,6 +35,13 @@ test("session hooks merge two conditional events and preserve foreign configurat
     assert.equal(document.hooks.UserPromptSubmit[1].hooks[0].timeout, 3600);
     assert.match(document.hooks.UserPromptSubmit[1].hooks[0].command, /--skill-path/);
     assert.match(document.hooks.UserPromptSubmit[1].hooks[0].command, /codex skills/);
+    assert.match(document.hooks.UserPromptSubmit[1].hooks[0].command, /--delivery-mode advisory/);
+    assert.doesNotMatch(document.hooks.UserPromptSubmit[1].hooks[0].command, /--delivery-mode final/);
+    for (const client of ["codex", "claude-code"]) {
+      const parameters = sessionHookParameters({ applicationRoot: value.application, client, event: "UserPromptSubmit", skillRoots: value.skillRoots });
+      assert.equal(parameters.includes("advisory"), true, client);
+      assert.equal(parameters.includes("final"), false, client);
+    }
     assert.equal(document.hooks.SessionEnd[0].hooks[0].timeout, 3);
     assert.equal(installed.find(item => item.client === "codex").runtime_status, "requires_user_trust_verification");
     installSessionHooks({ applicationRoot: value.application, files: value.files, skillRoots: value.skillRoots });

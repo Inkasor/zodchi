@@ -1,4 +1,4 @@
-<document id="zodchi_onboarding" status="accepted" authority="zodchi" version="0.6.9" language="en">
+<document id="zodchi_onboarding" status="accepted" authority="zodchi" version="0.6.10" language="en">
   <title>Initial Zodchi setup</title>
   <purpose>Instructions for the LLM that installs and configures Zodchi. Use the person's actual conversation language, explain things plainly, and never ask them to fill internal fields.</purpose>
 
@@ -74,7 +74,7 @@
     <rule id="session_identity">Activation is keyed by client and session id, cannot silently move to another registered project, and ends automatically with the host session.</rule>
     <rule id="single_public_command">`/zodchi` is the only public command. Status, preparation, execution, and cleanup remain internal platform operations rather than separate slash commands.</rule>
     <rule id="conditional_router_only">The installed router must emit no output and create no run for an inactive session. Never restore the legacy unconditional project hook.</rule>
-    <rule id="activation_delivery">A successful activation is a normal non-blocking host turn in both Codex and Claude Code. Claude Code consumes the advisory activation context directly. If Codex omits that context, the managed skill checks the exact current `CODEX_SESSION_ID` in the canonical database before acknowledging activation. A blocking final hook response is reserved for a prepared Zodchi result, where it prevents the host from repeating paid work.</rule>
+    <rule id="activation_delivery">Activation and prepared Zodchi results are delivered through normal non-blocking host turns in both Codex and Claude Code. The delivery context tells the host to emit only the already prepared result and forbids tools or independent work. If Codex omits activation context, the managed skill checks the exact current `CODEX_SESSION_ID` in the canonical database before acknowledging activation. Installed hooks never render successful work as a blocked user message.</rule>
     <rule id="legacy_hook_migration">Install and update remove only legacy project hooks proved to be owned by Zodchi. Foreign hook entries are never rewritten.</rule>
   </chat_entry_skill>
 
