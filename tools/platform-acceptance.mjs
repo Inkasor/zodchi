@@ -6,6 +6,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { buildRelease } from "../scripts/build-release.mjs";
 import { installRelease, rollbackRelease, uninstallRelease } from "./install.mjs";
+import { sessionHookParameters } from "./session-hook-installation.mjs";
 import { resolveCommandCapability } from "../WorkflowPlatform/src/command-resolver.mjs";
 import { openDb } from "../WorkflowPlatform/src/db.mjs";
 
@@ -103,7 +104,7 @@ function installedHook(files, client, event, installedRoot) {
   return hook;
 }
 
-function invokeInstalledHook(hook, event, environment) {
+function invokeInstalledHook(hook, event, environment, parameters = null) {
   const options = {
     encoding: "utf8",
     windowsHide: true,
@@ -111,7 +112,9 @@ function invokeInstalledHook(hook, event, environment) {
     env: environment,
     stdio: ["pipe", "pipe", "pipe"]
   };
-  const result = Array.isArray(hook.args)
+  const result = parameters
+    ? spawnSync("node", parameters, options)
+    : Array.isArray(hook.args)
     ? spawnSync(hook.command, hook.args, options)
     : spawnSync(hook.commandWindows ?? hook.command, [], { ...options, shell: true });
   ensure(result.status === 0, "ACCEPTANCE_SESSION_HOOK_FAILED", String(result.stderr || result.error?.message || result.status));
@@ -127,24 +130,26 @@ function sessionActivationStatus({ files, skillRoots, installedRoot, workflowDat
     const sessionId = `platform-acceptance-${client}`;
     const submit = installedHook(files, client, "UserPromptSubmit", installedRoot);
     const end = installedHook(files, client, "SessionEnd", installedRoot);
+    const submitParameters = sessionHookParameters({ applicationRoot: installedRoot, client, event: "UserPromptSubmit", skillRoots });
+    const endParameters = sessionHookParameters({ applicationRoot: installedRoot, client, event: "SessionEnd", skillRoots });
     const baseEvent = { hook_event_name: "UserPromptSubmit", session_id: sessionId, cwd: projectRoot };
     const ordinary = client === "codex"
       ? { ...baseEvent, turn_id: `${sessionId}:ordinary`, prompt: "ordinary chat" }
       : { ...baseEvent, prompt_id: `${sessionId}:ordinary`, prompt: "ordinary chat" };
-    ensure(invokeInstalledHook(submit, ordinary, environment) === null, "ACCEPTANCE_ORDINARY_CHAT_INTERCEPTED", client);
+    ensure(invokeInstalledHook(submit, ordinary, environment, submitParameters) === null, "ACCEPTANCE_ORDINARY_CHAT_INTERCEPTED", client);
     const skillPath = path.join(skillRoots[client], "zodchi", "SKILL.md");
     const prompt = client === "codex" ? `[$zodchi](${skillPath})` : "/zodchi";
     const activation = client === "codex"
       ? { ...baseEvent, turn_id: `${sessionId}:activate`, prompt }
       : { ...baseEvent, prompt_id: `${sessionId}:activate`, prompt };
-    const response = invokeInstalledHook(submit, activation, environment);
+    const response = invokeInstalledHook(submit, activation, environment, submitParameters);
     ensure(response?.decision === "block" && /Zodchi/i.test(response.reason ?? ""), "ACCEPTANCE_SESSION_NOT_ACTIVATED", JSON.stringify({ client, prompt, skillPath, hook: submit, response }));
     let db = openDb(workflowDatabase);
     const active = db.prepare("SELECT state,project_id FROM zodchi_chat_sessions WHERE client=? AND session_id=?").get(client, sessionId);
     db.close();
     ensure(active?.state === "active" && active.project_id === "platform-acceptance", "ACCEPTANCE_SESSION_STATE_INVALID", client);
     const endEvent = { hook_event_name: "SessionEnd", session_id: sessionId, cwd: projectRoot };
-    ensure(invokeInstalledHook(end, endEvent, environment) === null, "ACCEPTANCE_SESSION_END_OUTPUT", client);
+    ensure(invokeInstalledHook(end, endEvent, environment, endParameters) === null, "ACCEPTANCE_SESSION_END_OUTPUT", client);
     db = openDb(workflowDatabase);
     const ended = db.prepare("SELECT state FROM zodchi_chat_sessions WHERE client=? AND session_id=?").get(client, sessionId);
     db.close();
