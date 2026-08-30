@@ -2,6 +2,7 @@
 // unambiguous, and it has to be repeated after the result: the boundary is what the model reads last.
 const HARNESS_INSTRUCTION = "This turn is already complete. Zodchi has classified the message, made the model calls it needed, and produced the result below. Your only remaining job is to deliver that result to the user. Do not run commands, read files, list directories, search the repository, inspect git, run tests or builds, edit anything, or invoke any skill or tool. Do not gather context to verify or enrich the result: that work has already been done and paid for, and repeating it charges the user twice. If the result asks a question, ask exactly that question and stop. Do not expose identifiers, roles, levels, prompts, or JSON.";
 const HARNESS_BOUNDARY = "End of the prepared result. Deliver it now, with no tool call and no independent research.";
+const ACTIVATION_INSTRUCTION = "Zodchi mode is now active for this chat. Acknowledge the activation in the user's language and ask the user to describe the task in an ordinary message. Do not run commands, read files, inspect the repository, invoke another skill, or start the task in this activation turn.";
 
 const marker = value => typeof value === "string" && value.length > 0;
 
@@ -86,5 +87,14 @@ export function formatHookOutput(result = {}, { deliveryMode = "advisory" } = {}
     context,
     HARNESS_BOUNDARY
   ].join("\n\n");
+  return { additionalContext, hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext } };
+}
+
+// Activation is session control, not a completed workflow result. Returning `decision: block` here
+// makes both clients render a successful activation as "the hook blocked this message", which looks
+// like a failure. Let the host produce the tiny acknowledgement turn; installed skills carry the same
+// instruction for hosts that do not consume additionalContext.
+export function formatActivationHookOutput({ response_language: responseLanguage = null } = {}) {
+  const additionalContext = `${ACTIVATION_INSTRUCTION} Reply naturally in ${responseLanguage ?? "the user's current language"}.`;
   return { additionalContext, hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext } };
 }

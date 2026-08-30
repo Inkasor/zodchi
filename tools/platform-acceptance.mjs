@@ -143,7 +143,7 @@ function sessionActivationStatus({ files, skillRoots, installedRoot, workflowDat
       ? { ...baseEvent, turn_id: `${sessionId}:activate`, prompt }
       : { ...baseEvent, prompt_id: `${sessionId}:activate`, prompt };
     const response = invokeInstalledHook(submit, activation, environment, submitParameters);
-    ensure(response?.decision === "block" && /Zodchi/i.test(response.reason ?? ""), "ACCEPTANCE_SESSION_NOT_ACTIVATED", JSON.stringify({ client, prompt, skillPath, hook: submit, response }));
+    ensure(response?.decision === undefined && /Zodchi mode is now active/i.test(response?.additionalContext ?? ""), "ACCEPTANCE_SESSION_NOT_ACTIVATED", JSON.stringify({ client, prompt, skillPath, hook: submit, response }));
     let db = openDb(workflowDatabase);
     const active = db.prepare("SELECT state,project_id FROM zodchi_chat_sessions WHERE client=? AND session_id=?").get(client, sessionId);
     db.close();

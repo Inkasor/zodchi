@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_6_6_2026_08_30" status="working">
+
+## 0.6.6 — 2026-08-30
+
+- Session activation is now a normal non-blocking turn in both Codex and Claude Code, so a successful `/zodchi` entry is no longer displayed as a hook rejection.
+- Blocking final delivery remains in place for prepared workflow results, preventing the host client from repeating model calls or project work that Zodchi already completed.
+- Platform acceptance verifies the installed activation behavior and persistent active-session state for both clients.
+
+</section>
+
 <section id="0_6_5_2026_08_30" status="working">
 
 ## 0.6.5 — 2026-08-30

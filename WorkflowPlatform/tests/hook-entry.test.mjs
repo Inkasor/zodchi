@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { isClaudeCodeEvent, hookEventFields, parseHookEvent, formatHookOutput, normalizeDeliveryMode } from "../src/hook-entry.mjs";
+import { formatActivationHookOutput, isClaudeCodeEvent, hookEventFields, parseHookEvent, formatHookOutput, normalizeDeliveryMode } from "../src/hook-entry.mjs";
 
 const projectRoot = path.join(os.tmpdir(), "zodchi-hook-entry-project");
 
@@ -152,6 +152,17 @@ test("final delivery mode ends the turn and hands the prepared answer straight t
   assert.equal(output.reason, "Какие старые документы проверить первыми?");
   assert.equal(output.additionalContext, undefined);
   assert.equal(output.hookSpecificOutput, undefined);
+});
+
+test("activation stays non-blocking for both clients even when workflow delivery is final", () => {
+  const output = formatActivationHookOutput({ response_language: "ru" });
+  assert.equal(output.decision, undefined);
+  assert.equal(output.reason, undefined);
+  assert.match(output.additionalContext, /Zodchi mode is now active/);
+  assert.match(output.additionalContext, /Reply naturally in ru/);
+  assert.match(output.additionalContext, /Do not run commands/);
+  assert.equal(output.hookSpecificOutput.hookEventName, "UserPromptSubmit");
+  assert.equal(output.hookSpecificOutput.additionalContext, output.additionalContext);
 });
 
 test("final delivery mode falls back to advisory when Zodchi prepared no answer", () => {

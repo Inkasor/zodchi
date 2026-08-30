@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { openDb } from "./db.mjs";
-import { formatHookOutput, hookEventFields } from "./hook-entry.mjs";
+import { formatActivationHookOutput, formatHookOutput, hookEventFields } from "./hook-entry.mjs";
 import { consumePendingMessage, endChatSession, routeChatPrompt, setPendingMessage } from "./chat-session.mjs";
 import { processMessage } from "./workflow-app.mjs";
 
@@ -68,13 +68,7 @@ export async function routeSessionEvent({ event, client, dbFile, workflow = null
   finally { db.close(); }
   if (routing.action === "pass") return null;
   if (routing.action === "activated") {
-    return formatHookOutput({
-      route: "conversation",
-      response_language: preferredLanguage,
-      response: preferredLanguage === "en"
-        ? "Zodchi mode is active for this chat. Describe the task normally; before implementation Zodchi will fix the Quality, Execution, Verification, and Planning profile."
-        : "Режим Zodchi включён для этого чата. Опишите задачу обычным сообщением; перед реализацией Zodchi зафиксирует профиль Quality, Execution, Verification и Planning."
-    }, { deliveryMode });
+    return formatActivationHookOutput({ response_language: preferredLanguage });
   }
   const processTask = dependencies.processMessage ?? processMessage;
   const result = await processTask({

@@ -28,8 +28,8 @@ test("/zodchi activates only the current session and later prompts route through
   const value = fixture(), calls = [];
   try {
     const activated = await routeSessionEvent({ event: event(value.project, "/zodchi"), client: "codex", dbFile: value.file, preferredLanguage: "ru" });
-    assert.equal(activated.decision, "block");
-    assert.match(activated.reason, /Режим Zodchi включён/);
+    assert.equal(activated.decision, undefined);
+    assert.match(activated.additionalContext, /Zodchi mode is now active/);
     const routed = await routeSessionEvent({ event: event(value.project, "Сделай импорт"), client: "codex", dbFile: value.file }, {
       processMessage: async input => { calls.push(input); return { route: "conversation", response: "Профиль подготовлен", response_language: "ru" }; }
     });
@@ -72,7 +72,7 @@ test("a host-expanded skill marker activates the session without treating skill 
   const value = fixture(), calls = [];
   try {
     const activated = await routeSessionEvent({ event: event(value.project, "internal skill text\nZODCHI_SESSION_ACTIVATION_V1"), client: "codex", dbFile: value.file }, { processMessage: async input => calls.push(input) });
-    assert.match(activated.reason, /Zodchi/);
+    assert.match(activated.additionalContext, /Zodchi/);
     assert.equal(calls.length, 0);
   } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
 });
@@ -104,7 +104,7 @@ test("a Codex skill mention follows a filesystem alias to the installed skill", 
     fs.writeFileSync(actual, "zodchi", "utf8");
     fs.symlinkSync(actualRoot, aliasRoot, process.platform === "win32" ? "junction" : "dir");
     const activated = await routeSessionEvent({ event: event(value.project, `[$zodchi](${alias})`, "aliased"), client: "codex", dbFile: value.file, activationSkillPath: actual });
-    assert.match(activated.reason, /Zodchi/);
+    assert.match(activated.additionalContext, /Zodchi/);
   } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
 });
 
@@ -121,7 +121,9 @@ test("the installed hook starts when its CLI path reaches the same file through 
       encoding: "utf8", input: JSON.stringify(payload), windowsHide: true
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(JSON.parse(result.stdout).decision, "block");
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.decision, undefined);
+    assert.match(output.additionalContext, /Zodchi mode is now active/);
   } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
 });
 
@@ -129,8 +131,25 @@ test("the canonical Codex skill token activates without exposing a second public
   const value = fixture();
   try {
     const activated = await routeSessionEvent({ event: event(value.project, "$zodchi"), client: "codex", dbFile: value.file, preferredLanguage: "en" });
-    assert.match(activated.reason, /Zodchi mode is active/);
+    assert.match(activated.additionalContext, /Zodchi mode is now active/);
   } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test("activation is non-blocking in both Codex and Claude Code", async () => {
+  for (const client of ["codex", "claude-code"]) {
+    const value = fixture();
+    try {
+      const activationEvent = client === "codex"
+        ? event(value.project, "/zodchi", `${client}-activation`)
+        : { hook_event_name: "UserPromptSubmit", session_id: `${client}-activation`, prompt_id: `${client}:prompt`, cwd: value.project, prompt: "/zodchi" };
+      const activated = await routeSessionEvent({ event: activationEvent, client, dbFile: value.file, deliveryMode: "final" });
+      assert.equal(activated.decision, undefined, client);
+      assert.match(activated.additionalContext, /Zodchi mode is now active/, client);
+      const db = openDb(value.file);
+      try { assert.equal(db.prepare("SELECT state FROM zodchi_chat_sessions WHERE client=? AND session_id=?").get(client, `${client}-activation`)?.state, "active", client); }
+      finally { db.close(); }
+    } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+  }
 });
 
 test("SessionEnd restores ordinary chat behavior", async () => {
