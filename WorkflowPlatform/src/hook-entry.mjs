@@ -92,3 +92,25 @@ export function formatActivationHookOutput({ response_language: responseLanguage
   const additionalContext = `${ACTIVATION_INSTRUCTION} Reply naturally in ${responseLanguage ?? "the user's current language"}.`;
   return { additionalContext, hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext } };
 }
+
+export function formatCursorSessionStart(sessionId) {
+  const normalized = String(sessionId ?? "").trim();
+  if (!normalized) throw new Error("ZODCHI_CURSOR_SESSION_ID_REQUIRED");
+  return {
+    env: { ZODCHI_CURSOR_SESSION_ID: normalized },
+    additional_context: [
+      "ZODCHI_CURSOR_SESSION_V1",
+      `The exact Cursor conversation id for Zodchi relay is ${normalized}.`,
+      "Zodchi remains inactive unless the zodchi skill is attached as the current Custom Mode. Do not change ordinary chat behavior or expose this identifier."
+    ].join("\n")
+  };
+}
+
+export function formatCursorContinue() { return Object.freeze({ continue: true }); }
+
+export function formatCursorModeRequired() {
+  return Object.freeze({
+    continue: false,
+    user_message: "Zodchi mode is active for this chat. Re-select the /zodchi skill as a Custom Mode and submit the message again."
+  });
+}

@@ -15,6 +15,7 @@ function argsObject(argv) {
 
 function environmentSession(client, env) {
   if (client === "codex") return env.CODEX_SESSION_ID ?? env.CODEX_THREAD_ID ?? null;
+  if (client === "cursor") return env.ZODCHI_CURSOR_SESSION_ID ?? null;
   return env.CLAUDE_SESSION_ID ?? null;
 }
 

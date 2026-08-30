@@ -6,6 +6,7 @@ import test from "node:test";
 import { activateChatSession, bindChatSessionResult, touchChatSession } from "../src/chat-session.mjs";
 import { openDb } from "../src/db.mjs";
 import { turnResult } from "../src/turn-result.mjs";
+import { spawnSync } from "node:child_process";
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "zodchi-turn-result-")), project = path.join(root, "project");
@@ -54,5 +55,19 @@ test("a late result from an older turn cannot replace the current turn", () => {
     );
     value.db.close();
     assert.deepEqual(turnResult({ dbFile: value.file, client: "codex", sessionId: "session" }), { status: "active", reason: "result_not_ready" });
+  } finally { try { value.db.close(); } catch {} fs.rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test("the Cursor relay reads the exact conversation identity supplied by sessionStart", () => {
+  const value = fixture(), script = path.resolve(import.meta.dirname, "..", "hooks", "turn-result.mjs");
+  try {
+    activateChatSession(value.db, { client: "cursor", sessionId: "cursor-conversation", origin: value.project, turnKey: "generation-1" });
+    bindChatSessionResult(value.db, { client: "cursor", sessionId: "cursor-conversation", runId: "run", turnKey: "generation-1" });
+    value.db.close();
+    const env = { ...process.env, WORKFLOW_DB: value.file, ZODCHI_CURSOR_SESSION_ID: "cursor-conversation" };
+    delete env.WORKFLOW_PLATFORM_CONFIG;
+    const result = spawnSync(process.execPath, [script, "--client", "cursor"], { encoding: "utf8", env, windowsHide: true });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { status: "ready", response: "Готовый ответ", response_language: "ru" });
   } finally { try { value.db.close(); } catch {} fs.rmSync(value.root, { recursive: true, force: true }); }
 });

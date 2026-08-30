@@ -47,3 +47,17 @@ test("the Codex verifier reads the current session identity from the host enviro
     assert.deepEqual(JSON.parse(inactive.stdout), { status: "inactive", reason: "session_not_found" });
   } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
 });
+
+test("the Cursor verifier reads the conversation identity exported at session start", () => {
+  const value = fixture(), script = path.resolve(import.meta.dirname, "..", "hooks", "activation-status.mjs");
+  try {
+    const db = openDb(value.file);
+    activateChatSession(db, { client: "cursor", sessionId: "cursor-session", origin: value.project, turnKey: "generation" });
+    db.close();
+    const env = { ...process.env, WORKFLOW_DB: value.file, ZODCHI_CURSOR_SESSION_ID: "cursor-session" };
+    delete env.WORKFLOW_PLATFORM_CONFIG;
+    const active = spawnSync(process.execPath, [script, "--client", "cursor"], { encoding: "utf8", env, windowsHide: true });
+    assert.equal(active.status, 0, active.stderr);
+    assert.deepEqual(JSON.parse(active.stdout), { status: "active" });
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});

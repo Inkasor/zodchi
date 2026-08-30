@@ -2,15 +2,20 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { openDb } from "./db.mjs";
-import { formatActivationHookOutput, formatHookOutput, hookEventFields } from "./hook-entry.mjs";
-import { bindChatSessionResult, consumePendingMessage, endChatSession, routeChatPrompt, setPendingMessage } from "./chat-session.mjs";
+import { formatActivationHookOutput, formatCursorContinue, formatCursorModeRequired, formatCursorSessionStart, formatHookOutput, hookEventFields } from "./hook-entry.mjs";
+import { bindChatSessionResult, chatSession, consumePendingMessage, endChatSession, routeChatPrompt, setPendingMessage } from "./chat-session.mjs";
 import { processMessage } from "./workflow-app.mjs";
 
 function eventMessage(event) {
   return event.prompt ?? event.user_input ?? event.user_input_raw ?? event.user_prompt ?? event.userPrompt ?? event.message ?? null;
 }
 
-function sessionId(event) { return event.session_id ?? event.sessionId ?? null; }
+function sessionId(event) { return event.conversation_id ?? event.conversationId ?? event.session_id ?? event.sessionId ?? null; }
+function eventOrigin(event, client) {
+  if (client !== "cursor") return event.cwd ?? event.project ?? null;
+  const roots = Array.isArray(event.workspace_roots) ? event.workspace_roots.filter(Boolean) : [];
+  return roots.length === 1 ? roots[0] : null;
+}
 const EXPANDED_SKILL_MARKER = "ZODCHI_SESSION_ACTIVATION_V1";
 const EXECUTION_CONFIRMATION = /^\s*(?:делай|начинай|запускай|продолжай|поехали|да|execute|proceed|go ahead|start)\s*[.!]?\s*$/iu;
 const PROFILE_CARD = /^\s*["“«]?\s*(?:Профиль выполнения|Execution profile)\s*:/iu;
@@ -36,9 +41,20 @@ function samePath(left, right) {
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
-function explicitSkillPrompt(rawPrompt, { client, activationSkillPath }) {
+function attachedCursorSkill(event, activationSkillPaths) {
+  const allowed = activationSkillPaths.filter(Boolean);
+  if (!allowed.length) return false;
+  return (event.attachments ?? []).some(item => item?.type === "rule" && allowed.some(skill => samePath(item.file_path, skill)));
+}
+
+function explicitSkillPrompt(rawPrompt, { client, activationSkillPath, cursorSkillAttached = false, cursorSessionActive = false }) {
   if (typeof rawPrompt !== "string") return rawPrompt;
   if (rawPrompt.includes(EXPANDED_SKILL_MARKER)) return "/zodchi";
+  if (client === "cursor" && cursorSkillAttached && !cursorSessionActive) {
+    const task = rawPrompt.trim();
+    if (/^\/zodchi(?:\s|$)/u.test(task)) return task;
+    return task ? `/zodchi ${task}` : "/zodchi";
+  }
   if (client !== "codex") return rawPrompt;
 
   // Codex app-server invokes a skill as a `$name` input item. Codex Desktop persists that item in
@@ -55,25 +71,32 @@ function explicitSkillPrompt(rawPrompt, { client, activationSkillPath }) {
   return rawPrompt;
 }
 
-export async function routeSessionEvent({ event, client, dbFile, workflow = null, preferredLanguage = null, deliveryMode = "advisory", activationSkillPath = null }, dependencies = {}) {
+export async function routeSessionEvent({ event, client, dbFile, workflow = null, preferredLanguage = null, deliveryMode = "advisory", activationSkillPath = null, alternateActivationSkillPath = null }, dependencies = {}) {
   if (process.env.ZODCHI_INTERNAL_INVOCATION === "1") return null;
   const id = sessionId(event);
   if (!id) throw new Error("ZODCHI_SESSION_ID_REQUIRED");
   const eventName = event.hook_event_name ?? event.hookEventName ?? "UserPromptSubmit";
+  if (client === "cursor" && eventName === "sessionStart") return formatCursorSessionStart(id);
   const db = (dependencies.openDb ?? openDb)(dbFile);
-  if (eventName === "SessionEnd") {
+  if (eventName === "SessionEnd" || eventName === "sessionEnd") {
     try { endChatSession(db, { client, sessionId: id }); }
     finally { db.close(); }
     return null;
   }
-  if (eventName !== "UserPromptSubmit") { db.close(); return null; }
+  const submitEvent = eventName === "UserPromptSubmit" || (client === "cursor" && eventName === "beforeSubmitPrompt");
+  if (!submitEvent) { db.close(); return null; }
+  const cursorAttached = client === "cursor" && attachedCursorSkill(event, [activationSkillPath, alternateActivationSkillPath]);
+  const existing = chatSession(db, { client, sessionId: id });
+  if (client === "cursor" && existing?.state === "active" && !cursorAttached) { db.close(); return formatCursorModeRequired(); }
+  const origin = eventOrigin(event, client);
+  if (client === "cursor" && cursorAttached && !origin) { db.close(); return { continue: false, user_message: "Zodchi requires one Cursor workspace root for this chat." }; }
   const rawPrompt = eventMessage(event);
-  const prompt = explicitSkillPrompt(rawPrompt, { client, activationSkillPath });
-  const turnKey = String(event.turn_id ?? event.turnId ?? event.prompt_id ?? event.promptId ?? event.event_id ?? event.eventId ?? randomUUID());
+  const prompt = explicitSkillPrompt(rawPrompt, { client, activationSkillPath, cursorSkillAttached: cursorAttached, cursorSessionActive: existing?.state === "active" });
+  const turnKey = String(event.generation_id ?? event.generationId ?? event.turn_id ?? event.turnId ?? event.prompt_id ?? event.promptId ?? event.event_id ?? event.eventId ?? randomUUID());
   if (prompt === null) { db.close(); return null; }
   let routing, prepared = null;
   try {
-    routing = routeChatPrompt(db, { client, sessionId: id, origin: event.cwd, prompt, turnKey });
+    routing = routeChatPrompt(db, { client, sessionId: id, origin, prompt, turnKey });
     if (routing.action === "route" && routing.session?.pending_message && isExecutionConfirmation(prompt)) {
       prepared = consumePendingMessage(db, { client, sessionId: id });
     }
@@ -81,18 +104,18 @@ export async function routeSessionEvent({ event, client, dbFile, workflow = null
   finally { db.close(); }
   if (routing.action === "pass") return null;
   if (routing.action === "activated") {
-    return formatActivationHookOutput({ response_language: preferredLanguage });
+    return client === "cursor" ? formatCursorContinue() : formatActivationHookOutput({ response_language: preferredLanguage });
   }
   const processTask = dependencies.processMessage ?? processMessage;
   const result = await processTask({
     message: prepared?.message ?? routing.message,
     project: routing.session.project_id,
-    origin: event.cwd,
+    origin,
     dbFile,
     workflow,
     execute: true,
     eventSource: `${client}-zodchi-session`,
-    eventKey: event.turn_id ?? event.turnId ?? event.prompt_id ?? event.promptId ?? event.event_id ?? event.eventId ?? null,
+    eventKey: event.generation_id ?? event.generationId ?? event.turn_id ?? event.turnId ?? event.prompt_id ?? event.promptId ?? event.event_id ?? event.eventId ?? null,
     eventFields: hookEventFields(event),
     client,
     preferredLanguage,
@@ -109,5 +132,5 @@ export async function routeSessionEvent({ event, client, dbFile, workflow = null
     if (result.route === "prepared") setPendingMessage(state, { client, sessionId: id, message: routing.message, profile: result.run_profile ?? null });
     if (result.run_id) bindChatSessionResult(state, { client, sessionId: id, runId: result.run_id, turnKey });
   } finally { state.close(); }
-  return formatHookOutput(result, { deliveryMode });
+  return client === "cursor" ? formatCursorContinue() : formatHookOutput(result, { deliveryMode });
 }

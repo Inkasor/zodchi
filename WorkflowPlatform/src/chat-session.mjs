@@ -3,7 +3,7 @@ import { inside } from "./project-roots.mjs";
 import { now } from "./db.mjs";
 
 export const ZODCHI_COMMAND = "/zodchi";
-export const CHAT_CLIENTS = Object.freeze(["codex", "claude-code"]);
+export const CHAT_CLIENTS = Object.freeze(["codex", "claude-code", "cursor"]);
 
 function required(value, code) {
   const text = String(value ?? "").trim();

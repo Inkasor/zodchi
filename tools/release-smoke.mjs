@@ -186,7 +186,7 @@ const installed = path.join(work, "installed");
 const smokeSkillRoots = { "claude-code": path.join(work, "client-skills", "claude-code"), codex: path.join(work, "client-skills", "codex") };
 const skillRootsFile = path.join(work, "skill-roots.json");
 fs.writeFileSync(skillRootsFile, `${JSON.stringify(smokeSkillRoots, null, 2)}\n`, "utf8");
-const smokeSessionHooks = { "claude-code": path.join(work, "client-hooks", "claude-code", "settings.json"), codex: path.join(work, "client-hooks", "codex", "hooks.json") };
+const smokeSessionHooks = { "claude-code": path.join(work, "client-hooks", "claude-code", "settings.json"), codex: path.join(work, "client-hooks", "codex", "hooks.json"), cursor: path.join(work, "client-hooks", "cursor", "hooks.json") };
 const sessionHookFiles = path.join(work, "session-hook-files.json");
 fs.writeFileSync(sessionHookFiles, `${JSON.stringify(smokeSessionHooks, null, 2)}\n`, "utf8");
 execFileSync(process.execPath, [path.join(productRoot, "tools", "install.mjs"), "install", "--source", productRoot, "--destination", installed, "--data-root", path.join(work, "installation-data"), "--skill-roots", skillRootsFile, "--session-hook-files", sessionHookFiles], { encoding: "utf8", windowsHide: true, stdio: "pipe" });
@@ -200,9 +200,14 @@ for (const [client, file] of Object.entries(smokeSessionHooks)) {
   const document = JSON.parse(fs.readFileSync(file, "utf8"));
   const script = path.join(installed, "WorkflowPlatform", "hooks", "session-router.mjs");
   if (!sessionHookDocumentUsesScript(document, script)) fail("RELEASE_SESSION_HOOK_TARGET_INVALID", client);
-  const submit = (document.hooks?.UserPromptSubmit ?? []).flatMap(entry => entry.hooks ?? []).find(hook => [hook.command, ...(hook.args ?? [])].join(" ").includes(script));
-  const end = (document.hooks?.SessionEnd ?? []).flatMap(entry => entry.hooks ?? []).find(hook => [hook.command, ...(hook.args ?? [])].join(" ").includes(script));
-  if (!submit || ![submit.command, ...(submit.args ?? [])].join(" ").includes(path.join(smokeSkillRoots[client], "zodchi", "SKILL.md"))) fail("RELEASE_SESSION_HOOK_SKILL_PATH_INVALID", client);
+  const flatten = event => (document.hooks?.[event] ?? []).flatMap(entry => entry.hooks?.length ? entry.hooks : [entry]);
+  const submitEvent = client === "cursor" ? "beforeSubmitPrompt" : "UserPromptSubmit";
+  const endEvent = client === "cursor" ? "sessionEnd" : "SessionEnd";
+  const submit = flatten(submitEvent).find(hook => [hook.command, ...(hook.args ?? [])].join(" ").includes(script));
+  const end = flatten(endEvent).find(hook => [hook.command, ...(hook.args ?? [])].join(" ").includes(script));
+  const skillRoot = smokeSkillRoots[client === "cursor" ? "codex" : client];
+  if (!submit || ![submit.command, ...(submit.args ?? [])].join(" ").includes(path.join(skillRoot, "zodchi", "SKILL.md"))) fail("RELEASE_SESSION_HOOK_SKILL_PATH_INVALID", client);
+  if (client === "cursor" && (document.version !== 1 || submit.failClosed !== true || !flatten("sessionStart").length)) fail("RELEASE_CURSOR_HOOK_INVALID", client);
   if (end?.timeout !== 3) fail("RELEASE_SESSION_END_TIMEOUT_INVALID", `${client}:${end?.timeout ?? "missing"}`);
 }
 const presetLint = JSON.parse(execFileSync(process.execPath, [path.join(installed, "WorkflowPlatform", "src", "cli.mjs"), "preset-lint"], { encoding: "utf8", windowsHide: true }));
