@@ -10,6 +10,18 @@ import { hookInstallationStatus, hookSnapshotHashes, removeOwnedHookInstallation
 import { defaultInstallationPaths } from "./installation-paths.mjs";
 import { defaultSkillRoots, installClientSkills, removeClientSkills, restoreClientSkills, snapshotClientSkills } from "./skill-installation.mjs";
 
+const renameDelay = new Int32Array(new SharedArrayBuffer(4));
+
+function renameWithRetry(source, destination) {
+  for (let attempt = 0; ; attempt += 1) {
+    try { fs.renameSync(source, destination); return; }
+    catch (error) {
+      if (!["EPERM", "EACCES"].includes(error.code) || attempt >= 9) throw error;
+      Atomics.wait(renameDelay, 0, 0, 20 * (attempt + 1));
+    }
+  }
+}
+
 function argsObject(argv) {
   const result = { _: [] };
   for (let index = 0; index < argv.length; index += 1) {
@@ -149,8 +161,8 @@ export function installRelease(options) {
   try {
     fs.cpSync(source, stage, { recursive: true, errorOnExist: true, force: false });
     healthCheck(stage);
-    if (previous) { fs.renameSync(destination, previous); oldMoved = true; }
-    fs.renameSync(stage, destination);
+    if (previous) { renameWithRetry(destination, previous); oldMoved = true; }
+    renameWithRetry(stage, destination);
     hookTransaction = removeLegacyHooks(targets);
     skillTransaction = updateClientSkills(destination, skillRoots);
     healthCheck(destination);
@@ -175,7 +187,7 @@ export function installRelease(options) {
     try { restoreHookTransaction(hookTransaction); } catch (rollbackError) { error.hookRollbackError = rollbackError; }
     if (fs.existsSync(destination) && oldMoved) fs.rmSync(destination, { recursive: true, force: true });
     else if (fs.existsSync(destination) && !oldMoved) fs.rmSync(destination, { recursive: true, force: true });
-    if (oldMoved && previous && fs.existsSync(previous) && !fs.existsSync(destination)) fs.renameSync(previous, destination);
+    if (oldMoved && previous && fs.existsSync(previous) && !fs.existsSync(destination)) renameWithRetry(previous, destination);
     throw error;
   } finally { if (fs.existsSync(stage)) fs.rmSync(stage, { recursive: true, force: true }); }
 }
@@ -195,8 +207,8 @@ export function rollbackRelease(options) {
   let hookTransaction = null, skillTransaction = null, movedCurrent = false, movedPrevious = false;
   try {
     healthCheck(previous);
-    fs.renameSync(destination, failed); movedCurrent = true;
-    fs.renameSync(previous, destination); movedPrevious = true;
+    renameWithRetry(destination, failed); movedCurrent = true;
+    renameWithRetry(previous, destination); movedPrevious = true;
     hookTransaction = removeLegacyHooks(targets);
     skillTransaction = updateClientSkills(destination, skillRoots);
     healthCheck(destination);
@@ -206,8 +218,8 @@ export function rollbackRelease(options) {
   } catch (error) {
     try { restoreSkillTransaction(skillTransaction); } catch (rollbackError) { error.skillRollbackError = rollbackError; }
     try { restoreHookTransaction(hookTransaction); } catch (rollbackError) { error.hookRollbackError = rollbackError; }
-    if (movedPrevious && fs.existsSync(destination)) fs.renameSync(destination, previous);
-    if (movedCurrent && fs.existsSync(failed)) fs.renameSync(failed, destination);
+    if (movedPrevious && fs.existsSync(destination)) renameWithRetry(destination, previous);
+    if (movedCurrent && fs.existsSync(failed)) renameWithRetry(failed, destination);
     throw error;
   }
 }
@@ -221,7 +233,7 @@ export function uninstallRelease(options) {
   const hookResults = targets.map(removeOwnedHookInstallation);
   const skillResults = removeClientSkills({ applicationRoot: destination, roots: options.skillRoots ?? defaultSkillRoots() });
   let recoverable = null;
-  if (fs.existsSync(destination)) { recoverable = safeSibling(`${destination}.uninstalled-${crypto.randomUUID()}`, destination, "uninstalled"); fs.renameSync(destination, recoverable); }
+  if (fs.existsSync(destination)) { recoverable = safeSibling(`${destination}.uninstalled-${crypto.randomUUID()}`, destination, "uninstalled"); renameWithRetry(destination, recoverable); }
   const next = { ...(state ?? {}), status: "uninstalled", application: destination, data_root: dataRoot, recoverable_release: recoverable, uninstalled_at: new Date().toISOString() };
   atomicJson(stateFile, next);
   return Object.freeze({ ...next, state_file: stateFile, hooks: hookResults, skills: skillResults, user_data_preserved: true });
