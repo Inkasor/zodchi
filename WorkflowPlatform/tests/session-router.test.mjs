@@ -58,6 +58,28 @@ test("prepared work starts from an ordinary confirmation without a public execut
   } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
 });
 
+test("a completed hook turn binds its exact run for the read-only result relay", async () => {
+  const value = fixture(), timestamp = new Date().toISOString();
+  try {
+    await routeSessionEvent({ event: event(value.project, "/zodchi"), client: "codex", dbFile: value.file });
+    await routeSessionEvent({ event: event(value.project, "Покажи состояние"), client: "codex", dbFile: value.file }, {
+      processMessage: async () => {
+        const db = openDb(value.file);
+        try {
+          db.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status) VALUES('workflow','Workflow','project','prototype','L0','active')").run();
+          db.prepare("INSERT INTO tasks(id,project_id,title,state,created_at,updated_at) VALUES('task','project','Task','completed',?,?)").run(timestamp, timestamp);
+          db.prepare("INSERT INTO workflow_runs(id,task_id,project_id,workflow_id,state,user_message,created_at,updated_at,completed_at,response_language) VALUES('run','task','project','workflow','completed','state',?,?,?,'ru')").run(timestamp, timestamp, timestamp);
+          db.prepare("INSERT INTO conversation_messages(id,project_id,run_id,role,content,created_at,language) VALUES('answer','project','run','assistant','Состояние готово',?,'ru')").run(timestamp);
+        } finally { db.close(); }
+        return { run_id: "run", route: "conversation", response: "Состояние готово", response_language: "ru" };
+      }
+    });
+    const db = openDb(value.file);
+    try { assert.equal(db.prepare("SELECT last_run_id FROM zodchi_chat_sessions WHERE client='codex' AND session_id='session'").get().last_run_id, "run"); }
+    finally { db.close(); }
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});
+
 test("a quoted profile card followed by confirmation executes the original pending task once", async () => {
   const value = fixture(), calls = [];
   try {

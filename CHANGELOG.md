@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_6_11_2026_08_30" status="working">
+
+## 0.6.11 — 2026-08-30
+
+- Codex no longer depends on consuming `UserPromptSubmit.additionalContext` to receive a prepared Zodchi result: the invoked skill keeps a standing per-turn relay rule and reads the result for the exact active `CODEX_SESSION_ID` before any project work.
+- The read-only relay binds each active chat to its exact workflow run, refuses stale or cross-session results, and does not create SQLite sidecars or modify the database from the project sandbox.
+- Claude Code keeps native hook-context delivery and now carries the same standing prohibition against independently repeating work after `/zodchi` activation.
+
+</section>
+
 <section id="0_6_10_2026_08_30" status="working">
 
 ## 0.6.10 — 2026-08-30

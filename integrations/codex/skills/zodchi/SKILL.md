@@ -16,4 +16,13 @@ Codex may omit non-blocking hook context. If no explicit activation context is p
 
 Do not expose the internal verification command or invent `/status`, `/execute`, `/exit`, or other public commands.
 
+Standing instruction for every later ordinary user message in this same chat:
+
+1. Before commentary, reasoning, project inspection, memory lookup, or any other tool, run exactly:
+   `node "__ZODCHI_ROOT__/WorkflowPlatform/hooks/turn-result.mjs" --client codex`
+2. If its JSON status is `ready`, output only its `response` value in `response_language` and stop. Do not preface, summarize, reinterpret, verify, enrich, run another tool, or perform the user's original request yourself. The session hook has already completed and paid for that turn.
+3. For every other status, do not inspect the project or perform the request yourself. Report a Zodchi delivery defect and include only the returned bounded `status` and `reason`.
+
+This is a standing session rule, not a one-time activation step. It applies again after every subsequent user message until the chat ends, including after context compaction.
+
 ZODCHI_SESSION_ACTIVATION_V1

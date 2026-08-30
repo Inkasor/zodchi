@@ -26,11 +26,11 @@ test("only the single public /zodchi command enters chat mode", () => {
 test("ordinary prompts are ignored until the exact client session enters Zodchi mode", () => {
   const value = fixture();
   try {
-    assert.equal(routeChatPrompt(value.db, { client: "codex", sessionId: "one", origin: value.nested, prompt: "обычный чат" }).action, "pass");
-    assert.equal(routeChatPrompt(value.db, { client: "codex", sessionId: "one", origin: value.nested, prompt: "/zodchi" }).action, "activated");
-    assert.equal(routeChatPrompt(value.db, { client: "codex", sessionId: "one", origin: value.nested, prompt: "теперь работаем" }).action, "route");
-    assert.equal(routeChatPrompt(value.db, { client: "codex", sessionId: "two", origin: value.nested, prompt: "соседний чат" }).action, "pass");
-    assert.equal(routeChatPrompt(value.db, { client: "claude-code", sessionId: "one", origin: value.nested, prompt: "другой клиент" }).action, "pass");
+    assert.equal(routeChatPrompt(value.db, { client: "codex", sessionId: "one", origin: value.nested, prompt: "обычный чат", turnKey: "turn-1" }).action, "pass");
+    assert.equal(routeChatPrompt(value.db, { client: "codex", sessionId: "one", origin: value.nested, prompt: "/zodchi", turnKey: "turn-2" }).action, "activated");
+    assert.equal(routeChatPrompt(value.db, { client: "codex", sessionId: "one", origin: value.nested, prompt: "теперь работаем", turnKey: "turn-3" }).action, "route");
+    assert.equal(routeChatPrompt(value.db, { client: "codex", sessionId: "two", origin: value.nested, prompt: "соседний чат", turnKey: "turn-4" }).action, "pass");
+    assert.equal(routeChatPrompt(value.db, { client: "claude-code", sessionId: "one", origin: value.nested, prompt: "другой клиент", turnKey: "turn-5" }).action, "pass");
   } finally { value.db.close(); fs.rmSync(value.root, { recursive: true, force: true }); }
 });
 
@@ -39,16 +39,16 @@ test("a session cannot silently move to another registered project", () => {
   try {
     const other = path.join(value.root, "other"); fs.mkdirSync(other);
     value.db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('other','Other',?,?)").run(other, new Date().toISOString());
-    activateChatSession(value.db, { client: "codex", sessionId: "one", origin: value.project });
-    assert.throws(() => routeChatPrompt(value.db, { client: "codex", sessionId: "one", origin: other, prompt: "продолжай" }), /ZODCHI_SESSION_PROJECT_MISMATCH/);
+    activateChatSession(value.db, { client: "codex", sessionId: "one", origin: value.project, turnKey: "turn-1" });
+    assert.throws(() => routeChatPrompt(value.db, { client: "codex", sessionId: "one", origin: other, prompt: "продолжай", turnKey: "turn-2" }), /ZODCHI_SESSION_PROJECT_MISMATCH/);
   } finally { value.db.close(); fs.rmSync(value.root, { recursive: true, force: true }); }
 });
 
 test("SessionEnd closes routing without needing a public exit command", () => {
   const value = fixture();
   try {
-    activateChatSession(value.db, { client: "codex", sessionId: "one", origin: value.project });
+    activateChatSession(value.db, { client: "codex", sessionId: "one", origin: value.project, turnKey: "turn-1" });
     assert.equal(endChatSession(value.db, { client: "codex", sessionId: "one" }), true);
-    assert.equal(routeChatPrompt(value.db, { client: "codex", sessionId: "one", origin: value.project, prompt: "обычный чат снова" }).action, "pass");
+    assert.equal(routeChatPrompt(value.db, { client: "codex", sessionId: "one", origin: value.project, prompt: "обычный чат снова", turnKey: "turn-2" }).action, "pass");
   } finally { value.db.close(); fs.rmSync(value.root, { recursive: true, force: true }); }
 });

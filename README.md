@@ -1,4 +1,4 @@
-<document id="zodchi_readme" status="accepted" authority="zodchi" version="0.6.10" language="en" format="markdown+xml_semantic">
+<document id="zodchi_readme" status="accepted" authority="zodchi" version="0.6.11" language="en" format="markdown+xml_semantic">
 
 # Zodchi
 
