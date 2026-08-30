@@ -9,6 +9,17 @@ const NAMES = Object.freeze(["zodchi", "zod"]);
 
 const sha256 = value => crypto.createHash("sha256").update(value).digest("hex");
 const markerFile = directory => path.join(directory, ".zodchi-skill.json");
+const renameDelay = new Int32Array(new SharedArrayBuffer(4));
+
+function renameWithRetry(source, destination) {
+  for (let attempt = 0; ; attempt += 1) {
+    try { fs.renameSync(source, destination); return; }
+    catch (error) {
+      if (!["EPERM", "EACCES"].includes(error.code) || attempt >= 9) throw error;
+      Atomics.wait(renameDelay, 0, 0, 20 * (attempt + 1));
+    }
+  }
+}
 
 export function defaultSkillRoots(home = os.homedir()) {
   const resolved = path.resolve(home);
@@ -109,13 +120,13 @@ export function installClientSkills({ applicationRoot, roots = defaultSkillRoots
         installed_at: new Date().toISOString()
       };
       fs.writeFileSync(markerFile(stage), `${JSON.stringify(record, null, 2)}\n`, "utf8");
-      if (previous) fs.renameSync(target.directory, previous);
-      fs.renameSync(stage, target.directory);
+      if (previous) renameWithRetry(target.directory, previous);
+      renameWithRetry(stage, target.directory);
       if (previous) fs.rmSync(previous, { recursive: true, force: true });
       applied.push({ status: previous ? "updated" : "installed", client: target.client, name: target.name, directory: target.directory });
     } catch (error) {
       fs.rmSync(stage, { recursive: true, force: true });
-      if (previous && fs.existsSync(previous) && !fs.existsSync(target.directory)) fs.renameSync(previous, target.directory);
+      if (previous && fs.existsSync(previous) && !fs.existsSync(target.directory)) renameWithRetry(previous, target.directory);
       throw error;
     }
   }
