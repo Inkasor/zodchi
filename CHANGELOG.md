@@ -4,6 +4,18 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_6_2_unreleased" status="working">
+
+## 0.6.2 — Unreleased
+
+- Controlled project documents are owner-selected instead of package-required; packages no longer invent missing GDD, infrastructure, claims, or state files.
+- `document-list`, `document-register`, `document-unregister`, `document-status-register`, and `document-evidence-register` manage local document and lint-vocabulary control.
+- Project-scoped semantic statuses and evidence types no longer leak one project's vocabulary into another.
+- Reviewed package levels include bounded provider-neutral consilium roles for local Codex, Claude, Kimi, or other supported profile assignments.
+- Atomic release and explicit-skill replacement retries transient Windows `EPERM`/`EACCES` rename failures without weakening ownership checks.
+
+</section>
+
 <section id="0_6_1_2026_08_29" status="working">
 
 ## 0.6.1 — 2026-08-29

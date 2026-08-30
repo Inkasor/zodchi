@@ -4,6 +4,18 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_6_2_unreleased" status="working">
+
+## 0.6.2 — не выпущена
+
+- Контролируемые документы теперь выбирает владелец проекта: пакеты больше не требуют выдуманные GDD, инфраструктурные, claims- или state-файлы.
+- Команды `document-list`, `document-register`, `document-unregister`, `document-status-register` и `document-evidence-register` управляют локальным реестром документов и словарём линтера.
+- Проектные semantic statuses и evidence types больше не протекают между проектами.
+- Проверяемые уровни пакетов получили ограниченные provider-neutral роли консилиума для локальной привязки Codex, Claude, Kimi или других поддерживаемых профилей.
+- Атомарная замена релиза и явных skills повторяет временные ошибки Windows `EPERM`/`EACCES` без ослабления проверок владения.
+
+</section>
+
 <section id="0_6_1_2026_08_29" status="working">
 
 ## 0.6.1 — 2026-08-29
