@@ -25,9 +25,9 @@ function summarize(file, text) {
 // A reference document is a manifest or an index its own tool owns and formats. Holding it to the
 // semantic document format would report every one of them as failing forever, and the report is read
 // by the roles, so the noise would be permanent and would mean nothing.
-function registeredDocumentLint(documentType, exists, text, file, db) {
+function registeredDocumentLint(documentType, exists, text, file, db, projectId) {
   if (documentType === "reference") return { kind: "document", file, status: "not_applicable", errors: [] };
-  return exists ? documentLint(text, file, db) : { status: "missing", errors: [] };
+  return exists ? documentLint(text, file, db, { projectId }) : { status: "missing", errors: [] };
 }
 
 function parseJson(value, fallback) { try { return JSON.parse(value); } catch { return fallback; } }
@@ -78,7 +78,7 @@ export function readProjectContext(projectSelector, db, _workingDocuments = [], 
       // is refused when it is attempted. Advertising it here would send a role to spend its one call
       // producing a patch that is rejected on arrival, so the binding is dropped where it cannot hold.
       write_roles: root.access === "write" ? row.write_roles.split(",").filter(Boolean).sort() : [],
-      exists, text, ...summarize(file, text), lint: registeredDocumentLint(row.document_type, exists, text, file, db)
+      exists, text, ...summarize(file, text), lint: registeredDocumentLint(row.document_type, exists, text, file, db, project.id)
     };
   });
   const broken_links = documents.flatMap(document => document.links.filter(link => !link.exists).map(link => ({ from: document.path, target: link.target })));

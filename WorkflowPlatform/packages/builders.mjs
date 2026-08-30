@@ -250,7 +250,13 @@ function composedPackage(core, ...components) {
   ];
   const reviewed = ["reviewed", "release", "full"].includes(spec.rolePreset);
   const editorial = ["editorial", "full"].includes(spec.rolePreset);
-  if (reviewed) roles.push(role("reviewer", "Evaluate material claims and check evidence independently; never replace missing evidence with narrative confidence.", allWorkTypes, allArtifacts.filter(item => item !== "none"), { schema: "reviewer.v1", tools: [], boundaries: { writes: false, owner_decisions: false } }));
+  if (reviewed) roles.push(
+    role("reviewer", "Evaluate material claims and check evidence independently; never replace missing evidence with narrative confidence.", allWorkTypes, allArtifacts.filter(item => item !== "none"), { schema: "reviewer.v1", tools: [], boundaries: { writes: false, owner_decisions: false } }),
+    role("adversarial_reviewer", "Independently challenge the strongest material claim without seeing another review opinion.", allWorkTypes, allArtifacts.filter(item => item !== "none"), { schema: "reviewer.v1", tools: [], boundaries: { writes: false, opinions_from_other_reviewers: false, owner_decisions: false } }),
+    role("evidence_reviewer", "Independently verify that material conclusions follow from primary evidence and deterministic facts.", allWorkTypes, allArtifacts.filter(item => item !== "none"), { schema: "reviewer.v1", tools: [], boundaries: { writes: false, opinions_from_other_reviewers: false, owner_decisions: false } }),
+    role("judge", "Resolve only evaluative disagreement after deterministic blocker admissibility; never invent missing facts.", allWorkTypes, allArtifacts.filter(item => item !== "none"), { schema: "judge.v1", tools: [], boundaries: { writes: false, owner_decisions: false } }),
+    role("strategy_reviewer", "Choose a new evidence-backed recovery route after deterministic stagnation without replaying exhausted work.", allWorkTypes, allArtifacts.filter(item => item !== "none"), { schema: "strategy_review.v1", tools: [], boundaries: { writes: false, owner_decisions: false } })
+  );
   if (editorial) roles.push(role("editor", "Apply project document rules to an already evidenced result without multiplying documents or changing product truth.", ["documentation", "content", "marketing"].filter(item => workTypeCatalog[item]), ["document", "content_asset"], { schema: "documentator.v1", tools: ["apply_patch"], boundaries: { product_truth_changes: false, publication: false } }));
   if (moduleKeys.has("release")) roles.push(role("release_operator", "Apply only the exact release action bound to owner approval, then return deployment and rollback evidence.", ["release", "deployment"], ["release_package", "deployment_evidence"], { tools: ["exec_command"], checks: checks.map(item => item.key), boundaries: { explicit_approval_required: true, unapproved_scope: false } }));
   const workflows = [], routes = [], scenarios = [];
@@ -327,10 +333,18 @@ function composedPackage(core, ...components) {
     scenarios.push(scenario(`${item.key}_route`, { work_type: (item.options.workTypes ?? moduleWorkTypes[item.key])[0] }, { route: workflows.at(-1).key, mechanics: "executable" }));
   }
   const roleBindings = roles.map(item => binding(item.key, item.key === "editor", item.key === "editor" ? "accepted project document" : "registered project context", item.key === "editor" ? 20 : 0));
-  const documents = spec.documents.map(item => document(item.key, item.path, item.type ?? "reference", item.authority ?? spec.key, roleBindings, item.root ?? "primary"));
+  // A package defines executable capability, not the documents a person must keep. Project onboarding
+  // may suggest useful existing files, but only an explicit owner registration puts one under lint and
+  // role read/write control. This keeps a package portable across projects with different documentation.
+  const documents = (spec.documents ?? []).map(item => document(item.key, item.path, item.type ?? "reference", item.authority ?? spec.key, roleBindings, item.root ?? "primary"));
+  const consiliumLevels = reviewed ? new Set(["mvp", "production", "security-audit"]) : new Set();
   return finalize({
     key: spec.key, version: spec.version, purpose: spec.purpose, roles, workflows, routes, checks,
-    operationalLevels: ["prototype", "mvp", "production", "security-audit"].map(level => ({ level, escalation: level === "production" ? { owner_approval_for_irreversible: true } : {} })),
+    operationalLevels: ["prototype", "mvp", "production", "security-audit"].map(level => ({
+      level,
+      improvement_strategy: consiliumLevels.has(level) ? "gauntlet" : "standard",
+      escalation: { ...(level === "production" ? { owner_approval_for_irreversible: true } : {}), ...(consiliumLevels.has(level) ? { max_parallel_consilium_members: 3 } : {}) }
+    })),
     documents, evidenceFlows, resources: spec.resources, domains, disciplines,
     scenarios: [scenario("research_route", { work_type: "research" }, { route: `${prefix}.research`, mechanics: "executable" }), ...scenarios]
   });

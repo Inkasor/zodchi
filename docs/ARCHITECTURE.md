@@ -1,4 +1,4 @@
-<document id="zodchi_architecture" status="accepted" authority="zodchi" version="0.6.1" language="en">
+<document id="zodchi_architecture" status="accepted" authority="zodchi" version="0.6.2" language="en">
   <title>Zodchi system architecture</title>
 
   <purpose status="accepted">
@@ -27,6 +27,7 @@
 
   <contracts status="accepted">
     <rule id="registered_routes_only">Routes, roles, documents, and checks come from registries; runtime code does not infer them from keywords.</rule>
+    <rule id="owner_selected_documents">Portable packages never impose project filenames. The owner may register zero or more existing or proposed documents, their role access, and project-local semantic vocabulary; absence becomes a gap only after that explicit selection.</rule>
     <rule id="one_gateway_call">One AgentGateway run performs exactly one bounded model call; WorkflowPlatform owns the overall process.</rule>
     <rule id="quality_cascade">A stricter quality mode includes applicable checks from simpler modes and reruns them for the changed result.</rule>
     <rule id="documentator_boundary">Documentator receives a target document and accepted decisions from the workflow, verifies version and semantic markup, then applies the change atomically.</rule>
@@ -38,6 +39,7 @@
     <rule id="bounded_gauntlet">A project may explicitly select the Gauntlet improvement strategy: targeted corrections and independent same-evidence reviews repeat only while measurable progress and declared budgets permit.</rule>
     <rule id="bounded_frontier_credit">Evidence-frontier growth may defer stagnation for at most three consecutive snapshots with unchanged claim semantics; it never becomes verified semantic progress.</rule>
     <rule id="consilium_settlement">A terminal run transition waits for every admitted parallel review participant to settle; one failed participant cancels outstanding Gateway invocations before the parent exposes the failure.</rule>
+    <rule id="provider_neutral_consilium">Portable packages declare review capabilities without model providers. Local installation policy may bind primary, adversarial, evidence, judge, and strategy roles to different providers; concrete models and credentials never enter the package.</rule>
     <rule id="registered_evidence_flows">Cross-layer evidence flows belong to portable project packages and bind structurally to semantic workflow keys; platform core contains no project business vocabulary and records an explicit none selection when no flow applies.</rule>
     <rule id="interruptible_execution">Gateway invocations declare cancellation capability; owner cancellation terminates the complete provider process tree, while pause waits for a safe execution boundary.</rule>
     <rule id="typed_wait_states">`clarification_required` asks the owner for authority or meaning; `external_evidence_required` asks a registered collector or runtime for facts. They have different validation and neither creates an implicit replacement run.</rule>

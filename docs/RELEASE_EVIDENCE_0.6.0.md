@@ -8,7 +8,7 @@ This record describes pull request #87 and the evidence accepted for stable `0.6
 
 </scope>
 
-<automated_verification id="automated_verification" status="verified" evidence="local_deterministic_checks">
+<automated_verification id="automated_verification" status="verified" evidence="verified" evidence_ref="local_deterministic_checks">
 
 - Repository source at code-bearing revision `53f56bf`: tools `33/33`, WorkflowPlatform `329/329`, AgentGateway `26/26`; no failures or skips.
 - Package regeneration/import: all seven package artifacts match their definitions and public catalog; all fifteen presets validate and produce proposal-first local onboarding material.
@@ -19,7 +19,7 @@ This record describes pull request #87 and the evidence accepted for stable `0.6
 
 </automated_verification>
 
-<live_canaries id="windows_live_canaries" status="verified" evidence="local_run_receipts">
+<live_canaries id="windows_live_canaries" status="verified" evidence="verified" evidence_ref="local_run_receipts">
 
 All four runs used a deterministic contract provider through the real AgentGateway process and preserved their source baseline.
 
@@ -48,7 +48,7 @@ The four canary runs above were produced by `WorkflowPlatform/scripts/run-e2e-ev
 
 </canary_reproduction>
 
-<external_macos_acceptance id="fedor_danilov_macos_arm64" status="verified" evidence="external_acceptance_report">
+<external_macos_acceptance id="fedor_danilov_macos_arm64" status="verified" evidence="verified" evidence_ref="external_acceptance_report">
 
 Fedor Danilov's independent machine accepted archive `Zodchi-0.6.0-rc.1-explicit-62368be.zip`, SHA-256 `c71e74f3366ff471446b65c5473c5475fdedfd5c0b27f18daa1be011f1e5ccfa`, on macOS `15.7.7` / `arm64`, Node `24.20.0`, npm `11.19.0` and Apple Git `2.39.5`. Both top-level commands returned zero: `NPM_TEST_STATUS=0`, `ACCEPTANCE_STATUS=0`.
 
@@ -59,7 +59,7 @@ Fedor Danilov's independent machine accepted archive `Zodchi-0.6.0-rc.1-explicit
 
 </external_macos_acceptance>
 
-<legacy_release_preflight id="v0_5_24_checksum_repair" status="verified" evidence="github_release_api_and_downloaded_assets">
+<legacy_release_preflight id="v0_5_24_checksum_repair" status="verified" evidence="verified" evidence_ref="github_release_api_and_downloaded_assets">
 
 The required read-only preflight for `v0.5.24` was repeated on 2026-08-28. No release asset was modified by this verification.
 

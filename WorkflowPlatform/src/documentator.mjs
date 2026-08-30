@@ -72,7 +72,7 @@ function atomicReplace(file, text) {
   }
 }
 
-export function applyPatch({ file, patch, runId, db, projectRoot, documentId = null, roleId = null, qualityOutcome = null }) {
+export function applyPatch({ file, patch, runId, db, projectRoot, projectId = null, documentId = null, roleId = null, qualityOutcome = null }) {
   validateDocumentPatch(patch);
   assertInside(file, projectRoot);
   if (!patch.authority || typeof patch.authority !== "string") throw new Error("documentator: authority is required");
@@ -86,7 +86,7 @@ export function applyPatch({ file, patch, runId, db, projectRoot, documentId = n
     if ((patch.status === "accepted" || patch.operation === "supersede_document") && qualityOutcome.decision_status !== "accepted") throw new Error("DOCUMENT_OWNER_ACCEPTANCE_REQUIRED");
   }
   const after = renderAfter(before, patch, { runId, qualityOutcome });
-  const lint = documentLint(after, file, db);
+  const lint = documentLint(after, file, db, { projectId });
   if (lint.status !== "passed") throw new Error(`documentator: document lint failed: ${lint.errors.join("; ")}`);
   const afterVersion = versionOf(after);
   try {
@@ -136,7 +136,7 @@ export function applyRegisteredPatch({ db, runId, projectId, projectRoot, roleId
   };
   db.exec("BEGIN IMMEDIATE");
   try {
-    const result = applyPatch({ file, patch, runId, db, projectRoot: root.path, documentId: document.id, roleId, qualityOutcome });
+    const result = applyPatch({ file, patch, runId, db, projectRoot: root.path, projectId, documentId: document.id, roleId, qualityOutcome });
     db.prepare("UPDATE project_documents SET version=version+1,content_hash=?,updated_at=? WHERE id=?").run(result.afterVersion, now(), document.id);
     db.exec("COMMIT");
     return result;
