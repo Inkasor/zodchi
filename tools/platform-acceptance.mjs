@@ -198,7 +198,7 @@ export function runPlatformAcceptance({ repositoryRoot = path.resolve(import.met
       gateway_entry: path.join(installed, "AgentGateway", "src", "cli.mjs")
     });
     const explicitRun = runJson(process.execPath, [path.join(installed, "WorkflowPlatform", "scripts", "run-explicit-evidence.mjs"), "--config", explicitConfig]);
-    ensure(explicitRun.worktree_unchanged && explicitRun.results?.every(item => item.response_returned), "ACCEPTANCE_EXPLICIT_RUN_FAILED");
+    ensure(explicitRun.worktree_unchanged && explicitRun.results?.every(item => item.response_returned && item.final_state === "completed" && item.calls?.join(",") === "classifier,researcher"), "ACCEPTANCE_EXPLICIT_RUN_FAILED");
     const workflowDatabase = path.join(explicitEvidenceRoot, "workflow-evidence.sqlite");
     const sessionActivations = sessionActivationStatus({ files: sessionHookFiles, skillRoots, installedRoot: installed, workflowDatabase, projectRoot });
 
