@@ -68,7 +68,7 @@
   <review_strategy status="proposed">
     <rule id="owner_selects_strategy">TODO: effective standard or gauntlet strategy for each package and quality level, including owner override or inherited package policy.</rule>
     <rule id="standard_review">Standard invokes one primary reviewer only when the quality contract requires independent review.</rule>
-    <rule id="gauntlet_review">Gauntlet admits a bounded primary plus specialist reviewer consilium. Judge is conditional on disagreement; strategy reviewer is conditional on correction stagnation.</rule>
+    <rule id="gauntlet_persistence">Gauntlet repeats deterministic gate, targeted correction, and verification while declared progress and budgets permit. It does not create a review requirement. When the quality contract requires review, it may admit a bounded primary plus specialist reviewer consilium; judge remains conditional on disagreement and strategy reviewer on correction stagnation.</rule>
   </review_strategy>
 
   <structured_execution status="accepted">

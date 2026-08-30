@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { openDb, now } from "../src/db.mjs";
 import { documentLint } from "../src/lint.mjs";
-import { listControlledDocuments, registerControlledDocument, registerProjectDocumentVocabulary, unregisterControlledDocument } from "../src/document-registry.mjs";
+import { listControlledDocuments, registerControlledDocument, registerProjectDocumentVocabulary, unregisterControlledDocument, unregisterProjectDocumentVocabulary } from "../src/document-registry.mjs";
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir(), "workflow-document-registry-"));
@@ -42,6 +42,9 @@ test("project-local lint vocabulary does not leak into another project", () => {
   const text = '<document id="d" status="accepted-for-implementation" evidence="local-run-receipt"></document>';
   assert.equal(documentLint(text, "doc.md", db, { projectId: "project" }).status, "passed");
   assert.match(documentLint(text, "doc.md", db, { projectId: "other" }).errors.join(";"), /unknown status/);
+  assert.equal(unregisterProjectDocumentVocabulary(db, { projectId: "project", kind: "status", key: "accepted-for-implementation" }).status, "unregistered");
+  assert.match(documentLint(text, "doc.md", db, { projectId: "project" }).errors.join(";"), /unknown status/);
+  assert.equal(unregisterProjectDocumentVocabulary(db, { projectId: "project", kind: "status", key: "accepted-for-implementation" }).status, "not_registered");
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });

@@ -15,7 +15,7 @@
 - Atomic release and explicit-skill replacement retries transient Windows `EPERM`/`EACCES` rename failures without weakening ownership checks.
 - Projects composed from multiple packages reuse the same canonical versioned role contract instead of failing on duplicate package provenance.
 - The ambiguous `/zod` alias is retired; install/update safely removes only the unchanged alias owned by the same installation, leaving `/zodchi` as the single explicit command.
-- Owners can inspect and override `standard` or `gauntlet` review strategy per project, package, and quality level without rebuilding the package; onboarding now inventories and confirms harness/provider/model choices.
+- Owners can inspect and override the `standard` or `gauntlet` improvement strategy per project, package, and quality level without rebuilding the package; Prototype defaults to a bounded three-cycle Gauntlet without mandatory review, and onboarding now inventories and confirms harness/provider/model choices.
 
 </section>
 

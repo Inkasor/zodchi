@@ -83,6 +83,9 @@ test("the canonical Web package is SDK-composed and requires anchored API-to-UI 
   for (const workType of ["implementation", "data_change", "release", "incident", "access_management", "project_bootstrap", "documentation", "security_review"]) assert.equal(packageValue.routes.some(item => item.work_type_key === workType), true, workType);
   assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["adversarial_reviewer", "classifier", "coordinator", "editor", "evidence_reviewer", "judge", "release_operator", "reviewer", "strategy_reviewer", "worker"]);
   assert.equal(packageValue.documents.length, 0);
+  assert.equal(packageValue.operational_levels.find(item => item.level === "prototype").improvement_strategy, "gauntlet");
+  assert.equal(packageValue.operational_levels.find(item => item.level === "prototype").correction_limit, 3);
+  assert.equal(packageValue.operational_levels.find(item => item.level === "prototype").budgets.calls, 12);
   assert.equal(packageValue.operational_levels.find(item => item.level === "mvp").improvement_strategy, "gauntlet");
   const flow = packageValue.evidence_flows.find(item => item.key === "typescript.api_to_ui");
   assert.deepEqual(flow.required_edges, ["producer->api", "api->client_mapping", "client_mapping->state_model", "state_model->ui_consumer"]);

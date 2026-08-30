@@ -16,6 +16,16 @@ test("minimal composition has coordinator and worker but no ceremonial reviewer 
   assert.deepEqual(packageValue.workflows.find(item => item.key.endsWith(".change")).steps.map(item => item.role_key), ["coordinator", "worker"]);
 });
 
+test("Gauntlet persistence does not require review roles", () => {
+  const packageValue = composedPackage(core("minimal"), sourceChange());
+  const prototype = packageValue.operational_levels.find(item => item.level === "prototype");
+  prototype.improvement_strategy = "gauntlet";
+  prototype.budgets = { calls: 12, duration_ms: 3600000, correction_cycles: 3, cost_usd: 2 };
+  prototype.correction_limit = 3;
+  prototype.escalation = {};
+  assert.doesNotThrow(() => validateWorkflowPackage(packageValue));
+});
+
 test("capabilities add only the roles and approval boundary they execute", () => {
   const packageValue = validateWorkflowPackage(composedPackage(core("full"), sourceChange(), contentProduction(), releaseCapability()));
   const roles = new Set(packageValue.roles.map(item => item.key));

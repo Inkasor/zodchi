@@ -91,3 +91,13 @@ export function registerProjectDocumentVocabulary(db, { projectId, kind, key, na
   else throw new Error(`DOCUMENT_VOCABULARY_KIND_INVALID: ${kind}`);
   return { status: "registered", project_id: projectId, kind, key: normalized, name: name ?? normalized, ...(kind === "status" ? { category } : {}) };
 }
+
+export function unregisterProjectDocumentVocabulary(db, { projectId, kind, key }) {
+  project(db, projectId);
+  const normalized = semanticKey(key, kind === "status" ? "STATUS" : "EVIDENCE_TYPE");
+  let result;
+  if (kind === "status") result = db.prepare("DELETE FROM project_semantic_statuses WHERE project_id=? AND status_id=?").run(projectId, normalized);
+  else if (kind === "evidence") result = db.prepare("DELETE FROM project_evidence_types WHERE project_id=? AND evidence_type_id=?").run(projectId, normalized);
+  else throw new Error(`DOCUMENT_VOCABULARY_KIND_INVALID: ${kind}`);
+  return { status: result.changes ? "unregistered" : "not_registered", project_id: projectId, kind, key: normalized };
+}

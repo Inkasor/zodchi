@@ -55,20 +55,24 @@ Two packages are support-grade: `software.web-application` and `one-c.developmen
 
 Fifteen installable project recipes connect observed working patterns to these packages, required local adapters, source scopes, resource locks, authority boundaries, a first-value scenario, and an acceptance plan. Inspect a recipe with `preset-inspect`; create a hash-bound proposal with `preset-propose`. Import and any live action remain separate confirmed operations.
 
-Packages do not impose GDD, infrastructure, marketing, or other template filenames. During onboarding Zodchi may analyze existing project documents and propose useful controls, but the owner chooses whether to register any of them. A controlled document can be added or removed without rebuilding its workflow package:
+Packages do not impose GDD, infrastructure, marketing, or other template filenames. During onboarding Zodchi automatically analyzes existing project documents and explains why controlling selected files is useful: roles receive stable project truth, accepted decisions become lintable, and absent templates are not invented as requirements. It then proposes a minimal registry, but the owner chooses whether to register any of it. A controlled document can be added or removed without rebuilding its workflow package:
 
 ```powershell
 node WorkflowPlatform/src/cli.mjs document-register --db <workflow.sqlite> --project <project-id> --root primary --path docs/Decisions.md --type decision-log --authority owner --read-roles classifier,coordinator,worker,reviewer --write-roles editor
 node WorkflowPlatform/src/cli.mjs document-unregister --db <workflow.sqlite> --project <project-id> --root primary --path docs/Decisions.md
 ```
 
-Projects may also register their own semantic status and evidence-type keys with `document-status-register` and `document-evidence-register`; those keys do not leak into other projects.
+Projects may also register their own semantic status and evidence-type keys with `document-status-register` and `document-evidence-register`; those keys do not leak into other projects. `document-status-unregister` and `document-evidence-unregister` remove obsolete local vocabulary after documents have been migrated. Project-aware lint is explicit:
+
+```powershell
+node WorkflowPlatform/src/cli.mjs lint --db <workflow.sqlite> --project <project-id> --file <project-document.md>
+```
 
 The setup chat is the canonical administration place: it discovers documents, presents a proposal, waits for owner confirmation, and then runs these registry commands. A project `/zodchi` run can analyze current documents and recommend a change, but 0.6.2 does not yet turn a later natural-language confirmation inside that run into an automatic registry transaction. Apply the confirmed proposal in the setup chat. Unregistering a document only removes control metadata; it never deletes the file.
 
 Prefer the portable global status vocabulary when it expresses the same meaning. A project-local status is appropriate only for a real project concept that should not become a rule for every other project. It gives the linter exact local vocabulary without polluting or weakening the global contract.
 
-Gauntlet is an owner-selected review strategy, not a synonym for quality mode. List the package default, owner override, and effective value, then set or reset it without rebuilding the package:
+Gauntlet is an owner-selected improvement strategy, not a synonym for quality mode or mandatory review. List the package default, owner override, and effective value, then set or reset it without rebuilding the package:
 
 ```powershell
 node WorkflowPlatform/src/cli.mjs strategy-list --db <workflow.sqlite> --project <project-id>
@@ -77,7 +81,11 @@ node WorkflowPlatform/src/cli.mjs strategy-set --db <workflow.sqlite> --project 
 node WorkflowPlatform/src/cli.mjs strategy-set --db <workflow.sqlite> --project <project-id> --package <package-key> --level mvp --strategy inherit
 ```
 
-`standard` uses the ordinary reviewer path when the quality contract requires review. `gauntlet` admits a bounded consilium: the primary reviewer plus configured specialist reviewers; a judge runs only when their conclusions disagree, and a strategy reviewer runs only after correction stagnates. Prototype work normally has no reviewer, low-risk MVP may skip review, and production/security review remains governed by the quality contract.
+The setup chat displays this choice during onboarding. Later the owner can return to that chat and say “show or change this project's review mode”; the setup agent runs `strategy-list`, explains the current effective values, and applies only the confirmed `strategy-set` changes. The CLI above is the auditable mechanism, not something an ordinary user has to memorize.
+
+`standard` uses the ordinary bounded execution and correction allowance. `gauntlet` is first of all a persistence strategy: deterministic gates run, a failed gate is routed to a targeted correction, and the result is checked again until green or a bounded honest blocker. Review admission is a separate quality-contract decision. When review is required, standard uses one primary reviewer while Gauntlet may admit at most three independent opinions: the primary reviewer checks the result as a whole, the adversarial reviewer tries to disprove its strongest material claim, and the evidence reviewer checks primary evidence, provenance, and claimed completeness. They see the same canonical proof packet but not each other's opinion. A judge is not a fourth routine reviewer: it runs only when admissible reviewer conclusions materially disagree. A strategy reviewer is not a result reviewer at all: it runs only after correction stops adding semantic or evidence-frontier progress and chooses a new bounded route or an honest `blocked` outcome.
+
+Prototype defaults to Gauntlet because an exploratory implementation often needs several test-and-fix passes; the shipped package allows up to three correction cycles and twelve model calls for that loop. Prototype still has `reviewer_policy=none`: Gauntlet does not manufacture a review requirement. Low-risk MVP may also skip review under its conditional quality contract; production and security always require review. Switching to `standard` reduces persistence and, when review is required, reviewer breadth, time, and model cost, but never weakens deterministic gates or owner approvals.
 
 See [Portable project packages](WorkflowPlatform/docs/ProjectPackages.md) and the [0.6 release evidence](docs/RELEASE_EVIDENCE_0.6.0.md).
 
@@ -87,7 +95,7 @@ See [Portable project packages](WorkflowPlatform/docs/ProjectPackages.md) and th
 
 ## For developers
 
-The repository contains the source for `WorkflowPlatform` and `AgentGateway`. This README is human-facing, although its semantic wrapper is also linted by machines. Human documentation is available in English and Russian. Machine-operated setup, update, architecture, and configuration contracts use concise semantic English:
+The repository contains the source for `WorkflowPlatform` and `AgentGateway`. This root README is the canonical human-facing English edition, although its semantic wrapper is also linted by machines. The Russian human edition lives under `docs/ru`. Additional human translations belong under `docs/<language-tag>/` and must name the English source version they translate. Adding a fully supported runtime response language also requires deterministic response copy, language normalization, and tests; translating README files alone does not silently enable a new runtime language. Machine-operated setup, update, architecture, and configuration contracts stay in concise semantic English so one portable contract is linted instead of several diverging machine instructions:
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Quick start](QUICKSTART.md)
