@@ -95,6 +95,18 @@ test("a real Codex skill mention activates only from the installed skill path an
   } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
 });
 
+test("a Codex skill mention follows a filesystem alias to the installed skill", async () => {
+  const value = fixture(), actualRoot = path.join(value.root, "actual skills"), aliasRoot = path.join(value.root, "skill alias");
+  const actual = path.join(actualRoot, "zodchi", "SKILL.md"), alias = path.join(aliasRoot, "zodchi", "SKILL.md");
+  try {
+    fs.mkdirSync(path.dirname(actual), { recursive: true });
+    fs.writeFileSync(actual, "zodchi", "utf8");
+    fs.symlinkSync(actualRoot, aliasRoot, process.platform === "win32" ? "junction" : "dir");
+    const activated = await routeSessionEvent({ event: event(value.project, `[$zodchi](${alias})`, "aliased"), client: "codex", dbFile: value.file, activationSkillPath: actual });
+    assert.match(activated.reason, /Zodchi/);
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});
+
 test("the canonical Codex skill token activates without exposing a second public command", async () => {
   const value = fixture();
   try {
