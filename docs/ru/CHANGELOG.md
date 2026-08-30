@@ -4,6 +4,17 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="0_6_4_2026_08_30" status="working">
+
+## 0.6.4 — 2026-08-30
+
+- Реальное упоминание skill `$zodchi` из Codex Desktop распознаётся только по точному пути установленного skill; одноимённая или чужая Markdown-ссылка не может включить Zodchi.
+- Установка session hooks записывает канонический путь skill, использует трёхсекундный предел Codex для `SessionEnd` и сообщает, что изменённые unmanaged hooks требуют подтверждения владельца перед запуском.
+- Platform acceptance исполняет установленные команды хуков Codex и Claude Code, доказывает свободный проход обычных чатов, включение режима и очистку сессии в workflow database.
+- Если host раскрыл skill, но hook не отработал, skill завершается fail-closed и не утверждает, что режим Zodchi включён.
+
+</section>
+
 <section id="0_6_3_2026_08_30" status="working">
 
 ## 0.6.3 — 2026-08-30

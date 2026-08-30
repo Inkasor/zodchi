@@ -1,4 +1,4 @@
-<document id="zodchi_onboarding" status="accepted" authority="zodchi" version="0.6.3" language="en">
+<document id="zodchi_onboarding" status="accepted" authority="zodchi" version="0.6.4" language="en">
   <title>Initial Zodchi setup</title>
   <purpose>Instructions for the LLM that installs and configures Zodchi. Use the person's actual conversation language, explain things plainly, and never ask them to fill internal fields.</purpose>
 
@@ -66,8 +66,9 @@
     <rule id="explicit_only">Ordinary messages remain ordinary host-chat messages until `/zodchi` activates Zodchi mode for that exact client session.</rule>
     <step order="1" id="select_entry">Ask which chat entry point the person uses. Install user skills only for supported selected hosts.</step>
     <step order="2" id="verify_installation">Verify the owned `zodchi` skill and the owned conditional session-router entries in each selected host. Both must reference the installed release, never the development repository. Remove only an unchanged legacy `zod` alias owned by this exact installation.</step>
-    <step order="3" id="verify_explicit_run">Invoke `/zodchi`, send a safe ordinary follow-up in that same chat, and confirm a workflow_runs record with the expected client value.</step>
-    <step order="4" id="verify_non_interception">Send or inspect an ordinary message in another session and confirm that it did not create a Zodchi run.</step>
+    <step order="3" id="codex_hook_trust">For Codex, open `/hooks` after every install or hook-command change, approve the exact Zodchi UserPromptSubmit and SessionEnd entries, and start a new chat. An enabled toggle is not proof of approval: inspect Codex `hooks/list` and require `trustStatus=trusted` for both current hashes. Never write Codex private trust hashes on the person's behalf without their explicit approval.</step>
+    <step order="4" id="verify_explicit_run">Invoke `/zodchi` through the host's real skill mention, send a safe ordinary follow-up in that same chat, and confirm a workflow_runs record with the expected client value. A direct call of session-router.mjs is only a component test and does not prove host dispatch, hook trust, or skill-input decoding.</step>
+    <step order="5" id="verify_non_interception">Send or inspect an ordinary message in another session and confirm that it did not create a Zodchi run.</step>
     <rule id="session_identity">Activation is keyed by client and session id, cannot silently move to another registered project, and ends automatically with the host session.</rule>
     <rule id="single_public_command">`/zodchi` is the only public command. Status, preparation, execution, and cleanup remain internal platform operations rather than separate slash commands.</rule>
     <rule id="conditional_router_only">The installed router must emit no output and create no run for an inactive session. Never restore the legacy unconditional project hook.</rule>

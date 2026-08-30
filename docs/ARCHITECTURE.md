@@ -1,4 +1,4 @@
-<document id="zodchi_architecture" status="accepted" authority="zodchi" version="0.6.3" language="en">
+<document id="zodchi_architecture" status="accepted" authority="zodchi" version="0.6.4" language="en">
   <title>Zodchi system architecture</title>
 
   <purpose status="accepted">
@@ -9,7 +9,7 @@
     <component id="workflow_platform" responsibility="workflow">Classifies the request, assembles registered context, selects a route, and manages stages, documents, and deterministic checks.</component>
     <component id="code_intelligence" responsibility="source_retrieval">Maps natural-language evidence to code identifiers, expands them through bounded BSL or TypeScript/JavaScript structure, and can query a registered external C# LSP provider over an attested Unity solution boundary. It returns measured source locations without embeddings.</component>
     <component id="agent_gateway" responsibility="model_calls">Performs one bounded call to the assigned model and stores a technical receipt without the full request or response.</component>
-    <component id="explicit_skill" responsibility="chat_entry">Activates Zodchi mode for one explicit client session with `/zodchi`; the conditional router is a no-op for every inactive session.</component>
+    <component id="explicit_skill" responsibility="chat_entry">Activates Zodchi mode for one explicit client session with `/zodchi`; the conditional router validates the host's managed skill reference and is a no-op for every inactive session. Codex command hooks additionally require owner-approved current trust hashes.</component>
     <component id="package_sdk" responsibility="portable_workflows">Composes versioned roles, workflow graphs, checks, evidence flows, authority, resources, schemas, and quality contracts into deterministic portable packages.</component>
     <component id="project_presets" responsibility="onboarding_recipes">Map observed working patterns to public packages, source scopes, local capabilities, authority boundaries, first-value scenarios, and explicit acceptance plans without copying private project data.</component>
     <component id="external_control_plane" responsibility="external_runtime">Exchanges signed, hash-bound requests and results with registered external executors while WorkflowPlatform retains run, resource, cancellation, and completion authority.</component>

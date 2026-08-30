@@ -29,7 +29,8 @@ export async function main(argv = process.argv.slice(2)) {
     dbFile: args.db ?? settings.databasePath,
     workflow: args.workflow ?? settings.workflow,
     preferredLanguage: args.language ?? settings.responseLanguage,
-    deliveryMode: args["delivery-mode"] ?? "final"
+    deliveryMode: args["delivery-mode"] ?? "final",
+    activationSkillPath: args["skill-path"] ? path.resolve(String(args["skill-path"])) : null
   });
   if (output) process.stdout.write(`${JSON.stringify(output)}\n`);
   return output;
