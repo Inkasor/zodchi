@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { installSessionHooks, removeSessionHooks, restoreSessionHooks, snapshotSessionHooks } from "../session-hook-installation.mjs";
+import { installSessionHooks, removeSessionHooks, restoreSessionHooks, sessionHookDocumentUsesScript, snapshotSessionHooks } from "../session-hook-installation.mjs";
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "zodchi-session-hooks-")), application = path.join(root, "application");
@@ -19,6 +19,10 @@ test("session hooks merge two conditional events and preserve foreign configurat
     const foreign = { hooks: [{ type: "command", command: "node foreign.mjs" }] };
     fs.writeFileSync(value.files.codex, JSON.stringify({ setting: "kept", hooks: { UserPromptSubmit: [foreign] } }));
     installSessionHooks({ applicationRoot: value.application, files: value.files });
+    const script = path.join(value.application, "WorkflowPlatform", "hooks", "session-router.mjs");
+    for (const file of Object.values(value.files)) {
+      assert.equal(sessionHookDocumentUsesScript(JSON.parse(fs.readFileSync(file, "utf8")), script), true);
+    }
     const document = JSON.parse(fs.readFileSync(value.files.codex, "utf8"));
     assert.equal(document.setting, "kept");
     assert.equal(document.hooks.UserPromptSubmit.length, 2);
