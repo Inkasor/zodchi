@@ -14,7 +14,9 @@ function argsObject(argv) {
 }
 
 function environmentSession(client, env) {
-  return client === "codex" ? env.CODEX_SESSION_ID : null;
+  if (client === "codex") return env.CODEX_SESSION_ID;
+  if (client === "cursor") return env.ZODCHI_CURSOR_SESSION_ID;
+  return null;
 }
 
 export function main(argv = process.argv.slice(2), env = process.env) {
@@ -39,4 +41,3 @@ if (process.argv[1] && canonicalFile(process.argv[1]) === canonicalFile(fileURLT
   try { main(); }
   catch { process.stdout.write(`${JSON.stringify({ status: "unavailable", reason: "verification_failed" })}\n`); }
 }
-

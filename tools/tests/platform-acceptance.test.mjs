@@ -17,6 +17,7 @@ test("one command proves install explicit run update rollback and uninstall mech
     assert.equal(report.lifecycle.run.gate_status, "passed");
     assert.equal(report.lifecycle.explicit_skills.commands, 2);
     assert.equal(report.lifecycle.explicit_skills.scenarios, 2);
+    assert.equal(report.lifecycle.explicit_skills.session_activations.length, 3);
     assert.equal(report.lifecycle.update.skill_targets_updated, 2);
     assert.equal(report.lifecycle.rollback.skill_targets_restored, 2);
     assert.equal(report.lifecycle.uninstall.skills_removed, true);

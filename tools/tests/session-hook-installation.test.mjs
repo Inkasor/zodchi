@@ -11,7 +11,7 @@ function fixture() {
   fs.writeFileSync(path.join(application, "WorkflowPlatform", "hooks", "session-router.mjs"), "// router\n");
   return {
     root, application,
-    files: { codex: path.join(root, "codex", "hooks.json"), "claude-code": path.join(root, "claude", "settings.json") },
+    files: { codex: path.join(root, "codex", "hooks.json"), "claude-code": path.join(root, "claude", "settings.json"), cursor: path.join(root, "cursor", "hooks.json") },
     skillRoots: { codex: path.join(root, "codex skills"), "claude-code": path.join(root, "claude skills") }
   };
 }
@@ -42,7 +42,21 @@ test("session hooks merge two conditional events and preserve foreign configurat
       assert.equal(parameters.includes("advisory"), true, client);
       assert.equal(parameters.includes("final"), false, client);
     }
+    const cursorParameters = sessionHookParameters({ applicationRoot: value.application, client: "cursor", event: "beforeSubmitPrompt", skillRoots: value.skillRoots });
+    assert.equal(cursorParameters.includes("cursor"), true);
+    assert.equal(cursorParameters.some(item => /codex skills/u.test(item)), true);
+    assert.equal(cursorParameters.includes("--alternate-skill-path"), true);
+    assert.equal(cursorParameters.some(item => /claude skills/u.test(item)), true);
     assert.equal(document.hooks.SessionEnd[0].hooks[0].timeout, 3);
+    const cursor = JSON.parse(fs.readFileSync(value.files.cursor, "utf8"));
+    assert.equal(cursor.version, 1);
+    assert.equal(cursor.hooks.sessionStart.length, 1);
+    assert.equal(cursor.hooks.beforeSubmitPrompt[0].failClosed, true);
+    assert.equal(cursor.hooks.beforeSubmitPrompt[0].timeout, 3600);
+    assert.match(cursor.hooks.beforeSubmitPrompt[0].command, /--client cursor/);
+    assert.match(cursor.hooks.beforeSubmitPrompt[0].command, /codex skills/);
+    assert.equal(cursor.hooks.sessionEnd[0].timeout, 3);
+    assert.equal(installed.find(item => item.client === "cursor").runtime_status, "preview_requires_owner_acceptance");
     assert.equal(installed.find(item => item.client === "codex").runtime_status, "requires_user_trust_verification");
     installSessionHooks({ applicationRoot: value.application, files: value.files, skillRoots: value.skillRoots });
     assert.equal(JSON.parse(fs.readFileSync(value.files.codex, "utf8")).hooks.UserPromptSubmit.length, 2);

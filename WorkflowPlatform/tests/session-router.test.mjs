@@ -17,6 +17,14 @@ function fixture() {
 }
 
 const event = (root, prompt, session = "session") => ({ hook_event_name: "UserPromptSubmit", session_id: session, turn_id: `${session}:turn`, cwd: root, prompt });
+const cursorEvent = (root, prompt, skill, session = "cursor-session", generation = "cursor-generation") => ({
+  hook_event_name: "beforeSubmitPrompt",
+  conversation_id: session,
+  generation_id: generation,
+  workspace_roots: [root],
+  prompt,
+  attachments: skill ? [{ type: "rule", file_path: skill }] : []
+});
 
 test("the conditional router emits nothing outside an active session", async () => {
   const value = fixture();
@@ -201,5 +209,76 @@ test("SessionEnd restores ordinary chat behavior", async () => {
     await routeSessionEvent({ event: event(value.project, "/zodchi"), client: "codex", dbFile: value.file });
     assert.equal(await routeSessionEvent({ event: { hook_event_name: "SessionEnd", session_id: "session", cwd: value.project }, client: "codex", dbFile: value.file }), null);
     assert.equal(await routeSessionEvent({ event: event(value.project, "обычный чат"), client: "codex", dbFile: value.file }), null);
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test("Cursor session context carries exact conversation identity without activating ordinary chat", async () => {
+  const value = fixture();
+  try {
+    const started = await routeSessionEvent({ event: { hook_event_name: "sessionStart", conversation_id: "cursor-session", workspace_roots: [value.project] }, client: "cursor", dbFile: value.file });
+    assert.equal(started.env.ZODCHI_CURSOR_SESSION_ID, "cursor-session");
+    assert.match(started.additional_context, /ZODCHI_CURSOR_SESSION_V1/);
+    assert.equal(await routeSessionEvent({ event: cursorEvent(value.project, "ordinary chat", null), client: "cursor", dbFile: value.file }), null);
+    const db = openDb(value.file);
+    try { assert.equal(db.prepare("SELECT COUNT(*) AS count FROM zodchi_chat_sessions WHERE client='cursor'").get().count, 0); }
+    finally { db.close(); }
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test("Cursor Custom Mode attachment activates and routes the first task with exact generation identity", async () => {
+  const value = fixture(), calls = [], skill = path.join(value.root, "codex skills", "zodchi", "SKILL.md");
+  try {
+    const output = await routeSessionEvent({ event: cursorEvent(value.project, "Исследуй архитектуру", skill), client: "cursor", dbFile: value.file, activationSkillPath: skill }, {
+      processMessage: async input => { calls.push(input); return { route: "conversation", response: "Готово", response_language: "ru" }; }
+    });
+    assert.deepEqual(output, { continue: true });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].message, "Исследуй архитектуру");
+    assert.equal(calls[0].client, "cursor");
+    assert.equal(calls[0].eventKey, "cursor-generation");
+    const db = openDb(value.file);
+    try {
+      const session = db.prepare("SELECT client,state,active_turn_key FROM zodchi_chat_sessions WHERE client='cursor' AND session_id='cursor-session'").get();
+      assert.equal(session.client, "cursor");
+      assert.equal(session.state, "active");
+      assert.equal(session.active_turn_key, "cursor-generation");
+    } finally { db.close(); }
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test("Cursor accepts the installed Claude-compatible copy of the universal Zodchi skill", async () => {
+  const value = fixture(), primary = path.join(value.root, "codex skills", "zodchi", "SKILL.md"), alternate = path.join(value.root, "claude skills", "zodchi", "SKILL.md"), calls = [];
+  try {
+    const output = await routeSessionEvent({ event: cursorEvent(value.project, "Проверь проект", alternate), client: "cursor", dbFile: value.file, activationSkillPath: primary, alternateActivationSkillPath: alternate }, {
+      processMessage: async input => { calls.push(input); return { route: "conversation", response: "Готово", response_language: "ru" }; }
+    });
+    assert.deepEqual(output, { continue: true });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].message, "Проверь проект");
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test("Cursor active session fails closed when the Custom Mode skill is no longer attached", async () => {
+  const value = fixture(), skill = path.join(value.root, "codex skills", "zodchi", "SKILL.md");
+  try {
+    await routeSessionEvent({ event: cursorEvent(value.project, "Первая задача", skill), client: "cursor", dbFile: value.file, activationSkillPath: skill }, {
+      processMessage: async () => ({ route: "conversation", response: "Готово", response_language: "ru" })
+    });
+    const blocked = await routeSessionEvent({ event: cursorEvent(value.project, "Вторая задача", null, "cursor-session", "cursor-generation-2"), client: "cursor", dbFile: value.file, activationSkillPath: skill });
+    assert.equal(blocked.continue, false);
+    assert.match(blocked.user_message, /Custom Mode/);
+    const db = openDb(value.file);
+    try { assert.equal(db.prepare("SELECT active_turn_key FROM zodchi_chat_sessions WHERE client='cursor' AND session_id='cursor-session'").get().active_turn_key, "cursor-generation"); }
+    finally { db.close(); }
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test("Cursor rejects ambiguous multi-root activation instead of binding an arbitrary project", async () => {
+  const value = fixture(), skill = path.join(value.root, "codex skills", "zodchi", "SKILL.md");
+  try {
+    const payload = { ...cursorEvent(value.project, "Задача", skill), workspace_roots: [value.project, value.root] };
+    const blocked = await routeSessionEvent({ event: payload, client: "cursor", dbFile: value.file, activationSkillPath: skill });
+    assert.equal(blocked.continue, false);
+    assert.match(blocked.user_message, /one Cursor workspace root/);
   } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
 });

@@ -23,16 +23,18 @@ async function readStdin() {
 export async function main(argv = process.argv.slice(2)) {
   const args = argsObject(argv), settings = resolveWorkflowSettings(), event = await readStdin();
   const client = String(args.client ?? "");
-  if (!new Set(["codex", "claude-code"]).has(client)) throw new Error(`ZODCHI_SESSION_CLIENT_INVALID: ${client || "missing"}`);
+  if (!new Set(["codex", "claude-code", "cursor"]).has(client)) throw new Error(`ZODCHI_SESSION_CLIENT_INVALID: ${client || "missing"}`);
   const output = await routeSessionEvent({
     event, client,
     dbFile: args.db ?? settings.databasePath,
     workflow: args.workflow ?? settings.workflow,
     preferredLanguage: args.language ?? settings.responseLanguage,
     deliveryMode: args["delivery-mode"] ?? "advisory",
-    activationSkillPath: args["skill-path"] ? path.resolve(String(args["skill-path"])) : null
+    activationSkillPath: args["skill-path"] ? path.resolve(String(args["skill-path"])) : null,
+    alternateActivationSkillPath: args["alternate-skill-path"] ? path.resolve(String(args["alternate-skill-path"])) : null
   });
   if (output) process.stdout.write(`${JSON.stringify(output)}\n`);
+  else if (client === "cursor" && (event.hook_event_name ?? event.hookEventName) === "beforeSubmitPrompt") process.stdout.write(`${JSON.stringify({ continue: true })}\n`);
   return output;
 }
 

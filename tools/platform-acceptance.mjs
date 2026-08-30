@@ -95,7 +95,7 @@ function skillStatus(roots, installedRoot) {
 function installedHook(files, client, event, installedRoot) {
   const document = json(files[client]);
   const script = path.join(installedRoot, "WorkflowPlatform", "hooks", "session-router.mjs");
-  const candidates = (document.hooks?.[event] ?? []).flatMap(entry => entry.hooks ?? []);
+  const candidates = (document.hooks?.[event] ?? []).flatMap(entry => entry.hooks?.length ? entry.hooks : [entry]);
   const hook = candidates.find(item => {
     const command = [item.command, ...(Array.isArray(item.args) ? item.args : [])].join(" ");
     return command.includes(script);
@@ -126,38 +126,57 @@ function sessionActivationStatus({ files, skillRoots, installedRoot, workflowDat
   const environment = { ...process.env, WORKFLOW_DB: workflowDatabase };
   for (const key of ["WORKFLOW_PLATFORM_CONFIG", "WORKFLOW_PROJECT", "WORKFLOW_ID", "ZODCHI_DELIVERY_MODE", "ZODCHI_INTERNAL_INVOCATION", "WORKFLOW_INTERNAL"]) delete environment[key];
   const results = [];
-  for (const client of ["codex", "claude-code"]) {
+  for (const client of ["codex", "claude-code", "cursor"]) {
     const sessionId = `platform-acceptance-${client}`;
-    const submit = installedHook(files, client, "UserPromptSubmit", installedRoot);
-    const end = installedHook(files, client, "SessionEnd", installedRoot);
-    const submitParameters = sessionHookParameters({ applicationRoot: installedRoot, client, event: "UserPromptSubmit", skillRoots });
-    const endParameters = sessionHookParameters({ applicationRoot: installedRoot, client, event: "SessionEnd", skillRoots });
+    const submitEvent = client === "cursor" ? "beforeSubmitPrompt" : "UserPromptSubmit";
+    const endEventName = client === "cursor" ? "sessionEnd" : "SessionEnd";
+    const submit = installedHook(files, client, submitEvent, installedRoot);
+    const end = installedHook(files, client, endEventName, installedRoot);
+    const submitParameters = sessionHookParameters({ applicationRoot: installedRoot, client, event: submitEvent, skillRoots });
+    const endParameters = sessionHookParameters({ applicationRoot: installedRoot, client, event: endEventName, skillRoots });
     ensure(submitParameters.includes("advisory") && !submitParameters.includes("final"), "ACCEPTANCE_SESSION_DELIVERY_MODE_INVALID", client);
-    const baseEvent = { hook_event_name: "UserPromptSubmit", session_id: sessionId, cwd: projectRoot };
+    if (client === "cursor") {
+      const start = installedHook(files, client, "sessionStart", installedRoot);
+      const startParameters = sessionHookParameters({ applicationRoot: installedRoot, client, event: "sessionStart", skillRoots });
+      const started = invokeInstalledHook(start, { hook_event_name: "sessionStart", conversation_id: sessionId, workspace_roots: [projectRoot] }, environment, startParameters);
+      ensure(started?.env?.ZODCHI_CURSOR_SESSION_ID === sessionId && /ZODCHI_CURSOR_SESSION_V1/u.test(started?.additional_context ?? ""), "ACCEPTANCE_CURSOR_SESSION_CONTEXT_INVALID", JSON.stringify(started));
+    }
+    const baseEvent = client === "cursor"
+      ? { hook_event_name: submitEvent, conversation_id: sessionId, workspace_roots: [projectRoot], attachments: [] }
+      : { hook_event_name: submitEvent, session_id: sessionId, cwd: projectRoot };
     const ordinary = client === "codex"
       ? { ...baseEvent, turn_id: `${sessionId}:ordinary`, prompt: "ordinary chat" }
+      : client === "cursor"
+        ? { ...baseEvent, generation_id: `${sessionId}:ordinary`, prompt: "ordinary chat" }
       : { ...baseEvent, prompt_id: `${sessionId}:ordinary`, prompt: "ordinary chat" };
-    ensure(invokeInstalledHook(submit, ordinary, environment, submitParameters) === null, "ACCEPTANCE_ORDINARY_CHAT_INTERCEPTED", client);
-    const skillPath = path.join(skillRoots[client], "zodchi", "SKILL.md");
+    const ordinaryResponse = invokeInstalledHook(submit, ordinary, environment, submitParameters);
+    ensure(client === "cursor" ? ordinaryResponse?.continue === true : ordinaryResponse === null, "ACCEPTANCE_ORDINARY_CHAT_INTERCEPTED", client);
+    const skillPath = path.join(skillRoots[client === "cursor" ? "codex" : client], "zodchi", "SKILL.md");
     const prompt = client === "codex" ? `[$zodchi](${skillPath})` : "/zodchi";
     const activation = client === "codex"
       ? { ...baseEvent, turn_id: `${sessionId}:activate`, prompt }
+      : client === "cursor"
+        ? { ...baseEvent, generation_id: `${sessionId}:activate`, prompt, attachments: [{ type: "rule", file_path: skillPath }] }
       : { ...baseEvent, prompt_id: `${sessionId}:activate`, prompt };
     const response = invokeInstalledHook(submit, activation, environment, submitParameters);
-    ensure(response?.decision === undefined && /Zodchi mode is now active/i.test(response?.additionalContext ?? ""), "ACCEPTANCE_SESSION_NOT_ACTIVATED", JSON.stringify({ client, prompt, skillPath, hook: submit, response }));
+    ensure(client === "cursor"
+      ? response?.continue === true
+      : response?.decision === undefined && /Zodchi mode is now active/i.test(response?.additionalContext ?? ""), "ACCEPTANCE_SESSION_NOT_ACTIVATED", JSON.stringify({ client, prompt, skillPath, hook: submit, response }));
     let db = openDb(workflowDatabase);
     const active = db.prepare("SELECT state,project_id FROM zodchi_chat_sessions WHERE client=? AND session_id=?").get(client, sessionId);
     db.close();
     ensure(active?.state === "active" && active.project_id === "platform-acceptance", "ACCEPTANCE_SESSION_STATE_INVALID", client);
-    if (client === "codex") {
-      const verification = spawnSync(process.execPath, [path.join(installedRoot, "WorkflowPlatform", "hooks", "activation-status.mjs"), "--client", "codex"], {
+    if (client === "codex" || client === "cursor") {
+      const verification = spawnSync(process.execPath, [path.join(installedRoot, "WorkflowPlatform", "hooks", "activation-status.mjs"), "--client", client], {
         encoding: "utf8", windowsHide: true,
-        env: { ...environment, CODEX_SESSION_ID: sessionId }
+        env: { ...environment, ...(client === "codex" ? { CODEX_SESSION_ID: sessionId } : { ZODCHI_CURSOR_SESSION_ID: sessionId }) }
       });
       ensure(verification.status === 0, "ACCEPTANCE_ACTIVATION_VERIFIER_FAILED", String(verification.stderr || verification.error?.message || verification.status));
       ensure(JSON.parse(String(verification.stdout)).status === "active", "ACCEPTANCE_ACTIVATION_VERIFIER_INACTIVE", verification.stdout);
     }
-    const endEvent = { hook_event_name: "SessionEnd", session_id: sessionId, cwd: projectRoot };
+    const endEvent = client === "cursor"
+      ? { hook_event_name: endEventName, conversation_id: sessionId, workspace_roots: [projectRoot] }
+      : { hook_event_name: endEventName, session_id: sessionId, cwd: projectRoot };
     ensure(invokeInstalledHook(end, endEvent, environment, endParameters) === null, "ACCEPTANCE_SESSION_END_OUTPUT", client);
     db = openDb(workflowDatabase);
     const ended = db.prepare("SELECT state FROM zodchi_chat_sessions WHERE client=? AND session_id=?").get(client, sessionId);
@@ -190,7 +209,7 @@ export function runPlatformAcceptance({ repositoryRoot = path.resolve(import.met
 
     const projectRoot = path.join(root, "временный проект 😀"), installed = path.join(root, "installed"), dataRoot = path.join(root, "data");
     const skillRoots = { "claude-code": path.join(root, "claude-skills"), codex: path.join(root, "codex-skills") };
-    const sessionHookFiles = { "claude-code": path.join(root, "claude-hooks", "settings.json"), codex: path.join(root, "codex-hooks", "hooks.json") };
+    const sessionHookFiles = { "claude-code": path.join(root, "claude-hooks", "settings.json"), codex: path.join(root, "codex-hooks", "hooks.json"), cursor: path.join(root, "cursor-hooks", "hooks.json") };
     initializeProject(projectRoot);
     const installedBaseline = installRelease({ source: baseline, destination: installed, dataRoot, skillRoots, sessionHookFiles });
     const initialSkills = skillStatus(skillRoots, installed);
