@@ -30,15 +30,23 @@ const workflowId = db.prepare(`SELECT m.local_id FROM package_import_mappings m 
 if (!workflowId) throw new Error(`WORKFLOW_MAPPING_MISSING: ${config.workflow_key}`);
 const requirements = db.prepare("SELECT role_id,profile_key FROM portable_profile_requirements WHERE project_id=? AND package_key=? ORDER BY role_id").all(config.project_id, config.package_key);
 if (!requirements.length) throw new Error(`PACKAGE_PROFILE_REQUIREMENTS_MISSING: ${config.package_key}`);
-for (const requirement of requirements) {
-  db.prepare("INSERT OR IGNORE INTO profiles(id,provider,name,role_id) VALUES(?,'codex',?,?)").run(requirement.profile_key, requirement.profile_key, requirement.role_id);
-  db.prepare("INSERT OR REPLACE INTO role_profile_assignments(project_id,role_id,profile_id,operational_level,enabled,satisfies_profile_key) VALUES(?,?,?,'mvp',1,?)").run(config.project_id, requirement.role_id, requirement.profile_key, requirement.profile_key);
+// Classifier and researcher are host-runtime roles. A portable package can use them without containing a
+// productive researcher step, so its portable requirements are not sufficient to construct a runnable
+// chat installation. Acceptance must bind both explicitly or it can mistake a failed research route for
+// a successful invocation merely because the platform returned a human-readable controlled-stop message.
+const bindings = [...requirements];
+for (const roleId of ["classifier", "researcher"]) {
+  if (!bindings.some(binding => binding.role_id === roleId)) bindings.push({ role_id: roleId, profile_key: `${config.package_key}.${roleId}.mvp`, direct: true });
+}
+for (const binding of bindings) {
+  db.prepare("INSERT OR IGNORE INTO profiles(id,provider,name,role_id) VALUES(?,'codex',?,?)").run(binding.profile_key, binding.profile_key, binding.role_id);
+  db.prepare("INSERT OR REPLACE INTO role_profile_assignments(project_id,role_id,profile_id,operational_level,enabled,satisfies_profile_key) VALUES(?,?,?,'mvp',1,?)").run(config.project_id, binding.role_id, binding.profile_key, binding.direct ? null : binding.profile_key);
 }
 db.close();
 
 const fakeProvider = path.join(repositoryRoot, "tests", "fixtures", "deterministic-workflow-provider.mjs"), policyFile = path.join(outputRoot, "gateway-policy.json"), providerHome = path.join(outputRoot, "empty-provider-home");
 fs.mkdirSync(providerHome);
-const profiles = Object.fromEntries(requirements.map(requirement => [requirement.profile_key, { model: "deterministic-contract-v1", reasoningEffort: "low", readOnly: true }]));
+const profiles = Object.fromEntries(bindings.map(binding => [binding.profile_key, { model: "deterministic-contract-v1", reasoningEffort: "low", readOnly: true }]));
 fs.writeFileSync(policyFile, JSON.stringify({ schemaVersion: 1, levels: { prototype: { maxCalls: 2, maxCorrectionCycles: 0, timeoutSec: 60 }, mvp: { maxCalls: 3, maxCorrectionCycles: 1, timeoutSec: 3600 } }, providers: { codex: { command: process.execPath, args: [fakeProvider], profiles } } }, null, 2));
 Object.assign(process.env, {
   AGENT_GATEWAY_ENTRY: path.resolve(config.gateway_entry),
@@ -65,9 +73,12 @@ for (const scenario of scenarios) {
   db.close();
   if (recordedClient !== scenario.client) throw new Error(`EXPLICIT_CLIENT_MISMATCH ${scenario.key}: expected ${scenario.client}, recorded ${recordedClient}`);
   const statistics = workflowRunStatistics(dbFile, receipt.run_id);
+  if (statistics.final_state !== "completed") throw new Error(`EXPLICIT_RUN_NOT_COMPLETED: ${scenario.key}:${statistics.final_state}`);
+  const calledRoles = statistics.calls.map(call => call.role);
+  if (calledRoles.join(",") !== "classifier,researcher") throw new Error(`EXPLICIT_RUN_ROLE_SEQUENCE_INVALID: ${scenario.key}:${calledRoles.join(",")}`);
   const record = { scenario: scenario.key, receipt, statistics };
   fs.writeFileSync(path.join(outputRoot, `${scenario.key}.statistics.json`), JSON.stringify(record, null, 2));
-  results.push({ scenario: scenario.key, client: recordedClient, run_id: receipt.run_id, final_state: statistics.final_state, calls: statistics.calls.map(call => call.role), response_returned: typeof receipt.response === "string" && receipt.response.length > 0 });
+  results.push({ scenario: scenario.key, client: recordedClient, run_id: receipt.run_id, final_state: statistics.final_state, calls: calledRoles, response_returned: typeof receipt.response === "string" && receipt.response.length > 0 });
 }
 const after = captureProjectBaseline(projectRoot);
 assertProjectBaselineUnchanged(before, after, config.project_id);

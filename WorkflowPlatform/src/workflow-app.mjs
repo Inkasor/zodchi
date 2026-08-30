@@ -21,6 +21,7 @@ import { chargeDirectReceipt, effectiveQualityMode, initializeQualityRun, operat
 import { approveBoundInteraction, assertApprovalStillCurrent } from "./approval-binding.mjs";
 import { acceptExternalControlEvidenceResult } from "./external-control-plane.mjs";
 import { normalizeRunProfile, resolveRunProfile, storeRunProfile } from "./run-profile.mjs";
+import { assertProjectRuntimeReady } from "./runtime-readiness.mjs";
 
 export function loadWorkflow(id, workflowsRoot = resolveWorkflowSettings().workflowsRoot) {
   if (!id) throw new Error("workflow id is required");
@@ -273,6 +274,29 @@ export async function processMessage({
   workflow ??= definition?.id ?? runtime.db.prepare(`SELECT w.id FROM workflow_routes wr JOIN workflows w ON w.id=wr.workflow_id
     WHERE wr.project_id=? AND wr.enabled=1 AND w.status='active' ORDER BY wr.priority DESC,w.id LIMIT 1`).get(project)?.id;
   if (!workflow) { runtime.db.close(); throw new Error(`WORKFLOW_NOT_REGISTERED: ${project}`); }
+  let registryBackedDefinition = false;
+  if (!definition) {
+    definition = registryDefinition(runtime.db, project, workflow);
+    registryBackedDefinition = true;
+  }
+  // The classifier can choose bounded research for any message. A project whose researcher was omitted
+  // by onboarding therefore is not partly ready: it can spend a classifier call and only then discover
+  // that the selected route cannot run. Check both direct runtime roles before accepting a run or calling
+  // a model. Explicit test/embedded definitions remain self-contained and are checked where invoked.
+  if (execute && registryBackedDefinition && !classificationResult) {
+    try { assertProjectRuntimeReady(runtime.db, project); }
+    catch (error) { runtime.db.close(); throw error; }
+  }
+  if (execute && !registryBackedDefinition && !classificationResult) {
+    const missing = ["classifier", "researcher"].filter(roleId => {
+      const role = definition.roles?.[roleId];
+      return !role?.provider || !role.profile || !role.role;
+    });
+    if (missing.length) {
+      runtime.db.close();
+      throw new Error(`WORKFLOW_RUNTIME_NOT_READY: ${workflow}: missing ${missing.join(",")}`);
+    }
+  }
   const accepted = runtime.accept(message, { project_id: project, workflow_id: workflow, client, event_source: eventSource, event_key: eventKey, event_fields: eventFields, binding: bindingEvidence(binding, settings) });
   const runId = accepted.runId;
   const run = runtime.get(runId);
@@ -292,7 +316,6 @@ export async function processMessage({
 
   const workflowRow = runtime.db.prepare("SELECT * FROM workflows WHERE id=? AND project_id=? AND status='active'").get(workflow, run.project_id);
   if (!workflowRow) return classificationFailure(runtime, runId, new Error(`DISCOVERY_WORKFLOW_NOT_REGISTERED: ${workflow}`), finish, responseLanguage);
-  definition ??= registryDefinition(runtime.db, run.project_id, workflow);
   const historyContext = conversationContext(runtime.db, run.project_id, workflowRow.history_budget_bytes);
   responseLanguage = resolveResponseLanguage({ message, preferredLanguage: preferredLanguage ?? settings.responseLanguage, history: historyContext.history });
   runtime.db.prepare("UPDATE workflow_runs SET response_language=?,updated_at=? WHERE id=?").run(responseLanguage, now(), runId);

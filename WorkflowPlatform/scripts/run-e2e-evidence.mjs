@@ -57,28 +57,35 @@ for (const item of config.projects) {
   if (!routed) throw new Error(`CANARY_CLASSIFICATION_ROUTE_MISMATCH: ${item.project_id}: ${item.classification?.work_type ?? "missing"}: ${item.workflow_key}`);
   const requirements = db.prepare("SELECT role_id,profile_key FROM portable_profile_requirements WHERE project_id=? AND package_key=?").all(item.project_id, item.package_key);
   if (!requirements.length) throw new Error(`PACKAGE_PROFILE_REQUIREMENTS_MISSING: ${item.package_key}`);
-  for (const requirement of requirements) {
-    db.prepare("INSERT OR IGNORE INTO profiles(id,provider,name,role_id) VALUES(?,'codex',?,?)").run(requirement.profile_key, requirement.profile_key, requirement.role_id);
-    db.prepare("INSERT OR REPLACE INTO role_profile_assignments(project_id,role_id,profile_id,operational_level,enabled,satisfies_profile_key) VALUES(?,?,?,'mvp',1,?)").run(item.project_id, requirement.role_id, requirement.profile_key, requirement.profile_key);
-    profileKeys.add(requirement.profile_key);
+  const bindings = [...requirements];
+  for (const roleId of ["classifier", "researcher"]) {
+    if (!bindings.some(binding => binding.role_id === roleId)) bindings.push({ role_id: roleId, profile_key: `${item.package_key}.${roleId}.mvp`, direct: true });
+  }
+  for (const binding of bindings) {
+    db.prepare("INSERT OR IGNORE INTO profiles(id,provider,name,role_id) VALUES(?,'codex',?,?)").run(binding.profile_key, binding.profile_key, binding.role_id);
+    db.prepare("INSERT OR REPLACE INTO role_profile_assignments(project_id,role_id,profile_id,operational_level,enabled,satisfies_profile_key) VALUES(?,?,?,'mvp',1,?)").run(item.project_id, binding.role_id, binding.profile_key, binding.direct ? null : binding.profile_key);
+    profileKeys.add(binding.profile_key);
   }
   db.close();
   const checks = registerCanaryChecks(dbFile, item);
   if (checks) fs.writeFileSync(path.join(outputRoot, `${item.project_id}.checks.json`), JSON.stringify(checks, null, 2), "utf8");
-  prepared.push({ item, workflowId, checks });
+  prepared.push({ item, workflowId, checks, directProfiles: Object.fromEntries(bindings.filter(binding => ["classifier", "researcher"].includes(binding.role_id)).map(binding => [binding.role_id, binding.profile_key])) });
 }
 
 const profiles = Object.fromEntries([...profileKeys].map(key => [key, { model: "deterministic-contract-v1", reasoningEffort: "low", readOnly: true }]));
 fs.writeFileSync(policyFile, JSON.stringify({ schemaVersion: 1, levels: { prototype: { maxCalls: 2, maxCorrectionCycles: 0, timeoutSec: 60 }, mvp: { maxCalls: 2, maxCorrectionCycles: 1, timeoutSec: 3600 } }, providers: { codex: { command: process.execPath, args: [fakeProvider], profiles } } }, null, 2), "utf8");
 
 const results = [];
-for (const { item, workflowId, checks } of prepared) {
+for (const { item, workflowId, checks, directProfiles } of prepared) {
   const before = captureProjectBaseline(item.root_path), gateway = request => callGateway({ ...request, gateway: path.resolve(config.gateway_entry), gatewayDatabase: gatewayDb, gatewayPolicy: policyFile });
   const providerMessage = deterministicScenarioMessage(item);
   const outcome = await processMessage({
     message: providerMessage,
     project: path.resolve(item.root_path), dbFile, workflow: workflowId,
-    workflowDefinition: { id: workflowId, authority: "registered project documents", roles: { classifier: { provider: "codex", profile: `${item.package_key}.classifier.mvp`, role: "classifier" } } },
+    workflowDefinition: { id: workflowId, authority: "registered project documents", roles: {
+      classifier: { provider: "codex", profile: directProfiles.classifier, role: "classifier" },
+      researcher: { provider: "codex", profile: directProfiles.researcher, role: "researcher" }
+    } },
     execute: true, eventSource: "checkpoint9", eventKey: item.project_id, gatewayCall: gateway
   });
   const after = captureProjectBaseline(item.root_path);

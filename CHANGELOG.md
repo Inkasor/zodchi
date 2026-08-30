@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_6_5_2026_08_30" status="working">
+
+## 0.6.5 — 2026-08-30
+
+- Project readiness now verifies both direct chat roles before accepting a run, so a missing researcher cannot consume a classifier call and fail only after routing.
+- `project-readiness` reports direct role bindings and whether the owner-confirmed controlled documents are readable by the researcher.
+- Onboarding now binds a read-only researcher explicitly and includes its document access in the owner's document-ownership decision instead of silently assuming access.
+
+</section>
+
 <section id="0_6_4_2026_08_30" status="working">
 
 ## 0.6.4 — 2026-08-30
