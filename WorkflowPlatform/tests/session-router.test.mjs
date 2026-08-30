@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { openDb } from "../src/db.mjs";
 import { routeSessionEvent } from "../src/session-router.mjs";
@@ -104,6 +105,23 @@ test("a Codex skill mention follows a filesystem alias to the installed skill", 
     fs.symlinkSync(actualRoot, aliasRoot, process.platform === "win32" ? "junction" : "dir");
     const activated = await routeSessionEvent({ event: event(value.project, `[$zodchi](${alias})`, "aliased"), client: "codex", dbFile: value.file, activationSkillPath: actual });
     assert.match(activated.reason, /Zodchi/);
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test("the installed hook starts when its CLI path reaches the same file through an alias", () => {
+  const value = fixture(), platformRoot = path.resolve(import.meta.dirname, ".."), aliasRoot = path.join(value.root, "platform alias");
+  const skill = path.join(value.root, "skills", "zodchi", "SKILL.md");
+  try {
+    fs.mkdirSync(path.dirname(skill), { recursive: true });
+    fs.writeFileSync(skill, "zodchi", "utf8");
+    fs.symlinkSync(platformRoot, aliasRoot, process.platform === "win32" ? "junction" : "dir");
+    const script = path.join(aliasRoot, "hooks", "session-router.mjs");
+    const payload = event(value.project, `[$zodchi](${skill})`, "aliased-cli");
+    const result = spawnSync(process.execPath, [script, "--client", "codex", "--db", value.file, "--skill-path", skill, "--delivery-mode", "final"], {
+      encoding: "utf8", input: JSON.stringify(payload), windowsHide: true
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).decision, "block");
   } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
 });
 
