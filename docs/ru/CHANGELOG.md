@@ -4,9 +4,18 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
-<section id="0_6_2_unreleased" status="working">
+<section id="0_6_3_2026_08_30" status="working">
 
-## 0.6.2 — не выпущена
+## 0.6.3 — 2026-08-30
+
+- Smoke опубликованного релиза проверяет Windows session-hook структурно, а не поиском пути в экранированном тексте JSON.
+- Update сохраняет путь рабочей БД из установленного релиза и безопасно считает существующую, но ещё не мигрированную БД не содержащей старых project hooks.
+
+</section>
+
+<section id="0_6_2_2026_08_30" status="working">
+
+## 0.6.2 — 2026-08-30
 
 - Контролируемые документы теперь выбирает владелец проекта: пакеты больше не требуют выдуманные GDD, инфраструктурные, claims- или state-файлы.
 - Команды `document-list`, `document-register`, `document-unregister`, `document-status-register` и `document-evidence-register` управляют локальным реестром документов и словарём линтера.
