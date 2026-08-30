@@ -15,7 +15,7 @@ function temporaryRoot(prefix) {
 test("clean database applies Gateway-only migrations and SQLite safety pragmas", () => {
   const root = temporaryRoot("gateway-migrations-clean-");
   const db = openGatewayDb(path.join(root, "gateway.sqlite"));
-  assert.equal(gatewaySchemaVersion(db), 5);
+  assert.equal(gatewaySchemaVersion(db), 6);
   assert.equal(db.prepare("PRAGMA foreign_keys").get().foreign_keys, 1);
   assert.equal(db.prepare("PRAGMA journal_mode").get().journal_mode, "wal");
   assert.equal(db.prepare("PRAGMA busy_timeout").get().timeout, 5000);
@@ -29,7 +29,7 @@ test("clean database applies Gateway-only migrations and SQLite safety pragmas",
   for (const forbidden of ["output", "error", "raw_output", "gate_status", "gate_cycles", "escalation_reason"]) assert.equal(receiptColumns.has(forbidden), false, `forbidden receipt column ${forbidden}`);
   const snapshotColumns = new Set(db.prepare("PRAGMA table_info(provider_snapshots)").all().map(row => row.name));
   for (const forbidden of ["account", "raw_output", "error"]) assert.equal(snapshotColumns.has(forbidden), false, `forbidden snapshot column ${forbidden}`);
-  assert.deepEqual(db.prepare("SELECT provider_key FROM providers ORDER BY provider_key").all().map(row => row.provider_key), ["claude", "codex", "cursor", "kimi", "openai-compatible", "opencode"]);
+  assert.deepEqual(db.prepare("SELECT provider_key FROM providers ORDER BY provider_key").all().map(row => row.provider_key), ["claude", "codex", "cursor", "kimi", "openai-compatible", "opencode", "openrouter"]);
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });

@@ -17,6 +17,7 @@ export function normalizeOpenAICompatibleUsage(usage = {}) {
     cache_write_input_tokens: asNumber(
       usage.cache_write_input_tokens
       ?? usage.cache_creation_input_tokens
+      ?? usage.prompt_tokens_details?.cache_write_tokens
       ?? usage.prompt_cache_miss_tokens
       ?? 0
     ),
@@ -27,7 +28,8 @@ export function normalizeOpenAICompatibleUsage(usage = {}) {
       ?? usage.output_tokens_details?.reasoning_tokens
       ?? 0
     ),
-    total_tokens: asNumber(usage.total_tokens ?? ((inputTokens ?? 0) + (outputTokens ?? 0)))
+    total_tokens: asNumber(usage.total_tokens ?? ((inputTokens ?? 0) + (outputTokens ?? 0))),
+    cost_usd: asNumber(usage.cost_usd ?? usage.cost ?? usage.total_cost_usd)
   };
 }
 
@@ -52,7 +54,14 @@ function textContent(message) {
   return "";
 }
 
-export async function runOpenAICompatible({ profileConfig, prompt, systemPrompt, timeoutSec, env = process.env, fetchImpl = globalThis.fetch }) {
+function structuredResponse(outputSchema, name = "zodchi_result") {
+  if (!outputSchema) return {};
+  if (!outputSchema || typeof outputSchema !== "object" || Array.isArray(outputSchema)) throw new Error("OPENAI_COMPATIBLE_OUTPUT_SCHEMA_INVALID");
+  const normalizedName = String(name || "zodchi_result").replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64) || "zodchi_result";
+  return { response_format: { type: "json_schema", json_schema: { name: normalizedName, strict: true, schema: outputSchema } } };
+}
+
+export async function runOpenAICompatible({ profileConfig, prompt, systemPrompt, outputSchema = null, outputSchemaName = null, timeoutSec, env = process.env, fetchImpl = globalThis.fetch }) {
   if (typeof fetchImpl !== "function") throw new Error("OPENAI_COMPATIBLE_FETCH_UNAVAILABLE");
   if (!profileConfig.baseUrl) throw new Error("OPENAI_COMPATIBLE_BASE_URL_REQUIRED");
   if (!profileConfig.model) throw new Error("OPENAI_COMPATIBLE_MODEL_REQUIRED");
@@ -79,13 +88,19 @@ export async function runOpenAICompatible({ profileConfig, prompt, systemPrompt,
     ...(profileConfig.temperature !== undefined ? { temperature: profileConfig.temperature } : {}),
     ...(profileConfig.passReasoningEffort === true && profileConfig.reasoningEffort
       ? { reasoning_effort: profileConfig.reasoningEffort }
-      : {})
+      : {}),
+    ...(profileConfig.structuredOutput === true ? structuredResponse(outputSchema, outputSchemaName) : {})
   };
   const headers = { "content-type": "application/json" };
   if (apiKey) headers.authorization = `Bearer ${apiKey}`;
   if (profileConfig.clientHeaderName && profileConfig.clientHeaderValue) {
     if (/(?:authorization|api[_-]?key|token|cookie|secret)/i.test(profileConfig.clientHeaderName)) throw new Error("OPENAI_COMPATIBLE_SECRET_HEADER_FORBIDDEN");
     headers[profileConfig.clientHeaderName] = profileConfig.clientHeaderValue;
+  }
+  for (const [name, value] of Object.entries(profileConfig.clientHeaders ?? {})) {
+    if (/(?:authorization|api[_-]?key|token|cookie|secret)/i.test(name)) throw new Error("OPENAI_COMPATIBLE_SECRET_HEADER_FORBIDDEN");
+    if (typeof value !== "string") throw new Error(`OPENAI_COMPATIBLE_HEADER_VALUE_INVALID: ${name}`);
+    headers[name] = value;
   }
 
   const controller = new AbortController();
