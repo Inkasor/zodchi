@@ -4,6 +4,17 @@
 
 [English](../../CHANGELOG.md) · [Русский](CHANGELOG.md)
 
+<section id="unreleased_cursor_openrouter_preview" status="working">
+
+## Не выпущено
+
+- Вход из Cursor подготовлен как preview через его штатные session hooks и закрепляемый Custom Mode `/zodchi`. Обычные чаты Cursor не перехватываются, доставка связывается с точными conversation/generation ID, а неоднозначный multiroot завершается fail-closed.
+- Две управляемые копии skill Zodchi стали host-neutral: Cursor может использовать любое из совместимых глобальных расположений без третьей конфликтующей slash-команды.
+- В AgentGateway добавлен именованный прямой API-провайдер OpenRouter: ключ только из окружения, строгий JSON Schema routing, нормализованные token/cache/cost-метрики и обязательный live smoke до назначения роли.
+- Новый релиз из этой работы не публикуется до реальных owner-machine smoke для Cursor и OpenRouter.
+
+</section>
+
 <section id="0_6_11_2026_08_30" status="working">
 
 ## 0.6.11 — 2026-08-30
