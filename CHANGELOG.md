@@ -4,6 +4,15 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_6_8_2026_08_30" status="working">
+
+## 0.6.8 — 2026-08-30
+
+- Codex activation verification now opens the canonical workflow database strictly read-only, so it works inside a project sandbox without attempting to create SQLite WAL files in installation data.
+- The verifier test proves that checking the exact session leaves the database timestamp and sidecar files unchanged.
+
+</section>
+
 <section id="0_6_7_2026_08_30" status="working">
 
 ## 0.6.7 — 2026-08-30
