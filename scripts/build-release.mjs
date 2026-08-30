@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { execFileSync } from "node:child_process";
@@ -32,8 +31,11 @@ function copyTree(sourceRoot, relative, targetRoot, targetRelative = relative) {
   fs.mkdirSync(path.dirname(target), { recursive: true }); fs.cpSync(source, target, { recursive: true, force: false, errorOnExist: true });
 }
 
-export function buildRelease({ repositoryRoot, output, stageRoot = os.tmpdir(), replace = false }) {
-  const repository = path.resolve(repositoryRoot), destination = path.resolve(output), staging = path.resolve(stageRoot);
+export function buildRelease({ repositoryRoot, output, stageRoot = null, replace = false }) {
+  const repository = path.resolve(repositoryRoot), destination = path.resolve(output);
+  // Atomic rename requires the staging directory and destination to be on the same volume.
+  // The system temp directory is often on C: while a Windows workspace lives on D: or E:.
+  const staging = path.resolve(stageRoot ?? path.join(path.dirname(destination), ".zodchi-stage"));
   if (destination === path.parse(destination).root || staging === path.parse(staging).root) throw new Error("RELEASE_BUILD_PATH_TOO_BROAD");
   if (destination === repository || inside(destination, repository) || inside(path.join(repository, "WorkflowPlatform"), destination) || inside(path.join(repository, "AgentGateway"), destination)) throw new Error("RELEASE_OUTPUT_OVERLAPS_SOURCE");
   fs.mkdirSync(staging, { recursive: true }); fs.mkdirSync(path.dirname(destination), { recursive: true });
@@ -72,7 +74,7 @@ export function buildRelease({ repositoryRoot, output, stageRoot = os.tmpdir(), 
 
 function main() {
   const cli = argsObject(process.argv.slice(2)), repository = path.resolve(import.meta.dirname, "..");
-  const result = buildRelease({ repositoryRoot: repository, output: path.resolve(String(cli.output ?? path.join(repository, "dist", "Zodchi"))), stageRoot: path.resolve(String(cli["stage-root"] ?? os.tmpdir())), replace: cli.replace === true });
+  const result = buildRelease({ repositoryRoot: repository, output: path.resolve(String(cli.output ?? path.join(repository, "dist", "Zodchi"))), stageRoot: cli["stage-root"] ? path.resolve(String(cli["stage-root"])) : null, replace: cli.replace === true });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
