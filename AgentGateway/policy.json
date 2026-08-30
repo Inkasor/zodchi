@@ -128,6 +128,24 @@
     "openai-compatible": {
       "type": "openai-compatible",
       "profiles": {}
+    },
+    "openrouter": {
+      "type": "openai-compatible",
+      "profileDefaults": {
+        "baseUrl": "https://openrouter.ai/api/v1",
+        "apiKeyEnv": "OPENROUTER_API_KEY",
+        "modelProvider": "openrouter",
+        "structuredOutput": true,
+        "extraBody": {
+          "provider": {
+            "require_parameters": true
+          }
+        },
+        "clientHeaders": {
+          "X-OpenRouter-Title": "Zodchi AgentGateway"
+        }
+      },
+      "profiles": {}
     }
   }
 }

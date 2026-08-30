@@ -13,6 +13,7 @@ export function mergeGatewayPolicies(universal, local = null) {
     providers[key] = {
       ...base,
       ...overlay,
+      profileDefaults: { ...(base.profileDefaults ?? {}), ...(overlay.profileDefaults ?? {}) },
       profiles: { ...(base.profiles ?? {}), ...(overlay.profiles ?? {}) }
     };
   }

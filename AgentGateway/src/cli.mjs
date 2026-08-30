@@ -210,7 +210,7 @@ if (!limits) fail(`Unknown level: ${level}`);
 if (!providerConfig) fail(`Unknown provider: ${provider}`);
 const profile = cli.profile ?? null;
 if (!profile) fail("PROFILE_REQUIRED: all provider calls must use a named subscription profile");
-const profileConfig = providerConfig.profiles?.[profile] ?? {};
+const profileConfig = { ...(providerConfig.profileDefaults ?? {}), ...(providerConfig.profiles?.[profile] ?? {}) };
 if (!providerConfig.profiles?.[profile]) fail(`Unknown profile '${profile}' for provider '${provider}'`);
 const privacyMode = String(cli["privacy-mode"] ?? DEFAULT_PRIVACY_MODE);
 if (privacyMode !== DEFAULT_PRIVACY_MODE) fail(`RECEIPT_PRIVACY_MODE_UNSUPPORTED: ${privacyMode}`);
@@ -255,8 +255,13 @@ const replaceArg = (arg) => {
 const commandArgs = (providerConfig.args ?? []).map(replaceArg);
 const providerCommand = providerConfig.type === "openai-compatible" ? null : resolveProviderCommand(providerConfig);
 const outputSchema = cli["output-schema"] ? path.resolve(String(cli["output-schema"])) : null;
+let outputSchemaValue = null;
 if (outputSchema) {
   if (!fs.existsSync(outputSchema) || !fs.statSync(outputSchema).isFile()) fail(`OUTPUT_SCHEMA_NOT_FOUND: ${outputSchema}`);
+  if (fs.statSync(outputSchema).size > 1024 * 1024) fail(`OUTPUT_SCHEMA_TOO_LARGE: ${outputSchema}`);
+  try { outputSchemaValue = JSON.parse(fs.readFileSync(outputSchema, "utf8")); }
+  catch (error) { fail(`OUTPUT_SCHEMA_INVALID_JSON: ${error.message}`); }
+  if (!outputSchemaValue || typeof outputSchemaValue !== "object" || Array.isArray(outputSchemaValue)) fail(`OUTPUT_SCHEMA_INVALID: ${outputSchema}`);
   if (providerConfig.outputSchemaArg) commandArgs.push(providerConfig.outputSchemaArg, outputSchema);
 }
 if (provider === "claude") {
@@ -289,7 +294,7 @@ let result;
 let environment = null;
 try {
   result = providerConfig.type === "openai-compatible"
-    ? await runOpenAICompatible({ profileConfig, prompt, systemPrompt, timeoutSec: limits.timeoutSec, env: process.env })
+    ? await runOpenAICompatible({ profileConfig, prompt, systemPrompt, outputSchema: outputSchemaValue, outputSchemaName: `${cli.role ?? "worker"}_result`, timeoutSec: limits.timeoutSec, env: process.env })
     : await withProviderEnvironment(provider, { tempRoot: paths.tempRoot, sourceHome, sourceConfig: provider === "opencode" ? paths.opencodeSourceConfig : null, profileConfig, projectRoot: projectPath }, (providerEnvironment, _directory, capabilities) => {
       environment = capabilities;
       return runProcess(providerCommand, commandArgs, prompt, limits.timeoutSec, projectPath, providerEnvironment);

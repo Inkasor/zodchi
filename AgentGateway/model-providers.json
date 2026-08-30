@@ -66,6 +66,16 @@
         "allowAnonymous": true
       }
     },
+    "openrouter": {
+      "status": "ready-needs-live-smoke",
+      "harnesses": ["openrouter", "opencode"],
+      "directProfile": {
+        "baseUrl": "https://openrouter.ai/api/v1",
+        "apiKeyEnv": "OPENROUTER_API_KEY",
+        "structuredOutput": true,
+        "requireParameters": true
+      }
+    },
     "gigachat": {
       "status": "deferred",
       "harnesses": [],
