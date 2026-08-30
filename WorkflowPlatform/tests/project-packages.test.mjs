@@ -317,6 +317,31 @@ test("every generated package imports transactionally into a clean local project
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("one project reuses versioned role contracts composed by multiple packages", () => {
+  const root = temporaryRoot("workflow-composed-packages-"), dbFile = path.join(root, "packages.sqlite"), db = openDb(dbFile);
+  db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES(?,?,?,?)").run("combined", "Combined", root, new Date().toISOString());
+  db.close();
+  for (const packageKey of ["game.unity", "game.web"]) {
+    const proposalFile = path.join(root, `${packageKey}.json`);
+    let packageFile = generatedFile(packageKey);
+    if (packageKey === "game.web") {
+      const value = parseWorkflowPackage(fs.readFileSync(packageFile, "utf8"));
+      value.workflows = value.workflows.map(workflow => ({ ...workflow, name: `Web ${workflow.name}` }));
+      packageFile = path.join(root, "game.web.xml");
+      fs.writeFileSync(packageFile, serializeWorkflowPackage(value), "utf8");
+    }
+    proposeWorkflowImport(dbFile, packageFile, proposalFile, "combined");
+    assert.equal(applyWorkflowImport(dbFile, proposalFile, "combined", { confirmedBy: "contract-test-owner" }).status, "applied");
+  }
+  const verified = openDb(dbFile);
+  assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflow_package_releases WHERE project_id='combined' AND status='active'").get().count, 2);
+  assert.equal(verified.prepare("SELECT COUNT(*) count FROM role_contracts WHERE project_id='combined' AND role_id='reviewer' AND version='3.0.0'").get().count, 1);
+  assert.equal(verified.prepare(`SELECT COUNT(DISTINCT m.local_id) count FROM package_import_mappings m JOIN workflow_import_proposals p ON p.id=m.proposal_id
+    WHERE p.target_project_id='combined' AND m.entity_type='role_contract' AND m.semantic_key='reviewer'`).get().count, 1);
+  verified.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 // A role contract names portable requirement keys; an installation satisfies them with local profiles.
 // A requirement that no role declares can never be satisfied, and a role whose declared profiles are
 // not declared as requirements can never be loaded.

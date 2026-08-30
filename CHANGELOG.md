@@ -13,6 +13,7 @@
 - Project-scoped semantic statuses and evidence types no longer leak one project's vocabulary into another.
 - Reviewed package levels include bounded provider-neutral consilium roles for local Codex, Claude, Kimi, or other supported profile assignments.
 - Atomic release and explicit-skill replacement retries transient Windows `EPERM`/`EACCES` rename failures without weakening ownership checks.
+- Projects composed from multiple packages reuse the same canonical versioned role contract instead of failing on duplicate package provenance.
 
 </section>
 
