@@ -26,6 +26,15 @@ function samePath(left, right) {
 }
 function tokens(command) { return typeof command === "string" ? [...command.matchAll(/"([^"]+)"|'([^']+)'|([^\s]+)/g)].map(match => match[1] ?? match[2] ?? match[3]) : []; }
 function entryUses(entry, script) { return (entry?.hooks ?? []).some(hook => tokens(hook.command).some(token => samePath(token, script)) || (hook.args ?? []).some(token => samePath(token, script))); }
+export function sessionHookDocumentUsesScript(document, script) {
+  const visit = value => {
+    if (typeof value === "string") return samePath(value, script) || tokens(value).some(token => samePath(token, script));
+    if (Array.isArray(value)) return value.some(visit);
+    if (value && typeof value === "object") return Object.values(value).some(visit);
+    return false;
+  };
+  return visit(document);
+}
 function entry(applicationRoot, client, event) {
   const script = path.join(path.resolve(applicationRoot), "WorkflowPlatform", "hooks", "session-router.mjs");
   const parameters = [script, "--client", client, "--delivery-mode", "final"];

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { extractZip } from "./lib/zip.mjs";
+import { sessionHookDocumentUsesScript } from "./session-hook-installation.mjs";
 
 // Post-publication smoke. It answers one question only: does the artifact that GitHub actually
 // serves install and run? A local build output can never answer it, so nothing here reads the
@@ -196,8 +197,9 @@ for (const [client, root] of Object.entries(smokeSkillRoots)) for (const name of
   if (!text.includes("session router") && !text.includes("session-router")) fail("RELEASE_SKILL_TARGET_INVALID", `${client}:${name}`);
 }
 for (const [client, file] of Object.entries(smokeSessionHooks)) {
-  const text = fs.readFileSync(file, "utf8");
-  if (!text.includes(path.join(installed, "WorkflowPlatform", "hooks", "session-router.mjs"))) fail("RELEASE_SESSION_HOOK_TARGET_INVALID", client);
+  const document = JSON.parse(fs.readFileSync(file, "utf8"));
+  const script = path.join(installed, "WorkflowPlatform", "hooks", "session-router.mjs");
+  if (!sessionHookDocumentUsesScript(document, script)) fail("RELEASE_SESSION_HOOK_TARGET_INVALID", client);
 }
 const presetLint = JSON.parse(execFileSync(process.execPath, [path.join(installed, "WorkflowPlatform", "src", "cli.mjs"), "preset-lint"], { encoding: "utf8", windowsHide: true }));
 if (presetLint.status !== "passed" || presetLint.presets !== 15) fail("RELEASE_PRESET_CATALOG_INVALID", JSON.stringify(presetLint));
