@@ -337,12 +337,13 @@ function composedPackage(core, ...components) {
   // may suggest useful existing files, but only an explicit owner registration puts one under lint and
   // role read/write control. This keeps a package portable across projects with different documentation.
   const documents = (spec.documents ?? []).map(item => document(item.key, item.path, item.type ?? "reference", item.authority ?? spec.key, roleBindings, item.root ?? "primary"));
-  const consiliumLevels = reviewed ? new Set(["mvp", "production", "security-audit"]) : new Set();
+  const consiliumLevels = reviewed ? new Set(["prototype", "mvp", "production", "security-audit"]) : new Set();
   return finalize({
     key: spec.key, version: spec.version, purpose: spec.purpose, roles, workflows, routes, checks,
     operationalLevels: ["prototype", "mvp", "production", "security-audit"].map(level => ({
       level,
       improvement_strategy: consiliumLevels.has(level) ? "gauntlet" : "standard",
+      ...(level === "prototype" && consiliumLevels.has(level) ? { budgets: { calls: 12, duration_ms: 3600000, correction_cycles: 3, cost_usd: 2 }, correction_limit: 3 } : {}),
       escalation: { ...(level === "production" ? { owner_approval_for_irreversible: true } : {}), ...(consiliumLevels.has(level) ? { max_parallel_consilium_members: 3 } : {}) }
     })),
     documents, evidenceFlows, resources: spec.resources, domains, disciplines,

@@ -3,7 +3,7 @@
   "packages": [
     {
       "key": "software.web-application",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "support_status": "support-grade",
       "work_types": [
         "access_management",
@@ -35,7 +35,7 @@
     },
     {
       "key": "one-c.development",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "support_status": "support-grade",
       "work_types": [
         "continuation",
@@ -54,7 +54,7 @@
     },
     {
       "key": "game.web",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "support_status": "preview",
       "work_types": [
         "content",
@@ -76,7 +76,7 @@
     },
     {
       "key": "game.unity",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "support_status": "preview",
       "work_types": [
         "continuation",
@@ -96,7 +96,7 @@
     },
     {
       "key": "data.analytics",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "support_status": "preview",
       "work_types": [
         "continuation",
@@ -112,7 +112,7 @@
     },
     {
       "key": "infra.operations",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "support_status": "preview",
       "work_types": [
         "access_management",
@@ -132,7 +132,7 @@
     },
     {
       "key": "marketing.content-operations",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "support_status": "preview",
       "work_types": [
         "content",

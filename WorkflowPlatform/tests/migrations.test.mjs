@@ -18,7 +18,7 @@ function temporaryRoot(prefix) {
 test("clean database applies numbered normalized migrations and SQLite safety pragmas", () => {
   const root = temporaryRoot("workflow-migrations-clean-");
   const db = openDb(path.join(root, "workflow.sqlite"));
-  assert.equal(schemaVersion(db), 28);
+  assert.equal(schemaVersion(db), 29);
   assert.equal(db.prepare("PRAGMA foreign_keys").get().foreign_keys, 1);
   assert.equal(db.prepare("PRAGMA journal_mode").get().journal_mode, "wal");
   assert.equal(db.prepare("PRAGMA busy_timeout").get().timeout, 5000);
@@ -29,6 +29,10 @@ test("clean database applies numbered normalized migrations and SQLite safety pr
   assert.equal(db.prepare("SELECT name FROM domains WHERE id='one-c'").get().name, "1C");
   assert.equal(db.prepare("SELECT name FROM disciplines WHERE id='one-c-development'").get().name, "1C development");
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM work_types WHERE id LIKE 'one-c.%'").get().count, 7);
+  const prototypeContract = db.prepare("SELECT version,reviewer_policy FROM quality_contracts WHERE level='prototype'").get();
+  assert.equal(prototypeContract.version, "1.0.0");
+  assert.equal(prototypeContract.reviewer_policy, "none");
+  assert.equal(db.prepare("SELECT limit_value FROM quality_contract_budgets WHERE level='prototype' AND metric='calls'").get().limit_value, 4);
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -40,7 +44,7 @@ test("the known pre-publication migration 7 newline checksum remains readable", 
   db.prepare("UPDATE schema_migrations SET checksum=? WHERE version=7").run("8080e01be11bc8882303b50e3d51dc00d1dffcd23c3f08691dee6d7452770c1c");
   db.close();
   db = openDb(file);
-  assert.equal(schemaVersion(db), 28);
+  assert.equal(schemaVersion(db), 29);
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });

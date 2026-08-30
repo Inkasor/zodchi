@@ -312,6 +312,14 @@ test("correction admission reserves the complete required review phase", () => {
   assert.equal(correctionCallFloor(db, "project", "reviewer", policy, classification, 1, 1), 4);
 });
 
+test("Prototype Gauntlet correction is independent from reviewer admission", () => {
+  const db = { prepare: () => { throw new Error("review roles must not be queried"); } };
+  const policy = { contract: DEFAULT_QUALITY_CONTRACTS.find(item => item.level === "prototype"), improvement_strategy: "gauntlet", max_parallel_consilium_members: 3, project_escalations: [] };
+  const classification = { risk: "low", work_type: "prototype", artifact_type: "prototype", document_required: false };
+  assert.equal(policy.contract.reviewer_policy, "none");
+  assert.equal(correctionCallFloor(db, "project", "reviewer", policy, classification, 1, 1), 1);
+});
+
 test("verification changes only evidence frontier, not claim semantics", () => {
   const claim = { claim_coverage: [{ claim_id: "claim", claim_type: "material", coverage: "incomplete" }] };
   const before = { ...claim, verification: { verification_results: [] } };
