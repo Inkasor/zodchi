@@ -1,4 +1,4 @@
-<document id="zodchi_onboarding" status="accepted" authority="zodchi" version="0.6.1" language="en">
+<document id="zodchi_onboarding" status="accepted" authority="zodchi" version="0.6.2" language="en">
   <title>Initial Zodchi setup</title>
   <purpose>Instructions for the LLM that installs and configures Zodchi. Use the person's actual conversation language, explain things plainly, and never ask them to fill internal fields.</purpose>
 
@@ -38,10 +38,10 @@
     <step order="1" id="identify_project">Locate the first project root. If several candidates remain, ask one short question.</step>
     <step order="2" id="register_project">Register the project, root path, domain, and disciplines in Workflow DB.</step>
     <step order="3" id="load_catalogs">Load catalogs from configs/catalogs.json.</step>
-    <step order="4" id="discover_documents">Discover project documents and validate their format, status, and encoding.</step>
-    <step order="5" id="propose_ownership">Propose document owners and role read/write access.</step>
+    <step order="4" id="discover_documents">Discover existing project documents and explain which ones could be useful as controlled context. A package filename is never a requirement and absence is not a gap until the owner selects that document.</step>
+    <step order="5" id="propose_ownership">Propose zero or more controlled documents, their lint mode, project-local status/evidence vocabulary, owners, and role read/write access. The person may keep no controlled documents.</step>
     <step order="6" id="confirm_ownership">Never assign ownership silently. Wait for the person's confirmation.</step>
-    <step order="7" id="write_registry">After confirmation, write project_documents and role_documents to Workflow DB.</step>
+    <step order="7" id="write_registry">After confirmation, use document-register and the project vocabulary commands to write project_documents and role_documents to Workflow DB. Adding or removing one controlled document must not require rebuilding the workflow package.</step>
     <step order="8" id="confirm_routes">Propose mappings from registered work_types to workflow_routes and wait for owner confirmation; never select a product route silently.</step>
     <step order="9" id="write_routes">Write only confirmed workflow_routes. The classifier must not use a route absent from the registry.</step>
     <step order="10" id="architecture_document">Copy configs/WorkflowPlatformArchitecture.template.md into a local project-onboarding document and fill only verified values.</step>

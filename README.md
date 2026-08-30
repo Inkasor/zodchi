@@ -1,4 +1,4 @@
-<document id="zodchi_readme" status="accepted" authority="zodchi" version="0.6.1" language="en" format="markdown+xml_semantic">
+<document id="zodchi_readme" status="accepted" authority="zodchi" version="0.6.2" language="en" format="markdown+xml_semantic">
 
 # Zodchi
 
@@ -54,6 +54,15 @@ Zodchi requires Node.js 24 or newer. The 0.6 release candidate uses one cross-pl
 Two packages are support-grade: `software.web-application` and `one-c.development`. Five more are executable previews: `game.web`, `game.unity`, `data.analytics`, `infra.operations`, and `marketing.content-operations`. Preview means the workflow runs and its mechanical contract is tested; it does not claim domain, gameplay, product, visual, or owner acceptance.
 
 Fifteen installable project recipes connect observed working patterns to these packages, required local adapters, source scopes, resource locks, authority boundaries, a first-value scenario, and an acceptance plan. Inspect a recipe with `preset-inspect`; create a hash-bound proposal with `preset-propose`. Import and any live action remain separate confirmed operations.
+
+Packages do not impose GDD, infrastructure, marketing, or other template filenames. During onboarding Zodchi may analyze existing project documents and propose useful controls, but the owner chooses whether to register any of them. A controlled document can be added or removed without rebuilding its workflow package:
+
+```powershell
+node WorkflowPlatform/src/cli.mjs document-register --db <workflow.sqlite> --project <project-id> --root primary --path docs/Decisions.md --type decision-log --authority owner --read-roles classifier,coordinator,worker,reviewer --write-roles editor
+node WorkflowPlatform/src/cli.mjs document-unregister --db <workflow.sqlite> --project <project-id> --root primary --path docs/Decisions.md
+```
+
+Projects may also register their own semantic status and evidence-type keys with `document-status-register` and `document-evidence-register`; those keys do not leak into other projects.
 
 See [Portable project packages](WorkflowPlatform/docs/ProjectPackages.md) and the [0.6 release evidence](docs/RELEASE_EVIDENCE_0.6.0.md).
 
