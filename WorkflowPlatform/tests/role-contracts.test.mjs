@@ -46,12 +46,14 @@ function fixture(prefix, { document = false } = {}) {
   if (document) fs.writeFileSync(path.join(project, "docs", "control.md"), '<document id="control" status="working"><section id="summary" status="working">old</section></document>');
   const roles = [
     ["planner", "planner.v1", ["code", "document"]], ["worker", "worker.v1", ["code", "document"]],
-    ["reviewer", "reviewer.v1", ["code", "document"]], ["documentator", "documentator.v1", ["document"]]
+    ["coordinator", "planner.v1", ["code", "document"]], ["reviewer", "reviewer.v1", ["code", "document"]],
+    ["documentator", "documentator.v1", ["document"]]
   ];
   onboardProject(dbFile, {
     project: { id: "project", name: "Project", root_path: project },
     workflow: { id: "workflow", name: "Workflow", discovery: { git: false }, history_budget_bytes: 8192 },
-    profiles: roles.map(([role]) => ({ id: `profile-${role}`, provider: "codex", name: `local-${role}`, role_id: role })),
+    roles: roles.map(([role]) => ({ id: role, name: role })),
+    profiles: roles.map(([role]) => ({ id: `profile-${role}`, provider: role === "coordinator" ? "claude-code" : "codex", name: `local-${role}`, role_id: role })),
     routes: [{ work_type_id: "implementation" }, { work_type_id: "documentation" }],
     checks: [{ id: "check-ok", name: "Test check", runner: "fixture", kind: "fixture", config: { status: "passed" } }],
     project_checks: [{ check_id: "check-ok", quality_mode_id: "mvp", required: true }],
@@ -94,7 +96,7 @@ function receipt(role, result, suffix = "1", rawSuffix = "") {
   };
 }
 
-async function scenario({ prefix, gateStatus = "passed", reviewDecision = "PASS", invalidFirstReviewer = false, document = false, invalidDocumentVersion = false, message = null, risk = "high", projectInputTokenLimit = null }) {
+async function scenario({ prefix, gateStatus = "passed", gateStatuses = null, reviewDecision = "PASS", invalidFirstReviewer = false, document = false, invalidDocumentVersion = false, message = null, risk = "high", projectInputTokenLimit = null, runProfileOverrides = {}, longPlannerWork = false }) {
   const env = fixture(prefix, { document });
   if (projectInputTokenLimit !== null) {
     const budgetDb = openDb(env.dbFile);
@@ -108,9 +110,11 @@ async function scenario({ prefix, gateStatus = "passed", reviewDecision = "PASS"
   let reviewerCalls = 0;
   const gatewayCall = async request => {
     calls.push(request.role);
-    if (request.role === "planner") {
+    if (request.role === "planner" || request.role === "coordinator") {
       plannerPrompt = fs.readFileSync(request.taskFile, "utf8");
-      return receipt("planner", plannerResult({ document }), "1", "\nRAW_PLANNER_PROSE_MARKER");
+      const plannerReceipt = receipt(request.role, plannerResult({ document }), "1", "\nRAW_PLANNER_PROSE_MARKER");
+      if (longPlannerWork && request.role === "planner") plannerReceipt.duration_ms = 10 * 60 * 1000;
+      return plannerReceipt;
     }
     if (request.role === "worker") {
       workerPrompt = fs.readFileSync(request.taskFile, "utf8");
@@ -140,11 +144,15 @@ async function scenario({ prefix, gateStatus = "passed", reviewDecision = "PASS"
     }
     throw new Error(`unexpected role ${request.role}`);
   };
-  const gateRunner = async () => ({ task_id: "gate", project: env.project, level: "mvp", files: document ? ["docs/control.md"] : ["src/output.txt"], status: gateStatus, checks: [{ id: "check-ok", name: "Deterministic check", required: true, status: gateStatus, exit_code: 0, duration_ms: 17 }], summary: `${gateStatus}: deterministic check` });
+  let gateCalls = 0;
+  const gateRunner = async () => {
+    const currentGateStatus = gateStatuses?.[Math.min(gateCalls++, gateStatuses.length - 1)] ?? gateStatus;
+    return { task_id: "gate", project: env.project, level: "mvp", files: document ? ["docs/control.md"] : ["src/output.txt"], status: currentGateStatus, checks: [{ id: "check-ok", name: "Deterministic check", required: true, status: currentGateStatus, exit_code: 0, duration_ms: 17 }], summary: `${currentGateStatus}: deterministic check` };
+  };
   const result = await processMessage({
     message: message ?? (document ? "Update the registered document" : "Implement bounded output"), project: env.project, dbFile: env.dbFile,
     workflowDefinition: { id: "workflow", authority: "registered test authority", roles: {} }, execute: true,
-    classificationResult: classification(document, risk), gatewayCall, gateRunner
+    classificationResult: classification(document, risk), gatewayCall, gateRunner, runProfileOverrides
   });
   return { ...env, calls, plannerPrompt, workerPrompt, documentatorPrompt, result };
 }
@@ -215,6 +223,94 @@ test("structured planner-worker-gate-reviewer PASS completes and raw planner pro
   fs.rmSync(env.root, { recursive: true, force: true });
 });
 
+test("ensemble planning collects independent candidates before one synthesized executable plan", async () => {
+  const env = await scenario({ prefix: "workflow-planning-ensemble-", runProfileOverrides: { execution_mode: "standard", verification_mode: "baseline", planning_mode: "ensemble" } });
+  assert.equal(env.result.execution.status, "completed");
+  assert.deepEqual(env.calls.slice(0, 3), ["coordinator", "planner", "planner"]);
+  const db = openDb(env.dbFile);
+  try {
+    const evidence = db.prepare("SELECT evidence_json FROM run_evidence WHERE run_id=? AND kind='planning_ensemble'").get(env.result.run_id);
+    assert.ok(evidence);
+    const packet = JSON.parse(evidence.evidence_json);
+    assert.equal(packet.candidate_count, 2);
+    assert.equal(packet.candidate_hashes.length, 2);
+    assert.equal(packet.synthesis_hash.length, 64);
+    const planningSteps = db.prepare("SELECT step_key,state FROM workflow_steps WHERE run_id=? AND step_key LIKE 'planning_%' ORDER BY ordinal").all(env.result.run_id);
+    assert.deepEqual(planningSteps.map(item => item.step_key), ["planning_candidate_1", "planning_candidate_2", "planning_synthesis"]);
+    assert.equal(planningSteps.every(item => item.state === "completed"), true);
+  } finally { db.close(); }
+});
+
+test("profile preparation completes before any planner or productive model call", async () => {
+  const env = fixture("workflow-profile-prepare-");
+  let calls = 0;
+  const result = await processMessage({
+    message: "Implement bounded output", project: env.project, dbFile: env.dbFile,
+    workflowDefinition: { id: "workflow", authority: "registered test authority", roles: {} }, execute: true, prepareOnly: true,
+    classificationResult: classification(false, "high"),
+    runProfileOverrides: { execution_mode: "goal", verification_mode: "gauntlet", planning_mode: "ensemble" },
+    gatewayCall: async () => { calls += 1; throw new Error("model call must not happen during preparation"); }
+  });
+  assert.equal(result.route, "prepared");
+  assert.equal(calls, 0);
+  assert.equal(result.run_profile.execution_mode, "goal");
+  assert.equal(result.run_profile.verification_mode, "gauntlet");
+  assert.equal(result.run_profile.planning_mode, "ensemble");
+  const db = openDb(env.dbFile);
+  try { assert.equal(db.prepare("SELECT state FROM workflow_runs WHERE id=?").get(result.run_id).state, "completed"); }
+  finally { db.close(); }
+});
+
+test("a raised quality decision is shown again instead of silently executing an older prepared profile", async () => {
+  const env = fixture("workflow-profile-raised-");
+  let calls = 0;
+  const result = await processMessage({
+    message: "Implement bounded output", project: env.project, dbFile: env.dbFile,
+    workflowDefinition: { id: "workflow", authority: "registered test authority", roles: {} }, execute: true,
+    classificationResult: classification(false, "high"),
+    runProfileOverrides: { quality_mode: "prototype", execution_mode: "standard", verification_mode: "baseline", planning_mode: "single" },
+    gatewayCall: async () => { calls += 1; throw new Error("productive model call must wait for the raised profile confirmation"); }
+  });
+  assert.equal(result.route, "prepared");
+  assert.equal(result.run_profile.quality_mode, "mvp");
+  assert.match(result.response, /changed the profile/i);
+  assert.equal(calls, 0);
+});
+
+test("goal execution is not stopped by the standard correction-cycle count while factual progress continues", async () => {
+  const env = await scenario({
+    prefix: "workflow-goal-corrections-",
+    gateStatuses: ["failed", "failed", "passed"],
+    runProfileOverrides: { execution_mode: "goal", verification_mode: "baseline", planning_mode: "single" }
+  });
+  assert.equal(env.result.execution.status, "completed");
+  assert.equal(env.result.execution.correction_cycles, 2);
+  const db = openDb(env.dbFile);
+  try {
+    assert.equal(db.prepare("SELECT COUNT(*) count FROM run_evidence WHERE run_id=? AND kind='goal_correction_cycle'").get(env.result.run_id).count, 2);
+    assert.equal(db.prepare("SELECT correction_cycles FROM workflow_runs WHERE id=?").get(env.result.run_id).correction_cycles, 2);
+  } finally { db.close(); }
+});
+
+test("a long Goal route presents one helicopter-view reflection to the next model role", async () => {
+  const env = await scenario({
+    prefix: "workflow-goal-reflection-",
+    longPlannerWork: true,
+    runProfileOverrides: { execution_mode: "goal", verification_mode: "baseline", planning_mode: "single" }
+  });
+  assert.equal(env.result.execution.status, "completed");
+  assert.match(env.workerPrompt, /reflection_checkpoint/);
+  assert.match(env.workerPrompt, /Helicopter-view checkpoint/);
+  const db = openDb(env.dbFile);
+  try {
+    const checkpoints = db.prepare("SELECT trigger_role,status,result_hash FROM run_reflection_checkpoints WHERE run_id=? ORDER BY sequence").all(env.result.run_id);
+    assert.equal(checkpoints.length, 1);
+    assert.equal(checkpoints[0].trigger_role, "worker");
+    assert.equal(checkpoints[0].status, "applied");
+    assert.equal(checkpoints[0].result_hash.length, 64);
+  } finally { db.close(); }
+});
+
 test("a contradictory reviewer result is repaired once inside the same review phase", async () => {
   const env = await scenario({ prefix: "workflow-reviewer-schema-repair-", invalidFirstReviewer: true });
   assert.equal(env.result.execution.status, "completed");
@@ -229,11 +325,11 @@ test("a contradictory reviewer result is repaired once inside the same review ph
   fs.rmSync(env.root, { recursive: true, force: true });
 });
 
-test("low-risk green MVP skips the independent reviewer", async () => {
+test("low-risk green MVP still receives its required independent reviewer", async () => {
   const env = await scenario({ prefix: "workflow-structured-low-risk-", risk: "low" });
   assert.equal(env.result.execution.status, "completed");
-  assert.deepEqual(env.calls, ["planner", "worker"]);
-  assert.equal(env.result.execution.reviewer, null);
+  assert.deepEqual(env.calls, ["planner", "worker", "reviewer"]);
+  assert.equal(env.result.execution.reviewer.decision, "PASS");
   fs.rmSync(env.root, { recursive: true, force: true });
 });
 
@@ -252,6 +348,7 @@ test("a pathless decision artifact is materialized from worker evidence instead 
     gatewayCall: async request => {
       if (request.role === "planner") return receipt("planner", plan);
       if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "The entry point is established.", changed_paths: [], artifacts: [], evidence: ["Form calls the server export procedure."], questions: [], external_evidence_request: null });
+      if (request.role === "reviewer") return receipt("reviewer", reviewerResult("PASS"));
       throw new Error(`unexpected role ${request.role}`);
     },
     gateRunner: async () => ({ task_id: "gate", project: env.project, level: "mvp", files: [], status: "passed", checks: [{ id: "check-ok", required: true, status: "passed" }], summary: "passed" })
@@ -280,6 +377,7 @@ test("final document artifacts stay with the documentator even when a planner as
     gatewayCall: async request => {
       if (request.role === "planner") return receipt("planner", plan);
       if (request.role === "worker") { workerPrompt = fs.readFileSync(request.taskFile, "utf8"); return receipt("worker", { schema_version: 1, status: "completed", summary: "Evidence prepared.", changed_paths: [], artifacts: [], evidence: ["bounded source"], questions: [], external_evidence_request: null }); }
+      if (request.role === "reviewer") return receipt("reviewer", reviewerResult("PASS"));
       if (request.role === "documentator") { const lookup = openDb(env.dbFile); const documentId = lookup.prepare("SELECT id FROM project_documents WHERE project_id='project' AND path='docs/new-analysis.md'").get().id; lookup.close(); return receipt("documentator", { schema_version: 1, status: "proposed", document_id: documentId, expected_version: null, operation: "create_document", authority: "workflow", content: '<document id="new_analysis" status="working" authority="workflow" version="1.0"><section id="summary" status="working">New analysis</section></document>', section_id: null, decision_id: null, evidence_id: null, status_value: null, target_tag: null, target_id: null, replacement_id: null }); }
       throw new Error(`unexpected role ${request.role}`);
     },
@@ -431,6 +529,7 @@ test("independent plan steps using one role receive independent role call budget
         if (workerCalls === 2) secondPrompt = fs.readFileSync(request.taskFile, "utf8");
         return receipt("worker", { schema_version: 1, status: "completed", summary: `Completed package ${workerCalls}.`, changed_paths: [], artifacts: [], evidence: [`evidence-from-package-${workerCalls}`], questions: [], external_evidence_request: null }, String(workerCalls));
       }
+      if (request.role === "reviewer") return receipt("reviewer", reviewerResult("PASS"));
       throw new Error(`unexpected role ${request.role}`);
     },
     gateRunner: async () => ({ task_id: "gate", project: env.project, level: "mvp", files: [], status: "passed", checks: [{ id: "check-ok", required: true, status: "passed" }], summary: "passed" })
@@ -545,6 +644,7 @@ async function approvalScenario(prefix, ownerResponse, beforeDecision = null) {
     gatewayCall: async request => {
       calls.push(request.role);
       if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "Applied.", changed_paths: [], artifacts: [], evidence: ["bounded"], questions: [], external_evidence_request: null });
+      if (request.role === "reviewer") return receipt("reviewer", reviewerResult("PASS"));
       throw new Error(`unexpected role ${request.role}`);
     },
     gateRunner: async () => ({ task_id: "gate", project: env.project, level: "mvp", files: [], status: "passed", checks: [{ id: "check-ok", required: true, status: "passed" }], summary: "passed" })

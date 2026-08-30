@@ -84,7 +84,7 @@ function skillStatus(roots, installedRoot) {
     const marker = json(markerFile);
     ensure(marker.owner === "zodchi" && marker.client === client && marker.name === name, "ACCEPTANCE_SKILL_OWNER_INVALID", `${client}:${name}`);
     ensure(samePath(marker.application_root, installedRoot), "ACCEPTANCE_SKILL_TARGET_MISMATCH", marker.application_root);
-    ensure(fs.readFileSync(skillFile, "utf8").includes("explicit-invoke.mjs"), "ACCEPTANCE_SKILL_COMMAND_MISSING", `${client}:${name}`);
+    ensure(fs.readFileSync(skillFile, "utf8").includes("session router"), "ACCEPTANCE_SKILL_COMMAND_MISSING", `${client}:${name}`);
     results.push({ client, name, directory });
   }
   return results;
@@ -112,8 +112,9 @@ export function runPlatformAcceptance({ repositoryRoot = path.resolve(import.met
 
     const projectRoot = path.join(root, "временный проект 😀"), installed = path.join(root, "installed"), dataRoot = path.join(root, "data");
     const skillRoots = { "claude-code": path.join(root, "claude-skills"), codex: path.join(root, "codex-skills") };
+    const sessionHookFiles = { "claude-code": path.join(root, "claude-hooks", "settings.json"), codex: path.join(root, "codex-hooks", "hooks.json") };
     initializeProject(projectRoot);
-    const installedBaseline = installRelease({ source: baseline, destination: installed, dataRoot, skillRoots });
+    const installedBaseline = installRelease({ source: baseline, destination: installed, dataRoot, skillRoots, sessionHookFiles });
     const initialSkills = skillStatus(skillRoots, installed);
 
     const explicitEvidenceRoot = path.join(root, "explicit-evidence"), explicitConfig = path.join(root, "explicit-config.json");
@@ -131,7 +132,7 @@ export function runPlatformAcceptance({ repositoryRoot = path.resolve(import.met
     ensure(explicitRun.worktree_unchanged && explicitRun.results?.every(item => item.response_returned), "ACCEPTANCE_EXPLICIT_RUN_FAILED");
     const workflowDatabase = path.join(explicitEvidenceRoot, "workflow-evidence.sqlite");
 
-    const updated = installRelease({ source: candidate, destination: installed, dataRoot, workflowDatabase, skillRoots });
+    const updated = installRelease({ source: candidate, destination: installed, dataRoot, workflowDatabase, skillRoots, sessionHookFiles });
     const updatedSkills = skillStatus(skillRoots, installed);
     const workflowEvidenceRoot = path.join(root, "workflow-evidence"), workflowConfig = path.join(root, "workflow-config.json");
     writeJson(workflowConfig, {
@@ -151,11 +152,11 @@ export function runPlatformAcceptance({ repositoryRoot = path.resolve(import.met
     const candidateRun = workflowRun.results?.[0];
     ensure(candidateRun?.final_state === "completed" && candidateRun.gate_status === "passed" && candidateRun.worktree_unchanged, "ACCEPTANCE_CANDIDATE_RUN_FAILED", JSON.stringify(candidateRun ?? null));
 
-    const rolledBack = rollbackRelease({ destination: installed, dataRoot, skillRoots });
+    const rolledBack = rollbackRelease({ destination: installed, dataRoot, skillRoots, sessionHookFiles });
     const rollbackSkills = skillStatus(skillRoots, installed);
     const presetLint = runJson(process.execPath, [path.join(installed, "WorkflowPlatform", "src", "cli.mjs"), "preset-lint"]);
     ensure(presetLint.status === "passed" && presetLint.presets === 15, "ACCEPTANCE_PRESET_CATALOG_FAILED");
-    const uninstalled = uninstallRelease({ destination: installed, dataRoot, skillRoots });
+    const uninstalled = uninstallRelease({ destination: installed, dataRoot, skillRoots, sessionHookFiles });
     ensure(uninstalled.skills.filter(item => item.name === "zodchi").every(item => item.status === "removed"), "ACCEPTANCE_SKILL_SURVIVED_UNINSTALL");
     ensure(!fs.existsSync(path.join(projectRoot, ".codex")) && !fs.existsSync(path.join(projectRoot, ".claude")), "ACCEPTANCE_PROJECT_HOOK_CREATED");
 

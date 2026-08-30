@@ -14,6 +14,74 @@ import { normalizeResourceDeclaration } from "./resource-locks.mjs";
 import { loadRoleContract, parseRoleReceipt, rolePrompt, structuredHash } from "./role-contracts.mjs";
 import { WORKTREE_ALIAS, aliasDeclarations, registeredResources as registeredProjectResources } from "./project-resources.mjs";
 import { consumeCorrectionCycle, documentationOutcome, loadOperationalPolicy, loadQualityContract, operationalLevel, reviewerRequirement } from "./quality-contracts.mjs";
+
+function runOperationalPolicy(runtime, runId, projectId, workflowId, level) {
+  const legacy = loadOperationalPolicy(runtime.db, projectId, workflowId, level);
+  const profile = runtime.db.prepare("SELECT execution_mode,verification_mode,planning_mode FROM run_profiles WHERE run_id=?").get(runId);
+  return profile ? Object.freeze({ ...legacy, improvement_strategy: profile.verification_mode === "gauntlet" ? "gauntlet" : "standard", run_profile: profile }) : legacy;
+}
+
+function runPlanningProfile(db, runId) {
+  const row = db.prepare("SELECT planning_mode,planner_bindings_json FROM run_profiles WHERE run_id=?").get(runId);
+  return row ? { mode: row.planning_mode, bindings: parseJson(row.planner_bindings_json, []) } : { mode: "single", bindings: [] };
+}
+
+function ensemblePlannerRoles(db, runId, primaryRole) {
+  const profile = runPlanningProfile(db, runId);
+  if (profile.mode !== "ensemble") return [primaryRole].filter(Boolean);
+  const seen = new Set(), roles = [];
+  for (const binding of profile.bindings) {
+    const identity = [binding.provider, binding.profile, binding.model].filter(Boolean).join(":");
+    if (!binding.role || !identity || seen.has(identity)) continue;
+    const contract = db.prepare("SELECT result_schema_key FROM role_contracts WHERE project_id=(SELECT project_id FROM workflow_runs WHERE id=?) AND role_id=? AND status='active'").get(runId, binding.role);
+    if (contract?.result_schema_key !== "planner.v1") continue;
+    seen.add(identity); roles.push(binding.role);
+  }
+  if (roles.length < 2) throw new Error("ENSEMBLE_PLANNERS_UNAVAILABLE: fixed run profile no longer has two independent planner bindings");
+  return roles;
+}
+
+const GOAL_REFLECTION_INTERVAL_MS = 5 * 60 * 1000;
+
+function maybeOpenGoalReflection(runtime, runId, roleId) {
+  const profile = runtime.db.prepare("SELECT execution_mode FROM run_profiles WHERE run_id=?").get(runId);
+  if (profile?.execution_mode !== "goal") return null;
+  const run = runtime.get(runId), previous = runtime.db.prepare("SELECT sequence,elapsed_ms FROM run_reflection_checkpoints WHERE run_id=? ORDER BY sequence DESC LIMIT 1").get(runId);
+  const timestamp = now();
+  // Reflection measures model-bearing work, not wall-clock time. A ten-minute deterministic build or
+  // gate is useful evidence and must not by itself accuse the strategy of wandering.
+  const elapsed = Math.max(0, Number(runtime.db.prepare("SELECT COALESCE(SUM(duration_ms),0) value FROM gateway_calls WHERE run_id=?").get(runId).value) || 0);
+  const sincePrevious = Math.max(0, elapsed - (previous?.elapsed_ms ?? 0));
+  if (sincePrevious < GOAL_REFLECTION_INTERVAL_MS) return null;
+  const state = {
+    run_state: run.state,
+    cycle: run.cycle,
+    correction_cycles: run.correction_cycles,
+    steps: runtime.db.prepare("SELECT step_key,state FROM workflow_steps WHERE run_id=? ORDER BY ordinal,step_key").all(runId),
+    latest_progress: runtime.db.prepare("SELECT progress_kind,semantic_fingerprint,frontier_fingerprint,packet_hash FROM progress_snapshots WHERE run_id=? ORDER BY created_at DESC,id DESC LIMIT 1").get(runId) ?? null
+  };
+  const checkpoint = { id: id("reflection"), sequence: (previous?.sequence ?? 0) + 1, state_hash: structuredHash(state) };
+  runtime.db.prepare("INSERT INTO run_reflection_checkpoints(id,run_id,sequence,trigger_role,elapsed_ms,since_previous_ms,state_hash,status,created_at) VALUES(?,?,?,?,?,?,?,'presented',?)")
+    .run(checkpoint.id, runId, checkpoint.sequence, roleId, elapsed, sincePrevious, checkpoint.state_hash, timestamp);
+  recordRunEvidence(runtime.db, runId, null, "reflection_checkpoint", { sequence: checkpoint.sequence, trigger_role: roleId, elapsed_ms: elapsed, since_previous_ms: sincePrevious, state_hash: checkpoint.state_hash });
+  return {
+    ...checkpoint,
+    elapsed_ms: elapsed,
+    instruction: "Helicopter-view checkpoint: this Goal run has spent substantial time on its current route. Re-evaluate whether the route still advances the owner objective. Preserve it only when the evidence supports it; otherwise step back and return the schema-valid question, blocker, changed strategy or plan that corrects the route. Do not invent progress from elapsed time."
+  };
+}
+
+function applyGoalReflection(runtime, checkpoint, result) {
+  if (!checkpoint) return;
+  runtime.db.prepare("UPDATE run_reflection_checkpoints SET result_hash=?,status='applied',applied_at=? WHERE id=?")
+    .run(structuredHash(result), now(), checkpoint.id);
+}
+
+function consumeExecutionCorrection(runtime, runId, cycle, policy) {
+  if (policy.run_profile?.execution_mode !== "goal") return consumeCorrectionCycle(runtime, runId, cycle);
+  runtime.db.prepare("UPDATE workflow_runs SET correction_cycles=? WHERE id=?").run(cycle, runId);
+  recordRunEvidence(runtime.db, runId, null, "goal_correction_cycle", { cycle, rule: "no arbitrary correction-cycle stop; deterministic stagnation, authority, evidence and hard resource budgets still stop the run" });
+}
 import { buildReviewEvidence, captureRunBaselines, recordRunEvidence, runChangeEvidence } from "./run-evidence.mjs";
 import { applyRunControlAtBoundary, pendingRunControl, recordProgressSnapshot, semanticGapFingerprint } from "./progress-supervisor.mjs";
 import { blockerAdmissibility, admissibleOpinionDecision, hasSupportedFactualBlocker } from "./review-admissibility.mjs";
@@ -493,7 +561,8 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
   const step = runtime.db.prepare("SELECT * FROM workflow_steps WHERE id=?").get(lease.stepId);
   if (step.role_id !== roleId) throw new Error(`ROLE_STEP_MISMATCH: expected ${step.role_id}, got ${roleId}`);
   queue.start(lease.token);
-  const promptContext = context ?? {};
+  const reflection = maybeOpenGoalReflection(runtime, runId, roleId);
+  const promptContext = reflection ? { ...(context ?? {}), reflection_checkpoint: { sequence: reflection.sequence, elapsed_ms: reflection.elapsed_ms, state_hash: reflection.state_hash, instruction: reflection.instruction } } : (context ?? {});
   let prompt;
   try { prompt = promptWithinContract(contract, qualityContract, packageContract, promptContext, schemaKey); }
   catch (error) {
@@ -557,6 +626,7 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
     }
     const contractHash = structuredHash({ role_contract_id: contract.id, role_contract_version: contract.version, package: packageContract });
     const resultHash = structuredHash(result);
+    applyGoalReflection(runtime, reflection, result);
     runtime.linkGateway(runId, { ...receipt, step_id: step.id, attempt_id: lease.attemptId, contract_hash: contractHash, result_hash: resultHash });
     storeStepPayload(runtime.db, step.id, packageContract, schemaKey, result);
     return {
@@ -851,7 +921,10 @@ async function executeIndependentReview({ runtime, queue, runId, projectId, revi
   const activeInvocations = new Set();
   const invocations = selectedRoles.map(async roleId => {
     try {
-      const reviewerPackage = reviewerTaskPackage(reviewEvidence, reviewReason, correctionCycles, Number(policy.limits.correction_cycles) || 0);
+      const correctionLimit = policy.run_profile?.execution_mode === "goal"
+        ? correctionCycles + 1
+        : Number(policy.limits.correction_cycles) || 0;
+      const reviewerPackage = reviewerTaskPackage(reviewEvidence, reviewReason, correctionCycles, correctionLimit);
       const reviewer = await invokeReviewerWithSchemaRepair({
         packageContract: reviewerPackage,
         invoke: packageContract => invokeRole({ runtime, queue, runId, roleId, level, taskRoot, packageContract, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "reviewer.v1", parseOptions: {}, gatewayCall, activeInvocations }),
@@ -1135,7 +1208,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   const projectRoot = discovery.project.root_path;
   const queue = new ExecutionQueue(runtime.db);
   const routeContract = selectedWorkflowContract(runtime.db, projectId, runtime.get(runId).workflow_id);
-  const policy = loadOperationalPolicy(runtime.db, projectId, runtime.get(runId).workflow_id, level);
+  const policy = runOperationalPolicy(runtime, runId, projectId, runtime.get(runId).workflow_id, level);
   const approvalBeforeWork = Boolean(routeContract?.approval?.before_productive_work);
   const preparedPlan = approvalGranted && approvalBeforeWork ? storedAuthorizedPlan(runtime.db, runId) : null;
   // A workflow with no declared shape at all falls back to the platform roles. One that declares its
@@ -1146,6 +1219,12 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   const documentatorRole = routeContract?.documentator_role ?? "documentator";
   const plannerContract = plannerRole ? loadRoleContract(runtime.db, projectId, plannerRole, level) : null;
   if (plannerContract?.allowed_work_types.length && !plannerContract.allowed_work_types.includes(classification.work_type) && !plannerContract.allowed_work_types.includes("*")) throw new Error(`ROLE_WORK_TYPE_NOT_ALLOWED: planner:${classification.work_type}`);
+  const planningProfile = runPlanningProfile(runtime.db, runId);
+  const planningRoles = plannerContract ? ensemblePlannerRoles(runtime.db, runId, plannerRole) : [];
+  for (const role of planningRoles) {
+    const contract = loadRoleContract(runtime.db, projectId, role, level);
+    if (contract.allowed_work_types.length && !contract.allowed_work_types.includes(classification.work_type) && !contract.allowed_work_types.includes("*")) throw new Error(`ROLE_WORK_TYPE_NOT_ALLOWED: ${role}:${classification.work_type}`);
+  }
   // Planning a second time in the same run is a new step, not the old one reopened: the first planning
   // call happened, produced its questions and is history. A run holds one step per key, so the replan
   // gets its own, the way a correction cycle does.
@@ -1153,7 +1232,13 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   const planningKey = planningAttempts ? `replan_${planningAttempts}` : "planning";
   const stepKeyOf = key => (planningAttempts ? `replan_${planningAttempts}_${key}` : key);
   if (!preparedPlan) {
-    runtime.plan(runId, { objective: message, authority: definition.authority ?? "registered project documents", steps: plannerContract ? [{ key: planningKey, role: plannerRole, max_attempts: plannerContract.max_correction_cycles + 1 }] : [] });
+    const planningSteps = !plannerContract ? [] : planningProfile.mode === "ensemble"
+      ? [
+          ...planningRoles.map((role, index) => ({ key: `${planningKey}_candidate_${index + 1}`, role, max_attempts: loadRoleContract(runtime.db, projectId, role, level).max_correction_cycles + 1 })),
+          { key: `${planningKey}_synthesis`, role: plannerRole, max_attempts: plannerContract.max_correction_cycles + 1 }
+        ]
+      : [{ key: planningKey, role: plannerRole, max_attempts: plannerContract.max_correction_cycles + 1 }];
+    runtime.plan(runId, { objective: message, authority: definition.authority ?? "registered project documents", steps: planningSteps });
     queue.enqueueRun(runId);
   }
   const allRegisteredRoles = runtime.db.prepare("SELECT id FROM roles ORDER BY id").all().map(row => row.id);
@@ -1217,14 +1302,35 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       corpusExactScan = recordCorpusExactScan(runtime, runId, null, corpusExactScan);
     }
   }
-  const planner = !preparedPlan && plannerContract && await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: plannerPackage, context: boundedContext(discovery, plannerRole, classification, Math.floor(plannerContract.context_limit_bytes / 2), responseLanguage, {
-    source_inventory: inventorySummary(discovery.sources ?? []),
-      // An inventory says what exists; it does not say where the thing the owner asked about lives, and
-      // in a project of a thousand files choosing paths by name is guessing. The identifiers are already
-      // in the message, so the platform searches the declared scope for them before the planner is called
-      // and hands over the files that actually mention them.
-      source_matches: plannerSourceMatches
-    }), schemaKey: "planner.v1", parseOptions: { registeredRoles, registeredChecks, registeredArtifactTypes, registeredResources: registeredStepResources, maxStepAttempts: policy.limits.correction_cycles + 1 }, gatewayCall });
+  let planner = null;
+  if (!preparedPlan && plannerContract) {
+    const parseOptions = { registeredRoles, registeredChecks, registeredArtifactTypes, registeredResources: registeredStepResources, maxStepAttempts: policy.limits.correction_cycles + 1 };
+    const plannerContext = role => {
+      const contract = loadRoleContract(runtime.db, projectId, role, level);
+      return boundedContext(discovery, role, classification, Math.floor(contract.context_limit_bytes / 2), responseLanguage, {
+        source_inventory: inventorySummary(discovery.sources ?? []),
+        // An inventory says what exists; it does not say where the thing the owner asked about lives, and
+        // in a project of a thousand files choosing paths by name is guessing. The identifiers are already
+        // in the message, so the platform searches the declared scope for them before the planner is called
+        // and hands over the files that actually mention them.
+        source_matches: plannerSourceMatches
+      });
+    };
+    if (planningProfile.mode === "ensemble") {
+      const candidates = [];
+      for (const [index, role] of planningRoles.entries()) {
+        const candidatePackage = { ...plannerPackage, planning_ensemble: { phase: "independent_candidate", member: index + 1, members: planningRoles.length, rule: "Produce your own best plan from the owner objective and primary evidence. Do not assume or imitate another planner." } };
+        const candidate = await invokeRole({ runtime, queue, runId, roleId: role, level, taskRoot, packageContract: candidatePackage, context: plannerContext(role), schemaKey: "planner.v1", parseOptions, gatewayCall });
+        candidate.complete({ outcome: candidate.result.outcome, ensemble_phase: "candidate", member: index + 1 });
+        candidates.push({ member: index + 1, role, provider: candidate.contract.provider, profile: candidate.contract.profile, plan: candidate.result });
+      }
+      const synthesisPackage = { ...plannerPackage, planning_ensemble: { phase: "synthesis", rule: "Compare the independent candidate plans against the owner objective, registered authority, checks and evidence. Return one coherent executable planner.v1 plan. Preserve disagreements as risks or questions; do not concatenate incompatible steps.", candidates } };
+      planner = await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: synthesisPackage, context: plannerContext(plannerRole), schemaKey: "planner.v1", parseOptions, gatewayCall });
+      recordRunEvidence(runtime.db, runId, planner.step.id, "planning_ensemble", { candidate_count: candidates.length, candidate_hashes: candidates.map(item => ({ member: item.member, role: item.role, provider: item.provider, profile: item.profile, plan_hash: structuredHash(item.plan) })), synthesis_hash: structuredHash(planner.result) });
+    } else {
+      planner = await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: plannerPackage, context: plannerContext(plannerRole), schemaKey: "planner.v1", parseOptions, gatewayCall });
+    }
+  }
   let plan = preparedPlan ?? (planner ? planner.result : derivePlanFromTemplates(runtime, projectId, routeContract, message, registeredChecks, level, classification.document_required, documentatorRole, approvalGranted || approvalBeforeWork));
   if (!preparedPlan) {
     if (classification.document_required) registerNewPlannedDocument(runtime, projectId, projectRoot, plan, documentatorRole);
@@ -1335,7 +1441,10 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   let correctionCycles = 0;
   const strategyRecoveries = new Set();
   const recoveryKey = (kind, progress) => `${kind}:${progress?.latest?.semantic_fingerprint ?? progress?.latest?.primary_gap_fingerprint ?? "none"}`;
-  const emergencyFuse = Math.min(12, Math.max(0, Number(policy.limits.correction_cycles) || 0));
+  // Standard execution is a bounded attempt. Goal execution is persistent across factual-progress
+  // corrections: it stops on deterministic stagnation, missing authority/evidence, cancellation or a
+  // declared hard resource budget, not merely because the quality preset allowed N correction cycles.
+  const emergencyFuse = policy.run_profile?.execution_mode === "goal" ? Number.POSITIVE_INFINITY : Math.min(12, Math.max(0, Number(policy.limits.correction_cycles) || 0));
   let gate = await executeGateStep({ runtime, queue, runId, stepKey: stepKeyOf("verification"), projectRoot, level, plannerResult: plan, classification, gateRunner, cycle: 0 });
   let reviewerResult = null;
   let reviewRequirement = reviewerRequirement(policy.contract, classification, correctionCycles, policy.project_escalations);
@@ -1390,7 +1499,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
         runtime.setState(runId, "blocked", { reason: "insufficient workflow calls for correction and its required review phase" });
         return { status: "blocked", planner: plan, workers: workerResults, gate, reviewer: reviewerResult, progress, routing };
       }
-      consumeCorrectionCycle(runtime, runId, correctionCycles);
+      consumeExecutionCorrection(runtime, runId, correctionCycles, policy);
       recordRunEvidence(runtime.db, runId, null, "correction_routing", { ...routing, progress_kind: "gate", semantic_gap_fingerprint: progress.latest?.semantic_fingerprint ?? progress.latest?.primary_gap_fingerprint ?? null, route_keys: selected.map(step => step.key), packet_hash_before: progress.latest?.packet_hash ?? null, semantic_fingerprint_before: progress.latest?.semantic_fingerprint ?? null, frontier_fingerprint_before: progress.latest?.frontier_fingerprint ?? null });
       appendCorrectionSteps(runtime, runId, projectId, plan, correctionCycles, selected, stepKeyOf(""));
       queue.enqueueRun(runId);
@@ -1471,7 +1580,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       runtime.setState(runId, "blocked", { reason: "insufficient workflow calls for correction and its required review phase" });
       return { status: "blocked", planner: plan, workers: workerResults, gate, reviewer: reviewerResult, review_opinions: reviewed.opinions, progress, routing };
     }
-    consumeCorrectionCycle(runtime, runId, correctionCycles);
+    consumeExecutionCorrection(runtime, runId, correctionCycles, policy);
     recordRunEvidence(runtime.db, runId, null, "correction_routing", { ...routing, progress_kind: "semantic_review", semantic_gap_fingerprint: progress.latest?.semantic_fingerprint ?? progress.latest?.primary_gap_fingerprint ?? null, route_keys: selected.map(step => step.key), packet_hash_before: progress.latest?.packet_hash ?? null, semantic_fingerprint_before: progress.latest?.semantic_fingerprint ?? null, frontier_fingerprint_before: progress.latest?.frontier_fingerprint ?? null });
     appendCorrectionSteps(runtime, runId, projectId, plan, correctionCycles, selected, stepKeyOf(""));
     queue.enqueueRun(runId);
@@ -1585,7 +1694,7 @@ export async function continueApprovedRun({ runtime, runId, discovery, responseL
   const level = operationalLevel(classification.quality_mode);
   const projectId = runtime.get(runId).project_id;
   const routeContract = selectedWorkflowContract(runtime.db, projectId, runtime.get(runId).workflow_id);
-  const policy = loadOperationalPolicy(runtime.db, projectId, runtime.get(runId).workflow_id, level);
+  const policy = runOperationalPolicy(runtime, runId, projectId, runtime.get(runId).workflow_id, level);
   return documentAndComplete({
     runtime, queue: new ExecutionQueue(runtime.db), runId, projectId, projectRoot: discovery.project.root_path, level, classification, discovery, responseLanguage, taskRoot, gatewayCall, policy,
     plan: recorded.plan, gate: recorded.gate, reviewerResult: recorded.reviewer, documentatorRole: routeContract?.documentator_role ?? "documentator",

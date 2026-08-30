@@ -14,6 +14,7 @@ function temporaryRoot() { return fs.mkdtempSync(path.join(os.tmpdir(), "zodchi-
 function release(root, version) {
   fs.mkdirSync(path.join(root, "WorkflowPlatform", "hooks"), { recursive: true });
   fs.copyFileSync(path.join(repositoryRoot, "WorkflowPlatform", "hooks", "user-prompt-submit.mjs"), path.join(root, "WorkflowPlatform", "hooks", "user-prompt-submit.mjs"));
+  fs.copyFileSync(path.join(repositoryRoot, "WorkflowPlatform", "hooks", "session-router.mjs"), path.join(root, "WorkflowPlatform", "hooks", "session-router.mjs"));
   fs.cpSync(path.join(repositoryRoot, "configs"), path.join(root, "configs"), { recursive: true });
   fs.cpSync(path.join(repositoryRoot, "integrations"), path.join(root, "integrations"), { recursive: true });
   fs.writeFileSync(path.join(root, "product.json"), JSON.stringify({ version }));
@@ -21,6 +22,7 @@ function release(root, version) {
   return root;
 }
 function skillRoots(root) { return { "claude-code": path.join(root, "skills-claude"), codex: path.join(root, "skills-codex") }; }
+function sessionHookFiles(root) { return { "claude-code": path.join(root, "hooks-claude", "settings.json"), codex: path.join(root, "hooks-codex", "hooks.json") }; }
 
 test("an existing filesystem root is a valid parent for a specific installation directory", () => {
   const filesystemRoot = path.parse(process.cwd()).root;
@@ -81,7 +83,7 @@ test("clean install deploys explicit client skills and does not install project 
     assert.equal(installed.hook_results.length, 0);
     assert.equal(installed.skill_results.length, 2);
     assert.equal(fs.existsSync(path.join(project, ".codex", ".zodchi-hook.json")), false);
-    assert.match(fs.readFileSync(path.join(roots.codex, "zodchi", "SKILL.md"), "utf8"), /explicit-invoke\.mjs/);
+    assert.match(fs.readFileSync(path.join(roots.codex, "zodchi", "SKILL.md"), "utf8"), /session router/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -95,7 +97,7 @@ test("update removes owned legacy hooks, refreshes skills, rollback keeps hooks 
   const updated = installRelease({ source: sourceB, destination, dataRoot, hooks: hookManifest, skillRoots: roots, healthCheck });
   assert.equal(updated.version, "0.6.0-rc.1");
   assert.equal(fs.existsSync(path.join(project, ".codex", ".zodchi-hook.json")), false);
-  assert.match(fs.readFileSync(path.join(roots["claude-code"], "zodchi", "SKILL.md"), "utf8"), /explicit-invoke\.mjs/);
+  assert.match(fs.readFileSync(path.join(roots["claude-code"], "zodchi", "SKILL.md"), "utf8"), /session router/);
   assert.equal(fs.readFileSync(path.join(dataRoot, "owner-data.txt"), "utf8"), "preserve me");
   const rolledBack = rollbackRelease({ destination, dataRoot, skillRoots: roots, healthCheck });
   assert.equal(rolledBack.version, "0.5.24");

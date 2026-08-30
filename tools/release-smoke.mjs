@@ -185,12 +185,19 @@ const installed = path.join(work, "installed");
 const smokeSkillRoots = { "claude-code": path.join(work, "client-skills", "claude-code"), codex: path.join(work, "client-skills", "codex") };
 const skillRootsFile = path.join(work, "skill-roots.json");
 fs.writeFileSync(skillRootsFile, `${JSON.stringify(smokeSkillRoots, null, 2)}\n`, "utf8");
-execFileSync(process.execPath, [path.join(productRoot, "tools", "install.mjs"), "install", "--source", productRoot, "--destination", installed, "--data-root", path.join(work, "installation-data"), "--skill-roots", skillRootsFile], { encoding: "utf8", windowsHide: true, stdio: "pipe" });
+const smokeSessionHooks = { "claude-code": path.join(work, "client-hooks", "claude-code", "settings.json"), codex: path.join(work, "client-hooks", "codex", "hooks.json") };
+const sessionHookFiles = path.join(work, "session-hook-files.json");
+fs.writeFileSync(sessionHookFiles, `${JSON.stringify(smokeSessionHooks, null, 2)}\n`, "utf8");
+execFileSync(process.execPath, [path.join(productRoot, "tools", "install.mjs"), "install", "--source", productRoot, "--destination", installed, "--data-root", path.join(work, "installation-data"), "--skill-roots", skillRootsFile, "--session-hook-files", sessionHookFiles], { encoding: "utf8", windowsHide: true, stdio: "pipe" });
 for (const [client, root] of Object.entries(smokeSkillRoots)) for (const name of ["zodchi"]) {
   const skillFile = path.join(root, name, "SKILL.md");
   if (!fs.existsSync(skillFile)) fail("RELEASE_SKILL_NOT_INSTALLED", `${client}:${name}`);
   const text = fs.readFileSync(skillFile, "utf8");
-  if (!text.includes(path.resolve(installed).replaceAll("\\", "/")) || !text.includes("explicit-invoke.mjs")) fail("RELEASE_SKILL_TARGET_INVALID", `${client}:${name}`);
+  if (!text.includes("session router") && !text.includes("session-router")) fail("RELEASE_SKILL_TARGET_INVALID", `${client}:${name}`);
+}
+for (const [client, file] of Object.entries(smokeSessionHooks)) {
+  const text = fs.readFileSync(file, "utf8");
+  if (!text.includes(path.join(installed, "WorkflowPlatform", "hooks", "session-router.mjs"))) fail("RELEASE_SESSION_HOOK_TARGET_INVALID", client);
 }
 const presetLint = JSON.parse(execFileSync(process.execPath, [path.join(installed, "WorkflowPlatform", "src", "cli.mjs"), "preset-lint"], { encoding: "utf8", windowsHide: true }));
 if (presetLint.status !== "passed" || presetLint.presets !== 15) fail("RELEASE_PRESET_CATALOG_INVALID", JSON.stringify(presetLint));

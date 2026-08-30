@@ -8,7 +8,7 @@ Zodchi превращает один обычный чат с моделью в 
 
 Вы своими словами описываете, что хотите получить. Zodchi определяет вид работы, передаёт каждому специалисту только нужный контекст, запускает подходящие проверки, фиксирует принятые решения и возвращает понятный ответ в тот же чат.
 
-Обычные сообщения остаются обычными сообщениями. Для явного запуска используйте `/zodchi <задача>` в Codex или Claude Code. Команда без аргументов может взять непосредственно предшествующий содержательный запрос, только если это однозначно.
+Обычные сообщения остаются обычными сообщениями. Один раз вызовите `/zodchi` в чате Codex или Claude Code — режим Zodchi включится только для этого чата, после чего задачу можно обсуждать обычными сообщениями. Соседний и новый чат остаются обычными. Закрытие чата завершает режим; отдельных публичных команд status, execute и exit нет.
 
 <section id="zachem_eto_nuzhno" status="accepted">
 
@@ -71,20 +71,18 @@ node WorkflowPlatform/src/cli.mjs document-unregister --db <workflow.sqlite> --p
 node WorkflowPlatform/src/cli.mjs lint --db <workflow.sqlite> --project <project-id> --file <project-document.md>
 ```
 
-Gauntlet — отдельная выбираемая владельцем стратегия улучшения, а не название quality mode и не обязательный review. `strategy-list` показывает package default, локальный override и эффективное значение. `strategy-set` переключает `standard`/`gauntlet`; значение `inherit` удаляет override и возвращает политику пакета. Изменение не требует пересборки пакета и сохраняется отдельно от него.
+Перед реализацией Zodchi фиксирует четыре независимые оси: `Quality` (`prototype | mvp | production | security-audit`), `Execution` (`standard | goal`), `Verification` (`baseline | gauntlet`) и `Planning` (`single | ensemble`). Онбординг объясняет варианты и сохраняет дефолты проекта; конкретная задача может переопределить их обычным текстом. Если запрошен ensemble, но доступны меньше двух независимых планировщиков, Zodchi честно показывает переход к single.
 
 ```powershell
-node WorkflowPlatform/src/cli.mjs strategy-list --db <workflow.sqlite> --project <project-id>
-node WorkflowPlatform/src/cli.mjs strategy-set --db <workflow.sqlite> --project <project-id> --package <package-key> --level mvp --strategy standard --confirmed-by <владелец>
-node WorkflowPlatform/src/cli.mjs strategy-set --db <workflow.sqlite> --project <project-id> --package <package-key> --level mvp --strategy gauntlet --confirmed-by <владелец>
-node WorkflowPlatform/src/cli.mjs strategy-set --db <workflow.sqlite> --project <project-id> --package <package-key> --level mvp --strategy inherit
+node WorkflowPlatform/src/cli.mjs run-profile-list --db <workflow.sqlite> --project <project-id>
+node WorkflowPlatform/src/cli.mjs run-profile-set --db <workflow.sqlite> --project <project-id> --quality prototype --execution goal --verification gauntlet --planning ensemble --confirmed-by <владелец>
 ```
 
-Выбор показывается прямо во время онбординга. Позже владелец может вернуться в настроечный чат и написать: «Покажи или измени режим проверки проекта». Настроечный агент выполнит `strategy-list`, объяснит эффективные значения и применит только подтверждённые изменения через `strategy-set`. Команды выше — проверяемый механизм, а не синтаксис, который обычный пользователь обязан помнить.
+Выбор показывается прямо во время онбординга. Позже владелец может вернуться в настроечный чат и попросить показать или изменить дефолты запуска. Команды выше — внутренний проверяемый механизм, а не дополнительные команды чата.
 
-`standard` использует обычный ограниченный цикл исполнения и исправления. `gauntlet` прежде всего означает настойчивость: запускаются программные гейты, красный гейт направляется в targeted correction, затем результат проверяется снова — до green либо честного bounded blocker. Нужен ли reviewer, отдельно решает quality contract. Когда review обязателен, в standard работает один основной reviewer, а в Gauntlet допускается максимум три независимых мнения: основной reviewer проверяет результат целиком, adversarial reviewer пытается опровергнуть сильнейшее существенное утверждение, evidence reviewer проверяет первичные доказательства, provenance и заявленную полноту. Они получают один канонический proof packet, но не видят мнения друг друга. Judge не является постоянным четвёртым reviewer: он вызывается только при содержательном расхождении допустимых выводов. Strategy reviewer вообще не проверяет результат — он включается только после того, как correction перестала добавлять семантический прогресс или новые доказательства, и выбирает новый ограниченный маршрут либо честный `blocked`.
+`standard` — обычное ограниченное выполнение. `goal` сохраняет цель между контрольными точками и не выдаёт произвольное число циклов за завершение задачи. Reflection является производной Goal: платформа учитывает активное время и фактический прогресс, но не считает заранее известный долгий build или test признаком неверного маршрута. `gauntlet` относится к проверке: запускает испытания и targeted correction до доказанного результата, честного blocker или safety boundary. Нужен ли reviewer, отдельно решает Quality.
 
-Prototype по умолчанию использует Gauntlet, потому что исследовательская реализация часто требует нескольких проходов «проверить → исправить → проверить». Поставляемый пакет разрешает до трёх correction cycles и двенадцати model calls для этого цикла. При этом у Prototype остаётся `reviewer_policy=none`: Gauntlet сам по себе не создаёт обязательный review. Low-risk MVP по условному контракту также может пройти без review; production и security требуют review всегда. Переход на `standard` уменьшает настойчивость, а при обязательном review — число моделей, время и стоимость, но не ослабляет программные гейты и подтверждения владельца.
+У Prototype остаётся `reviewer_policy=none`: Gauntlet сам по себе не создаёт обязательный review. MVP требует независимый review, production и security используют более строгие review-контракты. В baseline работает основной reviewer; в Gauntlet могут быть допущены основной, adversarial и evidence reviewer. Judge вызывается только при содержательном расхождении, strategy reviewer — только при стагнации correction. Программные гейты и подтверждения владельца от количества reviewer не зависят.
 
 Подробнее: [переносимые пакеты](../../WorkflowPlatform/docs/ProjectPackages.md) и [доказательства выпуска 0.6](../RELEASE_EVIDENCE_0.6.0.md).
 

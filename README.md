@@ -8,7 +8,7 @@ Zodchi turns one ordinary AI chat into a coordinated team for real project work.
 
 You describe the result in your own words. Zodchi decides what kind of work is needed, gives each specialist only the relevant context, runs the appropriate checks, records accepted decisions, and returns a clear answer in the same chat.
 
-Ordinary chat messages stay ordinary. Invoke Zodchi explicitly with `/zodchi <task>` in Codex or Claude Code. With no arguments, the command may use the immediately preceding substantive request when that choice is unambiguous.
+Ordinary chat messages stay ordinary. Invoke `/zodchi` once in a Codex or Claude Code chat to enter Zodchi mode for that chat only; then describe and refine tasks with ordinary messages. A neighboring or newly opened chat remains an ordinary host chat. Closing the chat ends the mode, so there are no separate public status, execute, or exit commands.
 
 <section id="why_use_it" status="accepted">
 
@@ -72,20 +72,20 @@ The setup chat is the canonical administration place: it discovers documents, pr
 
 Prefer the portable global status vocabulary when it expresses the same meaning. A project-local status is appropriate only for a real project concept that should not become a rule for every other project. It gives the linter exact local vocabulary without polluting or weakening the global contract.
 
-Gauntlet is an owner-selected improvement strategy, not a synonym for quality mode or mandatory review. List the package default, owner override, and effective value, then set or reset it without rebuilding the package:
+Before implementation Zodchi fixes one visible run profile with four independent axes: `Quality` (`prototype | mvp | production | security-audit`), `Execution` (`standard | goal`), `Verification` (`baseline | gauntlet`), and `Planning` (`single | ensemble`). Onboarding explains the choices and records project defaults; a task may override them in ordinary language. If an ensemble was requested but fewer than two independent planner bindings are available, Zodchi reports the fallback instead of pretending that one model is an ensemble. Setup automation uses the internal `run-profile-list` and `run-profile-set` operations; they are not additional chat commands.
+
+Gauntlet is a verification policy, not a synonym for quality mode, Goal execution, or mandatory review. It repeats trials only while deterministic evidence changes and stops honestly on a proven blocker or safety boundary. Goal is the persistent execution policy: it keeps the objective across checkpoints rather than treating an arbitrary correction count as task completion. Reflection checkpoints derive from Goal execution and elapsed active work; known long builds and tests do not by themselves trigger a change of strategy.
 
 ```powershell
-node WorkflowPlatform/src/cli.mjs strategy-list --db <workflow.sqlite> --project <project-id>
-node WorkflowPlatform/src/cli.mjs strategy-set --db <workflow.sqlite> --project <project-id> --package <package-key> --level mvp --strategy standard --confirmed-by <owner>
-node WorkflowPlatform/src/cli.mjs strategy-set --db <workflow.sqlite> --project <project-id> --package <package-key> --level mvp --strategy gauntlet --confirmed-by <owner>
-node WorkflowPlatform/src/cli.mjs strategy-set --db <workflow.sqlite> --project <project-id> --package <package-key> --level mvp --strategy inherit
+node WorkflowPlatform/src/cli.mjs run-profile-list --db <workflow.sqlite> --project <project-id>
+node WorkflowPlatform/src/cli.mjs run-profile-set --db <workflow.sqlite> --project <project-id> --quality prototype --execution goal --verification gauntlet --planning ensemble --confirmed-by <owner>
 ```
 
-The setup chat displays this choice during onboarding. Later the owner can return to that chat and say “show or change this project's review mode”; the setup agent runs `strategy-list`, explains the current effective values, and applies only the confirmed `strategy-set` changes. The CLI above is the auditable mechanism, not something an ordinary user has to memorize.
+The setup chat displays these choices during onboarding. Later the owner can return to it and ask to show or change a project's run defaults. The CLI above is the auditable internal mechanism, not something an ordinary user has to memorize.
 
 `standard` uses the ordinary bounded execution and correction allowance. `gauntlet` is first of all a persistence strategy: deterministic gates run, a failed gate is routed to a targeted correction, and the result is checked again until green or a bounded honest blocker. Review admission is a separate quality-contract decision. When review is required, standard uses one primary reviewer while Gauntlet may admit at most three independent opinions: the primary reviewer checks the result as a whole, the adversarial reviewer tries to disprove its strongest material claim, and the evidence reviewer checks primary evidence, provenance, and claimed completeness. They see the same canonical proof packet but not each other's opinion. A judge is not a fourth routine reviewer: it runs only when admissible reviewer conclusions materially disagree. A strategy reviewer is not a result reviewer at all: it runs only after correction stops adding semantic or evidence-frontier progress and chooses a new bounded route or an honest `blocked` outcome.
 
-Prototype defaults to Gauntlet because an exploratory implementation often needs several test-and-fix passes; the shipped package allows up to three correction cycles and twelve model calls for that loop. Prototype still has `reviewer_policy=none`: Gauntlet does not manufacture a review requirement. Low-risk MVP may also skip review under its conditional quality contract; production and security always require review. Switching to `standard` reduces persistence and, when review is required, reviewer breadth, time, and model cost, but never weakens deterministic gates or owner approvals.
+Prototype keeps `reviewer_policy=none`: Gauntlet does not manufacture a review requirement. MVP requires an independent review; production and security use stricter review contracts. When review is required, baseline uses the primary reviewer while Gauntlet may admit primary, adversarial, and evidence opinions. Judge and strategy reviewer remain conditional. Deterministic gates and owner approvals never depend on reviewer count.
 
 See [Portable project packages](WorkflowPlatform/docs/ProjectPackages.md) and the [0.6 release evidence](docs/RELEASE_EVIDENCE_0.6.0.md).
 

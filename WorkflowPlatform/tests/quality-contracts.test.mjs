@@ -27,7 +27,7 @@ test("review escalation follows quality, risk and correction evidence", () => {
   const contract = level => DEFAULT_QUALITY_CONTRACTS.find(item => item.level === level);
   const low = { risk: "low", work_type: "implementation", artifact_type: "code" };
   assert.equal(reviewerRequirement(contract("prototype"), low).required, false);
-  assert.equal(reviewerRequirement(contract("mvp"), low).required, false);
+  assert.equal(reviewerRequirement(contract("mvp"), low).required, true);
   assert.equal(reviewerRequirement(contract("mvp"), { ...low, risk: "high" }).required, true);
   assert.equal(reviewerRequirement(contract("mvp"), low, 1).required, true);
   assert.equal(reviewerRequirement(contract("production"), low).required, true);

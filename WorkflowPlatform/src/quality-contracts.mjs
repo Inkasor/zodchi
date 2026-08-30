@@ -31,7 +31,7 @@ export const DEFAULT_QUALITY_CONTRACTS = Object.freeze([
   },
   {
     level: "mvp", version: "1.0.0", name: "MVP",
-    purpose: "Deliver one complete relevant user scenario with deterministic evidence.", reviewer_policy: "conditional", documentation_policy: "verified_result", correction_limit: 1, status: "active",
+    purpose: "Deliver one complete relevant user scenario with deterministic evidence.", reviewer_policy: "required", documentation_policy: "verified_result", correction_limit: 1, status: "active",
     budgets: budgets(12, 3600000, 1, 2),
     rules: rules("mvp", {
       success: [["complete_scenario", "One relevant end-to-end user scenario works inside the accepted scope."], ["deterministic_green", "All applicable static checks, dedicated tests and document lint are green."]],

@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import { hookInstallationStatus, hookSnapshotHashes, removeOwnedHookInstallation, restoreHookInstallation, snapshotHookInstallation } from "../WorkflowPlatform/src/hook-installation.mjs";
 import { defaultInstallationPaths } from "./installation-paths.mjs";
 import { defaultSkillRoots, installClientSkills, removeClientSkills, restoreClientSkills, snapshotClientSkills } from "./skill-installation.mjs";
+import { defaultSessionHookFiles, installSessionHooks, removeSessionHooks, restoreSessionHooks, snapshotSessionHooks } from "./session-hook-installation.mjs";
 
 const renameDelay = new Int32Array(new SharedArrayBuffer(4));
 
@@ -132,6 +133,20 @@ function restoreSkillTransaction(transaction) {
   if (transaction) restoreClientSkills(transaction.snapshots);
 }
 
+function updateSessionHooks(applicationRoot, files) {
+  const snapshots = snapshotSessionHooks({ files });
+  try { return { snapshots, applied: installSessionHooks({ applicationRoot, files }) }; }
+  catch (error) { restoreSessionHooks(snapshots); throw error; }
+}
+
+function restoreSessionHookTransaction(transaction) { if (transaction) restoreSessionHooks(transaction.snapshots); }
+
+function resolvedSessionHookFiles(options, skillRoots) {
+  if (options.sessionHookFiles) return options.sessionHookFiles;
+  if (options.skillRoots) return Object.fromEntries(Object.entries(skillRoots).map(([client, root]) => [client, path.join(path.dirname(path.resolve(root)), `${client}-session-hooks.json`)]));
+  return defaultSessionHookFiles();
+}
+
 function restoreHookTransaction(transaction) {
   if (!transaction) return;
   for (let index = transaction.snapshots.length - 1; index >= 0; index -= 1) restoreHookInstallation(transaction.snapshots[index], transaction.current[index]);
@@ -157,7 +172,8 @@ export function installRelease(options) {
   const workflowDatabase = options.workflowDatabase ?? process.env.WORKFLOW_DB ?? path.join(dataRoot, "workflow.sqlite");
   const targets = registeredHookTargets(workflowDatabase, options.hooks ?? []);
   const skillRoots = options.skillRoots ?? defaultSkillRoots();
-  let oldMoved = false, hookTransaction = null, skillTransaction = null;
+  const sessionHookFiles = resolvedSessionHookFiles(options, skillRoots);
+  let oldMoved = false, hookTransaction = null, skillTransaction = null, sessionHookTransaction = null;
   try {
     fs.cpSync(source, stage, { recursive: true, errorOnExist: true, force: false });
     healthCheck(stage);
@@ -165,6 +181,7 @@ export function installRelease(options) {
     renameWithRetry(stage, destination);
     hookTransaction = removeLegacyHooks(targets);
     skillTransaction = updateClientSkills(destination, skillRoots);
+    sessionHookTransaction = updateSessionHooks(destination, sessionHookFiles);
     healthCheck(destination);
     const state = {
       schema_version: 1,
@@ -178,11 +195,13 @@ export function installRelease(options) {
       hooks: [],
       legacy_hooks_removed: targets,
       skills: skillTransaction.applied,
+      session_hooks: sessionHookTransaction.applied,
       updated_at: new Date().toISOString()
     };
     atomicJson(stateFile, state);
-    return Object.freeze({ ...state, state_file: stateFile, hook_results: hookTransaction.applied, skill_results: skillTransaction.applied });
+    return Object.freeze({ ...state, state_file: stateFile, hook_results: hookTransaction.applied, skill_results: skillTransaction.applied, session_hook_results: sessionHookTransaction.applied });
   } catch (error) {
+    try { restoreSessionHookTransaction(sessionHookTransaction); } catch (rollbackError) { error.sessionHookRollbackError = rollbackError; }
     try { restoreSkillTransaction(skillTransaction); } catch (rollbackError) { error.skillRollbackError = rollbackError; }
     try { restoreHookTransaction(hookTransaction); } catch (rollbackError) { error.hookRollbackError = rollbackError; }
     if (fs.existsSync(destination) && oldMoved) fs.rmSync(destination, { recursive: true, force: true });
@@ -202,20 +221,23 @@ export function rollbackRelease(options) {
   if (!fs.existsSync(destination) || !fs.existsSync(previous)) throw new Error("INSTALL_ROLLBACK_RELEASE_MISSING");
   const healthCheck = options.healthCheck ?? defaultHealthCheck;
   const skillRoots = options.skillRoots ?? defaultSkillRoots();
+  const sessionHookFiles = resolvedSessionHookFiles(options, skillRoots);
   const failed = safeSibling(`${destination}.previous-${crypto.randomUUID()}`, destination, "previous");
   const targets = registeredHookTargets(state.workflow_database, [...(state.hooks ?? []), ...(state.legacy_hooks_removed ?? [])]);
-  let hookTransaction = null, skillTransaction = null, movedCurrent = false, movedPrevious = false;
+  let hookTransaction = null, skillTransaction = null, sessionHookTransaction = null, movedCurrent = false, movedPrevious = false;
   try {
     healthCheck(previous);
     renameWithRetry(destination, failed); movedCurrent = true;
     renameWithRetry(previous, destination); movedPrevious = true;
     hookTransaction = removeLegacyHooks(targets);
     skillTransaction = updateClientSkills(destination, skillRoots);
+    sessionHookTransaction = updateSessionHooks(destination, sessionHookFiles);
     healthCheck(destination);
     const next = { ...state, version: releaseVersion(destination), previous_release: failed, previous_version: releaseVersion(failed), rolled_back_at: new Date().toISOString() };
     atomicJson(stateFile, next);
-    return Object.freeze({ status: "rolled_back", application: destination, version: next.version, previous_release: failed, hook_results: hookTransaction.applied, skill_results: skillTransaction.applied });
+    return Object.freeze({ status: "rolled_back", application: destination, version: next.version, previous_release: failed, hook_results: hookTransaction.applied, skill_results: skillTransaction.applied, session_hook_results: sessionHookTransaction.applied });
   } catch (error) {
+    try { restoreSessionHookTransaction(sessionHookTransaction); } catch (rollbackError) { error.sessionHookRollbackError = rollbackError; }
     try { restoreSkillTransaction(skillTransaction); } catch (rollbackError) { error.skillRollbackError = rollbackError; }
     try { restoreHookTransaction(hookTransaction); } catch (rollbackError) { error.hookRollbackError = rollbackError; }
     if (movedPrevious && fs.existsSync(destination)) renameWithRetry(destination, previous);
@@ -232,11 +254,12 @@ export function uninstallRelease(options) {
   const targets = registeredHookTargets(state?.workflow_database, [...(state?.hooks ?? []), ...(state?.legacy_hooks_removed ?? []), ...(options.hooks ?? [])]);
   const hookResults = targets.map(removeOwnedHookInstallation);
   const skillResults = removeClientSkills({ applicationRoot: destination, roots: options.skillRoots ?? defaultSkillRoots() });
+  const sessionHookResults = removeSessionHooks({ applicationRoot: destination, files: resolvedSessionHookFiles(options, options.skillRoots ?? defaultSkillRoots()) });
   let recoverable = null;
   if (fs.existsSync(destination)) { recoverable = safeSibling(`${destination}.uninstalled-${crypto.randomUUID()}`, destination, "uninstalled"); renameWithRetry(destination, recoverable); }
   const next = { ...(state ?? {}), status: "uninstalled", application: destination, data_root: dataRoot, recoverable_release: recoverable, uninstalled_at: new Date().toISOString() };
   atomicJson(stateFile, next);
-  return Object.freeze({ ...next, state_file: stateFile, hooks: hookResults, skills: skillResults, user_data_preserved: true });
+  return Object.freeze({ ...next, state_file: stateFile, hooks: hookResults, skills: skillResults, session_hooks: sessionHookResults, user_data_preserved: true });
 }
 
 function manifestHooks(file) {
@@ -260,16 +283,27 @@ function manifestSkillRoots(file) {
   return roots;
 }
 
+function manifestSessionHookFiles(file) {
+  if (!file) return undefined;
+  const value = JSON.parse(fs.readFileSync(path.resolve(String(file)), "utf8"));
+  const files = {};
+  for (const client of Object.keys(defaultSessionHookFiles())) {
+    if (typeof value?.[client] !== "string" || !value[client].trim()) throw new Error(`INSTALL_SESSION_HOOK_FILES_INVALID: ${client}`);
+    files[client] = path.resolve(value[client]);
+  }
+  return files;
+}
+
 function main() {
   const cli = argsObject(process.argv.slice(2));
   const command = cli._[0];
   const defaults = defaultInstallationPaths();
-  const common = { destination: path.resolve(String(cli.destination ?? defaults.application)), dataRoot: path.resolve(String(cli["data-root"] ?? defaults.data)), workflowDatabase: cli["workflow-db"] ? path.resolve(String(cli["workflow-db"])) : undefined, hooks: manifestHooks(cli["hook-manifest"]), skillRoots: manifestSkillRoots(cli["skill-roots"]) };
+  const common = { destination: path.resolve(String(cli.destination ?? defaults.application)), dataRoot: path.resolve(String(cli["data-root"] ?? defaults.data)), workflowDatabase: cli["workflow-db"] ? path.resolve(String(cli["workflow-db"])) : undefined, hooks: manifestHooks(cli["hook-manifest"]), skillRoots: manifestSkillRoots(cli["skill-roots"]), sessionHookFiles: manifestSessionHookFiles(cli["session-hook-files"]) };
   let result;
   if (command === "install" || command === "update") result = installRelease({ ...common, source: path.resolve(String(cli.source ?? "")) });
   else if (command === "rollback") result = rollbackRelease(common);
   else if (command === "uninstall") result = uninstallRelease(common);
-  else throw new Error("Usage: node tools/install.mjs install|update --source <extracted-release> [--destination <dir>] [--data-root <dir>] [--workflow-db <file>] [--hook-manifest <legacy-removal-json>] [--skill-roots <json>] | rollback | uninstall");
+  else throw new Error("Usage: node tools/install.mjs install|update --source <extracted-release> [--destination <dir>] [--data-root <dir>] [--workflow-db <file>] [--hook-manifest <legacy-removal-json>] [--skill-roots <json>] [--session-hook-files <json>] | rollback | uninstall");
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
