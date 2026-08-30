@@ -1,4 +1,4 @@
-<document id="zodchi_readme" status="accepted" authority="zodchi" version="0.6.2" language="en" format="markdown+xml_semantic">
+<document id="zodchi_readme" status="accepted" authority="zodchi" version="0.6.3" language="en" format="markdown+xml_semantic">
 
 # Zodchi
 
@@ -68,7 +68,7 @@ Projects may also register their own semantic status and evidence-type keys with
 node WorkflowPlatform/src/cli.mjs lint --db <workflow.sqlite> --project <project-id> --file <project-document.md>
 ```
 
-The setup chat is the canonical administration place: it discovers documents, presents a proposal, waits for owner confirmation, and then runs these registry commands. A project `/zodchi` run can analyze current documents and recommend a change, but 0.6.2 does not yet turn a later natural-language confirmation inside that run into an automatic registry transaction. Apply the confirmed proposal in the setup chat. Unregistering a document only removes control metadata; it never deletes the file.
+The setup chat is the canonical administration place: it discovers documents, presents a proposal, waits for owner confirmation, and then runs these registry commands. A project `/zodchi` run can analyze current documents and recommend a change, but 0.6.3 does not yet turn a later natural-language confirmation inside that run into an automatic registry transaction. Apply the confirmed proposal in the setup chat. Unregistering a document only removes control metadata; it never deletes the file.
 
 Prefer the portable global status vocabulary when it expresses the same meaning. A project-local status is appropriate only for a real project concept that should not become a rule for every other project. It gives the linter exact local vocabulary without polluting or weakening the global contract.
 

@@ -4,9 +4,18 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
-<section id="0_6_2_unreleased" status="working">
+<section id="0_6_3_2026_08_30" status="working">
 
-## 0.6.2 — Unreleased
+## 0.6.3 — 2026-08-30
+
+- Published-release smoke validates Windows session-hook targets structurally instead of searching escaped JSON text.
+- Update preserves the workflow database registered by the installed release and safely treats an existing unmigrated database as having no legacy project hooks.
+
+</section>
+
+<section id="0_6_2_2026_08_30" status="working">
+
+## 0.6.2 — 2026-08-30
 
 - Controlled project documents are owner-selected instead of package-required; packages no longer invent missing GDD, infrastructure, claims, or state files.
 - `document-list`, `document-register`, `document-unregister`, `document-status-register`, and `document-evidence-register` manage local document and lint-vocabulary control.
