@@ -22,6 +22,10 @@ test("client skills install only the canonical Zodchi mode command for both host
       const directory = path.join(value.roots[client], name), text = fs.readFileSync(path.join(directory, "SKILL.md"), "utf8");
       assert.match(text, /session router/);
       assert.doesNotMatch(text, /__ZODCHI_ROOT__/);
+      if (client === "codex") {
+        assert.match(text, /activation-status\.mjs/);
+        assert.ok(text.includes(path.resolve(value.applicationRoot).replaceAll("\\", "/")));
+      }
       assert.equal(JSON.parse(fs.readFileSync(path.join(directory, ".zodchi-skill.json"), "utf8")).owner, "zodchi");
     }
     for (const client of ["claude-code", "codex"]) assert.equal(fs.existsSync(path.join(value.roots[client], "zod")), false);
