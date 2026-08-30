@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { openDb } from "./db.mjs";
 import { formatActivationHookOutput, formatHookOutput, hookEventFields } from "./hook-entry.mjs";
-import { consumePendingMessage, endChatSession, routeChatPrompt, setPendingMessage } from "./chat-session.mjs";
+import { bindChatSessionResult, consumePendingMessage, endChatSession, routeChatPrompt, setPendingMessage } from "./chat-session.mjs";
 import { processMessage } from "./workflow-app.mjs";
 
 function eventMessage(event) {
@@ -68,10 +69,11 @@ export async function routeSessionEvent({ event, client, dbFile, workflow = null
   if (eventName !== "UserPromptSubmit") { db.close(); return null; }
   const rawPrompt = eventMessage(event);
   const prompt = explicitSkillPrompt(rawPrompt, { client, activationSkillPath });
+  const turnKey = String(event.turn_id ?? event.turnId ?? event.prompt_id ?? event.promptId ?? event.event_id ?? event.eventId ?? randomUUID());
   if (prompt === null) { db.close(); return null; }
   let routing, prepared = null;
   try {
-    routing = routeChatPrompt(db, { client, sessionId: id, origin: event.cwd, prompt });
+    routing = routeChatPrompt(db, { client, sessionId: id, origin: event.cwd, prompt, turnKey });
     if (routing.action === "route" && routing.session?.pending_message && isExecutionConfirmation(prompt)) {
       prepared = consumePendingMessage(db, { client, sessionId: id });
     }
@@ -102,10 +104,10 @@ export async function routeSessionEvent({ event, client, dbFile, workflow = null
       planning_mode: prepared.profile.planning_mode
     } : {}
   });
-  if (result.route === "prepared") {
-    const state = (dependencies.openDb ?? openDb)(dbFile);
-    try { setPendingMessage(state, { client, sessionId: id, message: routing.message, profile: result.run_profile ?? null }); }
-    finally { state.close(); }
-  }
+  const state = (dependencies.openDb ?? openDb)(dbFile);
+  try {
+    if (result.route === "prepared") setPendingMessage(state, { client, sessionId: id, message: routing.message, profile: result.run_profile ?? null });
+    if (result.run_id) bindChatSessionResult(state, { client, sessionId: id, runId: result.run_id, turnKey });
+  } finally { state.close(); }
   return formatHookOutput(result, { deliveryMode });
 }

@@ -13,7 +13,7 @@ function fixture() {
   const project = path.join(root, "project"); fs.mkdirSync(project);
   const file = path.join(root, "workflow.sqlite"), db = openDb(file);
   db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('project','Project',?,?)").run(project, new Date().toISOString());
-  activateChatSession(db, { client: "codex", sessionId: "active-session", origin: project });
+  activateChatSession(db, { client: "codex", sessionId: "active-session", origin: project, turnKey: "turn-active" });
   db.close();
   return { root, project, file };
 }
