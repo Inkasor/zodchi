@@ -9,14 +9,14 @@
     <component id="workflow_platform" responsibility="workflow">Classifies the request, assembles registered context, selects a route, and manages stages, documents, and deterministic checks.</component>
     <component id="code_intelligence" responsibility="source_retrieval">Maps natural-language evidence to code identifiers, expands them through bounded BSL or TypeScript/JavaScript structure, and can query a registered external C# LSP provider over an attested Unity solution boundary. It returns measured source locations without embeddings.</component>
     <component id="agent_gateway" responsibility="model_calls">Performs one bounded call to the assigned model and stores a technical receipt without the full request or response.</component>
-    <component id="explicit_skill" responsibility="chat_entry">Passes only a task explicitly invoked with `/zodchi` to WorkflowPlatform and returns the result to the same chat.</component>
+    <component id="explicit_skill" responsibility="chat_entry">Activates Zodchi mode for one explicit client session with `/zodchi`; the conditional router is a no-op for every inactive session.</component>
     <component id="package_sdk" responsibility="portable_workflows">Composes versioned roles, workflow graphs, checks, evidence flows, authority, resources, schemas, and quality contracts into deterministic portable packages.</component>
     <component id="project_presets" responsibility="onboarding_recipes">Map observed working patterns to public packages, source scopes, local capabilities, authority boundaries, first-value scenarios, and explicit acceptance plans without copying private project data.</component>
     <component id="external_control_plane" responsibility="external_runtime">Exchanges signed, hash-bound requests and results with registered external executors while WorkflowPlatform retains run, resource, cancellation, and completion authority.</component>
   </components>
 
   <flow status="accepted">
-    <step id="intake" order="1">Receive the explicitly selected user task through an installed host skill and preserve its UTF-8 bytes.</step>
+    <step id="intake" order="1">Activate one client session explicitly, then receive ordinary messages from only that active session.</step>
     <step id="context" order="2">Programmatically assemble permitted project facts, registered documents, lexical source evidence, and a bounded language graph.</step>
     <step id="classification" order="3">Determine intent, work type, expected artifact, planning level, and quality mode.</step>
     <step id="dialog_or_route" order="4">Answer or ask a question when execution is unnecessary; otherwise start a registered workflow.</step>
@@ -36,7 +36,9 @@
     <rule id="source_truth">Source files remain authoritative; language adapters report coverage, ambiguity, and truncation and return locations rather than replacing source with an inferred summary.</rule>
     <rule id="completion_truth">The registered completion blockers are the sole canonical completion authority; planner criteria remain advisory.</rule>
     <rule id="run_evidence">Review compares the verbatim owner objective with run-relative Git or inventory changes, deterministic gates, analytical conclusions, and retained primary source evidence.</rule>
-    <rule id="bounded_gauntlet">A project may explicitly select the Gauntlet improvement strategy: targeted corrections and independent same-evidence reviews repeat only while measurable progress and declared budgets permit.</rule>
+    <rule id="orthogonal_run_profile">Every implementation run fixes four independent axes: quality, execution, verification, and planning. Reflection derives from execution and review admission derives from quality.</rule>
+    <rule id="bounded_gauntlet">Gauntlet is a verification loop: targeted trials repeat while measurable evidence progresses and safety boundaries permit; reviewer admission remains a separate quality decision.</rule>
+    <rule id="session_isolation">The conditional client router keys activation by client and session id, refuses project rebinding, and emits no output before explicit activation.</rule>
     <rule id="bounded_frontier_credit">Evidence-frontier growth may defer stagnation for at most three consecutive snapshots with unchanged claim semantics; it never becomes verified semantic progress.</rule>
     <rule id="consilium_settlement">A terminal run transition waits for every admitted parallel review participant to settle; one failed participant cancels outstanding Gateway invocations before the parent exposes the failure.</rule>
     <rule id="provider_neutral_consilium">Portable packages declare review capabilities without model providers. Local installation policy may bind primary, adversarial, evidence, judge, and strategy roles to different providers; concrete models and credentials never enter the package.</rule>

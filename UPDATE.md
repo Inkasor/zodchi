@@ -6,7 +6,7 @@
     <rule id="release_is_replaceable">The program directory is replaced as one unit.</rule>
     <rule id="data_is_external">Personal data stays outside the program directory and is never copied into a release.</rule>
     <rule id="verified_release_only">Use a published GitHub Release and verify the archive SHA-256.</rule>
-    <rule id="llm_runs_update">The LLM runs commands; the person confirms the destination. The installer updates owned user skills and removes owned legacy project hooks transactionally.</rule>
+    <rule id="llm_runs_update">The LLM runs commands; the person confirms the destination. The installer updates owned user skills and conditional session hooks, and removes owned legacy project hooks transactionally.</rule>
   </contract>
 
   <procedure status="accepted">
@@ -14,7 +14,7 @@
     <step order="2">When needed, create a supported snapshot of local databases with the backup command.</step>
     <step order="3">Run the trusted platform bootstrap with the current destination: `tools/install-latest.ps1` on Windows or `tools/install-latest.sh` on macOS/Linux. It must reject a release whose workflow, publisher, provenance, manifest, checksum, or archive disagree.</step>
     <step order="4">Verify bundle-manifest.json and run npm test in the installed release.</step>
-    <step order="5">Verify `/zodchi` in each selected host, verify that the retired owned `/zod` alias is absent, and verify that ordinary messages are not intercepted.</step>
+    <step order="5">Verify `/zodchi` activation in each selected host, verify that the retired owned `/zod` alias is absent, and verify that ordinary messages in inactive sessions are not intercepted.</step>
   </procedure>
 
   <operations status="accepted">

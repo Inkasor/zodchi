@@ -15,7 +15,10 @@
 - Atomic release and explicit-skill replacement retries transient Windows `EPERM`/`EACCES` rename failures without weakening ownership checks.
 - Projects composed from multiple packages reuse the same canonical versioned role contract instead of failing on duplicate package provenance.
 - The ambiguous `/zod` alias is retired; install/update safely removes only the unchanged alias owned by the same installation, leaving `/zodchi` as the single explicit command.
-- Owners can inspect and override the `standard` or `gauntlet` improvement strategy per project, package, and quality level without rebuilding the package; Prototype defaults to a bounded three-cycle Gauntlet without mandatory review, and onboarding now inventories and confirms harness/provider/model choices.
+- `/zodchi` now activates a client-and-session-scoped mode; conditional Codex and Claude Code routers remain inert in all other chats and are installed, updated, rolled back, and removed transactionally.
+- Run configuration is separated into Quality, Execution, Verification, and Planning. Project defaults and each fixed run profile are persisted and hash-bound; ensemble planning falls back visibly when fewer than two independent planners exist.
+- Ensemble planning now collects independent schema-valid candidate plans without cross-contamination and gives them to a separate synthesis step that produces the single executable plan and records candidate/synthesis hashes.
+- Goal execution is no longer stopped by the ordinary correction-cycle count while factual progress continues. Five-minute model-work checkpoints inject a helicopter-view reflection into the next model role; deterministic builds and gates do not trigger reflection. Hard budgets, missing authority or evidence, cancellation, and deterministic stagnation remain honest terminal boundaries.
 
 </section>
 

@@ -103,6 +103,17 @@ export function onboardProject(dbFile, spec) {
     rows(db, "INSERT OR IGNORE INTO workflow_transition_templates(project_id,workflow_id,from_step_key,to_step_key,condition_json) VALUES(?,?,?,?,?)", (spec.workflow_transitions ?? []).map(x => [spec.project.id, x.workflow_id ?? spec.workflow.id, x.from, x.to, JSON.stringify(x.condition ?? {})]));
     rows(db, "INSERT OR IGNORE INTO workflow_questions(project_id,workflow_id,question_key,phase,prompt,answer_schema_json,required) VALUES(?,?,?,?,?,?,?)", (spec.workflow_questions ?? []).map(x => [spec.project.id, x.workflow_id ?? spec.workflow.id, x.key, x.phase, x.prompt, JSON.stringify(x.answer_schema ?? {}), x.required === false ? 0 : 1]));
     rows(db, "INSERT OR IGNORE INTO operational_level_policies(project_id,package_key,level,budgets_json,required_checks_json,correction_limit,escalation_json,improvement_strategy) VALUES(?,?,?,?,?,?,?,?)", normalizedPolicies.map(x => [spec.project.id, x.package_key ?? spec.workflow.package_key ?? spec.workflow.id, x.level, JSON.stringify(x.budgets), JSON.stringify(x.required_check_keys ?? []), x.correction_limit, JSON.stringify(x.escalation ?? {}), x.improvement_strategy]));
+    const runProfileDefaults = spec.run_profile_defaults ?? normalizedPolicies.map(policy => ({
+      quality_mode: policy.level,
+      execution_mode: "standard",
+      verification_mode: policy.improvement_strategy === "gauntlet" ? "gauntlet" : "baseline",
+      planning_mode: "single",
+      confirmed_by: "onboarding_legacy_default"
+    }));
+    rows(db, `INSERT INTO project_run_profile_defaults(project_id,quality_mode,execution_mode,verification_mode,planning_mode,confirmed_by,confirmed_at)
+      VALUES(?,?,?,?,?,?,?) ON CONFLICT(project_id,quality_mode) DO UPDATE SET execution_mode=excluded.execution_mode,
+      verification_mode=excluded.verification_mode,planning_mode=excluded.planning_mode,confirmed_by=excluded.confirmed_by,confirmed_at=excluded.confirmed_at`,
+      runProfileDefaults.map(profile => [spec.project.id, profile.quality_mode, profile.execution_mode, profile.verification_mode, profile.planning_mode, profile.confirmed_by, now()]));
     for (const policy of normalizedPolicies) {
       const packageKey = policy.package_key ?? spec.workflow.package_key ?? spec.workflow.id;
       const budgets = { ...(policy.budgets ?? {}), correction_cycles: policy.correction_limit ?? policy.budgets?.correction_cycles ?? 0 };

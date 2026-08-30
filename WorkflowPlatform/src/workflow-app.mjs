@@ -20,6 +20,7 @@ import { continueApprovedRun, executeStructuredWork, pausedRunObjective, resumeO
 import { chargeDirectReceipt, effectiveQualityMode, initializeQualityRun, operationalLevel, ownerQualityFloor, reserveDirectModelCall } from "./quality-contracts.mjs";
 import { approveBoundInteraction, assertApprovalStillCurrent } from "./approval-binding.mjs";
 import { acceptExternalControlEvidenceResult } from "./external-control-plane.mjs";
+import { normalizeRunProfile, resolveRunProfile, storeRunProfile } from "./run-profile.mjs";
 
 export function loadWorkflow(id, workflowsRoot = resolveWorkflowSettings().workflowsRoot) {
   if (!id) throw new Error("workflow id is required");
@@ -73,6 +74,28 @@ function researchPrompt({ message, project, discovery, responseLanguage }) {
     `REGISTERED_CONTEXT:${JSON.stringify(boundedDocuments(discovery))}`,
     `CURRENT_USER_MESSAGE:${JSON.stringify(message)}`
   ].join("\n");
+}
+
+function plannerBindings(db, projectId, level, workType = null) {
+  return db.prepare(`SELECT assignment.role_id AS role,p.provider,p.name AS profile,contract.allowed_work_types_json
+    FROM role_profile_assignments assignment JOIN profiles p ON p.id=assignment.profile_id
+    JOIN role_contracts contract ON contract.project_id=assignment.project_id AND contract.role_id=assignment.role_id AND contract.status='active'
+    WHERE assignment.project_id=? AND assignment.enabled=1 AND assignment.role_id IN ('planner','coordinator')
+      AND assignment.operational_level=?
+    ORDER BY assignment.role_id,p.provider,p.name`).all(projectId, level)
+    .filter(binding => {
+      let allowed = []; try { allowed = JSON.parse(binding.allowed_work_types_json); } catch { return false; }
+      return !workType || !allowed.length || allowed.includes("*") || allowed.includes(workType);
+    }).map(({ allowed_work_types_json, ...binding }) => binding);
+}
+
+function profileLine(profile, language) {
+  if (!profile) return null;
+  const prefix = language === "ru" ? "Профиль выполнения" : "Execution profile";
+  const warning = profile.warnings?.length
+    ? ` ${language === "ru" ? "Ограничения" : "Constraints"}: ${profile.warnings.join("; ")}.`
+    : "";
+  return `${prefix}: Quality=${profile.quality_mode}; Execution=${profile.execution_mode}; Verification=${profile.verification_mode}; Planning=${profile.planning_mode}.${warning}`;
 }
 
 function recordClassificationFailure(runtime, runId, error) {
@@ -226,7 +249,7 @@ function registeredRoot(db, candidate) {
 
 export async function processMessage({
   message, project, origin = null, dbFile, workflow, workflowDefinition, execute = false, eventSource = "user", eventKey = null, eventFields = [],
-  classificationResult = null, gatewayCall = callGateway, gateRunner = undefined, preferredLanguage = null, client = "codex"
+  classificationResult = null, gatewayCall = callGateway, gateRunner = undefined, preferredLanguage = null, client = "codex", prepareOnly = false, runProfileOverrides = {}
 }) {
   const settings = resolveWorkflowSettings();
   dbFile ??= settings.databasePath;
@@ -295,6 +318,7 @@ export async function processMessage({
 
   let classifierReceipt = null;
   let classification;
+  let runProfile = null;
   try {
     if (classificationResult) classification = validateClassificationDecision(classificationResult, catalog);
     else {
@@ -317,7 +341,8 @@ export async function processMessage({
     const workflowQualityFloor = classification.reply_mode === "work"
       ? runtime.db.prepare("SELECT default_quality FROM workflows WHERE id=?").get(workflow)?.default_quality ?? null
       : null;
-    const effective = effectiveQualityMode(classifierQualityMode, requestedQualityFloor, workflowQualityFloor);
+    const profileQualityFloor = runProfileOverrides.quality_mode ? operationalLevel(runProfileOverrides.quality_mode) : null;
+    const effective = effectiveQualityMode(classifierQualityMode, requestedQualityFloor, workflowQualityFloor, profileQualityFloor);
     classification = Object.freeze({
       ...classification,
       quality_mode: effective,
@@ -328,11 +353,47 @@ export async function processMessage({
     });
     runtime.classify(runId, classification);
     initializeQualityRun(runtime, runId, classification, classifierReceipt);
+    const profileQuality = operationalLevel(classification.quality_mode);
+    const bindings = plannerBindings(runtime.db, run.project_id, profileQuality, classification.work_type);
+    const resolvedProfile = resolveRunProfile(runtime.db, { projectId: run.project_id, qualityMode: profileQuality, overrides: runProfileOverrides, plannerBindings: bindings });
+    if (resolvedProfile.status === "resolved") {
+      runProfile = resolvedProfile;
+      const defaultRow = runtime.db.prepare("SELECT confirmed_by FROM project_run_profile_defaults WHERE project_id=? AND quality_mode=?").get(run.project_id, profileQuality);
+      storeRunProfile(runtime.db, runId, runProfile, { status: "fixed", confirmedBy: defaultRow?.confirmed_by ?? null });
+    } else {
+      const legacy = runtime.get(runId).improvement_strategy === "gauntlet" ? "gauntlet" : "baseline";
+      const fallback = {
+        quality_mode: profileQuality,
+        execution_mode: runProfileOverrides.execution_mode ?? "standard",
+        verification_mode: runProfileOverrides.verification_mode ?? legacy,
+        planning_mode: runProfileOverrides.planning_mode ?? "single"
+      };
+      runProfile = { status: "resolved", ...normalizeRunProfile(fallback, { plannerBindings: bindings }), sources: {
+        quality_mode: "classification",
+        execution_mode: runProfileOverrides.execution_mode === undefined ? "legacy_fallback" : "task",
+        verification_mode: runProfileOverrides.verification_mode === undefined ? "legacy_fallback" : "task",
+        planning_mode: runProfileOverrides.planning_mode === undefined ? "legacy_fallback" : "task"
+      } };
+      storeRunProfile(runtime.db, runId, runProfile, { status: "proposed" });
+    }
   } catch (error) {
     return classificationFailure(runtime, runId, error, finish, responseLanguage);
   }
 
   const receiptsOf = () => classifierReceipt ? { mode: "executed", receipts: [{ step: "classifier", receipt: classifierReceipt }] } : { mode: "contract-test" };
+  const profileMismatch = ["quality_mode", "execution_mode", "verification_mode", "planning_mode"]
+    .some(axis => runProfileOverrides[axis] !== undefined && runProfile[axis] !== runProfileOverrides[axis]);
+  if ((prepareOnly || profileMismatch) && classification.reply_mode === "work") {
+    runtime.setState(runId, "completed", { reason: "run profile prepared before implementation" });
+    const next = responseLanguage === "ru"
+      ? "Если профиль подходит, ответьте обычным сообщением — например, «делай». Если нет, опишите, что изменить."
+      : "If this profile is right, reply normally, for example “proceed”. Otherwise describe what to change.";
+    const changed = profileMismatch
+      ? (responseLanguage === "ru" ? "После повторной классификации профиль изменился; работа ещё не началась и новое значение нужно подтвердить." : "Reclassification changed the profile; work has not started and the new value must be confirmed.")
+      : null;
+    const response = saveAssistant([profileLine(runProfile, responseLanguage), changed, classification.reason, next].filter(Boolean).join("\n\n"));
+    return finish({ route: "prepared", classification, run_profile: runProfile, response, gateway: receiptsOf() });
+  }
   // Every incoming message gets its own run, so intake stays idempotent whatever the message turns out to
   // be. What that run then does depends on whether it answered something the platform was waiting for —
   // and an ordinary message that answered nothing stays an ordinary new run rather than being attached to
@@ -463,7 +524,7 @@ export async function processMessage({
   if (execute) {
     try {
       const execution = await executeStructuredWork({ runtime, runId, classification, definition, discovery, message, responseLanguage, taskRoot: taskDirectory, gatewayCall, ...(gateRunner ? { gateRunner } : {}) });
-      const response = executionMessage(execution, responseLanguage);
+      const response = [profileLine(runProfile, responseLanguage), executionMessage(execution, responseLanguage)].filter(Boolean).join("\n\n");
       saveAssistant(response);
       return finish({ route: "work", classification, response, execution });
     } catch (error) {
@@ -494,8 +555,8 @@ export async function processMessage({
   const selected = selectProjectContext(discovery, classification, [], runtime.db, run.project_id, "planner");
   const plannerFile = path.join(taskDirectory, "planner-task.md");
   fs.writeFileSync(plannerFile, buildPrompt({ role: "planner", stage: "planning", intent: message, classification, quality: classification.quality_mode, plan, document: JSON.stringify(boundedDocuments(selected)), constraints: ["use registered context only", "do not edit files", "return a bounded structured package"], format: "JSON plan contract", responseLanguage }), "utf8");
-  const response = saveAssistant(formatClassification({ summary: classification.reason, quality: classification.quality_mode, nextStep: responseLanguage === "ru" ? "подготовить проверяемый план выполнения" : "prepare a verifiable execution plan", language: responseLanguage }));
-  return finish({ route: "work", classification, plan, response, gateway: { mode: execute ? "planned" : "dry-run", steps: [
+  const response = saveAssistant([profileLine(runProfile, responseLanguage), formatClassification({ summary: classification.reason, quality: classification.quality_mode, nextStep: responseLanguage === "ru" ? "подготовить проверяемый план выполнения" : "prepare a verifiable execution plan", language: responseLanguage })].filter(Boolean).join("\n\n"));
+  return finish({ route: "work", classification, run_profile: runProfile, plan, response, gateway: { mode: execute ? "planned" : "dry-run", steps: [
     { role: "planner", profile: definition.roles?.planner?.profile ?? null, task_file: plannerFile },
     { role: "worker", profile: definition.roles?.worker?.profile ?? null, condition: "after valid plan" },
     { role: "project-gate", runner: "workflow-platform", condition: "after worker" },

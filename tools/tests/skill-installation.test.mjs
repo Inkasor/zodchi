@@ -13,14 +13,14 @@ function fixture() {
   return { root, applicationRoot: application, roots };
 }
 
-test("client skills install only the canonical explicit command for both hosts without hooks", () => {
+test("client skills install only the canonical Zodchi mode command for both hosts", () => {
   const value = fixture();
   try {
     const result = installClientSkills(value);
     assert.equal(result.length, 2);
     for (const client of ["claude-code", "codex"]) for (const name of ["zodchi"]) {
       const directory = path.join(value.roots[client], name), text = fs.readFileSync(path.join(directory, "SKILL.md"), "utf8");
-      assert.match(text, /explicit-invoke\.mjs/);
+      assert.match(text, /session router/);
       assert.doesNotMatch(text, /__ZODCHI_ROOT__/);
       assert.equal(JSON.parse(fs.readFileSync(path.join(directory, ".zodchi-skill.json"), "utf8")).owner, "zodchi");
     }

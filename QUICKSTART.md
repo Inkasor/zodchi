@@ -14,9 +14,9 @@
     <step order="3">Verify Node.js 24 or newer and the chat host the person uses: Codex CLI, Claude Code, or both.</step>
     <step order="4">Create a separate personal-data directory outside the program directory.</step>
     <step order="5">Register the project, inspect the matching package and optional project preset, create a hash-bound import proposal, apply only the confirmed proposal, bind required local adapters/resources/checks, and assign local model profiles.</step>
-    <step order="6">Verify that the installer deployed the user-level `zodchi` and `zod` skills for each selected host. Do not create project hooks.</step>
+    <step order="6">Verify that the installer deployed the single user-level `zodchi` skill and its conditional session-router hooks for each selected host. Do not create or restore unconditional project hooks.</step>
     <step order="7">Restart or open a new host session when required for skill discovery.</step>
-    <step order="8">Run `/zodchi &lt;safe test task&gt;` and confirm that the run and receipts exist in local databases. Also confirm that an ordinary message does not create a Zodchi run.</step>
+    <step order="8">Run `/zodchi`, send a safe task as the next ordinary message in that chat, and confirm that the run and receipts exist in local databases. Also confirm that an ordinary message in another chat does not create a Zodchi run.</step>
   </installation>
 
   <verification status="accepted">

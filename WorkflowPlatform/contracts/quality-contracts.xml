@@ -20,7 +20,7 @@
       <escalation event="owner_decision" action="ask_owner" threshold="" ordinal="1">Escalate only an owner decision or a blocked target signal.</escalation>
     </escalations>
   </quality_contract>
-  <quality_contract id="mvp" version="1.0.0" status="active" reviewer_policy="conditional" documentation_policy="verified_result" correction_limit="1">
+  <quality_contract id="mvp" version="1.0.0" status="active" reviewer_policy="required" documentation_policy="verified_result" correction_limit="1">
     <name>MVP</name>
     <purpose>Deliver one complete relevant user scenario with deterministic evidence.</purpose>
     <budgets>
