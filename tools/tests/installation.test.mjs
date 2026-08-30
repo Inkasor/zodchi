@@ -87,6 +87,23 @@ test("clean install deploys explicit client skills and does not install project 
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test("install tolerates an unmigrated database and update preserves its registered database path", () => {
+  const root = temporaryRoot(), sourceA = release(path.join(root, "a"), "0.6.2"), sourceB = release(path.join(root, "b"), "0.6.3");
+  const destination = path.join(root, "installed"), dataRoot = path.join(root, "data"), database = path.join(dataRoot, "workflow", "workflow.sqlite");
+  const roots = skillRoots(root), hooks = sessionHookFiles(root);
+  const healthCheck = candidate => assert.equal(fs.existsSync(path.join(candidate, "release-marker.txt")), true);
+  try {
+    fs.mkdirSync(path.dirname(database), { recursive: true });
+    fs.writeFileSync(database, "");
+    const installed = installRelease({ source: sourceA, destination, dataRoot, workflowDatabase: database, skillRoots: roots, sessionHookFiles: hooks, healthCheck });
+    assert.equal(installed.workflow_database, database);
+    fs.writeFileSync(path.join(dataRoot, "workflow.sqlite"), "");
+    const updated = installRelease({ source: sourceB, destination, dataRoot, skillRoots: roots, sessionHookFiles: hooks, healthCheck });
+    assert.equal(updated.workflow_database, database);
+    assert.equal(updated.version, "0.6.3");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("update removes owned legacy hooks, refreshes skills, rollback keeps hooks absent and preserves data", () => {
   const root = temporaryRoot(), sourceA = release(path.join(root, "a"), "0.5.24"), sourceB = release(path.join(root, "b"), "0.6.0-rc.1"), destination = path.join(root, "installed"), dataRoot = path.join(root, "data"), project = path.join(root, "проект 😀");
   fs.mkdirSync(project); fs.mkdirSync(dataRoot); fs.writeFileSync(path.join(dataRoot, "owner-data.txt"), "preserve me");

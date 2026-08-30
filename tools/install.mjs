@@ -93,6 +93,8 @@ function registeredHookTargets(databaseFile, explicit = []) {
   if (databaseFile && fs.existsSync(databaseFile)) {
     const db = new DatabaseSync(databaseFile, { readOnly: true });
     try {
+      const hasProjects = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects'").get();
+      if (!hasProjects) return [...unique.values()];
       for (const row of db.prepare("SELECT root_path FROM projects ORDER BY id").all()) {
         for (const harness of ["codex", "claude-code"]) {
           const item = { projectRoot: path.resolve(String(row.root_path)), harness };
@@ -169,7 +171,8 @@ export function installRelease(options) {
   ensureDirectory(dataRoot, "DATA_ROOT");
   const stage = safeSibling(`${destination}.stage-${crypto.randomUUID()}`, destination, "stage");
   const previous = fs.existsSync(destination) ? safeSibling(`${destination}.previous-${crypto.randomUUID()}`, destination, "previous") : null;
-  const workflowDatabase = options.workflowDatabase ?? process.env.WORKFLOW_DB ?? path.join(dataRoot, "workflow.sqlite");
+  const installedState = readState(stateFile);
+  const workflowDatabase = options.workflowDatabase ?? installedState?.workflow_database ?? process.env.WORKFLOW_DB ?? path.join(dataRoot, "workflow.sqlite");
   const targets = registeredHookTargets(workflowDatabase, options.hooks ?? []);
   const skillRoots = options.skillRoots ?? defaultSkillRoots();
   const sessionHookFiles = resolvedSessionHookFiles(options, skillRoots);
