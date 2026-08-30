@@ -831,6 +831,37 @@ test("reviewer schema repair is not used for non-schema failures or beyond one r
   assert.equal(calls, 1);
 });
 
+test("reviewer retries one pre-receipt transport failure without pretending it was schema repair", async () => {
+  const packages = [], retryKinds = [];
+  let calls = 0;
+  const result = await invokeReviewerWithSchemaRepair({
+    packageContract: { review_reason: "project_policy" },
+    invoke: async packageContract => {
+      packages.push(packageContract);
+      calls += 1;
+      if (calls === 1) {
+        const error = new Error("Gateway exited before receipt (1): SQLITE_BUSY: database is locked");
+        error.queueFailure = { action: "retry_scheduled" };
+        throw error;
+      }
+      return { result: { decision: "PASS" } };
+    },
+    onRetry: ({ kind }) => retryKinds.push(kind)
+  });
+  assert.equal(result.result.decision, "PASS");
+  assert.equal(calls, 2);
+  assert.deepEqual(retryKinds, ["transport_retry"]);
+  assert.equal(packages[1].schema_repair, undefined);
+});
+
+test("reviewer does not retry cancellation or a pre-call budget failure", async () => {
+  for (const error of [Object.assign(new Error("GATEWAY_INVOCATION_CANCELLED"), { code: "GATEWAY_INVOCATION_CANCELLED", queueFailure: { action: "retry_scheduled" } }), new Error("BUDGET_EXHAUSTED")]) {
+    let calls = 0;
+    await assert.rejects(() => invokeReviewerWithSchemaRepair({ packageContract: {}, invoke: async () => { calls += 1; throw error; } }), candidate => candidate === error);
+    assert.equal(calls, 1);
+  }
+});
+
 test("flow selection is structural and reports none without a workflow registration", () => {
   const sources = new Map([["source", { code_intelligence: { adapters: [{ name: "typescript-compiler" }] } }]]);
   assert.equal(selectFlowEvidenceAdapter([TEST_FLOW], "workflow", sources).flow.key, TEST_FLOW.key);
