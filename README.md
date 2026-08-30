@@ -4,7 +4,7 @@
 
 [English](README.md) · [Русский](docs/ru/README.md)
 
-Zodchi helps Codex and Claude Code carry real project work through to a checked result.
+Zodchi helps Codex and Claude Code carry real project work through to a checked result. Cursor support is available as a preview.
 
 You describe the outcome in an ordinary chat. Zodchi can prepare a plan, divide the work between suitable models, keep important project context, run the project's checks, and record accepted decisions. You still decide what may be changed, published, deployed, or treated as complete.
 
@@ -18,7 +18,7 @@ You describe the outcome in an ordinary chat. Zodchi can prepare a plan, divide 
 4. Before substantial work starts, Zodchi shows how it intends to work: the required quality, whether to persist until the goal is reached, how strongly to verify the result, and whether one or several planners are available.
 5. Zodchi performs the work, checks the result, and either finishes with evidence or explains the real blocker.
 
-Other chats remain ordinary Codex or Claude Code chats. Closing the chat ends its Zodchi mode.
+Other chats remain ordinary. Closing the chat ends its Zodchi mode. In the Cursor preview, `/zodchi` is kept as the chat's Custom Mode.
 
 </section>
 
@@ -38,7 +38,7 @@ Different models can do different jobs. Routine work can use faster models, whil
 
 ## Try it
 
-Open a new Codex or Claude Code chat and send:
+Open a new Codex, Claude Code, or Cursor chat and send:
 
 > Open https://github.com/Inkasor/zodchi, read `ONBOARDING_PROMPT.md`, install the latest Zodchi release, and configure it for my project. Do the technical setup yourself and ask me only for decisions you cannot safely infer.
 

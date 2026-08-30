@@ -16,13 +16,17 @@
     "Codex",
     "Claude Code"
   ],
+  "previewHosts": [
+    "Cursor"
+  ],
   "workerHarnesses": [
     "Codex",
     "Claude Code",
     "Kimi",
     "OpenCode",
     "Cursor",
-    "OpenAI-compatible API"
+    "OpenAI-compatible API",
+    "OpenRouter API"
   ],
   "workflowPackages": [
     "software.web-application",
