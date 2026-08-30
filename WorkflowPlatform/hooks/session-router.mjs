@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { resolveWorkflowSettings } from "../src/paths.mjs";
 import { routeSessionEvent } from "../src/session-router.mjs";
 
@@ -36,6 +36,12 @@ export async function main(argv = process.argv.slice(2)) {
   return output;
 }
 
-if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+function canonicalFile(value) {
+  const resolved = path.resolve(value);
+  try { return fs.realpathSync.native(resolved); }
+  catch { return resolved; }
+}
+
+if (process.argv[1] && canonicalFile(process.argv[1]) === canonicalFile(fileURLToPath(import.meta.url))) {
   main().catch(error => { process.stderr.write(`${error.stack ?? error.message}\n`); process.exitCode = 1; });
 }
