@@ -157,6 +157,15 @@ test("an explicit package-key migration reuses local entities and retires the ol
   assert.equal(db.prepare("SELECT COUNT(*) count FROM workflow_routes r JOIN workflows w ON w.id=r.workflow_id WHERE r.project_id='target' AND w.package_key='demo.package'").get().count, 0);
   assert.equal(db.prepare("SELECT COUNT(*) count FROM portable_profile_requirements WHERE project_id='target' AND package_key='demo.package'").get().count, 0);
   db.close();
+
+  const upgraded = { ...successor, version: "2.1.0", purpose: "Canonical successor package, upgraded" };
+  const upgradedFile = path.join(root, "successor-upgraded.xml"), upgradedProposal = path.join(root, "successor-upgraded.json");
+  fs.writeFileSync(upgradedFile, serializeWorkflowPackage(upgraded), "utf8");
+  proposeWorkflowImport(targetDb, upgradedFile, upgradedProposal, "target");
+  applyWorkflowImport(targetDb, upgradedProposal, "target", { confirmedBy: "owner" });
+  db = openDb(targetDb);
+  assert.deepEqual({ ...db.prepare("SELECT id,package_key,status FROM workflows WHERE id=?").get(oldWorkflowId) }, { id: oldWorkflowId, package_key: "demo.successor", status: "active" });
+  db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
 
