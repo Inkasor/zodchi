@@ -44,6 +44,9 @@ function explicitSkillPrompt(rawPrompt, { client, activationSkillPath }) {
 }
 
 export async function routeSessionEvent({ event, client, dbFile, workflow = null, preferredLanguage = null, deliveryMode = "final", activationSkillPath = null }, dependencies = {}) {
+  if (process.env.ZODCHI_SESSION_ENTRY_DIAGNOSTIC === "1") {
+    throw new Error(`ZODCHI_SESSION_ENTRY_DIAGNOSTIC: ${JSON.stringify({ platform: process.platform, client, activationSkillPath, internal: process.env.ZODCHI_INTERNAL_INVOCATION ?? null, event })}`);
+  }
   if (process.env.ZODCHI_INTERNAL_INVOCATION === "1") return null;
   const id = sessionId(event);
   if (!id) throw new Error("ZODCHI_SESSION_ID_REQUIRED");
