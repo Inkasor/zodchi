@@ -123,8 +123,8 @@ function invokeInstalledHook(hook, event, environment, parameters = null) {
 }
 
 function sessionActivationStatus({ files, skillRoots, installedRoot, workflowDatabase, projectRoot }) {
-  const environment = { ...process.env, WORKFLOW_DB: workflowDatabase, ZODCHI_SESSION_ACCEPTANCE_DIAGNOSTIC: "1" };
-  for (const key of ["WORKFLOW_PLATFORM_CONFIG", "WORKFLOW_PROJECT", "WORKFLOW_ID", "ZODCHI_DELIVERY_MODE"]) delete environment[key];
+  const environment = { ...process.env, WORKFLOW_DB: workflowDatabase };
+  for (const key of ["WORKFLOW_PLATFORM_CONFIG", "WORKFLOW_PROJECT", "WORKFLOW_ID", "ZODCHI_DELIVERY_MODE", "ZODCHI_INTERNAL_INVOCATION", "WORKFLOW_INTERNAL"]) delete environment[key];
   const results = [];
   for (const client of ["codex", "claude-code"]) {
     const sessionId = `platform-acceptance-${client}`;
@@ -136,9 +136,7 @@ function sessionActivationStatus({ files, skillRoots, installedRoot, workflowDat
     const ordinary = client === "codex"
       ? { ...baseEvent, turn_id: `${sessionId}:ordinary`, prompt: "ordinary chat" }
       : { ...baseEvent, prompt_id: `${sessionId}:ordinary`, prompt: "ordinary chat" };
-    const ordinaryEnvironment = { ...environment };
-    delete ordinaryEnvironment.ZODCHI_SESSION_ACCEPTANCE_DIAGNOSTIC;
-    ensure(invokeInstalledHook(submit, ordinary, ordinaryEnvironment, submitParameters) === null, "ACCEPTANCE_ORDINARY_CHAT_INTERCEPTED", client);
+    ensure(invokeInstalledHook(submit, ordinary, environment, submitParameters) === null, "ACCEPTANCE_ORDINARY_CHAT_INTERCEPTED", client);
     const skillPath = path.join(skillRoots[client], "zodchi", "SKILL.md");
     const prompt = client === "codex" ? `[$zodchi](${skillPath})` : "/zodchi";
     const activation = client === "codex"
