@@ -66,12 +66,7 @@ export async function routeSessionEvent({ event, client, dbFile, workflow = null
     }
   }
   finally { db.close(); }
-  if (routing.action === "pass") {
-    if (process.env.ZODCHI_SESSION_ACCEPTANCE_DIAGNOSTIC === "1") {
-      throw new Error(`ZODCHI_SESSION_ACCEPTANCE_DIAGNOSTIC: ${JSON.stringify({ platform: process.platform, rawPrompt, prompt, activationSkillPath })}`);
-    }
-    return null;
-  }
+  if (routing.action === "pass") return null;
   if (routing.action === "activated") {
     return formatHookOutput({
       route: "conversation",
