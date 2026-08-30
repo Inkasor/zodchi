@@ -33,7 +33,8 @@ test("/zodchi activates only the current session and later prompts route through
     const routed = await routeSessionEvent({ event: event(value.project, "Сделай импорт"), client: "codex", dbFile: value.file }, {
       processMessage: async input => { calls.push(input); return { route: "conversation", response: "Профиль подготовлен", response_language: "ru" }; }
     });
-    assert.equal(routed.reason, "Профиль подготовлен");
+    assert.equal(routed.decision, undefined);
+    assert.match(routed.additionalContext, /Профиль подготовлен/);
     assert.equal(calls[0].message, "Сделай импорт");
     assert.equal(calls[0].prepareOnly, true);
     assert.equal(calls[0].project, "project");
@@ -54,6 +55,26 @@ test("prepared work starts from an ordinary confirmation without a public execut
     assert.equal(calls[1].message, "Реализуй импорт");
     assert.equal(calls[1].prepareOnly, false);
     assert.deepEqual(calls[1].runProfileOverrides, { quality_mode: "mvp", execution_mode: "goal", verification_mode: "gauntlet", planning_mode: "single" });
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test("a quoted profile card followed by confirmation executes the original pending task once", async () => {
+  const value = fixture(), calls = [];
+  try {
+    await routeSessionEvent({ event: event(value.project, "/zodchi"), client: "codex", dbFile: value.file });
+    await routeSessionEvent({ event: event(value.project, "Подготовь два документа"), client: "codex", dbFile: value.file }, {
+      processMessage: async input => { calls.push(input); return { route: "prepared", response: "Профиль выполнения: Quality=mvp", response_language: "ru", run_profile: { quality_mode: "mvp", execution_mode: "standard", verification_mode: "gauntlet", planning_mode: "single" } }; }
+    });
+    const quoted = '"Профиль выполнения: Quality=mvp; Execution=standard; Verification=gauntlet; Planning=single.\n\nЕсли профиль подходит, ответьте обычным сообщением — например, «делай»."\n\nДелай';
+    await routeSessionEvent({ event: event(value.project, quoted), client: "codex", dbFile: value.file }, {
+      processMessage: async input => { calls.push(input); return { route: "work", response: "Готово", response_language: "ru" }; }
+    });
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].message, "Подготовь два документа");
+    assert.equal(calls[1].prepareOnly, false);
+    const db = openDb(value.file);
+    try { assert.equal(db.prepare("SELECT pending_message FROM zodchi_chat_sessions WHERE client='codex' AND session_id='session'").get().pending_message, null); }
+    finally { db.close(); }
   } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
 });
 

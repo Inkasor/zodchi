@@ -12,6 +12,17 @@ function eventMessage(event) {
 function sessionId(event) { return event.session_id ?? event.sessionId ?? null; }
 const EXPANDED_SKILL_MARKER = "ZODCHI_SESSION_ACTIVATION_V1";
 const EXECUTION_CONFIRMATION = /^\s*(?:делай|начинай|запускай|продолжай|поехали|да|execute|proceed|go ahead|start)\s*[.!]?\s*$/iu;
+const PROFILE_CARD = /^\s*["“«]?\s*(?:Профиль выполнения|Execution profile)\s*:/iu;
+
+// A blocking hook is sometimes quoted into the next visible user message by the host. Treat the
+// final line as confirmation only when the preceding text is recognizably Zodchi's profile card;
+// arbitrary task prose that merely ends in "start" must remain ordinary input.
+export function isExecutionConfirmation(prompt) {
+  const text = String(prompt ?? "").trim();
+  if (EXECUTION_CONFIRMATION.test(text)) return true;
+  const lines = text.split(/\r?\n/u).map(line => line.trim()).filter(Boolean);
+  return lines.length > 1 && PROFILE_CARD.test(lines[0]) && EXECUTION_CONFIRMATION.test(lines.at(-1));
+}
 
 function samePath(left, right) {
   if (!left || !right) return false;
@@ -43,7 +54,7 @@ function explicitSkillPrompt(rawPrompt, { client, activationSkillPath }) {
   return rawPrompt;
 }
 
-export async function routeSessionEvent({ event, client, dbFile, workflow = null, preferredLanguage = null, deliveryMode = "final", activationSkillPath = null }, dependencies = {}) {
+export async function routeSessionEvent({ event, client, dbFile, workflow = null, preferredLanguage = null, deliveryMode = "advisory", activationSkillPath = null }, dependencies = {}) {
   if (process.env.ZODCHI_INTERNAL_INVOCATION === "1") return null;
   const id = sessionId(event);
   if (!id) throw new Error("ZODCHI_SESSION_ID_REQUIRED");
@@ -61,7 +72,7 @@ export async function routeSessionEvent({ event, client, dbFile, workflow = null
   let routing, prepared = null;
   try {
     routing = routeChatPrompt(db, { client, sessionId: id, origin: event.cwd, prompt });
-    if (routing.action === "route" && routing.session?.pending_message && EXECUTION_CONFIRMATION.test(String(prompt))) {
+    if (routing.action === "route" && routing.session?.pending_message && isExecutionConfirmation(prompt)) {
       prepared = consumePendingMessage(db, { client, sessionId: id });
     }
   }

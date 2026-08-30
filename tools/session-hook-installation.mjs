@@ -38,7 +38,7 @@ export function sessionHookDocumentUsesScript(document, script) {
 }
 export function sessionHookParameters({ applicationRoot, client, event, skillRoots = defaultSkillRoots() }) {
   const script = path.join(path.resolve(applicationRoot), "WorkflowPlatform", "hooks", "session-router.mjs");
-  const parameters = [script, "--client", client, "--delivery-mode", "final"];
+  const parameters = [script, "--client", client, "--delivery-mode", "advisory"];
   if (event === "UserPromptSubmit") parameters.push("--skill-path", path.join(path.resolve(skillRoots[client]), "zodchi", "SKILL.md"));
   return parameters;
 }
@@ -47,7 +47,7 @@ function entry(applicationRoot, client, event, skillRoots) {
   const script = path.join(path.resolve(applicationRoot), "WorkflowPlatform", "hooks", "session-router.mjs");
   const parameters = sessionHookParameters({ applicationRoot, client, event, skillRoots });
   const timeout = event === "SessionEnd" ? 3 : 3600;
-  const command = `node "${script}" --client ${client} --delivery-mode final${event === "UserPromptSubmit" ? ` --skill-path "${path.join(path.resolve(skillRoots[client]), "zodchi", "SKILL.md")}"` : ""}`;
+  const command = `node "${script}" --client ${client} --delivery-mode advisory${event === "UserPromptSubmit" ? ` --skill-path "${path.join(path.resolve(skillRoots[client]), "zodchi", "SKILL.md")}"` : ""}`;
   const hook = client === "claude-code"
     ? { type: "command", command: "node", args: parameters, timeout, statusMessage: event === "SessionEnd" ? "Zodchi is closing the session" : "Zodchi is processing the request" }
     : { type: "command", command, commandWindows: command, timeout, statusMessage: event === "SessionEnd" ? "Zodchi is closing the session" : "Zodchi is processing the request" };

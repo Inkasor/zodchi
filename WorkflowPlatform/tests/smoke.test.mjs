@@ -175,20 +175,18 @@ test("runtime advances an executed no-document workflow beyond planned", () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("an unconfigured Codex project delivers the prepared answer instead of losing it", () => {
-  // Advisory output travels in the additional-context shape, which a Codex turn was observed ignoring:
-  // the classification ran, the call was paid for and the answer reached nobody. An unconfigured Codex
-  // project therefore gets the blocking shape, while a stated mode is still honoured in either harness.
+test("unconfigured Codex and Claude Code projects deliver prepared answers without blocking", () => {
   const codex = parseHookEvent({ prompt: "привет", turn_id: "turn-1", cwd: "." }, { env: {}, argv: [], settings: {} });
   const claude = parseHookEvent({ user_input: "hello", prompt_id: "p-1", cwd: "." }, { env: {}, argv: [], settings: {} });
   assert.equal(codex.client, "codex");
-  assert.equal(codex.deliveryMode, "final");
+  assert.equal(codex.deliveryMode, "advisory");
   assert.equal(claude.deliveryMode, "advisory");
 
   const stated = parseHookEvent({ prompt: "привет", turn_id: "turn-2", cwd: "." }, { env: {}, argv: ["--delivery-mode=advisory"], settings: {} });
   assert.equal(stated.deliveryMode, "advisory");
 
   const delivered = formatHookOutput({ response: "готово", response_language: "ru" }, { deliveryMode: codex.deliveryMode });
-  assert.equal(delivered.decision, "block");
-  assert.equal(delivered.reason, "готово");
+  assert.equal(delivered.decision, undefined);
+  assert.match(delivered.additionalContext, /готово/);
+  assert.match(delivered.additionalContext, /Output only the prepared result/);
 });
