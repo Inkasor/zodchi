@@ -1,3 +1,4 @@
+import path from "node:path";
 import { openDb } from "./db.mjs";
 import { formatHookOutput, hookEventFields } from "./hook-entry.mjs";
 import { consumePendingMessage, endChatSession, routeChatPrompt, setPendingMessage } from "./chat-session.mjs";
@@ -11,7 +12,32 @@ function sessionId(event) { return event.session_id ?? event.sessionId ?? null; 
 const EXPANDED_SKILL_MARKER = "ZODCHI_SESSION_ACTIVATION_V1";
 const EXECUTION_CONFIRMATION = /^\s*(?:делай|начинай|запускай|продолжай|поехали|да|execute|proceed|go ahead|start)\s*[.!]?\s*$/iu;
 
-export async function routeSessionEvent({ event, client, dbFile, workflow = null, preferredLanguage = null, deliveryMode = "final" }, dependencies = {}) {
+function samePath(left, right) {
+  if (!left || !right) return false;
+  const a = path.resolve(String(left)), b = path.resolve(String(right));
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function explicitSkillPrompt(rawPrompt, { client, activationSkillPath }) {
+  if (typeof rawPrompt !== "string") return rawPrompt;
+  if (rawPrompt.includes(EXPANDED_SKILL_MARKER)) return "/zodchi";
+  if (client !== "codex") return rawPrompt;
+
+  // Codex app-server invokes a skill as a `$name` input item. Codex Desktop persists that item in
+  // the visible user message as a Markdown link, while CLI clients may keep the `$name` token.
+  // UserPromptSubmit receives this host representation before the model reads SKILL.md, so looking
+  // only for a marker inside the skill body can never activate a real Codex turn.
+  const linked = /^\s*\[\$zodchi\]\(([^)\r\n]+)\)(?:\s+([\s\S]*?))?\s*$/u.exec(rawPrompt);
+  if (linked) {
+    if (!samePath(linked[1], activationSkillPath)) return rawPrompt;
+    return linked[2]?.trim() ? `/zodchi ${linked[2].trim()}` : "/zodchi";
+  }
+  const token = /^\s*\$zodchi(?:\s+([\s\S]*?))?\s*$/u.exec(rawPrompt);
+  if (token) return token[1]?.trim() ? `/zodchi ${token[1].trim()}` : "/zodchi";
+  return rawPrompt;
+}
+
+export async function routeSessionEvent({ event, client, dbFile, workflow = null, preferredLanguage = null, deliveryMode = "final", activationSkillPath = null }, dependencies = {}) {
   if (process.env.ZODCHI_INTERNAL_INVOCATION === "1") return null;
   const id = sessionId(event);
   if (!id) throw new Error("ZODCHI_SESSION_ID_REQUIRED");
@@ -24,7 +50,7 @@ export async function routeSessionEvent({ event, client, dbFile, workflow = null
   }
   if (eventName !== "UserPromptSubmit") { db.close(); return null; }
   const rawPrompt = eventMessage(event);
-  const prompt = typeof rawPrompt === "string" && rawPrompt.includes(EXPANDED_SKILL_MARKER) ? "/zodchi" : rawPrompt;
+  const prompt = explicitSkillPrompt(rawPrompt, { client, activationSkillPath });
   if (prompt === null) { db.close(); return null; }
   let routing, prepared = null;
   try {

@@ -135,9 +135,9 @@ function restoreSkillTransaction(transaction) {
   if (transaction) restoreClientSkills(transaction.snapshots);
 }
 
-function updateSessionHooks(applicationRoot, files) {
+function updateSessionHooks(applicationRoot, files, skillRoots) {
   const snapshots = snapshotSessionHooks({ files });
-  try { return { snapshots, applied: installSessionHooks({ applicationRoot, files }) }; }
+  try { return { snapshots, applied: installSessionHooks({ applicationRoot, files, skillRoots }) }; }
   catch (error) { restoreSessionHooks(snapshots); throw error; }
 }
 
@@ -184,7 +184,7 @@ export function installRelease(options) {
     renameWithRetry(stage, destination);
     hookTransaction = removeLegacyHooks(targets);
     skillTransaction = updateClientSkills(destination, skillRoots);
-    sessionHookTransaction = updateSessionHooks(destination, sessionHookFiles);
+    sessionHookTransaction = updateSessionHooks(destination, sessionHookFiles, skillRoots);
     healthCheck(destination);
     const state = {
       schema_version: 1,
@@ -234,7 +234,7 @@ export function rollbackRelease(options) {
     renameWithRetry(previous, destination); movedPrevious = true;
     hookTransaction = removeLegacyHooks(targets);
     skillTransaction = updateClientSkills(destination, skillRoots);
-    sessionHookTransaction = updateSessionHooks(destination, sessionHookFiles);
+    sessionHookTransaction = updateSessionHooks(destination, sessionHookFiles, skillRoots);
     healthCheck(destination);
     const next = { ...state, version: releaseVersion(destination), previous_release: failed, previous_version: releaseVersion(failed), rolled_back_at: new Date().toISOString() };
     atomicJson(stateFile, next);

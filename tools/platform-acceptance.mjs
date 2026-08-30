@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { buildRelease } from "../scripts/build-release.mjs";
 import { installRelease, rollbackRelease, uninstallRelease } from "./install.mjs";
 import { resolveCommandCapability } from "../WorkflowPlatform/src/command-resolver.mjs";
+import { openDb } from "../WorkflowPlatform/src/db.mjs";
 
 function argsObject(argv) {
   const result = {};
@@ -90,6 +91,69 @@ function skillStatus(roots, installedRoot) {
   return results;
 }
 
+function installedHook(files, client, event, installedRoot) {
+  const document = json(files[client]);
+  const script = path.join(installedRoot, "WorkflowPlatform", "hooks", "session-router.mjs");
+  const candidates = (document.hooks?.[event] ?? []).flatMap(entry => entry.hooks ?? []);
+  const hook = candidates.find(item => {
+    const command = [item.command, ...(Array.isArray(item.args) ? item.args : [])].join(" ");
+    return command.includes(script);
+  });
+  ensure(hook, "ACCEPTANCE_SESSION_HOOK_MISSING", `${client}:${event}`);
+  return hook;
+}
+
+function invokeInstalledHook(hook, event, environment) {
+  const options = {
+    encoding: "utf8",
+    windowsHide: true,
+    input: JSON.stringify(event),
+    env: environment,
+    stdio: ["pipe", "pipe", "pipe"]
+  };
+  const result = Array.isArray(hook.args)
+    ? spawnSync(hook.command, hook.args, options)
+    : spawnSync(hook.commandWindows ?? hook.command, [], { ...options, shell: true });
+  ensure(result.status === 0, "ACCEPTANCE_SESSION_HOOK_FAILED", String(result.stderr || result.error?.message || result.status));
+  const output = String(result.stdout ?? "").trim();
+  return output ? JSON.parse(output) : null;
+}
+
+function sessionActivationStatus({ files, skillRoots, installedRoot, workflowDatabase, projectRoot }) {
+  const environment = { ...process.env, WORKFLOW_DB: workflowDatabase };
+  for (const key of ["WORKFLOW_PLATFORM_CONFIG", "WORKFLOW_PROJECT", "WORKFLOW_ID", "ZODCHI_DELIVERY_MODE"]) delete environment[key];
+  const results = [];
+  for (const client of ["codex", "claude-code"]) {
+    const sessionId = `platform-acceptance-${client}`;
+    const submit = installedHook(files, client, "UserPromptSubmit", installedRoot);
+    const end = installedHook(files, client, "SessionEnd", installedRoot);
+    const baseEvent = { hook_event_name: "UserPromptSubmit", session_id: sessionId, cwd: projectRoot };
+    const ordinary = client === "codex"
+      ? { ...baseEvent, turn_id: `${sessionId}:ordinary`, prompt: "ordinary chat" }
+      : { ...baseEvent, prompt_id: `${sessionId}:ordinary`, prompt: "ordinary chat" };
+    ensure(invokeInstalledHook(submit, ordinary, environment) === null, "ACCEPTANCE_ORDINARY_CHAT_INTERCEPTED", client);
+    const skillPath = path.join(skillRoots[client], "zodchi", "SKILL.md");
+    const prompt = client === "codex" ? `[$zodchi](${skillPath})` : "/zodchi";
+    const activation = client === "codex"
+      ? { ...baseEvent, turn_id: `${sessionId}:activate`, prompt }
+      : { ...baseEvent, prompt_id: `${sessionId}:activate`, prompt };
+    const response = invokeInstalledHook(submit, activation, environment);
+    ensure(response?.decision === "block" && /Zodchi/i.test(response.reason ?? ""), "ACCEPTANCE_SESSION_NOT_ACTIVATED", client);
+    let db = openDb(workflowDatabase);
+    const active = db.prepare("SELECT state,project_id FROM zodchi_chat_sessions WHERE client=? AND session_id=?").get(client, sessionId);
+    db.close();
+    ensure(active?.state === "active" && active.project_id === "platform-acceptance", "ACCEPTANCE_SESSION_STATE_INVALID", client);
+    const endEvent = { hook_event_name: "SessionEnd", session_id: sessionId, cwd: projectRoot };
+    ensure(invokeInstalledHook(end, endEvent, environment) === null, "ACCEPTANCE_SESSION_END_OUTPUT", client);
+    db = openDb(workflowDatabase);
+    const ended = db.prepare("SELECT state FROM zodchi_chat_sessions WHERE client=? AND session_id=?").get(client, sessionId);
+    db.close();
+    ensure(ended?.state === "ended", "ACCEPTANCE_SESSION_NOT_ENDED", client);
+    results.push({ client, ordinary_chat: "passed_through", activation: "active", session_end: "ended" });
+  }
+  return results;
+}
+
 function runJson(command, parameters) {
   const env = { ...process.env };
   for (const key of ["WORKFLOW_PLATFORM_CONFIG", "ZODCHI_PACKAGE_DEFINITIONS", "WORKFLOW_DB", "WORKFLOW_PROJECT", "WORKFLOW_ID", "ZODCHI_DELIVERY_MODE"]) delete env[key];
@@ -131,6 +195,7 @@ export function runPlatformAcceptance({ repositoryRoot = path.resolve(import.met
     const explicitRun = runJson(process.execPath, [path.join(installed, "WorkflowPlatform", "scripts", "run-explicit-evidence.mjs"), "--config", explicitConfig]);
     ensure(explicitRun.worktree_unchanged && explicitRun.results?.every(item => item.response_returned), "ACCEPTANCE_EXPLICIT_RUN_FAILED");
     const workflowDatabase = path.join(explicitEvidenceRoot, "workflow-evidence.sqlite");
+    const sessionActivations = sessionActivationStatus({ files: sessionHookFiles, skillRoots, installedRoot: installed, workflowDatabase, projectRoot });
 
     const updated = installRelease({ source: candidate, destination: installed, dataRoot, workflowDatabase, skillRoots, sessionHookFiles });
     const updatedSkills = skillStatus(skillRoots, installed);
@@ -169,7 +234,7 @@ export function runPlatformAcceptance({ repositoryRoot = path.resolve(import.met
       versions: { baseline: baselineVersion, candidate: candidateVersion },
       lifecycle: {
         install: { status: installedBaseline.status, version: installedBaseline.version },
-        explicit_skills: { status: "installed", commands: initialSkills.length, scenarios: explicitRun.results.length },
+        explicit_skills: { status: "installed", commands: initialSkills.length, scenarios: explicitRun.results.length, session_activations: sessionActivations },
         run: { final_state: candidateRun.final_state, gate_status: candidateRun.gate_status, calls: candidateRun.calls },
         update: { status: updated.status, version: updated.version, skill_targets_updated: updatedSkills.length },
         rollback: { status: rolledBack.status, version: rolledBack.version, skill_targets_restored: rollbackSkills.length },

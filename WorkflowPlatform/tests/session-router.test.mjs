@@ -76,6 +76,33 @@ test("a host-expanded skill marker activates the session without treating skill 
   } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
 });
 
+test("a real Codex skill mention activates only from the installed skill path and preserves task text", async () => {
+  const value = fixture(), calls = [], skill = path.join(value.root, "codex skills", "zodchi", "SKILL.md");
+  try {
+    const wrong = await routeSessionEvent({
+      event: event(value.project, `[$zodchi](${path.join(value.root, "foreign", "SKILL.md")}) Сделай импорт`, "wrong"),
+      client: "codex", dbFile: value.file, activationSkillPath: skill
+    });
+    assert.equal(wrong, null);
+    await routeSessionEvent({
+      event: event(value.project, `[$zodchi](${skill}) Сделай импорт`, "real"),
+      client: "codex", dbFile: value.file, activationSkillPath: skill
+    }, { processMessage: async input => { calls.push(input); return { route: "conversation", response: "Начал", response_language: "ru" }; } });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].message, "Сделай импорт");
+    assert.equal(calls[0].prepareOnly, true);
+    assert.equal((await routeSessionEvent({ event: event(value.project, "обычный чат", "wrong"), client: "codex", dbFile: value.file })), null);
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test("the canonical Codex skill token activates without exposing a second public command", async () => {
+  const value = fixture();
+  try {
+    const activated = await routeSessionEvent({ event: event(value.project, "$zodchi"), client: "codex", dbFile: value.file, preferredLanguage: "en" });
+    assert.match(activated.reason, /Zodchi mode is active/);
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});
+
 test("SessionEnd restores ordinary chat behavior", async () => {
   const value = fixture();
   try {

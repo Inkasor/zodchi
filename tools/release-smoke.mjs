@@ -200,6 +200,10 @@ for (const [client, file] of Object.entries(smokeSessionHooks)) {
   const document = JSON.parse(fs.readFileSync(file, "utf8"));
   const script = path.join(installed, "WorkflowPlatform", "hooks", "session-router.mjs");
   if (!sessionHookDocumentUsesScript(document, script)) fail("RELEASE_SESSION_HOOK_TARGET_INVALID", client);
+  const submit = (document.hooks?.UserPromptSubmit ?? []).flatMap(entry => entry.hooks ?? []).find(hook => [hook.command, ...(hook.args ?? [])].join(" ").includes(script));
+  const end = (document.hooks?.SessionEnd ?? []).flatMap(entry => entry.hooks ?? []).find(hook => [hook.command, ...(hook.args ?? [])].join(" ").includes(script));
+  if (!submit || ![submit.command, ...(submit.args ?? [])].join(" ").includes(path.join(smokeSkillRoots[client], "zodchi", "SKILL.md"))) fail("RELEASE_SESSION_HOOK_SKILL_PATH_INVALID", client);
+  if (end?.timeout !== 3) fail("RELEASE_SESSION_END_TIMEOUT_INVALID", `${client}:${end?.timeout ?? "missing"}`);
 }
 const presetLint = JSON.parse(execFileSync(process.execPath, [path.join(installed, "WorkflowPlatform", "src", "cli.mjs"), "preset-lint"], { encoding: "utf8", windowsHide: true }));
 if (presetLint.status !== "passed" || presetLint.presets !== 15) fail("RELEASE_PRESET_CATALOG_INVALID", JSON.stringify(presetLint));

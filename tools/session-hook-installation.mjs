@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { defaultSkillRoots } from "./skill-installation.mjs";
 
 const OWNER = "zodchi";
 const EVENTS = Object.freeze(["UserPromptSubmit", "SessionEnd"]);
@@ -35,12 +36,15 @@ export function sessionHookDocumentUsesScript(document, script) {
   };
   return visit(document);
 }
-function entry(applicationRoot, client, event) {
+function entry(applicationRoot, client, event, skillRoots) {
   const script = path.join(path.resolve(applicationRoot), "WorkflowPlatform", "hooks", "session-router.mjs");
   const parameters = [script, "--client", client, "--delivery-mode", "final"];
+  if (event === "UserPromptSubmit") parameters.push("--skill-path", path.join(path.resolve(skillRoots[client]), "zodchi", "SKILL.md"));
+  const timeout = event === "SessionEnd" ? 3 : 3600;
+  const command = `node "${script}" --client ${client} --delivery-mode final${event === "UserPromptSubmit" ? ` --skill-path "${path.join(path.resolve(skillRoots[client]), "zodchi", "SKILL.md")}"` : ""}`;
   const hook = client === "claude-code"
-    ? { type: "command", command: "node", args: parameters, timeout: 3600, statusMessage: event === "SessionEnd" ? "Zodchi is closing the session" : "Zodchi is processing the request" }
-    : { type: "command", command: `node "${script}" --client ${client} --delivery-mode final`, commandWindows: `node "${script}" --client ${client} --delivery-mode final`, timeout: 3600, statusMessage: event === "SessionEnd" ? "Zodchi is closing the session" : "Zodchi is processing the request" };
+    ? { type: "command", command: "node", args: parameters, timeout, statusMessage: event === "SessionEnd" ? "Zodchi is closing the session" : "Zodchi is processing the request" }
+    : { type: "command", command, commandWindows: command, timeout, statusMessage: event === "SessionEnd" ? "Zodchi is closing the session" : "Zodchi is processing the request" };
   return { hooks: [hook] };
 }
 function snapshotFile(file) { return fs.existsSync(file) ? { exists: true, content: fs.readFileSync(file) } : { exists: false, content: null }; }
@@ -51,7 +55,7 @@ export function snapshotSessionHooks({ files = defaultSessionHookFiles() } = {})
 }
 export function restoreSessionHooks(snapshots) { for (const item of snapshots) { restoreFile(item.file, item.config); restoreFile(item.marker, item.ownership); } }
 
-export function installSessionHooks({ applicationRoot, files = defaultSessionHookFiles() }) {
+export function installSessionHooks({ applicationRoot, files = defaultSessionHookFiles(), skillRoots = defaultSkillRoots() }) {
   const application = path.resolve(applicationRoot), script = path.join(application, "WorkflowPlatform", "hooks", "session-router.mjs");
   if (!fs.existsSync(script)) throw new Error(`SESSION_HOOK_SCRIPT_MISSING: ${script}`);
   const results = [];
@@ -65,14 +69,18 @@ export function installSessionHooks({ applicationRoot, files = defaultSessionHoo
       const entries = [...(hooks[event] ?? [])];
       const indices = entries.map((item, index) => (JSON.stringify(item) === JSON.stringify(recorded[event]) || entryUses(item, script)) ? index : -1).filter(index => index >= 0);
       if (indices.length > 1) throw new Error(`SESSION_HOOK_DUPLICATE_OWNED_ENTRY: ${client}:${event}`);
-      const desired = entry(application, client, event);
+      const desired = entry(application, client, event, skillRoots);
       if (indices.length === 1) entries[indices[0]] = desired; else entries.push(desired);
       hooks[event] = entries;
     }
     const next = { ...document, hooks };
     atomicJson(file, next);
-    atomicJson(marker, { owner: OWNER, schema_version: 1, client, application_root: application, entries: Object.fromEntries(EVENTS.map(event => [event, entry(application, client, event)])), installed_at: new Date().toISOString() });
-    results.push({ status: ownership ? "updated" : "installed", client, file });
+    atomicJson(marker, { owner: OWNER, schema_version: 1, client, application_root: application, entries: Object.fromEntries(EVENTS.map(event => [event, entry(application, client, event, skillRoots)])), installed_at: new Date().toISOString() });
+    results.push({
+      status: ownership ? "updated" : "installed", client, file,
+      runtime_status: client === "codex" ? "requires_user_trust_verification" : "configured",
+      user_action: client === "codex" ? "Open /hooks in Codex, approve both Zodchi hooks, and start a new chat." : null
+    });
   }
   return Object.freeze(results);
 }

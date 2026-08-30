@@ -1,4 +1,4 @@
-<document id="zodchi_readme" status="accepted" authority="zodchi" version="0.6.3" language="en" format="markdown+xml_semantic">
+<document id="zodchi_readme" status="accepted" authority="zodchi" version="0.6.4" language="en" format="markdown+xml_semantic">
 
 # Zodchi
 
@@ -43,6 +43,8 @@ Open a new Codex or Claude Code chat and send:
 > Open https://github.com/Inkasor/zodchi, read `ONBOARDING_PROMPT.md`, install the latest Zodchi release, and configure it for my project. Do the technical setup yourself and ask me only for decisions you cannot safely infer.
 
 Keep this setup chat: later you can use it to add projects, change models, and adjust how work is performed.
+
+Codex asks you to trust locally installed hooks. Open `/hooks`, approve both Zodchi entries, and start a new project chat; merely enabling their toggles is not approval.
 
 Zodchi requires Node.js 24 or newer. Windows and macOS are supported. Linux passes automated checks but is still experimental.
 

@@ -1,4 +1,4 @@
-<document id="zodchi_readme_ru" status="accepted" authority="zodchi" version="0.6.3" language="ru" format="markdown+xml_semantic">
+<document id="zodchi_readme_ru" status="accepted" authority="zodchi" version="0.6.4" language="ru" format="markdown+xml_semantic">
 
 # Zodchi
 
@@ -43,6 +43,8 @@ Zodchi можно использовать для разработки прог�
 > Открой https://github.com/Inkasor/zodchi, прочитай `ONBOARDING_PROMPT.md`, установи последнюю версию Zodchi и настрой её для моего проекта. Техническую часть выполни сам, а меня спрашивай только о решениях, которые нельзя безопасно определить автоматически.
 
 Сохраните этот настроечный чат: позже в нём можно добавлять проекты, менять модели и настраивать способ работы.
+
+Codex требует отдельно доверить локальные hooks. Откройте `/hooks`, одобрите обе записи Zodchi и создайте новый чат проекта; включённые переключатели сами по себе не означают одобрение.
 
 Для Zodchi нужен Node.js 24 или новее. Windows и macOS поддерживаются. Linux проходит автоматические проверки, но пока считается экспериментальным.
 
