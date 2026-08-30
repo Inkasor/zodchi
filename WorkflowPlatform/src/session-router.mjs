@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { openDb } from "./db.mjs";
 import { formatHookOutput, hookEventFields } from "./hook-entry.mjs";
@@ -14,7 +15,12 @@ const EXECUTION_CONFIRMATION = /^\s*(?:делай|начинай|запуска�
 
 function samePath(left, right) {
   if (!left || !right) return false;
-  const a = path.resolve(String(left)), b = path.resolve(String(right));
+  const canonical = value => {
+    const resolved = path.resolve(String(value));
+    try { return fs.realpathSync.native(resolved); }
+    catch { return resolved; }
+  };
+  const a = canonical(left), b = canonical(right);
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
