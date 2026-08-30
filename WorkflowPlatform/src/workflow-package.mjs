@@ -219,9 +219,11 @@ export function proposeWorkflowMigration(dbFile, packageFile, proposalFile, proj
 
 function technicalId(projectId, packageKey, type, itemKey) { return `imp_${type}_${structuredHash([projectId, packageKey, itemKey]).slice(0, 20)}`; }
 function mapEntity(db, proposal, projectId, packageKey, type, itemKey) {
+  const current = db.prepare(`SELECT m.local_id FROM package_import_mappings m JOIN workflow_import_proposals p ON p.id=m.proposal_id
+    WHERE p.target_project_id=? AND p.package_key=? AND p.status='applied' AND m.entity_type=? AND m.semantic_key=? ORDER BY p.applied_at DESC LIMIT 1`).get(projectId, packageKey, type, itemKey)?.local_id;
   const migrated = proposal.migration_from && type !== "package_release" ? db.prepare(`SELECT m.local_id FROM package_import_mappings m JOIN workflow_import_proposals p ON p.id=m.proposal_id
     WHERE p.target_project_id=? AND p.package_key=? AND p.status='applied' AND m.entity_type=? AND m.semantic_key=? ORDER BY p.applied_at DESC LIMIT 1`).get(projectId, proposal.migration_from, type, itemKey)?.local_id : null;
-  const value = migrated ?? technicalId(projectId, packageKey, type, itemKey);
+  const value = current ?? migrated ?? technicalId(projectId, packageKey, type, itemKey);
   db.prepare("INSERT OR REPLACE INTO package_import_mappings(proposal_id,entity_type,semantic_key,local_id) VALUES(?,?,?,?)").run(proposal.id, type, itemKey, value);
   return value;
 }
