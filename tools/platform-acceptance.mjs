@@ -148,6 +148,14 @@ function sessionActivationStatus({ files, skillRoots, installedRoot, workflowDat
     const active = db.prepare("SELECT state,project_id FROM zodchi_chat_sessions WHERE client=? AND session_id=?").get(client, sessionId);
     db.close();
     ensure(active?.state === "active" && active.project_id === "platform-acceptance", "ACCEPTANCE_SESSION_STATE_INVALID", client);
+    if (client === "codex") {
+      const verification = spawnSync(process.execPath, [path.join(installedRoot, "WorkflowPlatform", "hooks", "activation-status.mjs"), "--client", "codex"], {
+        encoding: "utf8", windowsHide: true,
+        env: { ...environment, CODEX_SESSION_ID: sessionId }
+      });
+      ensure(verification.status === 0, "ACCEPTANCE_ACTIVATION_VERIFIER_FAILED", String(verification.stderr || verification.error?.message || verification.status));
+      ensure(JSON.parse(String(verification.stdout)).status === "active", "ACCEPTANCE_ACTIVATION_VERIFIER_INACTIVE", verification.stdout);
+    }
     const endEvent = { hook_event_name: "SessionEnd", session_id: sessionId, cwd: projectRoot };
     ensure(invokeInstalledHook(end, endEvent, environment, endParameters) === null, "ACCEPTANCE_SESSION_END_OUTPUT", client);
     db = openDb(workflowDatabase);

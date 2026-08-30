@@ -4,6 +4,16 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_6_7_2026_08_30" status="working">
+
+## 0.6.7 — 2026-08-30
+
+- Codex now verifies the exact active `CODEX_SESSION_ID` when it omits non-blocking hook context, so successful activation no longer becomes a false installation error.
+- The verifier is read-only at the workflow level, returns only a bounded status, and cannot substitute another recent session or project run.
+- Claude Code continues to acknowledge the non-blocking hook context directly; platform acceptance covers both delivery paths from the installed artifact.
+
+</section>
+
 <section id="0_6_6_2026_08_30" status="working">
 
 ## 0.6.6 — 2026-08-30

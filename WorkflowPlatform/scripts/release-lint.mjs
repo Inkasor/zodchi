@@ -123,6 +123,7 @@ const required = [
   "tools/release-smoke.mjs",
   "tools/platform-acceptance.mjs",
   "tools/release-lint.mjs",
+  "WorkflowPlatform/hooks/activation-status.mjs",
   "integrations/claude-code/skills/zodchi/SKILL.md",
   "integrations/codex/skills/zodchi/SKILL.md",
   "integrations/codex/skills/zodchi/agents/openai.yaml"
