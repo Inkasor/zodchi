@@ -22,6 +22,7 @@ import { approveBoundInteraction, assertApprovalStillCurrent } from "./approval-
 import { acceptExternalControlEvidenceResult } from "./external-control-plane.mjs";
 import { normalizeRunProfile, resolveRunProfile, storeRunProfile } from "./run-profile.mjs";
 import { assertProjectRuntimeReady } from "./runtime-readiness.mjs";
+import { normalizeSemanticScope } from "./semantic-scope.mjs";
 
 export function loadWorkflow(id, workflowsRoot = resolveWorkflowSettings().workflowsRoot) {
   if (!id) throw new Error("workflow id is required");
@@ -252,11 +253,9 @@ function registeredRoot(db, candidate) {
 
 export async function processMessage({
   message, project, origin = null, dbFile, workflow, workflowDefinition, execute = false, eventSource = "user", eventKey = null, eventFields = [],
-  classificationResult = null, gatewayCall = callGateway, gateRunner = undefined, preferredLanguage = null, client = "codex", chatSession = null, semanticScope = null, prepareOnly = false, runProfileOverrides = {}
+  classificationResult = null, gatewayCall = callGateway, gateRunner = undefined, preferredLanguage = null, client = "codex", semanticScope, prepareOnly = false, runProfileOverrides = {}
 }) {
-  const resolvedSemanticScope = semanticScope ?? (chatSession ? chatSession : { mode: "stateless" });
-  if (chatSession && (resolvedSemanticScope.client !== chatSession.client || resolvedSemanticScope.session_id !== chatSession.session_id)) throw new Error("ZODCHI_SEMANTIC_SCOPE_SESSION_MISMATCH");
-  if (!chatSession && resolvedSemanticScope.mode !== "stateless") throw new Error("ZODCHI_SEMANTIC_SCOPE_SESSION_REQUIRED");
+  const resolvedSemanticScope = normalizeSemanticScope(semanticScope);
   const settings = resolveWorkflowSettings();
   dbFile ??= settings.databasePath;
   workflow ??= settings.workflow ?? workflowDefinition?.id;
@@ -302,7 +301,7 @@ export async function processMessage({
       throw new Error(`WORKFLOW_RUNTIME_NOT_READY: ${workflow}: missing ${missing.join(",")}`);
     }
   }
-  const accepted = runtime.accept(message, { project_id: project, workflow_id: workflow, client, chat_session: chatSession, event_source: eventSource, event_key: eventKey, event_fields: eventFields, binding: bindingEvidence(binding, settings) });
+  const accepted = runtime.accept(message, { project_id: project, workflow_id: workflow, client, chat_session: resolvedSemanticScope.mode === "session" ? resolvedSemanticScope : null, event_source: eventSource, event_key: eventKey, event_fields: eventFields, binding: bindingEvidence(binding, settings) });
   const runId = accepted.runId;
   const run = runtime.get(runId);
   let responseLanguage = resolveResponseLanguage({ message, preferredLanguage: preferredLanguage ?? settings.responseLanguage });

@@ -6,9 +6,11 @@ import path from "node:path";
 import test from "node:test";
 import { onboardProject } from "../src/onboarding.mjs";
 import { openDb, now } from "../src/db.mjs";
-import { deliverExternalEvidencePacket, processMessage } from "../src/workflow-app.mjs";
+import { deliverExternalEvidencePacket, processMessage as scopedProcessMessage } from "../src/workflow-app.mjs";
 import { classificationCatalog, validateClassificationDecision } from "../src/classifier.mjs";
 import { activateChatSession } from "../src/chat-session.mjs";
+
+const processMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
 import {
   cancelInteraction, deliverEvidence, expireInteractions, openClarification, openExternalEvidenceRequest,
   pendingInteractions, quiesceRun, readInteraction, settleInteraction, supersedeInteraction, validateEvidenceContract
@@ -63,7 +65,7 @@ function bareFixture(prefix) {
   db.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status,discovery_json,history_budget_bytes) VALUES('workflow','Workflow','project','mvp','L2','active','{\"git\":false}',4096)").run();
   db.prepare("INSERT INTO tasks(id,project_id,title,state,created_at,updated_at) VALUES('task','project','waiting','executing',?,?)").run(now(), now());
   db.prepare("INSERT INTO workflow_runs(id,task_id,project_id,workflow_id,state,operational_level,user_message,created_at,updated_at) VALUES('waiting','task','project','workflow','executing','mvp','waiting',?,?)").run(now(), now());
-  return { root, dbFile, db };
+  return { root, project, dbFile, db };
 }
 
 function contract(overrides = {}) {
@@ -249,7 +251,7 @@ test("opening a wait leaves no lease held and no child half-running", () => {
 });
 
 test("a message asserting an external fact does not close the request that asked for it", () => {
-  const { root, dbFile, db } = bareFixture("workflow-evidence-not-text-");
+  const { root, project, dbFile, db } = bareFixture("workflow-evidence-not-text-");
   const interactionId = openExternalEvidenceRequest(db, { taskId: "task", runId: "waiting", question: "Нужен журнал проведения.", contract: contract(), affectedSteps: ["worker"] });
   for (const [table, values] of [["work_types", ["implementation", "conversation", "clarification", "research"]], ["artifact_types", ["code", "none"]], ["domains", ["workflow"]], ["disciplines", ["software"]]]) {
     for (const value of values) db.prepare(`INSERT OR IGNORE INTO ${table}(id,name${table === "artifact_types" || table === "work_types" ? ",category" : ""}) VALUES(?,?${table === "artifact_types" || table === "work_types" ? ",'general'" : ""})`).run(value, value);
@@ -264,7 +266,10 @@ test("a message asserting an external fact does not close the request that asked
     needs_questions: false, document_required: false, reply_mode: "conversation", pending_interaction_id: interactionId,
     resolved_objective: "Зафиксировать утверждение владельца о записи обоих регистров.", reason: "Владелец утверждает, что оба регистра пишутся.", questions: [], human_response: "Да, пишутся оба."
   };
-  const catalog = classificationCatalog(db, "project", { mode: "project_admin" });
+  const semanticScope = { mode: "session", client: "codex", session_id: "external-evidence-chat" };
+  activateChatSession(db, { client: semanticScope.client, sessionId: semanticScope.session_id, origin: project, turnKey: "turn-1" });
+  db.prepare("INSERT INTO zodchi_chat_session_runs(run_id,client,session_id,bound_at) VALUES('waiting',?,?,?)").run(semanticScope.client, semanticScope.session_id, now());
+  const catalog = classificationCatalog(db, "project", semanticScope);
   // The contract travels with the request so the person can tell whether they have what was asked for.
   assert.equal(catalog.pending_interactions.find(item => item.id === interactionId).evidence_contract.resource.identity, "srvr=erp-prod;ref=trade");
 
@@ -308,9 +313,9 @@ function readyPlan() {
 
 test("an answered clarification continues the run that asked instead of opening another one", async () => {
   const env = fixture("workflow-clarification-resume-");
-  const chatSession = { client: "codex", session_id: "clarification-resume-chat" };
+  const semanticScope = { mode: "session", client: "codex", session_id: "clarification-resume-chat" };
   const sessionDb = openDb(env.dbFile);
-  activateChatSession(sessionDb, { client: chatSession.client, sessionId: chatSession.session_id, origin: env.project, turnKey: "turn-1" });
+  activateChatSession(sessionDb, { client: semanticScope.client, sessionId: semanticScope.session_id, origin: env.project, turnKey: "turn-1" });
   sessionDb.close();
   const calls = [];
   let plannerCalls = 0;
@@ -332,14 +337,14 @@ test("an answered clarification continues the run that asked instead of opening 
     return receipt("reviewer", { schema_version: 1, decision: "PASS", summary: "All criteria passed.", blockers: [], required_actions: [], evidence_refs: ["gate:passed"] });
   };
 
-  const asked = await processMessage({ message: "Сделай ограниченный вывод", project: env.project, dbFile: env.dbFile, execute: true, chatSession, classificationResult: classification(), gatewayCall, gateRunner: async () => ({ status: "passed", checks: [] }) });
+  const asked = await processMessage({ message: "Сделай ограниченный вывод", project: env.project, dbFile: env.dbFile, execute: true, semanticScope, classificationResult: classification(), gatewayCall, gateRunner: async () => ({ status: "passed", checks: [] }) });
   assert.equal(asked.execution.status, "clarification_required");
 
   const paused = openDb(env.dbFile);
   const questionId = paused.prepare("SELECT id FROM approvals WHERE status='pending' AND kind='planner_clarification'").get().id;
   paused.close();
 
-  const answered = await processMessage({ message: "В src/output.txt", project: env.project, dbFile: env.dbFile, execute: true, chatSession, classificationResult: classification({ pending_interaction_id: questionId, reply_mode: "conversation", planning_required: false, artifact_type: "none", work_type: "conversation", human_response: "В src/output.txt" }), gatewayCall, gateRunner: async () => ({ status: "passed", checks: [] }) });
+  const answered = await processMessage({ message: "В src/output.txt", project: env.project, dbFile: env.dbFile, execute: true, semanticScope, classificationResult: classification({ pending_interaction_id: questionId, reply_mode: "conversation", planning_required: false, artifact_type: "none", work_type: "conversation", human_response: "В src/output.txt" }), gatewayCall, gateRunner: async () => ({ status: "passed", checks: [] }) });
 
   // The answer belongs to the run that asked. Routing it through a fresh run would replan work already
   // done and pay for every model call again, so the intake run only records the delivery.

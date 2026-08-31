@@ -6,7 +6,9 @@ import test from "node:test";
 import { Runtime } from "../src/runtime.mjs";
 import { applyPatch } from "../src/documentator.mjs";
 import { buildPrompt } from "../src/prompt-builder.mjs";
-import { processMessage } from "../src/workflow-app.mjs";
+import { processMessage as scopedProcessMessage } from "../src/workflow-app.mjs";
+
+const processMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
 import { openDb } from "../src/db.mjs";
 import { formatHookOutput, parseHookEvent } from "../src/hook-entry.mjs";
 

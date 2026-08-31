@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { normalizeSemanticScope } from "./semantic-scope.mjs";
 import { execFileSync } from "node:child_process";
 import { documentLint } from "./lint.mjs";
 import { projectRoots, primaryRoot, findRoot, resolveInRoot, displayPath } from "./project-roots.mjs";
@@ -144,21 +145,16 @@ export function conversationContext(db, projectId, historyBudgetBytes = 24_000, 
   // Accepted owner decisions are project truth and intentionally cross chat boundaries. Conversational
   // wording is not. A caller must name either one exact chat or a stateless automation scope; omission
   // is a contract error rather than a silent return to project-wide conversation history.
-  if (!semanticScope) throw new Error("ZODCHI_SEMANTIC_SCOPE_REQUIRED");
-  const stateless = semanticScope.mode === "stateless";
-  const projectAdmin = semanticScope.mode === "project_admin";
-  const sessionBound = typeof semanticScope.client === "string" && typeof semanticScope.session_id === "string";
-  if (!stateless && !projectAdmin && !sessionBound) throw new Error("ZODCHI_SEMANTIC_SCOPE_INVALID");
+  const scope = normalizeSemanticScope(semanticScope);
+  const sessionBound = scope.mode === "session";
   const decisions = db.prepare("SELECT id,kind,outcome,source,structured_json,created_at FROM decisions WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND active=1 AND outcome='APPROVE' ORDER BY created_at,id").all(projectId)
     .map(row => ({ id: row.id, kind: row.kind, outcome: row.outcome, source: row.source, structured: parseJson(row.structured_json, null), created_at: row.created_at }));
   const messages = sessionBound
     ? db.prepare(`SELECT cm.id,cm.role,cm.content,cm.created_at FROM conversation_messages cm
         JOIN zodchi_chat_session_runs csr ON csr.run_id=cm.run_id
         WHERE cm.project_id=? AND csr.client=? AND csr.session_id=? ORDER BY cm.created_at,cm.id`)
-      .all(projectId, semanticScope.client, semanticScope.session_id)
-    : projectAdmin
-      ? db.prepare("SELECT id,role,content,created_at FROM conversation_messages WHERE project_id=? ORDER BY created_at,id").all(projectId)
-      : [];
+      .all(projectId, scope.client, scope.session_id)
+    : [];
   const selected = [];
   let used = 0;
   for (const message of [...messages].reverse()) {
