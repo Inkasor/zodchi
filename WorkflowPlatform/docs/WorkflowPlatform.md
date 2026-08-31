@@ -1,4 +1,4 @@
-<document id="workflow_platform" version="0.6.1" status="accepted" kind="governance" language="en">
+<document id="workflow_platform" version="0.6.2" status="accepted" kind="governance" language="en">
 <metadata owner="workflow-platform" authority="Zodchi">
 </metadata>
 <section id="documentator_contract" status="accepted">
@@ -46,6 +46,9 @@ The host event supplies only its origin directory. WorkflowPlatform binds that o
 <section id="context_collection" status="accepted">
 The platform reads the project and assembles the context; a role works from what it was given and does not open files itself.
 </section>
+<rule id="semantic_scope_is_explicit" status="accepted">
+Every workflow intake names exactly one semantic scope: an exact client session or stateless automation. Session history and pending interactions never fall back to project scope, while accepted owner decisions remain project truth.
+</rule>
 <rule id="collection_covers_the_project" status="accepted">
 Source collection covers the project's tracked and unignored files; a declared source scope narrows that, and a credential-shaped or dump-shaped name is never collected.
 </rule>

@@ -7,7 +7,9 @@ import { now, openDb } from "../src/db.mjs";
 import { bindProject, bindingEvidence } from "../src/project-binding.mjs";
 import { parseHookEvent } from "../src/hook-entry.mjs";
 import { applyHookInstallation, hookInstallationStatus, hookSnapshotHashes, planHookInstallation, removeOwnedHookInstallation, restoreHookInstallation, snapshotHookInstallation } from "../src/hook-installation.mjs";
-import { processMessage } from "../src/workflow-app.mjs";
+import { processMessage as scopedProcessMessage } from "../src/workflow-app.mjs";
+
+const processMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
 import { resolveWorkflowSettings, workflowPlatformRoot } from "../src/paths.mjs";
 
 function temporaryRoot(prefix) {

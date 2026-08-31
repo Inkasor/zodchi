@@ -1,3 +1,5 @@
+import { normalizeSemanticScope } from "./semantic-scope.mjs";
+
 const REQUIRED_FIELDS = Object.freeze([
   "schema_version", "work_type", "artifact_type", "domain", "discipline", "risk", "planning_level", "quality_mode",
   "planning_required", "human_required", "needs_questions", "document_required", "reply_mode", "pending_interaction_id", "pending_interaction_response",
@@ -16,11 +18,8 @@ const DIRECT_REPLY_WORK_TYPES = Object.freeze(["clarification", "conversation", 
 function ids(db, table) { return db.prepare(`SELECT id FROM ${table} ORDER BY id`).all().map(row => row.id); }
 
 export function classificationCatalog(db, projectId, semanticScope = null) {
-  if (!semanticScope) throw new Error("ZODCHI_SEMANTIC_SCOPE_REQUIRED");
-  const stateless = semanticScope.mode === "stateless";
-  const projectAdmin = semanticScope.mode === "project_admin";
-  const sessionBound = typeof semanticScope.client === "string" && typeof semanticScope.session_id === "string";
-  if (!stateless && !projectAdmin && !sessionBound) throw new Error("ZODCHI_SEMANTIC_SCOPE_INVALID");
+  const scope = normalizeSemanticScope(semanticScope);
+  const sessionBound = scope.mode === "session";
   const routes = db.prepare(`SELECT wr.work_type_id,wr.workflow_id,wr.priority
     FROM workflow_routes wr JOIN workflows w ON w.id=wr.workflow_id
     WHERE wr.project_id=? AND wr.enabled=1 AND w.status='active'
@@ -29,17 +28,13 @@ export function classificationCatalog(db, projectId, semanticScope = null) {
     ? db.prepare(`SELECT a.id,a.kind,a.question AS summary,a.detail_json FROM approvals a
         JOIN zodchi_chat_session_runs csr ON csr.run_id=a.run_id
         WHERE a.task_id IN (SELECT id FROM tasks WHERE project_id=?) AND a.status='pending'
-          AND csr.client=? AND csr.session_id=? ORDER BY a.created_at,a.id`).all(projectId, semanticScope.client, semanticScope.session_id)
-    : projectAdmin
-      ? db.prepare("SELECT id,kind,question AS summary,detail_json FROM approvals WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND status='pending' ORDER BY created_at,id").all(projectId)
-      : [];
+          AND csr.client=? AND csr.session_id=? ORDER BY a.created_at,a.id`).all(projectId, scope.client, scope.session_id)
+    : [];
   const proposalRows = sessionBound
     ? db.prepare(`SELECT dp.id,'document_proposal' AS kind,dp.target AS summary FROM document_proposals dp
         JOIN zodchi_chat_session_runs csr ON csr.run_id=dp.run_id
-        WHERE dp.project_id=? AND dp.status='pending' AND csr.client=? AND csr.session_id=? ORDER BY dp.created_at,dp.id`).all(projectId, semanticScope.client, semanticScope.session_id)
-    : projectAdmin
-      ? db.prepare("SELECT id,'document_proposal' AS kind,target AS summary FROM document_proposals WHERE project_id=? AND status='pending' ORDER BY created_at,id").all(projectId)
-      : [];
+        WHERE dp.project_id=? AND dp.status='pending' AND csr.client=? AND csr.session_id=? ORDER BY dp.created_at,dp.id`).all(projectId, scope.client, scope.session_id)
+    : [];
   const pending = [
     // The kind is what separates a question from a decision on an action, and collapsing every approval
     // into one label left the classifier unable to tell them apart in the very list it reads.

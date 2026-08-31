@@ -6,10 +6,12 @@ import test from "node:test";
 import { openDb, now } from "../src/db.mjs";
 import { classificationCatalog, classificationJsonSchema, classifierPrompt, parseClassificationReceipt, validateClassificationDecision } from "../src/classifier.mjs";
 import { compactProjectSnapshot, conversationContext, readProjectContext, selectProjectContext } from "../src/document-context.mjs";
-import { processMessage } from "../src/workflow-app.mjs";
+import { processMessage as scopedProcessMessage } from "../src/workflow-app.mjs";
 import { onboardProject, registerProject } from "../src/onboarding.mjs";
 import { Runtime } from "../src/runtime.mjs";
 import { activateChatSession } from "../src/chat-session.mjs";
+
+const processMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
 
 function temporaryRoot(prefix) {
   const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir();
@@ -57,9 +59,15 @@ function receipt(output, receiptId = "receipt") {
   return { receiptId, taskId: `${receiptId}-task`, provider: "codex", profile: "test-classifier", role: "classifier", status: "completed", exitCode: 0, startedAt: timestamp, finishedAt: timestamp, usage: {}, output, error: "" };
 }
 
+test("workflow intake requires one exact semantic scope", async () => {
+  await assert.rejects(() => scopedProcessMessage({ message: "hello" }), /ZODCHI_SEMANTIC_SCOPE_REQUIRED/);
+  await assert.rejects(() => scopedProcessMessage({ message: "hello", semanticScope: { mode: "stateless", client: "codex" } }), /ZODCHI_SEMANTIC_SCOPE_INVALID/);
+  await assert.rejects(() => scopedProcessMessage({ message: "hello", semanticScope: { mode: "session", client: "codex", session_id: "" } }), /ZODCHI_SEMANTIC_SCOPE_INVALID/);
+});
+
 test("classification schema accepts only exact registered values and known provider envelopes", () => {
   const { root, db } = fixture("workflow-classification-schema-");
-  const catalog = classificationCatalog(db, "project", { mode: "project_admin" });
+  const catalog = classificationCatalog(db, "project", { mode: "stateless" });
   const valid = validateClassificationDecision(decision(), catalog);
   assert.equal(valid.kind, "implementation");
   assert.equal(valid.level, "L2");
@@ -126,7 +134,7 @@ test("ordinary conversation invokes only the classifier and returns a plain huma
 test("the classifier is offered only routed work types plus the direct answers that never enter a workflow", () => {
   const { root, db } = fixture("workflow-classification-catalog-");
   db.prepare("DELETE FROM workflow_routes WHERE project_id='project' AND work_type_id NOT IN ('narrative','decision')").run();
-  const catalog = classificationCatalog(db, "project", { mode: "project_admin" });
+  const catalog = classificationCatalog(db, "project", { mode: "stateless" });
   assert.deepEqual(catalog.work_types, ["clarification", "conversation", "decision", "narrative", "research"]);
   assert.throws(() => validateClassificationDecision(decision({ work_type: "implementation" }), catalog), /CLASSIFICATION_VALUE_UNREGISTERED: work_type=implementation/);
   db.close();
@@ -218,7 +226,7 @@ test("clarification produces plain questions and does not start productive roles
 
 test("registered contract covers decision, documentation, implementation, verification, material and continuation intents", () => {
   const { root, db } = fixture("workflow-classification-intents-");
-  const catalog = classificationCatalog(db, "project", { mode: "project_admin" });
+  const catalog = classificationCatalog(db, "project", { mode: "stateless" });
   const cases = [
     decision({ work_type: "decision", artifact_type: "decision" }),
     decision({ work_type: "documentation", artifact_type: "document", discipline: "documentation", document_required: true }),
@@ -301,22 +309,26 @@ test("discovery and role context read only registered documents and explicit per
 test("classifier context keeps accepted decisions, ordered bounded history, pending interactions and current message last", () => {
   const { root, db } = fixture("workflow-context-order-");
   const runtimeTask = "task-history";
+  const semanticScope = { mode: "session", client: "codex", session_id: "history-chat" };
+  activateChatSession(db, { client: semanticScope.client, sessionId: semanticScope.session_id, origin: path.join(root, "project"), turnKey: "turn-1" });
   db.prepare("INSERT INTO tasks(id,project_id,title,state,created_at,updated_at) VALUES(?,'project','History','completed',?,?)").run(runtimeTask, now(), now());
+  db.prepare("INSERT INTO workflow_runs(id,task_id,project_id,workflow_id,state,user_message,created_at,updated_at,completed_at) VALUES('history-run',?,'project','workflow','completed','History',?,?,?)").run(runtimeTask, now(), now(), now());
+  db.prepare("INSERT INTO zodchi_chat_session_runs(run_id,client,session_id,bound_at) VALUES('history-run',?,?,?)").run(semanticScope.client, semanticScope.session_id, now());
   db.prepare("INSERT INTO decisions(id,task_id,kind,outcome,source,structured_json,active,created_at) VALUES('accepted-decision',?,'owner','APPROVE','owner','{\"value\":1}',1,?)").run(runtimeTask, now());
   db.prepare("INSERT INTO decisions(id,task_id,kind,outcome,source,structured_json,active,created_at) VALUES('classifier-decision',?,'classification','conversation','classifier','{\"value\":2}',1,?)").run(runtimeTask, now());
-  db.prepare("INSERT INTO approvals(id,task_id,kind,question,status,created_at) VALUES('pending-approval',?,'owner','Продолжить?','pending',?)").run(runtimeTask, now());
-  for (let index = 0; index < 8; index += 1) db.prepare("INSERT INTO conversation_messages(id,project_id,role,content,created_at) VALUES(?,'project',?,?,?)")
+  db.prepare("INSERT INTO approvals(id,task_id,run_id,kind,question,status,created_at) VALUES('pending-approval',?,'history-run','owner','Продолжить?','pending',?)").run(runtimeTask, now());
+  for (let index = 0; index < 8; index += 1) db.prepare("INSERT INTO conversation_messages(id,project_id,run_id,role,content,created_at) VALUES(?,'project','history-run',?,?,?)")
     .run(`message-${index}`, index % 2 ? "assistant" : "user", `history-${index}-${"x".repeat(120)}`, `2026-01-01T00:00:0${index}.000Z`);
   assert.throws(() => conversationContext(db, "project", 500), /ZODCHI_SEMANTIC_SCOPE_REQUIRED/);
   assert.throws(() => classificationCatalog(db, "project"), /ZODCHI_SEMANTIC_SCOPE_REQUIRED/);
   assert.deepEqual(conversationContext(db, "project", 500, { mode: "stateless" }).history, []);
   assert.deepEqual(classificationCatalog(db, "project", { mode: "stateless" }).pending_interactions, []);
-  const context = conversationContext(db, "project", 500, { mode: "project_admin" });
+  const context = conversationContext(db, "project", 500, semanticScope);
   assert.equal(context.accepted_decisions[0].id, "accepted-decision");
   assert.equal(context.accepted_decisions.some(item => item.id === "classifier-decision"), false);
   assert.equal(context.history.at(-1).id, "message-7");
   assert.ok(context.history.length < 8);
-  const catalog = classificationCatalog(db, "project", { mode: "project_admin" });
+  const catalog = classificationCatalog(db, "project", semanticScope);
   const snapshot = { project: { id: "project", name: "Project" } };
   const first = classifierPrompt({ message: "Да", catalog, projectSnapshot: snapshot, acceptedDecisions: context.accepted_decisions, history: context.history });
   const second = classifierPrompt({ message: "Продолжай", catalog, projectSnapshot: snapshot, acceptedDecisions: context.accepted_decisions, history: context.history });
@@ -366,7 +378,7 @@ test("project registration is idempotent and rejects conflicting identity", () =
 
 test("the classifier prompt keeps run state below an invariant head long enough for a provider to cache", () => {
   const { root, db } = fixture("workflow-classification-prefix-");
-  const catalog = classificationCatalog(db, "project", { mode: "project_admin" });
+  const catalog = classificationCatalog(db, "project", { mode: "stateless" });
   const build = (message, head) => classifierPrompt({ message, catalog, projectSnapshot: { git: { head } }, acceptedDecisions: [], history: [], responseLanguage: "ru" });
   const first = build("first message", "aaa"), second = build("second message", "bbb");
   let shared = 0;
@@ -386,8 +398,8 @@ test("the classifier prompt keeps run state below an invariant head long enough 
 
 test("a clarification stops being pending once the next message answers or supersedes it", async () => {
   const { root, project, dbFile, db } = fixture("workflow-clarification-settle-");
-  const chatSession = { client: "codex", session_id: "clarification-chat" };
-  activateChatSession(db, { client: chatSession.client, sessionId: chatSession.session_id, origin: project, turnKey: "turn-1" });
+  const semanticScope = { mode: "session", client: "codex", session_id: "clarification-chat" };
+  activateChatSession(db, { client: semanticScope.client, sessionId: semanticScope.session_id, origin: project, turnKey: "turn-1" });
   db.close();
   const asking = decision({
     work_type: "clarification", artifact_type: "none", discipline: "general", planning_level: "L0",
@@ -395,7 +407,7 @@ test("a clarification stops being pending once the next message answers or super
     questions: ["Какие документы проверить первыми?"], reason: "Не указаны исходные документы."
   });
   const first = await processMessage({
-    message: "Разберись со старыми материалами", project, dbFile, workflowDefinition: definition(), execute: true, chatSession,
+    message: "Разберись со старыми материалами", project, dbFile, workflowDefinition: definition(), execute: true, semanticScope,
     gatewayCall: async () => receipt(JSON.stringify(asking))
   });
   const opened = openDb(dbFile);
@@ -403,7 +415,7 @@ test("a clarification stops being pending once the next message answers or super
   opened.close();
 
   const answered = await processMessage({
-    message: "Начни с бестиария", project, dbFile, workflowDefinition: definition(), execute: true, chatSession,
+    message: "Начни с бестиария", project, dbFile, workflowDefinition: definition(), execute: true, semanticScope,
     gatewayCall: async () => receipt(JSON.stringify({ ...asking, questions: ["Только классифицировать или готовить предложение?"], pending_interaction_id: pendingId }))
   });
   const verified = openDb(dbFile);
@@ -434,18 +446,18 @@ test("two chats in one project keep history and interactions isolated while down
     planning_required: false, human_required: true, needs_questions: true, reply_mode: "clarification",
     resolved_objective: "Уточнить формат отчёта.", reason: "Не выбран формат.", questions: ["Нужен Markdown или JSON?"]
   });
-  const firstA = await processMessage({ message: "Начнём анализ", project, dbFile, workflowDefinition: definition(), classificationResult: askingA, chatSession: { client: "codex", session_id: "chat-a" } });
-  const firstB = await processMessage({ message: "Подготовь отчёт", project, dbFile, workflowDefinition: definition(), classificationResult: askingB, chatSession: { client: "codex", session_id: "chat-b" } });
+  const firstA = await processMessage({ message: "Начнём анализ", project, dbFile, workflowDefinition: definition(), classificationResult: askingA, semanticScope: { mode: "session", client: "codex", session_id: "chat-a" } });
+  const firstB = await processMessage({ message: "Подготовь отчёт", project, dbFile, workflowDefinition: definition(), classificationResult: askingB, semanticScope: { mode: "session", client: "codex", session_id: "chat-b" } });
 
   const state = openDb(dbFile);
   const pendingA = state.prepare("SELECT id FROM approvals WHERE run_id=?").get(firstA.run_id).id;
   const pendingB = state.prepare("SELECT id FROM approvals WHERE run_id=?").get(firstB.run_id).id;
-  const contextA = conversationContext(state, "project", 24_000, { client: "codex", session_id: "chat-a" });
-  const contextB = conversationContext(state, "project", 24_000, { client: "codex", session_id: "chat-b" });
+  const contextA = conversationContext(state, "project", 24_000, { mode: "session", client: "codex", session_id: "chat-a" });
+  const contextB = conversationContext(state, "project", 24_000, { mode: "session", client: "codex", session_id: "chat-b" });
   assert.equal(JSON.stringify(contextA.history).includes("Markdown или JSON"), false);
   assert.equal(JSON.stringify(contextB.history).includes("архитектуру"), false);
-  assert.deepEqual(classificationCatalog(state, "project", { client: "codex", session_id: "chat-a" }).pending_interactions.map(item => item.id), [pendingA]);
-  assert.deepEqual(classificationCatalog(state, "project", { client: "codex", session_id: "chat-b" }).pending_interactions.map(item => item.id), [pendingB]);
+  assert.deepEqual(classificationCatalog(state, "project", { mode: "session", client: "codex", session_id: "chat-a" }).pending_interactions.map(item => item.id), [pendingA]);
+  assert.deepEqual(classificationCatalog(state, "project", { mode: "session", client: "codex", session_id: "chat-b" }).pending_interactions.map(item => item.id), [pendingB]);
   state.close();
 
   const resolved = "Проанализировать по порядку: текущую архитектуру движка, соответствие заявленной универсальности и готовность к дальнейшей разработке.";
@@ -457,7 +469,7 @@ test("two chats in one project keep history and interactions isolated while down
   });
   const secondA = await processMessage({
     message: "давай все три в порядке который ты указал", project, dbFile, workflowDefinition: definition(), execute: true,
-    chatSession: { client: "codex", session_id: "chat-a" },
+    semanticScope: { mode: "session", client: "codex", session_id: "chat-a" },
     gatewayCall: async request => {
       const prompt = fs.readFileSync(request.taskFile, "utf8");
       if (request.role === "classifier") { classifierInput = prompt; return receipt(JSON.stringify(research), "classifier-context"); }
@@ -480,7 +492,7 @@ test("two chats in one project keep history and interactions isolated while down
   const plannerObjective = "Подготовить Markdown-отчёт по зарегистрированным материалам проекта.";
   const planned = await processMessage({
     message: "Markdown", project, dbFile, workflowDefinition: definition(), execute: false,
-    chatSession: { client: "codex", session_id: "chat-b" },
+    semanticScope: { mode: "session", client: "codex", session_id: "chat-b" },
     classificationResult: decision({ artifact_type: "document", discipline: "documentation", document_required: true, pending_interaction_id: pendingB, resolved_objective: plannerObjective })
   });
   assert.equal(planned.route, "work");

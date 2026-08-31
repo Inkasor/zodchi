@@ -6,6 +6,7 @@ import test from "node:test";
 import { openDb, now } from "../src/db.mjs";
 import { classificationCatalog, validateClassificationDecision } from "../src/classifier.mjs";
 import { Runtime } from "../src/runtime.mjs";
+import { activateChatSession } from "../src/chat-session.mjs";
 
 function temporaryRoot(prefix) {
   const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir();
@@ -54,12 +55,19 @@ function askPlannerQuestion(db, taskId, runId, approvalId = "planner_question") 
   return approvalId;
 }
 
+function bindRunToSession(db, project, runId, sessionId) {
+  const scope = { mode: "session", client: "codex", session_id: sessionId };
+  activateChatSession(db, { client: scope.client, sessionId: scope.session_id, origin: project, turnKey: `${sessionId}-turn` });
+  db.prepare("INSERT INTO zodchi_chat_session_runs(run_id,client,session_id,bound_at) VALUES(?,?,?,?)").run(runId, scope.client, scope.session_id, now());
+  return scope;
+}
+
 test("one answer settles every question it answered, and an id that is not pending does not end the run", () => {
-  const { root, dbFile, db } = fixture("workflow-pending-");
+  const { root, project, dbFile, db } = fixture("workflow-pending-");
   db.prepare("INSERT INTO tasks(id,project_id,title,state,created_at,updated_at) VALUES('task','project','asked','clarification_required',?,?)").run(now(), now());
   db.prepare("INSERT INTO workflow_runs(id,task_id,project_id,workflow_id,state,operational_level,user_message,created_at,updated_at) VALUES('asking','task','project','workflow','clarification_required','mvp','asked',?,?)").run(now(), now());
   const asked = askQuestions(db, "task", "asking", 2);
-  const catalog = classificationCatalog(db, "project", { mode: "project_admin" });
+  const catalog = classificationCatalog(db, "project", bindRunToSession(db, project, "asking", "pending-chat"));
 
   // The platform asked two questions and the person answered both in one message. Naming one and
   // cancelling the other recorded an answer that was given as an answer that never came.
@@ -82,11 +90,11 @@ test("one answer settles every question it answered, and an id that is not pendi
 });
 
 test("a decision on an action is still named exactly", () => {
-  const { root, db } = fixture("workflow-pending-decision-");
+  const { root, project, db } = fixture("workflow-pending-decision-");
   db.prepare("INSERT INTO tasks(id,project_id,title,state,created_at,updated_at) VALUES('task','project','asked','approval_required',?,?)").run(now(), now());
   db.prepare("INSERT INTO workflow_runs(id,task_id,project_id,workflow_id,state,operational_level,user_message,created_at,updated_at) VALUES('asking','task','project','workflow','approval_required','mvp','asked',?,?)").run(now(), now());
   db.prepare("INSERT INTO approvals(id,task_id,run_id,kind,question,status,created_at) VALUES('approval_deploy','task','asking','workflow_approval','Разрешить выкладку?','pending',?)").run(now());
-  const catalog = classificationCatalog(db, "project", { mode: "project_admin" });
+  const catalog = classificationCatalog(db, "project", bindRunToSession(db, project, "asking", "decision-chat"));
 
   // Leniency belongs where being wrong costs nothing. An approval authorizes an action, so a response
   // paired with an id that is not pending is refused rather than read as consent to something else.
@@ -99,11 +107,11 @@ test("a decision on an action is still named exactly", () => {
 });
 
 test("a planner clarification is a question, not an approval decision, and is settled by the answer", () => {
-  const { root, dbFile, db } = fixture("workflow-planner-clarification-");
+  const { root, project, dbFile, db } = fixture("workflow-planner-clarification-");
   db.prepare("INSERT INTO tasks(id,project_id,title,state,created_at,updated_at) VALUES('task','project','asked','clarification_required',?,?)").run(now(), now());
   db.prepare("INSERT INTO workflow_runs(id,task_id,project_id,workflow_id,state,operational_level,user_message,created_at,updated_at) VALUES('asking','task','project','workflow','clarification_required','mvp','asked',?,?)").run(now(), now());
   const pendingId = askPlannerQuestion(db, "task", "asking");
-  const classified = validateClassificationDecision(decision({ pending_interaction_id: pendingId }), classificationCatalog(db, "project", { mode: "project_admin" }));
+  const classified = validateClassificationDecision(decision({ pending_interaction_id: pendingId }), classificationCatalog(db, "project", bindRunToSession(db, project, "asking", "planner-chat")));
   assert.equal(classified.pending_interaction_response, null);
   db.close();
 
@@ -117,7 +125,7 @@ test("a planner clarification is a question, not an approval decision, and is se
 
 test("a run that fails on its way into execution ends instead of staying classified", () => {
   const { root, db } = fixture("workflow-classified-dead-end-");
-  const classified = validateClassificationDecision(decision(), classificationCatalog(db, "project", { mode: "project_admin" }));
+  const classified = validateClassificationDecision(decision(), classificationCatalog(db, "project", { mode: "stateless" }));
   db.close();
   const runtime = new Runtime(path.join(root, "workflow.sqlite"));
   const runId = runtime.create("сделай пакет", { project_id: "project", workflow_id: "workflow" });

@@ -5,7 +5,9 @@ import path from "node:path";
 import test from "node:test";
 import { now, openDb } from "../src/db.mjs";
 import { resolveWorkflowSettings, workflowPlatformRoot } from "../src/paths.mjs";
-import { processMessage } from "../src/workflow-app.mjs";
+import { processMessage as scopedProcessMessage } from "../src/workflow-app.mjs";
+
+const processMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
 
 test("relative runtime paths resolve from the installation root", () => {
   const settings = resolveWorkflowSettings({

@@ -4,7 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { openDb, now } from "../src/db.mjs";
-import { processMessage } from "../src/workflow-app.mjs";
+import { processMessage as scopedProcessMessage } from "../src/workflow-app.mjs";
+
+const processMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
 import { projectRuntimeReadiness } from "../src/runtime-readiness.mjs";
 
 function fixture() {
