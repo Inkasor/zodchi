@@ -10,6 +10,8 @@
 
 - Workflow runs are bound to the exact `(client, session_id)` at intake, so two Zodchi chats in one project no longer share conversational history or pending clarifications.
 - Classification now produces and stores a standalone resolved objective. Research, planning, execution and resumed work receive the resolved meaning instead of a context-dependent reply such as “all three”.
+- Chat semantics now fail closed: sessionless CLI, evidence and background runs are explicitly stateless and cannot read project-wide conversation history or pending chat interactions.
+- On upgrade, a live pre-isolation chat wait that cannot be tied to one exact session is cancelled with a migration event instead of becoming an invisible pending request. Restart that request in its chat after updating.
 - Cursor chat entry is available as a preview through its native session hooks and a persistent `/zodchi` Custom Mode. Ordinary Cursor chats remain untouched, exact conversation/generation identities bind result delivery, and ambiguous multi-root workspaces fail closed.
 - The two managed Zodchi skill copies are host-neutral, so Cursor can use either global compatibility location without adding a third conflicting slash command.
 - AgentGateway includes a named OpenRouter direct API provider with environment-only credentials, strict JSON Schema output routing, normalized token/cache/cost usage, and an explicit live-smoke requirement before role assignment.

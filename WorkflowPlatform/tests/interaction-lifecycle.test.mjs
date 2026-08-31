@@ -8,6 +8,7 @@ import { onboardProject } from "../src/onboarding.mjs";
 import { openDb, now } from "../src/db.mjs";
 import { deliverExternalEvidencePacket, processMessage } from "../src/workflow-app.mjs";
 import { classificationCatalog, validateClassificationDecision } from "../src/classifier.mjs";
+import { activateChatSession } from "../src/chat-session.mjs";
 import {
   cancelInteraction, deliverEvidence, expireInteractions, openClarification, openExternalEvidenceRequest,
   pendingInteractions, quiesceRun, readInteraction, settleInteraction, supersedeInteraction, validateEvidenceContract
@@ -263,7 +264,7 @@ test("a message asserting an external fact does not close the request that asked
     needs_questions: false, document_required: false, reply_mode: "conversation", pending_interaction_id: interactionId,
     resolved_objective: "Зафиксировать утверждение владельца о записи обоих регистров.", reason: "Владелец утверждает, что оба регистра пишутся.", questions: [], human_response: "Да, пишутся оба."
   };
-  const catalog = classificationCatalog(db, "project");
+  const catalog = classificationCatalog(db, "project", { mode: "project_admin" });
   // The contract travels with the request so the person can tell whether they have what was asked for.
   assert.equal(catalog.pending_interactions.find(item => item.id === interactionId).evidence_contract.resource.identity, "srvr=erp-prod;ref=trade");
 
@@ -307,6 +308,10 @@ function readyPlan() {
 
 test("an answered clarification continues the run that asked instead of opening another one", async () => {
   const env = fixture("workflow-clarification-resume-");
+  const chatSession = { client: "codex", session_id: "clarification-resume-chat" };
+  const sessionDb = openDb(env.dbFile);
+  activateChatSession(sessionDb, { client: chatSession.client, sessionId: chatSession.session_id, origin: env.project, turnKey: "turn-1" });
+  sessionDb.close();
   const calls = [];
   let plannerCalls = 0;
   let secondPlannerPrompt = "";
@@ -327,14 +332,14 @@ test("an answered clarification continues the run that asked instead of opening 
     return receipt("reviewer", { schema_version: 1, decision: "PASS", summary: "All criteria passed.", blockers: [], required_actions: [], evidence_refs: ["gate:passed"] });
   };
 
-  const asked = await processMessage({ message: "Сделай ограниченный вывод", project: env.project, dbFile: env.dbFile, execute: true, classificationResult: classification(), gatewayCall, gateRunner: async () => ({ status: "passed", checks: [] }) });
+  const asked = await processMessage({ message: "Сделай ограниченный вывод", project: env.project, dbFile: env.dbFile, execute: true, chatSession, classificationResult: classification(), gatewayCall, gateRunner: async () => ({ status: "passed", checks: [] }) });
   assert.equal(asked.execution.status, "clarification_required");
 
   const paused = openDb(env.dbFile);
   const questionId = paused.prepare("SELECT id FROM approvals WHERE status='pending' AND kind='planner_clarification'").get().id;
   paused.close();
 
-  const answered = await processMessage({ message: "В src/output.txt", project: env.project, dbFile: env.dbFile, execute: true, classificationResult: classification({ pending_interaction_id: questionId, reply_mode: "conversation", planning_required: false, artifact_type: "none", work_type: "conversation", human_response: "В src/output.txt" }), gatewayCall, gateRunner: async () => ({ status: "passed", checks: [] }) });
+  const answered = await processMessage({ message: "В src/output.txt", project: env.project, dbFile: env.dbFile, execute: true, chatSession, classificationResult: classification({ pending_interaction_id: questionId, reply_mode: "conversation", planning_required: false, artifact_type: "none", work_type: "conversation", human_response: "В src/output.txt" }), gatewayCall, gateRunner: async () => ({ status: "passed", checks: [] }) });
 
   // The answer belongs to the run that asked. Routing it through a fresh run would replan work already
   // done and pay for every model call again, so the intake run only records the delivery.

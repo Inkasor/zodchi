@@ -18,7 +18,7 @@ function temporaryRoot(prefix) {
 test("clean database applies numbered normalized migrations and SQLite safety pragmas", () => {
   const root = temporaryRoot("workflow-migrations-clean-");
   const db = openDb(path.join(root, "workflow.sqlite"));
-  assert.equal(schemaVersion(db), 33);
+  assert.equal(schemaVersion(db), 34);
   assert.equal(db.prepare("PRAGMA foreign_keys").get().foreign_keys, 1);
   assert.equal(db.prepare("PRAGMA journal_mode").get().journal_mode, "wal");
   assert.equal(db.prepare("PRAGMA busy_timeout").get().timeout, 5000);
@@ -45,7 +45,7 @@ test("the known pre-publication migration 7 newline checksum remains readable", 
   db.prepare("UPDATE schema_migrations SET checksum=? WHERE version=7").run("8080e01be11bc8882303b50e3d51dc00d1dffcd23c3f08691dee6d7452770c1c");
   db.close();
   db = openDb(file);
-  assert.equal(schemaVersion(db), 33);
+  assert.equal(schemaVersion(db), 34);
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -125,18 +125,29 @@ test("a migration that rebuilds a referenced table survives a database that has 
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("session context migration preserves only the exact last run proved by the old relay", () => {
+test("session context migration preserves an exact relay and cancels an unbound legacy chat wait", () => {
   const root = temporaryRoot("workflow-migration-session-context-");
   const partial = path.join(root, "migrations");
   const all = fs.readdirSync(migrationsDirectory).filter(name => /^\d{3}_/.test(name)).sort();
   fs.mkdirSync(partial);
-  for (const name of all.filter(name => !name.startsWith("033_"))) fs.copyFileSync(path.join(migrationsDirectory, name), path.join(partial, name));
+  for (const name of all.filter(name => !name.startsWith("033_") && !name.startsWith("034_"))) fs.copyFileSync(path.join(migrationsDirectory, name), path.join(partial, name));
   const file = path.join(root, "workflow.sqlite"), timestamp = now();
   const before = openDb(file, { migrationsDirectory: partial });
   before.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('project','Project',?,?)").run(root, timestamp);
   before.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status) VALUES('workflow','Workflow','project','mvp','L2','active')").run();
   before.prepare("INSERT INTO tasks(id,project_id,title,state,created_at,updated_at) VALUES('task','project','Task','completed',?,?)").run(timestamp, timestamp);
   before.prepare("INSERT INTO workflow_runs(id,task_id,project_id,workflow_id,state,user_message,created_at,updated_at,completed_at) VALUES('run','task','project','workflow','completed','Task',?,?,?)").run(timestamp, timestamp, timestamp);
+  before.prepare("INSERT INTO tasks(id,project_id,title,state,created_at,updated_at) VALUES('waiting-task','project','Waiting','clarification_required',?,?)").run(timestamp, timestamp);
+  before.prepare("INSERT INTO workflow_runs(id,task_id,project_id,workflow_id,state,user_message,created_at,updated_at) VALUES('waiting-run','waiting-task','project','workflow','clarification_required','Answer me',?,?)").run(timestamp, timestamp);
+  before.prepare("INSERT INTO approvals(id,task_id,run_id,kind,question,status,created_at) VALUES('waiting-approval','waiting-task','waiting-run','clarification','Which one?','pending',?)").run(timestamp);
+  before.prepare("INSERT INTO document_proposals(id,run_id,project_id,workflow_id,target,patch_json,status,created_at) VALUES('waiting-proposal','waiting-run','project','workflow','docs/plan.md','{}','pending',?)").run(timestamp);
+  before.prepare("INSERT INTO events(event_id,entity_type,entity_id,task_id,run_id,kind,payload_json,created_at) VALUES('waiting-created','workflow_run','waiting-run','waiting-task','waiting-run','created',? ,?)")
+    .run(JSON.stringify({ source: "codex-zodchi-session" }), timestamp);
+  before.prepare("INSERT INTO tasks(id,project_id,title,state,created_at,updated_at) VALUES('cli-task','project','CLI waiting','approval_required',?,?)").run(timestamp, timestamp);
+  before.prepare("INSERT INTO workflow_runs(id,task_id,project_id,workflow_id,state,user_message,created_at,updated_at) VALUES('cli-run','cli-task','project','workflow','approval_required','Approve',?,?)").run(timestamp, timestamp);
+  before.prepare("INSERT INTO approvals(id,task_id,run_id,kind,question,status,created_at) VALUES('cli-approval','cli-task','cli-run','workflow_approval','Apply?','pending',?)").run(timestamp);
+  before.prepare("INSERT INTO events(event_id,entity_type,entity_id,task_id,run_id,kind,payload_json,created_at) VALUES('cli-created','workflow_run','cli-run','cli-task','cli-run','created',? ,?)")
+    .run(JSON.stringify({ source: "cli" }), timestamp);
   before.prepare(`INSERT INTO zodchi_chat_sessions(client,session_id,project_id,origin,state,entered_at,last_seen_at,last_run_id,last_result_at,active_turn_key)
     VALUES('codex','session','project',?,'active',?,?, 'run',?,'turn')`).run(root, timestamp, timestamp, timestamp);
   before.close();
@@ -144,6 +155,16 @@ test("session context migration preserves only the exact last run proved by the 
   const after = openDb(file);
   assert.deepEqual({ ...after.prepare("SELECT run_id,client,session_id FROM zodchi_chat_session_runs").get() }, { run_id: "run", client: "codex", session_id: "session" });
   assert.equal(after.prepare("SELECT resolved_objective FROM workflow_runs WHERE id='run'").get().resolved_objective, null);
+  assert.deepEqual({ ...after.prepare("SELECT status,answer_json FROM approvals WHERE id='waiting-approval'").get(), answer_json: JSON.parse(after.prepare("SELECT answer_json FROM approvals WHERE id='waiting-approval'").get().answer_json) }, {
+    status: "cancelled",
+    answer_json: { reason: "pre-0.6.12 chat session cannot be reconstructed safely; restart the request in that chat", migration: 34 }
+  });
+  assert.equal(after.prepare("SELECT state FROM workflow_runs WHERE id='waiting-run'").get().state, "cancelled");
+  assert.equal(after.prepare("SELECT state FROM tasks WHERE id='waiting-task'").get().state, "cancelled");
+  assert.equal(after.prepare("SELECT status FROM document_proposals WHERE id='waiting-proposal'").get().status, "cancelled");
+  assert.equal(after.prepare("SELECT COUNT(*) AS count FROM events WHERE event_id='migration-034:waiting-run'").get().count, 1);
+  assert.equal(after.prepare("SELECT status FROM approvals WHERE id='cli-approval'").get().status, "pending");
+  assert.equal(after.prepare("SELECT state FROM workflow_runs WHERE id='cli-run'").get().state, "approval_required");
   after.close();
   fs.rmSync(root, { recursive: true, force: true });
 });

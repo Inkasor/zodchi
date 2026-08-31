@@ -59,7 +59,7 @@ function receipt(output, receiptId = "receipt") {
 
 test("classification schema accepts only exact registered values and known provider envelopes", () => {
   const { root, db } = fixture("workflow-classification-schema-");
-  const catalog = classificationCatalog(db, "project");
+  const catalog = classificationCatalog(db, "project", { mode: "project_admin" });
   const valid = validateClassificationDecision(decision(), catalog);
   assert.equal(valid.kind, "implementation");
   assert.equal(valid.level, "L2");
@@ -126,7 +126,7 @@ test("ordinary conversation invokes only the classifier and returns a plain huma
 test("the classifier is offered only routed work types plus the direct answers that never enter a workflow", () => {
   const { root, db } = fixture("workflow-classification-catalog-");
   db.prepare("DELETE FROM workflow_routes WHERE project_id='project' AND work_type_id NOT IN ('narrative','decision')").run();
-  const catalog = classificationCatalog(db, "project");
+  const catalog = classificationCatalog(db, "project", { mode: "project_admin" });
   assert.deepEqual(catalog.work_types, ["clarification", "conversation", "decision", "narrative", "research"]);
   assert.throws(() => validateClassificationDecision(decision({ work_type: "implementation" }), catalog), /CLASSIFICATION_VALUE_UNREGISTERED: work_type=implementation/);
   db.close();
@@ -218,7 +218,7 @@ test("clarification produces plain questions and does not start productive roles
 
 test("registered contract covers decision, documentation, implementation, verification, material and continuation intents", () => {
   const { root, db } = fixture("workflow-classification-intents-");
-  const catalog = classificationCatalog(db, "project");
+  const catalog = classificationCatalog(db, "project", { mode: "project_admin" });
   const cases = [
     decision({ work_type: "decision", artifact_type: "decision" }),
     decision({ work_type: "documentation", artifact_type: "document", discipline: "documentation", document_required: true }),
@@ -307,12 +307,16 @@ test("classifier context keeps accepted decisions, ordered bounded history, pend
   db.prepare("INSERT INTO approvals(id,task_id,kind,question,status,created_at) VALUES('pending-approval',?,'owner','Продолжить?','pending',?)").run(runtimeTask, now());
   for (let index = 0; index < 8; index += 1) db.prepare("INSERT INTO conversation_messages(id,project_id,role,content,created_at) VALUES(?,'project',?,?,?)")
     .run(`message-${index}`, index % 2 ? "assistant" : "user", `history-${index}-${"x".repeat(120)}`, `2026-01-01T00:00:0${index}.000Z`);
-  const context = conversationContext(db, "project", 500);
+  assert.throws(() => conversationContext(db, "project", 500), /ZODCHI_SEMANTIC_SCOPE_REQUIRED/);
+  assert.throws(() => classificationCatalog(db, "project"), /ZODCHI_SEMANTIC_SCOPE_REQUIRED/);
+  assert.deepEqual(conversationContext(db, "project", 500, { mode: "stateless" }).history, []);
+  assert.deepEqual(classificationCatalog(db, "project", { mode: "stateless" }).pending_interactions, []);
+  const context = conversationContext(db, "project", 500, { mode: "project_admin" });
   assert.equal(context.accepted_decisions[0].id, "accepted-decision");
   assert.equal(context.accepted_decisions.some(item => item.id === "classifier-decision"), false);
   assert.equal(context.history.at(-1).id, "message-7");
   assert.ok(context.history.length < 8);
-  const catalog = classificationCatalog(db, "project");
+  const catalog = classificationCatalog(db, "project", { mode: "project_admin" });
   const snapshot = { project: { id: "project", name: "Project" } };
   const first = classifierPrompt({ message: "Да", catalog, projectSnapshot: snapshot, acceptedDecisions: context.accepted_decisions, history: context.history });
   const second = classifierPrompt({ message: "Продолжай", catalog, projectSnapshot: snapshot, acceptedDecisions: context.accepted_decisions, history: context.history });
@@ -362,7 +366,7 @@ test("project registration is idempotent and rejects conflicting identity", () =
 
 test("the classifier prompt keeps run state below an invariant head long enough for a provider to cache", () => {
   const { root, db } = fixture("workflow-classification-prefix-");
-  const catalog = classificationCatalog(db, "project");
+  const catalog = classificationCatalog(db, "project", { mode: "project_admin" });
   const build = (message, head) => classifierPrompt({ message, catalog, projectSnapshot: { git: { head } }, acceptedDecisions: [], history: [], responseLanguage: "ru" });
   const first = build("first message", "aaa"), second = build("second message", "bbb");
   let shared = 0;
@@ -382,6 +386,8 @@ test("the classifier prompt keeps run state below an invariant head long enough 
 
 test("a clarification stops being pending once the next message answers or supersedes it", async () => {
   const { root, project, dbFile, db } = fixture("workflow-clarification-settle-");
+  const chatSession = { client: "codex", session_id: "clarification-chat" };
+  activateChatSession(db, { client: chatSession.client, sessionId: chatSession.session_id, origin: project, turnKey: "turn-1" });
   db.close();
   const asking = decision({
     work_type: "clarification", artifact_type: "none", discipline: "general", planning_level: "L0",
@@ -389,7 +395,7 @@ test("a clarification stops being pending once the next message answers or super
     questions: ["Какие документы проверить первыми?"], reason: "Не указаны исходные документы."
   });
   const first = await processMessage({
-    message: "Разберись со старыми материалами", project, dbFile, workflowDefinition: definition(), execute: true,
+    message: "Разберись со старыми материалами", project, dbFile, workflowDefinition: definition(), execute: true, chatSession,
     gatewayCall: async () => receipt(JSON.stringify(asking))
   });
   const opened = openDb(dbFile);
@@ -397,7 +403,7 @@ test("a clarification stops being pending once the next message answers or super
   opened.close();
 
   const answered = await processMessage({
-    message: "Начни с бестиария", project, dbFile, workflowDefinition: definition(), execute: true,
+    message: "Начни с бестиария", project, dbFile, workflowDefinition: definition(), execute: true, chatSession,
     gatewayCall: async () => receipt(JSON.stringify({ ...asking, questions: ["Только классифицировать или готовить предложение?"], pending_interaction_id: pendingId }))
   });
   const verified = openDb(dbFile);
@@ -462,6 +468,7 @@ test("two chats in one project keep history and interactions isolated while down
   assert.equal(secondA.route, "research");
   assert.match(classifierInput, /архитектуру, заявленную универсальность или готовность/);
   assert.equal(classifierInput.includes("Markdown или JSON"), false);
+  assert.match(researcherInput, /RESOLVED_OBJECTIVE.*authoritative standalone task/);
   assert.equal(researcherInput.includes(resolved), true);
   assert.match(researcherInput, /VERBATIM_CURRENT_USER_MESSAGE:"давай все три/);
 

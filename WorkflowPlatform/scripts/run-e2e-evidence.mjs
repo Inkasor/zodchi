@@ -86,7 +86,8 @@ for (const { item, workflowId, checks, directProfiles } of prepared) {
       classifier: { provider: "codex", profile: directProfiles.classifier, role: "classifier" },
       researcher: { provider: "codex", profile: directProfiles.researcher, role: "researcher" }
     } },
-    execute: true, eventSource: "checkpoint9", eventKey: item.project_id, gatewayCall: gateway
+    execute: true, eventSource: "checkpoint9", eventKey: item.project_id, gatewayCall: gateway,
+    semanticScope: { mode: "stateless" }
   });
   const after = captureProjectBaseline(item.root_path);
   assertProjectBaselineUnchanged(before, after, item.project_id);

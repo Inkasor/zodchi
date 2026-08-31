@@ -11,6 +11,7 @@ import { classificationCatalog } from "../src/classifier.mjs";
 import { RESULT_SCHEMA_SHAPES, loadRoleContract, parseRoleReceipt, rolePrompt, validateDocumentatorResult, validateJudgeResult, validatePlannerResult, validateReviewerResult, validateStrategyReviewResult, validateWorkerResult } from "../src/role-contracts.mjs";
 import { BudgetManager } from "../src/budget.mjs";
 import { loadQualityContract } from "../src/quality-contracts.mjs";
+import { activateChatSession } from "../src/chat-session.mjs";
 
 function temporaryRoot(prefix) {
   const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir();
@@ -195,7 +196,7 @@ test("role result schemas reject extra fields, path escapes and false reviewer P
   assert.match(reviewerPrompt, /their absence from review_evidence is not a blocker/);
   assert.match(reviewerPrompt, /Use CHANGES_REQUESTED for an evidence gap/);
   assert.equal(parseRoleReceipt(receipt("reviewer", reviewerResult("PASS")), "reviewer.v1", {}).decision, "PASS");
-  assert.ok(classificationCatalog(db, "project").routes.length >= 2);
+  assert.ok(classificationCatalog(db, "project", { mode: "project_admin" }).routes.length >= 2);
   db.close();
   fs.rmSync(env.root, { recursive: true, force: true });
 });
@@ -624,13 +625,15 @@ test("a declared route whose worker may write is refused without a planning step
 // yes takes an action they were still deciding about, so doubt leaves the decision exactly where it was.
 async function approvalScenario(prefix, ownerResponse, beforeDecision = null) {
   const env = fixture(prefix);
+  const chatSession = { client: "codex", session_id: `${prefix}chat` };
   const db = openDb(env.dbFile);
   db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow',?,?,?,1,?,'package.v1',?,'[]','[\"check-ok\"]','{}','{}')").run("owner_approval", 1, null, 1, "approval.v1");
   db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow',?,?,?,1,?,'package.v1',?,'[]','[\"check-ok\"]','{}','{}')").run("apply", 2, "worker", 0, "worker.v1");
+  activateChatSession(db, { client: chatSession.client, sessionId: chatSession.session_id, origin: env.project, turnKey: "turn-1" });
   db.close();
   const first = await processMessage({
     message: "Разверни изменение", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} },
-    execute: true, classificationResult: classification(false), gatewayCall: async () => { throw new Error("must not be called"); }
+    execute: true, chatSession, classificationResult: classification(false), gatewayCall: async () => { throw new Error("must not be called"); }
   });
   assert.equal(first.execution.status, "approval_required");
   const opened = openDb(env.dbFile);
@@ -639,7 +642,7 @@ async function approvalScenario(prefix, ownerResponse, beforeDecision = null) {
   if (beforeDecision) beforeDecision(env.dbFile, approval.id);
   const calls = [];
   const second = await processMessage({
-    message: "ответ владельца", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true,
+    message: "ответ владельца", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, chatSession,
     classificationResult: { ...classification(false), work_type: "conversation", artifact_type: "none", planning_required: false, reply_mode: "conversation", human_response: "Записал.", pending_interaction_id: approval.id, pending_interaction_response: ownerResponse },
     gatewayCall: async request => {
       calls.push(request.role);
@@ -732,9 +735,11 @@ test("a workflow whose every step is named for verification still has a role to 
 
 test("a decision that follows the work is continued from what was recorded, not by redoing it", async () => {
   const env = fixture("workflow-owner-approve-after-work-", { document: true });
+  const chatSession = { client: "codex", session_id: "approve-after-work-chat" };
   const db = openDb(env.dbFile);
   db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow','prepare',1,'worker',1,0,'package.v1','worker.v1','[]','[\"check-ok\"]','{}','{}')").run();
   db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow','owner_approval',2,NULL,1,1,'package.v1','approval.v1','[\"decision\"]','[]','{}','{}')").run();
+  activateChatSession(db, { client: chatSession.client, sessionId: chatSession.session_id, origin: env.project, turnKey: "turn-1" });
   db.close();
   const calls = [];
   const gatewayCall = async request => {
@@ -754,7 +759,7 @@ test("a decision that follows the work is continued from what was recorded, not 
   const gateRunner = async () => ({ task_id: "gate", project: env.project, level: "mvp", files: ["docs/control.md"], status: "passed", checks: [{ id: "check-ok", required: true, status: "passed" }], summary: "passed" });
   const first = await processMessage({
     message: "Обнови зарегистрированный документ", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} },
-    execute: true, classificationResult: classification(true), gatewayCall, gateRunner
+    execute: true, chatSession, classificationResult: classification(true), gatewayCall, gateRunner
   });
   assert.equal(first.execution.status, "approval_required");
   assert.equal(calls.includes("worker"), true);
@@ -764,7 +769,7 @@ test("a decision that follows the work is continued from what was recorded, not 
   opened.close();
   const before = calls.length;
   const second = await processMessage({
-    message: "Да, принимаем", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true,
+    message: "Да, принимаем", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, chatSession,
     classificationResult: { ...classification(true), work_type: "conversation", artifact_type: "none", planning_required: false, document_required: false, reply_mode: "conversation", human_response: "Записал.", pending_interaction_id: approval.id, pending_interaction_response: "approve" },
     gatewayCall, gateRunner
   });
