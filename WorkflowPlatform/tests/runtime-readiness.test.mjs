@@ -6,7 +6,7 @@ import test from "node:test";
 import { openDb, now } from "../src/db.mjs";
 import { processMessage as scopedProcessMessage } from "../src/workflow-app.mjs";
 
-const processMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
+const statelessProcessMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
 import { projectRuntimeReadiness } from "../src/runtime-readiness.mjs";
 
 function fixture() {
@@ -52,7 +52,7 @@ test("registry-backed intake fails before accepting a run or spending a classifi
   const { root, project, dbFile, db } = fixture();
   db.close();
   let calls = 0;
-  await assert.rejects(() => processMessage({
+  await assert.rejects(() => statelessProcessMessage({
     message: "Implement the change",
     project,
     dbFile,
@@ -70,7 +70,7 @@ test("a file-backed workflow also declares both direct roles before a classifier
   const { root, project, dbFile, db } = fixture();
   db.close();
   let calls = 0;
-  await assert.rejects(() => processMessage({
+  await assert.rejects(() => statelessProcessMessage({
     message: "Research the registered context",
     project,
     dbFile,

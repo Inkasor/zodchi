@@ -8,7 +8,7 @@ import { onboardProject } from "../src/onboarding.mjs";
 import { openDb } from "../src/db.mjs";
 import { processMessage as scopedProcessMessage } from "../src/workflow-app.mjs";
 
-const processMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
+const statelessProcessMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
 import { validatePlannerResult } from "../src/role-contracts.mjs";
 import { resourceIdentity } from "../src/resource-locks.mjs";
 import { projectResources, registeredResources } from "../src/project-resources.mjs";
@@ -113,7 +113,7 @@ test("a resource the project registered reaches the step, the lock and the recei
       : { status: "passed", checks: [{ id: "check-ok", required: true, status: "passed" }] };
   };
 
-  const result = await processMessage({ message: "Собери ограниченный вывод", project: env.project, dbFile: env.dbFile, execute: true, classificationResult: classification(), gatewayCall, gateRunner });
+  const result = await statelessProcessMessage({ message: "Собери ограниченный вывод", project: env.project, dbFile: env.dbFile, execute: true, classificationResult: classification(), gatewayCall, gateRunner });
   assert.equal(result.execution.status, "completed");
 
   const db = openDb(env.dbFile);

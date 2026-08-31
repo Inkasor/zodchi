@@ -7,7 +7,7 @@ import { now, openDb } from "../src/db.mjs";
 import { resolveWorkflowSettings, workflowPlatformRoot } from "../src/paths.mjs";
 import { processMessage as scopedProcessMessage } from "../src/workflow-app.mjs";
 
-const processMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
+const statelessProcessMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
 
 test("relative runtime paths resolve from the installation root", () => {
   const settings = resolveWorkflowSettings({
@@ -27,11 +27,11 @@ test("runtime has no implicit project or workflow", async () => {
   // A negative portability test must not open the repository's default mutable database. Besides making
   // the result depend on a previous run, that hid migration changes behind whichever installation data
   // happened to be present on the developer machine.
-  await assert.rejects(() => processMessage({ message: "hello", workflowDefinition: { id: "x" }, dbFile: emptyDbFile }), /PROJECT_REQUIRED/);
+  await assert.rejects(() => statelessProcessMessage({ message: "hello", workflowDefinition: { id: "x" }, dbFile: emptyDbFile }), /PROJECT_REQUIRED/);
   fs.mkdirSync(project);
   const db = openDb(dbFile);
   db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('project','Project',?,?)").run(project, now());
   db.close();
-  await assert.rejects(() => processMessage({ message: "hello", project, dbFile }), /WORKFLOW_NOT_REGISTERED/);
+  await assert.rejects(() => statelessProcessMessage({ message: "hello", project, dbFile }), /WORKFLOW_NOT_REGISTERED/);
   fs.rmSync(root, { recursive: true, force: true });
 });
