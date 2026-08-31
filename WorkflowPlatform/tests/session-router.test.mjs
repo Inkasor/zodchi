@@ -77,6 +77,7 @@ test("a completed hook turn binds its exact run for the read-only result relay",
           db.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status) VALUES('workflow','Workflow','project','prototype','L0','active')").run();
           db.prepare("INSERT INTO tasks(id,project_id,title,state,created_at,updated_at) VALUES('task','project','Task','completed',?,?)").run(timestamp, timestamp);
           db.prepare("INSERT INTO workflow_runs(id,task_id,project_id,workflow_id,state,user_message,created_at,updated_at,completed_at,response_language) VALUES('run','task','project','workflow','completed','state',?,?,?,'ru')").run(timestamp, timestamp, timestamp);
+          db.prepare("INSERT INTO zodchi_chat_session_runs(run_id,client,session_id,bound_at) VALUES('run','codex','session',?)").run(timestamp);
           db.prepare("INSERT INTO conversation_messages(id,project_id,run_id,role,content,created_at,language) VALUES('answer','project','run','assistant','Состояние готово',?,'ru')").run(timestamp);
         } finally { db.close(); }
         return { run_id: "run", route: "conversation", response: "Состояние готово", response_language: "ru" };

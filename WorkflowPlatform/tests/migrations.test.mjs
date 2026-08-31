@@ -18,14 +18,15 @@ function temporaryRoot(prefix) {
 test("clean database applies numbered normalized migrations and SQLite safety pragmas", () => {
   const root = temporaryRoot("workflow-migrations-clean-");
   const db = openDb(path.join(root, "workflow.sqlite"));
-  assert.equal(schemaVersion(db), 32);
+  assert.equal(schemaVersion(db), 33);
   assert.equal(db.prepare("PRAGMA foreign_keys").get().foreign_keys, 1);
   assert.equal(db.prepare("PRAGMA journal_mode").get().journal_mode, "wal");
   assert.equal(db.prepare("PRAGMA busy_timeout").get().timeout, 5000);
   const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => row.name));
-  for (const table of ["goals", "stages", "tasks", "workflow_runs", "workflow_steps", "attempts", "decisions", "approvals", "artifacts", "events", "budgets", "budget_entries", "leases", "resource_leases", "project_resources", "inbox_events", "dead_letters", "role_contracts", "role_profile_assignments", "workflow_package_releases", "workflow_import_proposals", "package_import_mappings", "experience_observations", "experience_proposals", "experience_evaluations", "check_baselines", "check_baseline_diagnostics", "diagnostic_rules", "diagnostic_rule_tags", "project_diagnostic_policies", "project_semantic_statuses", "project_evidence_types", "project_strategy_overrides", "zodchi_chat_sessions", "project_run_profile_defaults", "run_profiles", "run_reflection_checkpoints", "run_root_baselines", "run_evidence", "run_control_requests", "progress_snapshots", "evidence_flow_adapters", "external_executors", "external_control_requests", "external_control_results", "owner_acceptance_records"]) assert.equal(tables.has(table), true, `missing ${table}`);
+  for (const table of ["goals", "stages", "tasks", "workflow_runs", "workflow_steps", "attempts", "decisions", "approvals", "artifacts", "events", "budgets", "budget_entries", "leases", "resource_leases", "project_resources", "inbox_events", "dead_letters", "role_contracts", "role_profile_assignments", "workflow_package_releases", "workflow_import_proposals", "package_import_mappings", "experience_observations", "experience_proposals", "experience_evaluations", "check_baselines", "check_baseline_diagnostics", "diagnostic_rules", "diagnostic_rule_tags", "project_diagnostic_policies", "project_semantic_statuses", "project_evidence_types", "project_strategy_overrides", "zodchi_chat_sessions", "zodchi_chat_session_runs", "project_run_profile_defaults", "run_profiles", "run_reflection_checkpoints", "run_root_baselines", "run_evidence", "run_control_requests", "progress_snapshots", "evidence_flow_adapters", "external_executors", "external_control_requests", "external_control_results", "owner_acceptance_records"]) assert.equal(tables.has(table), true, `missing ${table}`);
   assert.equal(new Set(db.prepare("PRAGMA table_info(gateway_calls)").all().map(row => row.name)).has("model_provider"), true);
   assert.equal(new Set(db.prepare("PRAGMA table_info(workflow_step_templates)").all().map(row => row.name)).has("resources_json"), true);
+  assert.equal(new Set(db.prepare("PRAGMA table_info(workflow_runs)").all().map(row => row.name)).has("resolved_objective"), true);
   assert.equal(db.prepare("SELECT name FROM domains WHERE id='one-c'").get().name, "1C");
   assert.equal(db.prepare("SELECT name FROM disciplines WHERE id='one-c-development'").get().name, "1C development");
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM work_types WHERE id LIKE 'one-c.%'").get().count, 7);
@@ -44,7 +45,7 @@ test("the known pre-publication migration 7 newline checksum remains readable", 
   db.prepare("UPDATE schema_migrations SET checksum=? WHERE version=7").run("8080e01be11bc8882303b50e3d51dc00d1dffcd23c3f08691dee6d7452770c1c");
   db.close();
   db = openDb(file);
-  assert.equal(schemaVersion(db), 32);
+  assert.equal(schemaVersion(db), 33);
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -121,5 +122,28 @@ test("a migration that rebuilds a referenced table survives a database that has 
   assert.equal(after.prepare("PRAGMA foreign_key_check").all().length, 0);
   after.close();
 
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("session context migration preserves only the exact last run proved by the old relay", () => {
+  const root = temporaryRoot("workflow-migration-session-context-");
+  const partial = path.join(root, "migrations");
+  const all = fs.readdirSync(migrationsDirectory).filter(name => /^\d{3}_/.test(name)).sort();
+  fs.mkdirSync(partial);
+  for (const name of all.filter(name => !name.startsWith("033_"))) fs.copyFileSync(path.join(migrationsDirectory, name), path.join(partial, name));
+  const file = path.join(root, "workflow.sqlite"), timestamp = now();
+  const before = openDb(file, { migrationsDirectory: partial });
+  before.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('project','Project',?,?)").run(root, timestamp);
+  before.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status) VALUES('workflow','Workflow','project','mvp','L2','active')").run();
+  before.prepare("INSERT INTO tasks(id,project_id,title,state,created_at,updated_at) VALUES('task','project','Task','completed',?,?)").run(timestamp, timestamp);
+  before.prepare("INSERT INTO workflow_runs(id,task_id,project_id,workflow_id,state,user_message,created_at,updated_at,completed_at) VALUES('run','task','project','workflow','completed','Task',?,?,?)").run(timestamp, timestamp, timestamp);
+  before.prepare(`INSERT INTO zodchi_chat_sessions(client,session_id,project_id,origin,state,entered_at,last_seen_at,last_run_id,last_result_at,active_turn_key)
+    VALUES('codex','session','project',?,'active',?,?, 'run',?,'turn')`).run(root, timestamp, timestamp, timestamp);
+  before.close();
+
+  const after = openDb(file);
+  assert.deepEqual({ ...after.prepare("SELECT run_id,client,session_id FROM zodchi_chat_session_runs").get() }, { run_id: "run", client: "codex", session_id: "session" });
+  assert.equal(after.prepare("SELECT resolved_objective FROM workflow_runs WHERE id='run'").get().resolved_objective, null);
+  after.close();
   fs.rmSync(root, { recursive: true, force: true });
 });

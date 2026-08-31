@@ -118,6 +118,7 @@ export async function routeSessionEvent({ event, client, dbFile, workflow = null
     eventKey: event.generation_id ?? event.generationId ?? event.turn_id ?? event.turnId ?? event.prompt_id ?? event.promptId ?? event.event_id ?? event.eventId ?? null,
     eventFields: hookEventFields(event),
     client,
+    chatSession: { client, session_id: id },
     preferredLanguage,
     prepareOnly: prepared === null,
     runProfileOverrides: prepared?.profile ? {

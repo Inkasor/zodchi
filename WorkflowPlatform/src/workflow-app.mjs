@@ -66,14 +66,15 @@ function boundedDocuments(discovery, maxBytes = 32_000) {
   return result;
 }
 
-function researchPrompt({ message, project, discovery, responseLanguage }) {
+function researchPrompt({ message, resolvedObjective, project, discovery, responseLanguage }) {
   return [
     "WORKFLOW RESEARCH REQUEST v2",
     "Answer the current question from only the registered readable documents below. Do not edit files, invoke other agents, or invent facts.",
     `Return a concise human-readable answer in ${languageName(responseLanguage)} without internal IDs, profiles, levels, prompts or JSON.`,
     `PROJECT:${project.name}`,
     `REGISTERED_CONTEXT:${JSON.stringify(boundedDocuments(discovery))}`,
-    `CURRENT_USER_MESSAGE:${JSON.stringify(message)}`
+    `RESOLVED_OBJECTIVE:${JSON.stringify(resolvedObjective)}`,
+    `VERBATIM_CURRENT_USER_MESSAGE:${JSON.stringify(message)}`
   ].join("\n");
 }
 
@@ -250,7 +251,7 @@ function registeredRoot(db, candidate) {
 
 export async function processMessage({
   message, project, origin = null, dbFile, workflow, workflowDefinition, execute = false, eventSource = "user", eventKey = null, eventFields = [],
-  classificationResult = null, gatewayCall = callGateway, gateRunner = undefined, preferredLanguage = null, client = "codex", prepareOnly = false, runProfileOverrides = {}
+  classificationResult = null, gatewayCall = callGateway, gateRunner = undefined, preferredLanguage = null, client = "codex", chatSession = null, prepareOnly = false, runProfileOverrides = {}
 }) {
   const settings = resolveWorkflowSettings();
   dbFile ??= settings.databasePath;
@@ -297,7 +298,7 @@ export async function processMessage({
       throw new Error(`WORKFLOW_RUNTIME_NOT_READY: ${workflow}: missing ${missing.join(",")}`);
     }
   }
-  const accepted = runtime.accept(message, { project_id: project, workflow_id: workflow, client, event_source: eventSource, event_key: eventKey, event_fields: eventFields, binding: bindingEvidence(binding, settings) });
+  const accepted = runtime.accept(message, { project_id: project, workflow_id: workflow, client, chat_session: chatSession, event_source: eventSource, event_key: eventKey, event_fields: eventFields, binding: bindingEvidence(binding, settings) });
   const runId = accepted.runId;
   const run = runtime.get(runId);
   let responseLanguage = resolveResponseLanguage({ message, preferredLanguage: preferredLanguage ?? settings.responseLanguage });
@@ -316,7 +317,7 @@ export async function processMessage({
 
   const workflowRow = runtime.db.prepare("SELECT * FROM workflows WHERE id=? AND project_id=? AND status='active'").get(workflow, run.project_id);
   if (!workflowRow) return classificationFailure(runtime, runId, new Error(`DISCOVERY_WORKFLOW_NOT_REGISTERED: ${workflow}`), finish, responseLanguage);
-  const historyContext = conversationContext(runtime.db, run.project_id, workflowRow.history_budget_bytes);
+  const historyContext = conversationContext(runtime.db, run.project_id, workflowRow.history_budget_bytes, chatSession);
   responseLanguage = resolveResponseLanguage({ message, preferredLanguage: preferredLanguage ?? settings.responseLanguage, history: historyContext.history });
   runtime.db.prepare("UPDATE workflow_runs SET response_language=?,updated_at=? WHERE id=?").run(responseLanguage, now(), runId);
   const discovery = readProjectContext(project, runtime.db);
@@ -324,7 +325,7 @@ export async function processMessage({
   // unrelated message arriving. The deadline is the only one of the four that nobody sends, so it is
   // applied here, before the classifier is shown what is still open.
   expireInteractions(runtime.db, run.project_id);
-  const catalog = classificationCatalog(runtime.db, run.project_id);
+  const catalog = classificationCatalog(runtime.db, run.project_id, chatSession);
   runtime.db.prepare("INSERT INTO conversation_messages(id,project_id,run_id,role,content,created_at,language) VALUES(?,?,?,'user',?,?,?)")
     .run(`${runId}:user`, run.project_id, runId, String(message), now(), responseLanguage);
   const saveAssistant = response => {
@@ -343,7 +344,10 @@ export async function processMessage({
   let classification;
   let runProfile = null;
   try {
-    if (classificationResult) classification = validateClassificationDecision(classificationResult, catalog);
+    // Embedded deterministic callers predate the standalone objective field. Their supplied message is
+    // already the complete objective, so it is a safe compatibility value. Model output never receives
+    // this fallback: parseClassificationReceipt still requires the field and fails closed when absent.
+    if (classificationResult) classification = validateClassificationDecision({ ...classificationResult, resolved_objective: classificationResult.resolved_objective ?? String(message) }, catalog);
     else {
       if (!execute) throw new Error("CLASSIFICATION_EXECUTION_REQUIRED: supply a validated contract result for dry-run tests");
       const role = definition.roles?.classifier;
@@ -404,6 +408,7 @@ export async function processMessage({
   }
 
   const receiptsOf = () => classifierReceipt ? { mode: "executed", receipts: [{ step: "classifier", receipt: classifierReceipt }] } : { mode: "contract-test" };
+  const resolvedObjective = classification.resolved_objective;
   const profileMismatch = ["quality_mode", "execution_mode", "verification_mode", "planning_mode"]
     .some(axis => runProfileOverrides[axis] !== undefined && runProfile[axis] !== runProfileOverrides[axis]);
   if ((prepareOnly || profileMismatch) && classification.reply_mode === "work") {
@@ -527,7 +532,7 @@ export async function processMessage({
     if (!execute) return finish({ route: "research", classification, response: formatClassification({ summary: classification.reason, nextStep: responseLanguage === "ru" ? "выполнить ограниченное исследование по зарегистрированным источникам" : "run bounded research over the registered sources", language: responseLanguage }), gateway: { mode: "dry-run", steps: [{ role: "researcher", readable_documents: selected.documents.map(item => item.path) }] } });
     runtime.setState(runId, "executing", { reason: "research route authorized" });
     const researchFile = path.join(taskDirectory, "research-task.md");
-    fs.writeFileSync(researchFile, researchPrompt({ message, project: discovery.project, discovery: selected, responseLanguage }), "utf8");
+    fs.writeFileSync(researchFile, researchPrompt({ message, resolvedObjective, project: discovery.project, discovery: selected, responseLanguage }), "utf8");
     const role = definition.roles?.researcher;
     if (!role?.provider || !role.profile || !role.role) return executionFailure(runtime, runId, new Error("RESEARCHER_ROLE_NOT_CONFIGURED"), finish, responseLanguage);
     let researcher;
@@ -546,7 +551,7 @@ export async function processMessage({
 
   if (execute) {
     try {
-      const execution = await executeStructuredWork({ runtime, runId, classification, definition, discovery, message, responseLanguage, taskRoot: taskDirectory, gatewayCall, ...(gateRunner ? { gateRunner } : {}) });
+      const execution = await executeStructuredWork({ runtime, runId, classification, definition, discovery, message: resolvedObjective, responseLanguage, taskRoot: taskDirectory, gatewayCall, ...(gateRunner ? { gateRunner } : {}) });
       const response = [profileLine(runProfile, responseLanguage), executionMessage(execution, responseLanguage)].filter(Boolean).join("\n\n");
       saveAssistant(response);
       return finish({ route: "work", classification, response, execution });
@@ -568,7 +573,7 @@ export async function processMessage({
   }
 
   const plan = {
-    objective: message, workflow, project: discovery.project.name, level: classification.planning_level, quality: classification.quality_mode,
+    objective: resolvedObjective, workflow, project: discovery.project.name, level: classification.planning_level, quality: classification.quality_mode,
     authority: definition.authority ?? "registered project documents",
     steps: [{ key: "planning" }, { key: "execution" }, { key: "verification" }, { key: "review" }, { key: "documentation" }],
     gates: definition.gates ?? []
@@ -577,7 +582,7 @@ export async function processMessage({
   runtime.plan(runId, plan);
   const selected = selectProjectContext(discovery, classification, [], runtime.db, run.project_id, "planner");
   const plannerFile = path.join(taskDirectory, "planner-task.md");
-  fs.writeFileSync(plannerFile, buildPrompt({ role: "planner", stage: "planning", intent: message, classification, quality: classification.quality_mode, plan, document: JSON.stringify(boundedDocuments(selected)), constraints: ["use registered context only", "do not edit files", "return a bounded structured package"], format: "JSON plan contract", responseLanguage }), "utf8");
+  fs.writeFileSync(plannerFile, buildPrompt({ role: "planner", stage: "planning", intent: resolvedObjective, classification, quality: classification.quality_mode, plan, document: JSON.stringify(boundedDocuments(selected)), constraints: ["use registered context only", "do not edit files", "return a bounded structured package"], format: "JSON plan contract", responseLanguage }), "utf8");
   const response = saveAssistant([profileLine(runProfile, responseLanguage), formatClassification({ summary: classification.reason, quality: classification.quality_mode, nextStep: responseLanguage === "ru" ? "подготовить проверяемый план выполнения" : "prepare a verifiable execution plan", language: responseLanguage })].filter(Boolean).join("\n\n"));
   return finish({ route: "work", classification, run_profile: runProfile, plan, response, gateway: { mode: execute ? "planned" : "dry-run", steps: [
     { role: "planner", profile: definition.roles?.planner?.profile ?? null, task_file: plannerFile },

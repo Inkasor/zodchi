@@ -1211,9 +1211,10 @@ export function pausedRunObjective(db, runId) {
     domain: row.domain_id, discipline: row.discipline_id, risk: row.risk, planning_level: row.planning_level_id, level: row.planning_level_id,
     quality_mode: row.quality_mode_id, quality: row.quality_mode_id, planning_required: row.planning_required === 1, human_required: row.human_required === 1,
     needs_questions: false, document_required: row.document_required === 1, reply_mode: row.reply_mode, pending_interaction_id: null,
-    pending_interaction_response: null, reason: row.reason ?? "", questions: [], human_response: null
+    pending_interaction_response: null, resolved_objective: db.prepare("SELECT resolved_objective FROM workflow_runs WHERE id=?").get(runId)?.resolved_objective ?? message.content,
+    reason: row.reason ?? "", questions: [], human_response: null
   });
-  return { classification, message: message.content };
+  return { classification, message: classification.resolved_objective };
 }
 
 export async function executeStructuredWork({ runtime, runId, classification, definition, discovery, message, responseLanguage = "en", taskRoot, gatewayCall, gateRunner = runProjectGate, approvalGranted = false }) {

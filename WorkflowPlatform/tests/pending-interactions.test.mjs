@@ -35,7 +35,7 @@ function decision(overrides = {}) {
     schema_version: 1, work_type: "implementation", artifact_type: "code", domain: "workflow", discipline: "software",
     risk: "low", planning_level: "L2", quality_mode: "mvp", planning_required: true, human_required: false,
     needs_questions: false, document_required: false, reply_mode: "work", pending_interaction_id: null, pending_interaction_response: null,
-    reason: "Ответ на заданные вопросы.", questions: [], human_response: null, ...overrides
+    resolved_objective: "Выполнить реализацию с учётом данного ответа.", reason: "Ответ на заданные вопросы.", questions: [], human_response: null, ...overrides
   };
 }
 

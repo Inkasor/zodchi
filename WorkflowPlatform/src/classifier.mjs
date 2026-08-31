@@ -1,7 +1,7 @@
 const REQUIRED_FIELDS = Object.freeze([
   "schema_version", "work_type", "artifact_type", "domain", "discipline", "risk", "planning_level", "quality_mode",
   "planning_required", "human_required", "needs_questions", "document_required", "reply_mode", "pending_interaction_id", "pending_interaction_response",
-  "reason", "questions", "human_response"
+  "resolved_objective", "reason", "questions", "human_response"
 ]);
 const BOOLEAN_FIELDS = Object.freeze(["planning_required", "human_required", "needs_questions", "document_required"]);
 const RISKS = new Set(["low", "medium", "high"]);
@@ -15,25 +15,36 @@ const DIRECT_REPLY_WORK_TYPES = Object.freeze(["clarification", "conversation", 
 
 function ids(db, table) { return db.prepare(`SELECT id FROM ${table} ORDER BY id`).all().map(row => row.id); }
 
-export function classificationCatalog(db, projectId) {
+export function classificationCatalog(db, projectId, chatSession = null) {
   const routes = db.prepare(`SELECT wr.work_type_id,wr.workflow_id,wr.priority
     FROM workflow_routes wr JOIN workflows w ON w.id=wr.workflow_id
     WHERE wr.project_id=? AND wr.enabled=1 AND w.status='active'
     ORDER BY wr.work_type_id,wr.priority DESC,wr.workflow_id`).all(projectId);
+  const approvalRows = chatSession
+    ? db.prepare(`SELECT a.id,a.kind,a.question AS summary,a.detail_json FROM approvals a
+        JOIN zodchi_chat_session_runs csr ON csr.run_id=a.run_id
+        WHERE a.task_id IN (SELECT id FROM tasks WHERE project_id=?) AND a.status='pending'
+          AND csr.client=? AND csr.session_id=? ORDER BY a.created_at,a.id`).all(projectId, chatSession.client, chatSession.session_id)
+    : db.prepare("SELECT id,kind,question AS summary,detail_json FROM approvals WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND status='pending' ORDER BY created_at,id").all(projectId);
+  const proposalRows = chatSession
+    ? db.prepare(`SELECT dp.id,'document_proposal' AS kind,dp.target AS summary FROM document_proposals dp
+        JOIN zodchi_chat_session_runs csr ON csr.run_id=dp.run_id
+        WHERE dp.project_id=? AND dp.status='pending' AND csr.client=? AND csr.session_id=? ORDER BY dp.created_at,dp.id`).all(projectId, chatSession.client, chatSession.session_id)
+    : db.prepare("SELECT id,'document_proposal' AS kind,target AS summary FROM document_proposals WHERE project_id=? AND status='pending' ORDER BY created_at,id").all(projectId);
   const pending = [
     // The kind is what separates a question from a decision on an action, and collapsing every approval
     // into one label left the classifier unable to tell them apart in the very list it reads.
     // The evidence contract travels with the request. A person answering "which information base?" is
     // answering a question; a person being asked for a posting log from one named base needs to see which
     // base, over what period, and what the log has to cover, or they cannot tell whether they have it.
-    ...db.prepare("SELECT id,kind,question AS summary,detail_json FROM approvals WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND status='pending' ORDER BY created_at,id").all(projectId)
+    ...approvalRows
       .map(item => {
         const detail = item.kind === EXTERNAL_EVIDENCE_KIND && item.detail_json ? JSON.parse(item.detail_json) : null;
         return detail
           ? { id: item.id, kind: item.kind, summary: item.summary, evidence_contract: { evidence_kind: detail.evidence_kind, resource: detail.resource, expected_completeness: detail.expected_completeness, command: detail.command } }
           : { id: item.id, kind: item.kind, summary: item.summary };
       }),
-    ...db.prepare("SELECT id,'document_proposal' AS kind,target AS summary FROM document_proposals WHERE project_id=? AND status='pending' ORDER BY created_at,id").all(projectId)
+    ...proposalRows
   ].sort((a, b) => a.id.localeCompare(b.id, "en"));
   return Object.freeze({
     schema_version: 1,
@@ -84,6 +95,7 @@ export function classificationJsonSchema(catalog) {
       reply_mode: { type: "string", enum: [...REPLY_MODES] },
       pending_interaction_id: pendingInteraction,
       pending_interaction_response: { enum: [...OWNER_RESPONSES] },
+      resolved_objective: { type: "string", minLength: 1, maxLength: 12000 },
       reason: { type: "string", minLength: 1, maxLength: 2000 },
       questions: { type: "array", items: { type: "string", minLength: 1, maxLength: 1000 }, maxItems: 5 },
       human_response: { anyOf: [{ type: "string", maxLength: 4000 }, { type: "null" }] }
@@ -126,6 +138,7 @@ export function validateClassificationDecision(value, catalog) {
   if (value.needs_questions !== (value.questions.length > 0)) throw new Error("CLASSIFICATION_SCHEMA_INVALID: needs_questions mismatch");
   if (value.needs_questions !== (value.reply_mode === "clarification")) throw new Error("CLASSIFICATION_SCHEMA_INVALID: clarification mode mismatch");
   if (typeof value.reason !== "string" || !value.reason.trim() || value.reason.length > 2000) throw new Error("CLASSIFICATION_SCHEMA_INVALID: reason");
+  if (typeof value.resolved_objective !== "string" || !value.resolved_objective.trim() || value.resolved_objective.length > 12000) throw new Error("CLASSIFICATION_SCHEMA_INVALID: resolved_objective");
   if (value.human_response !== null && (typeof value.human_response !== "string" || value.human_response.length > 4000)) throw new Error("CLASSIFICATION_SCHEMA_INVALID: human_response");
   // A clarification lives until the next message and is then settled either way, so naming it wrongly
   // costs nothing while refusing the whole classification costs the run, the call and the person's
@@ -232,6 +245,7 @@ export function classifierPrompt({ message, catalog, projectSnapshot, acceptedDe
     "- An interaction of kind external_evidence asks for a fact from a live information base, a runtime, a device or a closed contour, described by the evidence contract carried beside it. It cannot be answered in words: only a delivered evidence packet closes it. Set pending_interaction_response to decline when the user refuses or cancels the request, and undecided otherwise, including when the user asserts the fact is true.",
     "- pending_interaction_response: null when pending_interaction_id is null or names an interaction of kind clarification or planner_clarification. When it names any other kind, the user is being asked to decide whether an action may happen, and this field says what they decided: approve only for an unambiguous yes to that exact action, decline for a refusal, undecided for anything else. Doubt, a question back, a condition, a partial agreement and thinking aloud are all undecided: the decision stays open and the user is answered. Treating hesitation as approval takes an action the user never authorized, so undecided is the answer whenever both readings are possible.",
     "- reason: why this classification, in RESPONSE_LANGUAGE.",
+    "- resolved_objective: a standalone formulation of exactly what downstream roles must answer or do. Resolve pronouns, confirmations, item numbers and phrases such as 'all three' against ORDERED_HISTORY and PENDING_INTERACTIONS. Preserve every requested item and its order. Do not include internal ids. For a self-contained message, restate it without adding scope.",
     "- human_response: the reply text when reply_mode is conversation, otherwise null.",
     "LEVEL_SELECTION:",
     "- planning_level measures how much ordered work the answer needs, not how important it is. L0 one response with no steps. L1 one bounded step. L2 a few dependent steps inside one area. L3 work crossing areas, releases, or anything irreversible. L4 a full audit.",
