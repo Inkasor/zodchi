@@ -13,7 +13,7 @@ import { BudgetManager } from "../src/budget.mjs";
 import { loadQualityContract } from "../src/quality-contracts.mjs";
 import { activateChatSession } from "../src/chat-session.mjs";
 
-const processMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
+const statelessProcessMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
 
 function temporaryRoot(prefix) {
   const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir();
@@ -152,7 +152,7 @@ async function scenario({ prefix, gateStatus = "passed", gateStatuses = null, re
     const currentGateStatus = gateStatuses?.[Math.min(gateCalls++, gateStatuses.length - 1)] ?? gateStatus;
     return { task_id: "gate", project: env.project, level: "mvp", files: document ? ["docs/control.md"] : ["src/output.txt"], status: currentGateStatus, checks: [{ id: "check-ok", name: "Deterministic check", required: true, status: currentGateStatus, exit_code: 0, duration_ms: 17 }], summary: `${currentGateStatus}: deterministic check` };
   };
-  const result = await processMessage({
+  const result = await statelessProcessMessage({
     message: message ?? (document ? "Update the registered document" : "Implement bounded output"), project: env.project, dbFile: env.dbFile,
     workflowDefinition: { id: "workflow", authority: "registered test authority", roles: {} }, execute: true,
     classificationResult: classification(document, risk), gatewayCall, gateRunner, runProfileOverrides
@@ -247,7 +247,7 @@ test("ensemble planning collects independent candidates before one synthesized e
 test("profile preparation completes before any planner or productive model call", async () => {
   const env = fixture("workflow-profile-prepare-");
   let calls = 0;
-  const result = await processMessage({
+  const result = await statelessProcessMessage({
     message: "Implement bounded output", project: env.project, dbFile: env.dbFile,
     workflowDefinition: { id: "workflow", authority: "registered test authority", roles: {} }, execute: true, prepareOnly: true,
     classificationResult: classification(false, "high"),
@@ -267,7 +267,7 @@ test("profile preparation completes before any planner or productive model call"
 test("a raised quality decision is shown again instead of silently executing an older prepared profile", async () => {
   const env = fixture("workflow-profile-raised-");
   let calls = 0;
-  const result = await processMessage({
+  const result = await statelessProcessMessage({
     message: "Implement bounded output", project: env.project, dbFile: env.dbFile,
     workflowDefinition: { id: "workflow", authority: "registered test authority", roles: {} }, execute: true,
     classificationResult: classification(false, "high"),
@@ -345,7 +345,7 @@ test("a pathless decision artifact is materialized from worker evidence instead 
   plan.allowed_paths = [];
   plan.artifacts = [{ key: "analysis-findings", type: "decision", path: null, required: true }];
   plan.steps[0] = { ...plan.steps[0], objective: "Establish the finding from supplied sources", allowed_paths: [], artifact_keys: ["analysis-findings"] };
-  const result = await processMessage({
+  const result = await statelessProcessMessage({
     message: "Establish a bounded analytical finding", project: env.project, dbFile: env.dbFile,
     workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, classificationResult: classification(false),
     gatewayCall: async request => {
@@ -374,7 +374,7 @@ test("final document artifacts stay with the documentator even when a planner as
   plan.artifacts = [{ key: "new-analysis", type: "document", path: "docs/new-analysis.md", required: true }];
   plan.steps[0] = { ...plan.steps[0], allowed_paths: ["src/output.txt"], artifact_keys: ["new-analysis"] };
   let workerPrompt = "";
-  const result = await processMessage({
+  const result = await statelessProcessMessage({
     message: "Create a new analysis document", project: env.project, dbFile: env.dbFile,
     workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, classificationResult: classification(true),
     gatewayCall: async request => {
@@ -394,7 +394,7 @@ test("final document artifacts stay with the documentator even when a planner as
 
 test("a worker artifact verification failure settles the worker step", async () => {
   const env = fixture("workflow-worker-artifact-failure-");
-  const result = await processMessage({
+  const result = await statelessProcessMessage({
     message: "Implement bounded output", project: env.project, dbFile: env.dbFile,
     workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, classificationResult: classification(false),
     gatewayCall: async request => {
@@ -419,7 +419,7 @@ test("planner questions stop before worker and become plain pending clarificatio
     schema_version: 1, outcome: "questions", scope: { included: [], excluded: [] }, allowed_paths: [], inputs: [], checks: [], risks: [], artifacts: [],
     completion_criteria: [], questions: ["Какой файл разрешено изменить?"], steps: []
   };
-  const result = await processMessage({
+  const result = await statelessProcessMessage({
     message: "Change it", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} },
     execute: true, classificationResult: classification(false), gatewayCall: async () => { calls += 1; return receipt("planner", questions); }
   });
@@ -450,7 +450,7 @@ test("planner source evidence is fitted to its byte contract and keeps the best 
     schema_version: 1, outcome: "questions", scope: { included: [], excluded: [] }, allowed_paths: [], inputs: [], checks: [], risks: [], artifacts: [],
     completion_criteria: [], questions: ["Остановиться после проверки контекста?"], steps: []
   };
-  const result = await processMessage({
+  const result = await statelessProcessMessage({
     message: "Проверь avgCost и себестоимость для артикула 620008", project: env.project, dbFile: env.dbFile,
     workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, classificationResult: classification(false),
     gatewayCall: async request => { plannerPrompt = fs.readFileSync(request.taskFile, "utf8"); return receipt("planner", questions); }
@@ -486,7 +486,7 @@ test("worker prompt fits the final byte contract and receives requested regions 
   // request. The collector must retain those global hints when it prepares this worker's source.
   plan.steps[0].objective = "Проследи LocalEntryMarker и точку запуска";
   let workerPrompt = "";
-  const result = await processMessage({
+  const result = await statelessProcessMessage({
     message: "Разбери большой BSL-модуль: СебестоимостьМаркер2800 в строках 2750–2850 и СебестоимостьМаркер4400 в строках 4380–4460", project: env.project, dbFile: env.dbFile,
     workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, classificationResult: classification(false),
     gatewayCall: async request => {
@@ -522,7 +522,7 @@ test("independent plan steps using one role receive independent role call budget
     key, role: "worker", objective: `Complete ${key}`, allowed_paths: [], artifact_keys: [], check_ids: ["check-ok"], resources: [], required: true, irreversible: false, max_attempts: 1
   }));
   let workerCalls = 0, secondPrompt = "";
-  const result = await processMessage({
+  const result = await statelessProcessMessage({
     message: "Run two bounded analysis packages", project: env.project, dbFile: env.dbFile,
     workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, classificationResult: classification(false),
     gatewayCall: async request => {
@@ -551,7 +551,7 @@ test("configured project call budget hard-stops the real role wrapper before Gat
   new BudgetManager(setup).define({ scopeType: "project", scopeId: "project", metric: "calls", limit: 0 });
   setup.close();
   let calls = 0;
-  const result = await processMessage({
+  const result = await statelessProcessMessage({
     message: "Implement bounded output", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} },
     execute: true, classificationResult: classification(false), gatewayCall: async () => { calls += 1; return receipt("planner", plannerResult()); }
   });
@@ -585,7 +585,7 @@ test("a route that declares its steps without planning runs them without a plann
   db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow',?,?,?,1,0,'package.v1',?,'[]','[\"check-ok\"]','{}','{}')").run("review", 2, "reviewer", "reviewer.v1");
   db.close();
   const calls = [];
-  const result = await processMessage({
+  const result = await statelessProcessMessage({
     message: "Проверь зарегистрированный контекст", project: env.project, dbFile: env.dbFile,
     workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, classificationResult: classification(false),
     gatewayCall: async request => {
@@ -614,7 +614,7 @@ test("a declared route whose worker may write is refused without a planning step
   db.prepare("UPDATE role_contracts SET allowed_tools_json='[\"apply_patch\"]' WHERE role_id='worker'").run();
   db.close();
   let calls = 0;
-  const result = await processMessage({
+  const result = await statelessProcessMessage({
     message: "Внеси изменение", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} },
     execute: true, classificationResult: classification(false), gatewayCall: async () => { calls += 1; throw new Error("must not be called"); }
   });
@@ -633,7 +633,7 @@ async function approvalScenario(prefix, ownerResponse, beforeDecision = null) {
   db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow',?,?,?,1,?,'package.v1',?,'[]','[\"check-ok\"]','{}','{}')").run("apply", 2, "worker", 0, "worker.v1");
   activateChatSession(db, { client: semanticScope.client, sessionId: semanticScope.session_id, origin: env.project, turnKey: "turn-1" });
   db.close();
-  const first = await processMessage({
+  const first = await scopedProcessMessage({
     message: "Разверни изменение", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} },
     execute: true, semanticScope, classificationResult: classification(false), gatewayCall: async () => { throw new Error("must not be called"); }
   });
@@ -643,7 +643,7 @@ async function approvalScenario(prefix, ownerResponse, beforeDecision = null) {
   opened.close();
   if (beforeDecision) beforeDecision(env.dbFile, approval.id);
   const calls = [];
-  const second = await processMessage({
+  const second = await scopedProcessMessage({
     message: "ответ владельца", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, semanticScope,
     classificationResult: { ...classification(false), work_type: "conversation", artifact_type: "none", planning_required: false, reply_mode: "conversation", human_response: "Записал.", pending_interaction_id: approval.id, pending_interaction_response: ownerResponse },
     gatewayCall: async request => {
@@ -717,7 +717,7 @@ test("a workflow whose every step is named for verification still has a role to 
   db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow','review',2,'reviewer',1,0,'package.v1','reviewer.v1','[]','[\"check-ok\"]','{}','{}')").run();
   db.close();
   const calls = [];
-  const result = await processMessage({
+  const result = await statelessProcessMessage({
     message: "Прогони зарегистрированные проверки", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} },
     execute: true, classificationResult: classification(false),
     gatewayCall: async request => {
@@ -759,7 +759,7 @@ test("a decision that follows the work is continued from what was recorded, not 
     throw new Error(`unexpected role ${request.role}`);
   };
   const gateRunner = async () => ({ task_id: "gate", project: env.project, level: "mvp", files: ["docs/control.md"], status: "passed", checks: [{ id: "check-ok", required: true, status: "passed" }], summary: "passed" });
-  const first = await processMessage({
+  const first = await scopedProcessMessage({
     message: "Обнови зарегистрированный документ", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} },
     execute: true, semanticScope, classificationResult: classification(true), gatewayCall, gateRunner
   });
@@ -770,7 +770,7 @@ test("a decision that follows the work is continued from what was recorded, not 
   const approval = opened.prepare("SELECT id FROM approvals WHERE run_id=? AND status='pending'").get(first.run_id);
   opened.close();
   const before = calls.length;
-  const second = await processMessage({
+  const second = await scopedProcessMessage({
     message: "Да, принимаем", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, semanticScope,
     classificationResult: { ...classification(true), work_type: "conversation", artifact_type: "none", planning_required: false, document_required: false, reply_mode: "conversation", human_response: "Записал.", pending_interaction_id: approval.id, pending_interaction_response: "approve" },
     gatewayCall, gateRunner
@@ -797,7 +797,7 @@ test("a routed irreversible approval binds an exact plan before any productive r
   db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow','deploy',3,'worker',1,0,'package.v1','worker.v1','[\"code\"]','[\"check-ok\"]','{}','{}')").run();
   db.close();
   const calls = [];
-  const result = await processMessage({
+  const result = await statelessProcessMessage({
     message: "Разверни изменение", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} },
     execute: true, classificationResult: classification(false), gatewayCall: async request => {
       calls.push(request.role);

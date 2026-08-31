@@ -11,7 +11,7 @@ import { onboardProject, registerProject } from "../src/onboarding.mjs";
 import { Runtime } from "../src/runtime.mjs";
 import { activateChatSession } from "../src/chat-session.mjs";
 
-const processMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
+const statelessProcessMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
 
 function temporaryRoot(prefix) {
   const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir();
@@ -90,7 +90,7 @@ test("invalid classifier output fails closed before any productive role", async 
   const { root, project, dbFile, db } = fixture("workflow-classification-fail-closed-");
   db.close();
   let calls = 0;
-  const result = await processMessage({
+  const result = await statelessProcessMessage({
     message: "Implement a package", project, dbFile, workflowDefinition: definition(), execute: true,
     gatewayCall: async request => { calls += 1; assert.match(request.outputSchemaFile, /classifier-output\.schema\.json$/); return receipt(JSON.stringify({ ...decision(), surprise: true })); }
   });
@@ -114,7 +114,7 @@ test("ordinary conversation invokes only the classifier and returns a plain huma
     work_type: "conversation", artifact_type: "none", discipline: "general", planning_level: "L0",
     planning_required: false, reply_mode: "conversation", reason: "Пользователь здоровается.", human_response: "Привет! Чем помочь?"
   });
-  const result = await processMessage({
+  const result = await statelessProcessMessage({
     message: "Привет", project, dbFile, workflowDefinition: definition(), execute: true,
     gatewayCall: async request => { calls += 1; assert.equal(request.project, project); return receipt(JSON.stringify(conversation)); }
   });
@@ -167,7 +167,7 @@ test("a project without a conversation route still answers a conversation instea
     work_type: "conversation", artifact_type: "none", discipline: "general", planning_level: "L0",
     planning_required: false, reply_mode: "conversation", reason: "Пользователь спрашивает о проекте.", human_response: "Отвечаю по существу."
   });
-  const result = await processMessage({
+  const result = await statelessProcessMessage({
     message: "Как дела с каноном?", project, dbFile, workflowDefinition: definition(), execute: true,
     gatewayCall: async () => receipt(JSON.stringify(conversation))
   });
@@ -187,7 +187,7 @@ test("research invokes classifier then researcher without planner, worker or rev
     work_type: "research", artifact_type: "test_report", discipline: "general", planning_required: false,
     reply_mode: "research", reason: "Нужно проверить зарегистрированные источники."
   });
-  const result = await processMessage({
+  const result = await statelessProcessMessage({
     message: "Что известно?", project, dbFile, workflowDefinition: definition(), execute: true,
     gatewayCall: async request => {
       assert.equal(request.project, project);
@@ -212,7 +212,7 @@ test("clarification produces plain questions and does not start productive roles
     work_type: "clarification", artifact_type: "none", discipline: "general", planning_required: false, human_required: true,
     needs_questions: true, reply_mode: "clarification", reason: "Не указан целевой документ.", questions: ["Какой документ нужно изменить?"]
   });
-  const result = await processMessage({ message: "Измени это", project, dbFile, workflowDefinition: definition(), classificationResult: clarification });
+  const result = await statelessProcessMessage({ message: "Измени это", project, dbFile, workflowDefinition: definition(), classificationResult: clarification });
   assert.equal(result.route, "clarification");
   assert.match(result.response, /Какой документ нужно изменить\?/);
   assert.equal(result.response.includes(result.run_id), false);
@@ -248,7 +248,7 @@ test("an unpinned project hook lets the classifier select the registered workflo
   db.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status,discovery_json,history_budget_bytes) VALUES('implementation-workflow','Implementation','project','mvp','L2','active','{\"git\":false}',4096)").run();
   db.prepare("UPDATE workflow_routes SET workflow_id='implementation-workflow',priority=100 WHERE project_id='project' AND work_type_id='implementation'").run();
   db.close();
-  const result = await processMessage({ message: "Исправь ошибку", project, dbFile, classificationResult: decision() });
+  const result = await statelessProcessMessage({ message: "Исправь ошибку", project, dbFile, classificationResult: decision() });
   assert.equal(result.route, "work");
   const verified = openDb(dbFile);
   assert.equal(verified.prepare("SELECT workflow_id FROM workflow_runs WHERE id=?").get(result.run_id).workflow_id, "implementation-workflow");
@@ -406,7 +406,7 @@ test("a clarification stops being pending once the next message answers or super
     planning_required: false, reply_mode: "clarification", needs_questions: true,
     questions: ["Какие документы проверить первыми?"], reason: "Не указаны исходные документы."
   });
-  const first = await processMessage({
+  const first = await scopedProcessMessage({
     message: "Разберись со старыми материалами", project, dbFile, workflowDefinition: definition(), execute: true, semanticScope,
     gatewayCall: async () => receipt(JSON.stringify(asking))
   });
@@ -414,7 +414,7 @@ test("a clarification stops being pending once the next message answers or super
   const pendingId = opened.prepare("SELECT id FROM approvals WHERE run_id=? AND status='pending'").get(first.run_id).id;
   opened.close();
 
-  const answered = await processMessage({
+  const answered = await scopedProcessMessage({
     message: "Начни с бестиария", project, dbFile, workflowDefinition: definition(), execute: true, semanticScope,
     gatewayCall: async () => receipt(JSON.stringify({ ...asking, questions: ["Только классифицировать или готовить предложение?"], pending_interaction_id: pendingId }))
   });
@@ -446,8 +446,8 @@ test("two chats in one project keep history and interactions isolated while down
     planning_required: false, human_required: true, needs_questions: true, reply_mode: "clarification",
     resolved_objective: "Уточнить формат отчёта.", reason: "Не выбран формат.", questions: ["Нужен Markdown или JSON?"]
   });
-  const firstA = await processMessage({ message: "Начнём анализ", project, dbFile, workflowDefinition: definition(), classificationResult: askingA, semanticScope: { mode: "session", client: "codex", session_id: "chat-a" } });
-  const firstB = await processMessage({ message: "Подготовь отчёт", project, dbFile, workflowDefinition: definition(), classificationResult: askingB, semanticScope: { mode: "session", client: "codex", session_id: "chat-b" } });
+  const firstA = await scopedProcessMessage({ message: "Начнём анализ", project, dbFile, workflowDefinition: definition(), classificationResult: askingA, semanticScope: { mode: "session", client: "codex", session_id: "chat-a" } });
+  const firstB = await scopedProcessMessage({ message: "Подготовь отчёт", project, dbFile, workflowDefinition: definition(), classificationResult: askingB, semanticScope: { mode: "session", client: "codex", session_id: "chat-b" } });
 
   const state = openDb(dbFile);
   const pendingA = state.prepare("SELECT id FROM approvals WHERE run_id=?").get(firstA.run_id).id;
@@ -467,7 +467,7 @@ test("two chats in one project keep history and interactions isolated while down
     reply_mode: "research", pending_interaction_id: pendingA, resolved_objective: resolved,
     reason: "Пользователь выбрал все три ранее перечисленных аспекта в указанном порядке."
   });
-  const secondA = await processMessage({
+  const secondA = await scopedProcessMessage({
     message: "давай все три в порядке который ты указал", project, dbFile, workflowDefinition: definition(), execute: true,
     semanticScope: { mode: "session", client: "codex", session_id: "chat-a" },
     gatewayCall: async request => {
@@ -490,7 +490,7 @@ test("two chats in one project keep history and interactions isolated while down
   afterA.close();
 
   const plannerObjective = "Подготовить Markdown-отчёт по зарегистрированным материалам проекта.";
-  const planned = await processMessage({
+  const planned = await scopedProcessMessage({
     message: "Markdown", project, dbFile, workflowDefinition: definition(), execute: false,
     semanticScope: { mode: "session", client: "codex", session_id: "chat-b" },
     classificationResult: decision({ artifact_type: "document", discipline: "documentation", document_required: true, pending_interaction_id: pendingB, resolved_objective: plannerObjective })

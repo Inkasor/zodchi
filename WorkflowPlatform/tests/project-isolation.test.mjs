@@ -9,7 +9,7 @@ import { parseHookEvent } from "../src/hook-entry.mjs";
 import { applyHookInstallation, hookInstallationStatus, hookSnapshotHashes, planHookInstallation, removeOwnedHookInstallation, restoreHookInstallation, snapshotHookInstallation } from "../src/hook-installation.mjs";
 import { processMessage as scopedProcessMessage } from "../src/workflow-app.mjs";
 
-const processMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
+const statelessProcessMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
 import { resolveWorkflowSettings, workflowPlatformRoot } from "../src/paths.mjs";
 
 function temporaryRoot(prefix) {
@@ -80,7 +80,7 @@ test("the real hook path refuses a message from another project instead of resta
   try {
     process.env.WORKFLOW_PROJECT = configured;
     // Exactly the call `hooks/user-prompt-submit.mjs` makes, with exactly the fields it passes.
-    await assert.rejects(() => processMessage({ message: entry.message, origin: entry.origin, dbFile, eventSource: entry.eventSource, eventKey: entry.eventKey, eventFields: entry.eventFields, client: entry.client }), /PROJECT_BINDING_MISMATCH/);
+    await assert.rejects(() => statelessProcessMessage({ message: entry.message, origin: entry.origin, dbFile, eventSource: entry.eventSource, eventKey: entry.eventKey, eventFields: entry.eventFields, client: entry.client }), /PROJECT_BINDING_MISMATCH/);
     const opened = openDb(dbFile);
     assert.equal(opened.prepare("SELECT COUNT(*) AS count FROM workflow_runs").get().count, 0);
 
@@ -88,7 +88,7 @@ test("the real hook path refuses a message from another project instead of resta
     // of its own, it is the project the message belongs to, and the run is charged there.
     opened.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('other','Other',?,?)").run(other, now());
     opened.close();
-    await assert.rejects(() => processMessage({ message: entry.message, origin: entry.origin, dbFile }), /WORKFLOW_NOT_REGISTERED: other/);
+    await assert.rejects(() => statelessProcessMessage({ message: entry.message, origin: entry.origin, dbFile }), /WORKFLOW_NOT_REGISTERED: other/);
   } finally {
     delete process.env.WORKFLOW_PROJECT;
     assert.equal(resolveWorkflowSettings().project, declared);
@@ -111,7 +111,7 @@ test("a message from an unrelated directory never reaches the configured project
     // `resolveWorkflowSettings` reads the process environment, which is exactly the inheritance this
     // guards against, so the environment is what the test sets.
     process.env.WORKFLOW_PROJECT = configured;
-    await assert.rejects(() => processMessage({ message: "hello", origin: other, dbFile }), /PROJECT_BINDING_MISMATCH/);
+    await assert.rejects(() => statelessProcessMessage({ message: "hello", origin: other, dbFile }), /PROJECT_BINDING_MISMATCH/);
     const opened = openDb(dbFile);
     assert.equal(opened.prepare("SELECT COUNT(*) AS count FROM workflow_runs").get().count, 0);
     opened.close();

@@ -10,7 +10,7 @@ import { deliverExternalEvidencePacket, processMessage as scopedProcessMessage }
 import { classificationCatalog, validateClassificationDecision } from "../src/classifier.mjs";
 import { activateChatSession } from "../src/chat-session.mjs";
 
-const processMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
+const statelessProcessMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
 import {
   cancelInteraction, deliverEvidence, expireInteractions, openClarification, openExternalEvidenceRequest,
   pendingInteractions, quiesceRun, readInteraction, settleInteraction, supersedeInteraction, validateEvidenceContract
@@ -337,14 +337,14 @@ test("an answered clarification continues the run that asked instead of opening 
     return receipt("reviewer", { schema_version: 1, decision: "PASS", summary: "All criteria passed.", blockers: [], required_actions: [], evidence_refs: ["gate:passed"] });
   };
 
-  const asked = await processMessage({ message: "Сделай ограниченный вывод", project: env.project, dbFile: env.dbFile, execute: true, semanticScope, classificationResult: classification(), gatewayCall, gateRunner: async () => ({ status: "passed", checks: [] }) });
+  const asked = await scopedProcessMessage({ message: "Сделай ограниченный вывод", project: env.project, dbFile: env.dbFile, execute: true, semanticScope, classificationResult: classification(), gatewayCall, gateRunner: async () => ({ status: "passed", checks: [] }) });
   assert.equal(asked.execution.status, "clarification_required");
 
   const paused = openDb(env.dbFile);
   const questionId = paused.prepare("SELECT id FROM approvals WHERE status='pending' AND kind='planner_clarification'").get().id;
   paused.close();
 
-  const answered = await processMessage({ message: "В src/output.txt", project: env.project, dbFile: env.dbFile, execute: true, semanticScope, classificationResult: classification({ pending_interaction_id: questionId, reply_mode: "conversation", planning_required: false, artifact_type: "none", work_type: "conversation", human_response: "В src/output.txt" }), gatewayCall, gateRunner: async () => ({ status: "passed", checks: [] }) });
+  const answered = await scopedProcessMessage({ message: "В src/output.txt", project: env.project, dbFile: env.dbFile, execute: true, semanticScope, classificationResult: classification({ pending_interaction_id: questionId, reply_mode: "conversation", planning_required: false, artifact_type: "none", work_type: "conversation", human_response: "В src/output.txt" }), gatewayCall, gateRunner: async () => ({ status: "passed", checks: [] }) });
 
   // The answer belongs to the run that asked. Routing it through a fresh run would replan work already
   // done and pay for every model call again, so the intake run only records the delivery.
@@ -374,10 +374,10 @@ test("a message that answers nothing stays its own run and leaves the open quest
     if (request.role === "planner") return receipt("planner", { ...readyPlan(), outcome: "questions", steps: [], artifacts: [], questions: ["Куда писать результат?"] });
     return receipt(request.role, {});
   };
-  const asked = await processMessage({ message: "Сделай ограниченный вывод", project: env.project, dbFile: env.dbFile, execute: true, classificationResult: classification(), gatewayCall, gateRunner: async () => ({ status: "passed", checks: [] }) });
+  const asked = await statelessProcessMessage({ message: "Сделай ограниченный вывод", project: env.project, dbFile: env.dbFile, execute: true, classificationResult: classification(), gatewayCall, gateRunner: async () => ({ status: "passed", checks: [] }) });
   assert.equal(asked.execution.status, "clarification_required");
 
-  const unrelated = await processMessage({ message: "Как дела?", project: env.project, dbFile: env.dbFile, execute: true, classificationResult: classification({ work_type: "conversation", artifact_type: "none", reply_mode: "conversation", planning_required: false, human_response: "Всё в порядке." }), gatewayCall, gateRunner: async () => ({ status: "passed", checks: [] }) });
+  const unrelated = await statelessProcessMessage({ message: "Как дела?", project: env.project, dbFile: env.dbFile, execute: true, classificationResult: classification({ work_type: "conversation", artifact_type: "none", reply_mode: "conversation", planning_required: false, human_response: "Всё в порядке." }), gatewayCall, gateRunner: async () => ({ status: "passed", checks: [] }) });
   assert.equal(unrelated.route, "conversation");
 
   // The old semantics settled every open question whenever any message arrived, answered or not. A
@@ -399,7 +399,7 @@ test("a worker blocked on an external fact parks the run and asks for evidence, 
     if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "blocked", summary: "Нужен журнал проведения из рабочей ИБ.", changed_paths: [], artifacts: [], evidence: [], questions: [], external_evidence_request: contract() });
     return receipt(request.role, {});
   };
-  const blocked = await processMessage({ message: "Проверь проведение документа", project: env.project, dbFile: env.dbFile, execute: true, classificationResult: classification(), gatewayCall, gateRunner: async () => ({ status: "passed", checks: [] }) });
+  const blocked = await statelessProcessMessage({ message: "Проверь проведение документа", project: env.project, dbFile: env.dbFile, execute: true, classificationResult: classification(), gatewayCall, gateRunner: async () => ({ status: "passed", checks: [] }) });
   assert.equal(blocked.execution.status, "external_evidence_required");
 
   const verified = openDb(env.dbFile);
@@ -425,7 +425,7 @@ async function parkedOnEvidence(prefix) {
     return receipt(request.role, {});
   };
   const gateRunner = async () => ({ status: "passed", checks: [] });
-  const blocked = await processMessage({ message: "Проверь проведение документа", project: env.project, dbFile: env.dbFile, execute: true, classificationResult: classification(), gatewayCall, gateRunner });
+  const blocked = await statelessProcessMessage({ message: "Проверь проведение документа", project: env.project, dbFile: env.dbFile, execute: true, classificationResult: classification(), gatewayCall, gateRunner });
   assert.equal(blocked.execution.status, "external_evidence_required");
   const db = openDb(env.dbFile);
   const interactionId = db.prepare("SELECT id FROM approvals WHERE status='pending' AND kind='external_evidence'").get().id;
@@ -512,7 +512,7 @@ test("a delivered evidence packet resumes the run that asked for it", async () =
   };
   const gateRunner = async () => ({ status: "passed", checks: [] });
 
-  const blocked = await processMessage({ message: "Проверь проведение документа", project: env.project, dbFile: env.dbFile, execute: true, classificationResult: classification(), gatewayCall, gateRunner });
+  const blocked = await statelessProcessMessage({ message: "Проверь проведение документа", project: env.project, dbFile: env.dbFile, execute: true, classificationResult: classification(), gatewayCall, gateRunner });
   assert.equal(blocked.execution.status, "external_evidence_required");
   const waiting = openDb(env.dbFile);
   const interactionId = waiting.prepare("SELECT id FROM approvals WHERE status='pending' AND kind='external_evidence'").get().id;

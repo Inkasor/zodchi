@@ -8,7 +8,7 @@ import { applyPatch } from "../src/documentator.mjs";
 import { buildPrompt } from "../src/prompt-builder.mjs";
 import { processMessage as scopedProcessMessage } from "../src/workflow-app.mjs";
 
-const processMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
+const statelessProcessMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
 import { openDb } from "../src/db.mjs";
 import { formatHookOutput, parseHookEvent } from "../src/hook-entry.mjs";
 
@@ -117,7 +117,7 @@ test("generic workflow dry-run exposes a bounded chain", async () => {
   const db = openDb(dbFile);
   registerTestProject(db, { projectRoot: project });
   db.close();
-  const result = await processMessage({ message: "Implement a bounded package", project, dbFile, workflowDefinition: workflowDefinition(), classificationResult: classificationDecision() });
+  const result = await statelessProcessMessage({ message: "Implement a bounded package", project, dbFile, workflowDefinition: workflowDefinition(), classificationResult: classificationDecision() });
   assert.equal(result.route, "work");
   assert.deepEqual(result.gateway.steps.map(step => step.role), ["planner", "worker", "project-gate", "reviewer", "documentator"]);
   assert.equal(result.gateway.steps[0].profile, "local-planner");
@@ -136,8 +136,8 @@ test("repeating one hook event does not create a second workflow run", async () 
   registerTestProject(db, { projectRoot: project });
   db.close();
   const input = { message: "Implement one bounded package", project, dbFile, workflowDefinition: workflowDefinition(), eventSource: "codex-hook", eventKey: "hook-event-1", classificationResult: classificationDecision() };
-  const first = await processMessage(input);
-  const duplicate = await processMessage(input);
+  const first = await statelessProcessMessage(input);
+  const duplicate = await statelessProcessMessage(input);
   assert.equal(first.route, "work");
   assert.equal(duplicate.route, "duplicate");
   assert.equal(duplicate.run_id, first.run_id);
@@ -157,7 +157,7 @@ test("Claude Code hook events preserve prompt id and client identity", async () 
   registerTestProject(setup, { projectRoot: project });
   setup.close();
   const input = { message: "Implement one bounded package", project, dbFile, workflowDefinition: workflowDefinition(), eventSource: "claude-code-hook", eventKey: "550e8400-e29b-41d4-a716-446655440000", client: "claude-code", classificationResult: classificationDecision() };
-  const result = await processMessage(input);
+  const result = await statelessProcessMessage(input);
   const db = openDb(dbFile);
   assert.equal(db.prepare("SELECT client FROM workflow_runs WHERE id=?").get(result.run_id).client, "claude-code");
   assert.equal(db.prepare("SELECT run_id FROM inbox_events WHERE source=? AND event_key=?").get("claude-code-hook", "550e8400-e29b-41d4-a716-446655440000").run_id, result.run_id);
