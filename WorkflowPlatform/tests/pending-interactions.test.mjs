@@ -59,7 +59,7 @@ test("one answer settles every question it answered, and an id that is not pendi
   db.prepare("INSERT INTO tasks(id,project_id,title,state,created_at,updated_at) VALUES('task','project','asked','clarification_required',?,?)").run(now(), now());
   db.prepare("INSERT INTO workflow_runs(id,task_id,project_id,workflow_id,state,operational_level,user_message,created_at,updated_at) VALUES('asking','task','project','workflow','clarification_required','mvp','asked',?,?)").run(now(), now());
   const asked = askQuestions(db, "task", "asking", 2);
-  const catalog = classificationCatalog(db, "project");
+  const catalog = classificationCatalog(db, "project", { mode: "project_admin" });
 
   // The platform asked two questions and the person answered both in one message. Naming one and
   // cancelling the other recorded an answer that was given as an answer that never came.
@@ -86,7 +86,7 @@ test("a decision on an action is still named exactly", () => {
   db.prepare("INSERT INTO tasks(id,project_id,title,state,created_at,updated_at) VALUES('task','project','asked','approval_required',?,?)").run(now(), now());
   db.prepare("INSERT INTO workflow_runs(id,task_id,project_id,workflow_id,state,operational_level,user_message,created_at,updated_at) VALUES('asking','task','project','workflow','approval_required','mvp','asked',?,?)").run(now(), now());
   db.prepare("INSERT INTO approvals(id,task_id,run_id,kind,question,status,created_at) VALUES('approval_deploy','task','asking','workflow_approval','Разрешить выкладку?','pending',?)").run(now());
-  const catalog = classificationCatalog(db, "project");
+  const catalog = classificationCatalog(db, "project", { mode: "project_admin" });
 
   // Leniency belongs where being wrong costs nothing. An approval authorizes an action, so a response
   // paired with an id that is not pending is refused rather than read as consent to something else.
@@ -103,7 +103,7 @@ test("a planner clarification is a question, not an approval decision, and is se
   db.prepare("INSERT INTO tasks(id,project_id,title,state,created_at,updated_at) VALUES('task','project','asked','clarification_required',?,?)").run(now(), now());
   db.prepare("INSERT INTO workflow_runs(id,task_id,project_id,workflow_id,state,operational_level,user_message,created_at,updated_at) VALUES('asking','task','project','workflow','clarification_required','mvp','asked',?,?)").run(now(), now());
   const pendingId = askPlannerQuestion(db, "task", "asking");
-  const classified = validateClassificationDecision(decision({ pending_interaction_id: pendingId }), classificationCatalog(db, "project"));
+  const classified = validateClassificationDecision(decision({ pending_interaction_id: pendingId }), classificationCatalog(db, "project", { mode: "project_admin" }));
   assert.equal(classified.pending_interaction_response, null);
   db.close();
 
@@ -117,7 +117,7 @@ test("a planner clarification is a question, not an approval decision, and is se
 
 test("a run that fails on its way into execution ends instead of staying classified", () => {
   const { root, db } = fixture("workflow-classified-dead-end-");
-  const classified = validateClassificationDecision(decision(), classificationCatalog(db, "project"));
+  const classified = validateClassificationDecision(decision(), classificationCatalog(db, "project", { mode: "project_admin" }));
   db.close();
   const runtime = new Runtime(path.join(root, "workflow.sqlite"));
   const runId = runtime.create("сделай пакет", { project_id: "project", workflow_id: "workflow" });

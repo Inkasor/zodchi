@@ -22,6 +22,7 @@ const result = await processMessage({
   eventKey: entry.eventKey,
   eventFields: entry.eventFields,
   client: entry.client,
+  semanticScope: { mode: "stateless" },
   preferredLanguage: entry.preferredLanguage,
   execute: true
 });

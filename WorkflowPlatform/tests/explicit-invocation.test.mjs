@@ -22,6 +22,7 @@ test("explicit invocation preserves UTF-8 task bytes and removes the transfer fi
     assert.equal(calls[0].message, "Проверь цепочку API → UI 😀\n");
     assert.equal(calls[0].origin, value.project);
     assert.equal(calls[0].eventSource, "codex-skill");
+    assert.deepEqual(calls[0].semanticScope, { mode: "stateless" });
     assert.equal(calls[0].execute, true);
     assert.equal(result.response, "Готово");
     assert.equal(result.source_bytes, Buffer.byteLength(calls[0].message));

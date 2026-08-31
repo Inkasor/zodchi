@@ -42,6 +42,7 @@ export async function invokeExplicitTask(options, dependencies = {}) {
       eventKey: options.eventKey ?? null,
       eventFields: ["explicit_skill", "message_file"],
       client,
+      semanticScope: { mode: "stateless" },
       preferredLanguage: options.preferredLanguage ?? null,
       execute: true
     });

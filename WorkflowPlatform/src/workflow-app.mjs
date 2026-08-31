@@ -69,7 +69,8 @@ function boundedDocuments(discovery, maxBytes = 32_000) {
 function researchPrompt({ message, resolvedObjective, project, discovery, responseLanguage }) {
   return [
     "WORKFLOW RESEARCH REQUEST v2",
-    "Answer the current question from only the registered readable documents below. Do not edit files, invoke other agents, or invent facts.",
+    "Answer RESOLVED_OBJECTIVE from only the registered readable documents below. It is the authoritative standalone task; VERBATIM_CURRENT_USER_MESSAGE is provenance only and must not narrow or override it.",
+    "Do not edit files, invoke other agents, or invent facts.",
     `Return a concise human-readable answer in ${languageName(responseLanguage)} without internal IDs, profiles, levels, prompts or JSON.`,
     `PROJECT:${project.name}`,
     `REGISTERED_CONTEXT:${JSON.stringify(boundedDocuments(discovery))}`,
@@ -251,8 +252,11 @@ function registeredRoot(db, candidate) {
 
 export async function processMessage({
   message, project, origin = null, dbFile, workflow, workflowDefinition, execute = false, eventSource = "user", eventKey = null, eventFields = [],
-  classificationResult = null, gatewayCall = callGateway, gateRunner = undefined, preferredLanguage = null, client = "codex", chatSession = null, prepareOnly = false, runProfileOverrides = {}
+  classificationResult = null, gatewayCall = callGateway, gateRunner = undefined, preferredLanguage = null, client = "codex", chatSession = null, semanticScope = null, prepareOnly = false, runProfileOverrides = {}
 }) {
+  const resolvedSemanticScope = semanticScope ?? (chatSession ? chatSession : { mode: "stateless" });
+  if (chatSession && (resolvedSemanticScope.client !== chatSession.client || resolvedSemanticScope.session_id !== chatSession.session_id)) throw new Error("ZODCHI_SEMANTIC_SCOPE_SESSION_MISMATCH");
+  if (!chatSession && resolvedSemanticScope.mode !== "stateless") throw new Error("ZODCHI_SEMANTIC_SCOPE_SESSION_REQUIRED");
   const settings = resolveWorkflowSettings();
   dbFile ??= settings.databasePath;
   workflow ??= settings.workflow ?? workflowDefinition?.id;
@@ -317,7 +321,7 @@ export async function processMessage({
 
   const workflowRow = runtime.db.prepare("SELECT * FROM workflows WHERE id=? AND project_id=? AND status='active'").get(workflow, run.project_id);
   if (!workflowRow) return classificationFailure(runtime, runId, new Error(`DISCOVERY_WORKFLOW_NOT_REGISTERED: ${workflow}`), finish, responseLanguage);
-  const historyContext = conversationContext(runtime.db, run.project_id, workflowRow.history_budget_bytes, chatSession);
+  const historyContext = conversationContext(runtime.db, run.project_id, workflowRow.history_budget_bytes, resolvedSemanticScope);
   responseLanguage = resolveResponseLanguage({ message, preferredLanguage: preferredLanguage ?? settings.responseLanguage, history: historyContext.history });
   runtime.db.prepare("UPDATE workflow_runs SET response_language=?,updated_at=? WHERE id=?").run(responseLanguage, now(), runId);
   const discovery = readProjectContext(project, runtime.db);
@@ -325,7 +329,7 @@ export async function processMessage({
   // unrelated message arriving. The deadline is the only one of the four that nobody sends, so it is
   // applied here, before the classifier is shown what is still open.
   expireInteractions(runtime.db, run.project_id);
-  const catalog = classificationCatalog(runtime.db, run.project_id, chatSession);
+  const catalog = classificationCatalog(runtime.db, run.project_id, resolvedSemanticScope);
   runtime.db.prepare("INSERT INTO conversation_messages(id,project_id,run_id,role,content,created_at,language) VALUES(?,?,?,'user',?,?,?)")
     .run(`${runId}:user`, run.project_id, runId, String(message), now(), responseLanguage);
   const saveAssistant = response => {
