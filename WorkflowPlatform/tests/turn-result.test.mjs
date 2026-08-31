@@ -20,10 +20,16 @@ function fixture() {
   return { root, project, file, db };
 }
 
+function bindRunToSession(db, client, sessionId) {
+  db.prepare("INSERT INTO zodchi_chat_session_runs(run_id,client,session_id,bound_at) VALUES('run',?,?,?)")
+    .run(client, sessionId, new Date().toISOString());
+}
+
 test("the exact active session reads its prepared result without mutating the database", () => {
   const value = fixture();
   try {
     activateChatSession(value.db, { client: "codex", sessionId: "session", origin: value.project, turnKey: "turn-1" });
+    bindRunToSession(value.db, "codex", "session");
     bindChatSessionResult(value.db, { client: "codex", sessionId: "session", runId: "run", turnKey: "turn-1" });
     value.db.close();
     const before = fs.statSync(value.file).mtimeMs;
@@ -37,6 +43,7 @@ test("a new turn makes the preceding result stale until the router binds a new r
   const value = fixture();
   try {
     activateChatSession(value.db, { client: "codex", sessionId: "session", origin: value.project, turnKey: "turn-1" });
+    bindRunToSession(value.db, "codex", "session");
     bindChatSessionResult(value.db, { client: "codex", sessionId: "session", runId: "run", turnKey: "turn-1" });
     touchChatSession(value.db, { client: "codex", sessionId: "session", origin: value.project, turnKey: "turn-2" });
     value.db.close();
@@ -48,6 +55,7 @@ test("a late result from an older turn cannot replace the current turn", () => {
   const value = fixture();
   try {
     activateChatSession(value.db, { client: "codex", sessionId: "session", origin: value.project, turnKey: "turn-1" });
+    bindRunToSession(value.db, "codex", "session");
     touchChatSession(value.db, { client: "codex", sessionId: "session", origin: value.project, turnKey: "turn-2" });
     assert.throws(
       () => bindChatSessionResult(value.db, { client: "codex", sessionId: "session", runId: "run", turnKey: "turn-1" }),
@@ -62,6 +70,7 @@ test("the Cursor relay reads the exact conversation identity supplied by session
   const value = fixture(), script = path.resolve(import.meta.dirname, "..", "hooks", "turn-result.mjs");
   try {
     activateChatSession(value.db, { client: "cursor", sessionId: "cursor-conversation", origin: value.project, turnKey: "generation-1" });
+    bindRunToSession(value.db, "cursor", "cursor-conversation");
     bindChatSessionResult(value.db, { client: "cursor", sessionId: "cursor-conversation", runId: "run", turnKey: "generation-1" });
     value.db.close();
     const env = { ...process.env, WORKFLOW_DB: value.file, ZODCHI_CURSOR_SESSION_ID: "cursor-conversation" };

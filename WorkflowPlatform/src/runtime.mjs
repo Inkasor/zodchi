@@ -37,8 +37,17 @@ export class Runtime {
     const payloadHash = crypto.createHash("sha256").update(String(message)).digest("hex");
     const taskIdempotencyKey = eventKey ? `${source}:${eventKey}` : null;
     const taskId = id("task"), runId = id("run"), timestamp = now();
+    const chatSession = context.chat_session ?? null;
+    const sessionClient = chatSession?.client ? String(chatSession.client) : null;
+    const sessionId = chatSession?.session_id ? String(chatSession.session_id) : null;
+    if ((sessionClient === null) !== (sessionId === null)) throw new Error("ZODCHI_RUN_SESSION_INCOMPLETE");
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      if (sessionClient !== null) {
+        const session = this.db.prepare("SELECT project_id,state FROM zodchi_chat_sessions WHERE client=? AND session_id=?").get(sessionClient, sessionId);
+        if (!session || session.state !== "active") throw new Error(`ZODCHI_RUN_SESSION_NOT_ACTIVE: ${sessionClient}:${sessionId}`);
+        if (session.project_id !== project.id) throw new Error(`ZODCHI_RUN_SESSION_PROJECT_MISMATCH: ${session.project_id} != ${project.id}`);
+      }
       if (eventKey) {
         const existing = this.db.prepare("SELECT task_id,run_id,payload_hash FROM inbox_events WHERE project_id=? AND source=? AND event_key=?").get(project.id, source, String(eventKey));
         if (existing) {
@@ -47,6 +56,10 @@ export class Runtime {
             appendEvent(this.db, { entityType: "task", entityId: existing.task_id, kind: "contract_error", payload: { reason: "idempotency key reused with a different payload hash", source, event_key: String(eventKey) } });
             this.db.exec("COMMIT");
             throw new Error(`IDEMPOTENCY_CONFLICT: ${source}:${eventKey}`);
+          }
+          if (sessionClient !== null) {
+            const bound = this.db.prepare("SELECT client,session_id FROM zodchi_chat_session_runs WHERE run_id=?").get(existing.run_id);
+            if (!bound || bound.client !== sessionClient || bound.session_id !== sessionId) throw new Error(`IDEMPOTENCY_SESSION_CONFLICT: ${source}:${eventKey}`);
           }
           this.lastCreateWasDuplicate = true;
           this.db.exec("COMMIT");
@@ -57,6 +70,8 @@ export class Runtime {
         .run(taskId, project.id, context.goal_id ?? null, context.stage_id ?? null, String(message), taskIdempotencyKey, timestamp, timestamp);
       this.db.prepare("INSERT INTO workflow_runs(id,task_id,project_id,workflow_id,state,operational_level,client,user_message,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
         .run(runId, taskId, project.id, workflow.id, "received", context.operational_level ?? "mvp", context.client ?? "codex", String(message), timestamp, timestamp);
+      if (sessionClient !== null) this.db.prepare("INSERT INTO zodchi_chat_session_runs(run_id,client,session_id,bound_at) VALUES(?,?,?,?)")
+        .run(runId, sessionClient, sessionId, timestamp);
       if (eventKey) this.db.prepare("INSERT INTO inbox_events(id,project_id,source,event_key,payload_hash,task_id,run_id,received_at) VALUES(?,?,?,?,?,?,?,?)")
         .run(id("inbox"), project.id, source, String(eventKey), payloadHash, taskId, runId, timestamp);
       appendEvent(this.db, { entityType: "task", entityId: taskId, kind: "created", payload: { source, event_key: eventKey } });
@@ -92,6 +107,8 @@ export class Runtime {
         .run(decisionId, taskId, runId, "classification", value.kind, "classifier", JSON.stringify(value), now());
       this.db.prepare("INSERT INTO classifications(run_id,decision_id,kind,domain_id,discipline_id,risk,planning_level_id,quality_mode_id,planning_required,human_required,document_required,artifact_type_id,reply_mode,needs_questions,pending_interaction_id,reason,questions_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
         .run(runId, decisionId, value.kind, value.domain, value.discipline, value.risk, value.level, value.quality, value.planning_required ? 1 : 0, value.human_required ? 1 : 0, value.document_required ? 1 : 0, value.artifact_type ?? value.artifact ?? null, value.reply_mode ?? null, value.needs_questions ? 1 : 0, value.pending_interaction_id ?? null, value.reason ?? null, JSON.stringify(value.questions ?? []));
+      this.db.prepare("UPDATE workflow_runs SET resolved_objective=? WHERE id=?")
+        .run(value.resolved_objective ?? run.user_message, runId);
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
     transitionRunAndTask(this.db, runId, "classified", { reason: "classification decision stored" });

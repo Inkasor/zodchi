@@ -140,10 +140,17 @@ export function selectProjectContext(discovery, classification = {}, _workingDoc
   };
 }
 
-export function conversationContext(db, projectId, historyBudgetBytes = 24_000) {
+export function conversationContext(db, projectId, historyBudgetBytes = 24_000, chatSession = null) {
+  // Accepted owner decisions are project truth and intentionally cross chat boundaries. Conversational
+  // wording is not: it is selected only through the run-to-session binding when a chat is present.
   const decisions = db.prepare("SELECT id,kind,outcome,source,structured_json,created_at FROM decisions WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND active=1 AND outcome='APPROVE' ORDER BY created_at,id").all(projectId)
     .map(row => ({ id: row.id, kind: row.kind, outcome: row.outcome, source: row.source, structured: parseJson(row.structured_json, null), created_at: row.created_at }));
-  const messages = db.prepare("SELECT id,role,content,created_at FROM conversation_messages WHERE project_id=? ORDER BY created_at,id").all(projectId);
+  const messages = chatSession
+    ? db.prepare(`SELECT cm.id,cm.role,cm.content,cm.created_at FROM conversation_messages cm
+        JOIN zodchi_chat_session_runs csr ON csr.run_id=cm.run_id
+        WHERE cm.project_id=? AND csr.client=? AND csr.session_id=? ORDER BY cm.created_at,cm.id`)
+      .all(projectId, chatSession.client, chatSession.session_id)
+    : db.prepare("SELECT id,role,content,created_at FROM conversation_messages WHERE project_id=? ORDER BY created_at,id").all(projectId);
   const selected = [];
   let used = 0;
   for (const message of [...messages].reverse()) {

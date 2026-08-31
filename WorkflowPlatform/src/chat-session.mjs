@@ -56,9 +56,12 @@ export function activateChatSession(db, { client, sessionId, origin, message = n
 export function bindChatSessionResult(db, { client, sessionId, runId, turnKey }) {
   const session = chatSession(db, { client, sessionId });
   if (!session || session.state !== "active") throw new Error("ZODCHI_SESSION_NOT_ACTIVE");
-  const run = db.prepare("SELECT project_id FROM workflow_runs WHERE id=?").get(required(runId, "ZODCHI_SESSION_RUN_REQUIRED"));
+  const run = db.prepare(`SELECT wr.project_id,csr.client AS session_client,csr.session_id
+    FROM workflow_runs wr LEFT JOIN zodchi_chat_session_runs csr ON csr.run_id=wr.id WHERE wr.id=?`)
+    .get(required(runId, "ZODCHI_SESSION_RUN_REQUIRED"));
   if (!run) throw new Error(`ZODCHI_SESSION_RUN_NOT_FOUND: ${runId}`);
   if (run.project_id !== session.project_id) throw new Error(`ZODCHI_SESSION_RUN_PROJECT_MISMATCH: ${run.project_id} != ${session.project_id}`);
+  if (run.session_client !== client || run.session_id !== sessionId) throw new Error(`ZODCHI_SESSION_RUN_BINDING_MISMATCH: ${run.session_client ?? "unbound"}:${run.session_id ?? "unbound"}`);
   const normalizedTurn = required(turnKey, "ZODCHI_SESSION_TURN_REQUIRED");
   if (session.active_turn_key !== normalizedTurn) throw new Error(`ZODCHI_SESSION_TURN_MISMATCH: ${session.active_turn_key} != ${normalizedTurn}`);
   const timestamp = now();

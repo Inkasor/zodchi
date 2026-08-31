@@ -9,6 +9,7 @@ import { compactProjectSnapshot, conversationContext, readProjectContext, select
 import { processMessage } from "../src/workflow-app.mjs";
 import { onboardProject, registerProject } from "../src/onboarding.mjs";
 import { Runtime } from "../src/runtime.mjs";
+import { activateChatSession } from "../src/chat-session.mjs";
 
 function temporaryRoot(prefix) {
   const parent = process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir();
@@ -47,7 +48,7 @@ function decision(overrides = {}) {
     schema_version: 1, work_type: "implementation", artifact_type: "code", domain: "workflow", discipline: "software",
     risk: "low", planning_level: "L2", quality_mode: "mvp", planning_required: true, human_required: false,
     needs_questions: false, document_required: false, reply_mode: "work", pending_interaction_id: null, pending_interaction_response: null,
-    reason: "Нужен ограниченный пакет реализации.", questions: [], human_response: null, ...overrides
+    resolved_objective: "Выполнить ограниченный пакет реализации.", reason: "Нужен ограниченный пакет реализации.", questions: [], human_response: null, ...overrides
   };
 }
 
@@ -406,5 +407,79 @@ test("a clarification stops being pending once the next message answers or super
   assert.equal(open.length, 1);
   assert.equal(open[0].run_id, answered.run_id);
   verified.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("two chats in one project keep history and interactions isolated while downstream receives resolved objectives", async () => {
+  const { root, project, dbFile, db } = fixture("workflow-session-semantic-context-");
+  activateChatSession(db, { client: "codex", sessionId: "chat-a", origin: project, turnKey: "a-1" });
+  activateChatSession(db, { client: "codex", sessionId: "chat-b", origin: project, turnKey: "b-1" });
+  db.close();
+
+  const askingA = decision({
+    work_type: "clarification", artifact_type: "none", discipline: "general", planning_level: "L0",
+    planning_required: false, human_required: true, needs_questions: true, reply_mode: "clarification",
+    resolved_objective: "Уточнить, какой из трёх аспектов анализировать первым.",
+    reason: "Нужно выбрать порядок анализа.",
+    questions: ["Что проанализировать первым: архитектуру, заявленную универсальность или готовность к дальнейшей разработке?"]
+  });
+  const askingB = decision({
+    work_type: "clarification", artifact_type: "none", discipline: "general", planning_level: "L0",
+    planning_required: false, human_required: true, needs_questions: true, reply_mode: "clarification",
+    resolved_objective: "Уточнить формат отчёта.", reason: "Не выбран формат.", questions: ["Нужен Markdown или JSON?"]
+  });
+  const firstA = await processMessage({ message: "Начнём анализ", project, dbFile, workflowDefinition: definition(), classificationResult: askingA, chatSession: { client: "codex", session_id: "chat-a" } });
+  const firstB = await processMessage({ message: "Подготовь отчёт", project, dbFile, workflowDefinition: definition(), classificationResult: askingB, chatSession: { client: "codex", session_id: "chat-b" } });
+
+  const state = openDb(dbFile);
+  const pendingA = state.prepare("SELECT id FROM approvals WHERE run_id=?").get(firstA.run_id).id;
+  const pendingB = state.prepare("SELECT id FROM approvals WHERE run_id=?").get(firstB.run_id).id;
+  const contextA = conversationContext(state, "project", 24_000, { client: "codex", session_id: "chat-a" });
+  const contextB = conversationContext(state, "project", 24_000, { client: "codex", session_id: "chat-b" });
+  assert.equal(JSON.stringify(contextA.history).includes("Markdown или JSON"), false);
+  assert.equal(JSON.stringify(contextB.history).includes("архитектуру"), false);
+  assert.deepEqual(classificationCatalog(state, "project", { client: "codex", session_id: "chat-a" }).pending_interactions.map(item => item.id), [pendingA]);
+  assert.deepEqual(classificationCatalog(state, "project", { client: "codex", session_id: "chat-b" }).pending_interactions.map(item => item.id), [pendingB]);
+  state.close();
+
+  const resolved = "Проанализировать по порядку: текущую архитектуру движка, соответствие заявленной универсальности и готовность к дальнейшей разработке.";
+  let classifierInput = null, researcherInput = null;
+  const research = decision({
+    work_type: "research", artifact_type: "test_report", discipline: "general", planning_required: false,
+    reply_mode: "research", pending_interaction_id: pendingA, resolved_objective: resolved,
+    reason: "Пользователь выбрал все три ранее перечисленных аспекта в указанном порядке."
+  });
+  const secondA = await processMessage({
+    message: "давай все три в порядке который ты указал", project, dbFile, workflowDefinition: definition(), execute: true,
+    chatSession: { client: "codex", session_id: "chat-a" },
+    gatewayCall: async request => {
+      const prompt = fs.readFileSync(request.taskFile, "utf8");
+      if (request.role === "classifier") { classifierInput = prompt; return receipt(JSON.stringify(research), "classifier-context"); }
+      researcherInput = prompt;
+      return receipt("Анализ выполнен по трём аспектам.", "researcher-context");
+    }
+  });
+  assert.equal(secondA.route, "research");
+  assert.match(classifierInput, /архитектуру, заявленную универсальность или готовность/);
+  assert.equal(classifierInput.includes("Markdown или JSON"), false);
+  assert.equal(researcherInput.includes(resolved), true);
+  assert.match(researcherInput, /VERBATIM_CURRENT_USER_MESSAGE:"давай все три/);
+
+  const afterA = openDb(dbFile);
+  assert.equal(afterA.prepare("SELECT status FROM approvals WHERE id=?").get(pendingA).status, "approved");
+  assert.equal(afterA.prepare("SELECT status FROM approvals WHERE id=?").get(pendingB).status, "pending");
+  afterA.close();
+
+  const plannerObjective = "Подготовить Markdown-отчёт по зарегистрированным материалам проекта.";
+  const planned = await processMessage({
+    message: "Markdown", project, dbFile, workflowDefinition: definition(), execute: false,
+    chatSession: { client: "codex", session_id: "chat-b" },
+    classificationResult: decision({ artifact_type: "document", discipline: "documentation", document_required: true, pending_interaction_id: pendingB, resolved_objective: plannerObjective })
+  });
+  assert.equal(planned.route, "work");
+  assert.equal(planned.plan.objective, plannerObjective);
+  const final = openDb(dbFile);
+  assert.equal(final.prepare("SELECT resolved_objective FROM workflow_runs WHERE id=?").get(planned.run_id).resolved_objective, plannerObjective);
+  final.close();
   fs.rmSync(root, { recursive: true, force: true });
 });

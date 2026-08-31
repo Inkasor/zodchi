@@ -261,7 +261,7 @@ test("a message asserting an external fact does not close the request that asked
     schema_version: 1, work_type: "conversation", artifact_type: "none", domain: "workflow", discipline: "software",
     risk: "low", planning_level: "L2", quality_mode: "mvp", planning_required: false, human_required: false,
     needs_questions: false, document_required: false, reply_mode: "conversation", pending_interaction_id: interactionId,
-    reason: "Владелец утверждает, что оба регистра пишутся.", questions: [], human_response: "Да, пишутся оба."
+    resolved_objective: "Зафиксировать утверждение владельца о записи обоих регистров.", reason: "Владелец утверждает, что оба регистра пишутся.", questions: [], human_response: "Да, пишутся оба."
   };
   const catalog = classificationCatalog(db, "project");
   // The contract travels with the request so the person can tell whether they have what was asked for.
