@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "zodchi",
   "displayName": "Zodchi",
-  "version": "0.6.11",
+  "version": "0.6.12",
   "workingName": false,
   "releaseChannel": "stable",
   "components": [
@@ -25,7 +25,9 @@
     "Kimi",
     "OpenCode",
     "Cursor",
-    "OpenAI-compatible API",
+    "OpenAI-compatible API"
+  ],
+  "previewModelProviders": [
     "OpenRouter API"
   ],
   "workflowPackages": [

@@ -33,7 +33,7 @@
     <rule id="irreversible_is_human">An irreversible step carries no role. Approval, publication, deployment, access and acceptance belong to a person and are recorded as their own step.</rule>
     <rule id="approval_precedes_action">Where a workflow acts on the outside world, the approval step comes before that action and never after it.</rule>
     <rule id="green_is_not_acceptance">A passing check never closes an owner decision. Technical evidence and acceptance are separate records.</rule>
-    <rule id="model_classification">The classifier selects only registered work types and routes and never routes by trigger phrase or keyword.</rule>
+    <rule id="model_classification">The classifier selects only registered work types, routes, and typed pending interactions. Transport code passes ordinary user text unchanged and never selects confirmation, refusal, continuation, or another semantic transition by trigger phrase, keyword, command-shaped shortcut, or regular expression.</rule>
   </owner_boundary>
 
   <example status="accepted">

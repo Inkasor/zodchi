@@ -1,4 +1,4 @@
-<document id="zodchi_architecture" status="accepted" authority="zodchi" version="0.6.11" language="en">
+<document id="zodchi_architecture" status="accepted" authority="zodchi" version="0.6.12" language="en">
   <title>Zodchi system architecture</title>
 
   <purpose status="accepted">
@@ -27,6 +27,8 @@
 
   <contracts status="accepted">
     <rule id="registered_routes_only">Routes, roles, documents, and checks come from registries; runtime code does not infer them from keywords.</rule>
+    <rule id="semantic_transport_boundary">Hooks and session routers recognize protocol and identity only. Every ordinary user message reaches the classifier unchanged together with registered routes, typed pending interactions, and ordered history; only the classifier may resolve confirmation, refusal, continuation, references, or the next action. Deterministic code validates the returned structural choice and never substitutes lexical or regular-expression intent routing.</rule>
+    <rule id="registered_research_corpus">A direct research role may inspect the registered source inventory under a read-only contract. Controlled documents provide authority and constraints but do not replace source inspection when the objective concerns repository implementation or state. An answered research result names inspected inventory paths, which the platform validates inside registered roots and records as evidence; otherwise the result is explicitly insufficient.</rule>
     <rule id="owner_selected_documents">Portable packages never impose project filenames. The owner may register zero or more existing or proposed documents, their role access, and project-local semantic vocabulary; absence becomes a gap only after that explicit selection.</rule>
     <rule id="one_gateway_call">One AgentGateway run performs exactly one bounded model call; WorkflowPlatform owns the overall process.</rule>
     <rule id="quality_cascade">A stricter quality mode includes applicable checks from simpler modes and reruns them for the changed result.</rule>
