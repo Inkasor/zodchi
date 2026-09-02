@@ -891,6 +891,28 @@ export async function invokeReviewerWithSchemaRepair({ invoke, packageContract, 
   throw new Error("REVIEWER_SCHEMA_REPAIR_EXHAUSTED");
 }
 
+export async function invokePlannerWithSchemaRepair({ invoke, packageContract, onRetry = () => {} }) {
+  let currentPackage = packageContract;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try { return await invoke(currentPackage); }
+    catch (error) {
+      const schemaRepair = error.code === "ROLE_RESULT_SCHEMA_INVALID" && error.queueFailure?.action === "retry_scheduled";
+      if (!schemaRepair || attempt === 2) throw error;
+      currentPackage = {
+        ...packageContract,
+        schema_repair: {
+          attempt: attempt + 1,
+          validation_error: String(error.message),
+          invalid_result: error.invalidRoleOutput ?? null,
+          instruction: "Return one corrected planner.v1 object. Preserve the intended bounded route, use exactly the declared fields, keep read-only findings in worker result evidence rather than plan.artifacts, and give every non-decision artifact a relative file path."
+        }
+      };
+      await onRetry({ attempt: attempt + 1, error, packageContract: currentPackage });
+    }
+  }
+  throw new Error("PLANNER_SCHEMA_REPAIR_EXHAUSTED");
+}
+
 async function executeIndependentReview({ runtime, queue, runId, projectId, reviewerRole, policy, level, classification, discovery, responseLanguage, taskRoot, gatewayCall, reviewReason, plan, gate, workerResults, correctionCycles }) {
   const available = new Set(runtime.db.prepare("SELECT role_id FROM role_contracts WHERE project_id=? AND status='active'").all(projectId).map(row => row.role_id));
   const roles = policy.improvement_strategy === "gauntlet"
@@ -1295,6 +1317,11 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   // resolves to is the installation's material and is neither the model's business nor safe in a prompt.
   const registeredStepResources = registeredProjectResources(runtime.db, projectId);
   const plannerPackage = { objective: message, classification: { work_type: classification.work_type, artifact_type: classification.artifact_type, risk: classification.risk, quality_mode: classification.quality_mode }, registered_roles: roleCapabilities, plan_boundary: planBoundary, following_phases: followingPhases, registered_checks: registeredChecks, registered_artifact_types: registeredArtifactTypes, registered_resources: registeredStepResources };
+  plannerPackage.artifact_contract = {
+    file_backed_only: "plan.artifacts lists only files that a write-capable worker will create or update; every such artifact has a relative project path",
+    pathless_decision_only: "decision is the only artifact type that may use path=null",
+    read_only_results: "analysis, verification findings, test reports returned by read-only roles, and intermediate synthesis are structured worker evidence; omit them from plan.artifacts and use artifact_keys=[]"
+  };
   plannerPackage.collection_contract = {
     source_matches: "Ranked locator evidence. It is deliberately excerpted and may cap returned result files; use exact_term_index and completeness to distinguish a result cap from an incomplete corpus scan.",
     worker_sources: "After planning, the platform supplies each worker with contents, relevant ranges and complete-file exact-term scan results for its allowed_paths. Workers consume those supplied results and do not rerun shell or file searches. The planner must select paths and assign investigation steps; it must not request full source bodies for itself.",
@@ -1331,19 +1358,29 @@ export async function executeStructuredWork({ runtime, runId, classification, de
         source_matches: plannerSourceMatches
       });
     };
+    const invokePlanner = ({ role, packageContract, context }) => invokePlannerWithSchemaRepair({
+      packageContract,
+      invoke: currentPackage => invokeRole({ runtime, queue, runId, roleId: role, level, taskRoot, packageContract: currentPackage, context, schemaKey: "planner.v1", parseOptions, gatewayCall }),
+      onRetry: ({ attempt, error }) => recordRunEvidence(runtime.db, runId, null, "planner_schema_repair", {
+        role_id: role,
+        attempt,
+        validation_error: String(error.message),
+        prior_result_hash: crypto.createHash("sha256").update(String(error.invalidRoleOutput ?? "")).digest("hex")
+      })
+    });
     if (planningProfile.mode === "ensemble") {
       const candidates = [];
       for (const [index, role] of planningRoles.entries()) {
         const candidatePackage = { ...plannerPackage, planning_ensemble: { phase: "independent_candidate", member: index + 1, members: planningRoles.length, rule: "Produce your own best plan from the owner objective and primary evidence. Do not assume or imitate another planner." } };
-        const candidate = await invokeRole({ runtime, queue, runId, roleId: role, level, taskRoot, packageContract: candidatePackage, context: plannerContext(role), schemaKey: "planner.v1", parseOptions, gatewayCall });
+        const candidate = await invokePlanner({ role, packageContract: candidatePackage, context: plannerContext(role) });
         candidate.complete({ outcome: candidate.result.outcome, ensemble_phase: "candidate", member: index + 1 });
         candidates.push({ member: index + 1, role, provider: candidate.contract.provider, profile: candidate.contract.profile, plan: candidate.result });
       }
       const synthesisPackage = { ...plannerPackage, planning_ensemble: { phase: "synthesis", rule: "Compare the independent candidate plans against the owner objective, registered authority, checks and evidence. Return one coherent executable planner.v1 plan. Preserve disagreements as risks or questions; do not concatenate incompatible steps.", candidates } };
-      planner = await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: synthesisPackage, context: plannerContext(plannerRole), schemaKey: "planner.v1", parseOptions, gatewayCall });
+      planner = await invokePlanner({ role: plannerRole, packageContract: synthesisPackage, context: plannerContext(plannerRole) });
       recordRunEvidence(runtime.db, runId, planner.step.id, "planning_ensemble", { candidate_count: candidates.length, candidate_hashes: candidates.map(item => ({ member: item.member, role: item.role, provider: item.provider, profile: item.profile, plan_hash: structuredHash(item.plan) })), synthesis_hash: structuredHash(planner.result) });
     } else {
-      planner = await invokeRole({ runtime, queue, runId, roleId: plannerRole, level, taskRoot, packageContract: plannerPackage, context: plannerContext(plannerRole), schemaKey: "planner.v1", parseOptions, gatewayCall });
+      planner = await invokePlanner({ role: plannerRole, packageContract: plannerPackage, context: plannerContext(plannerRole) });
     }
   }
   let plan = preparedPlan ?? (planner ? planner.result : derivePlanFromTemplates(runtime, projectId, routeContract, message, registeredChecks, level, classification.document_required, documentatorRole, approvalGranted || approvalBeforeWork));

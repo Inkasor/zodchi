@@ -34,7 +34,7 @@ function roleContract(roleId, schema, artifacts) {
   return {
     id: `contract-${roleId}`, role_id: roleId, version: "1.0.0", purpose: `${roleId} test contract`, boundaries: { writes: roleId === "worker" || roleId === "documentator" },
     allowed_work_types: ["*"], allowed_artifact_types: artifacts, allowed_tools: [], allowed_skills: [], required_checks: ["check-ok"],
-    allowed_transitions: [], allowed_profiles: ["*"], context_limit_bytes: 65536, max_calls: roleId === "worker" || roleId === "reviewer" ? 2 : 1, max_correction_cycles: roleId === "worker" || roleId === "planner" ? 1 : 0,
+    allowed_transitions: [], allowed_profiles: ["*"], context_limit_bytes: 65536, max_calls: roleId === "worker" || roleId === "reviewer" || roleId === "planner" ? 2 : 1, max_correction_cycles: roleId === "worker" || roleId === "planner" ? 1 : 0,
     timeout_seconds: 60, result_schema_key: schema, prompt_template_version: "1.0.0", escalation: { on_invalid: "blocked" }
   };
 }
@@ -99,7 +99,7 @@ function receipt(role, result, suffix = "1", rawSuffix = "") {
   };
 }
 
-async function scenario({ prefix, gateStatus = "passed", gateStatuses = null, reviewDecision = "PASS", invalidFirstReviewer = false, document = false, invalidDocumentVersion = false, message = null, risk = "high", projectInputTokenLimit = null, runProfileOverrides = {}, longPlannerWork = false }) {
+async function scenario({ prefix, gateStatus = "passed", gateStatuses = null, reviewDecision = "PASS", invalidFirstPlanner = false, invalidFirstReviewer = false, document = false, invalidDocumentVersion = false, message = null, risk = "high", projectInputTokenLimit = null, runProfileOverrides = {}, longPlannerWork = false }) {
   const env = fixture(prefix, { document });
   if (projectInputTokenLimit !== null) {
     const budgetDb = openDb(env.dbFile);
@@ -110,11 +110,22 @@ async function scenario({ prefix, gateStatus = "passed", gateStatuses = null, re
   let workerPrompt = "";
   let plannerPrompt = "";
   let documentatorPrompt = "";
+  let plannerCalls = 0;
   let reviewerCalls = 0;
   const gatewayCall = async request => {
     calls.push(request.role);
     if (request.role === "planner" || request.role === "coordinator") {
+      plannerCalls += 1;
       plannerPrompt = fs.readFileSync(request.taskFile, "utf8");
+      if (invalidFirstPlanner && plannerCalls === 1) {
+        const invalid = plannerResult({ document });
+        invalid.artifacts = invalid.artifacts.map(item => ({ ...item, path: null }));
+        return receipt(request.role, invalid, "1");
+      }
+      if (invalidFirstPlanner) {
+        assert.match(plannerPrompt, /schema_repair/);
+        assert.match(plannerPrompt, /only artifact type that may use path=null/);
+      }
       const plannerReceipt = receipt(request.role, plannerResult({ document }), "1", "\nRAW_PLANNER_PROSE_MARKER");
       if (longPlannerWork && request.role === "planner") plannerReceipt.duration_ms = 10 * 60 * 1000;
       return plannerReceipt;
@@ -323,6 +334,20 @@ test("a contradictory reviewer result is repaired once inside the same review ph
   assert.equal(db.prepare("SELECT COUNT(*) count FROM attempts a JOIN workflow_steps s ON s.id=a.step_id WHERE s.run_id=? AND s.result_schema_key='reviewer.v1'").get(runId).count, 2);
   assert.equal(db.prepare("SELECT state FROM workflow_steps WHERE run_id=? AND result_schema_key='reviewer.v1'").get(runId).state, "completed");
   assert.equal(db.prepare("SELECT COUNT(*) count FROM run_evidence WHERE run_id=? AND kind='reviewer_schema_repair'").get(runId).count, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM run_evidence WHERE run_id=? AND kind='role_result_validation_error'").get(runId).count, 1);
+  db.close();
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
+test("a planner artifact schema error is repaired once before the run is failed", async () => {
+  const env = await scenario({ prefix: "workflow-planner-schema-repair-", invalidFirstPlanner: true });
+  assert.equal(env.result.execution.status, "completed");
+  assert.deepEqual(env.calls, ["planner", "planner", "worker", "reviewer"]);
+  const db = openDb(env.dbFile);
+  const runId = env.result.run_id;
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM attempts a JOIN workflow_steps s ON s.id=a.step_id WHERE s.run_id=? AND s.result_schema_key='planner.v1'").get(runId).count, 2);
+  assert.equal(db.prepare("SELECT state FROM workflow_steps WHERE run_id=? AND result_schema_key='planner.v1'").get(runId).state, "completed");
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM run_evidence WHERE run_id=? AND kind='planner_schema_repair'").get(runId).count, 1);
   assert.equal(db.prepare("SELECT COUNT(*) count FROM run_evidence WHERE run_id=? AND kind='role_result_validation_error'").get(runId).count, 1);
   db.close();
   fs.rmSync(env.root, { recursive: true, force: true });
