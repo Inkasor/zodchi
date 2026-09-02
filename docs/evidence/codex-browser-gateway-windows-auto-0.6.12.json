@@ -1,4 +1,6 @@
 {
+  "schema_version": 1,
+  "finding": "This retained schema-v1 run establishes only that the model reported no connected browser backend after AgentGateway carried the configured plugin and node_repl. It predates platform-observed sentinel and per-capability evidence and is not admissible as a positive browser or screen-capture capability proof.",
   "probe": "codex_browser_worker_capture",
   "status": "model_reported_unavailable",
   "receipt_id": "2026-09-02T18-12-22.679Z-codex-8caf80f2-bc4a-4d2d-8077-93cd9e736a96",
