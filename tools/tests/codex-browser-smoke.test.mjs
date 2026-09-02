@@ -45,7 +45,7 @@ if (process.env.SMOKE_BROWSER_SEQUENCE === "true") {
 fs.writeFileSync(process.env.SMOKE_CAPTURE, JSON.stringify({ args, task }));
 process.stdout.write(JSON.stringify({
   receiptId: "browser-proof-receipt", status: "completed", error: null,
-  output: JSON.stringify({ status: "observed", title, body, screenshot: true, evidence: "sentinel observed" }),
+  output: JSON.stringify({ status: "observed", title, body, screenshot: process.env.SMOKE_SCREENSHOT !== "false", evidence: "sentinel observed" }),
   environment: { provider_environment: { plugins: { carried: [{ id: "browser@openai-bundled" }] }, mcp_servers: { carried: [{ name: "node_repl" }] } } }
 }) + "\\n");
 `, "utf8");
@@ -60,6 +60,7 @@ process.stdout.write(JSON.stringify({
   assert.equal(report.sentinel_evidence.requests.length, 4);
   assert.deepEqual(report.capability_evidence.browser_automation, { status: "available", enforcement: "technical", source: "sentinel_request_sequence" });
   assert.deepEqual(report.capability_evidence.screen_capture, { status: "unknown", enforcement: "model_reported", source: "model_result_only" });
+  assert.equal(report.schema_version, 2);
   const invocation = JSON.parse(fs.readFileSync(capture, "utf8"));
   const requirements = JSON.parse(invocation.args[invocation.args.indexOf("--capability-requirements") + 1]);
   assert.deepEqual(requirements, { required: ["context_input", "project_write"], forbidden: [] });
@@ -78,5 +79,14 @@ process.stdout.write(JSON.stringify({
   assert.equal(plainReport.capability_evidence.browser_automation.status, "unknown");
   assert.equal(plainReport.capability_evidence.screen_capture.enforcement, "model_reported");
   assert.equal(plainReport.reported.screenshot, true, "a model-reported screenshot must not prove browser use");
+
+  const noScreenshot = spawnSync(process.execPath, [smoke, "--project", project, "--policy", policy, "--profile", "writer", "--gateway", gateway], {
+    cwd: path.resolve("."), encoding: "utf8", windowsHide: true, env: { ...process.env, SMOKE_CAPTURE: capture, SMOKE_BROWSER_SEQUENCE: "true", SMOKE_SCREENSHOT: "false" }
+  });
+  assert.equal(noScreenshot.status, 0, noScreenshot.stderr || noScreenshot.stdout);
+  const noScreenshotReport = JSON.parse(noScreenshot.stdout);
+  assert.equal(noScreenshotReport.status, "browser_confirmed");
+  assert.equal(noScreenshotReport.capability_evidence.browser_automation.status, "available");
+  assert.deepEqual(noScreenshotReport.capability_evidence.screen_capture, { status: "unknown", enforcement: "unknown", source: "screenshot_not_observed" });
   fs.rmSync(root, { recursive: true, force: true });
 });

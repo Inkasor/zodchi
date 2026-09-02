@@ -5,6 +5,8 @@ import path from "node:path";
 import process from "node:process";
 import { spawn, spawnSync } from "node:child_process";
 
+const REPORT_SCHEMA_VERSION = 2;
+
 function argsObject(argv) {
   const result = {};
   for (let index = 0; index < argv.length; index += 1) {
@@ -195,15 +197,17 @@ try {
   const providerError = String(receipt?.error ?? child.stderr ?? "").trim().replaceAll(root, "<probe-root>").replaceAll(os.tmpdir(), "<system-temp>").slice(0, 4000);
   const browserConfirmed = receipt?.status === "completed" && modelResult?.status === "observed" && modelResult.title === title && modelResult.body === body && sentinelEvidence.confirmed && carriedPlugins.includes(plugin) && carriedMcp.includes("node_repl");
   const captureReported = capture && modelResult?.screenshot === true;
-  const confirmed = browserConfirmed && (!capture || captureReported);
+  const confirmed = browserConfirmed;
   const modelReportedUnavailable = receipt?.status === "completed" && ["unavailable", "blocked", "failed"].includes(modelResult?.status) && carriedPlugins.includes(plugin) && carriedMcp.includes("node_repl");
   const report = {
+    schema_version: REPORT_SCHEMA_VERSION,
+    finding: "Browser confirmation is a high-confidence sentinel observation, not an unforgeable proof: a deliberate client can replay the discovered resource sequence and browser headers. Screen capture is never technical evidence without a retained artifact and digest.",
     probe: capture ? "codex_browser_worker_capture" : "codex_browser_worker", status: confirmed ? "browser_confirmed" : modelReportedUnavailable ? "model_reported_unavailable" : "inconclusive", receipt_id: receipt?.receiptId ?? null,
     gateway_exit_code: child.status, provider_status: receipt?.status ?? null, plugin, surface, expected: { title, body },
     reported: modelResult,
     capability_evidence: {
       browser_automation: { status: browserConfirmed ? "available" : "unknown", enforcement: browserConfirmed ? "technical" : "unknown", source: "sentinel_request_sequence" },
-      screen_capture: capture ? { status: captureReported ? "unknown" : "unavailable", enforcement: captureReported ? "model_reported" : "technical", source: captureReported ? "model_result_only" : "screenshot_call_not_reported" } : { status: "not_probed", enforcement: "none", source: "capture_disabled" }
+      screen_capture: capture ? { status: "unknown", enforcement: captureReported ? "model_reported" : "unknown", source: captureReported ? "model_result_only" : "screenshot_not_observed" } : { status: "not_probed", enforcement: "none", source: "capture_disabled" }
     },
     sentinel_evidence: sentinelEvidence, carried_plugins: carriedPlugins, carried_mcp_servers: carriedMcp,
     provider_error: providerError,
