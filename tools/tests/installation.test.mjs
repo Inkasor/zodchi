@@ -110,6 +110,7 @@ test("install and update diagnose role assignments whose profiles violate write 
   const database = path.join(dataRoot, "workflow", "workflow.sqlite"), gatewayPolicy = path.join(dataRoot, "gateway", "policy.local.json");
   const roots = skillRoots(root), hooks = sessionHookFiles(root), healthCheck = candidate => assert.equal(fs.existsSync(path.join(candidate, "release-marker.txt")), true);
   try {
+    fs.cpSync(path.join(repositoryRoot, "AgentGateway"), path.join(source, "AgentGateway"), { recursive: true });
     fs.mkdirSync(path.dirname(database), { recursive: true }); fs.mkdirSync(path.dirname(gatewayPolicy), { recursive: true });
     const db = new DatabaseSync(database);
     db.exec("CREATE TABLE profiles(id TEXT PRIMARY KEY,provider TEXT NOT NULL,name TEXT NOT NULL,role_id TEXT); CREATE TABLE role_profile_assignments(project_id TEXT NOT NULL,role_id TEXT NOT NULL,profile_id TEXT NOT NULL,operational_level TEXT NOT NULL,enabled INTEGER NOT NULL); CREATE TABLE role_contracts(project_id TEXT NOT NULL,role_id TEXT NOT NULL,boundaries_json TEXT NOT NULL,status TEXT NOT NULL);");

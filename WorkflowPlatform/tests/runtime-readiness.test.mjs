@@ -8,7 +8,7 @@ import { checkGatewayProfileRequirements } from "../src/gateway.mjs";
 import { processMessage as scopedProcessMessage } from "../src/workflow-app.mjs";
 
 const statelessProcessMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
-import { projectRuntimeReadiness } from "../src/runtime-readiness.mjs";
+import { projectRuntimeReadiness, workflowRuntimeReadiness } from "../src/runtime-readiness.mjs";
 
 const compatibleProfileCheck = requirements => ({ status: "compatible", checks: requirements, conflicts: [] });
 
@@ -51,30 +51,44 @@ test("runtime readiness requires direct classifier and researcher assignments an
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("runtime readiness rejects a writable documentator profile before accepting a run or calling a model", async () => {
+test("runtime readiness isolates an incompatible profile to the selected workflow", async () => {
   const { root, project, dbFile, db } = fixture();
   for (const role of ["classifier", "researcher", "documentator"]) db.prepare("INSERT INTO profiles(id,provider,name,role_id) VALUES(?, 'codex', ?, ?)").run(`${role}-profile`, `${role}-profile`, role);
   for (const role of ["classifier", "researcher", "documentator"]) db.prepare("INSERT INTO role_profile_assignments(project_id,role_id,profile_id,operational_level,enabled) VALUES('project',?,?, 'mvp',1)").run(role, `${role}-profile`);
   db.prepare(`INSERT INTO role_contracts(id,project_id,role_id,version,purpose,boundaries_json,allowed_work_types_json,allowed_artifact_types_json,allowed_tools_json,allowed_skills_json,required_checks_json,allowed_transitions_json,allowed_profiles_json,context_limit_bytes,max_calls,max_correction_cycles,timeout_seconds,result_schema_key,prompt_template_version,escalation_json,status)
     VALUES('documentator-contract','project','documentator','1','documentation','{}','[]','[]','[]','[]','[]','[]','[]',65536,1,0,60,'documentator.v1','1','{}','active')`).run();
+  db.prepare(`INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json)
+    VALUES('project','workflow','document',1,'documentator',1,0,'package.v1','documentator.v1','[]','[]','{}','{}')`).run();
   const gatewayPolicy = path.join(root, "policy.json");
   fs.writeFileSync(gatewayPolicy, JSON.stringify({ schemaVersion: 1, providers: { codex: { profiles: {
     "classifier-profile": { readOnly: true }, "researcher-profile": { readOnly: true }, "documentator-profile": { readOnly: false }
   } } } }), "utf8");
   const profileCheck = requirements => checkGatewayProfileRequirements({ requirements, gateway: path.resolve(import.meta.dirname, "..", "..", "AgentGateway", "src", "cli.mjs"), gatewayPolicy });
-  const readiness = projectRuntimeReadiness(db, "project", { profileCheck });
-  assert.equal(readiness.status, "unavailable");
-  assert.deepEqual(readiness.profile_write_requirements.conflicts, [{ code: "PROFILE_WRITE_REQUIREMENT_MISMATCH", role: "documentator", provider: "codex", profile: "documentator-profile", operational_level: "mvp", requires_write: false, profile_read_only: false }]);
+  const projectReadiness = projectRuntimeReadiness(db, "project", { profileCheck });
+  assert.equal(projectReadiness.status, "ready");
+  assert.deepEqual(projectReadiness.profile_write_requirements.checks.map(item => item.role).sort(), ["classifier", "researcher"]);
+  const workflowReadiness = workflowRuntimeReadiness(db, "project", "workflow", "mvp", { profileCheck });
+  assert.equal(workflowReadiness.status, "unavailable");
+  assert.deepEqual(workflowReadiness.profile_write_requirements.conflicts, [{ code: "PROFILE_WRITE_REQUIREMENT_MISMATCH", role: "documentator", provider: "codex", profile: "documentator-profile", operational_level: "mvp", requires_write: false, profile_read_only: false }]);
   db.close();
 
   let calls = 0;
-  await assert.rejects(() => statelessProcessMessage({
+  const result = await statelessProcessMessage({
     message: "Implement the change", project, dbFile, execute: true, gatewayProfileCheck: profileCheck,
+    classificationResult: {
+      schema_version: 1, work_type: "implementation", artifact_type: "code", domain: "workflow", discipline: "software",
+      risk: "low", planning_level: "L2", quality_mode: "mvp", planning_required: true, human_required: false,
+      needs_questions: false, document_required: false, reply_mode: "work", pending_interaction_id: null,
+      pending_interaction_response: null, reason: "Bounded implementation requested.", questions: [], human_response: null
+    },
     gatewayCall: async () => { calls += 1; throw new Error("must not be called"); }
-  }), /PROJECT_RUNTIME_NOT_READY: project: PROFILE_WRITE_REQUIREMENT_MISMATCH: role=documentator; profile=documentator-profile/);
+  });
+  assert.equal(result.route, "failed");
+  assert.equal(result.error, "WORKFLOW_RUNTIME_NOT_READY");
   assert.equal(calls, 0);
   const verified = openDb(dbFile);
-  assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM workflow_runs").get().count, 0);
+  assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM workflow_runs").get().count, 1);
+  assert.equal(verified.prepare("SELECT state FROM workflow_runs").get().state, "failed");
   verified.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
