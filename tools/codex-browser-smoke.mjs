@@ -143,7 +143,9 @@ try {
     probe: capture ? "codex_browser_worker_capture" : "codex_browser_worker", status: confirmed ? "browser_confirmed" : modelReportedUnavailable ? "model_reported_unavailable" : "inconclusive", receipt_id: receipt?.receiptId ?? null,
     gateway_exit_code: child.status, provider_status: receipt?.status ?? null, plugin, surface, expected: { title, body },
     reported: modelResult, carried_plugins: carriedPlugins, carried_mcp_servers: carriedMcp,
-    provider_error: providerError, temporary_database: cli.keep ? database : null
+    provider_error: providerError,
+    database_retained: cli.keep,
+    temporary_database: cli.keep ? "<probe-root>/gateway.sqlite" : null
   };
   if (cli.report) fs.writeFileSync(path.resolve(String(cli.report)), `${JSON.stringify(report, null, 2)}\n`, "utf8");
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
