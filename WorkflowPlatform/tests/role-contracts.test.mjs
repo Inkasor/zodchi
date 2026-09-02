@@ -867,8 +867,9 @@ test("a read-only operator proposes before approval and only a signed registered
   const semanticScope = { mode: "session", client: "codex", session_id: "external-release-chat" };
   const keys = crypto.generateKeyPairSync("ed25519"), publicKeyPem = keys.publicKey.export({ type: "spki", format: "pem" });
   const db = openDb(env.dbFile);
-  db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow','proposal',1,'release_operator',1,0,'package.v1','release_operation.v1','[\"release_package\"]','[\"check-ok\"]','{}','{}')").run();
-  db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow','deployment_approval',2,NULL,1,1,'package.v1','approval.v1','[\"decision\"]','[]','{}','{}')").run();
+  db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow','coordinate',1,'coordinator',1,0,'package.v1','planner.v1','[\"document\"]','[]','{}','{}')").run();
+  db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow','proposal',2,'release_operator',1,0,'package.v1','release_operation.v1','[\"release_package\"]','[\"check-ok\"]','{}','{}')").run();
+  db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow','deployment_approval',3,NULL,1,1,'package.v1','approval.v1','[\"decision\"]','[]','{}','{}')").run();
   registerExternalExecutor(db, { projectId: "project", executorId: "release.test", purpose: "Test release executor", publicKeyPem, keyId: "release-key-v1" });
   registerExternalOperation(db, { projectId: "project", operationId: "release.prod", executorId: "release.test", operationKind: "release", action: "deploy_revision", config: { environment: "production", verification_check_ids: ["check-post"] } });
   activateChatSession(db, { client: semanticScope.client, sessionId: semanticScope.session_id, origin: env.project, turnKey: "turn-1" });
@@ -876,7 +877,10 @@ test("a read-only operator proposes before approval and only a signed registered
   const calls = [], gates = [];
   const gateRunner = async (_project, _level, _dbFile, taskId, options) => {
     const checkId = taskId.endsWith(":external") ? "check-post" : "check-ok";
-    if (checkId === "check-post") assert.deepEqual(options.checkIds, ["check-post"]);
+    if (checkId === "check-post") {
+      assert.deepEqual(options.checkIds, ["check-post"]);
+      assert.deepEqual(options.allowedPaths, ["src/output.txt"], "post-operation verification preserves the run's authorized change scope");
+    }
     gates.push({ taskId, checkId });
     return { task_id: taskId, project: env.project, level: "mvp", files: [], status: "passed", checks: [{ id: checkId, required: true, status: "passed" }], summary: "passed" };
   };
@@ -885,6 +889,13 @@ test("a read-only operator proposes before approval and only a signed registered
     classificationResult: { ...classification(false), work_type: "release", artifact_type: "release_package", human_required: true, reason: "Release requires an exact proposal and owner approval." },
     gatewayCall: async request => {
       calls.push(request.role);
+      if (request.role === "coordinator") {
+        const plan = plannerResult();
+        plan.allowed_paths = ["src/output.txt"];
+        plan.artifacts = [];
+        plan.steps[0] = { ...plan.steps[0], key: "proposal", role: "release_operator", objective: "Propose the exact registered release operation.", allowed_paths: [], artifact_keys: [] };
+        return receipt("coordinator", plan);
+      }
       if (request.role === "release_operator") {
         assert.equal(request.requiresWrite, false);
         return receipt("release_operator", { schema_version: 1, status: "proposed", operation_id: "release.prod", target_revision: "a".repeat(40), target_environment: "production", artifact_refs: ["artifact:build"], evidence_refs: ["gate:check-ok"], summary: "Deploy the verified immutable revision." });
@@ -895,6 +906,7 @@ test("a read-only operator proposes before approval and only a signed registered
     gateRunner
   });
   assert.equal(first.execution.status, "approval_required");
+  fs.writeFileSync(path.join(env.project, "src", "output.txt"), "an authorized change already accepted before the external operation", "utf8");
   const waiting = openDb(env.dbFile);
   const approval = waiting.prepare("SELECT id,binding_hash FROM approvals WHERE run_id=? AND status='pending'").get(first.run_id);
   assert.equal(waiting.prepare("SELECT COUNT(*) count FROM external_control_requests WHERE run_id=?").get(first.run_id).count, 0);
@@ -918,6 +930,7 @@ test("a read-only operator proposes before approval and only a signed registered
   assert.equal(executionBinding.status, "pending");
   const request = { ...second.execution.external_request, payload: second.execution.dispatch_payload };
   const wrongTargetPacket = signedExternalResult(request, keys.privateKey, { schema_version: 1, operation_id: "release.prod", applied_revision: "b".repeat(40), target_environment: "production", evidence_refs: ["deployment:wrong"] });
+  await assert.rejects(() => deliverExternalControlResult({ packet: { ...wrongTargetPacket, signature: "AAAA" }, project: env.project, dbFile: env.dbFile, execute: true, gateRunner }), /SIGNATURE_INVALID/, "untrusted payload semantics are not disclosed before signature verification");
   await assert.rejects(() => deliverExternalControlResult({ packet: wrongTargetPacket, project: env.project, dbFile: env.dbFile, execute: true, gateRunner }), /TARGET_MISMATCH/);
   const rejectedDb = openDb(env.dbFile);
   assert.equal(rejectedDb.prepare("SELECT COUNT(*) count FROM external_control_results WHERE request_id=?").get(request.request_id).count, 0, "a mismatched target is rejected before persistence");
