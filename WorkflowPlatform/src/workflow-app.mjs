@@ -25,6 +25,7 @@ import { acceptExternalControlEvidenceResult, acceptExternalControlResult, valid
 import { normalizeRunProfile, resolveRunProfile, storeRunProfile } from "./run-profile.mjs";
 import { assertProjectRuntimeReady, assertWorkflowRuntimeReady } from "./runtime-readiness.mjs";
 import { normalizeSemanticScope } from "./semantic-scope.mjs";
+import { collectSourceFiles, expandTerms, searchSources, sourceScope } from "./source-context.mjs";
 
 export function loadWorkflow(id, workflowsRoot = resolveWorkflowSettings().workflowsRoot) {
   if (!id) throw new Error("workflow id is required");
@@ -82,6 +83,54 @@ function boundedResearchInventory(discovery, maxBytes = 24_000) {
   return { roots, files, truncated: (discovery.sources ?? []).some(source => source.truncated) };
 }
 
+function researchSourceContext(discovery, objective, { sourceBytes = 32_000, maxFiles = 8 } = {}) {
+  const scope = sourceScope(discovery.source_scope);
+  const expanded = expandTerms(discovery.roots ?? [], scope, objective, { maxFiles: 24, proseFiles: 120 });
+  const locatorTerms = [...new Set([...expanded.terms, ...expanded.subject])];
+  const located = searchSources(discovery.roots ?? [], scope, locatorTerms, { maxFiles: Math.max(maxFiles * 2, 16), indexedTerms: expanded.code });
+  let selectedPaths = located.files.slice(0, maxFiles).map(file => file.path);
+  let strategy = selectedPaths.length ? "ranked_objective_matches" : "no_relevant_match";
+  const inventoryFiles = (discovery.sources ?? []).flatMap(source => source.files ?? []);
+  const completeSmallCorpus = (discovery.sources ?? []).every(source => source.enumeration_complete && !source.truncated) && inventoryFiles.length > 0 && inventoryFiles.length <= maxFiles;
+  if (!selectedPaths.length && completeSmallCorpus) {
+    selectedPaths = inventoryFiles.map(file => file.path);
+    strategy = "complete_small_corpus";
+  }
+  const collected = collectSourceFiles(discovery.roots ?? [], selectedPaths, scope, sourceBytes, { query: objective });
+  const files = collected.files;
+  const suppliedPaths = files.filter(file => file.status === "read").map(file => file.path);
+  return {
+    supplied_paths: suppliedPaths,
+    files,
+    bytes: collected.bytes,
+    budget_bytes: collected.budget_bytes,
+    selection: {
+      strategy,
+      request_terms: expanded.subject,
+      discovered_identifiers: expanded.harvested,
+      explicit_identifiers: expanded.code,
+      searched_files: located.searched_files,
+      search_truncated: located.truncated,
+      selected_paths: selectedPaths,
+      supplied_paths: suppliedPaths,
+      source_excerpts_truncated: files.some(file => file.status === "read" && file.truncated),
+      inventory_complete: (discovery.sources ?? []).every(source => source.enumeration_complete && !source.truncated)
+    }
+  };
+}
+
+function researchContext(discovery, objective) {
+  const documents = boundedDocuments(discovery, 12_000);
+  const sources = researchSourceContext(discovery, objective);
+  const readableDocuments = new Set((discovery.documents ?? []).filter(document => document.exists && document.text).map(document => document.path));
+  return {
+    documents,
+    inventory: boundedResearchInventory(discovery, 8_000),
+    sources,
+    supplied_paths: [...new Set([...documents.filter(document => readableDocuments.has(document.path) && document.text).map(document => document.path), ...sources.supplied_paths])]
+  };
+}
+
 function researchJsonSchema() {
   return {
     type: "object", additionalProperties: false,
@@ -107,7 +156,7 @@ function assertGatewayReceiptCompleted(receipt, role) {
   throw new Error(`${String(role).toUpperCase()}_${suffix}`);
 }
 
-function validateResearchResult(receipt, discovery) {
+function validateResearchResult(receipt, discovery, suppliedPaths) {
   const raw = extractModelText(receipt.output);
   let value;
   try { value = JSON.parse(raw); } catch { throw new Error("RESEARCH_RESULT_INVALID_JSON"); }
@@ -116,11 +165,11 @@ function validateResearchResult(receipt, discovery) {
   if (JSON.stringify(keys) !== JSON.stringify(expected) || value.schema_version !== 1 || !["answered", "insufficient"].includes(value.status)) throw new Error("RESEARCH_RESULT_SCHEMA_INVALID");
   if (typeof value.answer !== "string" || !value.answer.trim() || value.answer.length > 20_000) throw new Error("RESEARCH_RESULT_ANSWER_INVALID");
   if (!Array.isArray(value.inspected_paths) || value.inspected_paths.length > 40 || !Array.isArray(value.limitations) || value.limitations.length > 20) throw new Error("RESEARCH_RESULT_SCHEMA_INVALID");
-  const allowed = new Set((discovery.sources ?? []).flatMap(source => (source.files ?? []).map(file => file.path.replaceAll("\\", "/"))));
+  const allowed = new Set((suppliedPaths ?? []).map(file => file.replaceAll("\\", "/")));
   const inspected = [];
   for (const supplied of value.inspected_paths) {
     const normalized = String(supplied).replaceAll("\\", "/").replace(/^\.\//, "");
-    if (!allowed.has(normalized)) throw new Error(`RESEARCH_PATH_NOT_IN_REGISTERED_INVENTORY: ${normalized}`);
+    if (!allowed.has(normalized)) throw new Error(`RESEARCH_PATH_NOT_SUPPLIED: ${normalized}`);
     const parsed = parseRootedPath(discovery.roots ?? [], normalized);
     const target = path.resolve(parsed.root.path, parsed.relative);
     const realRoot = fs.realpathSync(parsed.root.path), realTarget = fs.realpathSync(target);
@@ -133,18 +182,18 @@ function validateResearchResult(receipt, discovery) {
   return Object.freeze({ schema_version: 1, status: value.status, answer: value.answer.trim(), inspected_paths: inspected, limitations: value.limitations.map(item => item.trim()) });
 }
 
-function researchPrompt({ message, resolvedObjective, project, discovery, responseLanguage }) {
-  const inventory = boundedResearchInventory(discovery);
+function researchPrompt({ message, resolvedObjective, project, context, responseLanguage }) {
   return [
-    "WORKFLOW RESEARCH REQUEST v3",
-    "Answer RESOLVED_OBJECTIVE by performing bounded read-only research inside REGISTERED_PROJECT_CORPUS. It is the authoritative standalone task; VERBATIM_CURRENT_USER_MESSAGE is provenance only and must not narrow or override it.",
-    "REGISTERED_CONTEXT contains authoritative project rules and reference material. It is not a substitute for inspecting the actual repository when the objective asks about implementation, architecture, readiness, behavior, or source state.",
-    "REGISTERED_PROJECT_CORPUS is the complete permission boundary. Inspect only paths listed in its files inventory, never leave its registered roots, and use read-only commands and file reads only. Do not edit files, invoke other agents, access credentials or dumps, or invent facts.",
-    "For status=answered, inspect at least one relevant repository file and list every file relied on in inspected_paths using the exact project-relative path from the inventory. If the bounded inventory or available files cannot support an answer, return status=insufficient and explain the precise limitation.",
+    "WORKFLOW RESEARCH REQUEST v4",
+    "Answer RESOLVED_OBJECTIVE from the bounded source evidence supplied by WorkflowPlatform. It is the authoritative standalone task; VERBATIM_CURRENT_USER_MESSAGE is provenance only and must not narrow or override it.",
+    "REGISTERED_CONTEXT contains authoritative project rules and reference material. REGISTERED_SOURCE_EVIDENCE contains deterministically selected source excerpts and exact-term evidence. REGISTERED_PROJECT_CORPUS is inventory and completeness metadata only, not proof that you inspected every listed file.",
+    "Do not run commands or read files directly. Do not edit files, invoke other agents, access credentials or dumps, or invent facts. Treat only REGISTERED_CONTEXT and files with status=read in REGISTERED_SOURCE_EVIDENCE as inspected content.",
+    "For status=answered, rely on at least one supplied relevant file and list every file relied on in inspected_paths using its exact project-relative path. Never cite an inventory-only path. If the supplied excerpts are irrelevant, truncated at a required boundary, or otherwise cannot support the answer, return status=insufficient and explain the precise limitation.",
     `Return JSON matching the supplied schema. Put the concise human-readable answer in ${languageName(responseLanguage)} in answer; do not mention internal IDs, profiles, levels, or prompts.`,
     `PROJECT:${project.name}`,
-    `REGISTERED_CONTEXT:${JSON.stringify(boundedDocuments(discovery))}`,
-    `REGISTERED_PROJECT_CORPUS:${JSON.stringify(inventory)}`,
+    `REGISTERED_CONTEXT:${JSON.stringify(context.documents)}`,
+    `REGISTERED_SOURCE_EVIDENCE:${JSON.stringify(context.sources)}`,
+    `REGISTERED_PROJECT_CORPUS:${JSON.stringify(context.inventory)}`,
     `RESOLVED_OBJECTIVE:${JSON.stringify(resolvedObjective)}`,
     `VERBATIM_CURRENT_USER_MESSAGE:${JSON.stringify(message)}`
   ].join("\n");
@@ -660,11 +709,12 @@ export async function processMessage({
 
   if (classification.reply_mode === "research") {
     const selected = selectProjectContext(discovery, classification, [], runtime.db, run.project_id, "researcher");
-    if (!execute) return finish({ route: "research", classification, response: formatClassification({ summary: classification.reason, nextStep: responseLanguage === "ru" ? "выполнить ограниченное read-only исследование зарегистрированного репозитория" : "run bounded read-only research over the registered repository", language: responseLanguage }), gateway: { mode: "dry-run", steps: [{ role: "researcher", readable_documents: selected.documents.map(item => item.path), readable_roots: selected.roots.map(item => item.key) }] } });
+    const supplied = researchContext(selected, resolvedObjective);
+    if (!execute) return finish({ route: "research", classification, response: formatClassification({ summary: classification.reason, nextStep: responseLanguage === "ru" ? "выполнить ограниченное read-only исследование зарегистрированного репозитория" : "run bounded read-only research over the registered repository", language: responseLanguage }), gateway: { mode: "dry-run", steps: [{ role: "researcher", readable_documents: selected.documents.map(item => item.path), readable_roots: selected.roots.map(item => item.key), supplied_source_paths: supplied.sources.supplied_paths, source_selection: supplied.sources.selection }] } });
     runtime.setState(runId, "executing", { reason: "research route authorized" });
     const researchFile = path.join(taskDirectory, "research-task.md");
     const researchSchemaFile = path.join(taskDirectory, "researcher-output.schema.json");
-    fs.writeFileSync(researchFile, researchPrompt({ message, resolvedObjective, project: discovery.project, discovery: selected, responseLanguage }), "utf8");
+    fs.writeFileSync(researchFile, researchPrompt({ message, resolvedObjective, project: discovery.project, context: supplied, responseLanguage }), "utf8");
     fs.writeFileSync(researchSchemaFile, `${JSON.stringify(researchJsonSchema(), null, 2)}\n`, "utf8");
     const role = definition.roles?.researcher;
     if (!role?.provider || !role.profile || !role.role) return executionFailure(runtime, runId, new Error("RESEARCHER_ROLE_NOT_CONFIGURED"), finish, responseLanguage);
@@ -679,10 +729,10 @@ export async function processMessage({
     let research;
     try {
       assertGatewayReceiptCompleted(researcher, "researcher");
-      research = validateResearchResult(researcher, selected);
+      research = validateResearchResult(researcher, selected, supplied.supplied_paths);
     }
     catch (error) { return executionFailure(runtime, runId, error, finish, responseLanguage); }
-    recordRunEvidence(runtime.db, runId, null, "research_inspection", { status: research.status, inspected_paths: research.inspected_paths, limitations: research.limitations });
+    recordRunEvidence(runtime.db, runId, null, "research_inspection", { status: research.status, inspected_paths: research.inspected_paths, limitations: research.limitations, source_selection: supplied.sources.selection });
     const response = saveAssistant(research.answer);
     if (research.status === "insufficient") runtime.setState(runId, "blocked", { reason: "registered research evidence was insufficient" });
     else {
