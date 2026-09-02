@@ -1,8 +1,9 @@
 import { ATTEMPT_STATES, RUN_STATES, STEP_STATES, TASK_STATES, ALLOWED_TRANSITIONS } from "../src/state-machine.mjs";
 import { structuredHash } from "../src/role-contracts.mjs";
+import { portableCapabilitiesForContract } from "../src/executor-capabilities.mjs";
 import * as packageSdk from "./sdk.mjs";
 
-const PACKAGE_VERSION = "3.1.0";
+const PACKAGE_VERSION = "3.2.0";
 const REVIEW_CONTEXT_BYTES = 256 * 1024;
 
 const workTypeCatalog = {
@@ -29,7 +30,7 @@ function role(key, purpose, workTypes, artifacts, options = {}) {
   boundaries.writes = options.writes ?? boundaries.writes ?? tools.includes("apply_patch");
   return { key, name: options.name ?? key.split("_").map(word => word[0].toUpperCase() + word.slice(1)).join(" "), contract: { version: PACKAGE_VERSION, purpose, boundaries, allowed_work_types: workTypes, allowed_artifact_types: artifacts, allowed_tools: tools, allowed_skills: options.skills ?? [], required_checks: options.checks ?? [], allowed_transitions: options.transitions ?? ["executing", "verifying", "review_required", "documenting"], allowed_profile_keys: [`${key}.mvp`], context_limit_bytes: options.context ?? 65536, max_calls: options.maxCalls ?? 2, max_correction_cycles: options.corrections ?? 1, timeout_seconds: options.timeout ?? 1800, result_schema_key: resultSchema, prompt_template_version: PACKAGE_VERSION, escalation: options.escalation ?? { after_failed_corrections: 1, owner_decisions: true } } };
 }
-const profilesFor = (packageKey, roles) => roles.map(item => ({ key: `${packageKey}.${item.key}.mvp`, role_key: item.key, provider_family: null, capabilities: item.contract.allowed_skills, operational_levels: ["prototype", "mvp", "production", "security-audit"] }));
+const profilesFor = (packageKey, roles) => roles.map(item => ({ key: `${packageKey}.${item.key}.mvp`, role_key: item.key, provider_family: null, capabilities: portableCapabilitiesForContract(item.contract), operational_levels: ["prototype", "mvp", "production", "security-audit"] }));
 const promptsFor = roles => roles.map(item => { const template = `ROLE ${item.key}. Follow the versioned role contract and the separately supplied quality contract. Return only ${item.contract.result_schema_key}. Do not make owner decisions or publish.`; return { key: `${item.key}.default`, version: PACKAGE_VERSION, role_key: item.key, result_schema_key: item.contract.result_schema_key, template, content_hash: promptHash(template) }; });
 function addRoleToPackage(packageValue, item) {
   item = { ...item, contract: { ...item.contract, allowed_profile_keys: [`${packageValue.key}.${item.key}.mvp`] } };
@@ -243,11 +244,13 @@ function composedPackage(core, ...components) {
   if (moduleKeys.has("activityOperations")) for (const item of ["activity_record", "test_report"]) artifacts.add(item);
   const allWorkTypes = [...workTypes];
   const allArtifacts = [...artifacts];
+  const browserRuntime = capabilities.some(item => item.key === "externalRuntime" && item.options.browser === true);
   const roles = [
     role("classifier", "Classify only against the package's registered routes; never perform productive work.", allWorkTypes, ["none"], { schema: "classification.v1", corrections: 0, boundaries: { productive_work: false, keyword_routing: false } }),
     role("coordinator", "Turn the owner objective and registered evidence into the smallest executable plan; ask only for missing authority or evidence.", allWorkTypes, allArtifacts.filter(item => item !== "none"), { schema: "planner.v1", tools: [], boundaries: { writes: false, owner_decisions: false } }),
-    role("worker", "Perform the bounded capability work and return evidence for the declared artifacts and checks.", allWorkTypes, allArtifacts.filter(item => item !== "none"), { tools: [...new Set([...(moduleKeys.has("sourceChange") || moduleKeys.has("dataChange") || moduleKeys.has("contentProduction") || moduleKeys.has("projectBootstrap") || moduleKeys.has("documentation") || moduleKeys.has("activityOperations") ? ["apply_patch"] : []), ...(moduleKeys.has("externalRuntime") || moduleKeys.has("incident") || moduleKeys.has("backupRestore") || moduleKeys.has("activityOperations") ? ["exec_command"] : [])])], checks: checks.map(item => item.key), boundaries: { owner_decisions: false, publication: false, production_deploy: false } })
+    role("worker", "Perform the bounded capability work and return evidence for the declared artifacts and checks.", allWorkTypes, allArtifacts.filter(item => item !== "none"), { tools: [...new Set([...(moduleKeys.has("sourceChange") || moduleKeys.has("dataChange") || moduleKeys.has("contentProduction") || moduleKeys.has("projectBootstrap") || moduleKeys.has("documentation") || moduleKeys.has("activityOperations") ? ["apply_patch"] : []), ...(moduleKeys.has("incident") || moduleKeys.has("backupRestore") || moduleKeys.has("activityOperations") ? ["exec_command"] : [])])], checks: checks.map(item => item.key), boundaries: { owner_decisions: false, publication: false, production_deploy: false, browser_execution: false, screen_capture: false } })
   ];
+  if (browserRuntime) roles.push(role("browser_worker", "Implement the bounded browser-facing change, inspect it through the explicitly allowed browser automation surface, and return evidence without treating model observation as the deterministic acceptance gate.", allWorkTypes, allArtifacts.filter(item => item !== "none"), { tools: ["apply_patch"], checks: checks.map(item => item.key), boundaries: { owner_decisions: false, publication: false, production_deploy: false, browser_execution: true, screen_capture: true, required_executor_capabilities: ["browser_automation", "screen_capture"] } }));
   const reviewed = ["reviewed", "release", "full"].includes(spec.rolePreset);
   const editorial = ["editorial", "full"].includes(spec.rolePreset);
   if (reviewed) roles.push(
@@ -268,7 +271,7 @@ function composedPackage(core, ...components) {
     const customChecks = item.options.checkKeys?.length ? item.options.checkKeys : baselineKeys;
     const capabilityResources = item.options.resources ?? [];
     if (item.key === "sourceChange") {
-      workflows.push(workflow(`${prefix}.change`, "Bounded source change", optionalReview([step("coordinate", 1, "coordinator", ["document"]), step("work", 2, "worker", ["code"], customChecks, { resources: capabilityResources })]), [question("expected_result", "Which observable result should change?")]));
+      workflows.push(workflow(`${prefix}.change`, "Bounded source change", optionalReview([step("coordinate", 1, "coordinator", ["document"]), step("work", 2, browserRuntime ? "browser_worker" : "worker", ["code"], customChecks, { resources: capabilityResources })]), [question("expected_result", "Which observable result should change?")]));
       for (const workType of item.options.workTypes ?? moduleWorkTypes.sourceChange) routes.push(route(workType, `${prefix}.change`));
     } else if (item.key === "dataChange") {
       const items = optionalReview([step("coordinate", 1, "coordinator", ["data_migration"]), step("prepare", 2, "worker", ["data_migration", "test_report"], customChecks, { resources: capabilityResources })]);
@@ -291,7 +294,7 @@ function composedPackage(core, ...components) {
       workflows.push(workflow(`${prefix}.incident`, "Incident diagnosis and bounded repair", optionalReview([step("coordinate", 1, "coordinator", ["incident_report"]), step("respond", 2, "worker", ["incident_report", "test_report"], customChecks, { resources: capabilityResources })]), [question("observed_failure", "What is observed, where, and since when?")], { quality: "production", level: "L3" }));
       for (const workType of item.options.workTypes ?? moduleWorkTypes.incident) routes.push(route(workType, `${prefix}.incident`));
     } else if (item.key === "externalRuntime") {
-      workflows.push(workflow(`${prefix}.runtime`, "External runtime evidence", optionalReview([step("coordinate", 1, "coordinator", ["document"]), step("verify", 2, "worker", ["test_report"], customChecks, { resources: capabilityResources })]), [question("runtime_boundary", "Which registered external runtime and evidence contract are in scope?")], { level: "L2" }));
+      workflows.push(workflow(`${prefix}.runtime`, "External runtime evidence", optionalReview([step("coordinate", 1, "coordinator", ["document"]), step("verify", 2, item.options.browser === true ? "browser_worker" : "worker", ["test_report"], customChecks, { resources: capabilityResources })]), [question("runtime_boundary", "Which registered external runtime and evidence contract are in scope?")], { level: "L2" }));
       for (const workType of item.options.workTypes ?? moduleWorkTypes.externalRuntime) routes.push(route(workType, `${prefix}.runtime`));
     } else if (item.key === "experiment") {
       workflows.push(workflow(`${prefix}.experiment`, "Bounded experiment", [step("coordinate", 1, "coordinator", ["document"]), step("experiment", 2, "worker", ["prototype", "test_report"], customChecks, { resources: capabilityResources })], [question("experiment_answer", "Which hypothesis and observable answer end the experiment?")], { quality: "prototype", level: "L1" }));

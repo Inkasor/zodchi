@@ -31,7 +31,7 @@ test("CLI returns provider output transiently but persists only whitelisted tech
       }
     }
   }, null, 2));
-  const result = spawnSync(process.execPath, [path.resolve("src/cli.mjs"), "run", "--provider", "codex", "--profile", "test", "--level", "mvp", "--requires-write", "false", "--task-file", taskPath, "--task", "receipt-test"], {
+  const result = spawnSync(process.execPath, [path.resolve("src/cli.mjs"), "run", "--provider", "codex", "--profile", "test", "--level", "mvp", "--capability-requirements", JSON.stringify({ required: ["context_input"], forbidden: ["project_write"] }), "--task-file", taskPath, "--task", "receipt-test"], {
     cwd: path.dirname(path.resolve("src/cli.mjs")),
     encoding: "utf8",
     windowsHide: true,

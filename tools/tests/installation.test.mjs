@@ -105,7 +105,7 @@ test("install tolerates an unmigrated database and update preserves its register
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-test("install and update diagnose role assignments whose profiles violate write requirements", () => {
+test("install and update diagnose role assignments whose profiles violate capability requirements", () => {
   const root = temporaryRoot(), source = release(path.join(root, "source"), "0.6.12"), destination = path.join(root, "installed"), dataRoot = path.join(root, "data");
   const database = path.join(dataRoot, "workflow", "workflow.sqlite"), gatewayPolicy = path.join(dataRoot, "gateway", "policy.local.json");
   const roots = skillRoots(root), hooks = sessionHookFiles(root), healthCheck = candidate => assert.equal(fs.existsSync(path.join(candidate, "release-marker.txt")), true);
@@ -120,8 +120,10 @@ test("install and update diagnose role assignments whose profiles violate write 
     db.close();
     fs.writeFileSync(gatewayPolicy, JSON.stringify({ schemaVersion: 1, providers: { codex: { profiles: { "writable-documentator": { readOnly: false } } } } }));
     const installed = installRelease({ source, destination, dataRoot, workflowDatabase: database, gatewayPolicy, skillRoots: roots, sessionHookFiles: hooks, healthCheck });
-    assert.equal(installed.profile_write_requirement_diagnostics.status, "checked");
-    assert.deepEqual(installed.profile_write_requirement_diagnostics.conflicts, [{ code: "PROFILE_WRITE_REQUIREMENT_MISMATCH", project_id: "project", role_id: "documentator", operational_level: "mvp", provider: "codex", profile: "writable-documentator", requires_write: false, profile_read_only: false }]);
+    assert.equal(installed.profile_capability_diagnostics.status, "checked");
+    assert.equal(installed.profile_capability_diagnostics.conflicts.length, 1);
+    assert.equal(installed.profile_capability_diagnostics.conflicts[0].code, "PROFILE_CAPABILITY_MISMATCH");
+    assert.deepEqual(installed.profile_capability_diagnostics.conflicts[0].mismatches.map(item => [item.capability, item.expectation]), [["project_write", "forbidden"]]);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

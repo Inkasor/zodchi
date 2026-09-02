@@ -11,6 +11,7 @@ import { runOpenAICompatible } from "./openai-compatible.mjs";
 import { providerCommandInvocation, resolveProviderCommand } from "./command.mjs";
 import { loadGatewayPolicy } from "./policy.mjs";
 import { assertMetadataOnlyReceipt, DEFAULT_PRIVACY_MODE, privacyAttestation } from "./receipt-privacy.mjs";
+import { inspectCapabilityRequirements, normalizeCapabilityRequirements, profileCapabilities } from "./profile-capabilities.mjs";
 
 const paths = resolveGatewayPaths();
 const root = paths.root;
@@ -198,19 +199,24 @@ function runProcess(command, commandArgs, input, timeoutSec, cwd, env = process.
 
 const cli = argsObject(process.argv.slice(2));
 const command = process.argv[2];
-if (!["run", "profiles-check"].includes(command)) fail("Usage: node src/cli.mjs run --provider <adapter> --level prototype|mvp|production|security-audit --task-file <file> [--project <path>] [--role <name>] --profile <name> --requires-write true|false | node src/cli.mjs profiles-check");
+if (!["run", "profiles-check"].includes(command)) fail("Usage: node src/cli.mjs run --provider <adapter> --level prototype|mvp|production|security-audit --task-file <file> [--project <path>] [--role <name>] --profile <name> --capability-requirements <json> | node src/cli.mjs profiles-check");
 
 const policy = loadGatewayPolicy(paths);
-function inspectProfileWriteRequirement({ provider, profile, role = "worker", project_id: projectId = null, operational_level: operationalLevel = null, requires_write: requiresWrite }) {
+function inspectProfileRequirement({ provider, profile, role = "worker", project_id: projectId = null, operational_level: operationalLevel = null, capability_requirements: capabilityRequirements }) {
   const scope = { ...(projectId ? { project_id: projectId } : {}), ...(operationalLevel ? { operational_level: operationalLevel } : {}) };
-  if (typeof requiresWrite !== "boolean") return { code: "PROFILE_WRITE_REQUIREMENT_INVALID", role, provider, profile, ...scope, value: requiresWrite ?? null };
   const providerConfig = policy.providers?.[provider];
   if (!providerConfig) return { code: "PROFILE_PROVIDER_UNKNOWN", role, provider, profile, ...scope };
   if (!profile || !providerConfig.profiles?.[profile]) return { code: "PROFILE_UNKNOWN", role, provider, profile: profile ?? null, ...scope };
   const profileConfig = { ...(providerConfig.profileDefaults ?? {}), ...(providerConfig.profiles[profile] ?? {}) };
-  const profileReadOnly = profileConfig.readOnly === true;
-  if (requiresWrite === profileReadOnly) return { code: "PROFILE_WRITE_REQUIREMENT_MISMATCH", role, provider, profile, ...scope, requires_write: requiresWrite, profile_read_only: profileReadOnly };
-  return { status: "compatible", role, provider, profile, ...scope, requires_write: requiresWrite, profile_read_only: profileReadOnly };
+  let requirements;
+  try { requirements = normalizeCapabilityRequirements(capabilityRequirements); }
+  catch (error) { return { code: error.message.split(":", 1)[0], role, provider, profile, ...scope, value: capabilityRequirements ?? null }; }
+  let capabilities;
+  try { capabilities = profileCapabilities(provider, providerConfig, profileConfig); }
+  catch (error) { return { code: error.message.split(":", 1)[0], role, provider, profile, ...scope, message: error.message }; }
+  const inspection = inspectCapabilityRequirements(capabilities, requirements);
+  if (inspection.mismatches.length) return { code: "PROFILE_CAPABILITY_MISMATCH", role, provider, profile, ...scope, capability_requirements: requirements, mismatches: inspection.mismatches, profile_capabilities: capabilities };
+  return { status: "compatible", role, provider, profile, ...scope, capability_requirements: requirements, profile_capabilities: capabilities };
 }
 
 if (command === "profiles-check") {
@@ -218,7 +224,7 @@ if (command === "profiles-check") {
   try { requirements = JSON.parse(fs.readFileSync(0, "utf8")); }
   catch (error) { fail(`PROFILE_REQUIREMENTS_INVALID: ${error.message}`, 77); }
   if (!Array.isArray(requirements)) fail("PROFILE_REQUIREMENTS_INVALID: expected a JSON array", 77);
-  const checks = requirements.map(inspectProfileWriteRequirement);
+  const checks = requirements.map(inspectProfileRequirement);
   const conflicts = checks.filter(check => check.status !== "compatible");
   process.stdout.write(`${JSON.stringify({ status: conflicts.length ? "incompatible" : "compatible", checks: checks.filter(check => check.status === "compatible"), conflicts })}\n`);
   process.exit(conflicts.length ? 77 : 0);
@@ -236,10 +242,12 @@ const profile = cli.profile ?? null;
 if (!profile) fail("PROFILE_REQUIRED: all provider calls must use a named subscription profile");
 const profileConfig = { ...(providerConfig.profileDefaults ?? {}), ...(providerConfig.profiles?.[profile] ?? {}) };
 if (!providerConfig.profiles?.[profile]) fail(`Unknown profile '${profile}' for provider '${provider}'`);
-const writeRequirement = cli["requires-write"];
-if (!["true", "false"].includes(String(writeRequirement))) fail(`PROFILE_WRITE_REQUIREMENT_INVALID: role=${cli.role ?? "worker"}; profile=${profile}; value=${writeRequirement ?? "missing"}`, 77);
-const requirement = inspectProfileWriteRequirement({ provider, profile, role: cli.role ?? "worker", requires_write: String(writeRequirement) === "true" });
-if (requirement.status !== "compatible") fail(`${requirement.code}: role=${requirement.role}; profile=${requirement.profile}; requires_write=${requirement.requires_write}; profile_read_only=${requirement.profile_read_only}`, 77);
+let capabilityRequirements;
+try { capabilityRequirements = JSON.parse(String(cli["capability-requirements"] ?? "")); }
+catch { fail(`PROFILE_CAPABILITY_REQUIREMENTS_INVALID: role=${cli.role ?? "worker"}; profile=${profile}; value=${cli["capability-requirements"] ?? "missing"}`, 77); }
+const requirement = inspectProfileRequirement({ provider, profile, role: cli.role ?? "worker", capability_requirements: capabilityRequirements });
+if (requirement.status !== "compatible") fail(`${requirement.code}: role=${requirement.role}; profile=${requirement.profile}; mismatches=${JSON.stringify(requirement.mismatches ?? [])}`, 77);
+const profileCapabilityReport = requirement.profile_capabilities;
 const privacyMode = String(cli["privacy-mode"] ?? DEFAULT_PRIVACY_MODE);
 if (privacyMode !== DEFAULT_PRIVACY_MODE) fail(`RECEIPT_PRIVACY_MODE_UNSUPPORTED: ${privacyMode}`);
 
@@ -319,12 +327,12 @@ let result;
 // What the ephemeral home gave the provider, and what it withheld, is part of the call: a role that ran
 // without the server or the skill it needed produced a different result from the same prompt, and the
 // receipt is the only place that difference is ever recorded.
-let environment = null;
+let environment = { profile_capabilities: profileCapabilityReport, provider_environment: null };
 try {
   result = providerConfig.type === "openai-compatible"
     ? await runOpenAICompatible({ profileConfig, prompt, systemPrompt, outputSchema: outputSchemaValue, outputSchemaName: `${cli.role ?? "worker"}_result`, timeoutSec: limits.timeoutSec, env: process.env })
     : await withProviderEnvironment(provider, { tempRoot: paths.tempRoot, sourceHome, sourceConfig: provider === "opencode" ? paths.opencodeSourceConfig : null, profileConfig, projectRoot: projectPath }, (providerEnvironment, _directory, capabilities) => {
-      environment = capabilities;
+      environment = { profile_capabilities: profileCapabilityReport, provider_environment: capabilities };
       return runProcess(providerCommand, commandArgs, prompt, limits.timeoutSec, projectPath, providerEnvironment);
     });
 } catch (error) {

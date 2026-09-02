@@ -1,4 +1,5 @@
 import { checkGatewayProfileRequirements } from "./gateway.mjs";
+import { executorCapabilityRequirements } from "./executor-capabilities.mjs";
 
 const DIRECT_RUNTIME_ROLES = Object.freeze(["classifier", "researcher"]);
 const profileCheckDefault = requirements => checkGatewayProfileRequirements({ requirements });
@@ -7,7 +8,7 @@ function roleAssignments(db, projectId, roleIds, operationalLevel = null) {
   if (!roleIds.length) return [];
   const placeholders = roleIds.map(() => "?").join(",");
   const levelClause = operationalLevel ? "AND a.operational_level=?" : "";
-  return db.prepare(`SELECT a.role_id,a.operational_level,p.id AS profile_id,p.provider,p.name AS profile_name,rc.boundaries_json
+  return db.prepare(`SELECT a.role_id,a.operational_level,p.id AS profile_id,p.provider,p.name AS profile_name,rc.boundaries_json,rc.allowed_tools_json
     FROM role_profile_assignments a JOIN profiles p ON p.id=a.profile_id
     LEFT JOIN role_contracts rc ON rc.project_id=a.project_id AND rc.role_id=a.role_id AND rc.status='active'
     WHERE a.project_id=? AND a.enabled=1 AND a.role_id IN (${placeholders}) ${levelClause}
@@ -17,12 +18,14 @@ function roleAssignments(db, projectId, roleIds, operationalLevel = null) {
 
 function requirement(assignment, direct = false) {
   let boundaries = {};
+  let allowedTools = [];
   try { boundaries = JSON.parse(assignment.boundaries_json ?? "{}"); } catch { /* active contract validation owns malformed JSON */ }
+  try { allowedTools = JSON.parse(assignment.allowed_tools_json ?? "[]"); } catch { /* active contract validation owns malformed JSON */ }
   return {
     role: assignment.role_id,
     provider: assignment.provider,
     profile: assignment.profile_name,
-    requires_write: direct ? false : boundaries.writes === true,
+    capability_requirements: executorCapabilityRequirements({ boundaries, allowed_tools: allowedTools }, { direct }),
     operational_level: assignment.operational_level
   };
 }
@@ -36,8 +39,8 @@ function inspectRequirements(profileCheck, requirements, missing, missingReason)
 function readinessReasons(readiness) {
   const reasons = [];
   if (readiness.missing_role_assignments.length) reasons.push(`missing ${readiness.missing_role_assignments.join(",")}`);
-  for (const conflict of readiness.profile_write_requirements.conflicts ?? []) reasons.push(`${conflict.code}: role=${conflict.role}; profile=${conflict.profile}`);
-  if (readiness.profile_write_requirements.status === "unavailable") reasons.push(`${readiness.profile_write_requirements.reason}: ${readiness.profile_write_requirements.message}`);
+  for (const conflict of readiness.profile_capability_requirements.conflicts ?? []) reasons.push(`${conflict.code}: role=${conflict.role}; profile=${conflict.profile}`);
+  if (readiness.profile_capability_requirements.status === "unavailable") reasons.push(`${readiness.profile_capability_requirements.reason}: ${readiness.profile_capability_requirements.message}`);
   for (const kind of readiness.external_operations?.missing ?? []) reasons.push(`missing registered external ${kind} operation`);
   return reasons;
 }
@@ -83,6 +86,7 @@ export function projectRuntimeReadiness(db, projectId, { profileCheck = profileC
     project: { id: project.id, name: project.name },
     direct_roles: directRoles,
     missing_role_assignments: missing,
+    profile_capability_requirements: profileRequirements,
     profile_write_requirements: profileRequirements,
     registered_context: {
       status: researcherContext,
@@ -113,6 +117,7 @@ export function workflowRuntimeReadiness(db, projectId, workflowId, operationalL
     operational_level: operationalLevel,
     required_roles: roleIds,
     missing_role_assignments: missing,
+    profile_capability_requirements: profileRequirements,
     profile_write_requirements: profileRequirements,
     external_operations: externalOperations
   };

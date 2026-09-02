@@ -261,3 +261,29 @@ test("OpenCode carries named servers from its own configuration and Kimi inherit
     assert.deepEqual(kimi.capabilities.mcp_servers.carried, [{ scope: "home", name: "inherited" }]);
   } finally { kimi.cleanup(); fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test("Codex carries only explicitly allowed browser plugins into the ephemeral home", () => {
+  const root = temporaryRoot("gateway-browser-plugin-"), source = path.join(root, "source"), temp = path.join(root, "temp");
+  const browserCache = path.join(source, "plugins", "cache", "openai-bundled", "browser", "1.0.0");
+  fs.mkdirSync(browserCache, { recursive: true });
+  fs.writeFileSync(path.join(source, "auth.json"), "test-auth");
+  fs.writeFileSync(path.join(browserCache, "plugin.json"), "{}\n");
+  fs.writeFileSync(path.join(source, "config.toml"), [
+    '[plugins."browser@openai-bundled"]', "enabled = true",
+    '[plugins."unrelated@openai-bundled"]', "enabled = true",
+    "[marketplaces.openai-bundled]", 'source_type = "local"', `source = ${JSON.stringify(path.join(source, "marketplace"))}`,
+    "[mcp_servers.node_repl]", `command = ${JSON.stringify(path.join(source, "runtime", "node_repl.exe"))}`,
+    "[mcp_servers.node_repl.env]", `CODEX_HOME = ${JSON.stringify(source)}`
+  ].join("\n"));
+  const environment = createProviderEnvironment("codex", { tempRoot: temp, sourceHome: source, profileConfig: { readOnly: false, allowedPlugins: ["browser@openai-bundled"], allowedMcpServers: ["node_repl"] } });
+  try {
+    const config = fs.readFileSync(path.join(environment.directory, "config.toml"), "utf8");
+    assert.match(config, /plugins = true/);
+    assert.match(config, /plugins\."browser@openai-bundled"/);
+    assert.doesNotMatch(config, /unrelated@openai-bundled/);
+    assert.match(config, /mcp_servers\.node_repl/);
+    assert.equal(config.includes(JSON.stringify(environment.directory).slice(1, -1)), true);
+    assert.equal(fs.existsSync(path.join(environment.directory, "plugins", "cache", "openai-bundled", "browser", "1.0.0", "plugin.json")), true);
+    assert.deepEqual(environment.capabilities.plugins.carried, [{ id: "browser@openai-bundled" }]);
+  } finally { environment.cleanup(); fs.rmSync(root, { recursive: true, force: true }); }
+});

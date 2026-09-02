@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { resolveWorkflowSettings } from "./paths.mjs";
+import { executorCapabilityRequirements, normalizeExecutorCapabilityRequirements } from "./executor-capabilities.mjs";
 
 export function checkGatewayProfileRequirements({ requirements, gateway, gatewayPolicy } = {}) {
   const settings = resolveWorkflowSettings();
@@ -19,16 +20,19 @@ export function checkGatewayProfileRequirements({ requirements, gateway, gateway
   throw error;
 }
 
-export function callGateway({ gateway, gatewayDatabase, gatewayPolicy, provider = "codex", profile, level = "mvp", role = "worker", requiresWrite, taskFile, outputSchemaFile = null, project, writeDirs = [], taskId, workflowRunId = null, attemptNo = null, artifactRef = null, decisionRef = null, privacyMode = "no_source_persistence" }) {
+export function callGateway({ gateway, gatewayDatabase, gatewayPolicy, provider = "codex", profile, level = "mvp", role = "worker", capabilityRequirements = null, requiresWrite, taskFile, outputSchemaFile = null, project, writeDirs = [], taskId, workflowRunId = null, attemptNo = null, artifactRef = null, decisionRef = null, privacyMode = "no_source_persistence" }) {
   const settings = resolveWorkflowSettings();
   gateway ??= settings.gatewayEntry;
   gatewayDatabase ??= settings.gatewayDatabasePath;
   gatewayPolicy ??= settings.gatewayPolicyPath;
   if (!profile) throw new Error("Gateway profile is required; assign it during onboarding");
-  if (typeof requiresWrite !== "boolean") throw new Error(`GATEWAY_WRITE_REQUIREMENT_REQUIRED: role=${role}; profile=${profile}`);
+  if (capabilityRequirements === null) {
+    if (typeof requiresWrite !== "boolean") throw new Error(`GATEWAY_CAPABILITY_REQUIREMENTS_REQUIRED: role=${role}; profile=${profile}`);
+    capabilityRequirements = executorCapabilityRequirements({ boundaries: { writes: requiresWrite }, allowed_tools: requiresWrite ? ["apply_patch"] : [] });
+  } else capabilityRequirements = normalizeExecutorCapabilityRequirements(capabilityRequirements);
   let child = null, cancellationRequested = false;
   const promise = new Promise((resolve, reject) => {
-    const args = [gateway, "run", "--provider", provider, "--profile", profile, "--level", level, "--role", role, "--requires-write", String(requiresWrite), "--task-file", taskFile, "--task", taskId ?? taskFile, "--privacy-mode", privacyMode];
+    const args = [gateway, "run", "--provider", provider, "--profile", profile, "--level", level, "--role", role, "--capability-requirements", JSON.stringify(capabilityRequirements), "--task-file", taskFile, "--task", taskId ?? taskFile, "--privacy-mode", privacyMode];
     if (outputSchemaFile) args.push("--output-schema", outputSchemaFile);
     if (project) args.push("--project", project);
     // Only a writable root reaches the provider. What a role reads was collected before the call and
@@ -61,7 +65,7 @@ export function callGateway({ gateway, gatewayDatabase, gatewayPolicy, provider 
       else if (cancellationRequested) { const error = new Error("GATEWAY_INVOCATION_CANCELLED"); error.code = "GATEWAY_INVOCATION_CANCELLED"; reject(error); }
       else {
         const text = err || out;
-        const requirementFailure = text.match(/PROFILE_WRITE_REQUIREMENT_(?:MISMATCH|INVALID):[^\r\n]*/u)?.[0] ?? null;
+        const requirementFailure = text.match(/PROFILE_(?:CAPABILITY|CAPABILITIES)_[A-Z_]+:[^\r\n]*/u)?.[0] ?? null;
         const error = new Error(requirementFailure ?? `Gateway exited before receipt (${code}): ${text}`);
         error.code = requirementFailure?.split(":", 1)[0] ?? "GATEWAY_EXITED_BEFORE_RECEIPT";
         reject(error);

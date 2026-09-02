@@ -125,7 +125,8 @@ fs.writeFileSync(taskFile, probe.task, "utf8");
 fs.writeFileSync(schemaFile, `${JSON.stringify(probe.schema, null, 2)}\n`, "utf8");
 
 try {
-  const child = spawnSync(process.execPath, [gateway, "run", "--provider", "codex", "--profile", profile, "--level", "prototype", "--role", "researcher", "--requires-write", "false", "--task-file", taskFile, "--output-schema", schemaFile, "--project", project, "--task", `codex-readonly-${probe.kind}-smoke-${crypto.randomUUID()}`], {
+  const capabilityRequirements = JSON.stringify({ required: ["context_input"], forbidden: ["project_write"] });
+  const child = spawnSync(process.execPath, [gateway, "run", "--provider", "codex", "--profile", profile, "--level", "prototype", "--role", "researcher", "--capability-requirements", capabilityRequirements, "--task-file", taskFile, "--output-schema", schemaFile, "--project", project, "--task", `codex-readonly-${probe.kind}-smoke-${crypto.randomUUID()}`], {
     encoding: "utf8", windowsHide: true,
     env: { ...process.env, AGENT_GATEWAY_POLICY: policy, AGENT_GATEWAY_DB: database, AGENT_GATEWAY_DATA: root, AGENT_GATEWAY_TEMP: path.join(root, "temp") }
   });

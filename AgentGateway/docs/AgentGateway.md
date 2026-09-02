@@ -12,12 +12,16 @@
     <rule id="process_tree_cancellation">Receipts declare cancellation capability and mode. Process-backed harness cancellation terminates the complete provider process tree; WorkflowPlatform owns the corresponding lease, attempt, and run state.</rule>
     <rule id="parallel_settlement">A parallel review group waits for every admitted invocation to settle. On participant failure, outstanding calls are cancelled and closed before WorkflowPlatform exposes a terminal state or calculates final budget use.</rule>
     <rule id="receipt_linkage">Every completed or failed call with a receipt is linked to its run before role-result validation evidence is recorded; schema repair cannot erase the original call or spend.</rule>
+    <rule id="executor_capability_contract">Every invocation carries an explicit capability requirement. Gateway derives the assigned profile's provider-specific capability matrix and starts the provider only when every required capability is technically available and every forbidden capability is technically unavailable; declarative and unknown guarantees fail closed.</rule>
+    <rule id="browser_profile_boundary">A Codex browser profile receives only browser or Chrome plugins and MCP servers named by its local allowlists. That configuration remains an unknown capability until a live smoke for the exact Gateway contour records an explicit technical profile capability; ambient desktop plugins are not inherited by other Gateway profiles.</rule>
+    <rule id="browser_evidence_boundary">A browser-capable worker may edit and inspect a bounded browser-facing change in one model call. Its observation helps implementation but never replaces WorkflowPlatform's separately registered deterministic browser check or owner acceptance.</rule>
   </responsibilities>
   <security status="accepted">
     <rule id="no_shell_interpolation">Harness commands use bounded argument arrays without shell interpolation.</rule>
     <rule id="environment_credentials">Compatible API credentials are read from named environment variables and never written to product configuration.</rule>
     <rule id="openrouter_credentials" status="preview">OpenRouter reads only the environment variable named by the local profile, normally OPENROUTER_API_KEY. Onboarding checks availability without printing the value and requires a live smoke on that installation before assigning the profile. Absence of the preview provider does not block stable product release.</rule>
     <rule id="receipt_privacy">Persistent storage contains normalized receipt metadata, hashes, usage, duration, status, compact errors, and artifact references only. Full prompts, responses, transcripts, source bodies, and credential samples are forbidden.</rule>
+    <rule id="capability_receipt">The receipt records the effective profile capability matrix and provider-environment inventory without storing credentials, prompts, responses, or browser content.</rule>
   </security>
   <section id="license" status="accepted">AgentGateway is distributed as part of Zodchi under the repository-level MIT License. Copyright 2026 Petr Tsap.</section>
 </document>

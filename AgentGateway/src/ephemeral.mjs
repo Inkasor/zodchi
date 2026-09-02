@@ -136,12 +136,12 @@ function jsonIfPresent(file) {
 
 // The policy is an allowlist by name, and it is explicit in both directions: a server the profile did not
 // name is withheld and said so, never quietly absent.
-function selectMcpServers(sources, allowed) {
+function selectTomlTables(sources, allowed, prefix = MCP_PREFIX) {
   const allowedNames = new Set(allowed ?? []);
   const carried = [], withheld = [], shadowed = [], sections = [];
   const selected = new Map();
   for (const { scope, text } of sources) {
-    for (const [name, lines] of tomlTables(text, MCP_PREFIX)) {
+    for (const [name, lines] of tomlTables(text, prefix)) {
       if (selected.has(name)) shadowed.push({ scope: selected.get(name).scope, name, by_scope: scope });
       selected.set(name, { scope, name, lines });
     }
@@ -153,12 +153,35 @@ function selectMcpServers(sources, allowed) {
   return { carried, withheld, shadowed, sections };
 }
 
-function capabilityReport(provider, { skills, mcp }) {
+function copyAllowedPluginCaches(sourceHome, targetHome, allowedPlugins) {
+  const copied = [];
+  for (const id of allowedPlugins ?? []) {
+    const separator = id.lastIndexOf("@");
+    if (separator <= 0 || separator === id.length - 1) throw new Error(`ALLOWED_PLUGIN_INVALID: ${id}`);
+    const name = id.slice(0, separator), marketplace = id.slice(separator + 1);
+    const source = path.join(sourceHome, "plugins", "cache", marketplace, name);
+    if (!fs.existsSync(source)) throw new Error(`ALLOWED_PLUGIN_NOT_FOUND: ${id}`);
+    const target = path.join(targetHome, "plugins", "cache", marketplace, name);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.cpSync(source, target, { recursive: true, force: false, errorOnExist: true });
+    copied.push({ id, path: target });
+  }
+  return copied;
+}
+
+function rewriteHomeReferences(sections, sourceHome, targetHome) {
+  if (!sourceHome) return sections;
+  const variants = [sourceHome, sourceHome.replaceAll("\\", "/"), sourceHome.replaceAll("\\", "\\\\")];
+  return sections.map(section => variants.reduce((text, value) => text.replaceAll(value, targetHome.replaceAll("\\", value.includes("\\\\") ? "\\\\" : value.includes("/") ? "/" : "\\")), section));
+}
+
+function capabilityReport(provider, { skills, mcp, plugins = { policy: "disabled", carried: [], withheld: [] } }) {
   return Object.freeze({
     provider,
     home: "ephemeral",
     skills: Object.freeze({ policy: "allowlist", allowed: Object.freeze(skills.allowed), withheld: Object.freeze(skills.withheld) }),
-    mcp_servers: Object.freeze({ policy: mcp.policy, carried: Object.freeze(mcp.carried ?? []), withheld: Object.freeze(mcp.withheld ?? []), shadowed: Object.freeze(mcp.shadowed ?? []) })
+    mcp_servers: Object.freeze({ policy: mcp.policy, carried: Object.freeze(mcp.carried ?? []), withheld: Object.freeze(mcp.withheld ?? []), shadowed: Object.freeze(mcp.shadowed ?? []) }),
+    plugins: Object.freeze({ policy: plugins.policy, carried: Object.freeze(plugins.carried ?? []), withheld: Object.freeze(plugins.withheld ?? []) })
   });
 }
 
@@ -185,10 +208,15 @@ export function createProviderEnvironment(provider, { tempRoot, sourceHome, sour
       // Whatever the owner registered for Codex stays registered: an ephemeral home that quietly drops
       // every MCP server changes what the worker can reach without anyone deciding it should, and a role
       // that cannot reach its server reports the work as impossible instead of as unequipped.
-      const mcp = selectMcpServers([
+      const configSources = [
         { scope: "home", text: readIfPresent(sourceHome ? path.join(sourceHome, "config.toml") : null) },
         { scope: "project", text: readIfPresent(projectRoot ? path.join(projectRoot, ".codex", "config.toml") : null) }
-      ], profileConfig.allowedMcpServers);
+      ];
+      const mcp = selectTomlTables(configSources, profileConfig.allowedMcpServers);
+      const plugins = selectTomlTables(configSources, profileConfig.allowedPlugins, "plugins");
+      const marketplaces = selectTomlTables(configSources, [...new Set((profileConfig.allowedPlugins ?? []).map(id => id.slice(id.lastIndexOf("@") + 1)))], "marketplaces");
+      const copiedPlugins = copyAllowedPluginCaches(sourceHome, directory, profileConfig.allowedPlugins);
+      const mcpSections = rewriteHomeReferences(mcp.sections, sourceHome, directory);
       fs.writeFileSync(path.join(directory, "config.toml"), [
         ...(profileConfig.model ? [`model = ${JSON.stringify(profileConfig.model)}`] : []),
         `model_reasoning_effort = ${JSON.stringify(profileConfig.reasoningEffort ?? "low")}`,
@@ -197,16 +225,18 @@ export function createProviderEnvironment(provider, { tempRoot, sourceHome, sour
         "[features]",
         "memories = false",
         "multi_agent = false",
-        "plugins = false",
+        `plugins = ${(profileConfig.allowedPlugins ?? []).length > 0}`,
         "remote_plugin = false",
         "[plugins]",
+        ...plugins.sections,
+        ...marketplaces.sections,
         ...skillOverrides,
-        ...mcp.sections
+        ...mcpSections
       ].join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
       return {
         directory,
         env: { CODEX_HOME: directory, RUST_LOG: "error" },
-        capabilities: capabilityReport(provider, { skills: { allowed: [...allowedSkillFiles], withheld: withheldSkills }, mcp: { policy: "allowlist", carried: mcp.carried, withheld: mcp.withheld, shadowed: mcp.shadowed } }),
+        capabilities: capabilityReport(provider, { skills: { allowed: [...allowedSkillFiles], withheld: withheldSkills }, mcp: { policy: "allowlist", carried: mcp.carried, withheld: mcp.withheld, shadowed: mcp.shadowed }, plugins: { policy: "allowlist", carried: copiedPlugins.map(item => ({ id: item.id })), withheld: plugins.withheld } }),
         cleanup: () => removeDirectory(directory)
       };
     }

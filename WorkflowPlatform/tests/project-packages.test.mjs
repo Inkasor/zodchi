@@ -110,7 +110,7 @@ test("the canonical Web package is SDK-composed and requires anchored API-to-UI 
   const packageValue = PACKAGE_DEFINITIONS.find(item => item.key === "software.web-application");
   assert.ok(packageValue);
   for (const workType of ["implementation", "data_change", "release", "incident", "access_management", "project_bootstrap", "documentation", "security_review"]) assert.equal(packageValue.routes.some(item => item.work_type_key === workType), true, workType);
-  assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["access_administrator", "adversarial_reviewer", "classifier", "coordinator", "editor", "evidence_reviewer", "judge", "release_operator", "reviewer", "strategy_reviewer", "worker"]);
+  assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["access_administrator", "adversarial_reviewer", "browser_worker", "classifier", "coordinator", "editor", "evidence_reviewer", "judge", "release_operator", "reviewer", "strategy_reviewer", "worker"]);
   assert.equal(packageValue.documents.length, 0);
   assert.equal(packageValue.operational_levels.find(item => item.level === "prototype").improvement_strategy, "gauntlet");
   assert.equal(packageValue.operational_levels.find(item => item.level === "prototype").correction_limit, 3);
@@ -212,13 +212,31 @@ test("the Web-game preview traces design to browser proof without folding produc
   for (const workType of ["game.design-research", "game.change", "game.build-test", "game.technical-qa", "game.visual-acceptance", "game.product-acceptance", "game.release-readiness", "game.pipeline-audit", "content", "marketing"]) {
     assert.equal(packageValue.routes.some(item => item.work_type_key === workType), true, workType);
   }
-  assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["adversarial_reviewer", "classifier", "coordinator", "editor", "evidence_reviewer", "judge", "reviewer", "strategy_reviewer", "worker"]);
+  assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["adversarial_reviewer", "browser_worker", "classifier", "coordinator", "editor", "evidence_reviewer", "judge", "reviewer", "strategy_reviewer", "worker"]);
   assert.equal(packageValue.documents.length, 0);
   const flow = packageValue.evidence_flows.find(item => item.key === "game.feature_to_browser_proof");
   assert.deepEqual(flow.required_edges, ["design_decision->technical_task", "technical_task->browser_proof"]);
   assert.equal(flow.transition.adapter, "registered-browser-evidence");
   const content = packageValue.workflows.find(item => item.key.endsWith(".content"));
   assert.equal(content.steps.some(item => item.key === "edit" && item.role_key === "editor"), true);
+});
+
+test("only browser packages require a browser worker and other external runtimes stay runnable without it", () => {
+  const byKey = new Map(PACKAGE_DEFINITIONS.map(item => [item.key, item]));
+  for (const key of ["software.web-application", "game.web"]) {
+    const packageValue = byKey.get(key);
+    const browserRole = packageValue.roles.find(item => item.key === "browser_worker");
+    assert.ok(browserRole, key);
+    assert.deepEqual(browserRole.contract.boundaries.required_executor_capabilities, ["browser_automation", "screen_capture"]);
+    assert.deepEqual([...packageValue.profiles.find(item => item.role_key === "browser_worker").capabilities].sort(), ["browser_automation", "context_input", "project_write", "screen_capture"]);
+    assert.equal(packageValue.workflows.find(item => item.key.endsWith(".change")).steps.find(item => item.key === "work").role_key, "browser_worker");
+    assert.equal(packageValue.workflows.find(item => item.key.endsWith(".runtime")).steps.find(item => item.key === "verify").role_key, "browser_worker");
+  }
+  for (const key of ["one-c.development", "game.unity", "data.analytics", "infra.operations"]) {
+    const packageValue = byKey.get(key);
+    assert.equal(packageValue.roles.some(item => item.key === "browser_worker"), false, key);
+    assert.equal(packageValue.workflows.find(item => item.key.endsWith(".runtime")).steps.find(item => item.key === "verify").role_key, "worker", key);
+  }
 });
 
 test("the data preview separates read-only evidence from approval-bound mutation preparation", () => {
@@ -377,7 +395,7 @@ test("one project reuses versioned role contracts composed by multiple packages"
   }
   const verified = openDb(dbFile);
   assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflow_package_releases WHERE project_id='combined' AND status='active'").get().count, 2);
-  assert.equal(verified.prepare("SELECT COUNT(*) count FROM role_contracts WHERE project_id='combined' AND role_id='reviewer' AND version='3.1.0'").get().count, 1);
+  assert.equal(verified.prepare("SELECT COUNT(*) count FROM role_contracts WHERE project_id='combined' AND role_id='reviewer' AND version='3.2.0'").get().count, 1);
   assert.equal(verified.prepare(`SELECT COUNT(DISTINCT m.local_id) count FROM package_import_mappings m JOIN workflow_import_proposals p ON p.id=m.proposal_id
     WHERE p.target_project_id='combined' AND m.entity_type='role_contract' AND m.semantic_key='reviewer'`).get().count, 1);
   verified.close();

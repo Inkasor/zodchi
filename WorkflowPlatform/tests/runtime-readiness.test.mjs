@@ -68,10 +68,12 @@ test("runtime readiness isolates an incompatible profile to the selected workflo
   const profileCheck = requirements => checkGatewayProfileRequirements({ requirements, gateway: path.resolve(import.meta.dirname, "..", "..", "AgentGateway", "src", "cli.mjs"), gatewayPolicy });
   const projectReadiness = projectRuntimeReadiness(db, "project", { profileCheck });
   assert.equal(projectReadiness.status, "ready");
-  assert.deepEqual(projectReadiness.profile_write_requirements.checks.map(item => item.role).sort(), ["classifier", "researcher"]);
+  assert.deepEqual(projectReadiness.profile_capability_requirements.checks.map(item => item.role).sort(), ["classifier", "researcher"]);
   const workflowReadiness = workflowRuntimeReadiness(db, "project", "workflow", "mvp", { profileCheck });
   assert.equal(workflowReadiness.status, "unavailable");
-  assert.deepEqual(workflowReadiness.profile_write_requirements.conflicts, [{ code: "PROFILE_WRITE_REQUIREMENT_MISMATCH", role: "documentator", provider: "codex", profile: "documentator-profile", operational_level: "mvp", requires_write: false, profile_read_only: false }]);
+  assert.equal(workflowReadiness.profile_capability_requirements.conflicts.length, 1);
+  assert.equal(workflowReadiness.profile_capability_requirements.conflicts[0].code, "PROFILE_CAPABILITY_MISMATCH");
+  assert.deepEqual(workflowReadiness.profile_capability_requirements.conflicts[0].mismatches.map(item => [item.capability, item.expectation]), [["project_write", "forbidden"]]);
   db.close();
 
   let calls = 0;

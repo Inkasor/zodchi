@@ -10,6 +10,7 @@ import { hookInstallationStatus, hookSnapshotHashes, removeOwnedHookInstallation
 import { defaultInstallationPaths } from "./installation-paths.mjs";
 import { defaultSkillRoots, installClientSkills, removeClientSkills, restoreClientSkills, snapshotClientSkills } from "./skill-installation.mjs";
 import { defaultSessionHookFiles, installSessionHooks, removeSessionHooks, restoreSessionHooks, snapshotSessionHooks } from "./session-hook-installation.mjs";
+import { executorCapabilityRequirements } from "../WorkflowPlatform/src/executor-capabilities.mjs";
 
 const renameDelay = new Int32Array(new SharedArrayBuffer(4));
 
@@ -168,8 +169,9 @@ function restoreHookTransaction(transaction) {
 function readState(file) { return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null; }
 
 function tableExists(db, name) { return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name)); }
+function columnExists(db, table, name) { return db.prepare(`PRAGMA table_info(${table})`).all().some(column => column.name === name); }
 
-export function profileWriteRequirementDiagnostics({ workflowDatabase, gatewayPolicy, gateway }) {
+export function profileCapabilityDiagnostics({ workflowDatabase, gatewayPolicy, gateway }) {
   if (!workflowDatabase || !fs.existsSync(workflowDatabase)) return { status: "unavailable", reason: "workflow_database_missing", conflicts: [] };
   if (!gatewayPolicy || !fs.existsSync(gatewayPolicy)) return { status: "unavailable", reason: "gateway_policy_missing", conflicts: [] };
   if (!gateway || !fs.existsSync(gateway)) return { status: "unavailable", reason: "gateway_preflight_missing", conflicts: [] };
@@ -177,7 +179,8 @@ export function profileWriteRequirementDiagnostics({ workflowDatabase, gatewayPo
   try {
     const requiredTables = ["profiles", "role_profile_assignments", "role_contracts"];
     if (!requiredTables.every(name => tableExists(db, name))) return { status: "unavailable", reason: "workflow_schema_not_ready", conflicts: [] };
-    const assignments = db.prepare(`SELECT a.project_id,a.role_id,a.operational_level,p.provider,p.name AS profile,rc.boundaries_json
+    const allowedToolsColumn = columnExists(db, "role_contracts", "allowed_tools_json") ? "rc.allowed_tools_json" : "NULL AS allowed_tools_json";
+    const assignments = db.prepare(`SELECT a.project_id,a.role_id,a.operational_level,p.provider,p.name AS profile,rc.boundaries_json,${allowedToolsColumn}
       FROM role_profile_assignments a
       JOIN profiles p ON p.id=a.profile_id
       JOIN role_contracts rc ON rc.project_id=a.project_id AND rc.role_id=a.role_id AND rc.status='active'
@@ -185,14 +188,16 @@ export function profileWriteRequirementDiagnostics({ workflowDatabase, gatewayPo
       ORDER BY a.project_id,a.role_id,a.operational_level,p.provider,p.name`).all();
     const requirements = assignments.map(assignment => {
       let boundaries = {};
+      let allowedTools = [];
       try { boundaries = JSON.parse(assignment.boundaries_json ?? "{}"); } catch { /* runtime treats an absent declaration as non-writing */ }
+      try { allowedTools = JSON.parse(assignment.allowed_tools_json ?? "[]"); } catch { /* active contract validation owns malformed JSON */ }
       return {
         project_id: assignment.project_id,
         role: assignment.role_id,
         operational_level: assignment.operational_level,
         provider: assignment.provider,
         profile: assignment.profile,
-        requires_write: boundaries.writes === true
+        capability_requirements: executorCapabilityRequirements({ boundaries, allowed_tools: allowedTools })
       };
     });
     const child = spawnSync(process.execPath, [gateway, "profiles-check"], {
@@ -212,6 +217,8 @@ export function profileWriteRequirementDiagnostics({ workflowDatabase, gatewayPo
   } finally { db.close(); }
 }
 
+export const profileWriteRequirementDiagnostics = profileCapabilityDiagnostics;
+
 export function installRelease(options) {
   const source = specificDirectory(options.source, "SOURCE");
   const destination = specificDirectory(options.destination, "DESTINATION");
@@ -230,7 +237,7 @@ export function installRelease(options) {
   const installedState = readState(stateFile);
   const workflowDatabase = options.workflowDatabase ?? installedState?.workflow_database ?? process.env.WORKFLOW_DB ?? path.join(dataRoot, "workflow.sqlite");
   const gatewayPolicy = options.gatewayPolicy ?? installedState?.gateway_policy ?? path.join(dataRoot, "gateway", "policy.local.json");
-  const profileWriteRequirements = profileWriteRequirementDiagnostics({ workflowDatabase, gatewayPolicy, gateway: path.join(source, "AgentGateway", "src", "cli.mjs") });
+  const profileCapabilityRequirements = profileCapabilityDiagnostics({ workflowDatabase, gatewayPolicy, gateway: path.join(source, "AgentGateway", "src", "cli.mjs") });
   const targets = registeredHookTargets(workflowDatabase, options.hooks ?? []);
   const skillRoots = options.skillRoots ?? defaultSkillRoots();
   const sessionHookFiles = resolvedSessionHookFiles(options, skillRoots, installedState);
@@ -254,7 +261,8 @@ export function installRelease(options) {
       previous_version: previous ? releaseVersion(previous) : null,
       workflow_database: workflowDatabase,
       gateway_policy: gatewayPolicy,
-      profile_write_requirement_diagnostics: profileWriteRequirements,
+      profile_capability_diagnostics: profileCapabilityRequirements,
+      profile_write_requirement_diagnostics: profileCapabilityRequirements,
       hooks: [],
       legacy_hooks_removed: targets,
       skills: skillTransaction.applied,

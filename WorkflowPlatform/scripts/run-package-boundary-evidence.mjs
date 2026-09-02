@@ -10,6 +10,7 @@ import { runProjectGate } from "../src/gates.mjs";
 import { workflowRunStatistics } from "../src/statistics.mjs";
 import { registerImplicitResources } from "../src/project-resources.mjs";
 import { assertProjectBaselineUnchanged, captureProjectBaseline } from "./project-baseline.mjs";
+import { executorCapabilityRequirements } from "../src/executor-capabilities.mjs";
 
 const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 function argsObject(argv) { const result = {}; for (let i = 0; i < argv.length; i += 1) if (argv[i].startsWith("--")) result[argv[i].slice(2)] = argv[i + 1]?.startsWith("--") || argv[i + 1] === undefined ? true : argv[++i]; return result; }
@@ -45,7 +46,7 @@ for (const item of config.projects) {
     runtime.db.prepare("UPDATE workflow_steps SET state='running',updated_at=? WHERE id=?").run(now(), step.id); runtime.db.prepare("INSERT INTO attempts(id,step_id,ordinal,state,provider,profile,started_at) VALUES(?,?,1,'running','codex',?,?)").run(attemptId, step.id, contract.profile, now());
     const taskFile = path.join(outputRoot, `${item.project_id}-${role}.md`), packageContract = { objective: item.message, allowed_paths: [], artifact_keys: [], check_ids: [] };
     fs.writeFileSync(taskFile, rolePrompt({ contract, packageContract, context: { project: item.project_id, documents: [], decisions: [], pending_interactions: [] }, resultSchema: schemaKey }));
-    const receipt = await callGateway({ gateway: path.resolve(config.gateway_entry), gatewayDatabase: gatewayDb, gatewayPolicy: policyFile, provider: "codex", profile: contract.profile, level: "mvp", role, taskFile, project: path.resolve(item.root_path), taskId: `${runId}:${role}`, workflowRunId: runId, attemptNo: 1 });
+    const receipt = await callGateway({ gateway: path.resolve(config.gateway_entry), gatewayDatabase: gatewayDb, gatewayPolicy: policyFile, provider: "codex", profile: contract.profile, level: "mvp", role, capabilityRequirements: executorCapabilityRequirements(contract), taskFile, project: path.resolve(item.root_path), taskId: `${runId}:${role}`, workflowRunId: runId, attemptNo: 1 });
     parseRoleReceipt(receipt, schemaKey, schemaKey === "worker.v1" ? { contract, packageContract } : {}); runtime.linkGateway(runId, { ...receipt, step_id: step.id, attempt_id: attemptId });
     runtime.db.prepare("UPDATE attempts SET state='succeeded',finished_at=?,receipt_id=? WHERE id=?").run(now(), receipt.receiptId, attemptId); runtime.db.prepare("UPDATE workflow_steps SET state='completed',result_schema_key=?,updated_at=? WHERE id=?").run(schemaKey, now(), step.id);
   }
