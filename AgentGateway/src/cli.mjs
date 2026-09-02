@@ -214,9 +214,13 @@ function inspectProfileRequirement({ provider, profile, role = "worker", project
   let capabilities;
   try { capabilities = profileCapabilities(provider, providerConfig, profileConfig); }
   catch (error) { return { code: error.message.split(":", 1)[0], role, provider, profile, ...scope, message: error.message }; }
-  const inspection = inspectCapabilityRequirements(capabilities, requirements);
+  const inspection = inspectCapabilityRequirements(capabilities, requirements, { role, acceptedDeclarativeBoundaries: profileConfig.acceptedDeclarativeBoundaries });
   if (inspection.mismatches.length) return { code: "PROFILE_CAPABILITY_MISMATCH", role, provider, profile, ...scope, capability_requirements: requirements, mismatches: inspection.mismatches, profile_capabilities: capabilities };
-  return { status: "compatible", role, provider, profile, ...scope, capability_requirements: requirements, profile_capabilities: capabilities };
+  const accepted = inspection.accepted_declarative;
+  const profileCapabilitiesReport = accepted.length
+    ? Object.freeze(Object.fromEntries(Object.entries(capabilities).map(([name, value]) => [name, accepted.some(item => item.capability === name) ? Object.freeze({ ...value, boundary_acceptance: Object.freeze(accepted.find(item => item.capability === name)) }) : value])))
+    : capabilities;
+  return { status: accepted.length ? "accepted_declarative" : "compatible", role, provider, profile, ...scope, capability_requirements: requirements, accepted_declarative: accepted, profile_capabilities: profileCapabilitiesReport };
 }
 
 if (command === "profiles-check") {
@@ -225,8 +229,10 @@ if (command === "profiles-check") {
   catch (error) { fail(`PROFILE_REQUIREMENTS_INVALID: ${error.message}`, 77); }
   if (!Array.isArray(requirements)) fail("PROFILE_REQUIREMENTS_INVALID: expected a JSON array", 77);
   const checks = requirements.map(inspectProfileRequirement);
-  const conflicts = checks.filter(check => check.status !== "compatible");
-  process.stdout.write(`${JSON.stringify({ status: conflicts.length ? "incompatible" : "compatible", checks: checks.filter(check => check.status === "compatible"), conflicts })}\n`);
+  const admitted = new Set(["compatible", "accepted_declarative"]);
+  const conflicts = checks.filter(check => !admitted.has(check.status));
+  const status = conflicts.length ? "incompatible" : checks.some(check => check.status === "accepted_declarative") ? "accepted_declarative" : "compatible";
+  process.stdout.write(`${JSON.stringify({ status, checks: checks.filter(check => admitted.has(check.status)), conflicts })}\n`);
   process.exit(conflicts.length ? 77 : 0);
 }
 
@@ -246,7 +252,7 @@ let capabilityRequirements;
 try { capabilityRequirements = JSON.parse(String(cli["capability-requirements"] ?? "")); }
 catch { fail(`PROFILE_CAPABILITY_REQUIREMENTS_INVALID: role=${cli.role ?? "worker"}; profile=${profile}; value=${cli["capability-requirements"] ?? "missing"}`, 77); }
 const requirement = inspectProfileRequirement({ provider, profile, role: cli.role ?? "worker", capability_requirements: capabilityRequirements });
-if (requirement.status !== "compatible") fail(`${requirement.code}: role=${requirement.role}; profile=${requirement.profile}; mismatches=${JSON.stringify(requirement.mismatches ?? [])}`, 77);
+if (!["compatible", "accepted_declarative"].includes(requirement.status)) fail(`${requirement.code}: role=${requirement.role}; profile=${requirement.profile}; mismatches=${JSON.stringify(requirement.mismatches ?? [])}`, 77);
 const profileCapabilityReport = requirement.profile_capabilities;
 const privacyMode = String(cli["privacy-mode"] ?? DEFAULT_PRIVACY_MODE);
 if (privacyMode !== DEFAULT_PRIVACY_MODE) fail(`RECEIPT_PRIVACY_MODE_UNSUPPORTED: ${privacyMode}`);

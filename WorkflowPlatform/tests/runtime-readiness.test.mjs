@@ -13,6 +13,7 @@ import { projectRuntimeReadiness, workflowRuntimeReadiness } from "../src/runtim
 import { registerExternalExecutor, registerExternalOperation } from "../src/external-control-plane.mjs";
 
 const compatibleProfileCheck = requirements => ({ status: "compatible", checks: requirements, conflicts: [] });
+const acceptedDeclarativeProfileCheck = requirements => ({ status: "accepted_declarative", checks: requirements.map(item => ({ ...item, status: "accepted_declarative", accepted_declarative: [{ capability: "project_write", role: item.role, reason: "Owner accepted the declarative reviewer boundary." }] })), conflicts: [] });
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir(), "workflow-runtime-readiness-"));
@@ -49,6 +50,10 @@ test("runtime readiness requires direct classifier and researcher assignments an
   assert.equal(readiness.registered_context.status, "available");
   assert.equal(readiness.registered_context.researcher_documents, 1);
   assert.deepEqual(readiness.warnings, []);
+  readiness = projectRuntimeReadiness(db, "project", { profileCheck: acceptedDeclarativeProfileCheck });
+  assert.equal(readiness.status, "ready");
+  assert.equal(readiness.profile_capability_requirements.status, "accepted_declarative");
+  assert.equal(readiness.profile_capability_requirements.checks[0].accepted_declarative[0].reason, "Owner accepted the declarative reviewer boundary.");
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });

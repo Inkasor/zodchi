@@ -34,6 +34,14 @@ test("provider capability reports distinguish technical, declarative and unknown
   const kimiInspection = inspectCapabilityRequirements(kimi, { required: ["context_input"], forbidden: ["project_write"] });
   assert.deepEqual(kimiInspection.mismatches.map(item => [item.capability, item.expectation]), [["project_write", "forbidden"]]);
 
+  const reviewerException = [{ capability: "project_write", roles: ["evidence_reviewer", "strategy_reviewer"], reason: "Owner accepted Kimi's declarative boundary for reviewer roles." }];
+  const acceptedReviewer = inspectCapabilityRequirements(kimi, { required: ["context_input"], forbidden: ["project_write"] }, { role: "evidence_reviewer", acceptedDeclarativeBoundaries: reviewerException });
+  assert.equal(acceptedReviewer.mismatches.length, 0);
+  assert.deepEqual(acceptedReviewer.accepted_declarative.map(item => [item.status, item.capability, item.role, item.reason]), [["accepted_declarative", "project_write", "evidence_reviewer", reviewerException[0].reason]]);
+  assert.equal(inspectCapabilityRequirements(kimi, { required: ["context_input"], forbidden: ["project_write"] }, { role: "worker", acceptedDeclarativeBoundaries: reviewerException }).mismatches.length, 1);
+  assert.equal(inspectCapabilityRequirements(kimi, { required: ["project_write"], forbidden: [] }, { role: "evidence_reviewer", acceptedDeclarativeBoundaries: reviewerException }).mismatches.length, 1);
+  assert.throws(() => provider("kimi", { acceptedDeclarativeBoundaries: [{ capability: "project_write", roles: ["evidence_reviewer"], reason: "" }] }), /PROFILE_DECLARATIVE_BOUNDARY_EXCEPTION_REASON_REQUIRED/);
+
   const cursor = provider("cursor", { readOnly: true });
   assert.equal(cursor.project_write.status, "unknown");
   assert.equal(inspectCapabilityRequirements(cursor, { required: ["context_input"], forbidden: ["project_write"] }).mismatches.length, 1);

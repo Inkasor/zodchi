@@ -130,8 +130,22 @@ function normalizeOverride(name, value) {
   return capability(value.status, value.enforcement, value.access, "profile:explicit", value.evidenceRef?.trim() ?? null);
 }
 
+function normalizeDeclarativeBoundaryExceptions(value) {
+  if (value === undefined) return Object.freeze([]);
+  if (!Array.isArray(value)) throw new Error("PROFILE_DECLARATIVE_BOUNDARY_EXCEPTIONS_INVALID");
+  return Object.freeze(value.map((item, index) => {
+    if (!item || Array.isArray(item) || typeof item !== "object") throw new Error(`PROFILE_DECLARATIVE_BOUNDARY_EXCEPTION_INVALID: ${index}`);
+    if (JSON.stringify(Object.keys(item).sort()) !== JSON.stringify(["capability", "reason", "roles"])) throw new Error(`PROFILE_DECLARATIVE_BOUNDARY_EXCEPTION_INVALID: ${index}`);
+    if (!CAPABILITY_SET.has(item.capability)) throw new Error(`PROFILE_DECLARATIVE_BOUNDARY_EXCEPTION_CAPABILITY_INVALID: ${index}`);
+    if (!Array.isArray(item.roles) || !item.roles.length || item.roles.some(role => typeof role !== "string" || !role.trim() || role !== role.trim())) throw new Error(`PROFILE_DECLARATIVE_BOUNDARY_EXCEPTION_ROLES_INVALID: ${index}`);
+    if (typeof item.reason !== "string" || !item.reason.trim() || item.reason !== item.reason.trim()) throw new Error(`PROFILE_DECLARATIVE_BOUNDARY_EXCEPTION_REASON_REQUIRED: ${index}`);
+    return Object.freeze({ capability: item.capability, roles: Object.freeze([...new Set(item.roles)].sort()), reason: item.reason });
+  }));
+}
+
 export function profileCapabilities(provider, providerConfig, profileConfig, options = {}) {
   const result = providerCapabilities(provider, providerConfig, profileConfig, options.platform);
+  normalizeDeclarativeBoundaryExceptions(profileConfig.acceptedDeclarativeBoundaries);
   const overrides = profileConfig.capabilities ?? {};
   if (!overrides || Array.isArray(overrides) || typeof overrides !== "object") throw new Error("PROFILE_CAPABILITIES_INVALID");
   for (const [name, value] of Object.entries(overrides)) {
@@ -161,18 +175,26 @@ export function normalizeCapabilityRequirements(value) {
   return Object.freeze({ required: Object.freeze(required), forbidden: Object.freeze(forbidden) });
 }
 
-export function inspectCapabilityRequirements(capabilities, requirements) {
+export function inspectCapabilityRequirements(capabilities, requirements, { role = "worker", acceptedDeclarativeBoundaries = undefined } = {}) {
   const normalized = normalizeCapabilityRequirements(requirements);
+  const exceptions = normalizeDeclarativeBoundaryExceptions(acceptedDeclarativeBoundaries);
   const mismatches = [];
+  const acceptedDeclarative = [];
   for (const name of normalized.required) {
     const actual = capabilities[name];
     if (actual.status !== "available" || actual.enforcement !== "technical") mismatches.push({ capability: name, expectation: "required", actual });
   }
   for (const name of normalized.forbidden) {
     const actual = capabilities[name];
-    if (actual.status !== "unavailable" || actual.enforcement !== "technical") mismatches.push({ capability: name, expectation: "forbidden", actual });
+    if (actual.status === "unavailable" && actual.enforcement === "technical") continue;
+    const exception = exceptions.find(item => item.capability === name && item.roles.includes(role));
+    if (exception && actual.enforcement === "declarative") {
+      acceptedDeclarative.push({ status: "accepted_declarative", capability: name, role, reason: exception.reason, actual });
+      continue;
+    }
+    mismatches.push({ capability: name, expectation: "forbidden", actual });
   }
-  return { requirements: normalized, mismatches };
+  return { requirements: normalized, mismatches, accepted_declarative: acceptedDeclarative };
 }
 
 export { CAPABILITY_NAMES };

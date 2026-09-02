@@ -13,7 +13,7 @@ export function checkGatewayProfileRequirements({ requirements, gateway, gateway
   });
   let result = null;
   try { result = JSON.parse(String(child.stdout ?? "").trim()); } catch { /* handled below */ }
-  if (result && ["compatible", "incompatible"].includes(result.status)) return result;
+  if (result && ["compatible", "accepted_declarative", "incompatible"].includes(result.status)) return result;
   const text = String(child.stderr || child.stdout || child.error?.message || "unknown gateway preflight failure").trim();
   const error = new Error(`PROFILE_REQUIREMENTS_CHECK_FAILED: ${text}`);
   error.code = "PROFILE_REQUIREMENTS_CHECK_FAILED";
