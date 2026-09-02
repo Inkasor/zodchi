@@ -208,15 +208,21 @@ test("research invokes classifier then researcher without planner, worker or rev
   assert.equal(result.route, "research");
   assert.equal(result.response, "Исходник движка прочитан.");
   assert.deepEqual(result.research, { status: "answered", inspected_paths: ["src/engine.ts"], limitations: [] });
-  assert.match(researcherPrompt, /WORKFLOW RESEARCH REQUEST v3/);
-  assert.match(researcherPrompt, /actual repository/);
+  assert.match(researcherPrompt, /WORKFLOW RESEARCH REQUEST v4/);
+  assert.match(researcherPrompt, /Do not run commands or read files directly/);
+  assert.match(researcherPrompt, /REGISTERED_SOURCE_EVIDENCE/);
   assert.match(researcherPrompt, /REGISTERED_PROJECT_CORPUS/);
   assert.match(researcherPrompt, /src\/engine\.ts/);
+  assert.match(researcherPrompt, /export const engine = 'shared'/);
   const verified = openDb(dbFile);
   assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM workflow_steps").get().count, 0);
   assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(result.run_id).state, "completed");
   const evidence = JSON.parse(verified.prepare("SELECT evidence_json FROM run_evidence WHERE run_id=? AND kind='research_inspection'").get(result.run_id).evidence_json);
-  assert.deepEqual(evidence, { status: "answered", inspected_paths: ["src/engine.ts"], limitations: [] });
+  assert.equal(evidence.status, "answered");
+  assert.deepEqual(evidence.inspected_paths, ["src/engine.ts"]);
+  assert.deepEqual(evidence.limitations, []);
+  assert.equal(evidence.source_selection.strategy, "complete_small_corpus");
+  assert.deepEqual(evidence.source_selection.supplied_paths, ["src/engine.ts"]);
   verified.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -287,6 +293,36 @@ test("research cannot claim an answered repository analysis without inspected in
   });
   assert.equal(result.route, "failed");
   assert.equal(result.error, "RESEARCH_ANSWER_WITHOUT_INSPECTED_SOURCE");
+  const verified = openDb(dbFile);
+  assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(result.run_id).state, "failed");
+  assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM run_evidence WHERE run_id=? AND kind='research_inspection'").get(result.run_id).count, 0);
+  verified.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("research cannot cite an inventory path whose contents were not supplied", async () => {
+  const { root, project, dbFile, db } = fixture("workflow-research-supplied-source-required-");
+  fs.mkdirSync(path.join(project, "src"));
+  for (let index = 0; index < 10; index += 1) fs.writeFileSync(path.join(project, "src", `noise-${index}.ts`), `export const noise${index} = ${index};\n`, "utf8");
+  fs.writeFileSync(path.join(project, "src", "target.ts"), "export const uniqueResearchNeedle = 'evidence';\n", "utf8");
+  db.close();
+  const research = decision({
+    work_type: "research", artifact_type: "test_report", discipline: "software", planning_level: "L0", planning_required: false,
+    reply_mode: "research", resolved_objective: "Explain uniqueResearchNeedle from the registered source.", reason: "Нужно исследовать конкретный символ."
+  });
+  let researcherPrompt = null;
+  const result = await statelessProcessMessage({
+    message: "Что делает uniqueResearchNeedle?", project, dbFile, workflowDefinition: definition(), execute: true,
+    gatewayCall: async request => {
+      if (request.role === "classifier") return receipt(JSON.stringify(research), "classifier-receipt");
+      researcherPrompt = fs.readFileSync(request.taskFile, "utf8");
+      return receipt(JSON.stringify({ schema_version: 1, status: "answered", answer: "Ответ якобы получен из другого файла.", inspected_paths: ["src/noise-0.ts"], limitations: [] }), "research-receipt");
+    }
+  });
+  assert.equal(result.route, "failed");
+  assert.equal(result.error, "RESEARCH_PATH_NOT_SUPPLIED");
+  assert.match(researcherPrompt, /export const uniqueResearchNeedle = 'evidence'/);
+  assert.equal(researcherPrompt.includes("export const noise0 = 0"), false, "inventory-only files do not leak into supplied source content");
   const verified = openDb(dbFile);
   assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(result.run_id).state, "failed");
   assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM run_evidence WHERE run_id=? AND kind='research_inspection'").get(result.run_id).count, 0);
