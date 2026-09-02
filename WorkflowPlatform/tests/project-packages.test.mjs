@@ -246,7 +246,16 @@ test("the infrastructure preview has a two-step read-only route and approval-bou
   assert.deepEqual(restore.steps.map(item => item.key), ["coordinate", "verify_backup", "restore_approval", "restore", "verify_health"]);
   assert.equal(restore.steps.findIndex(item => item.key === "restore_approval") < restore.steps.findIndex(item => item.key === "restore"), true);
   assert.equal(restore.steps.find(item => item.key === "restore_approval").role_key, null);
-  assert.equal(packageValue.evidence_flows.some(item => item.key === "infra.change_to_health"), false, "post-action truth is carried by signed operations and gates, not pre-action review source anchors");
+  const flow = packageValue.evidence_flows.find(item => item.key === "infra.change_to_health");
+  assert.ok(flow);
+  assert.deepEqual(flow.workflow_keys, ["infra_operations.backup_restore"]);
+  assert.deepEqual(Object.fromEntries(flow.nodes.map(node => [node.key, node.step_keys])), {
+    observed_state: ["verify_backup"],
+    approved_action: ["restore_approval"],
+    applied_action: ["restore"],
+    health_result: ["verify_health"]
+  });
+  assert.deepEqual(flow.required_edges, ["observed_state->approved_action", "approved_action->applied_action", "applied_action->health_result"]);
 });
 
 test("the marketing preview leaves document selection to the owner and connects edited claims to measured execution", () => {
