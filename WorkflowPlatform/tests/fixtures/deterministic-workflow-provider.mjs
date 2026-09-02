@@ -38,11 +38,12 @@ if (resultSchema === "strategy_review.v1") {
     evidence_refs: ["worker:zero-change"], primary_gap: null, verification_request: null
   };
 } else if (resultSchema === "documentator.v1") {
-  const allowed = contractEnvelope()?.package?.allowed_document_ids ?? [];
+  const packageValue = contractEnvelope()?.package ?? {};
+  const existing = typeof packageValue.expected_version === "string";
   result = {
-    schema_version: 1, status: "proposed", document_id: allowed[0] ?? null, expected_version: null,
-    operation: "append_evidence", authority: "registered project documents", content: null,
-    section_id: null, decision_id: null, evidence_id: null, status_value: null,
+    schema_version: 1, status: "proposed", document_id: packageValue.document_id ?? null, expected_version: packageValue.expected_version ?? null,
+    operation: existing ? "update_section" : "create_document", authority: packageValue.authority ?? "registered project documents", content: existing ? "new accepted content" : '<document id="generated" status="working"><section id="summary" status="working">new accepted content</section></document>',
+    section_id: existing ? "summary" : null, decision_id: null, evidence_id: null, status_value: null,
     target_tag: null, target_id: null, replacement_id: null
   };
 } else if (role === "classifier") {

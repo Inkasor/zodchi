@@ -8,7 +8,7 @@ import { openDb } from "../src/db.mjs";
 import { applyWorkflowImport, parseWorkflowPackage, proposeWorkflowImport, serializeWorkflowPackage, validateWorkflowPackage } from "../src/workflow-package.mjs";
 import { inspectWorkflowBundle, parseWorkflowBundle } from "../src/workflow-bundle.mjs";
 import { loadPackageDefinitions } from "../packages/definitions.mjs";
-import { role } from "../packages/builders.mjs";
+import { companyWebPackage, role } from "../packages/builders.mjs";
 
 // Package definitions are an installation's own material and a configured source may be private, so
 // these tests assert the contract every package must satisfy rather than the content of any one
@@ -25,6 +25,14 @@ test("new role contracts use a measured-prompt allowance above the old 24KB defa
   const deliberatelySmall = role("fixture", "Exercise fitting.", ["research"], ["document"], { context: 24000 });
   assert.equal(ordinary.contract.context_limit_bytes, 65536);
   assert.equal(deliberatelySmall.contract.context_limit_bytes, 24000);
+});
+
+test("documentator contracts propose from a read-only profile while the platform owns the write", () => {
+  const packageValue = companyWebPackage({ key: "sdk.documentator", version: "1.0.0", purpose: "Documentator write-boundary fixture.", checks: [], documents: [] });
+  const documentator = packageValue.roles.find(item => item.key === "documentator");
+  assert.equal(documentator.contract.result_schema_key, "documentator.v1");
+  assert.equal(documentator.contract.boundaries.writes, false);
+  assert.equal(documentator.contract.allowed_tools.includes("apply_patch"), false);
 });
 
 test("package lint enforces the configurable one-to-three consilium contract", () => {
@@ -51,6 +59,8 @@ test("at least one package is configured and every one is generated and free of 
     assert.equal(/[A-Za-z]:[\\/]/.test(source), false); assert.equal(source.includes("model_id"), false); assert.equal(source.includes("profile_id"), false); assert.equal(source.includes("api_key"), false);
     assert.equal(packageValue.roles.every(role => role.contract.purpose && role.contract.result_schema_key && role.contract.allowed_profile_keys.length), true);
     assert.equal(packageValue.roles.filter(role => role.contract.allowed_tools.includes("apply_patch")).every(role => role.contract.boundaries.writes === true), true);
+    const documentator = packageValue.roles.find(role => role.key === "documentator");
+    if (documentator) { assert.equal(documentator.contract.boundaries.writes, false); assert.equal(documentator.contract.allowed_tools.includes("apply_patch"), false); }
     assert.equal(packageValue.workflows.every(workflow => workflow.steps.length && workflow.transitions.length === workflow.steps.length - 1), true);
     assert.equal(packageValue.documents.every(item => !path.isAbsolute(item.path)), true);
   }
