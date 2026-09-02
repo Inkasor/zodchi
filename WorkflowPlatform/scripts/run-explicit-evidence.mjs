@@ -38,6 +38,12 @@ const bindings = [...requirements];
 for (const roleId of ["classifier", "researcher"]) {
   if (!bindings.some(binding => binding.role_id === roleId)) bindings.push({ role_id: roleId, profile_key: `${config.package_key}.${roleId}.mvp`, direct: true });
 }
+const contractWrites = new Map(db.prepare("SELECT role_id,boundaries_json FROM role_contracts WHERE project_id=? AND status='active'").all(config.project_id).map(row => {
+  let boundaries = {};
+  try { boundaries = JSON.parse(row.boundaries_json ?? "{}"); } catch { /* imported contract validation owns malformed JSON */ }
+  return [row.role_id, boundaries.writes === true];
+}));
+for (const binding of bindings) binding.requires_write = binding.direct ? false : contractWrites.get(binding.role_id) === true;
 for (const binding of bindings) {
   db.prepare("INSERT OR IGNORE INTO profiles(id,provider,name,role_id) VALUES(?,'codex',?,?)").run(binding.profile_key, binding.profile_key, binding.role_id);
   db.prepare("INSERT OR REPLACE INTO role_profile_assignments(project_id,role_id,profile_id,operational_level,enabled,satisfies_profile_key) VALUES(?,?,?,'mvp',1,?)").run(config.project_id, binding.role_id, binding.profile_key, binding.direct ? null : binding.profile_key);
@@ -46,7 +52,7 @@ db.close();
 
 const fakeProvider = path.join(repositoryRoot, "tests", "fixtures", "deterministic-workflow-provider.mjs"), policyFile = path.join(outputRoot, "gateway-policy.json"), providerHome = path.join(outputRoot, "empty-provider-home");
 fs.mkdirSync(providerHome);
-const profiles = Object.fromEntries(bindings.map(binding => [binding.profile_key, { model: "deterministic-contract-v1", reasoningEffort: "low", readOnly: true }]));
+const profiles = Object.fromEntries(bindings.map(binding => [binding.profile_key, { model: "deterministic-contract-v1", reasoningEffort: "low", readOnly: !binding.requires_write }]));
 fs.writeFileSync(policyFile, JSON.stringify({ schemaVersion: 1, levels: { prototype: { maxCalls: 2, maxCorrectionCycles: 0, timeoutSec: 60 }, mvp: { maxCalls: 3, maxCorrectionCycles: 1, timeoutSec: 3600 } }, providers: { codex: { command: process.execPath, args: [fakeProvider], profiles } } }, null, 2));
 Object.assign(process.env, {
   AGENT_GATEWAY_ENTRY: path.resolve(config.gateway_entry),

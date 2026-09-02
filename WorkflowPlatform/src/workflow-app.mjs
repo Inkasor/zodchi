@@ -338,7 +338,7 @@ function registeredRoot(db, candidate) {
 
 export async function processMessage({
   message, project, origin = null, dbFile, workflow, workflowDefinition, execute = false, eventSource = "user", eventKey = null, eventFields = [],
-  classificationResult = null, gatewayCall = callGateway, gateRunner = undefined, preferredLanguage = null, client = "codex", semanticScope, prepareOnly = false, runProfileOverrides = {}
+  classificationResult = null, gatewayCall = callGateway, gatewayProfileCheck = undefined, gateRunner = undefined, preferredLanguage = null, client = "codex", semanticScope, prepareOnly = false, runProfileOverrides = {}
 }) {
   const resolvedSemanticScope = normalizeSemanticScope(semanticScope);
   const settings = resolveWorkflowSettings();
@@ -373,7 +373,7 @@ export async function processMessage({
   // that the selected route cannot run. Check both direct runtime roles before accepting a run or calling
   // a model. Explicit test/embedded definitions remain self-contained and are checked where invoked.
   if (execute && registryBackedDefinition && !classificationResult) {
-    try { assertProjectRuntimeReady(runtime.db, project); }
+    try { assertProjectRuntimeReady(runtime.db, project, gatewayProfileCheck ? { profileCheck: gatewayProfileCheck } : undefined); }
     catch (error) { runtime.db.close(); throw error; }
   }
   if (execute && !registryBackedDefinition && !classificationResult) {

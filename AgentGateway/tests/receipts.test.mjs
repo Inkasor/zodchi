@@ -27,11 +27,11 @@ test("CLI returns provider output transiently but persists only whitelisted tech
       codex: {
         command: process.execPath,
         args: ["-e", "console.log(JSON.stringify({usage:{input_tokens:4,output_tokens:2,private_field:'SECRET_USAGE_MARKER'}}));console.log('SECRET_OUTPUT_MARKER ответ 😀 SELECT private_value');console.error('SECRET_STDERR_MARKER пароль-секрет')"],
-        profiles: { test: { reasoningEffort: "low" } }
+        profiles: { test: { reasoningEffort: "low", readOnly: true } }
       }
     }
   }, null, 2));
-  const result = spawnSync(process.execPath, [path.resolve("src/cli.mjs"), "run", "--provider", "codex", "--profile", "test", "--level", "mvp", "--task-file", taskPath, "--task", "receipt-test"], {
+  const result = spawnSync(process.execPath, [path.resolve("src/cli.mjs"), "run", "--provider", "codex", "--profile", "test", "--level", "mvp", "--requires-write", "false", "--task-file", taskPath, "--task", "receipt-test"], {
     cwd: path.dirname(path.resolve("src/cli.mjs")),
     encoding: "utf8",
     windowsHide: true,
@@ -44,7 +44,7 @@ test("CLI returns provider output transiently but persists only whitelisted tech
       CODEX_SOURCE_HOME: sourceHome
     }
   });
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 0, JSON.stringify({ stderr: result.stderr, stdout: result.stdout, signal: result.signal, error: result.error?.message }));
   const transientReceipt = JSON.parse(result.stdout.trim());
   assert.match(transientReceipt.output, /SECRET_OUTPUT_MARKER/);
   assert.match(transientReceipt.error, /SECRET_STDERR_MARKER/);

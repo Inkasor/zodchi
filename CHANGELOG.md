@@ -19,6 +19,10 @@
 - The two managed Zodchi skill copies are host-neutral, so Cursor can use either global compatibility location without adding a third conflicting slash command.
 - AgentGateway includes a preview named OpenRouter direct API provider with environment-only credentials, strict JSON Schema output routing, normalized token/cache/cost usage, and an explicit live-smoke requirement before role assignment.
 - Cursor and OpenRouter remain preview capabilities. Each stays unavailable on an installation until its own live smoke passes; their absence on the release owner's machine does not block the stable release.
+- Role write requirements now fail closed at the AgentGateway boundary. Every invocation must declare whether its active contract permits writes, and a mismatched or omitted profile capability is rejected before the provider starts.
+- Project readiness performs one Gateway-owned preflight over all enabled role assignments before accepting a run. Package imports that turn a role read-only therefore expose incompatible local profiles before any classifier, planner, worker or reviewer spends budget; installation and update diagnostics use the same absent-`writes` = read-only rule.
+- Documentators are read-only model roles: they return a validated `documentator.v1` proposal while WorkflowPlatform keeps the exclusive worktree lease, applies the operation atomically, runs Document Lint and rolls back a failed change.
+- Existing installations must assign read-only profiles to every role whose contract does not permit writes, including documentators and proposal-only access or release operators, before those projects become runtime-ready.
 
 </section>
 

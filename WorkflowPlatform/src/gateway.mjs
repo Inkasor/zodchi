@@ -1,6 +1,24 @@
 import { spawn, spawnSync } from "node:child_process";
 import { resolveWorkflowSettings } from "./paths.mjs";
 
+export function checkGatewayProfileRequirements({ requirements, gateway, gatewayPolicy } = {}) {
+  const settings = resolveWorkflowSettings();
+  gateway ??= settings.gatewayEntry;
+  gatewayPolicy ??= settings.gatewayPolicyPath;
+  if (!Array.isArray(requirements)) throw new Error("PROFILE_REQUIREMENTS_INVALID: expected an array");
+  const child = spawnSync(process.execPath, [gateway, "profiles-check"], {
+    input: JSON.stringify(requirements), encoding: "utf8", windowsHide: true,
+    env: { ...process.env, AGENT_GATEWAY_POLICY: gatewayPolicy }
+  });
+  let result = null;
+  try { result = JSON.parse(String(child.stdout ?? "").trim()); } catch { /* handled below */ }
+  if (result && ["compatible", "incompatible"].includes(result.status)) return result;
+  const text = String(child.stderr || child.stdout || child.error?.message || "unknown gateway preflight failure").trim();
+  const error = new Error(`PROFILE_REQUIREMENTS_CHECK_FAILED: ${text}`);
+  error.code = "PROFILE_REQUIREMENTS_CHECK_FAILED";
+  throw error;
+}
+
 export function callGateway({ gateway, gatewayDatabase, gatewayPolicy, provider = "codex", profile, level = "mvp", role = "worker", requiresWrite, taskFile, outputSchemaFile = null, project, writeDirs = [], taskId, workflowRunId = null, attemptNo = null, artifactRef = null, decisionRef = null, privacyMode = "no_source_persistence" }) {
   const settings = resolveWorkflowSettings();
   gateway ??= settings.gatewayEntry;
