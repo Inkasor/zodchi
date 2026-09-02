@@ -114,6 +114,10 @@ async function scenario({ prefix, gateStatus = "passed", gateStatuses = null, re
   let reviewerCalls = 0;
   const gatewayCall = async request => {
     calls.push(request.role);
+    const contractDb = openDb(env.dbFile);
+    const expectedWrites = JSON.parse(contractDb.prepare("SELECT boundaries_json FROM role_contracts WHERE project_id='project' AND role_id=? AND status='active'").get(request.role).boundaries_json).writes === true;
+    contractDb.close();
+    assert.equal(request.requiresWrite, expectedWrites, `${request.role} write requirement must come from its active contract`);
     if (request.role === "planner" || request.role === "coordinator") {
       plannerCalls += 1;
       plannerPrompt = fs.readFileSync(request.taskFile, "utf8");

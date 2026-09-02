@@ -717,7 +717,7 @@ test("H: cancelling an active Gateway invocation kills descendants and closes qu
     fs.writeFileSync(childFile, `import fs from "node:fs"; const file=process.argv[2]; setInterval(()=>fs.appendFileSync(file,"x"),25);\n`);
     fs.writeFileSync(gatewayFile, `import {spawn} from "node:child_process"; import path from "node:path"; spawn(process.execPath,[path.join(import.meta.dirname,"child.mjs"),${JSON.stringify(marker)}],{stdio:"ignore"}); setInterval(()=>{},1000);\n`);
     fx.queue.enqueueRun(fx.runId); const lease = fx.queue.checkout({ ownerId: "worker", runId: fx.runId }); fx.queue.start(lease.token);
-    const invocation = callGateway({ gateway: gatewayFile, gatewayDatabase: path.join(fx.root, "gateway.sqlite"), gatewayPolicy: path.join(fx.root, "policy.json"), profile: "fixture", taskFile: childFile, project: fx.projectRoot, taskId: "fixture", workflowRunId: fx.runId });
+    const invocation = callGateway({ gateway: gatewayFile, gatewayDatabase: path.join(fx.root, "gateway.sqlite"), gatewayPolicy: path.join(fx.root, "policy.json"), profile: "fixture", requiresWrite: false, taskFile: childFile, project: fx.projectRoot, taskId: "fixture", workflowRunId: fx.runId });
     const rejected = assert.rejects(invocation, /GATEWAY_INVOCATION_CANCELLED/);
     for (let attempt = 0; attempt < 40 && !fs.existsSync(marker); attempt += 1) await new Promise(resolve => setTimeout(resolve, 25));
     assert.equal(fs.existsSync(marker), true);

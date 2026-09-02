@@ -1,15 +1,16 @@
 import { spawn, spawnSync } from "node:child_process";
 import { resolveWorkflowSettings } from "./paths.mjs";
 
-export function callGateway({ gateway, gatewayDatabase, gatewayPolicy, provider = "codex", profile, level = "mvp", role = "worker", taskFile, outputSchemaFile = null, project, writeDirs = [], taskId, workflowRunId = null, attemptNo = null, artifactRef = null, decisionRef = null, privacyMode = "no_source_persistence" }) {
+export function callGateway({ gateway, gatewayDatabase, gatewayPolicy, provider = "codex", profile, level = "mvp", role = "worker", requiresWrite, taskFile, outputSchemaFile = null, project, writeDirs = [], taskId, workflowRunId = null, attemptNo = null, artifactRef = null, decisionRef = null, privacyMode = "no_source_persistence" }) {
   const settings = resolveWorkflowSettings();
   gateway ??= settings.gatewayEntry;
   gatewayDatabase ??= settings.gatewayDatabasePath;
   gatewayPolicy ??= settings.gatewayPolicyPath;
   if (!profile) throw new Error("Gateway profile is required; assign it during onboarding");
+  if (typeof requiresWrite !== "boolean") throw new Error(`GATEWAY_WRITE_REQUIREMENT_REQUIRED: role=${role}; profile=${profile}`);
   let child = null, cancellationRequested = false;
   const promise = new Promise((resolve, reject) => {
-    const args = [gateway, "run", "--provider", provider, "--profile", profile, "--level", level, "--role", role, "--task-file", taskFile, "--task", taskId ?? taskFile, "--privacy-mode", privacyMode];
+    const args = [gateway, "run", "--provider", provider, "--profile", profile, "--level", level, "--role", role, "--requires-write", String(requiresWrite), "--task-file", taskFile, "--task", taskId ?? taskFile, "--privacy-mode", privacyMode];
     if (outputSchemaFile) args.push("--output-schema", outputSchemaFile);
     if (project) args.push("--project", project);
     // Only a writable root reaches the provider. What a role reads was collected before the call and
@@ -40,7 +41,13 @@ export function callGateway({ gateway, gatewayDatabase, gatewayPolicy, provider 
       captureReceipt(); settled = true;
       if (pendingReceipt) resolve(pendingReceipt);
       else if (cancellationRequested) { const error = new Error("GATEWAY_INVOCATION_CANCELLED"); error.code = "GATEWAY_INVOCATION_CANCELLED"; reject(error); }
-      else { const text = err || out; reject(new Error(`Gateway exited before receipt (${code}): ${text}`)); }
+      else {
+        const text = err || out;
+        const requirementFailure = text.match(/PROFILE_WRITE_REQUIREMENT_(?:MISMATCH|INVALID):[^\r\n]*/u)?.[0] ?? null;
+        const error = new Error(requirementFailure ?? `Gateway exited before receipt (${code}): ${text}`);
+        error.code = requirementFailure?.split(":", 1)[0] ?? "GATEWAY_EXITED_BEFORE_RECEIPT";
+        reject(error);
+      }
     });
   });
   promise.supports_cancel = true;
