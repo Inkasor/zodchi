@@ -131,6 +131,11 @@ test("quality gates cascade lower-level checks and de-duplicate repeated binding
   const production = await runProjectGate(project, "production", dbFile, "cascade-production", { allowedPaths: [], artifactType: "release_package" });
   assert.deepEqual(production.checks.map(item => item.id), ["static", "tests", "release"]);
   assert.deepEqual(production.checks.find(item => item.id === "tests").inherited_from, ["mvp", "production"]);
+  const explicitPostCheck = await runProjectGate(project, "production", dbFile, "cascade-explicit-post", { allowedPaths: [], artifactType: "release_package", checkIds: ["release"] });
+  assert.deepEqual(explicitPostCheck.checks.map(item => item.id), ["release"]);
+  const missingPostCheck = await runProjectGate(project, "production", dbFile, "cascade-missing-post", { allowedPaths: [], artifactType: "release_package", checkIds: ["not-registered"] });
+  assert.equal(missingPostCheck.status, "unavailable");
+  assert.equal(missingPostCheck.checks.some(item => item.id === "not-registered" && item.required), true);
   const security = await runProjectGate(project, "security-audit", dbFile, "cascade-security", { allowedPaths: [], artifactType: "security_report" });
   assert.deepEqual(security.checks.map(item => item.id), ["static", "tests", "release", "security"]);
   fs.rmSync(root, { recursive: true, force: true });

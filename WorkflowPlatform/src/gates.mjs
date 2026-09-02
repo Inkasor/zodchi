@@ -156,7 +156,14 @@ async function executeCheck(check, project, allowedPaths, context) {
 export async function runProjectGate(project, level = "mvp", dbFile = resolveWorkflowSettings().databasePath, taskId = `gate-${Date.now()}`, options = {}) {
   const resolvedProject = path.resolve(project);
   const allowedPaths = [...new Set((options.allowedPaths ?? []).map(item => item.replaceAll("\\", "/")))].sort();
-  const configured = configuredChecks(resolvedProject, level, dbFile, options.artifactType ?? null);
+  const available = configuredChecks(resolvedProject, level, dbFile, options.artifactType ?? null);
+  const requestedCheckIds = options.checkIds === undefined ? null : [...new Set(options.checkIds)];
+  if (requestedCheckIds !== null && requestedCheckIds.some(item => typeof item !== "string" || !item.trim())) throw new Error("GATE_CHECK_IDS_INVALID");
+  const configured = requestedCheckIds === null ? available : available
+    .filter(check => requestedCheckIds.includes(check.check_id) || requestedCheckIds.includes(check.semantic_id))
+    .map(check => ({ ...check, required: true }));
+  const matchedCheckIds = new Set(configured.flatMap(check => [check.check_id, check.semantic_id]));
+  const missingCheckIds = requestedCheckIds?.filter(checkId => !matchedCheckIds.has(checkId)) ?? [];
   const checks = [];
   const startedAt = new Date().toISOString();
   // A check that cannot run is evidence of nothing, so coverage counts only required executable checks.
@@ -164,6 +171,7 @@ export async function runProjectGate(project, level = "mvp", dbFile = resolveWor
   if (!executableRequired.length && (level === "security-audit" || CHECKED_ARTIFACTS.has(options.artifactType))) {
     checks.push({ id: "quality_contract_checks", name: "Required check coverage", required: true, status: "unavailable", exit_code: 1, duration_ms: 0, failure: `No executable required checks are configured for ${level}/${options.artifactType ?? "unknown"}.`, execution_project_id: null, execution_root: resolvedProject });
   }
+  for (const checkId of missingCheckIds) checks.push({ id: checkId, name: checkId, required: true, status: "unavailable", exit_code: 1, duration_ms: 0, failure: `Explicitly requested check is not registered for ${level}/${options.artifactType ?? "unknown"}.`, execution_project_id: null, execution_root: resolvedProject });
   for (const check of configured) {
     const started = Date.now();
     const result = await executeCheck(check, resolvedProject, allowedPaths, { level, artifactType: options.artifactType ?? null });

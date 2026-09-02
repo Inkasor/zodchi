@@ -61,8 +61,14 @@ function fixture(prefix, { document = false, externalOperation = false } = {}) {
     roles: roles.map(([role]) => ({ id: role, name: role })),
     profiles: roles.map(([role]) => ({ id: `profile-${role}`, provider: role === "coordinator" ? "claude-code" : "codex", name: `local-${role}`, role_id: role })),
     routes: [{ work_type_id: "implementation" }, { work_type_id: "documentation" }, ...(externalOperation ? [{ work_type_id: "release" }] : [])],
-    checks: [{ id: "check-ok", name: "Test check", runner: "fixture", kind: "fixture", config: { status: "passed" } }],
-    project_checks: [{ check_id: "check-ok", quality_mode_id: "mvp", required: true }],
+    checks: [
+      { id: "check-ok", name: "Test check", runner: "fixture", kind: "fixture", config: { status: "passed" } },
+      ...(externalOperation ? [{ id: "check-post", name: "Post-operation check", runner: "fixture", kind: "fixture", config: { status: "passed" } }] : [])
+    ],
+    project_checks: [
+      { check_id: "check-ok", quality_mode_id: "mvp", required: true },
+      ...(externalOperation ? [{ check_id: "check-post", quality_mode_id: "mvp", required: true, artifact_type_id: "deployment_evidence" }] : [])
+    ],
     role_contracts: roles.map(([role, schema, artifacts]) => roleContract(role, schema, artifacts)),
     role_assignments: roles.map(([role]) => ({ role_id: role, profile_id: `profile-${role}`, operational_level: "mvp" })),
     ...(document ? {
@@ -864,13 +870,15 @@ test("a read-only operator proposes before approval and only a signed registered
   db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow','proposal',1,'release_operator',1,0,'package.v1','release_operation.v1','[\"release_package\"]','[\"check-ok\"]','{}','{}')").run();
   db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow','deployment_approval',2,NULL,1,1,'package.v1','approval.v1','[\"decision\"]','[]','{}','{}')").run();
   registerExternalExecutor(db, { projectId: "project", executorId: "release.test", purpose: "Test release executor", publicKeyPem, keyId: "release-key-v1" });
-  registerExternalOperation(db, { projectId: "project", operationId: "release.prod", executorId: "release.test", operationKind: "release", action: "deploy_revision", config: { environment: "production" } });
+  registerExternalOperation(db, { projectId: "project", operationId: "release.prod", executorId: "release.test", operationKind: "release", action: "deploy_revision", config: { environment: "production", verification_check_ids: ["check-post"] } });
   activateChatSession(db, { client: semanticScope.client, sessionId: semanticScope.session_id, origin: env.project, turnKey: "turn-1" });
   db.close();
   const calls = [], gates = [];
-  const gateRunner = async (_project, _level, _dbFile, taskId) => {
-    gates.push(taskId);
-    return { task_id: taskId, project: env.project, level: "mvp", files: [], status: "passed", checks: [{ id: "check-ok", required: true, status: "passed" }], summary: "passed" };
+  const gateRunner = async (_project, _level, _dbFile, taskId, options) => {
+    const checkId = taskId.endsWith(":external") ? "check-post" : "check-ok";
+    if (checkId === "check-post") assert.deepEqual(options.checkIds, ["check-post"]);
+    gates.push({ taskId, checkId });
+    return { task_id: taskId, project: env.project, level: "mvp", files: [], status: "passed", checks: [{ id: checkId, required: true, status: "passed" }], summary: "passed" };
   };
   const first = await scopedProcessMessage({
     message: "Разверни проверенную ревизию", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, semanticScope,
@@ -909,17 +917,23 @@ test("a read-only operator proposes before approval and only a signed registered
   assert.equal(executionBinding.definition_hash, boundDefinitionHash);
   assert.equal(executionBinding.status, "pending");
   const request = { ...second.execution.external_request, payload: second.execution.dispatch_payload };
-  const resultPacket = signedExternalResult(request, keys.privateKey, { deployed_revision: "a".repeat(40), environment: "production", marker: "RAW_EXTERNAL_RESULT" });
+  const wrongTargetPacket = signedExternalResult(request, keys.privateKey, { schema_version: 1, operation_id: "release.prod", applied_revision: "b".repeat(40), target_environment: "production", evidence_refs: ["deployment:wrong"] });
+  await assert.rejects(() => deliverExternalControlResult({ packet: wrongTargetPacket, project: env.project, dbFile: env.dbFile, execute: true, gateRunner }), /TARGET_MISMATCH/);
+  const rejectedDb = openDb(env.dbFile);
+  assert.equal(rejectedDb.prepare("SELECT COUNT(*) count FROM external_control_results WHERE request_id=?").get(request.request_id).count, 0, "a mismatched target is rejected before persistence");
+  rejectedDb.close();
+  const resultPacket = signedExternalResult(request, keys.privateKey, { schema_version: 1, operation_id: "release.prod", applied_revision: "a".repeat(40), target_environment: "production", evidence_refs: ["RAW_EXTERNAL_RESULT"] });
   const delivered = await deliverExternalControlResult({
     packet: resultPacket,
     project: env.project, dbFile: env.dbFile, execute: true, gatewayCall: async request => { throw new Error(`unexpected model after external result: ${request.role}`); }, gateRunner
   });
   assert.equal(delivered.operation.status, "completed");
-  assert.equal(gates.length, 2, "one gate before approval and one after the external result");
+  assert.deepEqual(gates.map(item => item.checkId), ["check-ok", "check-post"], "post-operation verification does not replay the preflight check");
   const verified = openDb(env.dbFile);
   assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(first.run_id).state, "completed");
   assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflow_steps WHERE run_id=? AND step_key='external_verification' AND state='completed'").get(first.run_id).count, 1);
   assert.equal(verified.prepare("SELECT status FROM external_operation_executions WHERE request_id=?").get(request.request_id).status, "verified");
+  assert.equal(verified.prepare("SELECT COUNT(*) count FROM artifacts WHERE run_id=? AND kind='deployment_evidence' AND status='verified'").get(first.run_id).count, 1);
   const evidenceCount = verified.prepare("SELECT COUNT(*) count FROM run_evidence WHERE run_id=? AND kind='external_operation_result'").get(first.run_id).count;
   assert.equal(JSON.stringify(verified.prepare("SELECT * FROM external_control_results WHERE request_id=?").get(request.request_id)).includes("RAW_EXTERNAL_RESULT"), false);
   verified.close();
@@ -941,7 +955,7 @@ test("a read-only operator proposes before approval and only a signed registered
   }).request;
   genericDb.close();
   await assert.rejects(() => deliverExternalControlResult({
-    packet: signedExternalResult(generic, keys.privateKey, { deployed_revision: "b".repeat(40) }),
+    packet: signedExternalResult(generic, keys.privateKey, { schema_version: 1, operation_id: "release.prod", applied_revision: "b".repeat(40), target_environment: "production", evidence_refs: ["deployment:generic"] }),
     project: env.project, dbFile: env.dbFile, execute: true, gateRunner
   }), /EXTERNAL_OPERATION_RESULT_NOT_FOUND/);
   fs.rmSync(env.root, { recursive: true, force: true });

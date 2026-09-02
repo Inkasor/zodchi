@@ -21,7 +21,7 @@ import { recordRunEvidence } from "./run-evidence.mjs";
 import { continueApprovedRun, continueExternalOperationResult, executeStructuredWork, pausedRunObjective, resumeObjective } from "./work-executor.mjs";
 import { chargeDirectReceipt, effectiveQualityMode, initializeQualityRun, operationalLevel, ownerQualityFloor, reserveDirectModelCall } from "./quality-contracts.mjs";
 import { approveBoundInteraction, assertApprovalStillCurrent } from "./approval-binding.mjs";
-import { acceptExternalControlEvidenceResult, acceptExternalControlResult } from "./external-control-plane.mjs";
+import { acceptExternalControlEvidenceResult, acceptExternalControlResult, validateExternalOperationResultForRequest } from "./external-control-plane.mjs";
 import { normalizeRunProfile, resolveRunProfile, storeRunProfile } from "./run-profile.mjs";
 import { assertProjectRuntimeReady, assertWorkflowRuntimeReady } from "./runtime-readiness.mjs";
 import { normalizeSemanticScope } from "./semantic-scope.mjs";
@@ -329,6 +329,7 @@ export async function deliverExternalControlResult({
       });
       return { control: accepted, evidence };
     }
+    if (request.interaction_kind === "workflow_approval" && packet?.status === "completed") validateExternalOperationResultForRequest(runtime.db, request.id, packet.payload);
     const accepted = acceptExternalControlResult(runtime.db, packet);
     if (request.interaction_kind !== "workflow_approval" || !execute) return { control: accepted, operation: null };
     const responseLanguage = preferredLanguage ?? runtime.get(request.run_id).response_language ?? settings.responseLanguage ?? "en";

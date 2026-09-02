@@ -18,7 +18,7 @@ function temporaryRoot(prefix) {
 test("clean database applies numbered normalized migrations and SQLite safety pragmas", () => {
   const root = temporaryRoot("workflow-migrations-clean-");
   const db = openDb(path.join(root, "workflow.sqlite"));
-  assert.equal(schemaVersion(db), 35);
+  assert.equal(schemaVersion(db), 36);
   assert.equal(db.prepare("PRAGMA foreign_keys").get().foreign_keys, 1);
   assert.equal(db.prepare("PRAGMA journal_mode").get().journal_mode, "wal");
   assert.equal(db.prepare("PRAGMA busy_timeout").get().timeout, 5000);
@@ -45,7 +45,7 @@ test("the known pre-publication migration 7 newline checksum remains readable", 
   db.prepare("UPDATE schema_migrations SET checksum=? WHERE version=7").run("8080e01be11bc8882303b50e3d51dc00d1dffcd23c3f08691dee6d7452770c1c");
   db.close();
   db = openDb(file);
-  assert.equal(schemaVersion(db), 35);
+  assert.equal(schemaVersion(db), 36);
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -130,7 +130,7 @@ test("session context migration preserves an exact relay and cancels an unbound 
   const partial = path.join(root, "migrations");
   const all = fs.readdirSync(migrationsDirectory).filter(name => /^\d{3}_/.test(name)).sort();
   fs.mkdirSync(partial);
-  for (const name of all.filter(name => !name.startsWith("033_") && !name.startsWith("034_") && !name.startsWith("035_"))) fs.copyFileSync(path.join(migrationsDirectory, name), path.join(partial, name));
+  for (const name of all.filter(name => !name.startsWith("033_") && !name.startsWith("034_") && !name.startsWith("035_") && !name.startsWith("036_"))) fs.copyFileSync(path.join(migrationsDirectory, name), path.join(partial, name));
   const file = path.join(root, "workflow.sqlite"), timestamp = now();
   const before = openDb(file, { migrationsDirectory: partial });
   before.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('project','Project',?,?)").run(root, timestamp);

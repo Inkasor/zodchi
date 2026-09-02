@@ -24,6 +24,7 @@
 - Documentators are read-only model roles: they return a validated `documentator.v1` proposal while WorkflowPlatform keeps the exclusive worktree lease, applies the operation atomically, runs Document Lint and rolls back a failed change.
 - Release and access operators are now read-only proposal roles. They may select only a registered `release_operation.v1` or `access_change.v1`; the exact proposal and registered-operation definition are included in the owner approval hash, and the model never receives command or write authority.
 - Approved release and access actions use the signed external control plane. WorkflowPlatform dispatches the registered operation atomically, keeps only hashes and audit metadata in the database, accepts a result only from the bound executor key, and runs a fresh deterministic gate before completion.
+- A completed external result must name the exact approved release revision/environment or access subject/resource/delta. Mismatches are rejected before persistence, and post-operation verification runs the operation's separately registered checks rather than replaying local preflight checks; a verified external result materializes deployment/access evidence.
 - External executors and their release/access operations can be registered and inspected through the CLI. Existing installations must change the affected operator profiles to read-only and register their deterministic operations before those two routes can run; unrelated routes remain available.
 
 </section>

@@ -90,7 +90,7 @@ import { documentTermScore, rankTerms } from "./term-ranking.mjs";
 import { utf8Prefix } from "./utf8.mjs";
 import { openClarification, openExternalEvidenceRequest, quiesceRun } from "./interactions.mjs";
 import { assertApprovalStillCurrent, currentApprovalBinding } from "./approval-binding.mjs";
-import { createExternalControlRequest, registeredExternalOperations } from "./external-control-plane.mjs";
+import { createExternalControlRequest, registeredExternalOperations, validateExternalOperationResult } from "./external-control-plane.mjs";
 
 const OPERATION_RESULT_SCHEMAS = new Set(["release_operation.v1", "access_change.v1"]);
 
@@ -1152,28 +1152,30 @@ function ownerAccepted(runtime, runId) {
       AND (lower(d.source) IN ('owner','petr','user') OR a.status='approved') LIMIT 1`).get(taskId));
 }
 
-async function executeGateStep({ runtime, queue, runId, stepKey, projectRoot, level, plannerResult, classification, gateRunner, cycle }) {
+async function executeGateStep({ runtime, queue, runId, stepKey, projectRoot, level, plannerResult, classification, gateRunner, cycle, checkIds = null, artifactType = null, allowedPaths = null }) {
   const gateLease = queue.checkout({ ownerId: "workflow:project-gate", runId, stepKey, leaseMs: 900_000 });
   if (!gateLease || gateLease.stepKey !== stepKey) throw new Error(`GATE_STEP_NOT_READY: expected ${stepKey}`);
   queue.start(gateLease.token);
   let gate;
   try {
     gate = await gateRunner(projectRoot, level, runtime.dbFile ?? undefined, `${runId}:gate:${cycle}`, {
-      runId, allowedPaths: plannerResult.allowed_paths, artifactType: classification.artifact_type
+      runId, allowedPaths: allowedPaths ?? plannerResult.allowed_paths, artifactType: artifactType ?? classification.artifact_type,
+      ...(checkIds === null ? {} : { checkIds })
     });
   } catch (error) {
     queue.fail(gateLease.token, { category: "gate_runner_error", retryable: false });
     runtime.setState(runId, "failed", { reason: "project gate runner failed" });
     throw error;
   }
-  const changeEvidence = runChangeEvidence(runtime.db, runId, plannerResult.allowed_paths);
+  const effectiveAllowedPaths = allowedPaths ?? plannerResult.allowed_paths;
+  const changeEvidence = runChangeEvidence(runtime.db, runId, effectiveAllowedPaths);
   if (changeEvidence.unauthorized_changes.length) {
     gate.checks.push({ id: "authorized_write_scope", name: "Run-relative authorized write scope", required: true, status: "failed", exit_code: 1, duration_ms: 0, failure: `Unauthorized run changes: ${changeEvidence.unauthorized_changes.join(", ")}`, failure_path: changeEvidence.unauthorized_changes[0], execution_project_id: runtime.get(runId).project_id, execution_root: projectRoot });
     gate.status = "failed";
     gate.summary = `${gate.checks.filter(check => check.status === "passed").length} passed, ${gate.checks.filter(check => check.required && check.status !== "passed").length} blocking`;
   }
   runtime.recordGate(runId, { ...gate, step_id: gateLease.stepId }, `project_cycle_${cycle}`, true);
-  storeStepPayload(runtime.db, gateLease.stepId, { allowed_paths: plannerResult.allowed_paths, checks: plannerResult.checks, correction_cycle: cycle }, "gate.v1", gate);
+  storeStepPayload(runtime.db, gateLease.stepId, { allowed_paths: effectiveAllowedPaths, checks: checkIds ?? plannerResult.checks, correction_cycle: cycle }, "gate.v1", gate);
   queue.complete(gateLease.token, { details: { status: gate.status, correction_cycle: cycle } });
   if (runtime.get(runId).state !== "verifying") runtime.setState(runId, "verifying", { reason: cycle ? `program checks completed after correction ${cycle}` : "program checks completed" });
   return gate;
@@ -1822,12 +1824,13 @@ function dispatchApprovedExternalOperation(runtime, runId, approvalId) {
     const execution = {
       request_id: dispatched.request.request_id, project_id: runtime.get(runId).project_id, run_id: runId,
       step_id: selected.step_id, approval_id: approval.id, operation_id: operation.id, operation_kind: selected.operation_kind,
-      definition_hash: operation.definition_hash, proposal_hash: structuredHash(selected.proposal)
+      definition_hash: operation.definition_hash, proposal_hash: structuredHash(selected.proposal),
+      verification_checks_json: JSON.stringify(operation.config.verification_check_ids)
     };
-    runtime.db.prepare(`INSERT INTO external_operation_executions(request_id,project_id,run_id,step_id,approval_id,operation_id,operation_kind,definition_hash,proposal_hash,status,created_at,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,'pending',?,?) ON CONFLICT(request_id) DO NOTHING`)
-      .run(execution.request_id, execution.project_id, execution.run_id, execution.step_id, execution.approval_id, execution.operation_id, execution.operation_kind, execution.definition_hash, execution.proposal_hash, now(), now());
-    const recordedExecution = runtime.db.prepare("SELECT request_id,project_id,run_id,step_id,approval_id,operation_id,operation_kind,definition_hash,proposal_hash FROM external_operation_executions WHERE request_id=?").get(execution.request_id);
+    runtime.db.prepare(`INSERT INTO external_operation_executions(request_id,project_id,run_id,step_id,approval_id,operation_id,operation_kind,definition_hash,proposal_hash,verification_checks_json,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,'pending',?,?) ON CONFLICT(request_id) DO NOTHING`)
+      .run(execution.request_id, execution.project_id, execution.run_id, execution.step_id, execution.approval_id, execution.operation_id, execution.operation_kind, execution.definition_hash, execution.proposal_hash, execution.verification_checks_json, now(), now());
+    const recordedExecution = runtime.db.prepare("SELECT request_id,project_id,run_id,step_id,approval_id,operation_id,operation_kind,definition_hash,proposal_hash,verification_checks_json FROM external_operation_executions WHERE request_id=?").get(execution.request_id);
     if (structuredHash(recordedExecution) !== structuredHash(execution)) throw new Error("EXTERNAL_OPERATION_EXECUTION_BINDING_CONFLICT");
     runtime.setState(runId, "blocked", { reason: `waiting for signed result from approved external ${selected.operation_kind} operation` });
     runtime.db.exec("COMMIT");
@@ -1850,7 +1853,10 @@ export async function continueApprovedRun({ runtime, runId, approvalId = null, d
   const projectId = runtime.get(runId).project_id;
   const routeContract = selectedWorkflowContract(runtime.db, projectId, runtime.get(runId).workflow_id);
   const policy = runOperationalPolicy(runtime, runId, projectId, runtime.get(runId).workflow_id, level);
-  if (runtime.db.prepare("SELECT 1 FROM decisions WHERE run_id=? AND kind='external_operation_proposal' AND active=1 AND outcome='PROPOSED'").get(runId)) {
+  const operationProposal = runtime.db.prepare(`SELECT ws.state FROM decisions d JOIN workflow_steps ws ON ws.id=d.step_id
+    WHERE d.run_id=? AND d.kind='external_operation_proposal' AND d.active=1 AND d.outcome='PROPOSED'`).get(runId);
+  if (operationProposal && operationProposal.state !== "completed") throw new Error(`EXTERNAL_OPERATION_PROPOSAL_NOT_COMPLETED: ${operationProposal.state}`);
+  if (operationProposal) {
     return { ...dispatchApprovedExternalOperation(runtime, runId, approvalId), planner: recorded.plan, workers: recorded.workers, gate: recorded.gate, reviewer: recorded.reviewer };
   }
   return documentAndComplete({
@@ -1863,7 +1869,7 @@ export async function continueApprovedRun({ runtime, runId, approvalId = null, d
 
 export async function continueExternalOperationResult({ runtime, accepted, discovery, responseLanguage = "en", taskRoot, gatewayCall, gateRunner = runProjectGate }) {
   const request = runtime.db.prepare(`SELECT q.*,r.payload_hash AS result_payload_hash,r.result_hash,
-      x.approval_id,x.operation_id,x.operation_kind,x.definition_hash,x.proposal_hash,x.status AS execution_status
+      x.approval_id,x.operation_id,x.operation_kind,x.definition_hash,x.proposal_hash,x.verification_checks_json,x.status AS execution_status
     FROM external_control_requests q
     JOIN external_control_results r ON r.request_id=q.id
     JOIN external_operation_executions x ON x.request_id=q.id
@@ -1895,6 +1901,7 @@ export async function continueExternalOperationResult({ runtime, accepted, disco
     runtime.setState(request.run_id, "cancelled", { reason: "registered external operation was cancelled" });
     return { status: "cancelled", external_request_id: request.id, external_result_hash: request.result_hash };
   }
+  validateExternalOperationResult(request.operation_kind, selected.proposal, accepted.payload);
   runtime.db.prepare("UPDATE external_operation_executions SET status=CASE WHEN status='pending' THEN 'result_received' ELSE status END,result_hash=?,updated_at=? WHERE request_id=?").run(request.result_hash, now(), request.id);
   if (request.execution_status === "verified" && runtime.get(request.run_id).state === "completed") return { status: "completed", duplicate: true, external_request_id: request.id, external_result_hash: request.result_hash };
   if (request.execution_status === "verification_failed") return { status: "blocked", duplicate: true, external_request_id: request.id, external_result_hash: request.result_hash };
@@ -1908,20 +1915,34 @@ export async function continueExternalOperationResult({ runtime, accepted, disco
   const level = operationalLevel(classification.quality_mode), projectId = runtime.get(request.run_id).project_id;
   const routeContract = selectedWorkflowContract(runtime.db, projectId, runtime.get(request.run_id).workflow_id);
   const policy = runOperationalPolicy(runtime, request.run_id, projectId, runtime.get(request.run_id).workflow_id, level);
+  const verificationChecks = parseJson(request.verification_checks_json, []);
+  if (!verificationChecks.length) throw new Error("EXTERNAL_OPERATION_VERIFICATION_CHECKS_MISSING");
   appendSteps(runtime, request.run_id, [{
     key: "external_verification", role: null, required: true, irreversible: false, max_attempts: 1, schema: "gate.v1",
-    contract: { allowed_paths: recorded.plan.allowed_paths, check_ids: recorded.plan.checks, external_request_id: request.id, external_result_hash: request.result_hash }
+    contract: { allowed_paths: [], check_ids: verificationChecks, external_request_id: request.id, external_result_hash: request.result_hash }
   }]);
   const queue = new ExecutionQueue(runtime.db);
   runtime.setState(request.run_id, "verifying", { reason: "registered external operation completed; deterministic verification started" });
   queue.enqueueRun(request.run_id);
-  const gate = await executeGateStep({ runtime, queue, runId: request.run_id, stepKey: "external_verification", projectRoot: discovery.project.root_path, level, plannerResult: recorded.plan, classification, gateRunner, cycle: "external" });
+  const gate = await executeGateStep({
+    runtime, queue, runId: request.run_id, stepKey: "external_verification", projectRoot: discovery.project.root_path, level,
+    plannerResult: recorded.plan, classification, gateRunner, cycle: "external", checkIds: verificationChecks, allowedPaths: [],
+    artifactType: request.operation_kind === "release" ? "deployment_evidence" : "access_change"
+  });
   if (gate.status !== "passed") {
     runtime.db.prepare("UPDATE external_operation_executions SET status='verification_failed',updated_at=? WHERE request_id=?").run(now(), request.id);
     runtime.setState(request.run_id, "blocked", { reason: `external operation verification ${gate.status}` });
     return { status: "blocked", external_request_id: request.id, external_result_hash: request.result_hash, gate };
   }
   runtime.db.prepare("UPDATE external_operation_executions SET status='verified',updated_at=? WHERE request_id=?").run(now(), request.id);
+  const artifactKind = request.operation_kind === "release" ? "deployment_evidence" : "access_change";
+  const artifactUri = `external-control://${request.id}`;
+  if (!runtime.db.prepare("SELECT 1 FROM artifacts WHERE run_id=? AND kind=? AND uri=?").get(request.run_id, artifactKind, artifactUri)) {
+    const timestamp = now();
+    runtime.db.prepare("INSERT INTO artifacts(id,task_id,run_id,step_id,kind,uri,content_hash,status,provenance_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+      .run(id("artifact"), runtime.get(request.run_id).task_id, request.run_id, request.step_id, artifactKind, artifactUri, request.result_hash, "verified",
+        JSON.stringify({ source: "signed_external_operation", request_hash: request.request_hash, result_hash: request.result_hash, definition_hash: request.definition_hash, verification_checks: verificationChecks }), timestamp, timestamp);
+  }
   return documentAndComplete({
     runtime, queue, runId: request.run_id, projectId, projectRoot: discovery.project.root_path, level, classification, discovery, responseLanguage, taskRoot, gatewayCall, policy,
     plan: recorded.plan, gate, reviewerResult: recorded.reviewer, documentatorRole: routeContract?.documentator_role ?? "documentator",
