@@ -4,10 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { openDb, now } from "../src/db.mjs";
+import { checkGatewayProfileRequirements } from "../src/gateway.mjs";
 import { processMessage as scopedProcessMessage } from "../src/workflow-app.mjs";
 
 const statelessProcessMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
 import { projectRuntimeReadiness } from "../src/runtime-readiness.mjs";
+
+const compatibleProfileCheck = requirements => ({ status: "compatible", checks: requirements, conflicts: [] });
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(process.env.WORKFLOW_PLATFORM_TEST_TEMP ?? os.tmpdir(), "workflow-runtime-readiness-"));
@@ -34,17 +37,45 @@ test("runtime readiness requires direct classifier and researcher assignments an
   db.prepare("INSERT INTO role_profile_assignments(project_id,role_id,profile_id,operational_level,enabled) VALUES('project','classifier','classifier-profile','prototype',1)").run();
   db.prepare("INSERT INTO role_profile_assignments(project_id,role_id,profile_id,operational_level,enabled) VALUES('project','researcher','researcher-profile','mvp',1)").run();
   db.prepare("INSERT INTO project_documents(id,project_id,path,root_key,document_type,authority,status,active) VALUES('readme','project','README.md','primary','reference','owner','active',1)").run();
-  readiness = projectRuntimeReadiness(db, "project");
+  readiness = projectRuntimeReadiness(db, "project", { profileCheck: compatibleProfileCheck });
   assert.equal(readiness.status, "ready");
   assert.equal(readiness.registered_context.status, "no_read_access");
   assert.equal(readiness.warnings.length, 1);
 
   db.prepare("INSERT INTO role_documents(project_id,role_id,document_id,read_access,write_access,purpose,priority) VALUES('project','researcher','readme',1,0,'research',10)").run();
-  readiness = projectRuntimeReadiness(db, "project");
+  readiness = projectRuntimeReadiness(db, "project", { profileCheck: compatibleProfileCheck });
   assert.equal(readiness.registered_context.status, "available");
   assert.equal(readiness.registered_context.researcher_documents, 1);
   assert.deepEqual(readiness.warnings, []);
   db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("runtime readiness rejects a writable documentator profile before accepting a run or calling a model", async () => {
+  const { root, project, dbFile, db } = fixture();
+  for (const role of ["classifier", "researcher", "documentator"]) db.prepare("INSERT INTO profiles(id,provider,name,role_id) VALUES(?, 'codex', ?, ?)").run(`${role}-profile`, `${role}-profile`, role);
+  for (const role of ["classifier", "researcher", "documentator"]) db.prepare("INSERT INTO role_profile_assignments(project_id,role_id,profile_id,operational_level,enabled) VALUES('project',?,?, 'mvp',1)").run(role, `${role}-profile`);
+  db.prepare(`INSERT INTO role_contracts(id,project_id,role_id,version,purpose,boundaries_json,allowed_work_types_json,allowed_artifact_types_json,allowed_tools_json,allowed_skills_json,required_checks_json,allowed_transitions_json,allowed_profiles_json,context_limit_bytes,max_calls,max_correction_cycles,timeout_seconds,result_schema_key,prompt_template_version,escalation_json,status)
+    VALUES('documentator-contract','project','documentator','1','documentation','{}','[]','[]','[]','[]','[]','[]','[]',65536,1,0,60,'documentator.v1','1','{}','active')`).run();
+  const gatewayPolicy = path.join(root, "policy.json");
+  fs.writeFileSync(gatewayPolicy, JSON.stringify({ schemaVersion: 1, providers: { codex: { profiles: {
+    "classifier-profile": { readOnly: true }, "researcher-profile": { readOnly: true }, "documentator-profile": { readOnly: false }
+  } } } }), "utf8");
+  const profileCheck = requirements => checkGatewayProfileRequirements({ requirements, gateway: path.resolve(import.meta.dirname, "..", "..", "AgentGateway", "src", "cli.mjs"), gatewayPolicy });
+  const readiness = projectRuntimeReadiness(db, "project", { profileCheck });
+  assert.equal(readiness.status, "unavailable");
+  assert.deepEqual(readiness.profile_write_requirements.conflicts, [{ code: "PROFILE_WRITE_REQUIREMENT_MISMATCH", role: "documentator", provider: "codex", profile: "documentator-profile", operational_level: "mvp", requires_write: false, profile_read_only: false }]);
+  db.close();
+
+  let calls = 0;
+  await assert.rejects(() => statelessProcessMessage({
+    message: "Implement the change", project, dbFile, execute: true, gatewayProfileCheck: profileCheck,
+    gatewayCall: async () => { calls += 1; throw new Error("must not be called"); }
+  }), /PROJECT_RUNTIME_NOT_READY: project: PROFILE_WRITE_REQUIREMENT_MISMATCH: role=documentator; profile=documentator-profile/);
+  assert.equal(calls, 0);
+  const verified = openDb(dbFile);
+  assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM workflow_runs").get().count, 0);
+  verified.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
 

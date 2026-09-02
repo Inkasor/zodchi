@@ -197,9 +197,33 @@ function runProcess(command, commandArgs, input, timeoutSec, cwd, env = process.
 }
 
 const cli = argsObject(process.argv.slice(2));
-if (process.argv[2] !== "run") fail("Usage: node src/cli.mjs run --provider <adapter> --level prototype|mvp|production|security-audit --task-file <file> [--project <path>] [--role <name>] --profile <name>");
+const command = process.argv[2];
+if (!["run", "profiles-check"].includes(command)) fail("Usage: node src/cli.mjs run --provider <adapter> --level prototype|mvp|production|security-audit --task-file <file> [--project <path>] [--role <name>] --profile <name> --requires-write true|false | node src/cli.mjs profiles-check");
 
 const policy = loadGatewayPolicy(paths);
+function inspectProfileWriteRequirement({ provider, profile, role = "worker", operational_level: operationalLevel = null, requires_write: requiresWrite }) {
+  const scope = operationalLevel ? { operational_level: operationalLevel } : {};
+  if (typeof requiresWrite !== "boolean") return { code: "PROFILE_WRITE_REQUIREMENT_INVALID", role, provider, profile, ...scope, value: requiresWrite ?? null };
+  const providerConfig = policy.providers?.[provider];
+  if (!providerConfig) return { code: "PROFILE_PROVIDER_UNKNOWN", role, provider, profile, ...scope };
+  if (!profile || !providerConfig.profiles?.[profile]) return { code: "PROFILE_UNKNOWN", role, provider, profile: profile ?? null, ...scope };
+  const profileConfig = { ...(providerConfig.profileDefaults ?? {}), ...(providerConfig.profiles[profile] ?? {}) };
+  const profileReadOnly = profileConfig.readOnly === true;
+  if (requiresWrite === profileReadOnly) return { code: "PROFILE_WRITE_REQUIREMENT_MISMATCH", role, provider, profile, ...scope, requires_write: requiresWrite, profile_read_only: profileReadOnly };
+  return { status: "compatible", role, provider, profile, ...scope, requires_write: requiresWrite, profile_read_only: profileReadOnly };
+}
+
+if (command === "profiles-check") {
+  let requirements;
+  try { requirements = JSON.parse(fs.readFileSync(0, "utf8")); }
+  catch (error) { fail(`PROFILE_REQUIREMENTS_INVALID: ${error.message}`, 77); }
+  if (!Array.isArray(requirements)) fail("PROFILE_REQUIREMENTS_INVALID: expected a JSON array", 77);
+  const checks = requirements.map(inspectProfileWriteRequirement);
+  const conflicts = checks.filter(check => check.status !== "compatible");
+  process.stdout.write(`${JSON.stringify({ status: conflicts.length ? "incompatible" : "compatible", checks: checks.filter(check => check.status === "compatible"), conflicts })}\n`);
+  process.exit(conflicts.length ? 77 : 0);
+}
+
 fs.mkdirSync(dataRoot, { recursive: true });
 cleanupConfirmedOrphans(paths.tempRoot);
 const level = cli.level ?? "mvp";
@@ -213,14 +237,9 @@ if (!profile) fail("PROFILE_REQUIRED: all provider calls must use a named subscr
 const profileConfig = { ...(providerConfig.profileDefaults ?? {}), ...(providerConfig.profiles?.[profile] ?? {}) };
 if (!providerConfig.profiles?.[profile]) fail(`Unknown profile '${profile}' for provider '${provider}'`);
 const writeRequirement = cli["requires-write"];
-if (writeRequirement !== undefined && !["true", "false"].includes(String(writeRequirement))) fail(`PROFILE_WRITE_REQUIREMENT_INVALID: role=${cli.role ?? "worker"}; profile=${profile}; value=${writeRequirement}`, 77);
-if (writeRequirement !== undefined) {
-  const requiresWrite = String(writeRequirement) === "true";
-  const profileReadOnly = profileConfig.readOnly === true;
-  if (requiresWrite === profileReadOnly) {
-    fail(`PROFILE_WRITE_REQUIREMENT_MISMATCH: role=${cli.role ?? "worker"}; profile=${profile}; requires_write=${requiresWrite}; profile_read_only=${profileReadOnly}`, 77);
-  }
-}
+if (!["true", "false"].includes(String(writeRequirement))) fail(`PROFILE_WRITE_REQUIREMENT_INVALID: role=${cli.role ?? "worker"}; profile=${profile}; value=${writeRequirement ?? "missing"}`, 77);
+const requirement = inspectProfileWriteRequirement({ provider, profile, role: cli.role ?? "worker", requires_write: String(writeRequirement) === "true" });
+if (requirement.status !== "compatible") fail(`${requirement.code}: role=${requirement.role}; profile=${requirement.profile}; requires_write=${requirement.requires_write}; profile_read_only=${requirement.profile_read_only}`, 77);
 const privacyMode = String(cli["privacy-mode"] ?? DEFAULT_PRIVACY_MODE);
 if (privacyMode !== DEFAULT_PRIVACY_MODE) fail(`RECEIPT_PRIVACY_MODE_UNSUPPORTED: ${privacyMode}`);
 

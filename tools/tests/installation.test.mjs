@@ -115,7 +115,7 @@ test("install and update diagnose role assignments whose profiles violate write 
     db.exec("CREATE TABLE profiles(id TEXT PRIMARY KEY,provider TEXT NOT NULL,name TEXT NOT NULL,role_id TEXT); CREATE TABLE role_profile_assignments(project_id TEXT NOT NULL,role_id TEXT NOT NULL,profile_id TEXT NOT NULL,operational_level TEXT NOT NULL,enabled INTEGER NOT NULL); CREATE TABLE role_contracts(project_id TEXT NOT NULL,role_id TEXT NOT NULL,boundaries_json TEXT NOT NULL,status TEXT NOT NULL);");
     db.prepare("INSERT INTO profiles VALUES('profile','codex','writable-documentator','documentator')").run();
     db.prepare("INSERT INTO role_profile_assignments VALUES('project','documentator','profile','mvp',1)").run();
-    db.prepare("INSERT INTO role_contracts VALUES('project','documentator',?,'active')").run(JSON.stringify({ writes: false }));
+    db.prepare("INSERT INTO role_contracts VALUES('project','documentator',?,'active')").run(JSON.stringify({}));
     db.close();
     fs.writeFileSync(gatewayPolicy, JSON.stringify({ schemaVersion: 1, providers: { codex: { profiles: { "writable-documentator": { readOnly: false } } } } }));
     const installed = installRelease({ source, destination, dataRoot, workflowDatabase: database, gatewayPolicy, skillRoots: roots, sessionHookFiles: hooks, healthCheck });

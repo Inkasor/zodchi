@@ -195,13 +195,13 @@ export function profileWriteRequirementDiagnostics({ workflowDatabase, gatewayPo
       WHERE a.enabled=1
       ORDER BY a.project_id,a.role_id,a.operational_level,p.provider,p.name`).all();
     for (const assignment of assignments) {
-      let boundaries;
-      try { boundaries = JSON.parse(assignment.boundaries_json ?? "{}"); } catch { continue; }
-      if (typeof boundaries.writes !== "boolean") continue;
+      let boundaries = {};
+      try { boundaries = JSON.parse(assignment.boundaries_json ?? "{}"); } catch { /* runtime treats an absent declaration as non-writing */ }
+      const requiresWrite = boundaries.writes === true;
       const profile = effectiveProfile(universal, local, assignment.provider, assignment.profile);
       if (!profile) continue;
       const profileReadOnly = profile.readOnly === true;
-      if (boundaries.writes !== profileReadOnly) continue;
+      if (requiresWrite !== profileReadOnly) continue;
       conflicts.push({
         code: "PROFILE_WRITE_REQUIREMENT_MISMATCH",
         project_id: assignment.project_id,
@@ -209,7 +209,7 @@ export function profileWriteRequirementDiagnostics({ workflowDatabase, gatewayPo
         operational_level: assignment.operational_level,
         provider: assignment.provider,
         profile: assignment.profile,
-        requires_write: boundaries.writes,
+        requires_write: requiresWrite,
         profile_read_only: profileReadOnly
       });
     }
