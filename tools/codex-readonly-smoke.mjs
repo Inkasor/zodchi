@@ -133,7 +133,8 @@ try {
   let modelResult = null;
   try { modelResult = JSON.parse(extractModelText(receipt?.output)); } catch { /* included in report */ }
   const modelEvidence = String(modelResult?.evidence ?? "").trim().slice(0, 2000);
-  const providerError = String(receipt?.error ?? child.stderr ?? "").trim().slice(0, 2000);
+  const rawProviderError = String(receipt?.error ?? child.stderr ?? "").trim();
+  const providerError = rawProviderError.slice(0, 2000);
   const technicalEvidence = [modelEvidence, providerError].filter(Boolean).join("\n");
   const report = {
     probe: probe.kind,
@@ -146,7 +147,9 @@ try {
     reported_value: modelResult?.value ?? null,
     model_evidence: modelEvidence,
     provider_error: providerError,
-    provider_error_sha256: crypto.createHash("sha256").update(providerError).digest("hex"),
+    provider_error_raw_sha256: crypto.createHash("sha256").update(rawProviderError).digest("hex"),
+    provider_error_raw_bytes: Buffer.byteLength(rawProviderError),
+    provider_error_truncated: providerError.length < rawProviderError.length,
     temporary_database: cli.keep ? database : null
   };
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
