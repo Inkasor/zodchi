@@ -522,6 +522,35 @@ test("a request written in prose finds the code through the project's own wordin
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("Russian prose uses bilingual corpus terms to rank the relevant implementation sources", () => {
+  const root = temporaryRoot("workflow-cross-language-source-ranking-");
+  fs.mkdirSync(path.join(root, "docs", "ru"), { recursive: true });
+  fs.mkdirSync(path.join(root, "WorkflowPlatform", "src"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "ru", "CHANGELOG.md"), [
+    "Проверка внешних операций после одобрения владельца использует external control plane и approval binding.",
+    "Подписанный payload сверяется с одобренной целью до записи результата."
+  ].join("\n"), "utf8");
+  fs.writeFileSync(path.join(root, "WorkflowPlatform", "src", "external-control-plane.mjs"), "export function validateExternalPayload(payload) { return payload.status; }\n", "utf8");
+  fs.writeFileSync(path.join(root, "WorkflowPlatform", "src", "approval-binding.mjs"), "export function assertApprovalBinding(approval) { return approval.binding; }\n", "utf8");
+  fs.writeFileSync(path.join(root, "WorkflowPlatform", "src", "work-executor.mjs"), "export function continueExternalOperation(payload, approval) { return payload.status && approval; }\n", "utf8");
+  for (let index = 0; index < 8; index += 1) fs.writeFileSync(path.join(root, "WorkflowPlatform", "src", `noise-${index}.mjs`), "export const status = 'completed'; export const message = 'owner';\n", "utf8");
+
+  const roots = [{ key: "primary", path: root, access: "read", primary: true }];
+  const scope = sourceScope([]);
+  const objective = "Как устроена проверка внешних операций после одобрения владельца?";
+  assert.deepEqual(searchTerms(objective), []);
+  const expanded = expandTerms(roots, scope, objective);
+  assert.equal(expanded.harvested.includes("external"), true);
+  assert.equal(expanded.harvested.includes("control"), true);
+  const found = searchSources(roots, scope, [...new Set([...expanded.terms, ...expanded.subject])], {
+    maxFiles: 8, indexedTerms: expanded.code, sourceCodeOnly: true, preferSourceCode: true
+  });
+  assert.equal(found.files[0].path, "WorkflowPlatform/src/external-control-plane.mjs");
+  assert.equal(found.files.slice(0, 3).some(file => file.path === "WorkflowPlatform/src/approval-binding.mjs"), true);
+  assert.equal(found.files.slice(0, 3).some(file => file.path === "WorkflowPlatform/src/work-executor.mjs"), true);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("long workflow wording does not displace the domain terms at the end of the request", () => {
   const { root, producer, db } = fixture("workflow-long-search-request-", { sources: ["src/**"] });
   fs.writeFileSync(path.join(producer, "src", "labels.mjs"), `export const labels = { avgCost: "Средняя себестоимость" };\n`);
