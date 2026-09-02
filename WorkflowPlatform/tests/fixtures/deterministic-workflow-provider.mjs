@@ -55,7 +55,7 @@ if (resultSchema === "strategy_review.v1") {
     resolved_objective: "Run the registered read-only verification route.", reason: "A registered read-only verification route was requested.", questions: [], human_response: null
   };
   if (conversation) Object.assign(result, { work_type: "conversation", artifact_type: "none", domain: "general", discipline: "general", planning_level: "L0", planning_required: false, reply_mode: "conversation", reason: "Ordinary conversation requires no productive role.", human_response: "Привет! Workflow Platform отвечает в тот же чат без запуска рабочих ролей." });
-  if (research) Object.assign(result, { work_type: "research", artifact_type: "document", domain: "research", discipline: "software", planning_level: "L1", planning_required: false, reply_mode: "research", reason: "Bounded research uses only registered project documents.", human_response: null });
+  if (research) Object.assign(result, { work_type: "research", artifact_type: "document", domain: "research", discipline: "software", planning_level: "L1", planning_required: false, reply_mode: "research", reason: "Bounded research uses the registered project corpus under read-only constraints.", human_response: null });
   if (scenario.work_type) Object.assign(result, {
     work_type: scenario.work_type,
     artifact_type: scenario.artifact ?? "test_report",
@@ -64,7 +64,7 @@ if (resultSchema === "strategy_review.v1") {
     reason: "The acceptance scenario explicitly names a route from the package imported into its isolated registry."
   });
 } else if (role === "researcher") {
-  result = "Исследование выполнено только по зарегистрированным документам Project R; файлы не изменялись, worker и reviewer не запускались.";
+  result = { schema_version: 1, status: "insufficient", answer: "Зарегистрированный корпус проверен в read-only режиме; файлов для содержательного ответа недостаточно, worker и reviewer не запускались.", inspected_paths: [], limitations: ["В acceptance-фикстуре нет исходников, необходимых для содержательного ответа."] };
 } else if (resultSchema === "planner.v1" || (!resultSchema && role === "planner")) {
   const contract = contractEnvelope(), checks = contract?.package?.registered_checks ?? [];
   // The step's role has to come from the package being planned. Naming a fixed role here made the
