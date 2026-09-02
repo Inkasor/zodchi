@@ -17,19 +17,6 @@ function eventOrigin(event, client) {
   return roots.length === 1 ? roots[0] : null;
 }
 const EXPANDED_SKILL_MARKER = "ZODCHI_SESSION_ACTIVATION_V1";
-const EXECUTION_CONFIRMATION = /^\s*(?:делай|начинай|запускай|продолжай|поехали|да|execute|proceed|go ahead|start)\s*[.!]?\s*$/iu;
-const PROFILE_CARD = /^\s*["“«]?\s*(?:Профиль выполнения|Execution profile)\s*:/iu;
-
-// A blocking hook is sometimes quoted into the next visible user message by the host. Treat the
-// final line as confirmation only when the preceding text is recognizably Zodchi's profile card;
-// arbitrary task prose that merely ends in "start" must remain ordinary input.
-export function isExecutionConfirmation(prompt) {
-  const text = String(prompt ?? "").trim();
-  if (EXECUTION_CONFIRMATION.test(text)) return true;
-  const lines = text.split(/\r?\n/u).map(line => line.trim()).filter(Boolean);
-  return lines.length > 1 && PROFILE_CARD.test(lines[0]) && EXECUTION_CONFIRMATION.test(lines.at(-1));
-}
-
 function samePath(left, right) {
   if (!left || !right) return false;
   const canonical = value => {
@@ -94,12 +81,9 @@ export async function routeSessionEvent({ event, client, dbFile, workflow = null
   const prompt = explicitSkillPrompt(rawPrompt, { client, activationSkillPath, cursorSkillAttached: cursorAttached, cursorSessionActive: existing?.state === "active" });
   const turnKey = String(event.generation_id ?? event.generationId ?? event.turn_id ?? event.turnId ?? event.prompt_id ?? event.promptId ?? event.event_id ?? event.eventId ?? randomUUID());
   if (prompt === null) { db.close(); return null; }
-  let routing, prepared = null;
+  let routing;
   try {
     routing = routeChatPrompt(db, { client, sessionId: id, origin, prompt, turnKey });
-    if (routing.action === "route" && routing.session?.pending_message && isExecutionConfirmation(prompt)) {
-      prepared = consumePendingMessage(db, { client, sessionId: id });
-    }
   }
   finally { db.close(); }
   if (routing.action === "pass") return null;
@@ -108,7 +92,7 @@ export async function routeSessionEvent({ event, client, dbFile, workflow = null
   }
   const processTask = dependencies.processMessage ?? processMessage;
   const result = await processTask({
-    message: prepared?.message ?? routing.message,
+    message: routing.message,
     project: routing.session.project_id,
     origin,
     dbFile,
@@ -120,17 +104,17 @@ export async function routeSessionEvent({ event, client, dbFile, workflow = null
     client,
     semanticScope: { mode: "session", client, session_id: id },
     preferredLanguage,
-    prepareOnly: prepared === null,
-    runProfileOverrides: prepared?.profile ? {
-      quality_mode: prepared.profile.quality_mode,
-      execution_mode: prepared.profile.execution_mode,
-      verification_mode: prepared.profile.verification_mode,
-      planning_mode: prepared.profile.planning_mode
-    } : {}
+    prepareOnly: true,
+    runProfileOverrides: {}
   });
   const state = (dependencies.openDb ?? openDb)(dbFile);
   try {
-    if (result.route === "prepared") setPendingMessage(state, { client, sessionId: id, message: routing.message, profile: result.run_profile ?? null });
+    if (result.route === "prepared") setPendingMessage(state, {
+      client, sessionId: id,
+      message: result.classification?.resolved_objective ?? routing.message,
+      profile: result.run_profile ?? null
+    });
+    else if (result.session_profile_action === "consume") consumePendingMessage(state, { client, sessionId: id });
     if (result.run_id) bindChatSessionResult(state, { client, sessionId: id, runId: result.run_id, turnKey });
   } finally { state.close(); }
   return client === "cursor" ? formatCursorContinue() : formatHookOutput(result, { deliveryMode });

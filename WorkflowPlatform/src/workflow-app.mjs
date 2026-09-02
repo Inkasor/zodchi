@@ -3,7 +3,7 @@ import path from "node:path";
 import { utf8Prefix } from "./utf8.mjs";
 import { Runtime, recordLint } from "./runtime.mjs";
 import { ExecutionQueue } from "./execution-queue.mjs";
-import { classificationCatalog, classificationJsonSchema, classifierPrompt, parseClassificationReceipt, resolveWorkflowRoute, validateClassificationDecision } from "./classifier.mjs";
+import { RUN_PROFILE_CONFIRMATION_KIND, classificationCatalog, classificationJsonSchema, classifierPrompt, parseClassificationReceipt, resolveWorkflowRoute, validateClassificationDecision } from "./classifier.mjs";
 import { buildPrompt } from "./prompt-builder.mjs";
 import { callGateway } from "./gateway.mjs";
 import { workflowLint } from "./lint.mjs";
@@ -16,6 +16,8 @@ import { CLARIFICATION_KINDS, EXTERNAL_EVIDENCE_KIND, cancelInteraction, deliver
 import { resolveWorkflowSettings } from "./paths.mjs";
 import { bindProject, bindingEvidence } from "./project-binding.mjs";
 import { inside } from "./project-roots.mjs";
+import { parseRootedPath } from "./source-context.mjs";
+import { recordRunEvidence } from "./run-evidence.mjs";
 import { continueApprovedRun, executeStructuredWork, pausedRunObjective, resumeObjective } from "./work-executor.mjs";
 import { chargeDirectReceipt, effectiveQualityMode, initializeQualityRun, operationalLevel, ownerQualityFloor, reserveDirectModelCall } from "./quality-contracts.mjs";
 import { approveBoundInteraction, assertApprovalStillCurrent } from "./approval-binding.mjs";
@@ -67,14 +69,82 @@ function boundedDocuments(discovery, maxBytes = 32_000) {
   return result;
 }
 
+function boundedResearchInventory(discovery, maxBytes = 24_000) {
+  const roots = (discovery.roots ?? []).map(root => ({ key: root.key, path: root.path, access: "read", primary: root.primary }));
+  const files = [];
+  let used = Buffer.byteLength(JSON.stringify(roots));
+  for (const source of discovery.sources ?? []) for (const file of source.files ?? []) {
+    const item = { path: file.path, bytes: file.bytes };
+    const bytes = Buffer.byteLength(JSON.stringify(item));
+    if (used + bytes > maxBytes) return { roots, files, truncated: true };
+    files.push(item); used += bytes;
+  }
+  return { roots, files, truncated: (discovery.sources ?? []).some(source => source.truncated) };
+}
+
+function researchJsonSchema() {
+  return {
+    type: "object", additionalProperties: false,
+    properties: {
+      schema_version: { type: "integer", const: 1 },
+      status: { type: "string", enum: ["answered", "insufficient"] },
+      answer: { type: "string", minLength: 1, maxLength: 20_000 },
+      inspected_paths: { type: "array", maxItems: 40, items: { type: "string", minLength: 1, maxLength: 512 } },
+      limitations: { type: "array", maxItems: 20, items: { type: "string", minLength: 1, maxLength: 1_000 } }
+    },
+    required: ["schema_version", "status", "answer", "inspected_paths", "limitations"]
+  };
+}
+
+function assertGatewayReceiptCompleted(receipt, role) {
+  const exitCode = receipt?.exitCode ?? receipt?.exit_code ?? null;
+  if (receipt?.status === "completed" && (exitCode === null || Number(exitCode) === 0)) return;
+  const failure = receipt?.failureCategory ?? receipt?.failure_category ?? (receipt?.status === "timed_out" ? "timeout" : null);
+  const suffix = failure === "provider_exit" ? "PROVIDER_EXIT"
+    : failure === "timeout" ? "TIMEOUT"
+      : failure === "adapter_configuration" ? "ADAPTER_CONFIGURATION"
+        : "GATEWAY_FAILED";
+  throw new Error(`${String(role).toUpperCase()}_${suffix}`);
+}
+
+function validateResearchResult(receipt, discovery) {
+  const raw = extractModelText(receipt.output);
+  let value;
+  try { value = JSON.parse(raw); } catch { throw new Error("RESEARCH_RESULT_INVALID_JSON"); }
+  const keys = value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value).sort() : [];
+  const expected = ["answer", "inspected_paths", "limitations", "schema_version", "status"].sort();
+  if (JSON.stringify(keys) !== JSON.stringify(expected) || value.schema_version !== 1 || !["answered", "insufficient"].includes(value.status)) throw new Error("RESEARCH_RESULT_SCHEMA_INVALID");
+  if (typeof value.answer !== "string" || !value.answer.trim() || value.answer.length > 20_000) throw new Error("RESEARCH_RESULT_ANSWER_INVALID");
+  if (!Array.isArray(value.inspected_paths) || value.inspected_paths.length > 40 || !Array.isArray(value.limitations) || value.limitations.length > 20) throw new Error("RESEARCH_RESULT_SCHEMA_INVALID");
+  const allowed = new Set((discovery.sources ?? []).flatMap(source => (source.files ?? []).map(file => file.path.replaceAll("\\", "/"))));
+  const inspected = [];
+  for (const supplied of value.inspected_paths) {
+    const normalized = String(supplied).replaceAll("\\", "/").replace(/^\.\//, "");
+    if (!allowed.has(normalized)) throw new Error(`RESEARCH_PATH_NOT_IN_REGISTERED_INVENTORY: ${normalized}`);
+    const parsed = parseRootedPath(discovery.roots ?? [], normalized);
+    const target = path.resolve(parsed.root.path, parsed.relative);
+    const realRoot = fs.realpathSync(parsed.root.path), realTarget = fs.realpathSync(target);
+    if (!inside(realRoot, realTarget) || !fs.statSync(realTarget).isFile()) throw new Error(`RESEARCH_PATH_INVALID: ${normalized}`);
+    inspected.push(normalized);
+  }
+  if (new Set(inspected).size !== inspected.length) throw new Error("RESEARCH_PATH_DUPLICATE");
+  if (value.status === "answered" && inspected.length === 0) throw new Error("RESEARCH_ANSWER_WITHOUT_INSPECTED_SOURCE");
+  if (value.limitations.some(item => typeof item !== "string" || !item.trim() || item.length > 1_000)) throw new Error("RESEARCH_LIMITATION_INVALID");
+  return Object.freeze({ schema_version: 1, status: value.status, answer: value.answer.trim(), inspected_paths: inspected, limitations: value.limitations.map(item => item.trim()) });
+}
+
 function researchPrompt({ message, resolvedObjective, project, discovery, responseLanguage }) {
+  const inventory = boundedResearchInventory(discovery);
   return [
-    "WORKFLOW RESEARCH REQUEST v2",
-    "Answer RESOLVED_OBJECTIVE from only the registered readable documents below. It is the authoritative standalone task; VERBATIM_CURRENT_USER_MESSAGE is provenance only and must not narrow or override it.",
-    "Do not edit files, invoke other agents, or invent facts.",
-    `Return a concise human-readable answer in ${languageName(responseLanguage)} without internal IDs, profiles, levels, prompts or JSON.`,
+    "WORKFLOW RESEARCH REQUEST v3",
+    "Answer RESOLVED_OBJECTIVE by performing bounded read-only research inside REGISTERED_PROJECT_CORPUS. It is the authoritative standalone task; VERBATIM_CURRENT_USER_MESSAGE is provenance only and must not narrow or override it.",
+    "REGISTERED_CONTEXT contains authoritative project rules and reference material. It is not a substitute for inspecting the actual repository when the objective asks about implementation, architecture, readiness, behavior, or source state.",
+    "REGISTERED_PROJECT_CORPUS is the complete permission boundary. Inspect only paths listed in its files inventory, never leave its registered roots, and use read-only commands and file reads only. Do not edit files, invoke other agents, access credentials or dumps, or invent facts.",
+    "For status=answered, inspect at least one relevant repository file and list every file relied on in inspected_paths using the exact project-relative path from the inventory. If the bounded inventory or available files cannot support an answer, return status=insufficient and explain the precise limitation.",
+    `Return JSON matching the supplied schema. Put the concise human-readable answer in ${languageName(responseLanguage)} in answer; do not mention internal IDs, profiles, levels, or prompts.`,
     `PROJECT:${project.name}`,
     `REGISTERED_CONTEXT:${JSON.stringify(boundedDocuments(discovery))}`,
+    `REGISTERED_PROJECT_CORPUS:${JSON.stringify(inventory)}`,
     `RESOLVED_OBJECTIVE:${JSON.stringify(resolvedObjective)}`,
     `VERBATIM_CURRENT_USER_MESSAGE:${JSON.stringify(message)}`
   ].join("\n");
@@ -100,6 +170,11 @@ function profileLine(profile, language) {
     ? ` ${language === "ru" ? "Ограничения" : "Constraints"}: ${profile.warnings.join("; ")}.`
     : "";
   return `${prefix}: Quality=${profile.quality_mode}; Execution=${profile.execution_mode}; Verification=${profile.verification_mode}; Planning=${profile.planning_mode}.${warning}`;
+}
+
+function runProfileAxes(profile = {}) {
+  return Object.fromEntries(["quality_mode", "execution_mode", "verification_mode", "planning_mode"]
+    .filter(axis => profile[axis] !== undefined).map(axis => [axis, profile[axis]]));
 }
 
 function recordClassificationFailure(runtime, runId, error) {
@@ -139,6 +214,15 @@ function executionFailure(runtime, runId, error, finish, responseLanguage = "en"
   appendEvent(runtime.db, { entityType: "workflow_run", entityId: runId, kind: "execution_error", payload: { category } });
   runtime.setState(runId, "failed", { reason: category });
   return finish({ route: "failed", response: workflowMessage("executionFailed", responseLanguage), error: category });
+}
+
+function structuredExecutionError(error) {
+  const message = String(error?.message ?? error).replace(/[\r\n\t]+/g, " ").trim();
+  const category = message.split(":")[0].slice(0, 120);
+  const diagnostic = /^(?:planner|worker|reviewer|judge|strategy_review|documentator)\.v1(?:\.|:)/u.test(message)
+    ? message.slice(0, 500)
+    : category;
+  return { category, diagnostic };
 }
 
 // Where the answer arrives decides how the run continues. A run that had not produced work yet re-enters
@@ -306,10 +390,11 @@ export async function processMessage({
   const run = runtime.get(runId);
   let responseLanguage = resolveResponseLanguage({ message, preferredLanguage: preferredLanguage ?? settings.responseLanguage });
   const taskDirectory = path.join(settings.tempRoot, projectSlug, runId);
+  let sessionProfileAction = null;
   const finish = value => {
     runtime.db.close();
     fs.rmSync(taskDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-    return { run_id: runId, response_language: responseLanguage, ...value };
+    return { run_id: runId, response_language: responseLanguage, ...(sessionProfileAction ? { session_profile_action: sessionProfileAction } : {}), ...value };
   };
   if (accepted.duplicate) {
     responseLanguage = run.response_language ?? responseLanguage;
@@ -346,6 +431,8 @@ export async function processMessage({
   let classifierReceipt = null;
   let classification;
   let runProfile = null;
+  let effectiveRunProfileOverrides = { ...runProfileOverrides };
+  let answeredProfileInteraction = null;
   try {
     // Embedded deterministic callers predate the standalone objective field. Their supplied message is
     // already the complete objective, so it is a safe compatibility value. Model output never receives
@@ -357,7 +444,18 @@ export async function processMessage({
       if (!role?.provider || !role.profile || !role.role) throw new Error("CLASSIFIER_ROLE_NOT_CONFIGURED");
       classifierReceipt = await gatewayCall({ provider: role.provider, profile: role.profile, level: "prototype", role: role.role, taskFile: classifierTaskFile, outputSchemaFile: classifierSchemaFile, project: projectRoot, taskId: `${runId}:classifier`, workflowRunId: runId });
       runtime.linkGateway(runId, classifierReceipt);
+      assertGatewayReceiptCompleted(classifierReceipt, "classifier");
       classification = parseClassificationReceipt(classifierReceipt, catalog);
+    }
+    answeredProfileInteraction = classification.pending_interaction_id
+      ? catalog.pending_interactions.find(item => item.id === classification.pending_interaction_id && item.kind === RUN_PROFILE_CONFIRMATION_KIND) ?? null
+      : null;
+    if (answeredProfileInteraction && classification.pending_interaction_response === "approve") {
+      effectiveRunProfileOverrides = runProfileAxes(answeredProfileInteraction.profile);
+      classification = Object.freeze({ ...classification, resolved_objective: answeredProfileInteraction.objective });
+      sessionProfileAction = "consume";
+    } else if (answeredProfileInteraction && classification.pending_interaction_response === "decline") {
+      sessionProfileAction = "consume";
     }
     if (classification.reply_mode === "work") {
       const routedWorkflow = resolveWorkflowRoute(catalog, classification.work_type);
@@ -371,7 +469,7 @@ export async function processMessage({
     const workflowQualityFloor = classification.reply_mode === "work"
       ? runtime.db.prepare("SELECT default_quality FROM workflows WHERE id=?").get(workflow)?.default_quality ?? null
       : null;
-    const profileQualityFloor = runProfileOverrides.quality_mode ? operationalLevel(runProfileOverrides.quality_mode) : null;
+    const profileQualityFloor = effectiveRunProfileOverrides.quality_mode ? operationalLevel(effectiveRunProfileOverrides.quality_mode) : null;
     const effective = effectiveQualityMode(classifierQualityMode, requestedQualityFloor, workflowQualityFloor, profileQualityFloor);
     classification = Object.freeze({
       ...classification,
@@ -385,7 +483,7 @@ export async function processMessage({
     initializeQualityRun(runtime, runId, classification, classifierReceipt);
     const profileQuality = operationalLevel(classification.quality_mode);
     const bindings = plannerBindings(runtime.db, run.project_id, profileQuality, classification.work_type);
-    const resolvedProfile = resolveRunProfile(runtime.db, { projectId: run.project_id, qualityMode: profileQuality, overrides: runProfileOverrides, plannerBindings: bindings });
+    const resolvedProfile = resolveRunProfile(runtime.db, { projectId: run.project_id, qualityMode: profileQuality, overrides: effectiveRunProfileOverrides, plannerBindings: bindings });
     if (resolvedProfile.status === "resolved") {
       runProfile = resolvedProfile;
       const defaultRow = runtime.db.prepare("SELECT confirmed_by FROM project_run_profile_defaults WHERE project_id=? AND quality_mode=?").get(run.project_id, profileQuality);
@@ -394,15 +492,15 @@ export async function processMessage({
       const legacy = runtime.get(runId).improvement_strategy === "gauntlet" ? "gauntlet" : "baseline";
       const fallback = {
         quality_mode: profileQuality,
-        execution_mode: runProfileOverrides.execution_mode ?? "standard",
-        verification_mode: runProfileOverrides.verification_mode ?? legacy,
-        planning_mode: runProfileOverrides.planning_mode ?? "single"
+        execution_mode: effectiveRunProfileOverrides.execution_mode ?? "standard",
+        verification_mode: effectiveRunProfileOverrides.verification_mode ?? legacy,
+        planning_mode: effectiveRunProfileOverrides.planning_mode ?? "single"
       };
       runProfile = { status: "resolved", ...normalizeRunProfile(fallback, { plannerBindings: bindings }), sources: {
         quality_mode: "classification",
-        execution_mode: runProfileOverrides.execution_mode === undefined ? "legacy_fallback" : "task",
-        verification_mode: runProfileOverrides.verification_mode === undefined ? "legacy_fallback" : "task",
-        planning_mode: runProfileOverrides.planning_mode === undefined ? "legacy_fallback" : "task"
+        execution_mode: effectiveRunProfileOverrides.execution_mode === undefined ? "legacy_fallback" : "task",
+        verification_mode: effectiveRunProfileOverrides.verification_mode === undefined ? "legacy_fallback" : "task",
+        planning_mode: effectiveRunProfileOverrides.planning_mode === undefined ? "legacy_fallback" : "task"
       } };
       storeRunProfile(runtime.db, runId, runProfile, { status: "proposed" });
     }
@@ -413,8 +511,9 @@ export async function processMessage({
   const receiptsOf = () => classifierReceipt ? { mode: "executed", receipts: [{ step: "classifier", receipt: classifierReceipt }] } : { mode: "contract-test" };
   const resolvedObjective = classification.resolved_objective;
   const profileMismatch = ["quality_mode", "execution_mode", "verification_mode", "planning_mode"]
-    .some(axis => runProfileOverrides[axis] !== undefined && runProfile[axis] !== runProfileOverrides[axis]);
-  if ((prepareOnly || profileMismatch) && classification.reply_mode === "work") {
+    .some(axis => effectiveRunProfileOverrides[axis] !== undefined && runProfile[axis] !== effectiveRunProfileOverrides[axis]);
+  const approvedPendingProfile = answeredProfileInteraction && classification.pending_interaction_response === "approve";
+  if (((prepareOnly && !approvedPendingProfile) || profileMismatch) && classification.reply_mode === "work") {
     runtime.setState(runId, "completed", { reason: "run profile prepared before implementation" });
     const next = responseLanguage === "ru"
       ? "Если профиль подходит, ответьте обычным сообщением — например, «делай». Если нет, опишите, что изменить."
@@ -465,8 +564,9 @@ export async function processMessage({
         const execution = await resumeWaitingRun({ runtime, waitingRunId, definition, discovery, responseLanguage, taskRoot: taskDirectory, gatewayCall, gateRunner });
         return finish({ route: "work", classification, response: saveAssistant(executionMessage(execution, responseLanguage)), execution, gateway: receiptsOf() });
       } catch (error) {
-        const response = saveAssistant(workflowMessage("contractRejected", responseLanguage));
-        return finish({ route: "execution_failed", classification, response, execution: { status: runtime.get(waitingRunId).state, error: String(error.message).split(":")[0].slice(0, 120) } });
+        const failure = structuredExecutionError(error);
+        const response = saveAssistant(`${workflowMessage("contractRejected", responseLanguage)} (${failure.diagnostic})`);
+        return finish({ route: "execution_failed", classification, response, execution: { status: runtime.get(waitingRunId).state, error: failure.category } });
       }
     }
   }
@@ -511,8 +611,9 @@ export async function processMessage({
       const response = saveAssistant(executionMessage(execution, responseLanguage));
       return finish({ route: "work", classification, response, execution, gateway: receipts });
     } catch (error) {
-      const response = saveAssistant(workflowMessage("contractRejected", responseLanguage));
-      return finish({ route: "execution_failed", classification, response, execution: { status: runtime.get(ownerDecision.run_id).state, error: String(error.message).split(":")[0].slice(0, 120) } });
+      const failure = structuredExecutionError(error);
+      const response = saveAssistant(`${workflowMessage("contractRejected", responseLanguage)} (${failure.diagnostic})`);
+      return finish({ route: "execution_failed", classification, response, execution: { status: runtime.get(ownerDecision.run_id).state, error: failure.category } });
     }
   }
 
@@ -532,23 +633,32 @@ export async function processMessage({
 
   if (classification.reply_mode === "research") {
     const selected = selectProjectContext(discovery, classification, [], runtime.db, run.project_id, "researcher");
-    if (!execute) return finish({ route: "research", classification, response: formatClassification({ summary: classification.reason, nextStep: responseLanguage === "ru" ? "выполнить ограниченное исследование по зарегистрированным источникам" : "run bounded research over the registered sources", language: responseLanguage }), gateway: { mode: "dry-run", steps: [{ role: "researcher", readable_documents: selected.documents.map(item => item.path) }] } });
+    if (!execute) return finish({ route: "research", classification, response: formatClassification({ summary: classification.reason, nextStep: responseLanguage === "ru" ? "выполнить ограниченное read-only исследование зарегистрированного репозитория" : "run bounded read-only research over the registered repository", language: responseLanguage }), gateway: { mode: "dry-run", steps: [{ role: "researcher", readable_documents: selected.documents.map(item => item.path), readable_roots: selected.roots.map(item => item.key) }] } });
     runtime.setState(runId, "executing", { reason: "research route authorized" });
     const researchFile = path.join(taskDirectory, "research-task.md");
+    const researchSchemaFile = path.join(taskDirectory, "researcher-output.schema.json");
     fs.writeFileSync(researchFile, researchPrompt({ message, resolvedObjective, project: discovery.project, discovery: selected, responseLanguage }), "utf8");
+    fs.writeFileSync(researchSchemaFile, `${JSON.stringify(researchJsonSchema(), null, 2)}\n`, "utf8");
     const role = definition.roles?.researcher;
     if (!role?.provider || !role.profile || !role.role) return executionFailure(runtime, runId, new Error("RESEARCHER_ROLE_NOT_CONFIGURED"), finish, responseLanguage);
     let researcher;
     try {
       reserveDirectModelCall(runtime, runId, "researcher");
-      researcher = await gatewayCall({ provider: role.provider, profile: role.profile, level: operationalLevel(classification.quality_mode), role: role.role, taskFile: researchFile, project: projectRoot, taskId: `${runId}:researcher`, workflowRunId: runId });
+      researcher = await gatewayCall({ provider: role.provider, profile: role.profile, level: operationalLevel(classification.quality_mode), role: role.role, taskFile: researchFile, outputSchemaFile: researchSchemaFile, project: projectRoot, taskId: `${runId}:researcher`, workflowRunId: runId });
       chargeDirectReceipt(runtime, runId, researcher, "researcher");
     }
     catch (error) { return executionFailure(runtime, runId, error, finish, responseLanguage); }
     runtime.linkGateway(runId, researcher);
+    let research;
+    try {
+      assertGatewayReceiptCompleted(researcher, "researcher");
+      research = validateResearchResult(researcher, selected);
+    }
+    catch (error) { return executionFailure(runtime, runId, error, finish, responseLanguage); }
+    recordRunEvidence(runtime.db, runId, null, "research_inspection", { status: research.status, inspected_paths: research.inspected_paths, limitations: research.limitations });
     runtime.setState(runId, "verifying", { reason: "research response received" });
     runtime.setState(runId, "completed", { reason: "research response delivered" });
-    const response = saveAssistant(extractModelText(researcher.output));
+    const response = saveAssistant(research.answer);
     return finish({ route: "research", classification, response, gateway: { mode: "executed", receipts: [{ step: "classifier", receipt: classifierReceipt }, { step: "researcher", receipt: researcher }] } });
   }
 
@@ -559,7 +669,8 @@ export async function processMessage({
       saveAssistant(response);
       return finish({ route: "work", classification, response, execution });
     } catch (error) {
-      const category = String(error.message).split(":")[0].slice(0, 120);
+      const failure = structuredExecutionError(error);
+      const category = failure.category;
       // A run that failed on its way into execution has to end. Where the failure already put the run
       // somewhere meaningful — waiting for a person, scheduled to retry, blocked — that state is the
       // truth and is left alone; anywhere else the run is finished as failed, because a run reported as
@@ -569,7 +680,7 @@ export async function processMessage({
         try { runtime.setState(runId, "failed", { reason: category }); } catch { /* the original failure is what matters */ }
       }
       const state = runtime.get(runId).state;
-      const response = `${workflowMessage("contractRejected", responseLanguage)} (${category})`;
+      const response = `${workflowMessage("contractRejected", responseLanguage)} (${failure.diagnostic})`;
       saveAssistant(response);
       return finish({ route: "execution_failed", classification, response, execution: { status: state, error: category } });
     }

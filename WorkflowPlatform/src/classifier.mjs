@@ -11,6 +11,8 @@ const REPLY_MODES = new Set(["conversation", "research", "clarification", "work"
 const OWNER_RESPONSES = new Set(["approve", "decline", "undecided", null]);
 const CLARIFICATION_INTERACTION_KINDS = new Set(["clarification", "planner_clarification"]);
 const EXTERNAL_EVIDENCE_KIND = "external_evidence";
+export const RUN_PROFILE_CONFIRMATION_KIND = "run_profile_confirmation";
+export const RUN_PROFILE_CONFIRMATION_ID = "pending_run_profile";
 // These answers are delivered directly and never enter a workflow, so they stay classifiable
 // even when a project registers no route for them.
 const DIRECT_REPLY_WORK_TYPES = Object.freeze(["clarification", "conversation", "research"]);
@@ -35,6 +37,25 @@ export function classificationCatalog(db, projectId, semanticScope = null) {
         JOIN zodchi_chat_session_runs csr ON csr.run_id=dp.run_id
         WHERE dp.project_id=? AND dp.status='pending' AND csr.client=? AND csr.session_id=? ORDER BY dp.created_at,dp.id`).all(projectId, scope.client, scope.session_id)
     : [];
+  const sessionProfileRow = sessionBound
+    ? db.prepare(`SELECT pending_message,pending_profile_json FROM zodchi_chat_sessions
+        WHERE client=? AND session_id=? AND project_id=? AND state='active'`).get(scope.client, scope.session_id, projectId) ?? null
+    : null;
+  let sessionProfileInteraction = null;
+  if (sessionProfileRow?.pending_message || sessionProfileRow?.pending_profile_json) {
+    if (!sessionProfileRow.pending_message || !sessionProfileRow.pending_profile_json) throw new Error("ZODCHI_PENDING_RUN_PROFILE_INCOMPLETE");
+    let profile;
+    try { profile = JSON.parse(sessionProfileRow.pending_profile_json); }
+    catch { throw new Error("ZODCHI_PENDING_RUN_PROFILE_INVALID"); }
+    sessionProfileInteraction = {
+      id: RUN_PROFILE_CONFIRMATION_ID,
+      kind: RUN_PROFILE_CONFIRMATION_KIND,
+      summary: "Decide whether to execute the pending objective with the proposed run profile.",
+      objective: sessionProfileRow.pending_message,
+      profile,
+      possible_responses: ["approve", "decline", "undecided"]
+    };
+  }
   const pending = [
     // The kind is what separates a question from a decision on an action, and collapsing every approval
     // into one label left the classifier unable to tell them apart in the very list it reads.
@@ -48,7 +69,8 @@ export function classificationCatalog(db, projectId, semanticScope = null) {
           ? { id: item.id, kind: item.kind, summary: item.summary, evidence_contract: { evidence_kind: detail.evidence_kind, resource: detail.resource, expected_completeness: detail.expected_completeness, command: detail.command } }
           : { id: item.id, kind: item.kind, summary: item.summary };
       }),
-    ...proposalRows
+    ...proposalRows,
+    ...(sessionProfileInteraction ? [sessionProfileInteraction] : [])
   ].sort((a, b) => a.id.localeCompare(b.id, "en"));
   return Object.freeze({
     schema_version: 1,
@@ -165,6 +187,14 @@ export function validateClassificationDecision(value, catalog) {
   const decides = Boolean(answered) && !CLARIFICATION_INTERACTION_KINDS.has(answered.kind);
   if (!OWNER_RESPONSES.has(value.pending_interaction_response)) throw new Error(`CLASSIFICATION_SCHEMA_INVALID: pending_interaction_response=${value.pending_interaction_response}`);
   if (decides !== (value.pending_interaction_response !== null)) throw new Error("CLASSIFICATION_SCHEMA_INVALID: pending_interaction_response belongs to a decision, and every decision needs one");
+  if (answered?.kind === RUN_PROFILE_CONFIRMATION_KIND) {
+    if (value.pending_interaction_response === "approve" && (value.reply_mode !== "work" || !value.planning_required)) {
+      throw new Error("CLASSIFICATION_SCHEMA_INVALID: approving a pending run profile must execute its work route");
+    }
+    if (value.pending_interaction_response !== "approve" && value.reply_mode !== "conversation") {
+      throw new Error("CLASSIFICATION_SCHEMA_INVALID: a pending run profile remains conversational until approved");
+    }
+  }
   // A request for external evidence asks for a fact that exists outside anything the platform can read.
   // A message saying the fact is true is an assertion about the evidence, not the evidence, and reading
   // it as one closes the request while the claim it guards stays unproven. Refusal and cancellation are
@@ -234,7 +264,7 @@ export function classifierPrompt({ message, catalog, projectSnapshot, acceptedDe
     "FIELD_SEMANTICS:",
     "- work_type, artifact_type, domain, discipline, quality_mode, planning_level: one registry value each, taken from ALLOWED_VALUES and never invented.",
     "- risk: low when the message cannot damage anything, medium when it changes registered material, high when it is irreversible or touches production.",
-    "- reply_mode: conversation for ordinary talk, research for a bounded question answered from registered sources, clarification when required information is missing, work when a registered route must run.",
+    "- reply_mode: conversation for ordinary talk, research for bounded read-only investigation of registered project sources, clarification when required information is missing, work when a registered route must run.",
     "- work_type=conversation forces artifact_type=none, planning_required=false and reply_mode=conversation.",
     "- work_type=continuation is only a short conversational follow-up with artifact_type=none, document_required=false, planning_required=false and reply_mode=conversation. A detailed task remains the underlying registered work type even when the same subject appeared earlier; a request to create a document is documentation, not continuation.",
     "- reply_mode=work requires planning_required=true and a work_type that REGISTERED_ROUTES actually routes.",
@@ -245,7 +275,9 @@ export function classifierPrompt({ message, catalog, projectSnapshot, acceptedDe
     "- questions: 0 to 5 plain-language questions, each one a real choice only the user can make. Never ask what the registry or the project files already answer.",
     "- The supplied project snapshot is proof that downstream roles can use the registered roots and sources. You only route the request; the platform collects matching file contents and Git history after a work route is selected. Never ask the user to paste source files, repository content, diffs or logs that are inside those registered roots.",
     "- A request to inspect registered project code and write the findings into a project document is documentation work: reply_mode=work, planning_required=true and document_required=true. The classifier's own lack of tools is not missing user information and never justifies clarification.",
+    "- A request to inspect, understand, explain, or analyze the registered repository without changing it or producing a registered project artifact is bounded research: reply_mode=research. The researcher may inspect the registered project source inventory under a read-only contract and must name the files supporting its answer. Verification means running registered checks against a claim or result; the word analysis alone never turns repository research into verification.",
     "- pending_interaction_id: the id from PENDING_INTERACTIONS that this message answers, or null. One message often answers every question that was asked, so when it answers several give the list of their ids instead of a single one. A short confirmation is resolved from pending interactions and ordered history, never from a keyword rule. A new detailed task does not answer an older interaction merely because it mentions the same subject.",
+    "- An interaction of kind run_profile_confirmation is the pending next action for this chat. Its objective is the authoritative task and its profile is the exact proposed execution profile. If the current message unambiguously accepts it, name that interaction, set pending_interaction_response=approve, classify the stored objective on its registered work route, and copy the complete stored objective into resolved_objective. If the user refuses or cancels it, set decline and answer conversationally. If the user asks what the profile means, hesitates, adds a condition, or requests a change, set undecided and answer conversationally; the pending action remains open. An unrelated detailed request names no pending profile interaction and is classified as a new request.",
     "- An interaction of kind external_evidence asks for a fact from a live information base, a runtime, a device or a closed contour, described by the evidence contract carried beside it. It cannot be answered in words: only a delivered evidence packet closes it. Set pending_interaction_response to decline when the user refuses or cancels the request, and undecided otherwise, including when the user asserts the fact is true.",
     "- pending_interaction_response: null when pending_interaction_id is null or names an interaction of kind clarification or planner_clarification. When it names any other kind, the user is being asked to decide whether an action may happen, and this field says what they decided: approve only for an unambiguous yes to that exact action, decline for a refusal, undecided for anything else. Doubt, a question back, a condition, a partial agreement and thinking aloud are all undecided: the decision stays open and the user is answered. Treating hesitation as approval takes an action the user never authorized, so undecided is the answer whenever both readings are possible.",
     "- reason: why this classification, in RESPONSE_LANGUAGE.",

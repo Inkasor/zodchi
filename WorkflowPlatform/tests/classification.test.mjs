@@ -4,12 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { openDb, now } from "../src/db.mjs";
-import { classificationCatalog, classificationJsonSchema, classifierPrompt, parseClassificationReceipt, validateClassificationDecision } from "../src/classifier.mjs";
+import { RUN_PROFILE_CONFIRMATION_ID, RUN_PROFILE_CONFIRMATION_KIND, classificationCatalog, classificationJsonSchema, classifierPrompt, parseClassificationReceipt, validateClassificationDecision } from "../src/classifier.mjs";
 import { compactProjectSnapshot, conversationContext, readProjectContext, selectProjectContext } from "../src/document-context.mjs";
 import { processMessage as scopedProcessMessage } from "../src/workflow-app.mjs";
 import { onboardProject, registerProject } from "../src/onboarding.mjs";
 import { Runtime } from "../src/runtime.mjs";
-import { activateChatSession } from "../src/chat-session.mjs";
+import { activateChatSession, setPendingMessage } from "../src/chat-session.mjs";
 
 const statelessProcessMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
 
@@ -181,8 +181,11 @@ test("a project without a conversation route still answers a conversation instea
 
 test("research invokes classifier then researcher without planner, worker or reviewer", async () => {
   const { root, project, dbFile, db } = fixture("workflow-research-route-");
+  fs.mkdirSync(path.join(project, "src"));
+  fs.writeFileSync(path.join(project, "src", "engine.ts"), "export const engine = 'shared';\n", "utf8");
   db.close();
   const roles = [];
+  let researcherPrompt = null;
   const research = decision({
     work_type: "research", artifact_type: "test_report", discipline: "general", planning_required: false,
     reply_mode: "research", reason: "Нужно проверить зарегистрированные источники."
@@ -192,15 +195,73 @@ test("research invokes classifier then researcher without planner, worker or rev
     gatewayCall: async request => {
       assert.equal(request.project, project);
       roles.push(request.role);
-      return request.role === "classifier" ? receipt(JSON.stringify(research), "classifier-receipt") : receipt("Проверенные источники пока пусты.", "research-receipt");
+      if (request.role === "classifier") return receipt(JSON.stringify(research), "classifier-receipt");
+      researcherPrompt = fs.readFileSync(request.taskFile, "utf8");
+      const schema = JSON.parse(fs.readFileSync(request.outputSchemaFile, "utf8"));
+      assert.deepEqual(schema.properties.status.enum, ["answered", "insufficient"]);
+      assert.deepEqual(schema.properties.schema_version, { type: "integer", const: 1 });
+      assert.equal(Object.hasOwn(schema.properties.inspected_paths, "uniqueItems"), false);
+      return receipt(JSON.stringify({ schema_version: 1, status: "answered", answer: "Исходник движка прочитан.", inspected_paths: ["src/engine.ts"], limitations: [] }), "research-receipt");
     }
   });
   assert.deepEqual(roles, ["classifier", "researcher"]);
   assert.equal(result.route, "research");
-  assert.equal(result.response, "Проверенные источники пока пусты.");
+  assert.equal(result.response, "Исходник движка прочитан.");
+  assert.match(researcherPrompt, /WORKFLOW RESEARCH REQUEST v3/);
+  assert.match(researcherPrompt, /actual repository/);
+  assert.match(researcherPrompt, /REGISTERED_PROJECT_CORPUS/);
+  assert.match(researcherPrompt, /src\/engine\.ts/);
   const verified = openDb(dbFile);
   assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM workflow_steps").get().count, 0);
   assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(result.run_id).state, "completed");
+  const evidence = JSON.parse(verified.prepare("SELECT evidence_json FROM run_evidence WHERE run_id=? AND kind='research_inspection'").get(result.run_id).evidence_json);
+  assert.deepEqual(evidence, { status: "answered", inspected_paths: ["src/engine.ts"], limitations: [] });
+  verified.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("research preserves a failed provider receipt instead of parsing its empty output", async () => {
+  const { root, project, dbFile, db } = fixture("workflow-research-provider-failure-");
+  fs.writeFileSync(path.join(project, "engine.ts"), "export const ready = false;\n", "utf8");
+  db.close();
+  const research = decision({
+    work_type: "research", artifact_type: "test_report", discipline: "software", planning_level: "L0", planning_required: false,
+    reply_mode: "research", reason: "Нужно исследовать исходники без изменений."
+  });
+  const result = await statelessProcessMessage({
+    message: "Проанализируй репозиторий", project, dbFile, workflowDefinition: definition(), execute: true,
+    gatewayCall: async request => request.role === "classifier"
+      ? receipt(JSON.stringify(research), "classifier-receipt")
+      : { ...receipt("", "research-receipt"), status: "failed", exitCode: 1, failureCategory: "provider_exit" }
+  });
+  assert.equal(result.route, "failed");
+  assert.equal(result.error, "RESEARCHER_PROVIDER_EXIT");
+  const verified = openDb(dbFile);
+  assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(result.run_id).state, "failed");
+  assert.equal(verified.prepare("SELECT payload_json FROM events WHERE entity_id=? AND kind='execution_error' ORDER BY created_at DESC LIMIT 1").get(result.run_id).payload_json.includes("RESEARCHER_PROVIDER_EXIT"), true);
+  verified.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("research cannot claim an answered repository analysis without inspected inventory paths", async () => {
+  const { root, project, dbFile, db } = fixture("workflow-research-evidence-required-");
+  fs.writeFileSync(path.join(project, "engine.ts"), "export const ready = false;\n", "utf8");
+  db.close();
+  const research = decision({
+    work_type: "research", artifact_type: "test_report", discipline: "software", planning_level: "L0", planning_required: false,
+    reply_mode: "research", reason: "Нужно исследовать исходники без изменений."
+  });
+  const result = await statelessProcessMessage({
+    message: "Проанализируй репозиторий", project, dbFile, workflowDefinition: definition(), execute: true,
+    gatewayCall: async request => request.role === "classifier"
+      ? receipt(JSON.stringify(research), "classifier-receipt")
+      : receipt(JSON.stringify({ schema_version: 1, status: "answered", answer: "Репозиторий готов.", inspected_paths: [], limitations: [] }), "research-receipt")
+  });
+  assert.equal(result.route, "failed");
+  assert.equal(result.error, "RESEARCH_ANSWER_WITHOUT_INSPECTED_SOURCE");
+  const verified = openDb(dbFile);
+  assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(result.run_id).state, "failed");
+  assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM run_evidence WHERE run_id=? AND kind='research_inspection'").get(result.run_id).count, 0);
   verified.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -317,6 +378,7 @@ test("classifier context keeps accepted decisions, ordered bounded history, pend
   db.prepare("INSERT INTO decisions(id,task_id,kind,outcome,source,structured_json,active,created_at) VALUES('accepted-decision',?,'owner','APPROVE','owner','{\"value\":1}',1,?)").run(runtimeTask, now());
   db.prepare("INSERT INTO decisions(id,task_id,kind,outcome,source,structured_json,active,created_at) VALUES('classifier-decision',?,'classification','conversation','classifier','{\"value\":2}',1,?)").run(runtimeTask, now());
   db.prepare("INSERT INTO approvals(id,task_id,run_id,kind,question,status,created_at) VALUES('pending-approval',?,'history-run','owner','Продолжить?','pending',?)").run(runtimeTask, now());
+  setPendingMessage(db, { client: semanticScope.client, sessionId: semanticScope.session_id, message: "Провести архитектурный анализ репозитория.", profile: { quality_mode: "mvp", execution_mode: "standard", verification_mode: "baseline", planning_mode: "single" } });
   for (let index = 0; index < 8; index += 1) db.prepare("INSERT INTO conversation_messages(id,project_id,run_id,role,content,created_at) VALUES(?,'project','history-run',?,?,?)")
     .run(`message-${index}`, index % 2 ? "assistant" : "user", `history-${index}-${"x".repeat(120)}`, `2026-01-01T00:00:0${index}.000Z`);
   assert.throws(() => conversationContext(db, "project", 500), /ZODCHI_SEMANTIC_SCOPE_REQUIRED/);
@@ -329,17 +391,47 @@ test("classifier context keeps accepted decisions, ordered bounded history, pend
   assert.equal(context.history.at(-1).id, "message-7");
   assert.ok(context.history.length < 8);
   const catalog = classificationCatalog(db, "project", semanticScope);
+  const profileInteraction = catalog.pending_interactions.find(item => item.kind === RUN_PROFILE_CONFIRMATION_KIND);
+  assert.equal(profileInteraction.id, RUN_PROFILE_CONFIRMATION_ID);
+  assert.equal(profileInteraction.objective, "Провести архитектурный анализ репозитория.");
+  assert.equal(profileInteraction.profile.verification_mode, "baseline");
   const snapshot = { project: { id: "project", name: "Project" } };
   const first = classifierPrompt({ message: "Да", catalog, projectSnapshot: snapshot, acceptedDecisions: context.accepted_decisions, history: context.history });
   const second = classifierPrompt({ message: "Продолжай", catalog, projectSnapshot: snapshot, acceptedDecisions: context.accepted_decisions, history: context.history });
   assert.match(first, /pending-approval/);
+  assert.match(first, /pending_run_profile/);
+  assert.match(first, /run_profile_confirmation/);
   assert.match(first, /FIXED_OUTPUT_VALUES:\{"schema_version":1\}/);
   assert.equal(first.split("CURRENT_USER_MESSAGE:")[0], second.split("CURRENT_USER_MESSAGE:")[0]);
   assert.ok(first.endsWith('CURRENT_USER_MESSAGE:"Да"'));
-  const source = `${fs.readFileSync(new URL("../src/classifier.mjs", import.meta.url), "utf8")}\n${fs.readFileSync(new URL("../src/workflow-app.mjs", import.meta.url), "utf8")}`;
+  const source = `${fs.readFileSync(new URL("../src/classifier.mjs", import.meta.url), "utf8")}\n${fs.readFileSync(new URL("../src/workflow-app.mjs", import.meta.url), "utf8")}\n${fs.readFileSync(new URL("../src/session-router.mjs", import.meta.url), "utf8")}`;
   assert.equal(source.includes("classifyMessage"), false);
   assert.equal(source.includes("/^(да|"), false);
+  assert.equal(source.includes("EXECUTION_CONFIRMATION"), false);
+  assert.equal(source.includes("isExecutionConfirmation"), false);
   db.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("model-classified profile approval executes the canonical pending objective without router keyword rules", async () => {
+  const { root, project, dbFile, db } = fixture("workflow-profile-confirmation-");
+  const semanticScope = { mode: "session", client: "codex", session_id: "profile-chat" };
+  activateChatSession(db, { client: semanticScope.client, sessionId: semanticScope.session_id, origin: project, turnKey: "turn-1" });
+  setPendingMessage(db, { client: semanticScope.client, sessionId: semanticScope.session_id, message: "Провести архитектурный анализ репозитория.", profile: { quality_mode: "mvp", execution_mode: "standard", verification_mode: "baseline", planning_mode: "single" } });
+  db.close();
+  const result = await scopedProcessMessage({
+    message: "Хорошо, делай", project, dbFile, workflowDefinition: definition(), execute: false, prepareOnly: true, semanticScope,
+    classificationResult: decision({ pending_interaction_id: RUN_PROFILE_CONFIRMATION_ID, pending_interaction_response: "approve", resolved_objective: "Неверная формулировка из текущей короткой реплики." })
+  });
+  assert.equal(result.route, "work");
+  assert.equal(result.session_profile_action, "consume");
+  assert.equal(result.classification.resolved_objective, "Провести архитектурный анализ репозитория.");
+  assert.deepEqual({
+    quality_mode: result.run_profile.quality_mode,
+    execution_mode: result.run_profile.execution_mode,
+    verification_mode: result.run_profile.verification_mode,
+    planning_mode: result.run_profile.planning_mode
+  }, { quality_mode: "mvp", execution_mode: "standard", verification_mode: "baseline", planning_mode: "single" });
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -461,6 +553,7 @@ test("two chats in one project keep history and interactions isolated while down
   state.close();
 
   const resolved = "Проанализировать по порядку: текущую архитектуру движка, соответствие заявленной универсальности и готовность к дальнейшей разработке.";
+  fs.writeFileSync(path.join(project, "architecture.md"), "# Architecture\n\nCurrent engine boundaries.\n", "utf8");
   let classifierInput = null, researcherInput = null;
   const research = decision({
     work_type: "research", artifact_type: "test_report", discipline: "general", planning_required: false,
@@ -474,7 +567,7 @@ test("two chats in one project keep history and interactions isolated while down
       const prompt = fs.readFileSync(request.taskFile, "utf8");
       if (request.role === "classifier") { classifierInput = prompt; return receipt(JSON.stringify(research), "classifier-context"); }
       researcherInput = prompt;
-      return receipt("Анализ выполнен по трём аспектам.", "researcher-context");
+      return receipt(JSON.stringify({ schema_version: 1, status: "answered", answer: "Анализ выполнен по трём аспектам.", inspected_paths: ["architecture.md"], limitations: [] }), "researcher-context");
     }
   });
   assert.equal(secondA.route, "research");
@@ -482,6 +575,8 @@ test("two chats in one project keep history and interactions isolated while down
   assert.equal(classifierInput.includes("Markdown или JSON"), false);
   assert.match(researcherInput, /RESOLVED_OBJECTIVE.*authoritative standalone task/);
   assert.equal(researcherInput.includes(resolved), true);
+  assert.match(researcherInput, /REGISTERED_PROJECT_CORPUS/);
+  assert.match(researcherInput, /architecture\.md/);
   assert.match(researcherInput, /VERBATIM_CURRENT_USER_MESSAGE:"давай все три/);
 
   const afterA = openDb(dbFile);
