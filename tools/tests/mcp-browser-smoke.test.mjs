@@ -33,13 +33,13 @@ if (screenshot) {
 const title = html.match(/<title>([^<]+)<\\/title>/u)[1], body = html.match(/<main>([^<]+)<\\/main>/u)[1];
 process.stdout.write(JSON.stringify({
   receiptId: "mcp-browser-proof-receipt", status: "completed", error: null,
-  output: JSON.stringify({ status: "observed", title, body, screenshot: Boolean(screenshot), evidence: "fixture MCP browser" }),
+  output: JSON.stringify({ type: "result", result: \`\\\`\\\`\\\`json\\n\${JSON.stringify({ status: "observed", title, body, screenshot: Boolean(screenshot), evidence: "fixture MCP browser at " + screenshot })}\\n\\\`\\\`\\\`\` }),
   environment: { provider_environment: { mcp_servers: { carried: [{ scope: "home", name: "playwright" }] } } }
 }) + "\\n");
 `, "utf8");
 
   const smoke = path.resolve("tools", "mcp-browser-smoke.mjs");
-  const child = spawnSync(process.execPath, [smoke, "--project", project, "--policy", policy, "--provider", "codex", "--profile", "writer", "--gateway", gateway], { cwd: path.resolve("."), encoding: "utf8", windowsHide: true });
+  const child = spawnSync(process.execPath, [smoke, "--project", project, "--policy", policy, "--provider", "codex", "--profile", "writer", "--gateway", gateway, "--screenshot", path.join(project, "proof.png")], { cwd: path.resolve("."), encoding: "utf8", windowsHide: true });
   assert.equal(child.status, 0, child.stderr || child.stdout);
   const report = JSON.parse(child.stdout);
   assert.equal(report.status, "browser_confirmed");
@@ -47,7 +47,9 @@ process.stdout.write(JSON.stringify({
   assert.deepEqual(report.capability_evidence.browser_automation, { status: "available", enforcement: "technical", source: "sentinel_request_sequence" });
   assert.equal(report.capability_evidence.screen_capture.status, "available");
   assert.equal(report.capability_evidence.screen_capture.enforcement, "technical");
-  assert.equal(report.capability_evidence.screen_capture.artifact.path, "<probe-root>/browser-proof.png");
+  assert.equal(report.capability_evidence.screen_capture.artifact.path, "proof.png");
+  assert.match(report.reported.evidence, /<project>[\\/]proof\.png/u);
+  assert.equal(report.reported.evidence.includes(project), false);
   assert.deepEqual([report.capability_evidence.screen_capture.artifact.width, report.capability_evidence.screen_capture.artifact.height], [800, 600]);
   assert.equal(report.capability_evidence.screen_capture.artifact.bytes > 8, true);
   assert.match(report.capability_evidence.screen_capture.artifact.sha256, /^[a-f0-9]{64}$/u);

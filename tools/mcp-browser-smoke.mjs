@@ -29,33 +29,53 @@ function parsedReceipt(text) {
   }
   return null;
 }
-function extractModelText(text) {
-  const direct = parsedJson(text);
-  if (typeof direct?.result === "string") return direct.result;
-  if (typeof direct?.text === "string") return direct.text;
-  if (typeof direct?.item?.text === "string") return direct.item.text;
-  for (const line of String(text ?? "").split(/\r?\n/u).reverse()) {
-    const value = parsedJson(line);
-    if (typeof value?.result === "string") return value.result;
-    if (typeof value?.text === "string") return value.text;
-    if (typeof value?.item?.text === "string") return value.item.text;
+function parseStructuredModelResult(text) {
+  const parseCandidate = value => {
+    if (value && typeof value === "object" && !Array.isArray(value) && ["observed", "unavailable", "blocked", "failed"].includes(value.status)) return value;
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    const direct = parsedJson(trimmed);
+    if (direct) return parseCandidate(direct);
+    const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/iu)?.[1];
+    if (fenced) return parseCandidate(fenced);
+    const first = trimmed.indexOf("{"), last = trimmed.lastIndexOf("}");
+    return first >= 0 && last > first ? parseCandidate(trimmed.slice(first, last + 1)) : null;
+  };
+  const values = [];
+  const collect = value => {
+    if (value === null || value === undefined) return;
+    values.push(value);
+    if (value && typeof value === "object" && !Array.isArray(value)) values.push(value.structured_output, value.result, value.text, value.item?.text);
+  };
+  collect(parsedJson(text));
+  for (const line of String(text ?? "").split(/\r?\n/u).reverse()) collect(parsedJson(line));
+  collect(String(text ?? "").trim());
+  for (const value of values) {
+    const parsed = parseCandidate(value);
+    if (parsed) return parsed;
   }
-  return String(text ?? "").trim();
+  return null;
 }
-function screenshotEvidence(file) {
+function portableReportValue(value, replacements) {
+  if (typeof value === "string") return replacements.reduce((text, [source, replacement]) => text.replaceAll(source, replacement).replaceAll(source.replaceAll("\\", "/"), replacement), value);
+  if (Array.isArray(value)) return value.map(item => portableReportValue(item, replacements));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, portableReportValue(item, replacements)]));
+  return value;
+}
+function screenshotEvidence(file, artifactPath = "<probe-root>/browser-proof.png") {
   if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) return { status: "unknown", enforcement: "unknown", source: "artifact_missing", artifact: null };
   const content = fs.readFileSync(file), signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
   if (content.length < signature.length || !content.subarray(0, signature.length).equals(signature)) return { status: "unknown", enforcement: "unknown", source: "artifact_not_png", artifact: null };
   if (content.length < 24 || content.subarray(12, 16).toString("ascii") !== "IHDR") return { status: "unknown", enforcement: "unknown", source: "artifact_png_ihdr_missing", artifact: null };
   const width = content.readUInt32BE(16), height = content.readUInt32BE(20);
   if (width < PROBE_VIEWPORT.width || height < PROBE_VIEWPORT.height) {
-    return { status: "unknown", enforcement: "unknown", source: "artifact_below_probe_viewport", artifact: { path: "<probe-root>/browser-proof.png", bytes: content.length, width, height, sha256: crypto.createHash("sha256").update(content).digest("hex") } };
+    return { status: "unknown", enforcement: "unknown", source: "artifact_below_probe_viewport", artifact: { path: artifactPath, bytes: content.length, width, height, sha256: crypto.createHash("sha256").update(content).digest("hex") } };
   }
   return {
     status: "available",
     enforcement: "technical",
     source: "retained_png_artifact",
-    artifact: { path: "<probe-root>/browser-proof.png", bytes: content.length, width, height, sha256: crypto.createHash("sha256").update(content).digest("hex") }
+    artifact: { path: artifactPath, bytes: content.length, width, height, sha256: crypto.createHash("sha256").update(content).digest("hex") }
   };
 }
 
@@ -79,7 +99,13 @@ const server = profile.browserMcpServer;
 if (typeof server !== "string" || !(profile.allowedMcpServers ?? []).includes(server)) fail(`MCP_BROWSER_SMOKE_CONTOUR_REQUIRED: ${provider}/${profileName}`, 2);
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "zodchi-mcp-browser-smoke-"));
-const taskFile = path.join(root, "task.md"), schemaFile = path.join(root, "result.schema.json"), database = path.join(root, "gateway.sqlite"), requestLog = path.join(root, "sentinel-requests.jsonl"), screenshotFile = path.join(root, "browser-proof.png");
+const taskFile = path.join(root, "task.md"), schemaFile = path.join(root, "result.schema.json"), database = path.join(root, "gateway.sqlite"), requestLog = path.join(root, "sentinel-requests.jsonl");
+const screenshotFile = cli.screenshot ? path.resolve(String(cli.screenshot)) : path.join(root, "browser-proof.png");
+const screenshotRelative = path.relative(project, screenshotFile);
+if (cli.screenshot && (screenshotRelative.startsWith("..") || path.isAbsolute(screenshotRelative))) fail(`MCP_BROWSER_SMOKE_SCREENSHOT_OUTSIDE_PROJECT: ${screenshotFile}`, 2);
+if (!fs.statSync(path.dirname(screenshotFile), { throwIfNoEntry: false })?.isDirectory()) fail(`MCP_BROWSER_SMOKE_SCREENSHOT_PARENT_MISSING: ${path.dirname(screenshotFile)}`, 2);
+if (fs.existsSync(screenshotFile)) fail(`MCP_BROWSER_SMOKE_SCREENSHOT_EXISTS: ${screenshotFile}`, 2);
+const screenshotArtifactPath = cli.screenshot ? screenshotRelative.replaceAll("\\", "/") : "<probe-root>/browser-proof.png";
 const route = `/zodchi-browser-${crypto.randomUUID()}`, title = `Zodchi ${crypto.randomUUID()}`, body = `Body ${crypto.randomUUID()}`, resourceToken = crypto.randomUUID();
 const sentinel = await startBrowserSentinel({ route, title, body, requestLog, resourceToken });
 const task = [
@@ -107,20 +133,20 @@ try {
     env: { ...process.env, AGENT_GATEWAY_POLICY: policyPath, AGENT_GATEWAY_DB: database, AGENT_GATEWAY_DATA: root, AGENT_GATEWAY_TEMP: path.join(root, "temp") }
   });
   const receipt = parsedReceipt(child.stdout);
-  let modelResult = null;
-  try { modelResult = JSON.parse(extractModelText(receipt?.output)); } catch { /* represented as inconclusive */ }
+  const modelResult = parseStructuredModelResult(receipt?.output);
   const carried = receipt?.environment?.provider_environment?.mcp_servers?.carried?.map(item => item.name) ?? [];
   const sentinelEvidence = readBrowserSentinelEvidence(requestLog, sentinel.routes);
   const browserConfirmed = receipt?.status === "completed" && modelResult?.status === "observed" && modelResult.title === title && modelResult.body === body && sentinelEvidence.confirmed && carried.includes(server);
-  const captureEvidence = capture ? screenshotEvidence(screenshotFile) : { status: "not_probed", enforcement: "none", source: "capture_disabled", artifact: null };
+  const captureEvidence = capture ? screenshotEvidence(screenshotFile, screenshotArtifactPath) : { status: "not_probed", enforcement: "none", source: "capture_disabled", artifact: null };
   const modelReportedUnavailable = receipt?.status === "completed" && ["unavailable", "blocked", "failed"].includes(modelResult?.status) && carried.includes(server);
+  const portableReported = portableReportValue(modelResult, [[project, "<project>"], [root, "<probe-root>"], [os.tmpdir(), "<system-temp>"]]);
   const report = {
     schema_version: 1,
     finding: "The MCP smoke observes the browser request sequence and retained screenshot artifact independently, but a deliberately adversarial writable profile can still replay requests or forge a PNG. Deterministic WorkflowPlatform checks and owner acceptance remain separate authorities.",
     probe: "registered_mcp_browser",
     status: browserConfirmed ? "browser_confirmed" : modelReportedUnavailable ? "model_reported_unavailable" : "inconclusive",
     provider, profile: profileName, browser_mcp_server: server, receipt_id: receipt?.receiptId ?? null, gateway_exit_code: child.status, provider_status: receipt?.status ?? null,
-    expected: { title, body }, reported: modelResult,
+    expected: { title, body }, reported: portableReported,
     capability_evidence: {
       browser_automation: { status: browserConfirmed ? "available" : "unknown", enforcement: browserConfirmed ? "technical" : "unknown", source: "sentinel_request_sequence" },
       screen_capture: browserConfirmed ? captureEvidence : { status: "unknown", enforcement: "unknown", source: "browser_not_confirmed", artifact: null }

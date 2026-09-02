@@ -305,7 +305,10 @@ if (outputSchema) {
   try { outputSchemaValue = JSON.parse(fs.readFileSync(outputSchema, "utf8")); }
   catch (error) { fail(`OUTPUT_SCHEMA_INVALID_JSON: ${error.message}`); }
   if (!outputSchemaValue || typeof outputSchemaValue !== "object" || Array.isArray(outputSchemaValue)) fail(`OUTPUT_SCHEMA_INVALID: ${outputSchema}`);
-  if (providerConfig.outputSchemaArg) commandArgs.push(providerConfig.outputSchemaArg, outputSchema);
+  if (providerConfig.outputSchemaArg) {
+    if (providerConfig.outputSchemaFormat !== undefined && providerConfig.outputSchemaFormat !== "json") fail(`OUTPUT_SCHEMA_FORMAT_UNSUPPORTED: ${providerConfig.outputSchemaFormat}`);
+    commandArgs.push(providerConfig.outputSchemaArg, providerConfig.outputSchemaFormat === "json" ? JSON.stringify(outputSchemaValue) : outputSchema);
+  }
 }
 if (provider === "claude") {
   for (const tool of profileConfig.allowedTools ?? []) commandArgs.push("--allowedTools", tool);

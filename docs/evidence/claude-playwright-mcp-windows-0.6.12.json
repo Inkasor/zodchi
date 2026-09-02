@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "finding": "The MCP smoke observes the browser request sequence and retained screenshot artifact independently, but a deliberately adversarial writable profile can still replay requests or forge a PNG. Deterministic WorkflowPlatform checks and owner acceptance remain separate authorities.",
+  "probe": "registered_mcp_browser",
+  "status": "browser_confirmed",
+  "provider": "claude",
+  "profile": "zodchi-playwright-smoke",
+  "browser_mcp_server": "playwright",
+  "receipt_id": "2026-09-02T20-50-42.491Z-claude-37514e21-cb9f-43a7-9963-0552c0cc7723",
+  "gateway_exit_code": 0,
+  "provider_status": "completed",
+  "expected": {
+    "title": "Zodchi b868767b-78db-4115-88fc-1090b81213a3",
+    "body": "Body fa60a526-2f5d-451c-af95-37f7fb907258"
+  },
+  "reported": {
+    "status": "observed",
+    "title": "Zodchi b868767b-78db-4115-88fc-1090b81213a3",
+    "body": "Body fa60a526-2f5d-451c-af95-37f7fb907258",
+    "screenshot": true,
+    "evidence": "Playwright MCP only (no shell/HTTP/subprocess/other agent). Steps: browser_resize -> viewport 1280x800 (>= 800x600, confirmed in-page: window.innerWidth=1280, window.innerHeight=800); browser_navigate -> http://127.0.0.1:58087/zodchi-browser-b96dea78-4a26-4b50-9dd5-121bd19a750f (final location.href identical, document.readyState=\"complete\", so the page script had run); browser_evaluate read document.title = \"Zodchi b868767b-78db-4115-88fc-1090b81213a3\" and document.body.innerText = \"Body fa60a526-2f5d-451c-af95-37f7fb907258\"; browser_snapshot showed a single main landmark with the same text. Note the title/body UUIDs are script-generated and differ from the URL UUID. browser_take_screenshot (type=png, scale=css, viewport) was called with filename \"<project>\\docs\\evidence\\claude-playwright-mcp-windows-0.6.12.png\" and returned successfully; the server echoed the saved artifact as \"docs\\evidence\\claude-playwright-mcp-windows-0.6.12.png\" (displayed relative to <project>, unlike its own output-dir artifacts which echo with a \".playwright-mcp\\\" prefix), which indicates the absolute target path was honored. I could not independently confirm the bytes on disk: file: protocol navigation is blocked by the MCP server and this profile has no filesystem/shell tools, so the on-disk path is asserted from the server's own success response, not verified by a second read. Navigation also reported 1 console error; its contents were not inspected as it was outside the task scope."
+  },
+  "capability_evidence": {
+    "browser_automation": {
+      "status": "available",
+      "enforcement": "technical",
+      "source": "sentinel_request_sequence"
+    },
+    "screen_capture": {
+      "status": "available",
+      "enforcement": "technical",
+      "source": "retained_png_artifact",
+      "artifact": {
+        "path": "docs/evidence/claude-playwright-mcp-windows-0.6.12.png",
+        "bytes": 7706,
+        "width": 1280,
+        "height": 800,
+        "sha256": "fa5a4dd80d32a176f76248bc527b7cd44d60f663f1734309a7969f70447bbea5"
+      }
+    }
+  },
+  "sentinel_evidence": {
+    "confirmed": true,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0",
+    "requests": [
+      {
+        "method": "GET",
+        "url": "/zodchi-browser-b96dea78-4a26-4b50-9dd5-121bd19a750f",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0",
+        "sec_fetch_mode": "navigate",
+        "sec_fetch_dest": "document",
+        "referer": null
+      },
+      {
+        "method": "GET",
+        "url": "/zodchi-browser-b96dea78-4a26-4b50-9dd5-121bd19a750f/pixel-a25ef051-efc7-4464-9654-4cd76b4e2914.png",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0",
+        "sec_fetch_mode": "no-cors",
+        "sec_fetch_dest": "image",
+        "referer": "http://127.0.0.1:58087/zodchi-browser-b96dea78-4a26-4b50-9dd5-121bd19a750f"
+      },
+      {
+        "method": "GET",
+        "url": "/zodchi-browser-b96dea78-4a26-4b50-9dd5-121bd19a750f/runtime-a25ef051-efc7-4464-9654-4cd76b4e2914.js",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0",
+        "sec_fetch_mode": "no-cors",
+        "sec_fetch_dest": "script",
+        "referer": "http://127.0.0.1:58087/zodchi-browser-b96dea78-4a26-4b50-9dd5-121bd19a750f"
+      },
+      {
+        "method": "GET",
+        "url": "/zodchi-browser-b96dea78-4a26-4b50-9dd5-121bd19a750f/executed-a25ef051-efc7-4464-9654-4cd76b4e2914",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0",
+        "sec_fetch_mode": "cors",
+        "sec_fetch_dest": "empty",
+        "referer": "http://127.0.0.1:58087/zodchi-browser-b96dea78-4a26-4b50-9dd5-121bd19a750f"
+      },
+      {
+        "method": "GET",
+        "url": "/favicon.ico",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0",
+        "sec_fetch_mode": "no-cors",
+        "sec_fetch_dest": "image",
+        "referer": "http://127.0.0.1:58087/zodchi-browser-b96dea78-4a26-4b50-9dd5-121bd19a750f"
+      }
+    ]
+  },
+  "carried_mcp_servers": [
+    "playwright"
+  ],
+  "provider_error": "",
+  "database_retained": true,
+  "temporary_database": "<probe-root>/gateway.sqlite"
+}

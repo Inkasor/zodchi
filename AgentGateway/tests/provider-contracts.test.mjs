@@ -15,6 +15,7 @@ function execute(root, provider, task, mode = "pass", options = {}) {
   const profile = options.profile ?? `${provider}-contract`;
   const args = [cli, "run", "--provider", provider, "--profile", profile, "--level", "mvp", "--role", options.role ?? "worker", "--task-file", path.join(root, "task.md"), "--task", task];
   if (options.capabilityRequirements !== null) args.push("--capability-requirements", JSON.stringify(options.capabilityRequirements ?? { required: ["context_input"], forbidden: ["project_write"] }));
+  if (options.outputSchema) args.push("--output-schema", path.join(root, "result.schema.json"));
   const result = spawnSync(process.execPath, args, {
     cwd: repositoryRoot, encoding: "utf8", windowsHide: true,
     env: { ...process.env, AGENT_GATEWAY_POLICY: path.join(root, `policy-${mode}.json`), AGENT_GATEWAY_DATA: path.join(root, "data"), AGENT_GATEWAY_DB: path.join(root, "data", "gateway.sqlite"), AGENT_GATEWAY_TEMP: path.join(root, "temp"), CODEX_SOURCE_HOME: path.join(root, "provider-homes", "codex"), CLAUDE_SOURCE_MCP_CONFIG: path.join(root, "provider-homes", "claude.json"), KIMI_SOURCE_HOME: path.join(root, "provider-homes", "kimi") }
@@ -27,8 +28,9 @@ test("CLI harness adapters preserve identity, usage and never fall back", () => 
   fs.mkdirSync(path.join(root, "provider-homes", "codex"), { recursive: true }); fs.mkdirSync(path.join(root, "provider-homes", "kimi"), { recursive: true });
   fs.writeFileSync(path.join(root, "provider-homes", "claude.json"), JSON.stringify({ mcpServers: { playwright: { command: "fixture-playwright" }, personal: { command: "fixture-personal" } } }));
   fs.writeFileSync(path.join(root, "task.md"), "bounded provider contract fixture", "utf8");
+  fs.writeFileSync(path.join(root, "result.schema.json"), JSON.stringify({ type: "object", additionalProperties: false, required: ["status"], properties: { status: { type: "string", enum: ["ok"] } } }), "utf8");
   const harnesses = ["codex", "claude", "kimi", "opencode", "cursor"];
-  const policy = mode => ({ schemaVersion: 1, levels: { mvp: { maxCalls: 1, maxCorrectionCycles: 0, timeoutSec: 10 } }, providers: Object.fromEntries(harnesses.map(provider => [provider, { command: process.execPath, args: [fakeProvider, provider, mode], profiles: {
+  const policy = mode => ({ schemaVersion: 1, levels: { mvp: { maxCalls: 1, maxCorrectionCycles: 0, timeoutSec: 10 } }, providers: Object.fromEntries(harnesses.map(provider => [provider, { command: process.execPath, args: [fakeProvider, provider, mode], ...(provider === "claude" ? { outputSchemaArg: "--json-schema", outputSchemaFormat: "json" } : {}), profiles: {
     [`${provider}-contract`]: { model: `${provider}-fixture-model`, modelProvider: `${provider}-model-provider`, reasoningEffort: "low", readOnly: true, capabilities: { project_write: { status: "unavailable", enforcement: "technical", access: "none", evidenceRef: `fixture:${provider}-readonly` } } },
     [`${provider}-writable`]: { model: `${provider}-fixture-model`, modelProvider: `${provider}-model-provider`, reasoningEffort: "low", readOnly: false },
     ...(provider === "claude" ? {
@@ -78,10 +80,12 @@ test("CLI harness adapters preserve identity, usage and never fall back", () => 
   assert.equal(kimiReviewer.receipt.environment.profile_capabilities.project_write.boundary_acceptance.reason, "Owner accepted Kimi's declarative boundary for reviewer roles.");
   const kimiWrongRole = execute(root, "kimi", "rejected-declarative-worker", "pass", { profile: "kimi-declarative-reviewer", role: "worker" });
   assert.equal(kimiWrongRole.result.status, 77);
-  const claudeBrowser = execute(root, "claude", "claude-browser-mcp", "pass", { profile: "claude-browser-mcp" });
+  const claudeBrowser = execute(root, "claude", "claude-browser-mcp", "pass", { profile: "claude-browser-mcp", outputSchema: true });
   assert.equal(claudeBrowser.result.status, 0, claudeBrowser.result.stderr);
   assert.match(claudeBrowser.receipt.output, /--strict-mcp-config/);
   assert.match(claudeBrowser.receipt.output, /--mcp-config/);
+  assert.match(claudeBrowser.receipt.output, /--json-schema/);
+  assert.match(claudeBrowser.receipt.output, /additionalProperties/);
   assert.deepEqual(claudeBrowser.receipt.environment.provider_environment.mcp_servers.carried, [{ scope: "home", name: "playwright" }]);
   assert.deepEqual(claudeBrowser.receipt.environment.provider_environment.mcp_servers.withheld, [{ scope: "home", name: "personal" }]);
   const missingClaudeBrowser = execute(root, "claude", "claude-browser-missing", "pass", { profile: "claude-browser-missing" });
