@@ -7,7 +7,7 @@ import test from "node:test";
 import { openDb, now } from "../src/db.mjs";
 import {
   acceptExternalControlEvidenceResult, acceptExternalControlResult, createExternalControlRequest,
-  pendingExternalControlRequests, registerExternalExecutor, requestExternalControlCancellation
+  pendingExternalControlRequests, registerExternalExecutor, registerExternalOperation, registeredExternalOperations, requestExternalControlCancellation
 } from "../src/external-control-plane.mjs";
 import { openExternalEvidenceRequest, readInteraction } from "../src/interactions.mjs";
 import { structuredHash } from "../src/role-contracts.mjs";
@@ -82,6 +82,21 @@ test("a signed external result is bound to request, run, step and checkpoint wit
     assert.equal(JSON.stringify(persisted).includes(resultPayload.marker), false);
     const tampered = signedResult({ ...created.request, checkpoint_hash: "b".repeat(64) }, fx.privateKey, resultPayload);
     assert.throws(() => acceptExternalControlResult(fx.db, tampered), /BINDING_MISMATCH/);
+  } finally { close(fx); }
+});
+
+test("external operations bind a registered action and config to one executor", () => {
+  const fx = fixture();
+  try {
+    const registered = registerExternalOperation(fx.db, { projectId: "project", operationId: "release.prod", executorId: "runtime.test", operationKind: "release", action: "deploy_revision", config: { environment: "production" } });
+    assert.match(registered.config_hash, /^[0-9a-f]{64}$/);
+    const listed = registeredExternalOperations(fx.db, "project", "release");
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].id, "release.prod");
+    assert.equal(listed[0].action, "deploy_revision");
+    assert.deepEqual(listed[0].config, { environment: "production" });
+    assert.match(listed[0].definition_hash, /^[0-9a-f]{64}$/);
+    assert.throws(() => registerExternalOperation(fx.db, { projectId: "project", operationId: "release.bad", executorId: "missing", operationKind: "release", action: "deploy_revision" }), /EXECUTOR_NOT_REGISTERED/);
   } finally { close(fx); }
 });
 

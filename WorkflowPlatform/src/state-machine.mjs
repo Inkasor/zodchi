@@ -44,7 +44,7 @@ const taskTransitions = {
   // A blocked run is one that stopped and needs escalation. When the escalation turns out to be a named
   // wait — a decision only the owner can make, a fact only a live system holds — the run moves to the
   // state that says so, instead of sitting in a generic block nobody knows what to do with.
-  blocked: ["retry_scheduled", "paused", "clarification_required", "external_evidence_required", "failed", "cancelled"],
+  blocked: ["retry_scheduled", "paused", "clarification_required", "external_evidence_required", "verifying", "failed", "cancelled"],
   completed: [], cancelled: [], rejected: [], failed: []
 };
 
@@ -148,7 +148,8 @@ export function transitionEntity(db, entityType, entityId, toState, options = {}
 }
 
 export function transitionRunAndTask(db, runId, toState, options = {}) {
-  db.exec("BEGIN IMMEDIATE");
+  const nested = db.isTransaction, savepoint = "transition_run_and_task";
+  db.exec(nested ? `SAVEPOINT ${savepoint}` : "BEGIN IMMEDIATE");
   try {
     const run = db.prepare("SELECT task_id,state FROM workflow_runs WHERE id=?").get(runId);
     if (!run) throw new Error(`STATE_ENTITY_NOT_FOUND: workflow_run:${runId}`);
@@ -157,7 +158,7 @@ export function transitionRunAndTask(db, runId, toState, options = {}) {
     if (!canTransition("workflow_run", run.state, toState) || !canTransition("task", task.state, toState)) {
       appendEvent(db, { entityType: "workflow_run", entityId: runId, kind: "contract_error", fromState: run.state, toState, payload: { reason: options.reason ?? "forbidden paired transition" } });
       appendEvent(db, { entityType: "task", entityId: run.task_id, kind: "contract_error", fromState: task.state, toState, payload: { reason: options.reason ?? "forbidden paired transition" } });
-      db.exec("COMMIT");
+      db.exec(nested ? `RELEASE ${savepoint}` : "COMMIT");
       throw new Error(`STATE_TRANSITION_FORBIDDEN: task/run ${run.state} -> ${toState}`);
     }
     if (toState === "completed") {
@@ -165,7 +166,7 @@ export function transitionRunAndTask(db, runId, toState, options = {}) {
       if (blockers.length) {
         appendEvent(db, { entityType: "workflow_run", entityId: runId, kind: "completion_blocked", fromState: run.state, toState, payload: { blockers } });
         appendEvent(db, { entityType: "task", entityId: run.task_id, kind: "completion_blocked", fromState: task.state, toState, payload: { blockers } });
-        db.exec("COMMIT");
+        db.exec(nested ? `RELEASE ${savepoint}` : "COMMIT");
         throw new Error(`COMPLETION_BLOCKED: ${JSON.stringify(blockers)}`);
       }
     }
@@ -174,10 +175,12 @@ export function transitionRunAndTask(db, runId, toState, options = {}) {
     db.prepare("UPDATE tasks SET state=?,updated_at=? WHERE id=?").run(toState, timestamp, run.task_id);
     appendEvent(db, { entityType: "workflow_run", entityId: runId, kind: "state_transition", fromState: run.state, toState, payload: { actor: options.actor ?? "workflow-platform", reason: options.reason ?? null } });
     appendEvent(db, { entityType: "task", entityId: run.task_id, kind: "state_transition", fromState: task.state, toState, payload: { actor: options.actor ?? "workflow-platform", reason: options.reason ?? null } });
-    db.exec("COMMIT");
+    db.exec(nested ? `RELEASE ${savepoint}` : "COMMIT");
     return toState;
   } catch (error) {
-    if (db.isTransaction) db.exec("ROLLBACK");
+    if (nested && db.isTransaction) {
+      try { db.exec(`ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`); } catch {}
+    } else if (db.isTransaction) db.exec("ROLLBACK");
     throw error;
   }
 }

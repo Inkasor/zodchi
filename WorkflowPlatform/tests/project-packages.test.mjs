@@ -35,6 +35,25 @@ test("documentator contracts propose from a read-only profile while the platform
   assert.equal(documentator.contract.allowed_tools.includes("apply_patch"), false);
 });
 
+test("release and access operators are read-only proposal roles before exact owner approval", () => {
+  for (const packageValue of PACKAGE_DEFINITIONS) {
+    for (const [roleKey, schemaKey, workflowSuffix] of [["release_operator", "release_operation.v1", ".release"], ["access_administrator", "access_change.v1", ".access"]]) {
+      const roleValue = packageValue.roles.find(item => item.key === roleKey);
+      if (!roleValue) continue;
+      assert.equal(roleValue.contract.boundaries.writes, false, `${packageValue.key}/${roleKey}`);
+      assert.equal(roleValue.contract.boundaries.execution, false, `${packageValue.key}/${roleKey}`);
+      assert.deepEqual(roleValue.contract.allowed_tools, [], `${packageValue.key}/${roleKey}`);
+      assert.equal(roleValue.contract.result_schema_key, schemaKey, `${packageValue.key}/${roleKey}`);
+      const workflow = packageValue.workflows.find(item => item.key.endsWith(workflowSuffix));
+      assert.ok(workflow, `${packageValue.key}/${workflowSuffix}`);
+      const proposal = workflow.steps.findIndex(item => item.role_key === roleKey && item.output_schema_key === schemaKey);
+      const approval = workflow.steps.findIndex(item => item.irreversible && !item.role_key);
+      assert.ok(proposal >= 0 && approval > proposal, `${packageValue.key}/${roleKey}: proposal must precede approval`);
+      assert.equal(workflow.steps.slice(approval + 1).some(item => item.role_key === roleKey), false, `${packageValue.key}/${roleKey}: model must not execute after approval`);
+    }
+  }
+});
+
 test("package lint enforces the configurable one-to-three consilium contract", () => {
   const invalid = structuredClone(PACKAGE_DEFINITIONS[0]);
   invalid.operational_levels.find(item => item.level === "mvp").escalation.max_parallel_consilium_members = 4;
@@ -91,7 +110,7 @@ test("the canonical Web package is SDK-composed and requires anchored API-to-UI 
   const packageValue = PACKAGE_DEFINITIONS.find(item => item.key === "software.web-application");
   assert.ok(packageValue);
   for (const workType of ["implementation", "data_change", "release", "incident", "access_management", "project_bootstrap", "documentation", "security_review"]) assert.equal(packageValue.routes.some(item => item.work_type_key === workType), true, workType);
-  assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["adversarial_reviewer", "classifier", "coordinator", "editor", "evidence_reviewer", "judge", "release_operator", "reviewer", "strategy_reviewer", "worker"]);
+  assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["access_administrator", "adversarial_reviewer", "classifier", "coordinator", "editor", "evidence_reviewer", "judge", "release_operator", "reviewer", "strategy_reviewer", "worker"]);
   assert.equal(packageValue.documents.length, 0);
   assert.equal(packageValue.operational_levels.find(item => item.level === "prototype").improvement_strategy, "gauntlet");
   assert.equal(packageValue.operational_levels.find(item => item.level === "prototype").correction_limit, 3);
@@ -220,7 +239,7 @@ test("the infrastructure preview has a two-step read-only route and approval-bou
   const packageValue = PACKAGE_DEFINITIONS.find(item => item.key === "infra.operations");
   assert.ok(packageValue);
   for (const workType of ["infra.inventory", "infra.backup-restore", "incident", "access_management", "release", "deployment", "implementation", "fix"]) assert.equal(packageValue.routes.some(item => item.work_type_key === workType), true, workType);
-  assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["adversarial_reviewer", "classifier", "coordinator", "evidence_reviewer", "judge", "release_operator", "reviewer", "strategy_reviewer", "worker"]);
+  assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["access_administrator", "adversarial_reviewer", "classifier", "coordinator", "evidence_reviewer", "judge", "release_operator", "reviewer", "strategy_reviewer", "worker"]);
   assert.equal(packageValue.documents.length, 0);
   assert.deepEqual(packageValue.workflows.find(item => item.key.endsWith(".runtime")).steps.map(item => item.key), ["coordinate", "verify", "review"]);
   const restore = packageValue.workflows.find(item => item.key.endsWith(".backup_restore"));
@@ -348,7 +367,7 @@ test("one project reuses versioned role contracts composed by multiple packages"
   }
   const verified = openDb(dbFile);
   assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflow_package_releases WHERE project_id='combined' AND status='active'").get().count, 2);
-  assert.equal(verified.prepare("SELECT COUNT(*) count FROM role_contracts WHERE project_id='combined' AND role_id='reviewer' AND version='3.0.0'").get().count, 1);
+  assert.equal(verified.prepare("SELECT COUNT(*) count FROM role_contracts WHERE project_id='combined' AND role_id='reviewer' AND version='3.1.0'").get().count, 1);
   assert.equal(verified.prepare(`SELECT COUNT(DISTINCT m.local_id) count FROM package_import_mappings m JOIN workflow_import_proposals p ON p.id=m.proposal_id
     WHERE p.target_project_id='combined' AND m.entity_type='role_contract' AND m.semantic_key='reviewer'`).get().count, 1);
   verified.close();

@@ -26,13 +26,18 @@ test("Gauntlet persistence does not require review roles", () => {
   assert.doesNotThrow(() => validateWorkflowPackage(packageValue));
 });
 
-test("capabilities add only the roles and approval boundary they execute", () => {
+test("capabilities add only proposal roles and keep external execution behind approval", () => {
   const packageValue = validateWorkflowPackage(composedPackage(core("full"), sourceChange(), contentProduction(), releaseCapability()));
   const roles = new Set(packageValue.roles.map(item => item.key));
   for (const expected of ["coordinator", "worker", "reviewer", "editor", "release_operator"]) assert.equal(roles.has(expected), true);
   const releaseFlow = packageValue.workflows.find(item => item.key.endsWith(".release"));
   assert.equal(releaseFlow.steps.some(item => item.key === "release_approval" && item.irreversible), true);
-  assert.equal(releaseFlow.steps.findIndex(item => item.key === "release_approval") < releaseFlow.steps.findIndex(item => item.key === "release"), true);
+  assert.equal(releaseFlow.steps.findIndex(item => item.key === "proposal") < releaseFlow.steps.findIndex(item => item.key === "release_approval"), true);
+  assert.equal(releaseFlow.steps.some(item => item.key === "release"), false);
+  const operator = packageValue.roles.find(item => item.key === "release_operator");
+  assert.equal(operator.contract.result_schema_key, "release_operation.v1");
+  assert.deepEqual(operator.contract.allowed_tools, []);
+  assert.equal(operator.contract.boundaries.writes, false);
 });
 
 test("composition order is deterministic and material adapters require an evidence policy", () => {
