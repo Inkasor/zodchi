@@ -1,0 +1,28 @@
+{
+  "probe": "codex_browser_worker_capture",
+  "status": "model_reported_unavailable",
+  "receipt_id": "2026-09-02T18-12-22.679Z-codex-8caf80f2-bc4a-4d2d-8077-93cd9e736a96",
+  "gateway_exit_code": 0,
+  "provider_status": "completed",
+  "plugin": "browser@openai-bundled",
+  "surface": "auto",
+  "expected": {
+    "title": "Zodchi 3faa4866-55c0-4ab8-bcb2-9787c7c2cd45",
+    "body": "Body 03ac61be-18dc-4f58-a84a-fdd34e975fe4"
+  },
+  "reported": {
+    "status": "unavailable",
+    "title": null,
+    "body": null,
+    "screenshot": false,
+    "evidence": "The allowed browser runtime reported: No browser is available."
+  },
+  "carried_plugins": [
+    "browser@openai-bundled"
+  ],
+  "carried_mcp_servers": [
+    "node_repl"
+  ],
+  "provider_error": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"C:\\\\Users\\\\Admin\\\\AppData\\\\Local\\\\Temp\\\\\" (codex_home: AbsolutePathBuf(\"C:\\\\Users\\\\Admin\\\\AppData\\\\Local\\\\Temp\\\\zodchi-codex-browser-smoke-6E2GRo\\\\temp\\\\codex-home-VkJpzu\"))\nReading prompt from stdin...",
+  "temporary_database": "C:\\Users\\Admin\\AppData\\Local\\Temp\\zodchi-codex-browser-smoke-6E2GRo\\gateway.sqlite"
+}

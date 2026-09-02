@@ -1,5 +1,7 @@
 {
   "probe": "codex_browser_worker",
+  "superseded_by": "codex-browser-gateway-windows-auto-0.6.12.json",
+  "superseded_reason": "This probe assumed a pre-existing agent.browsers global instead of initializing the current plugin browser-client runtime.",
   "status": "model_reported_unavailable",
   "receipt_id": "2026-09-02T16-34-57.572Z-codex-b7d71b3c-06f5-436e-853a-b5534c6c5553",
   "gateway_exit_code": 0,
