@@ -11,7 +11,9 @@ const GENERATED_PATH = /(?:^|\/)(?:generated|dist|build|out|coverage|node_module
 
 export const RESEARCH_SOURCE_RANKING = Object.freeze({
   selected_files: 8,
-  expansion: Object.freeze({ maxFiles: 24, proseFiles: 120 }),
+  // Keep enough corpus-owned identifiers for a rare phrase such as external-control-plane to survive
+  // ordinary changelog and readiness growth without widening the number of files opened or returned.
+  expansion: Object.freeze({ maxFiles: 24, proseFiles: 120, identifierTerms: 40 }),
   candidate_multiplier: 2,
   minimum_candidates: 16
 });
