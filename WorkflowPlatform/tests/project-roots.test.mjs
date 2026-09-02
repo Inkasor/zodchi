@@ -555,6 +555,39 @@ test("Russian prose uses bilingual corpus terms to rank the relevant implementat
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("Russian prose source ranking stays useful on the real repository corpus", () => {
+  const repository = path.resolve(import.meta.dirname, "..", "..");
+  const roots = [{ key: "primary", path: repository, access: "read", primary: true }];
+  const scope = sourceScope([]);
+  const cases = [
+    {
+      objective: "Как устроена проверка внешних операций после одобрения владельца?",
+      expected: ["WorkflowPlatform/src/external-control-plane.mjs"],
+      top: 5
+    },
+    {
+      objective: "Как WorkflowPlatform передаёт исследователю содержимое исходников?",
+      expected: ["WorkflowPlatform/src/workflow-app.mjs"],
+      top: 8
+    },
+    {
+      objective: "В каком состоянии оказывается прогон, если исследование недостаточно?",
+      expected: ["WorkflowPlatform/src/workflow-app.mjs", "WorkflowPlatform/src/state-machine.mjs"],
+      top: 8
+    }
+  ];
+  for (const item of cases) {
+    const expanded = expandTerms(roots, scope, item.objective);
+    const found = searchSources(roots, scope, [...new Set([...expanded.terms, ...expanded.subject])], {
+      maxFiles: item.top,
+      indexedTerms: expanded.code,
+      sourceCodeOnly: true,
+      preferSourceCode: true
+    });
+    assert.equal(found.files.some(file => item.expected.includes(file.path)), true, `${item.objective}\n${found.files.map(file => file.path).join("\n")}`);
+  }
+});
+
 test("long workflow wording does not displace the domain terms at the end of the request", () => {
   const { root, producer, db } = fixture("workflow-long-search-request-", { sources: ["src/**"] });
   fs.writeFileSync(path.join(producer, "src", "labels.mjs"), `export const labels = { avgCost: "Средняя себестоимость" };\n`);
