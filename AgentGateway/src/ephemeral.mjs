@@ -196,7 +196,9 @@ function rewriteHomeReferences(sections, sourceHome, targetHome) {
 function capabilityReport(provider, { skills, mcp, plugins = { policy: "disabled", carried: [], withheld: [] } }) {
   return Object.freeze({
     provider,
-    home: "ephemeral",
+    // Claude receives one strict temporary MCP configuration, but its HOME is intentionally not
+    // replaced. Do not claim the ambient Claude settings, hooks and skills were isolated.
+    home: provider === "claude" ? "mcp-config-only" : "ephemeral",
     skills: Object.freeze({ policy: skills.policy ?? "allowlist", allowed: Object.freeze(skills.allowed), withheld: Object.freeze(skills.withheld) }),
     mcp_servers: Object.freeze({ policy: mcp.policy, carried: Object.freeze(mcp.carried ?? []), withheld: Object.freeze(mcp.withheld ?? []), shadowed: Object.freeze(mcp.shadowed ?? []) }),
     plugins: Object.freeze({ policy: plugins.policy, carried: Object.freeze(plugins.carried ?? []), withheld: Object.freeze(plugins.withheld ?? []) })

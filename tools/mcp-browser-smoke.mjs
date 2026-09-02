@@ -7,6 +7,8 @@ import { spawnSync } from "node:child_process";
 import { loadGatewayPolicy } from "../AgentGateway/src/policy.mjs";
 import { readBrowserSentinelEvidence, startBrowserSentinel } from "./browser-sentinel.mjs";
 
+const PROBE_VIEWPORT = Object.freeze({ width: 800, height: 600 });
+
 function argsObject(argv) {
   const result = {};
   for (let index = 0; index < argv.length; index += 1) {
@@ -44,11 +46,16 @@ function screenshotEvidence(file) {
   if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) return { status: "unknown", enforcement: "unknown", source: "artifact_missing", artifact: null };
   const content = fs.readFileSync(file), signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
   if (content.length < signature.length || !content.subarray(0, signature.length).equals(signature)) return { status: "unknown", enforcement: "unknown", source: "artifact_not_png", artifact: null };
+  if (content.length < 24 || content.subarray(12, 16).toString("ascii") !== "IHDR") return { status: "unknown", enforcement: "unknown", source: "artifact_png_ihdr_missing", artifact: null };
+  const width = content.readUInt32BE(16), height = content.readUInt32BE(20);
+  if (width < PROBE_VIEWPORT.width || height < PROBE_VIEWPORT.height) {
+    return { status: "unknown", enforcement: "unknown", source: "artifact_below_probe_viewport", artifact: { path: "<probe-root>/browser-proof.png", bytes: content.length, width, height, sha256: crypto.createHash("sha256").update(content).digest("hex") } };
+  }
   return {
     status: "available",
     enforcement: "technical",
     source: "retained_png_artifact",
-    artifact: { path: "<probe-root>/browser-proof.png", bytes: content.length, sha256: crypto.createHash("sha256").update(content).digest("hex") }
+    artifact: { path: "<probe-root>/browser-proof.png", bytes: content.length, width, height, sha256: crypto.createHash("sha256").update(content).digest("hex") }
   };
 }
 
@@ -77,6 +84,7 @@ const route = `/zodchi-browser-${crypto.randomUUID()}`, title = `Zodchi ${crypto
 const sentinel = await startBrowserSentinel({ route, title, body, requestLog, resourceToken });
 const task = [
   `Use only the registered ${server} MCP server to navigate a real browser to this exact local URL: ${sentinel.url}`,
+  `Set the browser viewport to at least ${PROBE_VIEWPORT.width}x${PROBE_VIEWPORT.height} before capture.`,
   "Read the rendered document title and main text after the page script executes.",
   capture ? `Save one PNG screenshot through that MCP server to this exact absolute path: ${screenshotFile}` : "Do not take a screenshot in this probe.",
   "Do not use a shell, subprocess, direct HTTP client, desktop browser plugin, or another agent.",

@@ -76,7 +76,8 @@ test("CLI harness adapters preserve identity, usage and never fall back", () => 
   assert.deepEqual(claudeBrowser.receipt.environment.provider_environment.mcp_servers.carried, [{ scope: "home", name: "playwright" }]);
   assert.deepEqual(claudeBrowser.receipt.environment.provider_environment.mcp_servers.withheld, [{ scope: "home", name: "personal" }]);
   const missingClaudeBrowser = execute(root, "claude", "claude-browser-missing", "pass", { profile: "claude-browser-missing" });
-  assert.equal(missingClaudeBrowser.result.status, 78);
+  assert.equal(missingClaudeBrowser.result.status, 77);
+  assert.match(missingClaudeBrowser.receipt.error, /PROFILE_CAPABILITY_MISMATCH/);
   assert.match(missingClaudeBrowser.receipt.error, /BROWSER_MCP_SERVER_NOT_CARRIED: missing/);
 
   const preflight = spawnSync(process.execPath, [cli, "profiles-check"], {

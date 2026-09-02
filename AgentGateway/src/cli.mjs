@@ -344,7 +344,13 @@ try {
       return runProcess(providerCommand, runtimeArgs, prompt, limits.timeoutSec, projectPath, providerEnvironment);
     });
 } catch (error) {
-  result = { exitCode: 78, stdout: "", stderr: `ADAPTER_CONFIGURATION_ERROR: ${error.message}`, timedOut: false };
+  const profileMismatch = String(error.message).startsWith("BROWSER_MCP_SERVER_NOT_CARRIED:");
+  result = {
+    exitCode: profileMismatch ? 77 : 78,
+    stdout: "",
+    stderr: profileMismatch ? `PROFILE_CAPABILITY_MISMATCH: ${error.message}` : `ADAPTER_CONFIGURATION_ERROR: ${error.message}`,
+    timedOut: false
+  };
 }
 const stats = combinedDiffStats([projectPath, ...writeDirs].filter(Boolean));
 const usage = normalizeUsage(extractUsage(result.stdout, provider));
