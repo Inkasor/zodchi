@@ -10,6 +10,7 @@ if (provider === "opencode") {
   console.log(JSON.stringify({
     type: "turn.completed",
     provider_contract: provider,
+    provider_args: process.argv.slice(4),
     usage: {
       input_tokens: provider === "codex" ? 11 : provider === "claude" ? 22 : 33,
       cached_input_tokens: provider === "codex" ? 1 : provider === "claude" ? 2 : 3,

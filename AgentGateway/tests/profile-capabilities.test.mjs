@@ -21,6 +21,7 @@ test("provider capability reports distinguish technical, declarative and unknown
   assert.equal(claude.project_read.status, "available");
   assert.equal(claude.process_execution.status, "unavailable");
   assert.equal(claude.project_write.status, "unavailable");
+  assert.equal(provider("claude", { allowedMcpServers: [] }).mcp.status, "unavailable");
 
   const openCode = provider("opencode", { readOnly: true, allowShell: false, allowWeb: false });
   assert.equal(openCode.project_read.status, "available");
@@ -55,7 +56,21 @@ test("an explicit profile capability can record a separately verified technical 
     }
   });
   assert.equal(inspectCapabilityRequirements(browserCapabilities, { required: ["browser_automation", "screen_capture"], forbidden: [] }).mismatches.length, 0);
+
+  for (const name of ["codex", "claude", "opencode"]) {
+    const mcpBrowser = provider(name, {
+      readOnly: false,
+      allowedMcpServers: ["playwright"],
+      browserMcpServer: "playwright",
+      capabilities: { browser_automation: { status: "available", enforcement: "technical", access: "direct", evidenceRef: `receipt:${name}-playwright-smoke` } }
+    });
+    assert.equal(mcpBrowser.browser_automation.status, "available", name);
+    assert.equal(mcpBrowser.browser_automation.evidence_ref, `receipt:${name}-playwright-smoke`, name);
+    assert.equal(mcpBrowser.mcp.status, "available", name);
+  }
   assert.throws(() => provider("codex", { readOnly: false, capabilities: { browser_automation: { status: "available", enforcement: "technical", access: "direct", evidenceRef: "receipt:browser-smoke" } } }), /PROFILE_CAPABILITY_PREREQUISITE_MISSING/);
+  assert.throws(() => provider("codex", { allowedMcpServers: ["other"], browserMcpServer: "playwright" }), /PROFILE_BROWSER_MCP_NOT_ALLOWED/);
+  assert.throws(() => provider("kimi", { allowedMcpServers: ["playwright"], browserMcpServer: "playwright" }), /PROFILE_BROWSER_MCP_PROVIDER_UNSUPPORTED/);
   assert.throws(() => provider("cursor", { capabilities: { project_write: { status: "unavailable", enforcement: "technical", access: "none" } } }), /PROFILE_CAPABILITY_EVIDENCE_REQUIRED/);
 });
 

@@ -262,6 +262,22 @@ test("OpenCode carries named servers from its own configuration and Kimi inherit
   } finally { kimi.cleanup(); fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test("Claude receives only named MCP servers through one strict ephemeral config", () => {
+  const root = temporaryRoot("agent-gateway-claude-mcp-"), temp = path.join(root, "temp"), project = path.join(root, "project"), sourceConfig = path.join(root, "claude.json");
+  fs.mkdirSync(project, { recursive: true });
+  fs.writeFileSync(sourceConfig, JSON.stringify({ mcpServers: { playwright: { command: "home-playwright" }, personal: { command: "personal" } } }));
+  fs.writeFileSync(path.join(project, ".mcp.json"), JSON.stringify({ mcpServers: { playwright: { command: "project-playwright" }, projectIndex: { command: "project-index" } } }));
+  const environment = createProviderEnvironment("claude", { tempRoot: temp, sourceConfig, projectRoot: project, profileConfig: { allowedMcpServers: ["playwright"], browserMcpServer: "playwright" } });
+  try {
+    const config = JSON.parse(fs.readFileSync(environment.env.AGENT_GATEWAY_CLAUDE_MCP_CONFIG, "utf8"));
+    assert.deepEqual(config, { mcpServers: { playwright: { command: "project-playwright" } } });
+    assert.deepEqual(environment.capabilities.mcp_servers.carried, [{ scope: "project", name: "playwright" }]);
+    assert.deepEqual(environment.capabilities.mcp_servers.withheld.map(item => item.name).sort(), ["personal", "projectIndex"]);
+    assert.deepEqual(environment.capabilities.mcp_servers.shadowed, [{ scope: "home", name: "playwright", by_scope: "project" }]);
+    assert.equal(environment.capabilities.mcp_servers.policy, "allowlist");
+  } finally { environment.cleanup(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Codex carries only explicitly allowed browser plugins into the ephemeral home", () => {
   const root = temporaryRoot("gateway-browser-plugin-"), source = path.join(root, "source"), temp = path.join(root, "temp");
   const browserCache = path.join(source, "plugins", "cache", "openai-bundled", "browser", "1.0.0");
