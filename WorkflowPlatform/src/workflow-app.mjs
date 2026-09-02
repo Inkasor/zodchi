@@ -25,7 +25,7 @@ import { acceptExternalControlEvidenceResult, acceptExternalControlResult, valid
 import { normalizeRunProfile, resolveRunProfile, storeRunProfile } from "./run-profile.mjs";
 import { assertProjectRuntimeReady, assertWorkflowRuntimeReady } from "./runtime-readiness.mjs";
 import { normalizeSemanticScope } from "./semantic-scope.mjs";
-import { collectSourceFiles, expandTerms, isSourceCodePath, searchSources, sourceScope } from "./source-context.mjs";
+import { collectSourceFiles, expandTerms, isSourceCodePath, RESEARCH_SOURCE_RANKING, researchSourceRankingOptions, searchSources, sourceScope } from "./source-context.mjs";
 import { executorCapabilityRequirements } from "./executor-capabilities.mjs";
 
 export function loadWorkflow(id, workflowsRoot = resolveWorkflowSettings().workflowsRoot) {
@@ -93,12 +93,13 @@ const SOURCE_RESEARCH_DISCIPLINES = new Set([
 ]);
 function requiresSourceEvidence(classification) { return SOURCE_RESEARCH_DISCIPLINES.has(classification?.discipline); }
 
-function researchSourceContext(discovery, objective, { sourceBytes = 32_000, maxFiles = 8, sourceRequired = false } = {}) {
+function researchSourceContext(discovery, objective, { sourceBytes = 32_000, maxFiles = RESEARCH_SOURCE_RANKING.selected_files, sourceRequired = false } = {}) {
   const scope = sourceScope(discovery.source_scope);
-  const expanded = expandTerms(discovery.roots ?? [], scope, objective, { maxFiles: 24, proseFiles: 120 });
+  const ranking = researchSourceRankingOptions(maxFiles);
+  const expanded = expandTerms(discovery.roots ?? [], scope, objective, ranking.expansion);
   const locatorTerms = [...new Set([...expanded.terms, ...expanded.subject])];
   const located = searchSources(discovery.roots ?? [], scope, locatorTerms, {
-    maxFiles: Math.max(maxFiles * 2, 16), indexedTerms: expanded.code,
+    ...ranking.search, indexedTerms: expanded.code,
     sourceCodeOnly: sourceRequired, preferSourceCode: sourceRequired
   });
   let selectedPaths = located.files.slice(0, maxFiles).map(file => file.path);

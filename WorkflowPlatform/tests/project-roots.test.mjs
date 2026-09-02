@@ -9,7 +9,7 @@ import { openDb, now } from "../src/db.mjs";
 import { readProjectContext, compactProjectSnapshot } from "../src/document-context.mjs";
 import { applyRegisteredPatch } from "../src/documentator.mjs";
 import { projectRoots, writableRoots } from "../src/project-roots.mjs";
-import { collectGitHistory, collectSourceFiles, expandTerms, listFiles, scanSourceCorpus, searchSources, searchTerms, sourceInventory, sourceScope } from "../src/source-context.mjs";
+import { collectGitHistory, collectSourceFiles, expandTerms, listFiles, RESEARCH_SOURCE_RANKING, researchSourceRankingOptions, scanSourceCorpus, searchSources, searchTerms, sourceInventory, sourceScope } from "../src/source-context.mjs";
 import { buildCodeIntelligence, mergeGraphMatches } from "../src/code-intelligence.mjs";
 import { fitSourceEvidence } from "../src/work-executor.mjs";
 
@@ -576,15 +576,17 @@ test("Russian prose source ranking stays useful on the real repository corpus", 
       top: 8
     }
   ];
+  const ranking = researchSourceRankingOptions(RESEARCH_SOURCE_RANKING.selected_files);
   for (const item of cases) {
-    const expanded = expandTerms(roots, scope, item.objective);
+    const expanded = expandTerms(roots, scope, item.objective, ranking.expansion);
     const found = searchSources(roots, scope, [...new Set([...expanded.terms, ...expanded.subject])], {
-      maxFiles: item.top,
+      ...ranking.search,
       indexedTerms: expanded.code,
       sourceCodeOnly: true,
       preferSourceCode: true
     });
-    assert.equal(found.files.some(file => item.expected.includes(file.path)), true, `${item.objective}\n${found.files.map(file => file.path).join("\n")}`);
+    const leading = found.files.slice(0, item.top);
+    assert.equal(leading.some(file => item.expected.includes(file.path)), true, `${item.objective}\n${leading.map(file => file.path).join("\n")}`);
   }
 });
 

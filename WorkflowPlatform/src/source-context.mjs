@@ -9,6 +9,20 @@ const BINARY = /\.(?:png|jpe?g|gif|webp|ico|svg|pdf|zip|gz|7z|rar|exe|dll|so|dyl
 const SOURCE_CODE = /\.(?:[cm]?[jt]sx?|bsl|os|py|go|rs|java|kt|kts|cs|cpp|cxx|cc|c|hpp|hxx|hh|h|rb|php|swift|scala|sql|ps1|psm1|sh|bash|zsh|fish|lua|fs|fsx|vb|xml|xsd|html?|css|scss|sass|less|vue|svelte)$/i;
 const GENERATED_PATH = /(?:^|\/)(?:generated|dist|build|out|coverage|node_modules)(?:\/|$)/i;
 
+export const RESEARCH_SOURCE_RANKING = Object.freeze({
+  selected_files: 8,
+  expansion: Object.freeze({ maxFiles: 24, proseFiles: 120 }),
+  candidate_multiplier: 2,
+  minimum_candidates: 16
+});
+
+export function researchSourceRankingOptions(selectedFiles = RESEARCH_SOURCE_RANKING.selected_files) {
+  return Object.freeze({
+    expansion: RESEARCH_SOURCE_RANKING.expansion,
+    search: Object.freeze({ maxFiles: Math.max(selectedFiles * RESEARCH_SOURCE_RANKING.candidate_multiplier, RESEARCH_SOURCE_RANKING.minimum_candidates) })
+  });
+}
+
 export function isSourceCodePath(value) {
   const normalized = String(value ?? "").replaceAll("\\", "/");
   return SOURCE_CODE.test(normalized) && !GENERATED_PATH.test(normalized);
