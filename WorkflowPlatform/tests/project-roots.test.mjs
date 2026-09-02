@@ -527,12 +527,15 @@ test("Russian prose uses bilingual corpus terms to rank the relevant implementat
   fs.mkdirSync(path.join(root, "docs", "ru"), { recursive: true });
   fs.mkdirSync(path.join(root, "WorkflowPlatform", "src"), { recursive: true });
   fs.writeFileSync(path.join(root, "docs", "ru", "CHANGELOG.md"), [
-    "Проверка внешних операций после одобрения владельца использует external control plane и approval binding.",
-    "Подписанный payload сверяется с одобренной целью до записи результата."
+    "Проверка внешних операций после одобрения владельца описана в следующей строке.",
+    "Implementation: external control plane, approval binding и payload сверяются до записи результата."
   ].join("\n"), "utf8");
+  fs.writeFileSync(path.join(root, "docs", "ru", "Unity.md"), "Проверка владельца для постороннего продукта Unity описана отдельно.\n", "utf8");
   fs.writeFileSync(path.join(root, "WorkflowPlatform", "src", "external-control-plane.mjs"), "export function validateExternalPayload(payload) { return payload.status; }\n", "utf8");
   fs.writeFileSync(path.join(root, "WorkflowPlatform", "src", "approval-binding.mjs"), "export function assertApprovalBinding(approval) { return approval.binding; }\n", "utf8");
   fs.writeFileSync(path.join(root, "WorkflowPlatform", "src", "work-executor.mjs"), "export function continueExternalOperation(payload, approval) { return payload.status && approval; }\n", "utf8");
+  fs.mkdirSync(path.join(root, "WorkflowPlatform", "packages", "example", "generated"), { recursive: true });
+  fs.writeFileSync(path.join(root, "WorkflowPlatform", "packages", "example", "generated", "external-control-plane.xml"), "<package>external control plane approval payload</package>\n", "utf8");
   for (let index = 0; index < 8; index += 1) fs.writeFileSync(path.join(root, "WorkflowPlatform", "src", `noise-${index}.mjs`), "export const status = 'completed'; export const message = 'owner';\n", "utf8");
 
   const roots = [{ key: "primary", path: root, access: "read", primary: true }];
@@ -548,6 +551,7 @@ test("Russian prose uses bilingual corpus terms to rank the relevant implementat
   assert.equal(found.files[0].path, "WorkflowPlatform/src/external-control-plane.mjs");
   assert.equal(found.files.slice(0, 3).some(file => file.path === "WorkflowPlatform/src/approval-binding.mjs"), true);
   assert.equal(found.files.slice(0, 3).some(file => file.path === "WorkflowPlatform/src/work-executor.mjs"), true);
+  assert.equal(found.files.some(file => file.path.includes("/generated/")), false);
   fs.rmSync(root, { recursive: true, force: true });
 });
 

@@ -7,8 +7,12 @@ import { findRoot, resolveInRoot, displayPath } from "./project-roots.mjs";
 const IGNORED = new Set([".git", "node_modules", "dist", "build", "coverage", ".next", ".venv", "__pycache__", "vendor", "tmp", "temp"]);
 const BINARY = /\.(?:png|jpe?g|gif|webp|ico|svg|pdf|zip|gz|7z|rar|exe|dll|so|dylib|epf|erf|cf[eu]|mp[34]|wav|ogg|ttf|woff2?|sqlite3?|db|wal|shm|ndjson)$/i;
 const SOURCE_CODE = /\.(?:[cm]?[jt]sx?|bsl|os|py|go|rs|java|kt|kts|cs|cpp|cxx|cc|c|hpp|hxx|hh|h|rb|php|swift|scala|sql|ps1|psm1|sh|bash|zsh|fish|lua|fs|fsx|vb|xml|xsd|html?|css|scss|sass|less|vue|svelte)$/i;
+const GENERATED_PATH = /(?:^|\/)(?:generated|dist|build|out|coverage|node_modules)(?:\/|$)/i;
 
-export function isSourceCodePath(value) { return SOURCE_CODE.test(String(value ?? "").replaceAll("\\", "/")); }
+export function isSourceCodePath(value) {
+  const normalized = String(value ?? "").replaceAll("\\", "/");
+  return SOURCE_CODE.test(normalized) && !GENERATED_PATH.test(normalized);
+}
 
 // Git pathspec magic `:(glob)` shares this scope's wildcard semantics: `*` stops at a separator and a
 // `**` segment crosses them. It does not share character classes or brace expansion, and it rejects a
@@ -304,7 +308,7 @@ const HARVEST = [
 // label, name, length, stdout. Rarity is what makes a name worth searching for, and it is measurable —
 // no list of forbidden words to keep up to date, and it adapts to whatever the project is written in.
 export function harvestIdentifiers(hitsByFile, exclude, limit = 8, subjectTerms = []) {
-  const total = new Map(), documents = new Map(), relevance = new Map(), languageBridge = new Map();
+  const total = new Map(), documents = new Map(), relevance = new Map();
   const excluded = new Set(exclude.map(item => item.toLowerCase()));
   for (const lines of hitsByFile) {
     const here = new Set();
@@ -319,10 +323,12 @@ export function harvestIdentifiers(hitsByFile, exclude, limit = 8, subjectTerms 
           const name = match[1];
           if (name.length < 5 || excluded.has(name.toLowerCase())) continue;
           if (shaped && !CODE_SHAPED.test(name)) continue;
-          if (crossLanguage) languageBridge.set(name, true);
           total.set(name, (total.get(name) ?? 0) + 1);
           const distance = subjectPositions.length ? Math.min(...subjectPositions.map(index => Math.abs(index - (match.index ?? 0)))) : 1000;
-          const quality = subjectPositions.length * 1000 + Math.max(0, 1000 - distance);
+          // A language bridge is useful evidence, not an absolute trump card. Its bounded bonus sits
+          // inside ordinary subject relevance so a stray bilingual product name cannot outrank a much
+          // closer implementation identifier merely because it came from prose.
+          const quality = Math.min(subjectPositions.length, 2) * 1000 + Math.max(0, 1000 - distance) + (crossLanguage ? 400 : 0);
           relevance.set(name, Math.max(relevance.get(name) ?? 0, quality));
           here.add(name);
         }
@@ -336,7 +342,7 @@ export function harvestIdentifiers(hitsByFile, exclude, limit = 8, subjectTerms 
   // as `.equal()` is valid code, but it should not outrank `avgCost` merely because test helpers repeat
   // it more often on the first-pass lines. Corpus spread remains the first discriminator inside each
   // shape class, then repeated local evidence breaks ties.
-  return specific.sort((a, b) => Number(languageBridge.get(b[0]) ?? false) - Number(languageBridge.get(a[0]) ?? false) || (relevance.get(b[0]) ?? 0) - (relevance.get(a[0]) ?? 0) || Number(CODE_SHAPED.test(b[0])) - Number(CODE_SHAPED.test(a[0])) || (documents.get(a[0]) ?? 0) - (documents.get(b[0]) ?? 0) || b[1] - a[1] || b[0].length - a[0].length || a[0].localeCompare(b[0], "en")).slice(0, limit).map(([name]) => name);
+  return specific.sort((a, b) => (relevance.get(b[0]) ?? 0) - (relevance.get(a[0]) ?? 0) || Number(CODE_SHAPED.test(b[0])) - Number(CODE_SHAPED.test(a[0])) || (documents.get(a[0]) ?? 0) - (documents.get(b[0]) ?? 0) || b[1] - a[1] || b[0].length - a[0].length || a[0].localeCompare(b[0], "en")).slice(0, limit).map(([name]) => name);
 }
 
 // A word is written one way in the request and another in the code: "себестоимости" in a sentence,
@@ -433,6 +439,13 @@ export function searchSources(roots, scope, terms, { maxFiles = 40, maxMatchesPe
   const priority = file => Math.min(...file.matches.map(match => termPriority.get(match.term) ?? terms.length));
   const affinityTerms = indexedTerms.length ? indexedTerms : terms;
   const pathAffinity = file => preferSourceCode ? affinityTerms.filter(term => file.path.toLowerCase().includes(String(term).toLowerCase())).length : 0;
+  const implementationAffinity = file => {
+    if (!preferSourceCode) return 0;
+    const normalized = `/${file.path.toLowerCase().replaceAll("\\", "/")}`;
+    if (/(?:^|\/)(?:src|lib|app)(?:\/|$)/.test(normalized)) return 2;
+    if (/(?:^|\/)(?:tests?|fixtures|migrations|scripts|hooks|contracts)(?:\/|$)/.test(normalized)) return 0;
+    return 1;
+  };
   // When prose supplied no explicit identifier, rare corpus-derived terms carry more information than
   // generic words such as status or message. The score is measured from this scan, not maintained as a
   // language-specific stoplist, and only affects the source-preferred research contour.
@@ -441,6 +454,7 @@ export function searchSources(roots, scope, terms, { maxFiles = 40, maxMatchesPe
     : 0;
   files.sort((a, b) => (preferSourceCode ? Number(!isSourceCodePath(a.path)) - Number(!isSourceCodePath(b.path)) : 0)
     || pathAffinity(b) - pathAffinity(a)
+    || implementationAffinity(b) - implementationAffinity(a)
     || rarity(b) - rarity(a)
     || priority(a) - priority(b)
     || new Set(b.matches.map(match => match.term)).size - new Set(a.matches.map(match => match.term)).size
@@ -480,9 +494,23 @@ export function expandTerms(roots, scope, message, options = {}) {
   for (const file of first.files) for (const found of new Set(file.matches.map(match => match.term))) filesPerStem.set(found, (filesPerStem.get(found) ?? 0) + 1);
   const spread = Math.max(1, Math.ceil(Math.max(first.searched_files, first.files.length) * 0.34));
   const subject = stems.filter(item => filesPerStem.has(item) && filesPerStem.get(item) <= spread);
+  const proseLines = new Map();
+  const contextualText = (file, match) => {
+    if (isSourceCodePath(file.path)) return match.text;
+    try {
+      if (!proseLines.has(file.path)) {
+        const parsed = parseRootedPath(roots, file.path);
+        proseLines.set(file.path, fs.readFileSync(path.join(parsed.root.path, parsed.relative), "utf8").split(/\r?\n/));
+      }
+      const lines = proseLines.get(file.path), index = match.line - 1;
+      return lines.slice(Math.max(0, index - 1), Math.min(lines.length, index + 2)).map(line => line.trim().slice(0, 500)).join("\n");
+    } catch { return match.text; }
+  };
   const hitsByFile = first.files
     .map(file => file.matches.filter(match => subject.includes(match.term)).map(match => ({
-      text: match.text,
+      // One neighboring line keeps a bullet/paragraph together. Projects often introduce the human
+      // phrase in one line and the exact code term in the next; this remains bounded and file-local.
+      text: contextualText(file, match),
       // Bare Latin words bridge human languages only in prose documents. Source files continue to
       // contribute explicit identifiers, but syntax such as const/return cannot become vocabulary.
       cross_language: !isSourceCodePath(file.path)
