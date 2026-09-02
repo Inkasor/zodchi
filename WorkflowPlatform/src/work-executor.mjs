@@ -1926,7 +1926,7 @@ export async function continueExternalOperationResult({ runtime, accepted, disco
   queue.enqueueRun(request.run_id);
   const gate = await executeGateStep({
     runtime, queue, runId: request.run_id, stepKey: "external_verification", projectRoot: discovery.project.root_path, level,
-    plannerResult: recorded.plan, classification, gateRunner, cycle: "external", checkIds: verificationChecks, allowedPaths: [],
+    plannerResult: recorded.plan, classification, gateRunner, cycle: "external", checkIds: verificationChecks, allowedPaths: recorded.plan.allowed_paths,
     artifactType: request.operation_kind === "release" ? "deployment_evidence" : "access_change"
   });
   if (gate.status !== "passed") {

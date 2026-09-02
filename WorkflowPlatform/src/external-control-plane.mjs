@@ -217,7 +217,7 @@ function resultCore(packet, payloadHash) {
   };
 }
 
-export function acceptExternalControlResult(db, packet) {
+export function acceptExternalControlResult(db, packet, { validatePayload = null } = {}) {
   exactObject(packet, ["schema_version", "request_id", "request_hash", "project_id", "run_id", "step_id", "executor_id", "key_id", "checkpoint_hash", "status", "payload", "payload_hash", "finished_at", "signature"], "external_control_result");
   if (packet.schema_version !== 1 || !TERMINAL.has(packet.status)) throw new Error("EXTERNAL_CONTROL_RESULT_INVALID: schema_or_status");
   if (!Number.isFinite(Date.parse(packet.finished_at))) throw new Error("EXTERNAL_CONTROL_RESULT_INVALID: finished_at");
@@ -238,6 +238,10 @@ export function acceptExternalControlResult(db, packet) {
   let signature;
   try { signature = Buffer.from(packet.signature, "base64"); } catch { throw new Error("EXTERNAL_CONTROL_RESULT_SIGNATURE_INVALID"); }
   if (!signature.length || !crypto.verify(null, Buffer.from(resultHash, "utf8"), executor.public_key_pem, signature)) throw new Error("EXTERNAL_CONTROL_RESULT_SIGNATURE_INVALID");
+  if (validatePayload !== null) {
+    if (typeof validatePayload !== "function") throw new Error("EXTERNAL_CONTROL_RESULT_VALIDATOR_INVALID");
+    validatePayload(packet.payload);
+  }
   const existing = db.prepare("SELECT * FROM external_control_results WHERE request_id=?").get(found.id);
   if (existing) {
     if (existing.result_hash !== resultHash) throw new Error(`EXTERNAL_CONTROL_RESULT_CONFLICT: ${found.id}`);

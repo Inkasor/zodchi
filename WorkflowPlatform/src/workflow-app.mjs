@@ -329,8 +329,11 @@ export async function deliverExternalControlResult({
       });
       return { control: accepted, evidence };
     }
-    if (request.interaction_kind === "workflow_approval" && packet?.status === "completed") validateExternalOperationResultForRequest(runtime.db, request.id, packet.payload);
-    const accepted = acceptExternalControlResult(runtime.db, packet);
+    const accepted = acceptExternalControlResult(runtime.db, packet, {
+      validatePayload: request.interaction_kind === "workflow_approval" && packet?.status === "completed"
+        ? payload => validateExternalOperationResultForRequest(runtime.db, request.id, payload)
+        : null
+    });
     if (request.interaction_kind !== "workflow_approval" || !execute) return { control: accepted, operation: null };
     const responseLanguage = preferredLanguage ?? runtime.get(request.run_id).response_language ?? settings.responseLanguage ?? "en";
     const discovery = readProjectContext(registeredProject.id, runtime.db);
