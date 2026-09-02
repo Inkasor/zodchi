@@ -10,6 +10,7 @@ import { processMessage as scopedProcessMessage } from "../src/workflow-app.mjs"
 import { onboardProject, registerProject } from "../src/onboarding.mjs";
 import { Runtime } from "../src/runtime.mjs";
 import { activateChatSession, setPendingMessage } from "../src/chat-session.mjs";
+import { registerControlledDocument } from "../src/document-registry.mjs";
 
 const statelessProcessMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
 
@@ -327,6 +328,40 @@ test("research cannot cite an inventory path whose contents were not supplied", 
   assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(result.run_id).state, "failed");
   assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM run_evidence WHERE run_id=? AND kind='research_inspection'").get(result.run_id).count, 0);
   verified.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("software research cannot answer from a controlled document without supplied source evidence", async () => {
+  const { root, project, dbFile, db } = fixture("workflow-research-source-evidence-required-");
+  fs.mkdirSync(path.join(project, "docs"));
+  fs.mkdirSync(path.join(project, "WorkflowPlatform", "src"), { recursive: true });
+  fs.writeFileSync(path.join(project, "docs", "Research.md"), "WorkflowPlatform передаёт исследователю содержимое исходников.\n", "utf8");
+  fs.writeFileSync(path.join(project, "WorkflowPlatform", "src", "workflow-app.mjs"), "export function researchSourceContext() { return 'source packet'; }\n", "utf8");
+  db.prepare("INSERT OR IGNORE INTO roles(id,name) VALUES('researcher','Researcher')").run();
+  db.prepare(`INSERT INTO role_contracts(id,project_id,role_id,version,purpose,boundaries_json,allowed_work_types_json,allowed_artifact_types_json,allowed_tools_json,allowed_skills_json,required_checks_json,allowed_transitions_json,allowed_profiles_json,context_limit_bytes,max_calls,max_correction_cycles,timeout_seconds,result_schema_key,prompt_template_version,escalation_json,status)
+    VALUES('role-researcher','project','researcher','1','research','{}','[]','[]','[]','[]','[]','[]','[]',65536,1,0,60,'research.v1','1','{}','active')`).run();
+  registerControlledDocument(db, { projectId: "project", path: "docs/Research.md", authority: "owner", readRoles: "researcher" });
+  db.close();
+  const research = decision({
+    work_type: "research", artifact_type: "test_report", discipline: "software", planning_level: "L0", planning_required: false,
+    reply_mode: "research", resolved_objective: "Как WorkflowPlatform передаёт исследователю содержимое исходников?", reason: "Нужно проверить реализацию по исходникам."
+  });
+  let researcherPrompt = null;
+  const result = await statelessProcessMessage({
+    message: "Как WorkflowPlatform передаёт исследователю содержимое исходников?", project, dbFile, workflowDefinition: definition(), execute: true,
+    gatewayCall: async request => {
+      if (request.role === "classifier") return receipt(JSON.stringify(research), "classifier-receipt");
+      researcherPrompt = fs.readFileSync(request.taskFile, "utf8");
+      return receipt(JSON.stringify({ schema_version: 1, status: "answered", answer: "Ответ только по описанию.", inspected_paths: ["docs/Research.md"], limitations: [] }), "research-receipt");
+    }
+  });
+  assert.equal(result.route, "failed");
+  assert.equal(result.error, "RESEARCH_SOURCE_EVIDENCE_REQUIRED");
+  assert.match(researcherPrompt, /REGISTERED_DOCUMENT_CONTEXT:.*docs\/Research\.md/);
+  assert.match(researcherPrompt, /REGISTERED_SOURCE_EVIDENCE:.*WorkflowPlatform\/src\/workflow-app\.mjs/);
+  assert.match(researcherPrompt, /researchSourceContext/);
+  const sourcePacket = researcherPrompt.split("REGISTERED_SOURCE_EVIDENCE:")[1].split("\nREGISTERED_PROJECT_CORPUS:")[0];
+  assert.equal(sourcePacket.includes("docs/Research.md"), false, "controlled documents stay outside the source packet");
   fs.rmSync(root, { recursive: true, force: true });
 });
 

@@ -66,10 +66,12 @@ if (resultSchema === "strategy_review.v1") {
   });
 } else if (role === "researcher") {
   const decoded = unescapeXml(input);
-  const corpusText = decoded.match(/REGISTERED_PROJECT_CORPUS:(\{.*\})\r?\nRESOLVED_OBJECTIVE:/)?.[1] ?? null;
-  let corpus = null;
-  try { corpus = corpusText ? JSON.parse(corpusText) : null; } catch { /* malformed corpus remains insufficient */ }
-  const inspectedPath = corpus?.files?.find(item => typeof item?.path === "string")?.path ?? null;
+  const sourceText = decoded.match(/REGISTERED_SOURCE_EVIDENCE:(\{.*\})\r?\nREGISTERED_PROJECT_CORPUS:/)?.[1] ?? null;
+  let sources = null;
+  try { sources = sourceText ? JSON.parse(sourceText) : null; } catch { /* malformed supplied evidence remains insufficient */ }
+  // Acceptance must cite content the platform actually supplied, not merely the first inventory path.
+  // The latter can be a README or another name-only record and now correctly fails source validation.
+  const inspectedPath = sources?.files?.find(item => item?.status === "read" && typeof item?.path === "string")?.path ?? null;
   result = inspectedPath
     ? { schema_version: 1, status: "answered", answer: "Зарегистрированный корпус проверен в read-only режиме; один реальный путь подтверждает доступ исследователя, worker и reviewer не запускались.", inspected_paths: [inspectedPath], limitations: [] }
     : { schema_version: 1, status: "insufficient", answer: "Зарегистрированный корпус проверен в read-only режиме; файлов для содержательного ответа недостаточно, worker и reviewer не запускались.", inspected_paths: [], limitations: ["В acceptance-фикстуре нет исходников, необходимых для содержательного ответа."] };

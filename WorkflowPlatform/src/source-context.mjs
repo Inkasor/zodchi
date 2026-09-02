@@ -6,6 +6,9 @@ import { findRoot, resolveInRoot, displayPath } from "./project-roots.mjs";
 
 const IGNORED = new Set([".git", "node_modules", "dist", "build", "coverage", ".next", ".venv", "__pycache__", "vendor", "tmp", "temp"]);
 const BINARY = /\.(?:png|jpe?g|gif|webp|ico|svg|pdf|zip|gz|7z|rar|exe|dll|so|dylib|epf|erf|cf[eu]|mp[34]|wav|ogg|ttf|woff2?|sqlite3?|db|wal|shm|ndjson)$/i;
+const SOURCE_CODE = /\.(?:[cm]?[jt]sx?|bsl|os|py|go|rs|java|kt|kts|cs|cpp|cxx|cc|c|hpp|hxx|hh|h|rb|php|swift|scala|sql|ps1|psm1|sh|bash|zsh|fish|lua|fs|fsx|vb|xml|xsd|html?|css|scss|sass|less|vue|svelte)$/i;
+
+export function isSourceCodePath(value) { return SOURCE_CODE.test(String(value ?? "").replaceAll("\\", "/")); }
 
 // Git pathspec magic `:(glob)` shares this scope's wildcard semantics: `*` stops at a separator and a
 // `**` segment crosses them. It does not share character classes or brace expansion, and it rejects a
@@ -366,7 +369,7 @@ function matchingLines(text, terms, maxPerFile) {
 // the read budget decide the boundary of the search: a scope naming one directory of a large repository
 // was still cut at the first 4000 paths in Git order, and everything past them was reported as absent
 // rather than as unread.
-export function searchSources(roots, scope, terms, { maxFiles = 40, maxMatchesPerFile = 6, maxOpenedFiles = 4000, maxEnumeratedFiles = 20_000, maxFileBytes = 2 * 1024 * 1024, indexedTerms = [], maxIndexedPaths = 200 } = {}) {
+export function searchSources(roots, scope, terms, { maxFiles = 40, maxMatchesPerFile = 6, maxOpenedFiles = 4000, maxEnumeratedFiles = 20_000, maxFileBytes = 2 * 1024 * 1024, indexedTerms = [], maxIndexedPaths = 200, sourceCodeOnly = false, preferSourceCode = false } = {}) {
   if (!terms.length) return { terms, files: [], searched_files: 0, truncated: false };
   const files = [];
   const termPriority = new Map(terms.map((term, index) => [term, index]));
@@ -379,6 +382,7 @@ export function searchSources(roots, scope, terms, { maxFiles = 40, maxMatchesPe
     if (listing.truncated || !listing.authoritative) scanTruncated = true;
     for (const relative of listing.files) {
       if (BINARY.test(relative)) continue;
+      if (sourceCodeOnly && !isSourceCodePath(relative)) continue;
       eligible += 1;
       if (opened >= maxOpenedFiles) { scanTruncated = true; break; }
       const file = path.join(root.path, relative);
@@ -405,7 +409,13 @@ export function searchSources(roots, scope, terms, { maxFiles = 40, maxMatchesPe
   // considered. Terms keep their request-derived order, so an exact avgCost match outranks a generic
   // identifier harvested later from project prose.
   const priority = file => Math.min(...file.matches.map(match => termPriority.get(match.term) ?? terms.length));
-  files.sort((a, b) => priority(a) - priority(b) || b.matches.length - a.matches.length || a.path.localeCompare(b.path, "en"));
+  const pathAffinity = file => preferSourceCode ? indexedTerms.filter(term => file.path.toLowerCase().includes(String(term).toLowerCase())).length : 0;
+  files.sort((a, b) => (preferSourceCode ? Number(!isSourceCodePath(a.path)) - Number(!isSourceCodePath(b.path)) : 0)
+    || pathAffinity(b) - pathAffinity(a)
+    || priority(a) - priority(b)
+    || new Set(b.matches.map(match => match.term)).size - new Set(a.matches.map(match => match.term)).size
+    || b.matches.length - a.matches.length
+    || a.path.localeCompare(b.path, "en"));
   const resultTruncated = files.length > maxFiles;
   return {
     terms, files: files.slice(0, maxFiles), searched_files: opened,
@@ -913,7 +923,7 @@ function evidenceAllocations(descriptors, budgetBytes, query, supplementalQuery)
       const hits = lowered.split(term).length - 1;
       if (hits) { proseDistinct += 1; proseHits += Math.min(hits, 40); }
     }
-    const sourceCode = /\.(?:[cm]?[jt]sx?|bsl|os|py|go|rs|java|kt|cs|cpp|c|h)$/i.test(descriptor.path) ? 5_000 : 0;
+    const sourceCode = isSourceCodePath(descriptor.path) ? 5_000 : 0;
     return { ...descriptor, score: exactDistinct * 100_000 + exactHits * 100 + proseDistinct * 100 + proseHits + sourceCode };
   }).sort((left, right) => right.score - left.score || left.index - right.index);
   for (const [rank, descriptor] of ranked.entries()) descriptor.weight = rank < 4 ? 12 : rank < 8 ? 8 : rank < 12 ? 4 : 1;

@@ -423,6 +423,21 @@ test("the identifiers in a request find the files that carry them", () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("code research excludes prose documents and prefers project-affine source paths", () => {
+  const root = temporaryRoot("workflow-source-code-ranking-");
+  fs.mkdirSync(path.join(root, "WorkflowPlatform", "src"), { recursive: true });
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs", "Architecture.md"), "WorkflowPlatform WorkflowPlatform WorkflowPlatform\n", "utf8");
+  fs.writeFileSync(path.join(root, "WorkflowPlatform", "src", "workflow-app.mjs"), "export const WorkflowPlatform = 'research';\n", "utf8");
+  fs.writeFileSync(path.join(root, "unrelated.mjs"), "export const WorkflowPlatform = 'other';\n", "utf8");
+  const found = searchSources([{ key: "primary", path: root, access: "read", primary: true }], sourceScope([]), ["WorkflowPlatform"], {
+    maxFiles: 8, indexedTerms: ["WorkflowPlatform"], sourceCodeOnly: true, preferSourceCode: true
+  });
+  assert.deepEqual(found.files.map(file => file.path), ["WorkflowPlatform/src/workflow-app.mjs", "unrelated.mjs"]);
+  assert.equal(found.completeness.eligible_files, 2);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("git inventory keeps Cyrillic paths literal and balances a capped inventory across project areas", () => {
   const root = temporaryRoot("workflow-unicode-git-");
   fs.mkdirSync(path.join(root, ".codex"));
