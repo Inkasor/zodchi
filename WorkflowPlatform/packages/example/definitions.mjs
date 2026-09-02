@@ -203,6 +203,23 @@ export default function definePackages(b) {
     disabledCheck("infra_delivery", "Registered CI or deployment verification", "requires_local_delivery_binding", [checkBinding("production", "release_package")])
   ];
   const infraPrefix = "infra_operations";
+  const infraEvidenceFlow = {
+    key: "infra.change_to_health",
+    claim_type: "operational_change_trace",
+    subject: "registered infrastructure target and proposed change",
+    target: "post-change health evidence",
+    workflow_keys: [`${infraPrefix}.backup_restore`],
+    nodes: [
+      { key: "observed_state", step_keys: ["verify_backup"], path_hints: ["**/*.yml", "**/*.yaml", "**/*.tf", "**/*.json", "**/*.md"], anchor_terms: ["health", "inventory", "backup"] },
+      { key: "approved_action", step_keys: ["restore_approval"], path_hints: ["**/artifacts/**", "**/plans/**"], anchor_terms: ["approval", "hash", "target", "rollback"] },
+      { key: "applied_action", step_keys: ["restore"], path_hints: ["**/artifacts/**", "**/receipts/**"], anchor_terms: ["applied", "restored"] },
+      { key: "health_result", step_keys: ["verify_health"], path_hints: ["**/artifacts/**", "**/reports/**"], anchor_terms: ["healthy", "ready", "restored", "passed"] }
+    ],
+    required_edges: ["observed_state->approved_action", "approved_action->applied_action", "applied_action->health_result"],
+    material_symbols: [],
+    transition: { adapter: "registered-infra-command", method: "action_hash_and_receipt_provenance" },
+    status: "active"
+  };
   const infra = composedPackage(
     coreLifecycle({
       key: "infra.operations", version: "0.4.0", purpose: "Executable preview for read-only operations, incident diagnosis and approval-bound access, restore and delivery changes with redacted receipts.", rolePreset: "reviewed",
@@ -210,11 +227,10 @@ export default function definePackages(b) {
       resources: [{ alias: "infra.target", kind: "project.worktree", purpose: "Registered infrastructure configuration and local execution boundary" }],
       documents: []
     }),
-    // Release and access review deliberately happens before the approved external action. Their
-    // post-action truth is therefore owned by approval binding, the signed result, the registered
-    // verification gate and its verified artifact, not by a source-range evidence flow pretending the
-    // action already happened. Backup/restore likewise uses explicit before/after worker steps.
-    domainAdapter({ key: "infra-command", domains: ["infrastructure"], disciplines: ["devops"] }),
+    // Release and access post-action truth is owned by approval binding, the signed result, the
+    // registered verification gate and its verified artifact. Backup/restore still has explicit
+    // before, approval, application and health steps, so its evidence flow remains meaningful.
+    domainAdapter({ key: "infra-command", domains: ["infrastructure"], disciplines: ["devops"], materialClaims: true, evidenceFlows: [infraEvidenceFlow] }),
     externalRuntime({ workTypes: ["infra.inventory"], checkKeys: ["infra_health"], resources: [{ alias: "infra.target", mode: "shared" }] }),
     incidentCapability({ workTypes: ["incident"], checkKeys: ["infra_health"], resources: [{ alias: "infra.target", mode: "shared" }] }),
     sourceChange({ workTypes: ["implementation", "fix"], checkKeys: ["infra_health"], resources: [{ alias: "infra.target", mode: "exclusive" }] }),

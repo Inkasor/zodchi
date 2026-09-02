@@ -1919,7 +1919,7 @@ export async function continueExternalOperationResult({ runtime, accepted, disco
   if (!verificationChecks.length) throw new Error("EXTERNAL_OPERATION_VERIFICATION_CHECKS_MISSING");
   appendSteps(runtime, request.run_id, [{
     key: "external_verification", role: null, required: true, irreversible: false, max_attempts: 1, schema: "gate.v1",
-    contract: { allowed_paths: [], check_ids: verificationChecks, external_request_id: request.id, external_result_hash: request.result_hash }
+    contract: { allowed_paths: recorded.plan.allowed_paths, check_ids: verificationChecks, external_request_id: request.id, external_result_hash: request.result_hash }
   }]);
   const queue = new ExecutionQueue(runtime.db);
   runtime.setState(request.run_id, "verifying", { reason: "registered external operation completed; deterministic verification started" });

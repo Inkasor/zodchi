@@ -945,6 +945,8 @@ test("a read-only operator proposes before approval and only a signed registered
   const verified = openDb(env.dbFile);
   assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(first.run_id).state, "completed");
   assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflow_steps WHERE run_id=? AND step_key='external_verification' AND state='completed'").get(first.run_id).count, 1);
+  const verificationContract = JSON.parse(verified.prepare("SELECT contract_json FROM workflow_steps WHERE run_id=? AND step_key='external_verification'").get(first.run_id).contract_json);
+  assert.deepEqual(verificationContract.allowed_paths, ["src/output.txt"], "the audit contract records the same run paths enforced by the external gate");
   assert.equal(verified.prepare("SELECT status FROM external_operation_executions WHERE request_id=?").get(request.request_id).status, "verified");
   assert.equal(verified.prepare("SELECT COUNT(*) count FROM artifacts WHERE run_id=? AND kind='deployment_evidence' AND status='verified'").get(first.run_id).count, 1);
   const evidenceCount = verified.prepare("SELECT COUNT(*) count FROM run_evidence WHERE run_id=? AND kind='external_operation_result'").get(first.run_id).count;
