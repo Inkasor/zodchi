@@ -12,6 +12,7 @@ import { RESULT_SCHEMA_SHAPES, loadRoleContract, parseRoleReceipt, rolePrompt, v
 import { BudgetManager } from "../src/budget.mjs";
 import { loadQualityContract } from "../src/quality-contracts.mjs";
 import { activateChatSession } from "../src/chat-session.mjs";
+import { callGateway } from "../src/gateway.mjs";
 
 const statelessProcessMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
 
@@ -32,7 +33,7 @@ function classification(documentRequired = false, risk = "low") {
 
 function roleContract(roleId, schema, artifacts) {
   return {
-    id: `contract-${roleId}`, role_id: roleId, version: "1.0.0", purpose: `${roleId} test contract`, boundaries: { writes: roleId === "worker" || roleId === "documentator" },
+    id: `contract-${roleId}`, role_id: roleId, version: "1.0.0", purpose: `${roleId} test contract`, boundaries: { writes: roleId === "worker" },
     allowed_work_types: ["*"], allowed_artifact_types: artifacts, allowed_tools: [], allowed_skills: [], required_checks: ["check-ok"],
     allowed_transitions: [], allowed_profiles: ["*"], context_limit_bytes: 65536, max_calls: roleId === "worker" || roleId === "reviewer" || roleId === "planner" ? 2 : 1, max_correction_cycles: roleId === "worker" || roleId === "planner" ? 1 : 0,
     timeout_seconds: 60, result_schema_key: schema, prompt_template_version: "1.0.0", escalation: { on_invalid: "blocked" }
@@ -99,7 +100,7 @@ function receipt(role, result, suffix = "1", rawSuffix = "") {
   };
 }
 
-async function scenario({ prefix, gateStatus = "passed", gateStatuses = null, reviewDecision = "PASS", invalidFirstPlanner = false, invalidFirstReviewer = false, document = false, invalidDocumentVersion = false, message = null, risk = "high", projectInputTokenLimit = null, runProfileOverrides = {}, longPlannerWork = false }) {
+async function scenario({ prefix, gateStatus = "passed", gateStatuses = null, reviewDecision = "PASS", invalidFirstPlanner = false, invalidFirstReviewer = false, document = false, invalidDocumentVersion = false, message = null, risk = "high", projectInputTokenLimit = null, runProfileOverrides = {}, longPlannerWork = false, realDocumentatorGateway = false }) {
   const env = fixture(prefix, { document });
   if (projectInputTokenLimit !== null) {
     const budgetDb = openDb(env.dbFile);
@@ -112,6 +113,11 @@ async function scenario({ prefix, gateStatus = "passed", gateStatuses = null, re
   let documentatorPrompt = "";
   let plannerCalls = 0;
   let reviewerCalls = 0;
+  const gatewayPolicy = path.join(env.root, "gateway-policy.json"), gatewayDatabase = path.join(env.root, "gateway.sqlite"), providerHome = path.join(env.root, "provider-home");
+  if (realDocumentatorGateway) {
+    fs.mkdirSync(providerHome);
+    fs.writeFileSync(gatewayPolicy, JSON.stringify({ schemaVersion: 1, levels: { mvp: { maxCalls: 1, maxCorrectionCycles: 0, timeoutSec: 30 } }, providers: { codex: { command: process.execPath, args: [path.join(import.meta.dirname, "fixtures", "deterministic-workflow-provider.mjs")], profiles: { "local-documentator": { model: "deterministic-documentator", reasoningEffort: "low", readOnly: true } } } } }));
+  }
   const gatewayCall = async request => {
     calls.push(request.role);
     const contractDb = openDb(env.dbFile);
@@ -152,6 +158,7 @@ async function scenario({ prefix, gateStatus = "passed", gateStatuses = null, re
     }
     if (request.role === "documentator") {
       documentatorPrompt = fs.readFileSync(request.taskFile, "utf8");
+      if (realDocumentatorGateway) return callGateway({ ...request, gateway: path.resolve(import.meta.dirname, "..", "..", "AgentGateway", "src", "cli.mjs"), gatewayDatabase, gatewayPolicy });
       const file = path.join(env.project, "docs", "control.md");
       const version = `sha256:${crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex")}`;
       return receipt("documentator", {
@@ -167,11 +174,18 @@ async function scenario({ prefix, gateStatus = "passed", gateStatuses = null, re
     const currentGateStatus = gateStatuses?.[Math.min(gateCalls++, gateStatuses.length - 1)] ?? gateStatus;
     return { task_id: "gate", project: env.project, level: "mvp", files: document ? ["docs/control.md"] : ["src/output.txt"], status: currentGateStatus, checks: [{ id: "check-ok", name: "Deterministic check", required: true, status: currentGateStatus, exit_code: 0, duration_ms: 17 }], summary: `${currentGateStatus}: deterministic check` };
   };
-  const result = await statelessProcessMessage({
-    message: message ?? (document ? "Update the registered document" : "Implement bounded output"), project: env.project, dbFile: env.dbFile,
-    workflowDefinition: { id: "workflow", authority: "registered test authority", roles: {} }, execute: true,
-    classificationResult: classification(document, risk), gatewayCall, gateRunner, runProfileOverrides
-  });
+  const previousProviderHome = process.env.CODEX_SOURCE_HOME;
+  if (realDocumentatorGateway) process.env.CODEX_SOURCE_HOME = providerHome;
+  let result;
+  try {
+    result = await statelessProcessMessage({
+      message: message ?? (document ? "Update the registered document" : "Implement bounded output"), project: env.project, dbFile: env.dbFile,
+      workflowDefinition: { id: "workflow", authority: "registered test authority", roles: {} }, execute: true,
+      classificationResult: classification(document, risk), gatewayCall, gateRunner, runProfileOverrides
+    });
+  } finally {
+    if (previousProviderHome === undefined) delete process.env.CODEX_SOURCE_HOME; else process.env.CODEX_SOURCE_HOME = previousProviderHome;
+  }
   return { ...env, calls, plannerPrompt, workerPrompt, documentatorPrompt, result };
 }
 
@@ -871,10 +885,16 @@ for (const reviewDecision of ["CHANGES_REQUESTED", "REJECT"]) {
   });
 }
 
-test("required document patch applies atomically after reviewer PASS and lint", async () => {
-  const env = await scenario({ prefix: "workflow-document-required-pass-", document: true });
+test("read-only documentator proposal is applied atomically by the platform after reviewer PASS and lint", async () => {
+  const env = await scenario({ prefix: "workflow-document-required-pass-", document: true, realDocumentatorGateway: true });
   assert.equal(env.result.execution.status, "completed");
   assert.deepEqual(env.calls, ["planner", "worker", "reviewer", "documentator"]);
+  const contractDb = openDb(env.dbFile);
+  assert.equal(JSON.parse(contractDb.prepare("SELECT boundaries_json FROM role_contracts WHERE project_id='project' AND role_id='documentator' AND status='active'").get().boundaries_json).writes, false);
+  const resources = JSON.parse(contractDb.prepare("SELECT resources_json FROM workflow_steps WHERE run_id=? AND role_id='documentator'").get(env.result.run_id).resources_json);
+  assert.deepEqual({ ...contractDb.prepare("SELECT profile_id,status FROM gateway_calls WHERE run_id=? AND step_id=(SELECT id FROM workflow_steps WHERE run_id=? AND role_id='documentator')").get(env.result.run_id, env.result.run_id) }, { profile_id: "local-documentator", status: "completed" });
+  contractDb.close();
+  assert.equal(resources.some(item => item.alias === "project.worktree" && item.mode === "exclusive"), true);
   assert.match(fs.readFileSync(path.join(env.project, "docs", "control.md"), "utf8"), /new accepted content/);
   assert.match(env.documentatorPrompt, /document_proposal/);
   assert.match(env.documentatorPrompt, /Do not edit or write the filesystem/);

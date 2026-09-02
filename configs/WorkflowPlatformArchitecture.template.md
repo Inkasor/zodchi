@@ -16,7 +16,7 @@
     <step order="4" role="router">Select a registered route from the classifier decision.</step>
     <step order="5" role="agent_gateway">Send one concrete role and bounded context to its assigned profile.</step>
     <step order="6" role="checks">Run registered deterministic checks.</step>
-    <step order="7" role="documentator">Apply an authorized document change and run document-lint.</step>
+    <step order="7" role="documentator">Return an authorized structured document proposal; WorkflowPlatform applies it and runs document-lint.</step>
     <step order="8" role="response_formatter">Return a plain result in the current conversation language.</step>
   </flow>
 
@@ -44,7 +44,7 @@
   <registry id="project_registry" status="accepted">
     <rule id="documents_are_registered">Register project documents in Workflow DB; never hard-code them into runtime logic.</rule>
     <rule id="role_owns_document_access">Grant document access through role_documents read_access and write_access.</rule>
-    <rule id="documentator_writes_by_permission">Documentator changes only a registered document for which the role has write permission.</rule>
+    <rule id="documentator_writes_by_permission">The documentator model is read-only and may propose a change only for a registered document for which the role has document write permission; WorkflowPlatform performs the write.</rule>
     <documents>TODO: registered documents.</documents>
     <roles>TODO: project roles.</roles>
     <assignments>TODO: role-to-document assignments.</assignments>
