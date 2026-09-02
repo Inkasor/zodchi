@@ -683,10 +683,17 @@ export async function processMessage({
     }
     catch (error) { return executionFailure(runtime, runId, error, finish, responseLanguage); }
     recordRunEvidence(runtime.db, runId, null, "research_inspection", { status: research.status, inspected_paths: research.inspected_paths, limitations: research.limitations });
-    runtime.setState(runId, "verifying", { reason: "research response received" });
-    runtime.setState(runId, "completed", { reason: "research response delivered" });
     const response = saveAssistant(research.answer);
-    return finish({ route: "research", classification, response, gateway: { mode: "executed", receipts: [{ step: "classifier", receipt: classifierReceipt }, { step: "researcher", receipt: researcher }] } });
+    if (research.status === "insufficient") runtime.setState(runId, "blocked", { reason: "registered research evidence was insufficient" });
+    else {
+      runtime.setState(runId, "verifying", { reason: "research answer received with inspected sources" });
+      runtime.setState(runId, "completed", { reason: "evidence-backed research answer delivered" });
+    }
+    return finish({
+      route: "research", classification, response,
+      research: { status: research.status, inspected_paths: research.inspected_paths, limitations: research.limitations },
+      gateway: { mode: "executed", receipts: [{ step: "classifier", receipt: classifierReceipt }, { step: "researcher", receipt: researcher }] }
+    });
   }
 
   if (execute) {

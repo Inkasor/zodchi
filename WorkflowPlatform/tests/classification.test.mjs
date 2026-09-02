@@ -207,6 +207,7 @@ test("research invokes classifier then researcher without planner, worker or rev
   assert.deepEqual(roles, ["classifier", "researcher"]);
   assert.equal(result.route, "research");
   assert.equal(result.response, "Исходник движка прочитан.");
+  assert.deepEqual(result.research, { status: "answered", inspected_paths: ["src/engine.ts"], limitations: [] });
   assert.match(researcherPrompt, /WORKFLOW RESEARCH REQUEST v3/);
   assert.match(researcherPrompt, /actual repository/);
   assert.match(researcherPrompt, /REGISTERED_PROJECT_CORPUS/);
@@ -216,6 +217,32 @@ test("research invokes classifier then researcher without planner, worker or rev
   assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(result.run_id).state, "completed");
   const evidence = JSON.parse(verified.prepare("SELECT evidence_json FROM run_evidence WHERE run_id=? AND kind='research_inspection'").get(result.run_id).evidence_json);
   assert.deepEqual(evidence, { status: "answered", inspected_paths: ["src/engine.ts"], limitations: [] });
+  verified.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("insufficient research is recorded but cannot complete as an answered result", async () => {
+  const { root, project, dbFile, db } = fixture("workflow-research-insufficient-");
+  fs.writeFileSync(path.join(project, "engine.ts"), "export const ready = false;\n", "utf8");
+  db.close();
+  const research = decision({
+    work_type: "research", artifact_type: "test_report", discipline: "software", planning_level: "L0", planning_required: false,
+    reply_mode: "research", reason: "Нужно исследовать исходники без изменений."
+  });
+  const result = await statelessProcessMessage({
+    message: "Как внешний сервис использует этот проект?", project, dbFile, workflowDefinition: definition(), execute: true,
+    gatewayCall: async request => request.role === "classifier"
+      ? receipt(JSON.stringify(research), "classifier-receipt")
+      : receipt(JSON.stringify({ schema_version: 1, status: "insufficient", answer: "В зарегистрированных источниках нет данных о внешнем сервисе.", inspected_paths: [], limitations: ["External service configuration is not in the registered project corpus."] }), "research-receipt")
+  });
+  assert.equal(result.route, "research");
+  assert.equal(result.research.status, "insufficient");
+  assert.deepEqual(result.research.limitations, ["External service configuration is not in the registered project corpus."]);
+  const verified = openDb(dbFile);
+  assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(result.run_id).state, "blocked");
+  const evidence = JSON.parse(verified.prepare("SELECT evidence_json FROM run_evidence WHERE run_id=? AND kind='research_inspection'").get(result.run_id).evidence_json);
+  assert.equal(evidence.status, "insufficient");
+  assert.deepEqual(evidence.inspected_paths, []);
   verified.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -236,6 +263,7 @@ test("research preserves a failed provider receipt instead of parsing its empty 
   });
   assert.equal(result.route, "failed");
   assert.equal(result.error, "RESEARCHER_PROVIDER_EXIT");
+  assert.equal(result.research, undefined);
   const verified = openDb(dbFile);
   assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(result.run_id).state, "failed");
   assert.equal(verified.prepare("SELECT payload_json FROM events WHERE entity_id=? AND kind='execution_error' ORDER BY created_at DESC LIMIT 1").get(result.run_id).payload_json.includes("RESEARCHER_PROVIDER_EXIT"), true);
