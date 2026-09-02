@@ -18,10 +18,10 @@ import { bindProject, bindingEvidence } from "./project-binding.mjs";
 import { inside } from "./project-roots.mjs";
 import { parseRootedPath } from "./source-context.mjs";
 import { recordRunEvidence } from "./run-evidence.mjs";
-import { continueApprovedRun, executeStructuredWork, pausedRunObjective, resumeObjective } from "./work-executor.mjs";
+import { continueApprovedRun, continueExternalOperationResult, executeStructuredWork, pausedRunObjective, resumeObjective } from "./work-executor.mjs";
 import { chargeDirectReceipt, effectiveQualityMode, initializeQualityRun, operationalLevel, ownerQualityFloor, reserveDirectModelCall } from "./quality-contracts.mjs";
 import { approveBoundInteraction, assertApprovalStillCurrent } from "./approval-binding.mjs";
-import { acceptExternalControlEvidenceResult } from "./external-control-plane.mjs";
+import { acceptExternalControlEvidenceResult, acceptExternalControlResult } from "./external-control-plane.mjs";
 import { normalizeRunProfile, resolveRunProfile, storeRunProfile } from "./run-profile.mjs";
 import { assertProjectRuntimeReady, assertWorkflowRuntimeReady } from "./runtime-readiness.mjs";
 import { normalizeSemanticScope } from "./semantic-scope.mjs";
@@ -194,6 +194,7 @@ function executionMessage(execution, responseLanguage) {
     : execution.status === "rejected" ? workflowMessage("rejected", responseLanguage)
       : execution.status === "changes_requested" ? workflowMessage("changesRequested", responseLanguage)
         : execution.status === "approval_required" ? formatQuestions({ summary: responseLanguage === "ru" ? "Следующий шаг требует отдельного решения владельца." : "The next step requires a separate owner decision.", questions: execution.questions, nextStep: responseLanguage === "ru" ? "продолжить выбранный маршрут" : "continue with the selected workflow", language: responseLanguage })
+          : execution.status === "external_action_required" ? (responseLanguage === "ru" ? "Точная операция одобрена и передана зарегистрированному внешнему исполнителю. Продолжение — после подписанного результата и программной проверки." : "The exact operation was approved and dispatched to the registered external executor. The run continues after a signed result and deterministic verification.")
           : execution.status === "clarification_required" ? formatQuestions({ summary: responseLanguage === "ru" ? "План требует уточнения." : "The plan needs clarification.", questions: execution.questions, nextStep: responseLanguage === "ru" ? "продолжить исполнение" : "continue execution", language: responseLanguage })
             : workflowMessage("controlledStop", responseLanguage);
 }
@@ -220,7 +221,7 @@ function executionFailure(runtime, runId, error, finish, responseLanguage = "en"
 function structuredExecutionError(error) {
   const message = String(error?.message ?? error).replace(/[\r\n\t]+/g, " ").trim();
   const category = message.split(":")[0].slice(0, 120);
-  const diagnostic = /^(?:(?:planner|worker|reviewer|judge|strategy_review|documentator)\.v1(?:\.|:)|PROFILE_WRITE_REQUIREMENT_(?:MISMATCH|INVALID):)/u.test(message)
+  const diagnostic = /^(?:(?:planner|worker|reviewer|judge|strategy_review|documentator|release_operation|access_change)\.v1(?:\.|:)|PROFILE_WRITE_REQUIREMENT_(?:MISMATCH|INVALID):)/u.test(message)
     ? message.slice(0, 500)
     : category;
   return { category, diagnostic };
@@ -231,7 +232,7 @@ function structuredExecutionError(error) {
 // doing so would repeat, and pay for again, every call already made. That run resumes from its recorded
 // plan, gate and review, and only the phases the wait was blocking still run.
 async function resumeWaitingRun({ runtime, waitingRunId, definition, discovery, responseLanguage, taskRoot, gatewayCall, gateRunner }) {
-  const worked = runtime.db.prepare("SELECT COUNT(*) AS count FROM workflow_steps WHERE run_id=? AND state='completed' AND result_schema_key='worker.v1'").get(waitingRunId).count;
+  const worked = runtime.db.prepare("SELECT COUNT(*) AS count FROM workflow_steps WHERE run_id=? AND state='completed' AND result_schema_key IN ('worker.v1','release_operation.v1','access_change.v1')").get(waitingRunId).count;
   if (worked) {
     // Evidence that arrives after the work was done is checked, not re-executed; an answered question
     // resumes the execution it interrupted. Replanning needs neither, and enters planning on its own.
@@ -312,19 +313,32 @@ export async function deliverExternalControlResult({
   project ??= settings.project;
   dbFile ??= settings.databasePath;
   const runtime = new Runtime(dbFile);
-  let accepted;
   try {
     const registeredProject = runtime.db.prepare("SELECT id,root_path FROM projects WHERE id=? OR lower(root_path)=lower(?) LIMIT 1").get(project, path.resolve(project));
     if (!registeredProject) throw new Error(`PROJECT_NOT_REGISTERED: ${project}`);
     if (packet?.project_id !== registeredProject.id) throw new Error(`EXTERNAL_CONTROL_PROJECT_MISMATCH: ${packet?.project_id ?? "missing"} != ${registeredProject.id}`);
-    accepted = acceptExternalControlEvidenceResult(runtime.db, packet);
+    const request = runtime.db.prepare(`SELECT q.*,a.kind AS interaction_kind FROM external_control_requests q
+      LEFT JOIN approvals a ON a.id=q.interaction_id WHERE q.id=?`).get(packet?.request_id);
+    if (!request) throw new Error(`EXTERNAL_CONTROL_REQUEST_NOT_FOUND: ${packet?.request_id ?? "missing"}`);
+    if (request.interaction_kind === EXTERNAL_EVIDENCE_KIND) {
+      const accepted = acceptExternalControlEvidenceResult(runtime.db, packet);
+      if (accepted.status !== "completed") return { control: accepted, evidence: null };
+      const evidence = await deliverExternalEvidencePacket({
+        interactionId: accepted.interaction_id, packet: accepted.payload.evidence_packet,
+        project, dbFile, workflow, workflowDefinition, execute, gatewayCall, gateRunner, preferredLanguage
+      });
+      return { control: accepted, evidence };
+    }
+    const accepted = acceptExternalControlResult(runtime.db, packet);
+    if (request.interaction_kind !== "workflow_approval" || !execute) return { control: accepted, operation: null };
+    const responseLanguage = preferredLanguage ?? runtime.get(request.run_id).response_language ?? settings.responseLanguage ?? "en";
+    const discovery = readProjectContext(registeredProject.id, runtime.db);
+    const taskRoot = path.join(settings.tempRoot, path.basename(registeredProject.root_path).toLowerCase().replaceAll(" ", "-"), request.run_id);
+    try {
+      const operation = await continueExternalOperationResult({ runtime, accepted, discovery, responseLanguage, taskRoot, gatewayCall, ...(gateRunner ? { gateRunner } : {}) });
+      return { control: accepted, operation };
+    } finally { fs.rmSync(taskRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
   } finally { runtime.db.close(); }
-  if (accepted.status !== "completed") return { control: accepted, evidence: null };
-  const evidence = await deliverExternalEvidencePacket({
-    interactionId: accepted.interaction_id, packet: accepted.payload.evidence_packet,
-    project, dbFile, workflow, workflowDefinition, execute, gatewayCall, gateRunner, preferredLanguage
-  });
-  return { control: accepted, evidence };
 }
 
 // A directory belongs to the project registered closest above it: with a project registered inside
@@ -610,12 +624,12 @@ export async function processMessage({
     // from its objective, because nothing has been done yet. A decision after the work must not: doing so
     // would repeat, and pay for again, every step already completed. That run resumes from its recorded
     // plan, gate and review, and only the phases the decision was blocking still run.
-    const worked = runtime.db.prepare("SELECT COUNT(*) AS count FROM workflow_steps WHERE run_id=? AND state='completed' AND result_schema_key='worker.v1'").get(ownerDecision.run_id).count;
+    const worked = runtime.db.prepare("SELECT COUNT(*) AS count FROM workflow_steps WHERE run_id=? AND state='completed' AND result_schema_key IN ('worker.v1','release_operation.v1','access_change.v1')").get(ownerDecision.run_id).count;
     runtime.setState(runId, "completed", { reason: "owner approval delivered to the waiting run" });
     try {
       const paused = worked ? null : pausedRunObjective(runtime.db, ownerDecision.run_id);
       const execution = worked
-        ? await continueApprovedRun({ runtime, runId: ownerDecision.run_id, discovery, responseLanguage, taskRoot: taskDirectory, gatewayCall })
+        ? await continueApprovedRun({ runtime, runId: ownerDecision.run_id, approvalId: ownerDecision.id, discovery, responseLanguage, taskRoot: taskDirectory, gatewayCall })
         : await executeStructuredWork({ runtime, runId: ownerDecision.run_id, classification: paused.classification, definition, discovery, message: paused.message, responseLanguage, taskRoot: taskDirectory, gatewayCall, approvalGranted: true, ...(gateRunner ? { gateRunner } : {}) });
       const response = saveAssistant(executionMessage(execution, responseLanguage));
       return finish({ route: "work", classification, response, execution, gateway: receipts });

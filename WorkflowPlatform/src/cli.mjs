@@ -22,7 +22,7 @@ import { expandTerms, searchSources, sourceScope } from "./source-context.mjs";
 import { buildCodeIntelligence, mergeGraphMatches } from "./code-intelligence.mjs";
 import { runCSharpProvider } from "./csharp-provider.mjs";
 import { applyIdleRunControl, requestRunControl, resumeRunControl, runControlStatus } from "./progress-supervisor.mjs";
-import { createExternalControlRequest, pendingExternalControlRequests, registerExternalExecutor, requestExternalControlCancellation } from "./external-control-plane.mjs";
+import { createExternalControlRequest, pendingExternalControlRequests, registerExternalExecutor, registerExternalOperation, registeredExternalOperations, requestExternalControlCancellation } from "./external-control-plane.mjs";
 import { loadDefaultProjectPresetCatalog, proposeProjectPreset } from "./project-presets.mjs";
 import { listControlledDocuments, registerControlledDocument, unregisterControlledDocument, registerProjectDocumentVocabulary, unregisterProjectDocumentVocabulary } from "./document-registry.mjs";
 import { listProjectRunProfileDefaults, setProjectRunProfileDefault } from "./run-profile.mjs";
@@ -74,6 +74,14 @@ else if (process.argv[2] === "external-executor-register") {
   const runtime = new Runtime(args.db ?? settings.databasePath);
   try { console.log(JSON.stringify(registerExternalExecutor(runtime.db, { projectId: args.project, executorId: args.executor, purpose: args.purpose ?? null, publicKeyPem: fs.readFileSync(args["public-key"], "utf8"), keyId: args["key-id"] }), null, 2)); } finally { runtime.db.close(); }
 }
+else if (process.argv[2] === "external-operation-register") {
+  const runtime = new Runtime(args.db ?? settings.databasePath);
+  try { console.log(JSON.stringify(registerExternalOperation(runtime.db, { projectId: args.project, operationId: args.operation, executorId: args.executor, operationKind: args.kind, action: args.action, config: args.config ? JSON.parse(fs.readFileSync(args.config, "utf8")) : {} }), null, 2)); } finally { runtime.db.close(); }
+}
+else if (process.argv[2] === "external-operation-list") {
+  const runtime = new Runtime(args.db ?? settings.databasePath);
+  try { console.log(JSON.stringify(registeredExternalOperations(runtime.db, args.project, args.kind === true ? null : args.kind).map(item => ({ ...item, config: undefined })), null, 2)); } finally { runtime.db.close(); }
+}
 else if (process.argv[2] === "external-control-create") {
   const runtime = new Runtime(args.db ?? settings.databasePath);
   try { console.log(JSON.stringify(createExternalControlRequest(runtime.db, JSON.parse(fs.readFileSync(args.input, "utf8"))), null, 2)); } finally { runtime.db.close(); }
@@ -89,7 +97,7 @@ else if (process.argv[2] === "external-control-cancel") {
 else if (process.argv[2] === "external-control-deliver") {
   const result = await deliverExternalControlResult({ packet: JSON.parse(fs.readFileSync(args.packet, "utf8")), project: args.project ?? settings.project, dbFile: args.db ?? settings.databasePath, preferredLanguage: args.language ?? settings.responseLanguage, execute: args.execute !== false });
   console.log(JSON.stringify(result, null, 2));
-  process.exitCode = result.control?.status === "completed" && result.evidence?.delivered ? 0 : 1;
+  process.exitCode = result.control?.status === "completed" && (result.evidence?.delivered || ["completed", "external_action_required"].includes(result.operation?.status)) ? 0 : 1;
 }
 else if (process.argv[2] === "preset-lint" || process.argv[2] === "preset-inspect") {
   const catalog = loadDefaultProjectPresetCatalog({ presetFile: args.presets, packageFile: args.packages });

@@ -66,6 +66,34 @@ export function registerExternalExecutor(db, { projectId, executorId, purpose = 
   return Object.freeze({ project_id: projectId, executor_id: executorId, key_id: keyId, public_key_fingerprint: structuredHash(normalized) });
 }
 
+export function registerExternalOperation(db, { projectId, operationId, executorId, operationKind, action, config = {} }) {
+  if (!IDENTIFIER.test(String(operationId ?? ""))) throw new Error(`EXTERNAL_OPERATION_ID_INVALID: ${operationId}`);
+  if (!IDENTIFIER.test(String(executorId ?? ""))) throw new Error(`EXTERNAL_EXECUTOR_ID_INVALID: ${executorId}`);
+  if (!["release", "access"].includes(operationKind)) throw new Error(`EXTERNAL_OPERATION_KIND_INVALID: ${operationKind}`);
+  if (typeof action !== "string" || !action.trim()) throw new Error("EXTERNAL_CONTROL_ACTION_REQUIRED");
+  if (!config || Array.isArray(config) || typeof config !== "object") throw new Error("EXTERNAL_OPERATION_CONFIG_INVALID");
+  if (!executorRow(db, projectId, executorId)) throw new Error(`EXTERNAL_EXECUTOR_NOT_REGISTERED: ${executorId}`);
+  const timestamp = now();
+  db.prepare(`INSERT INTO external_operation_definitions(id,project_id,executor_id,operation_kind,action,config_json,active,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,1,?,?)
+    ON CONFLICT(project_id,id) DO UPDATE SET executor_id=excluded.executor_id,operation_kind=excluded.operation_kind,action=excluded.action,config_json=excluded.config_json,active=1,updated_at=excluded.updated_at`)
+    .run(operationId, projectId, executorId, operationKind, action.trim(), JSON.stringify(config), timestamp, timestamp);
+  return Object.freeze({ project_id: projectId, operation_id: operationId, executor_id: executorId, operation_kind: operationKind, action: action.trim(), config_hash: structuredHash(config) });
+}
+
+export function registeredExternalOperations(db, projectId, operationKind = null) {
+  return db.prepare(`SELECT id,executor_id,operation_kind,action,config_json FROM external_operation_definitions
+    WHERE project_id=? AND active=1 ${operationKind ? "AND operation_kind=?" : ""} ORDER BY id`)
+    .all(projectId, ...(operationKind ? [operationKind] : []))
+    .map(row => {
+      const config = JSON.parse(row.config_json);
+      return {
+        id: row.id, executor_id: row.executor_id, operation_kind: row.operation_kind, action: row.action, config,
+        definition_hash: structuredHash({ id: row.id, executor_id: row.executor_id, operation_kind: row.operation_kind, action: row.action, config })
+      };
+    });
+}
+
 export function createExternalControlRequest(db, { projectId, runId, stepId = null, interactionId = null, executorId, action, checkpointHash, payload, payloadRef = null, idempotencyKey = null }) {
   if (!IDENTIFIER.test(String(executorId ?? ""))) throw new Error(`EXTERNAL_EXECUTOR_ID_INVALID: ${executorId}`);
   if (typeof action !== "string" || !action.trim()) throw new Error("EXTERNAL_CONTROL_ACTION_REQUIRED");

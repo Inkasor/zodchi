@@ -6,13 +6,14 @@ import path from "node:path";
 import test from "node:test";
 import { onboardProject } from "../src/onboarding.mjs";
 import { openDb } from "../src/db.mjs";
-import { processMessage as scopedProcessMessage } from "../src/workflow-app.mjs";
+import { deliverExternalControlResult, processMessage as scopedProcessMessage } from "../src/workflow-app.mjs";
 import { classificationCatalog } from "../src/classifier.mjs";
-import { RESULT_SCHEMA_SHAPES, loadRoleContract, parseRoleReceipt, rolePrompt, validateDocumentatorResult, validateJudgeResult, validatePlannerResult, validateReviewerResult, validateStrategyReviewResult, validateWorkerResult } from "../src/role-contracts.mjs";
+import { RESULT_SCHEMA_SHAPES, loadRoleContract, parseRoleReceipt, rolePrompt, structuredHash, validateDocumentatorResult, validateJudgeResult, validatePlannerResult, validateReviewerResult, validateStrategyReviewResult, validateWorkerResult } from "../src/role-contracts.mjs";
 import { BudgetManager } from "../src/budget.mjs";
 import { loadQualityContract } from "../src/quality-contracts.mjs";
 import { activateChatSession } from "../src/chat-session.mjs";
 import { callGateway } from "../src/gateway.mjs";
+import { createExternalControlRequest, registerExternalExecutor, registerExternalOperation } from "../src/external-control-plane.mjs";
 
 const statelessProcessMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
 
@@ -40,7 +41,7 @@ function roleContract(roleId, schema, artifacts) {
   };
 }
 
-function fixture(prefix, { document = false } = {}) {
+function fixture(prefix, { document = false, externalOperation = false } = {}) {
   const root = temporaryRoot(prefix);
   const project = path.join(root, "project");
   const dbFile = path.join(root, "workflow.sqlite");
@@ -51,14 +52,15 @@ function fixture(prefix, { document = false } = {}) {
   const roles = [
     ["planner", "planner.v1", ["code", "document"]], ["worker", "worker.v1", ["code", "document"]],
     ["coordinator", "planner.v1", ["code", "document"]], ["reviewer", "reviewer.v1", ["code", "document"]],
-    ["documentator", "documentator.v1", ["document"]]
+    ["documentator", "documentator.v1", ["document"]],
+    ...(externalOperation ? [["release_operator", "release_operation.v1", ["release_package", "deployment_evidence"]]] : [])
   ];
   onboardProject(dbFile, {
     project: { id: "project", name: "Project", root_path: project },
     workflow: { id: "workflow", name: "Workflow", discovery: { git: false }, history_budget_bytes: 8192 },
     roles: roles.map(([role]) => ({ id: role, name: role })),
     profiles: roles.map(([role]) => ({ id: `profile-${role}`, provider: role === "coordinator" ? "claude-code" : "codex", name: `local-${role}`, role_id: role })),
-    routes: [{ work_type_id: "implementation" }, { work_type_id: "documentation" }],
+    routes: [{ work_type_id: "implementation" }, { work_type_id: "documentation" }, ...(externalOperation ? [{ work_type_id: "release" }] : [])],
     checks: [{ id: "check-ok", name: "Test check", runner: "fixture", kind: "fixture", config: { status: "passed" } }],
     project_checks: [{ check_id: "check-ok", quality_mode_id: "mvp", required: true }],
     role_contracts: roles.map(([role, schema, artifacts]) => roleContract(role, schema, artifacts)),
@@ -98,6 +100,19 @@ function receipt(role, result, suffix = "1", rawSuffix = "") {
     status: "completed", exitCode: 0, startedAt: timestamp, finishedAt: timestamp, usage: { input_tokens: 10, output_tokens: 5 },
     output: `${JSON.stringify({ item: { text: JSON.stringify(result) } })}${rawSuffix}`
   };
+}
+
+function signedExternalResult(request, privateKey, payload, status = "completed") {
+  const packet = {
+    schema_version: 1, request_id: request.request_id, request_hash: request.request_hash, project_id: request.project_id,
+    run_id: request.run_id, step_id: request.step_id, executor_id: request.executor_id, key_id: request.executor_key_id,
+    checkpoint_hash: request.checkpoint_hash, status, payload, payload_hash: structuredHash(payload),
+    finished_at: new Date().toISOString(), signature: ""
+  };
+  // External control uses canonical structured hashing rather than JSON insertion order.
+  const resultCore = { schema_version: packet.schema_version, request_id: packet.request_id, request_hash: packet.request_hash, project_id: packet.project_id, run_id: packet.run_id, step_id: packet.step_id, executor_id: packet.executor_id, key_id: packet.key_id, checkpoint_hash: packet.checkpoint_hash, status: packet.status, payload_hash: packet.payload_hash, finished_at: packet.finished_at };
+  packet.signature = crypto.sign(null, Buffer.from(structuredHash(resultCore), "utf8"), privateKey).toString("base64");
+  return packet;
 }
 
 async function scenario({ prefix, gateStatus = "passed", gateStatuses = null, reviewDecision = "PASS", invalidFirstPlanner = false, invalidFirstReviewer = false, document = false, invalidDocumentVersion = false, message = null, risk = "high", projectInputTokenLimit = null, runProfileOverrides = {}, longPlannerWork = false, realDocumentatorGateway = false }) {
@@ -230,6 +245,15 @@ test("role result schemas reject extra fields, path escapes and false reviewer P
   assert.ok(classificationCatalog(db, "project", { mode: "stateless" }).routes.length >= 2);
   db.close();
   fs.rmSync(env.root, { recursive: true, force: true });
+});
+
+test("operator receipts can only reference a registered exact operation", () => {
+  const release = { schema_version: 1, status: "proposed", operation_id: "release.prod", target_revision: "a".repeat(40), target_environment: "production", artifact_refs: ["artifact:build"], evidence_refs: ["gate:passed"], summary: "Deploy the verified revision." };
+  assert.deepEqual(parseRoleReceipt(receipt("release_operator", release), "release_operation.v1", { allowedOperationIds: ["release.prod"] }), release);
+  assert.throws(() => parseRoleReceipt(receipt("release_operator", { ...release, operation_id: "shell.anything" }), "release_operation.v1", { allowedOperationIds: ["release.prod"] }), /operation not registered/);
+  const access = { schema_version: 1, status: "proposed", operation_id: "access.project", subject: "analyst@example.test", resource: "analytics", grant: ["reader"], revoke: [], expires_at: null, evidence_refs: ["decision:owner"], summary: "Grant the smallest registered role." };
+  assert.deepEqual(parseRoleReceipt(receipt("access_administrator", access), "access_change.v1", { allowedOperationIds: ["access.project"] }), access);
+  assert.throws(() => parseRoleReceipt(receipt("access_administrator", { ...access, grant: [], revoke: [] }), "access_change.v1", { allowedOperationIds: ["access.project"] }), /empty permission delta/);
 });
 
 test("structured planner-worker-gate-reviewer PASS completes and raw planner prose never reaches worker", async () => {
@@ -829,6 +853,97 @@ test("a decision that follows the work is continued from what was recorded, not 
   assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(first.run_id).state, "completed");
   assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflow_steps WHERE run_id=? AND step_key='documentation'").get(first.run_id).count, 1);
   verified.close();
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
+test("a read-only operator proposes before approval and only a signed registered operation can complete", async () => {
+  const env = fixture("workflow-external-release-", { externalOperation: true });
+  const semanticScope = { mode: "session", client: "codex", session_id: "external-release-chat" };
+  const keys = crypto.generateKeyPairSync("ed25519"), publicKeyPem = keys.publicKey.export({ type: "spki", format: "pem" });
+  const db = openDb(env.dbFile);
+  db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow','proposal',1,'release_operator',1,0,'package.v1','release_operation.v1','[\"release_package\"]','[\"check-ok\"]','{}','{}')").run();
+  db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow','deployment_approval',2,NULL,1,1,'package.v1','approval.v1','[\"decision\"]','[]','{}','{}')").run();
+  registerExternalExecutor(db, { projectId: "project", executorId: "release.test", purpose: "Test release executor", publicKeyPem, keyId: "release-key-v1" });
+  registerExternalOperation(db, { projectId: "project", operationId: "release.prod", executorId: "release.test", operationKind: "release", action: "deploy_revision", config: { environment: "production" } });
+  activateChatSession(db, { client: semanticScope.client, sessionId: semanticScope.session_id, origin: env.project, turnKey: "turn-1" });
+  db.close();
+  const calls = [], gates = [];
+  const gateRunner = async (_project, _level, _dbFile, taskId) => {
+    gates.push(taskId);
+    return { task_id: taskId, project: env.project, level: "mvp", files: [], status: "passed", checks: [{ id: "check-ok", required: true, status: "passed" }], summary: "passed" };
+  };
+  const first = await scopedProcessMessage({
+    message: "Разверни проверенную ревизию", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, semanticScope,
+    classificationResult: { ...classification(false), work_type: "release", artifact_type: "release_package", human_required: true, reason: "Release requires an exact proposal and owner approval." },
+    gatewayCall: async request => {
+      calls.push(request.role);
+      if (request.role === "release_operator") {
+        assert.equal(request.requiresWrite, false);
+        return receipt("release_operator", { schema_version: 1, status: "proposed", operation_id: "release.prod", target_revision: "a".repeat(40), target_environment: "production", artifact_refs: ["artifact:build"], evidence_refs: ["gate:check-ok"], summary: "Deploy the verified immutable revision." });
+      }
+      if (request.role === "reviewer") return receipt("reviewer", reviewerResult("PASS"));
+      throw new Error(`unexpected role ${request.role}`);
+    },
+    gateRunner
+  });
+  assert.equal(first.execution.status, "approval_required");
+  const waiting = openDb(env.dbFile);
+  const approval = waiting.prepare("SELECT id,binding_hash FROM approvals WHERE run_id=? AND status='pending'").get(first.run_id);
+  assert.equal(waiting.prepare("SELECT COUNT(*) count FROM external_control_requests WHERE run_id=?").get(first.run_id).count, 0);
+  waiting.close();
+  const callsBeforeApproval = calls.length;
+  const second = await scopedProcessMessage({
+    message: "Да, развертывай именно это", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, semanticScope,
+    classificationResult: { ...classification(false), work_type: "conversation", artifact_type: "none", planning_required: false, human_required: false, reply_mode: "conversation", human_response: "Записал.", pending_interaction_id: approval.id, pending_interaction_response: "approve" },
+    gatewayCall: async request => { calls.push(request.role); throw new Error(`model called after approval: ${request.role}`); }, gateRunner
+  });
+  assert.equal(second.execution.status, "external_action_required");
+  assert.equal(calls.length, callsBeforeApproval);
+  assert.equal(second.execution.external_request.checkpoint_hash, approval.binding_hash);
+  const boundDb = openDb(env.dbFile);
+  const boundDefinitionHash = JSON.parse(boundDb.prepare("SELECT contract_json FROM workflow_steps WHERE run_id=? AND result_schema_key='release_operation.v1'").get(first.run_id).contract_json).registered_operations[0].definition_hash;
+  const executionBinding = boundDb.prepare("SELECT operation_id,definition_hash,proposal_hash,status FROM external_operation_executions WHERE request_id=?").get(second.execution.external_request.request_id);
+  boundDb.close();
+  assert.equal(second.execution.dispatch_payload.operation.definition_hash, boundDefinitionHash);
+  assert.equal(executionBinding.operation_id, "release.prod");
+  assert.equal(executionBinding.definition_hash, boundDefinitionHash);
+  assert.equal(executionBinding.status, "pending");
+  const request = { ...second.execution.external_request, payload: second.execution.dispatch_payload };
+  const resultPacket = signedExternalResult(request, keys.privateKey, { deployed_revision: "a".repeat(40), environment: "production", marker: "RAW_EXTERNAL_RESULT" });
+  const delivered = await deliverExternalControlResult({
+    packet: resultPacket,
+    project: env.project, dbFile: env.dbFile, execute: true, gatewayCall: async request => { throw new Error(`unexpected model after external result: ${request.role}`); }, gateRunner
+  });
+  assert.equal(delivered.operation.status, "completed");
+  assert.equal(gates.length, 2, "one gate before approval and one after the external result");
+  const verified = openDb(env.dbFile);
+  assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(first.run_id).state, "completed");
+  assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflow_steps WHERE run_id=? AND step_key='external_verification' AND state='completed'").get(first.run_id).count, 1);
+  assert.equal(verified.prepare("SELECT status FROM external_operation_executions WHERE request_id=?").get(request.request_id).status, "verified");
+  const evidenceCount = verified.prepare("SELECT COUNT(*) count FROM run_evidence WHERE run_id=? AND kind='external_operation_result'").get(first.run_id).count;
+  assert.equal(JSON.stringify(verified.prepare("SELECT * FROM external_control_results WHERE request_id=?").get(request.request_id)).includes("RAW_EXTERNAL_RESULT"), false);
+  verified.close();
+  const duplicate = await deliverExternalControlResult({
+    packet: resultPacket, project: env.project, dbFile: env.dbFile, execute: true,
+    gatewayCall: async request => { throw new Error(`unexpected model after duplicate result: ${request.role}`); }, gateRunner
+  });
+  assert.equal(duplicate.control.duplicate, true);
+  assert.equal(duplicate.operation.duplicate, true);
+  const duplicateDb = openDb(env.dbFile);
+  assert.equal(duplicateDb.prepare("SELECT COUNT(*) count FROM run_evidence WHERE run_id=? AND kind='external_operation_result'").get(first.run_id).count, evidenceCount);
+  assert.equal(duplicateDb.prepare("SELECT COUNT(*) count FROM workflow_steps WHERE run_id=? AND step_key='external_verification'").get(first.run_id).count, 1);
+  duplicateDb.close();
+  const genericDb = openDb(env.dbFile);
+  const generic = createExternalControlRequest(genericDb, {
+    projectId: "project", runId: first.run_id, stepId: request.step_id, interactionId: approval.id,
+    executorId: "release.test", action: "deploy_revision", checkpointHash: approval.binding_hash,
+    payload: { operation: "not-platform-dispatched" }, idempotencyKey: `generic:${first.run_id}`
+  }).request;
+  genericDb.close();
+  await assert.rejects(() => deliverExternalControlResult({
+    packet: signedExternalResult(generic, keys.privateKey, { deployed_revision: "b".repeat(40) }),
+    project: env.project, dbFile: env.dbFile, execute: true, gateRunner
+  }), /EXTERNAL_OPERATION_RESULT_NOT_FOUND/);
   fs.rmSync(env.root, { recursive: true, force: true });
 });
 

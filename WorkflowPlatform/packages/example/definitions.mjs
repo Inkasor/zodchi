@@ -35,7 +35,7 @@ export default function definePackages(b) {
   };
   const software = composedPackage(
     coreLifecycle({
-      key: "software.web-application", version: "1.2.0", purpose: "Portable Web application workflow for bounded source and data changes, evidence-grounded API-to-UI review, incidents, access and approved release.", rolePreset: "full",
+      key: "software.web-application", version: "1.3.0", purpose: "Portable Web application workflow for bounded source and data changes, evidence-grounded API-to-UI review, incidents, access and approved release.", rolePreset: "full",
       domains: ["software"], disciplines: ["software"], checks: webChecks,
       documents: []
     }),
@@ -80,7 +80,7 @@ export default function definePackages(b) {
   };
   const oneC = composedPackage(
     coreLifecycle({
-      key: "one-c.development", version: "1.2.0", purpose: "Support-grade 1C source diagnosis, change, integration, module build, functional verification and release with external evidence boundaries.", rolePreset: "reviewed",
+      key: "one-c.development", version: "1.3.0", purpose: "Support-grade 1C source diagnosis, change, integration, module build, functional verification and release with external evidence boundaries.", rolePreset: "reviewed",
       domains: ["one-c"], disciplines: ["one-c-development"], checks: [bslCheck],
       documents: []
     }),
@@ -114,7 +114,7 @@ export default function definePackages(b) {
   };
   const unity = composedPackage(
     coreLifecycle({
-      key: "game.unity", version: "0.3.0", purpose: "Executable preview for bounded Unity design research, C# change, build and technical QA with separate visual, gameplay and owner acceptance.", rolePreset: "reviewed",
+      key: "game.unity", version: "0.4.0", purpose: "Executable preview for bounded Unity design research, C# change, build and technical QA with separate visual, gameplay and owner acceptance.", rolePreset: "reviewed",
       domains: ["game-development"], disciplines: ["software", "game_design", "technical_art", "art_direction", "testing", "release"], checks: unityChecks,
       resources: [{ alias: "unity.project", kind: "project.worktree", purpose: "Explicit single-machine Unity project runtime boundary" }],
       documents: []
@@ -150,7 +150,7 @@ export default function definePackages(b) {
   };
   const gameWeb = composedPackage(
     coreLifecycle({
-      key: "game.web", version: "0.3.0", purpose: "Executable preview for browser-game design, implementation and deterministic browser proof with separate technical and owner product acceptance.", rolePreset: "full",
+      key: "game.web", version: "0.4.0", purpose: "Executable preview for browser-game design, implementation and deterministic browser proof with separate technical and owner product acceptance.", rolePreset: "full",
       domains: ["game-development"], disciplines: ["software", "game_design", "content", "marketing"], checks: gameWebChecks,
       documents: []
     }),
@@ -186,7 +186,7 @@ export default function definePackages(b) {
   };
   const dataAnalytics = composedPackage(
     coreLifecycle({
-      key: "data.analytics", version: "0.3.0", purpose: "Executable preview for read-only data discovery, deterministic invariants and approval-bound migration preparation without persisting source rows or prompts.", rolePreset: "reviewed",
+      key: "data.analytics", version: "0.4.0", purpose: "Executable preview for read-only data discovery, deterministic invariants and approval-bound migration preparation without persisting source rows or prompts.", rolePreset: "reviewed",
       domains: ["data"], disciplines: ["data_engineering", "software", "testing"], checks: dataChecks,
       resources: [{ alias: "data.primary", kind: "db", purpose: "Registered database or isolated analytical copy" }],
       documents: []
@@ -222,7 +222,7 @@ export default function definePackages(b) {
   };
   const infra = composedPackage(
     coreLifecycle({
-      key: "infra.operations", version: "0.3.0", purpose: "Executable preview for read-only operations, incident diagnosis and approval-bound access, restore and delivery changes with redacted receipts.", rolePreset: "reviewed",
+      key: "infra.operations", version: "0.4.0", purpose: "Executable preview for read-only operations, incident diagnosis and approval-bound access, restore and delivery changes with redacted receipts.", rolePreset: "reviewed",
       domains: ["infrastructure"], disciplines: ["devops", "security", "access_administration"], checks: infraChecks,
       resources: [{ alias: "infra.target", kind: "project.worktree", purpose: "Registered infrastructure configuration and local execution boundary" }],
       documents: []
@@ -262,7 +262,7 @@ export default function definePackages(b) {
   };
   const marketing = composedPackage(
     coreLifecycle({
-      key: "marketing.content-operations", version: "0.3.0", purpose: "Executable preview for grounded research, edited content and planned-to-measured marketing activity without multiplying permanent roles or documents.", rolePreset: "full",
+      key: "marketing.content-operations", version: "0.4.0", purpose: "Executable preview for grounded research, edited content and planned-to-measured marketing activity without multiplying permanent roles or documents.", rolePreset: "full",
       domains: ["marketing", "content"], disciplines: ["marketing", "content", "documentation"], checks: marketingChecks,
       resources: [{ alias: "marketing.state", kind: "project.worktree", purpose: "Canonical project claims, content and activity-state boundary" }],
       documents: []

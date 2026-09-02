@@ -89,7 +89,24 @@ import { executeTargetedVerification } from "./targeted-verification.mjs";
 import { documentTermScore, rankTerms } from "./term-ranking.mjs";
 import { utf8Prefix } from "./utf8.mjs";
 import { openClarification, openExternalEvidenceRequest, quiesceRun } from "./interactions.mjs";
-import { currentApprovalBinding } from "./approval-binding.mjs";
+import { assertApprovalStillCurrent, currentApprovalBinding } from "./approval-binding.mjs";
+import { createExternalControlRequest, registeredExternalOperations } from "./external-control-plane.mjs";
+
+const OPERATION_RESULT_SCHEMAS = new Set(["release_operation.v1", "access_change.v1"]);
+
+function operationKindForSchema(schemaKey) {
+  if (schemaKey === "release_operation.v1") return "release";
+  if (schemaKey === "access_change.v1") return "access";
+  return null;
+}
+
+function operationCatalog(db, projectId, schemaKey) {
+  const kind = operationKindForSchema(schemaKey);
+  if (!kind) return [];
+  const operations = registeredExternalOperations(db, projectId, kind);
+  if (!operations.length) throw new Error(`EXTERNAL_OPERATION_UNAVAILABLE: ${kind}`);
+  return operations;
+}
 
 function hashFile(file) { return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"); }
 function parseJson(value, fallback) { try { return JSON.parse(value); } catch { return fallback; } }
@@ -97,7 +114,7 @@ function parseJson(value, fallback) { try { return JSON.parse(value); } catch { 
 function selectedWorkflowContract(db, projectId, workflowId) {
   const rows = db.prepare("SELECT * FROM workflow_step_templates WHERE project_id=? AND workflow_id=? ORDER BY ordinal").all(projectId, workflowId);
   if (!rows.length) return null;
-  const workerSteps = rows.filter(row => row.role_id && row.output_schema_key === "worker.v1");
+  const workerSteps = rows.filter(row => row.role_id && (row.output_schema_key === "worker.v1" || OPERATION_RESULT_SCHEMAS.has(row.output_schema_key)));
   // A step named for testing is the verification phase's own work and must not become a worker step
   // as well. That is a refinement, not a way to empty a route: a workflow whose whole purpose is to
   // run the registered checks names every step that way, and filtering left it with nothing to run.
@@ -734,18 +751,31 @@ function plannedStepResources(db, projectId, writers, step) {
   return [...aliasDeclarations(db, projectId, [{ alias: WORKTREE_ALIAS, mode: "exclusive" }]), ...declared];
 }
 
-function appendExecutionSteps(runtime, runId, projectId, plannerResult, keyPrefix = "") {
+function executionStep(runtime, projectId, level, writers, step, key, correctionCycle = null) {
+  const schema = loadRoleContract(runtime.db, projectId, step.role, level).result_schema_key;
+  const operations = operationCatalog(runtime.db, projectId, schema);
+  return {
+    ...step, key, schema, resources: plannedStepResources(runtime.db, projectId, writers, step),
+    contract: {
+      objective: step.objective, allowed_paths: step.allowed_paths, artifact_keys: step.artifact_keys, check_ids: step.check_ids,
+      ...(correctionCycle === null ? {} : { correction_cycle: correctionCycle }),
+      ...(operations.length ? { registered_operations: operations.map(item => ({ id: item.id, action: item.action, operation_kind: item.operation_kind, definition_hash: item.definition_hash })) } : {})
+    }
+  };
+}
+
+function appendExecutionSteps(runtime, runId, projectId, level, plannerResult, keyPrefix = "") {
   const writers = writingRoles(runtime.db, projectId);
   appendSteps(runtime, runId, [
-    ...plannerResult.steps.map(step => ({ ...step, key: `${keyPrefix}${step.key}`, schema: "worker.v1", resources: plannedStepResources(runtime.db, projectId, writers, step), contract: { objective: step.objective, allowed_paths: step.allowed_paths, artifact_keys: step.artifact_keys, check_ids: step.check_ids } })),
+    ...plannerResult.steps.map(step => executionStep(runtime, projectId, level, writers, step, `${keyPrefix}${step.key}`)),
     { key: `${keyPrefix}verification`, role: null, required: true, irreversible: false, max_attempts: 1, schema: "gate.v1", contract: { allowed_paths: plannerResult.allowed_paths, check_ids: plannerResult.checks } }
   ]);
 }
 
-function appendCorrectionSteps(runtime, runId, projectId, plannerResult, cycle, selectedSteps = plannerResult.steps, keyPrefix = "") {
+function appendCorrectionSteps(runtime, runId, projectId, level, plannerResult, cycle, selectedSteps = plannerResult.steps, keyPrefix = "") {
   const writers = writingRoles(runtime.db, projectId);
   appendSteps(runtime, runId, [
-    ...selectedSteps.map(step => ({ key: `${keyPrefix}correction_${cycle}_${step.key}`, role: step.role, required: true, irreversible: false, max_attempts: 1, schema: "worker.v1", resources: plannedStepResources(runtime.db, projectId, writers, step), contract: { objective: step.objective, allowed_paths: step.allowed_paths, artifact_keys: step.artifact_keys, check_ids: step.check_ids, correction_cycle: cycle } })),
+    ...selectedSteps.map(step => executionStep(runtime, projectId, level, writers, { ...step, required: true, irreversible: false, max_attempts: 1 }, `${keyPrefix}correction_${cycle}_${step.key}`, cycle)),
     { key: `${keyPrefix}verification_${cycle}`, role: null, required: true, irreversible: false, max_attempts: 1, schema: "gate.v1", contract: { allowed_paths: plannerResult.allowed_paths, check_ids: plannerResult.checks, correction_cycle: cycle } }
   ]);
 }
@@ -1145,7 +1175,7 @@ async function executeGateStep({ runtime, queue, runId, stepKey, projectRoot, le
   runtime.recordGate(runId, { ...gate, step_id: gateLease.stepId }, `project_cycle_${cycle}`, true);
   storeStepPayload(runtime.db, gateLease.stepId, { allowed_paths: plannerResult.allowed_paths, checks: plannerResult.checks, correction_cycle: cycle }, "gate.v1", gate);
   queue.complete(gateLease.token, { details: { status: gate.status, correction_cycle: cycle } });
-  runtime.setState(runId, "verifying", { reason: cycle ? `program checks completed after correction ${cycle}` : "program checks completed" });
+  if (runtime.get(runId).state !== "verifying") runtime.setState(runId, "verifying", { reason: cycle ? `program checks completed after correction ${cycle}` : "program checks completed" });
   return gate;
 }
 
@@ -1403,7 +1433,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     }
   }
   if (classification.document_required && !plan.artifacts.some(item => item.type === "document" && item.required)) throw new Error("PLAN_REQUIRED_DOCUMENT_ARTIFACT_MISSING");
-  if (!preparedPlan) appendExecutionSteps(runtime, runId, projectId, plan, stepKeyOf(""));
+  if (!preparedPlan) appendExecutionSteps(runtime, runId, projectId, level, plan, stepKeyOf(""));
   // Consent is requested only after the exact plan has been persisted. The pending worker and gate steps
   // are part of the bound checkpoint but are not enqueued, leased or executed until the owner approves
   // that hash. Resuming reads this plan instead of asking a model to produce a different one after consent.
@@ -1417,7 +1447,9 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     for (const plannedStep of selectedSteps) {
     const contract = loadRoleContract(runtime.db, projectId, plannedStep.role, level);
     const reviewGap = correctionReview ? { blockers: correctionReview.blockers ?? [], required_actions: correctionReview.required_actions ?? [], evidence_refs: correctionReview.evidence_refs ?? [] } : null;
-    const packageContract = { objective: plannedStep.objective, allowed_paths: plannedStep.allowed_paths, artifact_keys: plannedStep.artifact_keys, check_ids: plannedStep.check_ids, plan_hash: structuredHash(plan), correction_cycle: cycle, gate_failures: priorGate?.checks?.filter(check => check.required && check.status !== "passed") ?? [], review_gap: reviewGap };
+    const operationKind = operationKindForSchema(contract.result_schema_key);
+    const operations = operationCatalog(runtime.db, projectId, contract.result_schema_key);
+    const packageContract = { objective: plannedStep.objective, allowed_paths: plannedStep.allowed_paths, artifact_keys: plannedStep.artifact_keys, check_ids: plannedStep.check_ids, plan_hash: structuredHash(plan), correction_cycle: cycle, gate_failures: priorGate?.checks?.filter(check => check.required && check.status !== "passed") ?? [], review_gap: reviewGap, ...(operationKind ? { registered_operations: operations.map(item => ({ id: item.id, action: item.action, operation_kind: item.operation_kind, definition_hash: item.definition_hash })) } : {}) };
     // A planner commonly shortens the worker objective and leaves exact paths, identifiers or line
     // ranges in the original request and its evidence inputs. Source selection needs that complete
     // search intent even though the worker's authority remains the narrower package contract.
@@ -1446,7 +1478,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     let probeContext;
     for (let pass = 0; pass < 4; pass += 1) {
       probeContext = makeContext(sourceBudget, 0);
-      const measured = Buffer.byteLength(rolePrompt({ contract, qualityContract, packageContract, context: probeContext, resultSchema: "worker.v1" }));
+      const measured = Buffer.byteLength(rolePrompt({ contract, qualityContract, packageContract, context: probeContext, resultSchema: contract.result_schema_key }));
       if (measured <= contract.context_limit_bytes) break;
       sourceBudget = Math.max(0, sourceBudget - (measured - contract.context_limit_bytes) - 512);
     }
@@ -1457,10 +1489,20 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       files: (workerContext.sources?.files ?? []).map(file => ({ path: file.path, segments: file.segments, exact_term_scan: file.exact_term_scan, supplied_bytes: file.supplied_bytes, text: file.text }))
     });
     let worker;
-    try { worker = await invokeRole({ runtime, queue, runId, roleId: plannedStep.role, level, taskRoot, packageContract, context: workerContext, schemaKey: "worker.v1", parseOptions: { packageContract }, gatewayCall }); }
+    try { worker = await invokeRole({ runtime, queue, runId, roleId: plannedStep.role, level, taskRoot, packageContract, context: workerContext, schemaKey: contract.result_schema_key, parseOptions: operationKind ? { allowedOperationIds: operations.map(item => item.id) } : { packageContract }, gatewayCall }); }
     catch (error) {
       if (error.code === "RUN_CANCELLED" || error.message === "RUN_CANCELLED") return { stopped: { status: "cancelled", planner: plan, workers: [...workerResults, ...cycleResults], gate: priorGate, reviewer: null } };
       throw error;
+    }
+    if (operationKind) {
+      const decisionId = id("decision");
+      runtime.db.prepare("UPDATE decisions SET active=0 WHERE run_id=? AND kind='external_operation_proposal'").run(runId);
+      runtime.db.prepare("INSERT INTO decisions(id,task_id,run_id,step_id,kind,outcome,source,structured_json,active,created_at) VALUES(?,?,?,?, 'external_operation_proposal','PROPOSED',?, ?,1,?)")
+        .run(decisionId, runtime.get(runId).task_id, runId, worker.step.id, plannedStep.role, JSON.stringify(worker.result), now());
+      runtime.db.prepare("UPDATE gateway_calls SET decision_ref=? WHERE run_id=? AND step_id=?").run(decisionId, runId, worker.step.id);
+      worker.complete({ status: "proposed", operation_id: worker.result.operation_id, decision_id: decisionId });
+      cycleResults.push({ ...worker.result, correction_cycle: cycle, plan_step: plannedStep.key, decision_id: decisionId });
+      continue;
     }
     if (worker.result.status !== "completed") {
       worker.fail(`worker_${worker.result.status}`, worker.result.status === "failed");
@@ -1554,7 +1596,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
       }
       consumeExecutionCorrection(runtime, runId, correctionCycles, policy);
       recordRunEvidence(runtime.db, runId, null, "correction_routing", { ...routing, progress_kind: "gate", semantic_gap_fingerprint: progress.latest?.semantic_fingerprint ?? progress.latest?.primary_gap_fingerprint ?? null, route_keys: selected.map(step => step.key), packet_hash_before: progress.latest?.packet_hash ?? null, semantic_fingerprint_before: progress.latest?.semantic_fingerprint ?? null, frontier_fingerprint_before: progress.latest?.frontier_fingerprint ?? null });
-      appendCorrectionSteps(runtime, runId, projectId, plan, correctionCycles, selected, stepKeyOf(""));
+      appendCorrectionSteps(runtime, runId, projectId, level, plan, correctionCycles, selected, stepKeyOf(""));
       queue.enqueueRun(runId);
       runtime.db.prepare("UPDATE workflow_runs SET cycle=?,updated_at=? WHERE id=?").run(correctionCycles, now(), runId);
       runtime.setState(runId, "executing", { reason: `targeted correction ${correctionCycles}: ${selected.map(step => step.key).join(",")}` });
@@ -1635,7 +1677,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     }
     consumeExecutionCorrection(runtime, runId, correctionCycles, policy);
     recordRunEvidence(runtime.db, runId, null, "correction_routing", { ...routing, progress_kind: "semantic_review", semantic_gap_fingerprint: progress.latest?.semantic_fingerprint ?? progress.latest?.primary_gap_fingerprint ?? null, route_keys: selected.map(step => step.key), packet_hash_before: progress.latest?.packet_hash ?? null, semantic_fingerprint_before: progress.latest?.semantic_fingerprint ?? null, frontier_fingerprint_before: progress.latest?.frontier_fingerprint ?? null });
-    appendCorrectionSteps(runtime, runId, projectId, plan, correctionCycles, selected, stepKeyOf(""));
+    appendCorrectionSteps(runtime, runId, projectId, level, plan, correctionCycles, selected, stepKeyOf(""));
     queue.enqueueRun(runId);
     runtime.db.prepare("UPDATE workflow_runs SET cycle=?,updated_at=? WHERE id=?").run(correctionCycles, now(), runId);
     runtime.setState(runId, "executing", { reason: `review-gap correction ${correctionCycles}: ${selected.map(step => step.key).join(",")}` });
@@ -1706,7 +1748,7 @@ async function documentAndComplete({ runtime, queue, runId, projectId, projectRo
 export function recordedRunResults(db, runId) {
   const row = db.prepare("SELECT * FROM plans WHERE run_id=?").get(runId);
   if (!row) throw new Error(`RUN_HAS_NO_PLAN: ${runId}`);
-  const steps = db.prepare("SELECT * FROM workflow_steps WHERE run_id=? AND result_schema_key='worker.v1' ORDER BY ordinal").all(runId);
+  const steps = db.prepare("SELECT * FROM workflow_steps WHERE run_id=? AND result_schema_key IN ('worker.v1','release_operation.v1','access_change.v1') ORDER BY ordinal").all(runId);
   const planned = steps.filter(step => !step.step_key.startsWith("correction_"));
   if (!planned.length) throw new Error(`RUN_HAS_NO_EXECUTED_STEPS: ${runId}`);
   const storedSteps = parseJson(row.steps_json, []);
@@ -1738,20 +1780,152 @@ export function recordedRunResults(db, runId) {
   };
 }
 
+function activeOperationProposal(db, runId) {
+  const rows = db.prepare(`SELECT d.step_id,d.structured_json,ws.result_schema_key,ws.contract_json,ws.result_json
+    FROM decisions d JOIN workflow_steps ws ON ws.id=d.step_id
+    WHERE d.run_id=? AND d.kind='external_operation_proposal' AND d.active=1 AND d.outcome='PROPOSED' AND ws.state='completed'
+    ORDER BY d.created_at DESC,d.id DESC`).all(runId);
+  if (rows.length !== 1) throw new Error(`EXTERNAL_OPERATION_PROPOSAL_COUNT_INVALID: ${rows.length}`);
+  const row = rows[0], proposal = parseJson(row.structured_json, null), stored = parseJson(row.result_json, null);
+  if (!proposal || structuredHash(proposal) !== structuredHash(stored)) throw new Error("EXTERNAL_OPERATION_PROPOSAL_RECORD_INVALID");
+  const kind = operationKindForSchema(row.result_schema_key);
+  if (!kind) throw new Error(`EXTERNAL_OPERATION_SCHEMA_INVALID: ${row.result_schema_key}`);
+  return { step_id: row.step_id, schema_key: row.result_schema_key, operation_kind: kind, proposal, contract: parseJson(row.contract_json, {}) };
+}
+
+function dispatchApprovedExternalOperation(runtime, runId, approvalId) {
+  if (!approvalId) throw new Error("EXTERNAL_OPERATION_APPROVAL_REQUIRED");
+  const approval = runtime.db.prepare("SELECT id,run_id,kind,status,binding_hash FROM approvals WHERE id=?").get(approvalId);
+  if (!approval || approval.run_id !== runId || approval.kind !== "workflow_approval" || approval.status !== "approved") throw new Error("EXTERNAL_OPERATION_APPROVAL_INVALID");
+  const binding = assertApprovalStillCurrent(runtime.db, approvalId);
+  if (binding.hash !== approval.binding_hash) throw new Error("EXTERNAL_OPERATION_APPROVAL_HASH_MISMATCH");
+  const selected = activeOperationProposal(runtime.db, runId);
+  const operation = registeredExternalOperations(runtime.db, runtime.get(runId).project_id, selected.operation_kind).find(item => item.id === selected.proposal.operation_id);
+  if (!operation) throw new Error(`EXTERNAL_OPERATION_NOT_REGISTERED: ${selected.proposal.operation_id}`);
+  const bound = (selected.contract.registered_operations ?? []).find(item => item.id === operation.id);
+  if (!bound || bound.definition_hash !== operation.definition_hash) throw new Error(`EXTERNAL_OPERATION_DEFINITION_CHANGED: ${operation.id}`);
+  const payload = {
+    schema_version: 1,
+    operation: { id: operation.id, kind: operation.operation_kind, action: operation.action, config: operation.config, definition_hash: operation.definition_hash },
+    proposal: selected.proposal,
+    approval: { interaction_id: approval.id, binding_hash: binding.hash }
+  };
+  let dispatched;
+  runtime.db.exec("BEGIN IMMEDIATE");
+  try {
+    dispatched = createExternalControlRequest(runtime.db, {
+      projectId: runtime.get(runId).project_id, runId, stepId: selected.step_id, interactionId: approval.id,
+      executorId: operation.executor_id, action: operation.action, checkpointHash: binding.hash, payload,
+      payloadRef: `workflow-step://${selected.step_id}/result`,
+      idempotencyKey: `external-operation:${runId}:${selected.step_id}:${approval.id}:${binding.hash}`
+    });
+    const execution = {
+      request_id: dispatched.request.request_id, project_id: runtime.get(runId).project_id, run_id: runId,
+      step_id: selected.step_id, approval_id: approval.id, operation_id: operation.id, operation_kind: selected.operation_kind,
+      definition_hash: operation.definition_hash, proposal_hash: structuredHash(selected.proposal)
+    };
+    runtime.db.prepare(`INSERT INTO external_operation_executions(request_id,project_id,run_id,step_id,approval_id,operation_id,operation_kind,definition_hash,proposal_hash,status,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,'pending',?,?) ON CONFLICT(request_id) DO NOTHING`)
+      .run(execution.request_id, execution.project_id, execution.run_id, execution.step_id, execution.approval_id, execution.operation_id, execution.operation_kind, execution.definition_hash, execution.proposal_hash, now(), now());
+    const recordedExecution = runtime.db.prepare("SELECT request_id,project_id,run_id,step_id,approval_id,operation_id,operation_kind,definition_hash,proposal_hash FROM external_operation_executions WHERE request_id=?").get(execution.request_id);
+    if (structuredHash(recordedExecution) !== structuredHash(execution)) throw new Error("EXTERNAL_OPERATION_EXECUTION_BINDING_CONFLICT");
+    runtime.setState(runId, "blocked", { reason: `waiting for signed result from approved external ${selected.operation_kind} operation` });
+    runtime.db.exec("COMMIT");
+  } catch (error) {
+    if (runtime.db.isTransaction) runtime.db.exec("ROLLBACK");
+    throw error;
+  }
+  const request = { ...dispatched.request };
+  delete request.payload;
+  return { status: "external_action_required", operation_kind: selected.operation_kind, operation_id: operation.id, external_request: request, dispatch_payload: dispatched.request.payload };
+}
+
 // Continuing a run whose decision followed its work runs only what the decision was blocking. The
 // alternative was to re-enter the run from its objective, which would repeat every completed step, so
 // this path deliberately never touches the worker, verification or review phases again.
-export async function continueApprovedRun({ runtime, runId, discovery, responseLanguage = "en", taskRoot, gatewayCall }) {
+export async function continueApprovedRun({ runtime, runId, approvalId = null, discovery, responseLanguage = "en", taskRoot, gatewayCall }) {
   const { classification } = pausedRunObjective(runtime.db, runId);
   const recorded = recordedRunResults(runtime.db, runId);
   const level = operationalLevel(classification.quality_mode);
   const projectId = runtime.get(runId).project_id;
   const routeContract = selectedWorkflowContract(runtime.db, projectId, runtime.get(runId).workflow_id);
   const policy = runOperationalPolicy(runtime, runId, projectId, runtime.get(runId).workflow_id, level);
+  if (runtime.db.prepare("SELECT 1 FROM decisions WHERE run_id=? AND kind='external_operation_proposal' AND active=1 AND outcome='PROPOSED'").get(runId)) {
+    return { ...dispatchApprovedExternalOperation(runtime, runId, approvalId), planner: recorded.plan, workers: recorded.workers, gate: recorded.gate, reviewer: recorded.reviewer };
+  }
   return documentAndComplete({
     runtime, queue: new ExecutionQueue(runtime.db), runId, projectId, projectRoot: discovery.project.root_path, level, classification, discovery, responseLanguage, taskRoot, gatewayCall, policy,
     plan: recorded.plan, gate: recorded.gate, reviewerResult: recorded.reviewer, documentatorRole: routeContract?.documentator_role ?? "documentator",
     correctionCycles: recorded.correction_cycles, workerResults: recorded.workers,
     reviewRequirement: { required: Boolean(recorded.reviewer), reason: recorded.reviewer ? "review recorded before the owner decision" : "not required" }
+  });
+}
+
+export async function continueExternalOperationResult({ runtime, accepted, discovery, responseLanguage = "en", taskRoot, gatewayCall, gateRunner = runProjectGate }) {
+  const request = runtime.db.prepare(`SELECT q.*,r.payload_hash AS result_payload_hash,r.result_hash,
+      x.approval_id,x.operation_id,x.operation_kind,x.definition_hash,x.proposal_hash,x.status AS execution_status
+    FROM external_control_requests q
+    JOIN external_control_results r ON r.request_id=q.id
+    JOIN external_operation_executions x ON x.request_id=q.id
+    WHERE q.id=?`).get(accepted.request_id);
+  if (!request) throw new Error(`EXTERNAL_OPERATION_RESULT_NOT_FOUND: ${accepted.request_id}`);
+  const approval = runtime.db.prepare("SELECT id,kind,status,binding_hash FROM approvals WHERE id=? AND run_id=?").get(request.interaction_id, request.run_id);
+  if (!approval || approval.kind !== "workflow_approval" || approval.status !== "approved" || approval.binding_hash !== request.checkpoint_hash) throw new Error("EXTERNAL_OPERATION_RESULT_APPROVAL_INVALID");
+  const selected = activeOperationProposal(runtime.db, request.run_id);
+  const bound = (selected.contract.registered_operations ?? []).find(item => item.id === request.operation_id);
+  if (selected.step_id !== request.step_id || selected.operation_kind !== request.operation_kind || selected.proposal.operation_id !== request.operation_id ||
+      structuredHash(selected.proposal) !== request.proposal_hash || !bound || bound.definition_hash !== request.definition_hash ||
+      bound.action !== request.action || request.approval_id !== approval.id) throw new Error("EXTERNAL_OPERATION_RESULT_BINDING_INVALID");
+  const evidence = {
+    request_id: request.id, request_hash: request.request_hash, result_hash: request.result_hash, payload_hash: request.result_payload_hash,
+    executor_id: request.executor_id, action: request.action, checkpoint_hash: request.checkpoint_hash, status: accepted.status
+  };
+  if (!runtime.db.prepare("SELECT 1 FROM run_evidence WHERE run_id=? AND step_id=? AND kind='external_operation_result' AND evidence_json=?").get(request.run_id, request.step_id, JSON.stringify(evidence))) {
+    recordRunEvidence(runtime.db, request.run_id, request.step_id, "external_operation_result", evidence);
+  }
+  if (accepted.status === "failed") {
+    runtime.db.prepare("UPDATE external_operation_executions SET status='failed',result_hash=?,updated_at=? WHERE request_id=?").run(request.result_hash, now(), request.id);
+    if (runtime.get(request.run_id).state === "failed") return { status: "failed", duplicate: true, external_request_id: request.id, external_result_hash: request.result_hash };
+    runtime.setState(request.run_id, "failed", { reason: "registered external operation failed" });
+    return { status: "failed", external_request_id: request.id, external_result_hash: request.result_hash };
+  }
+  if (accepted.status === "cancelled") {
+    runtime.db.prepare("UPDATE external_operation_executions SET status='cancelled',result_hash=?,updated_at=? WHERE request_id=?").run(request.result_hash, now(), request.id);
+    if (runtime.get(request.run_id).state === "cancelled") return { status: "cancelled", duplicate: true, external_request_id: request.id, external_result_hash: request.result_hash };
+    runtime.setState(request.run_id, "cancelled", { reason: "registered external operation was cancelled" });
+    return { status: "cancelled", external_request_id: request.id, external_result_hash: request.result_hash };
+  }
+  runtime.db.prepare("UPDATE external_operation_executions SET status=CASE WHEN status='pending' THEN 'result_received' ELSE status END,result_hash=?,updated_at=? WHERE request_id=?").run(request.result_hash, now(), request.id);
+  if (request.execution_status === "verified" && runtime.get(request.run_id).state === "completed") return { status: "completed", duplicate: true, external_request_id: request.id, external_result_hash: request.result_hash };
+  if (request.execution_status === "verification_failed") return { status: "blocked", duplicate: true, external_request_id: request.id, external_result_hash: request.result_hash };
+  if (runtime.get(request.run_id).state !== "blocked") {
+    if (runtime.get(request.run_id).state === "completed") return { status: "completed", duplicate: true, external_request_id: request.id, external_result_hash: request.result_hash };
+    throw new Error(`EXTERNAL_OPERATION_RUN_STATE_INVALID: ${runtime.get(request.run_id).state}`);
+  }
+  assertApprovalStillCurrent(runtime.db, approval.id);
+  const { classification } = pausedRunObjective(runtime.db, request.run_id);
+  const recorded = recordedRunResults(runtime.db, request.run_id);
+  const level = operationalLevel(classification.quality_mode), projectId = runtime.get(request.run_id).project_id;
+  const routeContract = selectedWorkflowContract(runtime.db, projectId, runtime.get(request.run_id).workflow_id);
+  const policy = runOperationalPolicy(runtime, request.run_id, projectId, runtime.get(request.run_id).workflow_id, level);
+  appendSteps(runtime, request.run_id, [{
+    key: "external_verification", role: null, required: true, irreversible: false, max_attempts: 1, schema: "gate.v1",
+    contract: { allowed_paths: recorded.plan.allowed_paths, check_ids: recorded.plan.checks, external_request_id: request.id, external_result_hash: request.result_hash }
+  }]);
+  const queue = new ExecutionQueue(runtime.db);
+  runtime.setState(request.run_id, "verifying", { reason: "registered external operation completed; deterministic verification started" });
+  queue.enqueueRun(request.run_id);
+  const gate = await executeGateStep({ runtime, queue, runId: request.run_id, stepKey: "external_verification", projectRoot: discovery.project.root_path, level, plannerResult: recorded.plan, classification, gateRunner, cycle: "external" });
+  if (gate.status !== "passed") {
+    runtime.db.prepare("UPDATE external_operation_executions SET status='verification_failed',updated_at=? WHERE request_id=?").run(now(), request.id);
+    runtime.setState(request.run_id, "blocked", { reason: `external operation verification ${gate.status}` });
+    return { status: "blocked", external_request_id: request.id, external_result_hash: request.result_hash, gate };
+  }
+  runtime.db.prepare("UPDATE external_operation_executions SET status='verified',updated_at=? WHERE request_id=?").run(now(), request.id);
+  return documentAndComplete({
+    runtime, queue, runId: request.run_id, projectId, projectRoot: discovery.project.root_path, level, classification, discovery, responseLanguage, taskRoot, gatewayCall, policy,
+    plan: recorded.plan, gate, reviewerResult: recorded.reviewer, documentatorRole: routeContract?.documentator_role ?? "documentator",
+    correctionCycles: recorded.correction_cycles, workerResults: recorded.workers,
+    reviewRequirement: { required: Boolean(recorded.reviewer), reason: recorded.reviewer ? "review recorded before owner approval and external execution" : "not required" }
   });
 }

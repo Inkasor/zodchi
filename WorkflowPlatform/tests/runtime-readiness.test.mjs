@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +10,7 @@ import { processMessage as scopedProcessMessage } from "../src/workflow-app.mjs"
 
 const statelessProcessMessage = input => scopedProcessMessage({ semanticScope: { mode: "stateless" }, ...input });
 import { projectRuntimeReadiness, workflowRuntimeReadiness } from "../src/runtime-readiness.mjs";
+import { registerExternalExecutor, registerExternalOperation } from "../src/external-control-plane.mjs";
 
 const compatibleProfileCheck = requirements => ({ status: "compatible", checks: requirements, conflicts: [] });
 
@@ -90,6 +92,28 @@ test("runtime readiness isolates an incompatible profile to the selected workflo
   assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM workflow_runs").get().count, 1);
   assert.equal(verified.prepare("SELECT state FROM workflow_runs").get().state, "failed");
   verified.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("an operator route is unavailable until its deterministic external operation is registered", () => {
+  const { root, db } = fixture();
+  db.prepare("INSERT INTO roles(id,name) VALUES('release_operator','Release operator')").run();
+  db.prepare("INSERT INTO profiles(id,provider,name,role_id) VALUES('release-profile','codex','release-profile','release_operator')").run();
+  db.prepare("INSERT INTO role_profile_assignments(project_id,role_id,profile_id,operational_level,enabled) VALUES('project','release_operator','release-profile','mvp',1)").run();
+  db.prepare(`INSERT INTO role_contracts(id,project_id,role_id,version,purpose,boundaries_json,allowed_work_types_json,allowed_artifact_types_json,allowed_tools_json,allowed_skills_json,required_checks_json,allowed_transitions_json,allowed_profiles_json,context_limit_bytes,max_calls,max_correction_cycles,timeout_seconds,result_schema_key,prompt_template_version,escalation_json,status)
+    VALUES('release-contract','project','release_operator','1','proposal','{"writes":false}','["release"]','["release_package"]','[]','[]','[]','[]','[]',65536,1,0,60,'release_operation.v1','1','{}','active')`).run();
+  db.prepare(`INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json)
+    VALUES('project','workflow','proposal',1,'release_operator',1,0,'package.v1','release_operation.v1','["release_package"]','[]','{}','{}')`).run();
+  let readiness = workflowRuntimeReadiness(db, "project", "workflow", "mvp", { profileCheck: compatibleProfileCheck });
+  assert.equal(readiness.status, "unavailable");
+  assert.deepEqual(readiness.external_operations.missing, ["release"]);
+  const keys = crypto.generateKeyPairSync("ed25519");
+  registerExternalExecutor(db, { projectId: "project", executorId: "release.test", publicKeyPem: keys.publicKey.export({ type: "spki", format: "pem" }), keyId: "release-key-v1" });
+  registerExternalOperation(db, { projectId: "project", operationId: "release.prod", executorId: "release.test", operationKind: "release", action: "deploy_revision" });
+  readiness = workflowRuntimeReadiness(db, "project", "workflow", "mvp", { profileCheck: compatibleProfileCheck });
+  assert.equal(readiness.status, "ready");
+  assert.equal(readiness.external_operations.available.release, 1);
+  db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
 

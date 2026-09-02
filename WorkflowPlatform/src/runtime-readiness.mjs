@@ -38,7 +38,19 @@ function readinessReasons(readiness) {
   if (readiness.missing_role_assignments.length) reasons.push(`missing ${readiness.missing_role_assignments.join(",")}`);
   for (const conflict of readiness.profile_write_requirements.conflicts ?? []) reasons.push(`${conflict.code}: role=${conflict.role}; profile=${conflict.profile}`);
   if (readiness.profile_write_requirements.status === "unavailable") reasons.push(`${readiness.profile_write_requirements.reason}: ${readiness.profile_write_requirements.message}`);
+  for (const kind of readiness.external_operations?.missing ?? []) reasons.push(`missing registered external ${kind} operation`);
   return reasons;
+}
+
+function workflowExternalOperations(db, projectId, workflowId) {
+  const schemas = db.prepare(`SELECT DISTINCT output_schema_key FROM workflow_step_templates
+    WHERE project_id=? AND workflow_id=? AND output_schema_key IN ('release_operation.v1','access_change.v1')`).all(projectId, workflowId).map(row => row.output_schema_key);
+  const required = schemas.map(schema => schema === "release_operation.v1" ? "release" : "access");
+  const available = Object.fromEntries(required.map(kind => [kind, db.prepare(`SELECT COUNT(*) count FROM external_operation_definitions o
+    JOIN external_executors e ON e.project_id=o.project_id AND e.id=o.executor_id
+    WHERE o.project_id=? AND o.operation_kind=? AND o.active=1 AND e.active=1`).get(projectId, kind).count]));
+  const missing = required.filter(kind => !available[kind]);
+  return { status: missing.length ? "unavailable" : required.length ? "configured" : "not_required", required, available, missing };
 }
 
 export function projectRuntimeReadiness(db, projectId, { profileCheck = profileCheckDefault } = {}) {
@@ -93,14 +105,16 @@ export function workflowRuntimeReadiness(db, projectId, workflowId, operationalL
   const missing = roleIds.filter(roleId => !assignments.some(item => item.role_id === roleId));
   const requirements = assignments.map(item => requirement(item, DIRECT_RUNTIME_ROLES.includes(item.role_id)));
   const profileRequirements = inspectRequirements(profileCheck, requirements, missing, "workflow_role_assignments_missing");
+  const externalOperations = workflowExternalOperations(db, projectId, workflowId);
   return {
-    status: missing.length || profileRequirements.status !== "compatible" ? "unavailable" : "ready",
+    status: missing.length || profileRequirements.status !== "compatible" || externalOperations.status === "unavailable" ? "unavailable" : "ready",
     project_id: projectId,
     workflow: { id: workflow.id, name: workflow.name },
     operational_level: operationalLevel,
     required_roles: roleIds,
     missing_role_assignments: missing,
-    profile_write_requirements: profileRequirements
+    profile_write_requirements: profileRequirements,
+    external_operations: externalOperations
   };
 }
 

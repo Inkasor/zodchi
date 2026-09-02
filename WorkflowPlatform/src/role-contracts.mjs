@@ -5,7 +5,7 @@ import { renderQualityContract, validateQualityContract } from "./quality-contra
 import { languageName, normalizeLanguage } from "./language.mjs";
 import { validateEvidenceContract } from "./interactions.mjs";
 
-const RESULT_SCHEMAS = new Set(["planner.v1", "worker.v1", "reviewer.v1", "judge.v1", "strategy_review.v1", "documentator.v1"]);
+const RESULT_SCHEMAS = new Set(["planner.v1", "worker.v1", "reviewer.v1", "judge.v1", "strategy_review.v1", "documentator.v1", "release_operation.v1", "access_change.v1"]);
 
 // The validator accepts an exact field set, so the prompt has to state that set. Naming the schema and
 // leaving the fields unsaid asks the model to guess a shape that is then rejected for guessing wrong.
@@ -68,6 +68,16 @@ export const RESULT_SCHEMA_SHAPES = Object.freeze({
     authority: "non-empty string",
     content: "string or null", section_id: "string or null", decision_id: "string or null", evidence_id: "string or null",
     status_value: "string or null", target_tag: "string or null", target_id: "string or null", replacement_id: "string or null"
+  }),
+  "release_operation.v1": Object.freeze({
+    schema_version: 1, status: "proposed", operation_id: "registered external release operation id",
+    target_revision: "non-empty immutable revision", target_environment: "non-empty registered deployment target",
+    artifact_refs: ["string"], evidence_refs: ["string"], summary: "non-empty string"
+  }),
+  "access_change.v1": Object.freeze({
+    schema_version: 1, status: "proposed", operation_id: "registered external access operation id",
+    subject: "non-empty identity", resource: "non-empty registered resource", grant: ["permission"], revoke: ["permission"],
+    expires_at: "ISO timestamp or null", evidence_refs: ["string"], summary: "non-empty string"
   })
 });
 
@@ -340,6 +350,31 @@ export function validateDocumentatorResult(value, { allowedDocumentIds }) {
   return value;
 }
 
+function validateOperationId(value, allowedOperationIds, schema) {
+  if (typeof value !== "string" || !value || !allowedOperationIds.includes(value)) throw new Error(`${schema}: operation not registered`);
+}
+
+export function validateReleaseOperationResult(value, { allowedOperationIds = [] } = {}) {
+  exactObject(value, schemaFields("release_operation.v1"), "release_operation.v1");
+  if (value.schema_version !== 1 || value.status !== "proposed") throw new Error("release_operation.v1: invalid version or status");
+  validateOperationId(value.operation_id, allowedOperationIds, "release_operation.v1");
+  for (const field of ["target_revision", "target_environment", "summary"]) if (typeof value[field] !== "string" || !value[field].trim()) throw new Error(`release_operation.v1: ${field} required`);
+  strings(value.artifact_refs, "release_operation.v1.artifact_refs");
+  strings(value.evidence_refs, "release_operation.v1.evidence_refs");
+  return value;
+}
+
+export function validateAccessChangeResult(value, { allowedOperationIds = [] } = {}) {
+  exactObject(value, schemaFields("access_change.v1"), "access_change.v1");
+  if (value.schema_version !== 1 || value.status !== "proposed") throw new Error("access_change.v1: invalid version or status");
+  validateOperationId(value.operation_id, allowedOperationIds, "access_change.v1");
+  for (const field of ["subject", "resource", "summary"]) if (typeof value[field] !== "string" || !value[field].trim()) throw new Error(`access_change.v1: ${field} required`);
+  strings(value.grant, "access_change.v1.grant"); strings(value.revoke, "access_change.v1.revoke"); strings(value.evidence_refs, "access_change.v1.evidence_refs");
+  if (!value.grant.length && !value.revoke.length) throw new Error("access_change.v1: empty permission delta");
+  if (value.expires_at !== null && !Number.isFinite(Date.parse(value.expires_at))) throw new Error("access_change.v1: invalid expires_at");
+  return value;
+}
+
 export function parseRoleReceipt(receipt, schemaKey, options) {
   const value = receiptObject(receipt);
   if (schemaKey === "planner.v1") return validatePlannerResult(value, options);
@@ -348,5 +383,7 @@ export function parseRoleReceipt(receipt, schemaKey, options) {
   if (schemaKey === "judge.v1") return validateJudgeResult(value, options);
   if (schemaKey === "strategy_review.v1") return validateStrategyReviewResult(value, options);
   if (schemaKey === "documentator.v1") return validateDocumentatorResult(value, options);
+  if (schemaKey === "release_operation.v1") return validateReleaseOperationResult(value, options);
+  if (schemaKey === "access_change.v1") return validateAccessChangeResult(value, options);
   throw new Error(`ROLE_RESULT_SCHEMA_UNKNOWN: ${schemaKey}`);
 }
