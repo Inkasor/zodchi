@@ -437,8 +437,16 @@ export function searchSources(roots, scope, terms, { maxFiles = 40, maxMatchesPe
   // considered. Terms keep their request-derived order, so an exact avgCost match outranks a generic
   // identifier harvested later from project prose.
   const priority = file => Math.min(...file.matches.map(match => termPriority.get(match.term) ?? terms.length));
-  const affinityTerms = indexedTerms.length ? indexedTerms : terms;
-  const pathAffinity = file => preferSourceCode ? affinityTerms.filter(term => file.path.toLowerCase().includes(String(term).toLowerCase())).length : 0;
+  const affinityTerms = [...new Set((indexedTerms.length ? indexedTerms : terms).map(term => String(term).toLowerCase()))];
+  const pathAffinity = file => {
+    if (!preferSourceCode) return 0;
+    const basename = path.basename(file.path).toLowerCase();
+    const matches = affinityTerms.filter(term => basename.includes(term)).length;
+    // One accidental word in a filename is weak evidence. Two independently harvested corpus terms
+    // in the same basename form a measurable phrase-level bridge (external + control, state + machine)
+    // and may influence ranking without letting a generic name such as approval dominate by itself.
+    return matches >= 2 ? matches : 0;
+  };
   const implementationAffinity = file => {
     if (!preferSourceCode) return 0;
     const normalized = `/${file.path.toLowerCase().replaceAll("\\", "/")}`;
@@ -516,7 +524,7 @@ export function expandTerms(roots, scope, message, options = {}) {
       cross_language: !isSourceCodePath(file.path)
     })))
     .filter(lines => lines.length);
-  const harvested = harvestIdentifiers(hitsByFile, [...prose, ...stems], options.identifierTerms ?? 16, subject);
+  const harvested = harvestIdentifiers(hitsByFile, [...prose, ...stems], options.identifierTerms ?? 32, subject);
   return { code, prose, subject, harvested, terms: [...new Set([...code, ...harvested])] };
 }
 
