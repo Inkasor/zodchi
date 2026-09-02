@@ -65,7 +65,14 @@ if (resultSchema === "strategy_review.v1") {
     reason: "The acceptance scenario explicitly names a route from the package imported into its isolated registry."
   });
 } else if (role === "researcher") {
-  result = { schema_version: 1, status: "insufficient", answer: "Зарегистрированный корпус проверен в read-only режиме; файлов для содержательного ответа недостаточно, worker и reviewer не запускались.", inspected_paths: [], limitations: ["В acceptance-фикстуре нет исходников, необходимых для содержательного ответа."] };
+  const decoded = unescapeXml(input);
+  const corpusText = decoded.match(/REGISTERED_PROJECT_CORPUS:(\{.*\})\r?\nRESOLVED_OBJECTIVE:/)?.[1] ?? null;
+  let corpus = null;
+  try { corpus = corpusText ? JSON.parse(corpusText) : null; } catch { /* malformed corpus remains insufficient */ }
+  const inspectedPath = corpus?.files?.find(item => typeof item?.path === "string")?.path ?? null;
+  result = inspectedPath
+    ? { schema_version: 1, status: "answered", answer: "Зарегистрированный корпус проверен в read-only режиме; один реальный путь подтверждает доступ исследователя, worker и reviewer не запускались.", inspected_paths: [inspectedPath], limitations: [] }
+    : { schema_version: 1, status: "insufficient", answer: "Зарегистрированный корпус проверен в read-only режиме; файлов для содержательного ответа недостаточно, worker и reviewer не запускались.", inspected_paths: [], limitations: ["В acceptance-фикстуре нет исходников, необходимых для содержательного ответа."] };
 } else if (resultSchema === "planner.v1" || (!resultSchema && role === "planner")) {
   const contract = contractEnvelope(), checks = contract?.package?.registered_checks ?? [];
   // The step's role has to come from the package being planned. Naming a fixed role here made the
