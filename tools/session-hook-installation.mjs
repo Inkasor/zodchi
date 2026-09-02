@@ -12,7 +12,7 @@ const markerFor = file => path.join(path.dirname(file), ".zodchi-session-hooks.j
 
 export function defaultSessionHookFiles(home = os.homedir()) {
   const root = path.resolve(home);
-  return Object.freeze({ codex: path.join(root, ".codex", "hooks.json"), "claude-code": path.join(root, ".claude", "settings.json"), cursor: path.join(root, ".cursor", "hooks.json") });
+  return Object.freeze({ codex: path.join(root, ".codex", "hooks.json"), "claude-code": path.join(root, ".claude", "settings.json") });
 }
 
 function readJson(file) { return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null; }

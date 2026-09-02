@@ -104,6 +104,21 @@ test("install tolerates an unmigrated database and update preserves its register
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test("an explicitly selected preview host stays selected through update and uninstall", () => {
+  const root = temporaryRoot(), sourceA = release(path.join(root, "a"), "0.6.11"), sourceB = release(path.join(root, "b"), "0.6.12");
+  const destination = path.join(root, "installed"), dataRoot = path.join(root, "data"), roots = skillRoots(root);
+  const hooks = { ...sessionHookFiles(root), cursor: path.join(root, "hooks-cursor", "hooks.json") };
+  const healthCheck = candidate => assert.equal(fs.existsSync(path.join(candidate, "release-marker.txt")), true);
+  try {
+    const installed = installRelease({ source: sourceA, destination, dataRoot, skillRoots: roots, sessionHookFiles: hooks, healthCheck });
+    assert.equal(installed.session_hooks.some(item => item.client === "cursor"), true);
+    const updated = installRelease({ source: sourceB, destination, dataRoot, skillRoots: roots, healthCheck });
+    assert.equal(updated.session_hooks.some(item => item.client === "cursor"), true);
+    const uninstalled = uninstallRelease({ destination, dataRoot, skillRoots: roots });
+    assert.equal(uninstalled.session_hooks.find(item => item.client === "cursor")?.status, "removed");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("update removes owned legacy hooks, refreshes skills, rollback keeps hooks absent and preserves data", () => {
   const root = temporaryRoot(), sourceA = release(path.join(root, "a"), "0.5.24"), sourceB = release(path.join(root, "b"), "0.6.0-rc.1"), destination = path.join(root, "installed"), dataRoot = path.join(root, "data"), project = path.join(root, "проект 😀");
   fs.mkdirSync(project); fs.mkdirSync(dataRoot); fs.writeFileSync(path.join(dataRoot, "owner-data.txt"), "preserve me");
