@@ -67,7 +67,9 @@
         "jsonSubscriptionField": "subscriptionType"
       },
       "profiles": {},
-      "additionalDirectoryArg": "--add-dir"
+      "additionalDirectoryArg": "--add-dir",
+      "outputSchemaArg": "--json-schema",
+      "outputSchemaFormat": "json"
     },
     "kimi": {
       "command": "kimi",
