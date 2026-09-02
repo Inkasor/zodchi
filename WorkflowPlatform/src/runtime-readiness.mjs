@@ -2,6 +2,7 @@ import { checkGatewayProfileRequirements } from "./gateway.mjs";
 import { executorCapabilityRequirements } from "./executor-capabilities.mjs";
 
 const DIRECT_RUNTIME_ROLES = Object.freeze(["classifier", "researcher"]);
+const PROFILE_REQUIREMENTS_READY = new Set(["compatible", "accepted_declarative"]);
 const profileCheckDefault = requirements => checkGatewayProfileRequirements({ requirements });
 
 function roleAssignments(db, projectId, roleIds, operationalLevel = null) {
@@ -82,7 +83,7 @@ export function projectRuntimeReadiness(db, projectId, { profileCheck = profileC
     : researcherDocuments === 0 ? "no_read_access" : "available";
 
   return {
-    status: missing.length || profileRequirements.status !== "compatible" ? "unavailable" : "ready",
+    status: missing.length || !PROFILE_REQUIREMENTS_READY.has(profileRequirements.status) ? "unavailable" : "ready",
     project: { id: project.id, name: project.name },
     direct_roles: directRoles,
     missing_role_assignments: missing,
@@ -111,7 +112,7 @@ export function workflowRuntimeReadiness(db, projectId, workflowId, operationalL
   const profileRequirements = inspectRequirements(profileCheck, requirements, missing, "workflow_role_assignments_missing");
   const externalOperations = workflowExternalOperations(db, projectId, workflowId);
   return {
-    status: missing.length || profileRequirements.status !== "compatible" || externalOperations.status === "unavailable" ? "unavailable" : "ready",
+    status: missing.length || !PROFILE_REQUIREMENTS_READY.has(profileRequirements.status) || externalOperations.status === "unavailable" ? "unavailable" : "ready",
     project_id: projectId,
     workflow: { id: workflow.id, name: workflow.name },
     operational_level: operationalLevel,

@@ -34,6 +34,9 @@ test("CLI harness adapters preserve identity, usage and never fall back", () => 
     ...(provider === "claude" ? {
       "claude-browser-mcp": { model: "claude-fixture-model", modelProvider: "claude-model-provider", reasoningEffort: "low", readOnly: true, allowedMcpServers: ["playwright"], browserMcpServer: "playwright", capabilities: { project_write: { status: "unavailable", enforcement: "technical", access: "none", evidenceRef: "fixture:claude-readonly" } } },
       "claude-browser-missing": { model: "claude-fixture-model", modelProvider: "claude-model-provider", reasoningEffort: "low", readOnly: true, allowedMcpServers: ["missing"], browserMcpServer: "missing", capabilities: { project_write: { status: "unavailable", enforcement: "technical", access: "none", evidenceRef: "fixture:claude-readonly" } } }
+    } : {}),
+    ...(provider === "kimi" ? {
+      "kimi-declarative-reviewer": { model: "kimi-fixture-model", modelProvider: "kimi-model-provider", reasoningEffort: "low", readOnly: true, acceptedDeclarativeBoundaries: [{ capability: "project_write", roles: ["evidence_reviewer", "strategy_reviewer"], reason: "Owner accepted Kimi's declarative boundary for reviewer roles." }] }
     } : {})
   } }])) });
   fs.writeFileSync(path.join(root, "policy-pass.json"), JSON.stringify(policy("pass"), null, 2));
@@ -69,6 +72,12 @@ test("CLI harness adapters preserve identity, usage and never fall back", () => 
   assert.equal(matched.result.status, 0, matched.result.stderr); assert.equal(matched.receipt.status, "completed");
   const writer = execute(root, "codex", "writer-match", "pass", { profile: "codex-writable", capabilityRequirements: { required: ["context_input", "project_write"], forbidden: [] } });
   assert.equal(writer.result.status, 0, writer.result.stderr);
+  const kimiReviewer = execute(root, "kimi", "accepted-declarative-reviewer", "pass", { profile: "kimi-declarative-reviewer", role: "evidence_reviewer" });
+  assert.equal(kimiReviewer.result.status, 0, kimiReviewer.result.stderr);
+  assert.equal(kimiReviewer.receipt.environment.profile_capabilities.project_write.boundary_acceptance.status, "accepted_declarative");
+  assert.equal(kimiReviewer.receipt.environment.profile_capabilities.project_write.boundary_acceptance.reason, "Owner accepted Kimi's declarative boundary for reviewer roles.");
+  const kimiWrongRole = execute(root, "kimi", "rejected-declarative-worker", "pass", { profile: "kimi-declarative-reviewer", role: "worker" });
+  assert.equal(kimiWrongRole.result.status, 77);
   const claudeBrowser = execute(root, "claude", "claude-browser-mcp", "pass", { profile: "claude-browser-mcp" });
   assert.equal(claudeBrowser.result.status, 0, claudeBrowser.result.stderr);
   assert.match(claudeBrowser.receipt.output, /--strict-mcp-config/);
@@ -95,6 +104,16 @@ test("CLI harness adapters preserve identity, usage and never fall back", () => 
   assert.equal(preflightResult.conflicts[0].code, "PROFILE_CAPABILITY_MISMATCH");
   assert.equal(preflightResult.conflicts[0].mismatches[0].capability, "project_write");
   assert.equal(preflightResult.conflicts[0].mismatches[0].expectation, "forbidden");
+  const acceptedPreflight = spawnSync(process.execPath, [cli, "profiles-check"], {
+    cwd: repositoryRoot, encoding: "utf8", windowsHide: true,
+    input: JSON.stringify([{ provider: "kimi", profile: "kimi-declarative-reviewer", role: "strategy_reviewer", capability_requirements: { required: ["context_input"], forbidden: ["project_write"] } }]),
+    env: { ...process.env, AGENT_GATEWAY_POLICY: path.join(root, "policy-pass.json") }
+  });
+  assert.equal(acceptedPreflight.status, 0, acceptedPreflight.stderr);
+  const acceptedPreflightResult = JSON.parse(acceptedPreflight.stdout);
+  assert.equal(acceptedPreflightResult.status, "accepted_declarative");
+  assert.equal(acceptedPreflightResult.checks[0].status, "accepted_declarative");
+  assert.equal(acceptedPreflightResult.checks[0].accepted_declarative[0].reason, "Owner accepted Kimi's declarative boundary for reviewer roles.");
   const db = openGatewayDb(path.join(root, "data", "gateway.sqlite"));
   assert.equal(db.prepare("SELECT COUNT(*) count FROM receipts WHERE task_id='write-mismatch'").get().count, 0);
   assert.deepEqual(db.prepare("SELECT provider,status FROM receipts WHERE task_id='fail-codex'").all().map(row => ({ ...row })), [{ provider: "codex", status: "failed" }]);
