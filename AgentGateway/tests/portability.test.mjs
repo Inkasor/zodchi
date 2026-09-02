@@ -275,6 +275,9 @@ test("Claude receives only named MCP servers through one strict ephemeral config
     assert.deepEqual(environment.capabilities.mcp_servers.withheld.map(item => item.name).sort(), ["personal", "projectIndex"]);
     assert.deepEqual(environment.capabilities.mcp_servers.shadowed, [{ scope: "home", name: "playwright", by_scope: "project" }]);
     assert.equal(environment.capabilities.mcp_servers.policy, "allowlist");
+    assert.equal(environment.capabilities.home, "mcp-config-only");
+    assert.equal("HOME" in environment.env, false);
+    assert.equal("USERPROFILE" in environment.env, false);
   } finally { environment.cleanup(); fs.rmSync(root, { recursive: true, force: true }); }
 });
 
