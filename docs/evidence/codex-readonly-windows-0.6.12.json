@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "checked_at": "2026-09-02T12:05:17.944Z",
+  "platform": "win32",
+  "provider": "codex",
+  "profile": "zodchi-researcher",
+  "profile_read_only": true,
+  "gateway_receipt_id": "2026-09-02T12-05-17.944Z-codex-cec75ba2-6a96-4f74-87c9-f55f1fc407b8",
+  "provider_status": "completed",
+  "smoke_status": "blocked_by_policy",
+  "requested_operation": "read package.json and calculate its SHA-256 digest",
+  "expected_sha256": "88f70e4dc511fe0c4b35abea725738b5f7ac2aee72b273bc9f4598af9d1224ac",
+  "reported_sha256": null,
+  "finding": "The ephemeral AgentGateway Codex profile could not execute the read-only filesystem command. Provider completion is not evidence that repository research succeeded.",
+  "reproduce": "node tools/codex-readonly-smoke.mjs --project <project> --policy <policy.local.json> --profile <read-only-codex-profile>"
+}

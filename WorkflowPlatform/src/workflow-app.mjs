@@ -23,7 +23,7 @@ import { chargeDirectReceipt, effectiveQualityMode, initializeQualityRun, operat
 import { approveBoundInteraction, assertApprovalStillCurrent } from "./approval-binding.mjs";
 import { acceptExternalControlEvidenceResult } from "./external-control-plane.mjs";
 import { normalizeRunProfile, resolveRunProfile, storeRunProfile } from "./run-profile.mjs";
-import { assertProjectRuntimeReady } from "./runtime-readiness.mjs";
+import { assertProjectRuntimeReady, assertWorkflowRuntimeReady } from "./runtime-readiness.mjs";
 import { normalizeSemanticScope } from "./semantic-scope.mjs";
 
 export function loadWorkflow(id, workflowsRoot = resolveWorkflowSettings().workflowsRoot) {
@@ -480,9 +480,16 @@ export async function processMessage({
       requested_quality_floor: requestedQualityFloor === "security-audit" ? "security" : requestedQualityFloor,
       workflow_quality_floor: workflowQualityFloor
     });
+    const profileQuality = operationalLevel(classification.quality_mode);
+    // Only the classifier and researcher are known before classification. Once the classifier has
+    // selected a route, fail closed on that route's actual roles and level before any planner, worker,
+    // reviewer or documentator is invoked. An incompatible release operator must not disable an
+    // unrelated implementation or research route.
+    if (execute && registryBackedDefinition && classification.reply_mode === "work" && (!classificationResult || gatewayProfileCheck)) {
+      assertWorkflowRuntimeReady(runtime.db, run.project_id, workflow, profileQuality, gatewayProfileCheck ? { profileCheck: gatewayProfileCheck } : undefined);
+    }
     runtime.classify(runId, classification);
     initializeQualityRun(runtime, runId, classification, classifierReceipt);
-    const profileQuality = operationalLevel(classification.quality_mode);
     const bindings = plannerBindings(runtime.db, run.project_id, profileQuality, classification.work_type);
     const resolvedProfile = resolveRunProfile(runtime.db, { projectId: run.project_id, qualityMode: profileQuality, overrides: effectiveRunProfileOverrides, plannerBindings: bindings });
     if (resolvedProfile.status === "resolved") {
@@ -506,6 +513,7 @@ export async function processMessage({
       storeRunProfile(runtime.db, runId, runProfile, { status: "proposed" });
     }
   } catch (error) {
+    if (error?.code === "WORKFLOW_RUNTIME_NOT_READY") return executionFailure(runtime, runId, error, finish, responseLanguage);
     return classificationFailure(runtime, runId, error, finish, responseLanguage);
   }
 

@@ -201,8 +201,8 @@ const command = process.argv[2];
 if (!["run", "profiles-check"].includes(command)) fail("Usage: node src/cli.mjs run --provider <adapter> --level prototype|mvp|production|security-audit --task-file <file> [--project <path>] [--role <name>] --profile <name> --requires-write true|false | node src/cli.mjs profiles-check");
 
 const policy = loadGatewayPolicy(paths);
-function inspectProfileWriteRequirement({ provider, profile, role = "worker", operational_level: operationalLevel = null, requires_write: requiresWrite }) {
-  const scope = operationalLevel ? { operational_level: operationalLevel } : {};
+function inspectProfileWriteRequirement({ provider, profile, role = "worker", project_id: projectId = null, operational_level: operationalLevel = null, requires_write: requiresWrite }) {
+  const scope = { ...(projectId ? { project_id: projectId } : {}), ...(operationalLevel ? { operational_level: operationalLevel } : {}) };
   if (typeof requiresWrite !== "boolean") return { code: "PROFILE_WRITE_REQUIREMENT_INVALID", role, provider, profile, ...scope, value: requiresWrite ?? null };
   const providerConfig = policy.providers?.[provider];
   if (!providerConfig) return { code: "PROFILE_PROVIDER_UNKNOWN", role, provider, profile, ...scope };

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { hookInstallationStatus, hookSnapshotHashes, removeOwnedHookInstallation, restoreHookInstallation, snapshotHookInstallation } from "../WorkflowPlatform/src/hook-installation.mjs";
@@ -169,51 +169,46 @@ function readState(file) { return fs.existsSync(file) ? JSON.parse(fs.readFileSy
 
 function tableExists(db, name) { return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name)); }
 
-function effectiveProfile(universal, local, provider, profile) {
-  const base = universal?.providers?.[provider] ?? {};
-  const overlay = local?.providers?.[provider] ?? {};
-  const baseProfile = base.profiles?.[profile];
-  const localProfile = overlay.profiles?.[profile];
-  if (!baseProfile && !localProfile) return null;
-  return { ...(base.profileDefaults ?? {}), ...(overlay.profileDefaults ?? {}), ...(baseProfile ?? {}), ...(localProfile ?? {}) };
-}
-
-export function profileWriteRequirementDiagnostics({ workflowDatabase, gatewayPolicy, universalPolicy = null }) {
+export function profileWriteRequirementDiagnostics({ workflowDatabase, gatewayPolicy, gateway }) {
   if (!workflowDatabase || !fs.existsSync(workflowDatabase)) return { status: "unavailable", reason: "workflow_database_missing", conflicts: [] };
   if (!gatewayPolicy || !fs.existsSync(gatewayPolicy)) return { status: "unavailable", reason: "gateway_policy_missing", conflicts: [] };
-  const local = JSON.parse(fs.readFileSync(gatewayPolicy, "utf8"));
-  const universal = universalPolicy && fs.existsSync(universalPolicy) ? JSON.parse(fs.readFileSync(universalPolicy, "utf8")) : {};
+  if (!gateway || !fs.existsSync(gateway)) return { status: "unavailable", reason: "gateway_preflight_missing", conflicts: [] };
   const db = new DatabaseSync(workflowDatabase, { readOnly: true });
   try {
     const requiredTables = ["profiles", "role_profile_assignments", "role_contracts"];
     if (!requiredTables.every(name => tableExists(db, name))) return { status: "unavailable", reason: "workflow_schema_not_ready", conflicts: [] };
-    const conflicts = [];
     const assignments = db.prepare(`SELECT a.project_id,a.role_id,a.operational_level,p.provider,p.name AS profile,rc.boundaries_json
       FROM role_profile_assignments a
       JOIN profiles p ON p.id=a.profile_id
       JOIN role_contracts rc ON rc.project_id=a.project_id AND rc.role_id=a.role_id AND rc.status='active'
       WHERE a.enabled=1
       ORDER BY a.project_id,a.role_id,a.operational_level,p.provider,p.name`).all();
-    for (const assignment of assignments) {
+    const requirements = assignments.map(assignment => {
       let boundaries = {};
       try { boundaries = JSON.parse(assignment.boundaries_json ?? "{}"); } catch { /* runtime treats an absent declaration as non-writing */ }
-      const requiresWrite = boundaries.writes === true;
-      const profile = effectiveProfile(universal, local, assignment.provider, assignment.profile);
-      if (!profile) continue;
-      const profileReadOnly = profile.readOnly === true;
-      if (requiresWrite !== profileReadOnly) continue;
-      conflicts.push({
-        code: "PROFILE_WRITE_REQUIREMENT_MISMATCH",
+      return {
         project_id: assignment.project_id,
-        role_id: assignment.role_id,
+        role: assignment.role_id,
         operational_level: assignment.operational_level,
         provider: assignment.provider,
         profile: assignment.profile,
-        requires_write: requiresWrite,
-        profile_read_only: profileReadOnly
-      });
+        requires_write: boundaries.writes === true
+      };
+    });
+    const child = spawnSync(process.execPath, [gateway, "profiles-check"], {
+      input: JSON.stringify(requirements), encoding: "utf8", windowsHide: true,
+      env: { ...process.env, AGENT_GATEWAY_POLICY: gatewayPolicy }
+    });
+    let result = null;
+    try { result = JSON.parse(String(child.stdout ?? "").trim()); } catch { /* reported below */ }
+    if (!result || !["compatible", "incompatible"].includes(result.status)) {
+      return { status: "unavailable", reason: "gateway_preflight_failed", conflicts: [], message: String(child.stderr || child.stdout || child.error?.message || "unknown failure").trim() };
     }
-    return { status: "checked", reason: null, conflicts };
+    const normalize = item => {
+      const { role, ...rest } = item;
+      return { ...rest, role_id: role };
+    };
+    return { status: "checked", reason: null, conflicts: result.conflicts.map(normalize), checks: result.checks.map(normalize) };
   } finally { db.close(); }
 }
 
@@ -235,7 +230,7 @@ export function installRelease(options) {
   const installedState = readState(stateFile);
   const workflowDatabase = options.workflowDatabase ?? installedState?.workflow_database ?? process.env.WORKFLOW_DB ?? path.join(dataRoot, "workflow.sqlite");
   const gatewayPolicy = options.gatewayPolicy ?? installedState?.gateway_policy ?? path.join(dataRoot, "gateway", "policy.local.json");
-  const profileWriteRequirements = profileWriteRequirementDiagnostics({ workflowDatabase, gatewayPolicy, universalPolicy: path.join(source, "AgentGateway", "policy.json") });
+  const profileWriteRequirements = profileWriteRequirementDiagnostics({ workflowDatabase, gatewayPolicy, gateway: path.join(source, "AgentGateway", "src", "cli.mjs") });
   const targets = registeredHookTargets(workflowDatabase, options.hooks ?? []);
   const skillRoots = options.skillRoots ?? defaultSkillRoots();
   const sessionHookFiles = resolvedSessionHookFiles(options, skillRoots, installedState);
