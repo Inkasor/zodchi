@@ -7,7 +7,8 @@ import test from "node:test";
 import { openDb, now } from "../src/db.mjs";
 import {
   acceptExternalControlEvidenceResult, acceptExternalControlResult, createExternalControlRequest,
-  pendingExternalControlRequests, registerExternalExecutor, registerExternalOperation, registeredExternalOperations, requestExternalControlCancellation
+  pendingExternalControlRequests, registerExternalExecutor, registerExternalOperation, registeredExternalOperations, requestExternalControlCancellation,
+  validateExternalOperationResult
 } from "../src/external-control-plane.mjs";
 import { openExternalEvidenceRequest, readInteraction } from "../src/interactions.mjs";
 import { structuredHash } from "../src/role-contracts.mjs";
@@ -32,6 +33,8 @@ function fixture() {
   });
   const keys = crypto.generateKeyPairSync("ed25519"), publicKeyPem = keys.publicKey.export({ type: "spki", format: "pem" });
   registerExternalExecutor(db, { projectId: "project", executorId: "runtime.test", purpose: "Fixture executor", publicKeyPem, keyId: "test-key-v1" });
+  db.prepare("INSERT INTO check_definitions(id,name,runner,kind,config_json,timeout_seconds) VALUES('check-post','Post-operation check','fixture','fixture','{\"status\":\"passed\"}',30)").run();
+  db.prepare("INSERT INTO project_checks(project_id,check_id,quality_mode_id,required,artifact_type_id) VALUES('project','check-post','mvp',1,NULL)").run();
   return { root, db, interactionId, privateKey: keys.privateKey, publicKeyPem };
 }
 
@@ -88,16 +91,26 @@ test("a signed external result is bound to request, run, step and checkpoint wit
 test("external operations bind a registered action and config to one executor", () => {
   const fx = fixture();
   try {
-    const registered = registerExternalOperation(fx.db, { projectId: "project", operationId: "release.prod", executorId: "runtime.test", operationKind: "release", action: "deploy_revision", config: { environment: "production" } });
+    const registered = registerExternalOperation(fx.db, { projectId: "project", operationId: "release.prod", executorId: "runtime.test", operationKind: "release", action: "deploy_revision", config: { environment: "production", verification_check_ids: ["check-post"] } });
     assert.match(registered.config_hash, /^[0-9a-f]{64}$/);
     const listed = registeredExternalOperations(fx.db, "project", "release");
     assert.equal(listed.length, 1);
     assert.equal(listed[0].id, "release.prod");
     assert.equal(listed[0].action, "deploy_revision");
-    assert.deepEqual(listed[0].config, { environment: "production" });
+    assert.deepEqual(listed[0].config, { environment: "production", verification_check_ids: ["check-post"] });
     assert.match(listed[0].definition_hash, /^[0-9a-f]{64}$/);
-    assert.throws(() => registerExternalOperation(fx.db, { projectId: "project", operationId: "release.bad", executorId: "missing", operationKind: "release", action: "deploy_revision" }), /EXECUTOR_NOT_REGISTERED/);
+    assert.throws(() => registerExternalOperation(fx.db, { projectId: "project", operationId: "release.bad", executorId: "missing", operationKind: "release", action: "deploy_revision", config: { verification_check_ids: ["check-post"] } }), /EXECUTOR_NOT_REGISTERED/);
+    assert.throws(() => registerExternalOperation(fx.db, { projectId: "project", operationId: "release.unverified", executorId: "runtime.test", operationKind: "release", action: "deploy_revision", config: {} }), /verification_check_ids/);
   } finally { close(fx); }
+});
+
+test("external operation results must report the exact approved target", () => {
+  const release = { operation_id: "release.prod", target_revision: "a".repeat(40), target_environment: "production" };
+  assert.doesNotThrow(() => validateExternalOperationResult("release", release, { schema_version: 1, operation_id: "release.prod", applied_revision: "a".repeat(40), target_environment: "production", evidence_refs: ["deployment:receipt"] }));
+  assert.throws(() => validateExternalOperationResult("release", release, { schema_version: 1, operation_id: "release.prod", applied_revision: "b".repeat(40), target_environment: "production", evidence_refs: ["deployment:receipt"] }), /TARGET_MISMATCH/);
+  const access = { operation_id: "access.project", subject: "analyst", resource: "reports", grant: ["reader"], revoke: ["writer"], expires_at: null };
+  assert.doesNotThrow(() => validateExternalOperationResult("access", access, { schema_version: 1, operation_id: "access.project", subject: "analyst", resource: "reports", grant: ["reader"], revoke: ["writer"], expires_at: null, evidence_refs: ["acl:receipt"] }));
+  assert.throws(() => validateExternalOperationResult("access", access, { schema_version: 1, operation_id: "access.project", subject: "analyst", resource: "reports", grant: ["admin"], revoke: ["writer"], expires_at: null, evidence_refs: ["acl:receipt"] }), /TARGET_MISMATCH/);
 });
 
 test("an oversized external result is rejected at the byte boundary before signature handling", () => {

@@ -109,7 +109,9 @@ test("an operator route is unavailable until its deterministic external operatio
   assert.deepEqual(readiness.external_operations.missing, ["release"]);
   const keys = crypto.generateKeyPairSync("ed25519");
   registerExternalExecutor(db, { projectId: "project", executorId: "release.test", publicKeyPem: keys.publicKey.export({ type: "spki", format: "pem" }), keyId: "release-key-v1" });
-  registerExternalOperation(db, { projectId: "project", operationId: "release.prod", executorId: "release.test", operationKind: "release", action: "deploy_revision" });
+  db.prepare("INSERT INTO check_definitions(id,name,runner,kind,config_json,timeout_seconds) VALUES('release-post','Release post-check','fixture','fixture','{\"status\":\"passed\"}',30)").run();
+  db.prepare("INSERT INTO project_checks(project_id,check_id,quality_mode_id,required,artifact_type_id) VALUES('project','release-post','mvp',1,NULL)").run();
+  registerExternalOperation(db, { projectId: "project", operationId: "release.prod", executorId: "release.test", operationKind: "release", action: "deploy_revision", config: { verification_check_ids: ["release-post"] } });
   readiness = workflowRuntimeReadiness(db, "project", "workflow", "mvp", { profileCheck: compatibleProfileCheck });
   assert.equal(readiness.status, "ready");
   assert.equal(readiness.external_operations.available.release, 1);

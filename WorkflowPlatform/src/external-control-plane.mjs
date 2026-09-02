@@ -19,6 +19,23 @@ function requireHash(value, label) {
   return String(value);
 }
 
+function nonEmptyString(value, label) {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${label}: non-empty string required`);
+  return value;
+}
+
+function stringList(value, label, { nonEmpty = false } = {}) {
+  if (!Array.isArray(value) || value.some(item => typeof item !== "string" || !item.trim())) throw new Error(`${label}: string array required`);
+  const normalized = [...new Set(value)].sort();
+  if (normalized.length !== value.length) throw new Error(`${label}: duplicate values`);
+  if (nonEmpty && !normalized.length) throw new Error(`${label}: at least one value required`);
+  return normalized;
+}
+
+function sameStrings(left, right) {
+  return JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
+}
+
 function requestRow(db, requestId) {
   return db.prepare("SELECT * FROM external_control_requests WHERE id=?").get(requestId) ?? null;
 }
@@ -73,12 +90,59 @@ export function registerExternalOperation(db, { projectId, operationId, executor
   if (typeof action !== "string" || !action.trim()) throw new Error("EXTERNAL_CONTROL_ACTION_REQUIRED");
   if (!config || Array.isArray(config) || typeof config !== "object") throw new Error("EXTERNAL_OPERATION_CONFIG_INVALID");
   if (!executorRow(db, projectId, executorId)) throw new Error(`EXTERNAL_EXECUTOR_NOT_REGISTERED: ${executorId}`);
+  const verificationCheckIds = stringList(config.verification_check_ids, "external_operation.config.verification_check_ids", { nonEmpty: true });
+  for (const checkId of verificationCheckIds) {
+    const registered = db.prepare(`SELECT 1 FROM project_checks pc
+      LEFT JOIN package_import_mappings m ON m.local_id=pc.check_id AND m.entity_type='check'
+      LEFT JOIN workflow_import_proposals p ON p.id=m.proposal_id AND p.target_project_id=pc.project_id AND p.status='applied'
+      WHERE pc.project_id=? AND (pc.check_id=? OR m.semantic_key=?) LIMIT 1`).get(projectId, checkId, checkId);
+    if (!registered) throw new Error(`EXTERNAL_OPERATION_VERIFICATION_CHECK_NOT_REGISTERED: ${checkId}`);
+  }
+  config = { ...config, verification_check_ids: verificationCheckIds };
   const timestamp = now();
   db.prepare(`INSERT INTO external_operation_definitions(id,project_id,executor_id,operation_kind,action,config_json,active,created_at,updated_at)
     VALUES(?,?,?,?,?,?,1,?,?)
     ON CONFLICT(project_id,id) DO UPDATE SET executor_id=excluded.executor_id,operation_kind=excluded.operation_kind,action=excluded.action,config_json=excluded.config_json,active=1,updated_at=excluded.updated_at`)
     .run(operationId, projectId, executorId, operationKind, action.trim(), JSON.stringify(config), timestamp, timestamp);
   return Object.freeze({ project_id: projectId, operation_id: operationId, executor_id: executorId, operation_kind: operationKind, action: action.trim(), config_hash: structuredHash(config) });
+}
+
+export function validateExternalOperationResult(operationKind, proposal, payload) {
+  if (operationKind === "release") {
+    exactObject(payload, ["schema_version", "operation_id", "applied_revision", "target_environment", "evidence_refs"], "external_release_result.v1");
+    if (payload.schema_version !== 1 || payload.operation_id !== proposal.operation_id ||
+        nonEmptyString(payload.applied_revision, "external_release_result.v1.applied_revision") !== proposal.target_revision ||
+        nonEmptyString(payload.target_environment, "external_release_result.v1.target_environment") !== proposal.target_environment) {
+      throw new Error("EXTERNAL_OPERATION_RESULT_TARGET_MISMATCH: release");
+    }
+    stringList(payload.evidence_refs, "external_release_result.v1.evidence_refs", { nonEmpty: true });
+    return payload;
+  }
+  if (operationKind === "access") {
+    exactObject(payload, ["schema_version", "operation_id", "subject", "resource", "grant", "revoke", "expires_at", "evidence_refs"], "external_access_result.v1");
+    const grant = stringList(payload.grant, "external_access_result.v1.grant"), revoke = stringList(payload.revoke, "external_access_result.v1.revoke");
+    if (payload.schema_version !== 1 || payload.operation_id !== proposal.operation_id ||
+        nonEmptyString(payload.subject, "external_access_result.v1.subject") !== proposal.subject ||
+        nonEmptyString(payload.resource, "external_access_result.v1.resource") !== proposal.resource ||
+        !sameStrings(grant, proposal.grant) || !sameStrings(revoke, proposal.revoke) || payload.expires_at !== proposal.expires_at) {
+      throw new Error("EXTERNAL_OPERATION_RESULT_TARGET_MISMATCH: access");
+    }
+    stringList(payload.evidence_refs, "external_access_result.v1.evidence_refs", { nonEmpty: true });
+    return payload;
+  }
+  throw new Error(`EXTERNAL_OPERATION_RESULT_KIND_INVALID: ${operationKind}`);
+}
+
+export function validateExternalOperationResultForRequest(db, requestId, payload) {
+  const row = db.prepare(`SELECT x.operation_kind,x.proposal_hash,d.structured_json
+    FROM external_operation_executions x
+    JOIN decisions d ON d.step_id=x.step_id AND d.run_id=x.run_id
+      AND d.kind='external_operation_proposal' AND d.active=1 AND d.outcome='PROPOSED'
+    WHERE x.request_id=?`).get(requestId);
+  if (!row) throw new Error(`EXTERNAL_OPERATION_RESULT_NOT_FOUND: ${requestId}`);
+  const proposal = JSON.parse(row.structured_json);
+  if (structuredHash(proposal) !== row.proposal_hash) throw new Error("EXTERNAL_OPERATION_PROPOSAL_RECORD_INVALID");
+  return validateExternalOperationResult(row.operation_kind, proposal, payload);
 }
 
 export function registeredExternalOperations(db, projectId, operationKind = null) {
