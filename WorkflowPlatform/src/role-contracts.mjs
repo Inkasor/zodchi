@@ -19,7 +19,7 @@ export const RESULT_SCHEMA_SHAPES = Object.freeze({
     inputs: ["string"],
     checks: ["registered check id from task_package.registered_checks"],
     risks: ["string"],
-    artifacts: [{ key: "string", type: "registered artifact type", path: "path relative to the project root, or null", required: true }],
+    artifacts: [{ key: "string", type: "registered artifact type", path: "path relative to the project root; null is permitted only when type is decision", required: true }],
     completion_criteria: ["string"],
     questions: ["string, at most 5; empty when outcome is ready"],
     steps: [{ key: "string", role: "role id from task_package.registered_roles", objective: "string", allowed_paths: ["subset of the plan allowed_paths"], artifact_keys: ["keys of non-document artifacts this worker creates; final document artifacts belong to the documentator"], check_ids: ["registered check id"], resources: [{ alias: "alias from task_package.registered_resources", mode: "shared to read it, exclusive to change it" }], required: true, irreversible: false, max_attempts: 1 }]
