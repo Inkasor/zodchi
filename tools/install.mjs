@@ -143,8 +143,19 @@ function updateSessionHooks(applicationRoot, files, skillRoots) {
 
 function restoreSessionHookTransaction(transaction) { if (transaction) restoreSessionHooks(transaction.snapshots); }
 
-function resolvedSessionHookFiles(options, skillRoots) {
+function stateSessionHookFiles(state) {
+  const files = {};
+  for (const item of state?.session_hooks ?? []) {
+    if (!new Set(["codex", "claude-code", "cursor"]).has(item?.client) || typeof item?.file !== "string" || !item.file.trim()) continue;
+    files[item.client] = path.resolve(item.file);
+  }
+  return Object.keys(files).length ? files : null;
+}
+
+function resolvedSessionHookFiles(options, skillRoots, state = null) {
   if (options.sessionHookFiles) return options.sessionHookFiles;
+  const persisted = stateSessionHookFiles(state);
+  if (persisted) return persisted;
   if (options.skillRoots) return Object.fromEntries(Object.entries(skillRoots).map(([client, root]) => [client, path.join(path.dirname(path.resolve(root)), `${client}-session-hooks.json`)]));
   return defaultSessionHookFiles();
 }
@@ -175,7 +186,7 @@ export function installRelease(options) {
   const workflowDatabase = options.workflowDatabase ?? installedState?.workflow_database ?? process.env.WORKFLOW_DB ?? path.join(dataRoot, "workflow.sqlite");
   const targets = registeredHookTargets(workflowDatabase, options.hooks ?? []);
   const skillRoots = options.skillRoots ?? defaultSkillRoots();
-  const sessionHookFiles = resolvedSessionHookFiles(options, skillRoots);
+  const sessionHookFiles = resolvedSessionHookFiles(options, skillRoots, installedState);
   let oldMoved = false, hookTransaction = null, skillTransaction = null, sessionHookTransaction = null;
   try {
     fs.cpSync(source, stage, { recursive: true, errorOnExist: true, force: false });
@@ -224,7 +235,7 @@ export function rollbackRelease(options) {
   if (!fs.existsSync(destination) || !fs.existsSync(previous)) throw new Error("INSTALL_ROLLBACK_RELEASE_MISSING");
   const healthCheck = options.healthCheck ?? defaultHealthCheck;
   const skillRoots = options.skillRoots ?? defaultSkillRoots();
-  const sessionHookFiles = resolvedSessionHookFiles(options, skillRoots);
+  const sessionHookFiles = resolvedSessionHookFiles(options, skillRoots, state);
   const failed = safeSibling(`${destination}.previous-${crypto.randomUUID()}`, destination, "previous");
   const targets = registeredHookTargets(state.workflow_database, [...(state.hooks ?? []), ...(state.legacy_hooks_removed ?? [])]);
   let hookTransaction = null, skillTransaction = null, sessionHookTransaction = null, movedCurrent = false, movedPrevious = false;
@@ -257,7 +268,7 @@ export function uninstallRelease(options) {
   const targets = registeredHookTargets(state?.workflow_database, [...(state?.hooks ?? []), ...(state?.legacy_hooks_removed ?? []), ...(options.hooks ?? [])]);
   const hookResults = targets.map(removeOwnedHookInstallation);
   const skillResults = removeClientSkills({ applicationRoot: destination, roots: options.skillRoots ?? defaultSkillRoots() });
-  const sessionHookResults = removeSessionHooks({ applicationRoot: destination, files: resolvedSessionHookFiles(options, options.skillRoots ?? defaultSkillRoots()) });
+  const sessionHookResults = removeSessionHooks({ applicationRoot: destination, files: resolvedSessionHookFiles(options, options.skillRoots ?? defaultSkillRoots(), state) });
   let recoverable = null;
   if (fs.existsSync(destination)) { recoverable = safeSibling(`${destination}.uninstalled-${crypto.randomUUID()}`, destination, "uninstalled"); renameWithRetry(destination, recoverable); }
   const next = { ...(state ?? {}), status: "uninstalled", application: destination, data_root: dataRoot, recoverable_release: recoverable, uninstalled_at: new Date().toISOString() };
@@ -289,11 +300,13 @@ function manifestSkillRoots(file) {
 function manifestSessionHookFiles(file) {
   if (!file) return undefined;
   const value = JSON.parse(fs.readFileSync(path.resolve(String(file)), "utf8"));
+  if (!value || Array.isArray(value) || typeof value !== "object") throw new Error("INSTALL_SESSION_HOOK_FILES_INVALID: expected object");
   const files = {};
-  for (const client of Object.keys(defaultSessionHookFiles())) {
-    if (typeof value?.[client] !== "string" || !value[client].trim()) throw new Error(`INSTALL_SESSION_HOOK_FILES_INVALID: ${client}`);
-    files[client] = path.resolve(value[client]);
+  for (const [client, target] of Object.entries(value)) {
+    if (!new Set(["codex", "claude-code", "cursor"]).has(client) || typeof target !== "string" || !target.trim()) throw new Error(`INSTALL_SESSION_HOOK_FILES_INVALID: ${client}`);
+    files[client] = path.resolve(target);
   }
+  if (!Object.keys(files).length) throw new Error("INSTALL_SESSION_HOOK_FILES_INVALID: at least one selected host is required");
   return files;
 }
 

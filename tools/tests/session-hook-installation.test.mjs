@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { installSessionHooks, removeSessionHooks, restoreSessionHooks, sessionHookDocumentUsesScript, sessionHookParameters, snapshotSessionHooks } from "../session-hook-installation.mjs";
+import { defaultSessionHookFiles, installSessionHooks, removeSessionHooks, restoreSessionHooks, sessionHookDocumentUsesScript, sessionHookParameters, snapshotSessionHooks } from "../session-hook-installation.mjs";
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "zodchi-session-hooks-")), application = path.join(root, "application");
@@ -15,6 +15,10 @@ function fixture() {
     skillRoots: { codex: path.join(root, "codex skills"), "claude-code": path.join(root, "claude skills") }
   };
 }
+
+test("preview Cursor hooks are opt-in instead of being installed on every machine", () => {
+  assert.deepEqual(Object.keys(defaultSessionHookFiles()).sort(), ["claude-code", "codex"]);
+});
 
 test("session hooks merge two conditional events and preserve foreign configuration", () => {
   const value = fixture();
