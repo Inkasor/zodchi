@@ -8,11 +8,13 @@ Thank you for helping Zodchi. Contributions may include fixes, new workflows, ch
 
 1. Create a short-lived branch from `main`.
 2. Do not commit databases, credentials, authentication files, run logs, or private project data.
-3. Run `npm test` from the repository root.
-4. Machine-operated documents must keep one `<document>` root, unique semantic IDs, balanced tags, current version/boundary statements, and no private paths. Run `node scripts/validate-source.mjs`; the root test command runs this semantic/documentator lint too.
-5. For package changes, run `npm --prefix WorkflowPlatform run packages:check`. Generated package XML and the public catalog must match their named definitions exactly.
-6. For release-layout changes, run `npm run release:build` and validate the assembled release rather than only the source checkout.
-7. In the pull request, explain the problem, the solution, and the checks you ran in plain language.
+3. Read the accepted boundaries in [Architecture](docs/ARCHITECTURE.md) before changing routing, workflow, evidence, or delivery behavior.
+4. Keep one semantic owner for user intent: hooks and session routers handle protocol and identity only. They must pass ordinary user text unchanged to the classifier and must never infer confirmation, refusal, continuation, or task type with keywords, regular expressions, or command shortcuts. Deterministic code validates the classifier's structural result; it does not replace the classifier.
+5. Run `npm test` from the repository root.
+6. Machine-operated documents must keep one `<document>` root, unique semantic IDs, balanced tags, current version/boundary statements, and no private paths. Run `node scripts/validate-source.mjs`; the root test command runs this semantic/documentator lint too.
+7. For package changes, run `npm --prefix WorkflowPlatform run packages:check`. Generated package XML and the public catalog must match their named definitions exactly.
+8. For release-layout changes, run `npm run release:build` and validate the assembled release rather than only the source checkout.
+9. In the pull request, explain the problem, the solution, and the checks you ran in plain language.
 
 ## Workflow packages
 

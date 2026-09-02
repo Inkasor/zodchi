@@ -1,4 +1,4 @@
-<document id="workflow_platform" version="0.6.2" status="accepted" kind="governance" language="en">
+<document id="workflow_platform" version="0.6.4" status="accepted" kind="governance" language="en">
 <metadata owner="workflow-platform" authority="Zodchi">
 </metadata>
 <section id="documentator_contract" status="accepted">
@@ -48,6 +48,12 @@ The platform reads the project and assembles the context; a role works from what
 </section>
 <rule id="semantic_scope_is_explicit" status="accepted">
 Every workflow intake names exactly one semantic scope: an exact client session or stateless automation. Session history and pending interactions never fall back to project scope, while accepted owner decisions remain project truth.
+</rule>
+<rule id="semantic_intent_has_one_owner" status="accepted">
+Client hooks and session routers are semantically blind transport. They may recognize explicit protocol syntax such as activation, host event types, session identity, and idempotency keys, but they pass every ordinary user message unchanged and never infer confirmation, refusal, continuation, reference, work type, or next action from a word, phrase, regular expression, or command-shaped shortcut. Every available continuation is exposed as a typed pending interaction beside the registered routes and ordered session history; the classifier alone maps the current message to one of those meanings, and deterministic code validates and applies the selected structural result.
+</rule>
+<rule id="research_reads_registered_project_corpus" status="accepted">
+Bounded research is not limited to controlled documents when the objective concerns repository implementation, architecture, readiness, behavior, or source state. Controlled documents remain authority and constraints; the registered source inventory is the read-only evidence corpus. The researcher may inspect only inventory paths inside registered roots, never mutate them, and an answered result names at least one inspected path. The platform validates those paths against the current inventory and stores the inspection boundary as run evidence.
 </rule>
 <rule id="collection_covers_the_project" status="accepted">
 Source collection covers the project's tracked and unignored files; a declared source scope narrows that, and a credential-shaped or dump-shaped name is never collected.
