@@ -212,6 +212,15 @@ const profile = cli.profile ?? null;
 if (!profile) fail("PROFILE_REQUIRED: all provider calls must use a named subscription profile");
 const profileConfig = { ...(providerConfig.profileDefaults ?? {}), ...(providerConfig.profiles?.[profile] ?? {}) };
 if (!providerConfig.profiles?.[profile]) fail(`Unknown profile '${profile}' for provider '${provider}'`);
+const writeRequirement = cli["requires-write"];
+if (writeRequirement !== undefined && !["true", "false"].includes(String(writeRequirement))) fail(`PROFILE_WRITE_REQUIREMENT_INVALID: role=${cli.role ?? "worker"}; profile=${profile}; value=${writeRequirement}`, 77);
+if (writeRequirement !== undefined) {
+  const requiresWrite = String(writeRequirement) === "true";
+  const profileReadOnly = profileConfig.readOnly === true;
+  if (requiresWrite === profileReadOnly) {
+    fail(`PROFILE_WRITE_REQUIREMENT_MISMATCH: role=${cli.role ?? "worker"}; profile=${profile}; requires_write=${requiresWrite}; profile_read_only=${profileReadOnly}`, 77);
+  }
+}
 const privacyMode = String(cli["privacy-mode"] ?? DEFAULT_PRIVACY_MODE);
 if (privacyMode !== DEFAULT_PRIVACY_MODE) fail(`RECEIPT_PRIVACY_MODE_UNSUPPORTED: ${privacyMode}`);
 

@@ -42,6 +42,7 @@ db.close();
 // package registers exactly one requirement per role, so the link is read from the import rather than
 // reconstructed from a naming convention.
 const profileKeys = new Set();
+const profileReadOnly = new Map();
 const prepared = [];
 for (const item of config.projects) {
   const proposalFile = path.join(outputRoot, `${item.project_id}.import-proposal.json`);
@@ -65,6 +66,10 @@ for (const item of config.projects) {
     db.prepare("INSERT OR IGNORE INTO profiles(id,provider,name,role_id) VALUES(?,'codex',?,?)").run(binding.profile_key, binding.profile_key, binding.role_id);
     db.prepare("INSERT OR REPLACE INTO role_profile_assignments(project_id,role_id,profile_id,operational_level,enabled,satisfies_profile_key) VALUES(?,?,?,'mvp',1,?)").run(item.project_id, binding.role_id, binding.profile_key, binding.direct ? null : binding.profile_key);
     profileKeys.add(binding.profile_key);
+    const requiresWrite = binding.direct ? false : JSON.parse(db.prepare("SELECT boundaries_json FROM role_contracts WHERE project_id=? AND role_id=? AND status='active'").get(item.project_id, binding.role_id).boundaries_json).writes === true;
+    const readOnly = !requiresWrite;
+    if (profileReadOnly.has(binding.profile_key) && profileReadOnly.get(binding.profile_key) !== readOnly) throw new Error(`EVIDENCE_PROFILE_WRITE_REQUIREMENT_CONFLICT: ${binding.profile_key}`);
+    profileReadOnly.set(binding.profile_key, readOnly);
   }
   db.close();
   const checks = registerCanaryChecks(dbFile, item);
@@ -72,7 +77,7 @@ for (const item of config.projects) {
   prepared.push({ item, workflowId, checks, directProfiles: Object.fromEntries(bindings.filter(binding => ["classifier", "researcher"].includes(binding.role_id)).map(binding => [binding.role_id, binding.profile_key])) });
 }
 
-const profiles = Object.fromEntries([...profileKeys].map(key => [key, { model: "deterministic-contract-v1", reasoningEffort: "low", readOnly: true }]));
+const profiles = Object.fromEntries([...profileKeys].map(key => [key, { model: "deterministic-contract-v1", reasoningEffort: "low", readOnly: profileReadOnly.get(key) }]));
 fs.writeFileSync(policyFile, JSON.stringify({ schemaVersion: 1, levels: { prototype: { maxCalls: 2, maxCorrectionCycles: 0, timeoutSec: 60 }, mvp: { maxCalls: 2, maxCorrectionCycles: 1, timeoutSec: 3600 } }, providers: { codex: { command: process.execPath, args: [fakeProvider], profiles } } }, null, 2), "utf8");
 
 const results = [];

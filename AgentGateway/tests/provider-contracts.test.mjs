@@ -11,8 +11,11 @@ const repositoryRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url))
 const cli = path.join(repositoryRoot, "src", "cli.mjs"), fakeProvider = path.join(repositoryRoot, "tests", "fixtures", "fake-provider.mjs");
 function temporaryRoot(prefix) { const parent = process.env.AGENT_GATEWAY_TEST_TEMP ?? os.tmpdir(); fs.mkdirSync(parent, { recursive: true }); return fs.mkdtempSync(path.join(parent, prefix)); }
 
-function execute(root, provider, task, mode = "pass") {
-  const result = spawnSync(process.execPath, [cli, "run", "--provider", provider, "--profile", `${provider}-contract`, "--level", "mvp", "--task-file", path.join(root, "task.md"), "--task", task], {
+function execute(root, provider, task, mode = "pass", options = {}) {
+  const profile = options.profile ?? `${provider}-contract`;
+  const args = [cli, "run", "--provider", provider, "--profile", profile, "--level", "mvp", "--role", options.role ?? "worker", "--task-file", path.join(root, "task.md"), "--task", task];
+  if (typeof options.requiresWrite === "boolean") args.push("--requires-write", String(options.requiresWrite));
+  const result = spawnSync(process.execPath, args, {
     cwd: repositoryRoot, encoding: "utf8", windowsHide: true,
     env: { ...process.env, AGENT_GATEWAY_POLICY: path.join(root, `policy-${mode}.json`), AGENT_GATEWAY_DATA: path.join(root, "data"), AGENT_GATEWAY_DB: path.join(root, "data", "gateway.sqlite"), AGENT_GATEWAY_TEMP: path.join(root, "temp"), CODEX_SOURCE_HOME: path.join(root, "provider-homes", "codex"), KIMI_SOURCE_HOME: path.join(root, "provider-homes", "kimi") }
   });
@@ -24,7 +27,10 @@ test("CLI harness adapters preserve identity, usage and never fall back", () => 
   fs.mkdirSync(path.join(root, "provider-homes", "codex"), { recursive: true }); fs.mkdirSync(path.join(root, "provider-homes", "kimi"), { recursive: true });
   fs.writeFileSync(path.join(root, "task.md"), "bounded provider contract fixture", "utf8");
   const harnesses = ["codex", "claude", "kimi", "opencode", "cursor"];
-  const policy = mode => ({ schemaVersion: 1, levels: { mvp: { maxCalls: 1, maxCorrectionCycles: 0, timeoutSec: 10 } }, providers: Object.fromEntries(harnesses.map(provider => [provider, { command: process.execPath, args: [fakeProvider, provider, mode], profiles: { [`${provider}-contract`]: { model: `${provider}-fixture-model`, modelProvider: `${provider}-model-provider`, reasoningEffort: "low", readOnly: true } } }])) });
+  const policy = mode => ({ schemaVersion: 1, levels: { mvp: { maxCalls: 1, maxCorrectionCycles: 0, timeoutSec: 10 } }, providers: Object.fromEntries(harnesses.map(provider => [provider, { command: process.execPath, args: [fakeProvider, provider, mode], profiles: {
+    [`${provider}-contract`]: { model: `${provider}-fixture-model`, modelProvider: `${provider}-model-provider`, reasoningEffort: "low", readOnly: true },
+    [`${provider}-writable`]: { model: `${provider}-fixture-model`, modelProvider: `${provider}-model-provider`, reasoningEffort: "low", readOnly: false }
+  } }])) });
   fs.writeFileSync(path.join(root, "policy-pass.json"), JSON.stringify(policy("pass"), null, 2));
   fs.writeFileSync(path.join(root, "policy-fail.json"), JSON.stringify(policy("fail"), null, 2));
 
@@ -44,7 +50,14 @@ test("CLI harness adapters preserve identity, usage and never fall back", () => 
   }
   const failed = execute(root, "codex", "fail-codex", "fail");
   assert.equal(failed.result.status, 9); assert.equal(failed.receipt.provider, "codex"); assert.equal(failed.receipt.status, "failed");
+  const mismatched = execute(root, "codex", "write-mismatch", "pass", { profile: "codex-writable", role: "documentator", requiresWrite: false });
+  assert.equal(mismatched.result.status, 77); assert.equal(mismatched.receipt, null);
+  assert.match(mismatched.result.stderr, /PROFILE_WRITE_REQUIREMENT_MISMATCH/);
+  assert.match(mismatched.result.stderr, /role=documentator; profile=codex-writable/);
+  const matched = execute(root, "codex", "write-match", "pass", { role: "documentator", requiresWrite: false });
+  assert.equal(matched.result.status, 0, matched.result.stderr); assert.equal(matched.receipt.status, "completed");
   const db = openGatewayDb(path.join(root, "data", "gateway.sqlite"));
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM receipts WHERE task_id='write-mismatch'").get().count, 0);
   assert.deepEqual(db.prepare("SELECT provider,status FROM receipts WHERE task_id='fail-codex'").all().map(row => ({ ...row })), [{ provider: "codex", status: "failed" }]);
   assert.deepEqual(db.prepare("SELECT provider,model_provider,COUNT(*) count FROM receipts WHERE task_id LIKE 'pass-%' GROUP BY provider,model_provider ORDER BY provider").all().map(row => ({ ...row })), harnesses.sort().map(provider => ({ provider, model_provider: `${provider}-model-provider`, count: 1 })));
   db.close(); fs.rmSync(root, { recursive: true, force: true });

@@ -167,6 +167,56 @@ function restoreHookTransaction(transaction) {
 
 function readState(file) { return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null; }
 
+function tableExists(db, name) { return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name)); }
+
+function effectiveProfile(universal, local, provider, profile) {
+  const base = universal?.providers?.[provider] ?? {};
+  const overlay = local?.providers?.[provider] ?? {};
+  const baseProfile = base.profiles?.[profile];
+  const localProfile = overlay.profiles?.[profile];
+  if (!baseProfile && !localProfile) return null;
+  return { ...(base.profileDefaults ?? {}), ...(overlay.profileDefaults ?? {}), ...(baseProfile ?? {}), ...(localProfile ?? {}) };
+}
+
+export function profileWriteRequirementDiagnostics({ workflowDatabase, gatewayPolicy, universalPolicy = null }) {
+  if (!workflowDatabase || !fs.existsSync(workflowDatabase)) return { status: "unavailable", reason: "workflow_database_missing", conflicts: [] };
+  if (!gatewayPolicy || !fs.existsSync(gatewayPolicy)) return { status: "unavailable", reason: "gateway_policy_missing", conflicts: [] };
+  const local = JSON.parse(fs.readFileSync(gatewayPolicy, "utf8"));
+  const universal = universalPolicy && fs.existsSync(universalPolicy) ? JSON.parse(fs.readFileSync(universalPolicy, "utf8")) : {};
+  const db = new DatabaseSync(workflowDatabase, { readOnly: true });
+  try {
+    const requiredTables = ["profiles", "role_profile_assignments", "role_contracts"];
+    if (!requiredTables.every(name => tableExists(db, name))) return { status: "unavailable", reason: "workflow_schema_not_ready", conflicts: [] };
+    const conflicts = [];
+    const assignments = db.prepare(`SELECT a.project_id,a.role_id,a.operational_level,p.provider,p.name AS profile,rc.boundaries_json
+      FROM role_profile_assignments a
+      JOIN profiles p ON p.id=a.profile_id
+      JOIN role_contracts rc ON rc.project_id=a.project_id AND rc.role_id=a.role_id AND rc.status='active'
+      WHERE a.enabled=1
+      ORDER BY a.project_id,a.role_id,a.operational_level,p.provider,p.name`).all();
+    for (const assignment of assignments) {
+      let boundaries;
+      try { boundaries = JSON.parse(assignment.boundaries_json ?? "{}"); } catch { continue; }
+      if (typeof boundaries.writes !== "boolean") continue;
+      const profile = effectiveProfile(universal, local, assignment.provider, assignment.profile);
+      if (!profile) continue;
+      const profileReadOnly = profile.readOnly === true;
+      if (boundaries.writes !== profileReadOnly) continue;
+      conflicts.push({
+        code: "PROFILE_WRITE_REQUIREMENT_MISMATCH",
+        project_id: assignment.project_id,
+        role_id: assignment.role_id,
+        operational_level: assignment.operational_level,
+        provider: assignment.provider,
+        profile: assignment.profile,
+        requires_write: boundaries.writes,
+        profile_read_only: profileReadOnly
+      });
+    }
+    return { status: "checked", reason: null, conflicts };
+  } finally { db.close(); }
+}
+
 export function installRelease(options) {
   const source = specificDirectory(options.source, "SOURCE");
   const destination = specificDirectory(options.destination, "DESTINATION");
@@ -184,6 +234,8 @@ export function installRelease(options) {
   const previous = fs.existsSync(destination) ? safeSibling(`${destination}.previous-${crypto.randomUUID()}`, destination, "previous") : null;
   const installedState = readState(stateFile);
   const workflowDatabase = options.workflowDatabase ?? installedState?.workflow_database ?? process.env.WORKFLOW_DB ?? path.join(dataRoot, "workflow.sqlite");
+  const gatewayPolicy = options.gatewayPolicy ?? installedState?.gateway_policy ?? path.join(dataRoot, "gateway", "policy.local.json");
+  const profileWriteRequirements = profileWriteRequirementDiagnostics({ workflowDatabase, gatewayPolicy, universalPolicy: path.join(source, "AgentGateway", "policy.json") });
   const targets = registeredHookTargets(workflowDatabase, options.hooks ?? []);
   const skillRoots = options.skillRoots ?? defaultSkillRoots();
   const sessionHookFiles = resolvedSessionHookFiles(options, skillRoots, installedState);
@@ -206,6 +258,8 @@ export function installRelease(options) {
       previous_release: previous,
       previous_version: previous ? releaseVersion(previous) : null,
       workflow_database: workflowDatabase,
+      gateway_policy: gatewayPolicy,
+      profile_write_requirement_diagnostics: profileWriteRequirements,
       hooks: [],
       legacy_hooks_removed: targets,
       skills: skillTransaction.applied,
@@ -314,12 +368,12 @@ function main() {
   const cli = argsObject(process.argv.slice(2));
   const command = cli._[0];
   const defaults = defaultInstallationPaths();
-  const common = { destination: path.resolve(String(cli.destination ?? defaults.application)), dataRoot: path.resolve(String(cli["data-root"] ?? defaults.data)), workflowDatabase: cli["workflow-db"] ? path.resolve(String(cli["workflow-db"])) : undefined, hooks: manifestHooks(cli["hook-manifest"]), skillRoots: manifestSkillRoots(cli["skill-roots"]), sessionHookFiles: manifestSessionHookFiles(cli["session-hook-files"]) };
+  const common = { destination: path.resolve(String(cli.destination ?? defaults.application)), dataRoot: path.resolve(String(cli["data-root"] ?? defaults.data)), workflowDatabase: cli["workflow-db"] ? path.resolve(String(cli["workflow-db"])) : undefined, gatewayPolicy: cli["gateway-policy"] ? path.resolve(String(cli["gateway-policy"])) : undefined, hooks: manifestHooks(cli["hook-manifest"]), skillRoots: manifestSkillRoots(cli["skill-roots"]), sessionHookFiles: manifestSessionHookFiles(cli["session-hook-files"]) };
   let result;
   if (command === "install" || command === "update") result = installRelease({ ...common, source: path.resolve(String(cli.source ?? "")) });
   else if (command === "rollback") result = rollbackRelease(common);
   else if (command === "uninstall") result = uninstallRelease(common);
-  else throw new Error("Usage: node tools/install.mjs install|update --source <extracted-release> [--destination <dir>] [--data-root <dir>] [--workflow-db <file>] [--hook-manifest <legacy-removal-json>] [--skill-roots <json>] [--session-hook-files <json>] | rollback | uninstall");
+  else throw new Error("Usage: node tools/install.mjs install|update --source <extracted-release> [--destination <dir>] [--data-root <dir>] [--workflow-db <file>] [--gateway-policy <file>] [--hook-manifest <legacy-removal-json>] [--skill-roots <json>] [--session-hook-files <json>] | rollback | uninstall");
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { applyHookInstallation, planHookInstallation } from "../../WorkflowPlatform/src/hook-installation.mjs";
 import { defaultInstallationPaths } from "../installation-paths.mjs";
 import { ensureDirectory, installRelease, rollbackRelease, uninstallRelease } from "../install.mjs";
@@ -101,6 +102,25 @@ test("install tolerates an unmigrated database and update preserves its register
     const updated = installRelease({ source: sourceB, destination, dataRoot, skillRoots: roots, sessionHookFiles: hooks, healthCheck });
     assert.equal(updated.workflow_database, database);
     assert.equal(updated.version, "0.6.3");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("install and update diagnose role assignments whose profiles violate write requirements", () => {
+  const root = temporaryRoot(), source = release(path.join(root, "source"), "0.6.12"), destination = path.join(root, "installed"), dataRoot = path.join(root, "data");
+  const database = path.join(dataRoot, "workflow", "workflow.sqlite"), gatewayPolicy = path.join(dataRoot, "gateway", "policy.local.json");
+  const roots = skillRoots(root), hooks = sessionHookFiles(root), healthCheck = candidate => assert.equal(fs.existsSync(path.join(candidate, "release-marker.txt")), true);
+  try {
+    fs.mkdirSync(path.dirname(database), { recursive: true }); fs.mkdirSync(path.dirname(gatewayPolicy), { recursive: true });
+    const db = new DatabaseSync(database);
+    db.exec("CREATE TABLE profiles(id TEXT PRIMARY KEY,provider TEXT NOT NULL,name TEXT NOT NULL,role_id TEXT); CREATE TABLE role_profile_assignments(project_id TEXT NOT NULL,role_id TEXT NOT NULL,profile_id TEXT NOT NULL,operational_level TEXT NOT NULL,enabled INTEGER NOT NULL); CREATE TABLE role_contracts(project_id TEXT NOT NULL,role_id TEXT NOT NULL,boundaries_json TEXT NOT NULL,status TEXT NOT NULL);");
+    db.prepare("INSERT INTO profiles VALUES('profile','codex','writable-documentator','documentator')").run();
+    db.prepare("INSERT INTO role_profile_assignments VALUES('project','documentator','profile','mvp',1)").run();
+    db.prepare("INSERT INTO role_contracts VALUES('project','documentator',?,'active')").run(JSON.stringify({ writes: false }));
+    db.close();
+    fs.writeFileSync(gatewayPolicy, JSON.stringify({ schemaVersion: 1, providers: { codex: { profiles: { "writable-documentator": { readOnly: false } } } } }));
+    const installed = installRelease({ source, destination, dataRoot, workflowDatabase: database, gatewayPolicy, skillRoots: roots, sessionHookFiles: hooks, healthCheck });
+    assert.equal(installed.profile_write_requirement_diagnostics.status, "checked");
+    assert.deepEqual(installed.profile_write_requirement_diagnostics.conflicts, [{ code: "PROFILE_WRITE_REQUIREMENT_MISMATCH", project_id: "project", role_id: "documentator", operational_level: "mvp", provider: "codex", profile: "writable-documentator", requires_write: false, profile_read_only: false }]);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

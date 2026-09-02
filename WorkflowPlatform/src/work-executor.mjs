@@ -592,6 +592,7 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
     receipt = await invokeWithinBudget(manager, request, () => {
       const gatewayInvocation = gatewayCall({
         provider: contract.provider, profile: contract.profile, level, role: roleId, taskFile,
+        requiresWrite: contract.boundaries.writes === true,
         project: runtime.db.prepare("SELECT root_path FROM projects WHERE id=?").get(runtime.get(runId).project_id).root_path,
         // Only the writable roots go to the provider, and the primary one is already there as --project.
         // A read-only root was collected into the prompt and is deliberately never handed to the sandbox.
