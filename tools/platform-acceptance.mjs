@@ -62,7 +62,9 @@ function git(cwd, ...parameters) {
 
 function initializeProject(projectRoot) {
   fs.mkdirSync(projectRoot, { recursive: true });
+  fs.mkdirSync(path.join(projectRoot, "src"));
   fs.writeFileSync(path.join(projectRoot, "README.md"), "# Zodchi platform acceptance\n", "utf8");
+  fs.writeFileSync(path.join(projectRoot, "src", "acceptance.mjs"), "export const acceptanceProject = 'read-only source evidence';\n", "utf8");
   writeJson(path.join(projectRoot, "package.json"), {
     name: "zodchi-platform-acceptance",
     version: "1.0.0",
