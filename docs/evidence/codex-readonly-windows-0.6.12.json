@@ -14,6 +14,8 @@
       "model_evidence": "No native file-reading tool is available in the supplied toolset.",
       "provider_error": "WARNING: PATH aliases unavailable under <temporary-dir>; prompt read from stdin. No file-read policy error was emitted.",
       "provider_error_raw_sha256": "1d0a39244bec316e0482e368615f2336d88cdc2ac7a82a418e84c5c0b5a8eea9",
+      "provider_error_raw_bytes": 317,
+      "provider_error_truncated": false,
       "gateway_receipt": {
         "receipt_id": "2026-09-02T14-48-39.024Z-codex-34a08e73-a443-418b-9aa4-ae3acc0be99e",
         "task_id": "codex-readonly-read-smoke-3273803a-e139-45da-bbf1-e3e20e1d9818",
@@ -37,6 +39,8 @@
       "model_evidence": "Rejected local PowerShell invocation: blocked by policy",
       "provider_error": "codex_core::tools::router: exec_command failed for <runtime-powershell>: CreateProcess { message: \"Rejected(<runtime-powershell> rejected: blocked by policy)\" }",
       "provider_error_raw_sha256": "74ac1a0679e453442ef54af95377bc5c097db800702d6e63365a39f0def3f03e",
+      "provider_error_raw_bytes": 877,
+      "provider_error_truncated": false,
       "gateway_receipt": {
         "receipt_id": "2026-09-02T14-48-19.587Z-codex-3b436fd0-4352-4ae9-8dae-981115c3ed41",
         "task_id": "codex-readonly-exec-smoke-66e74aa9-1562-4c19-9cb0-d9ac8fccfbf1",
