@@ -19,7 +19,7 @@ test("Workflow receives the transient structured output from AgentGateway while 
     assert.match(receipt.output, /TRANSIENT_STRUCTURED_MARKER/); assert.match(receipt.output, /output\.schema\.json/); assert.equal(receipt.usage.input_tokens, 3);
     assert.equal(receipt.privacyMode, "no_source_persistence");
     const db = new DatabaseSync(gatewayDb, { readOnly: true }), row = db.prepare("SELECT * FROM receipts WHERE task_id='integration-task'").get(); db.close(); assert.equal(JSON.stringify(row).includes("TRANSIENT_STRUCTURED_MARKER"), false); assert.equal(row.privacy_mode, "no_source_persistence");
-    await assert.rejects(callGateway({ gateway: path.resolve(repositoryRoot, "..", "AgentGateway", "src", "cli.mjs"), gatewayDatabase: gatewayDb, gatewayPolicy: policyFile, provider: "codex", profile: "writable", level: "mvp", role: "documentator", requiresWrite: false, taskFile, taskId: "write-mismatch" }), /PROFILE_WRITE_REQUIREMENT_MISMATCH: role=documentator; profile=writable/);
+    await assert.rejects(callGateway({ gateway: path.resolve(repositoryRoot, "..", "AgentGateway", "src", "cli.mjs"), gatewayDatabase: gatewayDb, gatewayPolicy: policyFile, provider: "codex", profile: "writable", level: "mvp", role: "documentator", requiresWrite: false, taskFile, taskId: "write-mismatch" }), /PROFILE_CAPABILITY_MISMATCH: role=documentator; profile=writable/);
   } finally {
     if (previousTemp === undefined) delete process.env.AGENT_GATEWAY_TEMP; else process.env.AGENT_GATEWAY_TEMP = previousTemp;
     if (previousHome === undefined) delete process.env.CODEX_SOURCE_HOME; else process.env.CODEX_SOURCE_HOME = previousHome;

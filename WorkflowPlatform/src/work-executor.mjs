@@ -14,6 +14,7 @@ import { normalizeResourceDeclaration } from "./resource-locks.mjs";
 import { loadRoleContract, parseRoleReceipt, rolePrompt, structuredHash } from "./role-contracts.mjs";
 import { WORKTREE_ALIAS, aliasDeclarations, registeredResources as registeredProjectResources } from "./project-resources.mjs";
 import { consumeCorrectionCycle, documentationOutcome, loadOperationalPolicy, loadQualityContract, operationalLevel, reviewerRequirement } from "./quality-contracts.mjs";
+import { executorCapabilityRequirements } from "./executor-capabilities.mjs";
 
 function runOperationalPolicy(runtime, runId, projectId, workflowId, level) {
   const legacy = loadOperationalPolicy(runtime.db, projectId, workflowId, level);
@@ -609,6 +610,7 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
     receipt = await invokeWithinBudget(manager, request, () => {
       const gatewayInvocation = gatewayCall({
         provider: contract.provider, profile: contract.profile, level, role: roleId, taskFile,
+        capabilityRequirements: executorCapabilityRequirements(contract),
         requiresWrite: contract.boundaries.writes === true,
         project: runtime.db.prepare("SELECT root_path FROM projects WHERE id=?").get(runtime.get(runId).project_id).root_path,
         // Only the writable roots go to the provider, and the primary one is already there as --project.

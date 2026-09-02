@@ -1,0 +1,27 @@
+{
+  "probe": "codex_browser_worker",
+  "status": "model_reported_unavailable",
+  "receipt_id": "2026-09-02T16-34-57.572Z-codex-b7d71b3c-06f5-436e-853a-b5534c6c5553",
+  "gateway_exit_code": 0,
+  "provider_status": "completed",
+  "plugin": "browser@openai-bundled",
+  "expected": {
+    "title": "Zodchi zodchi-browser-e30b0ff2-54aa-4601-94a5-4cee23251a56",
+    "body": "Body zodchi-browser-e30b0ff2-54aa-4601-94a5-4cee23251a56"
+  },
+  "reported": {
+    "status": "blocked",
+    "title": null,
+    "body": null,
+    "screenshot": false,
+    "evidence": "The required browser@openai-bundled plugin/API was unavailable in the node_repl environment: importing it returned “Module not found: browser@openai-bundled”, and agent.browsers was not defined."
+  },
+  "carried_plugins": [
+    "browser@openai-bundled"
+  ],
+  "carried_mcp_servers": [
+    "node_repl"
+  ],
+  "provider_error": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"<system-temp>\" (codex_home: AbsolutePathBuf(\"<probe-root>/temp/codex-home-nEdEyS\"))\nReading prompt from stdin...",
+  "temporary_database": "<probe-root>/gateway.sqlite"
+}

@@ -27,7 +27,13 @@ const config = json(path.resolve(args.config)), outputRoot = path.resolve(config
 if (fs.existsSync(outputRoot)) throw new Error(`EVIDENCE_OUTPUT_ALREADY_EXISTS: ${outputRoot}`);
 fs.mkdirSync(outputRoot, { recursive: true });
 const fakeProvider = path.join(repositoryRoot, "tests", "fixtures", "deterministic-workflow-provider.mjs"), policyFile = path.join(outputRoot, "gateway-policy.json"), providerHome = path.join(outputRoot, "empty-provider-home"), gatewayTemp = path.join(outputRoot, "gateway-temp");
-fs.mkdirSync(providerHome); process.env.CODEX_SOURCE_HOME = providerHome; process.env.AGENT_GATEWAY_TEMP = gatewayTemp;
+fs.mkdirSync(path.join(providerHome, "plugins", "cache", "fixture", "browser", "1.0.0"), { recursive: true });
+fs.writeFileSync(path.join(providerHome, "plugins", "cache", "fixture", "browser", "1.0.0", "fixture.txt"), "deterministic browser capability fixture\n", "utf8");
+fs.writeFileSync(path.join(providerHome, "config.toml"), [
+  '[plugins."browser@fixture"]', "enabled = true", "[marketplaces.fixture]", `source = ${JSON.stringify(providerHome.replaceAll("\\", "/"))}`,
+  "[mcp_servers.node_repl]", `command = ${JSON.stringify(process.execPath)}`
+].join("\n") + "\n", "utf8");
+process.env.CODEX_SOURCE_HOME = providerHome; process.env.AGENT_GATEWAY_TEMP = gatewayTemp;
 let db = openDb(dbFile);
 for (const item of config.projects) {
   const rootPath = path.resolve(item.root_path);
@@ -77,7 +83,13 @@ for (const item of config.projects) {
   prepared.push({ item, workflowId, checks, directProfiles: Object.fromEntries(bindings.filter(binding => ["classifier", "researcher"].includes(binding.role_id)).map(binding => [binding.role_id, binding.profile_key])) });
 }
 
-const profiles = Object.fromEntries([...profileKeys].map(key => [key, { model: "deterministic-contract-v1", reasoningEffort: "low", readOnly: profileReadOnly.get(key) }]));
+const profiles = Object.fromEntries([...profileKeys].map(key => [key, {
+  model: "deterministic-contract-v1", reasoningEffort: "low", readOnly: profileReadOnly.get(key),
+  ...(key.includes(".browser_worker.") ? { allowedPlugins: ["browser@fixture"], allowedMcpServers: ["node_repl"], capabilities: {
+    browser_automation: { status: "available", enforcement: "technical", access: "direct", evidenceRef: "fixture:deterministic-browser-worker" },
+    screen_capture: { status: "available", enforcement: "technical", access: "direct", evidenceRef: "fixture:deterministic-browser-worker" }
+  } } : {})
+}]));
 fs.writeFileSync(policyFile, JSON.stringify({ schemaVersion: 1, levels: { prototype: { maxCalls: 2, maxCorrectionCycles: 0, timeoutSec: 60 }, mvp: { maxCalls: 2, maxCorrectionCycles: 1, timeoutSec: 3600 } }, providers: { codex: { command: process.execPath, args: [fakeProvider], profiles } } }, null, 2), "utf8");
 
 const results = [];
