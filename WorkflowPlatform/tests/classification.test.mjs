@@ -365,6 +365,32 @@ test("software research cannot answer from a controlled document without supplie
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("a code-bearing non-software discipline also requires supplied source evidence", async () => {
+  const { root, project, dbFile, db } = fixture("workflow-game-research-source-required-");
+  fs.mkdirSync(path.join(project, "docs"));
+  fs.mkdirSync(path.join(project, "game"));
+  fs.writeFileSync(path.join(project, "docs", "Rules.md"), "Описание правила появления spawnEncounter.\n", "utf8");
+  fs.writeFileSync(path.join(project, "game", "encounter.ts"), "export function spawnEncounter() { return 'current source'; }\n", "utf8");
+  db.prepare("INSERT OR IGNORE INTO roles(id,name) VALUES('researcher','Researcher')").run();
+  db.prepare(`INSERT INTO role_contracts(id,project_id,role_id,version,purpose,boundaries_json,allowed_work_types_json,allowed_artifact_types_json,allowed_tools_json,allowed_skills_json,required_checks_json,allowed_transitions_json,allowed_profiles_json,context_limit_bytes,max_calls,max_correction_cycles,timeout_seconds,result_schema_key,prompt_template_version,escalation_json,status)
+    VALUES('role-researcher','project','researcher','1','research','{}','[]','[]','[]','[]','[]','[]','[]',65536,1,0,60,'research.v1','1','{}','active')`).run();
+  registerControlledDocument(db, { projectId: "project", path: "docs/Rules.md", authority: "owner", readRoles: "researcher" });
+  db.close();
+  const research = decision({
+    work_type: "research", artifact_type: "test_report", discipline: "game_design", planning_level: "L0", planning_required: false,
+    reply_mode: "research", resolved_objective: "Как устроен spawnEncounter?", reason: "Нужно проверить игровое правило по исходникам."
+  });
+  const result = await statelessProcessMessage({
+    message: "Как устроен spawnEncounter?", project, dbFile, workflowDefinition: definition(), execute: true,
+    gatewayCall: async request => request.role === "classifier"
+      ? receipt(JSON.stringify(research), "classifier-receipt")
+      : receipt(JSON.stringify({ schema_version: 1, status: "answered", answer: "Ответ только по документу.", inspected_paths: ["docs/Rules.md"], limitations: [] }), "research-receipt")
+  });
+  assert.equal(result.route, "failed");
+  assert.equal(result.error, "RESEARCH_SOURCE_EVIDENCE_REQUIRED");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("clarification produces plain questions and does not start productive roles", async () => {
   const { root, project, dbFile, db } = fixture("workflow-clarification-route-");
   db.close();

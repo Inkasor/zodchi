@@ -83,7 +83,13 @@ function boundedResearchInventory(discovery, maxBytes = 24_000) {
   return { roots, files, truncated: (discovery.sources ?? []).some(source => source.truncated) };
 }
 
-const SOURCE_RESEARCH_DISCIPLINES = new Set(["software", "one-c-development"]);
+// These disciplines can make implementation claims over source-bearing project scopes. A controlled
+// document may explain the implementation, but it cannot by itself prove the current code, data
+// pipeline, game, infrastructure, test, security or technical-art behavior.
+const SOURCE_RESEARCH_DISCIPLINES = new Set([
+  "software", "one-c-development", "data_engineering", "game_design",
+  "devops", "technical_art", "testing", "security"
+]);
 function requiresSourceEvidence(classification) { return SOURCE_RESEARCH_DISCIPLINES.has(classification?.discipline); }
 
 function researchSourceContext(discovery, objective, { sourceBytes = 32_000, maxFiles = 8, sourceRequired = false } = {}) {

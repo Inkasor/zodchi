@@ -292,25 +292,34 @@ const CODE_SHAPED = /[a-zа-яё][A-ZА-ЯЁ]|_/;
 const HARVEST = [
   { pattern: /([A-Za-z_Ѐ-ӿ][A-Za-z0-9_Ѐ-ӿ]{2,63})\s*[:=]/g, shaped: true },
   { pattern: /\.([A-Za-z_Ѐ-ӿ][A-Za-z0-9_Ѐ-ӿ]{2,63})/g, shaped: false },
-  { pattern: /\b([A-Za-z_Ѐ-ӿ][A-Za-z0-9_Ѐ-ӿ]*[a-zа-я][A-ZА-Я][A-Za-z0-9_Ѐ-ӿ]*)\b/g, shaped: true }
+  { pattern: /\b([A-Za-z_Ѐ-ӿ][A-Za-z0-9_Ѐ-ӿ]*[a-zа-я][A-ZА-Я][A-Za-z0-9_Ѐ-ӿ]*)\b/g, shaped: true },
+  // A bilingual project document is part of the corpus-owned vocabulary bridge too. On a line that
+  // actually matches the non-Latin subject, retain adjacent Latin technical words such as
+  // "external control plane". They are not guessed translations: every candidate is read from a
+  // subject-bearing project line and still has to pass the corpus-spread filter below.
+  { pattern: /\b([A-Za-z][A-Za-z0-9-]{4,63})\b/g, shaped: false, crossLanguage: true }
 ];
 
 // A name that turns up in most of the files it could turn up in describes the language, not the subject:
 // label, name, length, stdout. Rarity is what makes a name worth searching for, and it is measurable —
 // no list of forbidden words to keep up to date, and it adapts to whatever the project is written in.
 export function harvestIdentifiers(hitsByFile, exclude, limit = 8, subjectTerms = []) {
-  const total = new Map(), documents = new Map(), relevance = new Map();
+  const total = new Map(), documents = new Map(), relevance = new Map(), languageBridge = new Map();
   const excluded = new Set(exclude.map(item => item.toLowerCase()));
   for (const lines of hitsByFile) {
     const here = new Set();
-    for (const line of lines) {
+    for (const entry of lines) {
+      const line = typeof entry === "string" ? entry : entry.text;
+      const crossLanguageAllowed = typeof entry === "string" ? true : entry.cross_language;
       const loweredLine = line.toLowerCase();
       const subjectPositions = subjectTerms.map(term => loweredLine.indexOf(term.toLowerCase())).filter(index => index >= 0);
-      for (const { pattern, shaped } of HARVEST) {
+      for (const { pattern, shaped, crossLanguage } of HARVEST) {
+        if (crossLanguage && (!crossLanguageAllowed || !subjectPositions.length || !/[Ѐ-ӿ]/.test(line))) continue;
         for (const match of line.matchAll(pattern)) {
           const name = match[1];
           if (name.length < 5 || excluded.has(name.toLowerCase())) continue;
           if (shaped && !CODE_SHAPED.test(name)) continue;
+          if (crossLanguage) languageBridge.set(name, true);
           total.set(name, (total.get(name) ?? 0) + 1);
           const distance = subjectPositions.length ? Math.min(...subjectPositions.map(index => Math.abs(index - (match.index ?? 0)))) : 1000;
           const quality = subjectPositions.length * 1000 + Math.max(0, 1000 - distance);
@@ -327,7 +336,7 @@ export function harvestIdentifiers(hitsByFile, exclude, limit = 8, subjectTerms 
   // as `.equal()` is valid code, but it should not outrank `avgCost` merely because test helpers repeat
   // it more often on the first-pass lines. Corpus spread remains the first discriminator inside each
   // shape class, then repeated local evidence breaks ties.
-  return specific.sort((a, b) => (relevance.get(b[0]) ?? 0) - (relevance.get(a[0]) ?? 0) || Number(CODE_SHAPED.test(b[0])) - Number(CODE_SHAPED.test(a[0])) || (documents.get(a[0]) ?? 0) - (documents.get(b[0]) ?? 0) || b[1] - a[1] || b[0].length - a[0].length || a[0].localeCompare(b[0], "en")).slice(0, limit).map(([name]) => name);
+  return specific.sort((a, b) => Number(languageBridge.get(b[0]) ?? false) - Number(languageBridge.get(a[0]) ?? false) || (relevance.get(b[0]) ?? 0) - (relevance.get(a[0]) ?? 0) || Number(CODE_SHAPED.test(b[0])) - Number(CODE_SHAPED.test(a[0])) || (documents.get(a[0]) ?? 0) - (documents.get(b[0]) ?? 0) || b[1] - a[1] || b[0].length - a[0].length || a[0].localeCompare(b[0], "en")).slice(0, limit).map(([name]) => name);
 }
 
 // A word is written one way in the request and another in the code: "себестоимости" in a sentence,
@@ -336,7 +345,7 @@ export function harvestIdentifiers(hitsByFile, exclude, limit = 8, subjectTerms 
 function stem(word) { return word.length > 7 ? word.slice(0, word.length - 3) : word; }
 
 function matchingLines(text, terms, maxPerFile) {
-  const found = [], counts = new Map();
+  const found = [], counts = new Map(), firstByTerm = new Map();
   const prepared = terms.map((term, priority) => ({ term, needle: term.toLowerCase(), priority }));
   const lines = text.split(/\r?\n/);
   for (const [index, line] of lines.entries()) {
@@ -345,6 +354,7 @@ function matchingLines(text, terms, maxPerFile) {
     for (const hit of hits) {
       counts.set(hit.term, (counts.get(hit.term) ?? 0) + 1);
       const candidate = { line: index + 1, term: hit.term, text: line.trim().slice(0, 240), priority: hit.priority };
+      if (!firstByTerm.has(hit.term)) firstByTerm.set(hit.term, candidate);
       if (found.length < maxPerFile) { found.push(candidate); continue; }
       // Do not let six generic matches near the top of a large module hide an exact identifier near
       // the bottom. Keep a fixed-size best set over the whole file, ordered by request-derived term
@@ -356,8 +366,18 @@ function matchingLines(text, terms, maxPerFile) {
       if (candidate.priority < found[worst].priority || (candidate.priority === found[worst].priority && candidate.line < found[worst].line)) found[worst] = candidate;
     }
   }
+  // Preserve one occurrence for every request-derived term before repeated matches consume the cap.
+  // Otherwise a long changelog with many early "check" lines can erase the first "operation" line,
+  // which is exactly where bilingual technical vocabulary is often introduced.
+  const diverse = [...firstByTerm.values()].sort((left, right) => left.priority - right.priority || left.line - right.line).slice(0, maxPerFile);
+  const diverseKeys = new Set(diverse.map(item => `${item.term}\0${item.line}`));
+  const remaining = found
+    .filter(item => !diverseKeys.has(`${item.term}\0${item.line}`))
+    .sort((left, right) => left.priority - right.priority || left.line - right.line)
+    .slice(0, Math.max(0, maxPerFile - diverse.length));
+  const selected = [...diverse, ...remaining].sort((left, right) => left.priority - right.priority || left.line - right.line);
   return {
-    matches: found.sort((left, right) => left.priority - right.priority || left.line - right.line).map(({ priority, ...item }) => item),
+    matches: selected.map(({ priority, ...item }) => item),
     counts
   };
 }
@@ -374,6 +394,7 @@ export function searchSources(roots, scope, terms, { maxFiles = 40, maxMatchesPe
   const files = [];
   const termPriority = new Map(terms.map((term, index) => [term, index]));
   const indexed = new Map(indexedTerms.map(term => [term.toLowerCase(), { term, matched_files: 0, matched_lines: 0, paths: [], paths_truncated: false }]));
+  const matchedFilesByTerm = new Map();
   let opened = 0, eligible = 0, skippedLarge = 0, readErrors = 0, scanTruncated = false;
   const listings = [];
   for (const root of roots) {
@@ -394,6 +415,7 @@ export function searchSources(roots, scope, terms, { maxFiles = 40, maxMatchesPe
       const { matches, counts } = matchingLines(text, terms, maxMatchesPerFile);
       const shownPath = displayPath(root, relative);
       for (const [term, count] of counts) {
+        if (count > 0) matchedFilesByTerm.set(term, (matchedFilesByTerm.get(term) ?? 0) + 1);
         const statistic = indexed.get(term.toLowerCase());
         if (!statistic || count <= 0) continue;
         statistic.matched_files += 1;
@@ -409,9 +431,17 @@ export function searchSources(roots, scope, terms, { maxFiles = 40, maxMatchesPe
   // considered. Terms keep their request-derived order, so an exact avgCost match outranks a generic
   // identifier harvested later from project prose.
   const priority = file => Math.min(...file.matches.map(match => termPriority.get(match.term) ?? terms.length));
-  const pathAffinity = file => preferSourceCode ? indexedTerms.filter(term => file.path.toLowerCase().includes(String(term).toLowerCase())).length : 0;
+  const affinityTerms = indexedTerms.length ? indexedTerms : terms;
+  const pathAffinity = file => preferSourceCode ? affinityTerms.filter(term => file.path.toLowerCase().includes(String(term).toLowerCase())).length : 0;
+  // When prose supplied no explicit identifier, rare corpus-derived terms carry more information than
+  // generic words such as status or message. The score is measured from this scan, not maintained as a
+  // language-specific stoplist, and only affects the source-preferred research contour.
+  const rarity = file => preferSourceCode && !indexedTerms.length
+    ? [...new Set(file.matches.map(match => match.term))].reduce((score, term) => score + 1 / Math.max(1, matchedFilesByTerm.get(term) ?? 1), 0)
+    : 0;
   files.sort((a, b) => (preferSourceCode ? Number(!isSourceCodePath(a.path)) - Number(!isSourceCodePath(b.path)) : 0)
     || pathAffinity(b) - pathAffinity(a)
+    || rarity(b) - rarity(a)
     || priority(a) - priority(b)
     || new Set(b.matches.map(match => match.term)).size - new Set(a.matches.map(match => match.term)).size
     || b.matches.length - a.matches.length
@@ -451,7 +481,12 @@ export function expandTerms(roots, scope, message, options = {}) {
   const spread = Math.max(1, Math.ceil(Math.max(first.searched_files, first.files.length) * 0.34));
   const subject = stems.filter(item => filesPerStem.has(item) && filesPerStem.get(item) <= spread);
   const hitsByFile = first.files
-    .map(file => file.matches.filter(match => subject.includes(match.term)).map(match => match.text))
+    .map(file => file.matches.filter(match => subject.includes(match.term)).map(match => ({
+      text: match.text,
+      // Bare Latin words bridge human languages only in prose documents. Source files continue to
+      // contribute explicit identifiers, but syntax such as const/return cannot become vocabulary.
+      cross_language: !isSourceCodePath(file.path)
+    })))
     .filter(lines => lines.length);
   const harvested = harvestIdentifiers(hitsByFile, [...prose, ...stems], options.identifierTerms ?? 16, subject);
   return { code, prose, subject, harvested, terms: [...new Set([...code, ...harvested])] };
