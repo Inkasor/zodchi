@@ -1,6 +1,6 @@
 {
-  "schema_version": 2,
-  "checked_at": "2026-09-02T14:00:14.211Z",
+  "schema_version": 3,
+  "checked_at": "2026-09-02T14:48:39.024Z",
   "platform": "win32",
   "provider": "codex",
   "profile": "zodchi-researcher",
@@ -8,13 +8,15 @@
   "probes": [
     {
       "capability": "native_file_read_without_process_execution",
-      "status": "unavailable",
+      "status": "model_reported_unavailable",
       "target": "WorkflowPlatform/src/work-executor.mjs",
       "reported_value": null,
-      "evidence": "No native file-reading tool is available.",
+      "model_evidence": "No native file-reading tool is available in the supplied toolset.",
+      "provider_error": "WARNING: PATH aliases unavailable under <temporary-dir>; prompt read from stdin. No file-read policy error was emitted.",
+      "provider_error_raw_sha256": "1d0a39244bec316e0482e368615f2336d88cdc2ac7a82a418e84c5c0b5a8eea9",
       "gateway_receipt": {
-        "receipt_id": "2026-09-02T13-59-56.944Z-codex-876e493b-c721-46c2-b4e3-3e07a1085ca3",
-        "task_id": "codex-readonly-read-smoke-d4be6715-eb37-4bde-85c7-64fd112a5e44",
+        "receipt_id": "2026-09-02T14-48-39.024Z-codex-34a08e73-a443-418b-9aa4-ae3acc0be99e",
+        "task_id": "codex-readonly-read-smoke-3273803a-e139-45da-bbf1-e3e20e1d9818",
         "provider": "codex",
         "profile": "zodchi-researcher",
         "role": "researcher",
@@ -23,8 +25,8 @@
         "calls": 1,
         "model": "gpt-5.6-luna",
         "reasoning_effort": "low",
-        "contract_hash": "e8af9278efdcc7761cd91924c883d265ba0ef8e93370664131b14a456c082707",
-        "result_hash": "b074d658eff2712fd027366136f5d53c89eadcb8b4f0beace1dbfecd7bc8ea8d",
+        "contract_hash": "56e443a47369445e52c418b70dddc1538f1e627c6cf297610002bed4f71463e3",
+        "result_hash": "0535800c79581c3d5ba36112040635cc34b319bb924a2bfc06206cbf95680ff7",
         "privacy_mode": "no_source_persistence"
       }
     },
@@ -32,10 +34,12 @@
       "capability": "local_process_execution",
       "status": "blocked_by_policy",
       "reported_value": null,
-      "evidence": "Rejected local PowerShell invocation: blocked by policy",
+      "model_evidence": "Rejected local PowerShell invocation: blocked by policy",
+      "provider_error": "codex_core::tools::router: exec_command failed for <runtime-powershell>: CreateProcess { message: \"Rejected(<runtime-powershell> rejected: blocked by policy)\" }",
+      "provider_error_raw_sha256": "74ac1a0679e453442ef54af95377bc5c097db800702d6e63365a39f0def3f03e",
       "gateway_receipt": {
-        "receipt_id": "2026-09-02T14-00-14.211Z-codex-1ab02621-7f8f-4a8e-9fa3-1b67d2649c43",
-        "task_id": "codex-readonly-exec-smoke-7c3905a5-f3e8-49bd-b22b-a0dc774d0512",
+        "receipt_id": "2026-09-02T14-48-19.587Z-codex-3b436fd0-4352-4ae9-8dae-981115c3ed41",
+        "task_id": "codex-readonly-exec-smoke-66e74aa9-1562-4c19-9cb0-d9ac8fccfbf1",
         "provider": "codex",
         "profile": "zodchi-researcher",
         "role": "researcher",
@@ -44,14 +48,20 @@
         "calls": 1,
         "model": "gpt-5.6-luna",
         "reasoning_effort": "low",
-        "contract_hash": "c711ca4893149507a1723defa52ae0215481a6c4b77c158e4eb4d4009c205ab0",
-        "result_hash": "bf14e159705bbdacae9adf3db075dbd1df89690622f34657fa6c206bccd1b37e",
+        "contract_hash": "84d6bbf8c6659656c13bbf0d1f9ef2dc644cb7f6892d3d830692e85f2785d149",
+        "result_hash": "e599ba8b951327a3ea822993fd106b58a9b19e2f8dc7df16d5172923331bf269",
         "privacy_mode": "no_source_persistence"
       }
     }
   ],
-  "retained_gateway_databases": "operator-retained; locate both by their exact gateway receipt ids outside the portable release",
-  "finding": "The read-only Codex contour exposes no native file-reading tool, while its process-running tool is rejected by policy. Provider completion is therefore not evidence that repository sources were inspected; relevant source content must be supplied by the platform for this contour.",
+  "excluded_diagnostic_runs": [
+    {
+      "receipt_id": "2026-09-02T13-57-50.252Z-codex-a29b3df3-5962-47eb-af61-73b29e53ccc9",
+      "reason": "The pre-parser diagnostic completed, but no_source_persistence leaves no recoverable model output with which to classify its result; it is retained for audit and excluded from the finding."
+    }
+  ],
+  "retained_gateway_databases": "operator-retained; locate the two accepted probes and the excluded diagnostic by their exact gateway receipt ids outside the portable release",
+  "finding": "The native-read probe is a model self-report that no native reader was exposed; it is not itself a technical observation. The separate process probe records a provider-side CreateProcess policy rejection. Together, for this Codex contour where no native reader was exposed and filesystem access otherwise depends on process execution, repository contents cannot be acquired directly and must be supplied by WorkflowPlatform.",
   "reproduce": [
     "node tools/codex-readonly-smoke.mjs --project <project> --policy <policy.local.json> --profile <read-only-codex-profile> --probe read --keep",
     "node tools/codex-readonly-smoke.mjs --project <project> --policy <policy.local.json> --profile <read-only-codex-profile> --probe exec --keep"
