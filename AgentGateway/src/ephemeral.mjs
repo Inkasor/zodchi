@@ -4,7 +4,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 const MARKER = ".agent-gateway-ephemeral.json";
-const PREFIXES = ["codex-home-", "kimi-home-", "opencode-home-"];
+const PREFIXES = ["codex-home-", "claude-home-", "kimi-home-", "opencode-home-"];
 
 function isRunning(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -153,6 +153,24 @@ function selectTomlTables(sources, allowed, prefix = MCP_PREFIX) {
   return { carried, withheld, shadowed, sections };
 }
 
+function selectJsonServers(sources, allowed) {
+  const allowedNames = new Set(allowed ?? []);
+  const selected = new Map(), shadowed = [];
+  for (const { scope, servers } of sources) {
+    if (!servers || Array.isArray(servers) || typeof servers !== "object") continue;
+    for (const [name, config] of Object.entries(servers)) {
+      if (selected.has(name)) shadowed.push({ scope: selected.get(name).scope, name, by_scope: scope });
+      selected.set(name, { scope, name, config });
+    }
+  }
+  const carried = [], withheld = [], config = {};
+  for (const item of selected.values()) {
+    if (allowedNames.has(item.name)) { carried.push({ scope: item.scope, name: item.name }); config[item.name] = item.config; }
+    else withheld.push({ scope: item.scope, name: item.name });
+  }
+  return { carried, withheld, shadowed, config };
+}
+
 function copyAllowedPluginCaches(sourceHome, targetHome, allowedPlugins) {
   const copied = [];
   for (const id of allowedPlugins ?? []) {
@@ -179,20 +197,40 @@ function capabilityReport(provider, { skills, mcp, plugins = { policy: "disabled
   return Object.freeze({
     provider,
     home: "ephemeral",
-    skills: Object.freeze({ policy: "allowlist", allowed: Object.freeze(skills.allowed), withheld: Object.freeze(skills.withheld) }),
+    skills: Object.freeze({ policy: skills.policy ?? "allowlist", allowed: Object.freeze(skills.allowed), withheld: Object.freeze(skills.withheld) }),
     mcp_servers: Object.freeze({ policy: mcp.policy, carried: Object.freeze(mcp.carried ?? []), withheld: Object.freeze(mcp.withheld ?? []), shadowed: Object.freeze(mcp.shadowed ?? []) }),
     plugins: Object.freeze({ policy: plugins.policy, carried: Object.freeze(plugins.carried ?? []), withheld: Object.freeze(plugins.withheld ?? []) })
   });
 }
 
 export function createProviderEnvironment(provider, { tempRoot, sourceHome, sourceConfig = null, profileConfig = {}, projectRoot = null }) {
-  if (!["codex", "kimi", "opencode"].includes(provider)) return { env: {}, directory: null, capabilities: null, cleanup() {} };
+  if (!["codex", "claude", "kimi", "opencode"].includes(provider)) return { env: {}, directory: null, capabilities: null, cleanup() {} };
+  if (provider === "claude" && !Array.isArray(profileConfig.allowedMcpServers)) return { env: {}, directory: null, capabilities: null, cleanup() {} };
   fs.mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
   cleanupConfirmedOrphans(tempRoot);
   const directory = fs.mkdtempSync(path.join(tempRoot, `${provider}-home-`));
   try {
     restrictDirectory(directory);
     fs.writeFileSync(path.join(directory, MARKER), JSON.stringify({ owner: "agent-gateway", provider, pid: process.pid, createdAt: new Date().toISOString() }), { encoding: "utf8", mode: 0o600 });
+    if (provider === "claude") {
+      const homeConfig = jsonIfPresent(sourceConfig);
+      const projectConfig = jsonIfPresent(projectRoot ? path.join(projectRoot, ".mcp.json") : null);
+      const mcp = selectJsonServers([
+        { scope: "home", servers: homeConfig.mcpServers },
+        { scope: "project", servers: projectConfig.mcpServers }
+      ], profileConfig.allowedMcpServers);
+      const mcpConfig = path.join(directory, "mcp.json");
+      fs.writeFileSync(mcpConfig, `${JSON.stringify({ mcpServers: mcp.config }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+      return {
+        directory,
+        env: { AGENT_GATEWAY_CLAUDE_MCP_CONFIG: mcpConfig },
+        capabilities: capabilityReport(provider, {
+          skills: { policy: "ambient", allowed: [], withheld: [] },
+          mcp: { policy: "allowlist", carried: mcp.carried, withheld: mcp.withheld, shadowed: mcp.shadowed }
+        }),
+        cleanup: () => removeDirectory(directory)
+      };
+    }
     if (provider === "codex") {
       fs.mkdirSync(path.join(directory, "skills"), { recursive: true });
       copyIfPresent(sourceHome, directory, "auth.json");

@@ -3,7 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
+import { readBrowserSentinelEvidence, startBrowserSentinel } from "./browser-sentinel.mjs";
 
 const REPORT_SCHEMA_VERSION = 2;
 
@@ -41,90 +42,6 @@ function extractModelText(text) {
   return String(text ?? "").trim();
 }
 
-async function startSentinelServer(route, title, body, requestLog, resourceToken) {
-  const source = `
-const http = require("node:http");
-const fs = require("node:fs");
-const [route, title, body, requestLog, resourceToken] = process.argv.slice(1);
-const scriptRoute = route + "/runtime-" + resourceToken + ".js";
-const imageRoute = route + "/pixel-" + resourceToken + ".png";
-const beaconRoute = route + "/executed-" + resourceToken;
-const server = http.createServer((request, response) => {
-  fs.appendFileSync(requestLog, JSON.stringify({
-    method: request.method,
-    url: request.url,
-    user_agent: request.headers["user-agent"] || null,
-    sec_fetch_mode: request.headers["sec-fetch-mode"] || null,
-    sec_fetch_dest: request.headers["sec-fetch-dest"] || null,
-    referer: request.headers.referer || null
-  }) + "\\n");
-  response.setHeader("Cache-Control", "no-store");
-  if (request.url === route) {
-    response.setHeader("Content-Type", "text/html; charset=utf-8");
-    response.end("<!doctype html><title>" + title + "</title><main>" + body + "</main><img alt='' src='" + imageRoute + "'><script src='" + scriptRoute + "'></script>");
-    return;
-  }
-  if (request.url === scriptRoute) {
-    response.setHeader("Content-Type", "text/javascript; charset=utf-8");
-    response.end("fetch(" + JSON.stringify(beaconRoute) + ", { cache: 'no-store' }).catch(() => {});");
-    return;
-  }
-  if (request.url === imageRoute) {
-    response.setHeader("Content-Type", "image/png");
-    response.end(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64"));
-    return;
-  }
-  if (request.url === beaconRoute) { response.statusCode = 204; response.end(); return; }
-  response.statusCode = 404; response.end("not found");
-});
-server.listen(0, "127.0.0.1", () => process.stdout.write(String(server.address().port) + "\\n"));
-for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => server.close(() => process.exit(0)));
-`;
-  const child = spawn(process.execPath, ["-e", source, route, title, body, requestLog, resourceToken], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-  const port = await new Promise((resolve, reject) => {
-    let stdout = "", stderr = "";
-    const timeout = setTimeout(() => { child.kill(); reject(new Error(`BROWSER_SMOKE_SERVER_TIMEOUT: ${stderr}`)); }, 10_000);
-    child.stderr.on("data", chunk => { stderr += String(chunk); });
-    child.stdout.on("data", chunk => {
-      stdout += String(chunk);
-      const line = stdout.split(/\r?\n/u)[0];
-      if (!/^\d+$/u.test(line)) return;
-      clearTimeout(timeout); resolve(Number(line));
-    });
-    child.once("error", error => { clearTimeout(timeout); reject(error); });
-    child.once("exit", code => { if (!stdout.includes("\n")) { clearTimeout(timeout); reject(new Error(`BROWSER_SMOKE_SERVER_EXIT: ${code}: ${stderr}`)); } });
-  });
-  return {
-    child,
-    url: `http://127.0.0.1:${port}${route}`,
-    routes: {
-      document: route,
-      script: `${route}/runtime-${resourceToken}.js`,
-      image: `${route}/pixel-${resourceToken}.png`,
-      beacon: `${route}/executed-${resourceToken}`
-    }
-  };
-}
-
-function readRequestLog(file) {
-  if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) return [];
-  return fs.readFileSync(file, "utf8").split(/\r?\n/u).filter(Boolean).map(line => parsedJson(line)).filter(Boolean);
-}
-
-function browserRequestEvidence(requests, routes) {
-  const browserAgent = /(?:Chrome|Chromium|Edg|Firefox|Safari)\//u;
-  const observed = kind => requests.find(item => item.url === routes[kind]);
-  const document = observed("document"), script = observed("script"), image = observed("image"), beacon = observed("beacon");
-  const userAgent = document?.user_agent ?? null;
-  const confirmed = Boolean(
-    document && script && image && beacon && browserAgent.test(userAgent ?? "") &&
-    document.sec_fetch_mode === "navigate" && document.sec_fetch_dest === "document" &&
-    script.sec_fetch_dest === "script" && image.sec_fetch_dest === "image" &&
-    [script, image, beacon].every(item => item.user_agent === userAgent)
-  );
-  return { confirmed, user_agent: userAgent, requests };
-}
-
 const cli = argsObject(process.argv.slice(2));
 const project = path.resolve(String(cli.project ?? ""));
 const sourcePolicy = path.resolve(String(cli.policy ?? ""));
@@ -152,7 +69,7 @@ const route = `/${sentinel}`;
 const title = `Zodchi ${crypto.randomUUID()}`;
 const body = `Body ${crypto.randomUUID()}`;
 const resourceToken = crypto.randomUUID();
-const sentinelServer = await startSentinelServer(route, title, body, requestLog, resourceToken);
+const sentinelServer = await startBrowserSentinel({ route, title, body, requestLog, resourceToken });
 const browserLabel = surface === "auto" ? "an available browser selected for the target URL" : surface === "iab" ? "the in-app Browser" : surface === "chrome" ? "Chrome" : "Edge";
 const overlay = {
   schemaVersion: localPolicy.schemaVersion ?? 1,
@@ -193,7 +110,7 @@ try {
   try { modelResult = JSON.parse(extractModelText(receipt?.output)); } catch { /* reported below */ }
   const carriedPlugins = receipt?.environment?.provider_environment?.plugins?.carried?.map(item => item.id) ?? [];
   const carriedMcp = receipt?.environment?.provider_environment?.mcp_servers?.carried?.map(item => item.name) ?? [];
-  const sentinelEvidence = browserRequestEvidence(readRequestLog(requestLog), sentinelServer.routes);
+  const sentinelEvidence = readBrowserSentinelEvidence(requestLog, sentinelServer.routes);
   const providerError = String(receipt?.error ?? child.stderr ?? "").trim().replaceAll(root, "<probe-root>").replaceAll(os.tmpdir(), "<system-temp>").slice(0, 4000);
   const browserConfirmed = receipt?.status === "completed" && modelResult?.status === "observed" && modelResult.title === title && modelResult.body === body && sentinelEvidence.confirmed && carriedPlugins.includes(plugin) && carriedMcp.includes("node_repl");
   const captureReported = capture && modelResult?.screenshot === true;

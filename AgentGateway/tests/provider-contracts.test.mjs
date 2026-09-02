@@ -17,7 +17,7 @@ function execute(root, provider, task, mode = "pass", options = {}) {
   if (options.capabilityRequirements !== null) args.push("--capability-requirements", JSON.stringify(options.capabilityRequirements ?? { required: ["context_input"], forbidden: ["project_write"] }));
   const result = spawnSync(process.execPath, args, {
     cwd: repositoryRoot, encoding: "utf8", windowsHide: true,
-    env: { ...process.env, AGENT_GATEWAY_POLICY: path.join(root, `policy-${mode}.json`), AGENT_GATEWAY_DATA: path.join(root, "data"), AGENT_GATEWAY_DB: path.join(root, "data", "gateway.sqlite"), AGENT_GATEWAY_TEMP: path.join(root, "temp"), CODEX_SOURCE_HOME: path.join(root, "provider-homes", "codex"), KIMI_SOURCE_HOME: path.join(root, "provider-homes", "kimi") }
+    env: { ...process.env, AGENT_GATEWAY_POLICY: path.join(root, `policy-${mode}.json`), AGENT_GATEWAY_DATA: path.join(root, "data"), AGENT_GATEWAY_DB: path.join(root, "data", "gateway.sqlite"), AGENT_GATEWAY_TEMP: path.join(root, "temp"), CODEX_SOURCE_HOME: path.join(root, "provider-homes", "codex"), CLAUDE_SOURCE_MCP_CONFIG: path.join(root, "provider-homes", "claude.json"), KIMI_SOURCE_HOME: path.join(root, "provider-homes", "kimi") }
   });
   return { result, receipt: result.stdout.trim() ? JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1)) : null };
 }
@@ -25,11 +25,16 @@ function execute(root, provider, task, mode = "pass", options = {}) {
 test("CLI harness adapters preserve identity, usage and never fall back", () => {
   const root = temporaryRoot("gateway-provider-contracts-");
   fs.mkdirSync(path.join(root, "provider-homes", "codex"), { recursive: true }); fs.mkdirSync(path.join(root, "provider-homes", "kimi"), { recursive: true });
+  fs.writeFileSync(path.join(root, "provider-homes", "claude.json"), JSON.stringify({ mcpServers: { playwright: { command: "fixture-playwright" }, personal: { command: "fixture-personal" } } }));
   fs.writeFileSync(path.join(root, "task.md"), "bounded provider contract fixture", "utf8");
   const harnesses = ["codex", "claude", "kimi", "opencode", "cursor"];
   const policy = mode => ({ schemaVersion: 1, levels: { mvp: { maxCalls: 1, maxCorrectionCycles: 0, timeoutSec: 10 } }, providers: Object.fromEntries(harnesses.map(provider => [provider, { command: process.execPath, args: [fakeProvider, provider, mode], profiles: {
     [`${provider}-contract`]: { model: `${provider}-fixture-model`, modelProvider: `${provider}-model-provider`, reasoningEffort: "low", readOnly: true, capabilities: { project_write: { status: "unavailable", enforcement: "technical", access: "none", evidenceRef: `fixture:${provider}-readonly` } } },
-    [`${provider}-writable`]: { model: `${provider}-fixture-model`, modelProvider: `${provider}-model-provider`, reasoningEffort: "low", readOnly: false }
+    [`${provider}-writable`]: { model: `${provider}-fixture-model`, modelProvider: `${provider}-model-provider`, reasoningEffort: "low", readOnly: false },
+    ...(provider === "claude" ? {
+      "claude-browser-mcp": { model: "claude-fixture-model", modelProvider: "claude-model-provider", reasoningEffort: "low", readOnly: true, allowedMcpServers: ["playwright"], browserMcpServer: "playwright", capabilities: { project_write: { status: "unavailable", enforcement: "technical", access: "none", evidenceRef: "fixture:claude-readonly" } } },
+      "claude-browser-missing": { model: "claude-fixture-model", modelProvider: "claude-model-provider", reasoningEffort: "low", readOnly: true, allowedMcpServers: ["missing"], browserMcpServer: "missing", capabilities: { project_write: { status: "unavailable", enforcement: "technical", access: "none", evidenceRef: "fixture:claude-readonly" } } }
+    } : {})
   } }])) });
   fs.writeFileSync(path.join(root, "policy-pass.json"), JSON.stringify(policy("pass"), null, 2));
   fs.writeFileSync(path.join(root, "policy-fail.json"), JSON.stringify(policy("fail"), null, 2));
@@ -64,6 +69,15 @@ test("CLI harness adapters preserve identity, usage and never fall back", () => 
   assert.equal(matched.result.status, 0, matched.result.stderr); assert.equal(matched.receipt.status, "completed");
   const writer = execute(root, "codex", "writer-match", "pass", { profile: "codex-writable", capabilityRequirements: { required: ["context_input", "project_write"], forbidden: [] } });
   assert.equal(writer.result.status, 0, writer.result.stderr);
+  const claudeBrowser = execute(root, "claude", "claude-browser-mcp", "pass", { profile: "claude-browser-mcp" });
+  assert.equal(claudeBrowser.result.status, 0, claudeBrowser.result.stderr);
+  assert.match(claudeBrowser.receipt.output, /--strict-mcp-config/);
+  assert.match(claudeBrowser.receipt.output, /--mcp-config/);
+  assert.deepEqual(claudeBrowser.receipt.environment.provider_environment.mcp_servers.carried, [{ scope: "home", name: "playwright" }]);
+  assert.deepEqual(claudeBrowser.receipt.environment.provider_environment.mcp_servers.withheld, [{ scope: "home", name: "personal" }]);
+  const missingClaudeBrowser = execute(root, "claude", "claude-browser-missing", "pass", { profile: "claude-browser-missing" });
+  assert.equal(missingClaudeBrowser.result.status, 78);
+  assert.match(missingClaudeBrowser.receipt.error, /BROWSER_MCP_SERVER_NOT_CARRIED: missing/);
 
   const preflight = spawnSync(process.execPath, [cli, "profiles-check"], {
     cwd: repositoryRoot, encoding: "utf8", windowsHide: true,

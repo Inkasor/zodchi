@@ -13,7 +13,9 @@
     <rule id="parallel_settlement">A parallel review group waits for every admitted invocation to settle. On participant failure, outstanding calls are cancelled and closed before WorkflowPlatform exposes a terminal state or calculates final budget use.</rule>
     <rule id="receipt_linkage">Every completed or failed call with a receipt is linked to its run before role-result validation evidence is recorded; schema repair cannot erase the original call or spend.</rule>
     <rule id="executor_capability_contract">Every invocation carries an explicit capability requirement. Gateway derives the assigned profile's provider-specific capability matrix and starts the provider only when every required capability is technically available and every forbidden capability is technically unavailable; declarative and unknown guarantees fail closed.</rule>
-    <rule id="browser_profile_boundary">A Codex browser profile receives only browser or Chrome plugins and MCP servers named by its local allowlists. That configuration remains an unknown capability until a live smoke for the exact Gateway contour records an explicit technical profile capability; ambient desktop plugins are not inherited by other Gateway profiles.</rule>
+    <rule id="browser_profile_boundary">A browser profile names exactly one optional browser MCP server through browserMcpServer and includes it in allowedMcpServers. Codex and OpenCode copy only named native MCP registrations; Claude receives one generated --mcp-config under --strict-mcp-config. A named server that is absent from the effective provider environment fails before the provider starts.</rule>
+    <rule id="browser_profile_support">The registered MCP browser contour is supported for Codex, Claude Code and OpenCode. Kimi's inherited configuration and Cursor's unverified non-interactive harness cannot claim this technical contour. Desktop Browser or Chrome plugins remain a Codex-only optional preview and are never inherited ambiently.</rule>
+    <rule id="browser_capability_evidence">Registration and transport establish MCP availability but leave browser automation and screen capture unknown. An exact live smoke may bind browser automation to a technical evidence receipt; screen capture additionally requires a retained artifact and digest. Policy cannot claim either technical capability without the registered contour prerequisite and an evidence reference.</rule>
     <rule id="browser_evidence_boundary">A browser-capable worker may edit and inspect a bounded browser-facing change in one model call. Its observation helps implementation but never replaces WorkflowPlatform's separately registered deterministic browser check or owner acceptance.</rule>
   </responsibilities>
   <security status="accepted">
@@ -23,5 +25,15 @@
     <rule id="receipt_privacy">Persistent storage contains normalized receipt metadata, hashes, usage, duration, status, compact errors, and artifact references only. Full prompts, responses, transcripts, source bodies, and credential samples are forbidden.</rule>
     <rule id="capability_receipt">The receipt records the effective profile capability matrix and provider-environment inventory without storing credentials, prompts, responses, or browser content.</rule>
   </security>
+  <section id="browser_mcp_profile" status="accepted">
+    <purpose>Let a worker change a browser-facing project and inspect it in the same bounded call without making the interactive desktop state part of the product contract.</purpose>
+    <profile_fields>
+      <field id="allowedMcpServers">Names every MCP server admitted to the role's ephemeral provider environment.</field>
+      <field id="browserMcpServer">Names one admitted server that implements the locally registered Playwright-compatible browser contour.</field>
+      <field id="capabilities">Optionally records separately verified technical browser_automation or screen_capture evidence. Omit these overrides before the corresponding live smoke succeeds.</field>
+    </profile_fields>
+    <verification>Run `node tools/mcp-browser-smoke.mjs --project &lt;root&gt; --policy &lt;local-policy&gt; --provider &lt;codex|claude|opencode&gt; --profile &lt;profile&gt; --keep --report &lt;evidence.json&gt;`. The smoke admits only context input, verifies that the named MCP server was actually carried, observes the browser sentinel independently, and hashes a retained PNG when the server produces one.</verification>
+    <boundary>The MCP observation helps the worker iterate. WorkflowPlatform's registered command or capability check and owner acceptance remain independent completion authorities.</boundary>
+  </section>
   <section id="license" status="accepted">AgentGateway is distributed as part of Zodchi under the repository-level MIT License. Copyright 2026 Petr Tsap.</section>
 </document>

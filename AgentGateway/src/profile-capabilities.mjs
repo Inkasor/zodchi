@@ -17,6 +17,7 @@ const CAPABILITY_SET = new Set(CAPABILITY_NAMES);
 const STATUS = new Set(["available", "unavailable", "unknown"]);
 const ENFORCEMENT = new Set(["technical", "declarative", "unknown"]);
 const ACCESS = new Set(["embedded", "direct", "none", "unknown"]);
+const BROWSER_MCP_PROVIDERS = new Set(["codex", "claude", "opencode"]);
 
 const capability = (status, enforcement, access, source, evidenceRef = null) => Object.freeze({ status, enforcement, access, source, evidence_ref: evidenceRef });
 const unknown = source => capability("unknown", "unknown", "unknown", source);
@@ -31,10 +32,20 @@ function toolState(profileConfig, names) {
   return "unknown";
 }
 
+function configuredBrowserMcp(provider, profileConfig) {
+  const name = profileConfig.browserMcpServer;
+  if (name === undefined) return null;
+  if (typeof name !== "string" || !name.trim() || name !== name.trim()) throw new Error("PROFILE_BROWSER_MCP_INVALID");
+  if (!BROWSER_MCP_PROVIDERS.has(provider)) throw new Error(`PROFILE_BROWSER_MCP_PROVIDER_UNSUPPORTED: ${provider}`);
+  if (!(profileConfig.allowedMcpServers ?? []).includes(name)) throw new Error(`PROFILE_BROWSER_MCP_NOT_ALLOWED: ${name}`);
+  return name;
+}
+
 function providerCapabilities(provider, providerConfig, profileConfig, platform = process.platform) {
   const result = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, unknown(`provider:${provider}`)]));
   result.context_input = available("embedded", "gateway:prompt");
   const readOnly = profileConfig.readOnly === true;
+  const browserMcp = configuredBrowserMcp(provider, profileConfig);
 
   if (providerConfig.type === "openai-compatible" || provider === "openai-compatible" || provider === "openrouter") {
     for (const name of ["project_read", "file_search", "language_server", "process_execution", "long_lived_process", "project_write", "browser_automation", "screen_capture", "mcp", "skills"]) result[name] = unavailable("gateway:api-context-only");
@@ -54,8 +65,8 @@ function providerCapabilities(provider, providerConfig, profileConfig, platform 
     result.long_lived_process = result.process_execution.status === "available" ? available("direct", "codex:process-access") : result.process_execution;
     const browserPlugin = (profileConfig.allowedPlugins ?? []).some(name => /^(?:browser|chrome)@/u.test(name));
     const browserRuntime = (profileConfig.allowedMcpServers ?? []).includes("node_repl");
-    result.browser_automation = browserPlugin && browserRuntime ? unknown("codex:browser-plugin-configured-unverified") : unavailable("codex:browser-plugin-allowlist");
-    result.screen_capture = browserPlugin && browserRuntime ? unknown("codex:browser-plugin-configured-unverified") : unavailable("codex:browser-plugin-allowlist");
+    result.browser_automation = browserMcp ? unknown(`codex:browser-mcp-configured-unverified:${browserMcp}`) : browserPlugin && browserRuntime ? unknown("codex:browser-plugin-configured-unverified") : unavailable("codex:browser-plugin-allowlist");
+    result.screen_capture = browserMcp ? unknown(`codex:browser-mcp-configured-unverified:${browserMcp}`) : browserPlugin && browserRuntime ? unknown("codex:browser-plugin-configured-unverified") : unavailable("codex:browser-plugin-allowlist");
     result.network = unknown("codex:network-policy-unverified");
     result.mcp = (profileConfig.allowedMcpServers ?? []).length ? available("direct", "codex:mcp-allowlist") : unavailable("codex:mcp-allowlist");
     result.skills = (profileConfig.allowedSkills ?? []).length ? available("direct", "codex:skills-allowlist") : unavailable("codex:skills-allowlist");
@@ -70,11 +81,13 @@ function providerCapabilities(provider, providerConfig, profileConfig, platform 
     result.file_search = result.project_read;
     result.process_execution = shell === "denied" ? unavailable("claude:tool-denylist") : shell === "allowed" ? available("direct", "claude:tool-allowlist") : unknown("claude:bash-unbounded");
     result.long_lived_process = result.process_execution;
-    result.browser_automation = result.process_execution.status === "unavailable" ? result.process_execution : unknown("claude:browser-tooling-unverified");
-    result.screen_capture = result.process_execution.status === "unavailable" ? result.process_execution : unknown("claude:screen-capture-unverified");
+    result.browser_automation = browserMcp ? unknown(`claude:browser-mcp-configured-unverified:${browserMcp}`) : result.process_execution.status === "unavailable" ? result.process_execution : unknown("claude:browser-tooling-unverified");
+    result.screen_capture = browserMcp ? unknown(`claude:browser-mcp-configured-unverified:${browserMcp}`) : result.process_execution.status === "unavailable" ? result.process_execution : unknown("claude:screen-capture-unverified");
     result.project_write = write === "denied" ? unavailable("claude:tool-denylist") : write === "allowed" ? available("direct", "claude:tool-allowlist") : unknown("claude:write-tools-unbounded");
     result.network = unknown("claude:network-unverified");
-    result.mcp = unknown("claude:mcp-unverified");
+    result.mcp = Array.isArray(profileConfig.allowedMcpServers)
+      ? profileConfig.allowedMcpServers.length ? available("direct", "claude:strict-mcp-allowlist") : unavailable("claude:strict-mcp-allowlist")
+      : unknown("claude:mcp-unverified");
     result.skills = unknown("claude:skills-unverified");
     return result;
   }
@@ -85,8 +98,8 @@ function providerCapabilities(provider, providerConfig, profileConfig, platform 
     result.language_server = available("direct", "opencode:permission-lsp");
     result.process_execution = readOnly && profileConfig.allowShell !== true ? unavailable("opencode:permission-bash") : available("direct", "opencode:permission-bash");
     result.long_lived_process = result.process_execution;
-    result.browser_automation = result.process_execution.status === "unavailable" ? result.process_execution : unknown("opencode:browser-tooling-unverified");
-    result.screen_capture = result.process_execution.status === "unavailable" ? result.process_execution : unknown("opencode:screen-capture-unverified");
+    result.browser_automation = browserMcp ? unknown(`opencode:browser-mcp-configured-unverified:${browserMcp}`) : result.process_execution.status === "unavailable" ? result.process_execution : unknown("opencode:browser-tooling-unverified");
+    result.screen_capture = browserMcp ? unknown(`opencode:browser-mcp-configured-unverified:${browserMcp}`) : result.process_execution.status === "unavailable" ? result.process_execution : unknown("opencode:screen-capture-unverified");
     result.project_write = readOnly ? unavailable("opencode:permission-edit") : available("direct", "opencode:permission-edit");
     result.network = profileConfig.allowWeb === true ? available("direct", "opencode:permission-web") : unavailable("opencode:permission-web");
     result.mcp = (profileConfig.allowedMcpServers ?? []).length ? available("direct", "opencode:mcp-allowlist") : unavailable("opencode:mcp-allowlist");
@@ -126,7 +139,8 @@ export function profileCapabilities(provider, providerConfig, profileConfig, opt
     if (["browser_automation", "screen_capture"].includes(name) && normalized.status === "available" && normalized.enforcement === "technical") {
       const browserPlugin = (profileConfig.allowedPlugins ?? []).some(id => /^(?:browser|chrome)@/u.test(id));
       const browserRuntime = (profileConfig.allowedMcpServers ?? []).includes("node_repl");
-      if (!browserPlugin || !browserRuntime) throw new Error(`PROFILE_CAPABILITY_PREREQUISITE_MISSING: ${name}`);
+      const browserMcp = configuredBrowserMcp(provider, profileConfig);
+      if ((!browserPlugin || !browserRuntime) && !browserMcp) throw new Error(`PROFILE_CAPABILITY_PREREQUISITE_MISSING: ${name}`);
     }
     result[name] = normalized;
   }

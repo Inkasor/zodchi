@@ -275,6 +275,7 @@ const systemPrompt = [
   `You are a bounded ${cli.role ?? "worker"} for the ${level} delivery level.`,
   `Work only inside the supplied project directories and follow their native instructions (${profileConfig.instructionMode ?? "native project instructions"}).`,
   "Do not launch another AI agent, commit, push, deploy, or access production.",
+  profileConfig.browserMcpServer ? `Use only the registered ${profileConfig.browserMcpServer} MCP server for optional browser automation; its observations do not replace deterministic project checks or owner acceptance.` : "",
   profileConfig.readOnly ? "This profile is read-only: do not edit or write files." : ""
 ].filter(Boolean).join(" ");
 const maxTurns = String(profileConfig.maxTurns ?? 10);
@@ -323,6 +324,7 @@ if (cli["dry-run"] === true) {
   process.exit(0);
 }
 const sourceHome = provider === "codex" ? paths.codexSourceHome : provider === "kimi" ? paths.kimiSourceHome : provider === "opencode" ? paths.opencodeSourceHome : null;
+const sourceConfig = provider === "claude" ? paths.claudeSourceMcpConfig : provider === "opencode" ? paths.opencodeSourceConfig : null;
 let result;
 // What the ephemeral home gave the provider, and what it withheld, is part of the call: a role that ran
 // without the server or the skill it needed produced a different result from the same prompt, and the
@@ -331,9 +333,15 @@ let environment = { profile_capabilities: profileCapabilityReport, provider_envi
 try {
   result = providerConfig.type === "openai-compatible"
     ? await runOpenAICompatible({ profileConfig, prompt, systemPrompt, outputSchema: outputSchemaValue, outputSchemaName: `${cli.role ?? "worker"}_result`, timeoutSec: limits.timeoutSec, env: process.env })
-    : await withProviderEnvironment(provider, { tempRoot: paths.tempRoot, sourceHome, sourceConfig: provider === "opencode" ? paths.opencodeSourceConfig : null, profileConfig, projectRoot: projectPath }, (providerEnvironment, _directory, capabilities) => {
+    : await withProviderEnvironment(provider, { tempRoot: paths.tempRoot, sourceHome, sourceConfig, profileConfig, projectRoot: projectPath }, (providerEnvironment, _directory, capabilities) => {
       environment = { profile_capabilities: profileCapabilityReport, provider_environment: capabilities };
-      return runProcess(providerCommand, commandArgs, prompt, limits.timeoutSec, projectPath, providerEnvironment);
+      if (profileConfig.browserMcpServer && !capabilities?.mcp_servers?.carried?.some(item => item.name === profileConfig.browserMcpServer)) {
+        throw new Error(`BROWSER_MCP_SERVER_NOT_CARRIED: ${profileConfig.browserMcpServer}`);
+      }
+      const runtimeArgs = provider === "claude" && providerEnvironment.AGENT_GATEWAY_CLAUDE_MCP_CONFIG
+        ? [...commandArgs, "--mcp-config", providerEnvironment.AGENT_GATEWAY_CLAUDE_MCP_CONFIG, "--strict-mcp-config"]
+        : commandArgs;
+      return runProcess(providerCommand, runtimeArgs, prompt, limits.timeoutSec, projectPath, providerEnvironment);
     });
 } catch (error) {
   result = { exitCode: 78, stdout: "", stderr: `ADAPTER_CONFIGURATION_ERROR: ${error.message}`, timedOut: false };
