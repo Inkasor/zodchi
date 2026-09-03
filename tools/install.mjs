@@ -183,7 +183,7 @@ export function profileCapabilityDiagnostics({ workflowDatabase, gatewayPolicy, 
     const assignments = db.prepare(`SELECT a.project_id,a.role_id,a.operational_level,p.provider,p.name AS profile,rc.boundaries_json,${allowedToolsColumn}
       FROM role_profile_assignments a
       JOIN profiles p ON p.id=a.profile_id
-      JOIN role_contracts rc ON rc.project_id=a.project_id AND rc.role_id=a.role_id AND rc.status='active'
+      LEFT JOIN role_contracts rc ON rc.project_id=a.project_id AND rc.role_id=a.role_id AND rc.status='active'
       WHERE a.enabled=1
       ORDER BY a.project_id,a.role_id,a.operational_level,p.provider,p.name`).all();
     const requirements = assignments.map(assignment => {
