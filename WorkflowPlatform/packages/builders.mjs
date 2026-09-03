@@ -98,7 +98,36 @@ const binding = (roleKey, write = false, purpose = "registered context", priorit
 const document = (key, filePath, type, authority, bindings, root = "primary") => ({ key, path: filePath, root, type, authority, status: "active", bindings });
 const scenario = (key, input, expected) => ({ key, input, expected, anonymized: true });
 
+function withDirectRuntimeRoles(roles, routes) {
+  const routedWorkTypes = [...new Set(routes.map(item => item.work_type_key))];
+  const result = [...roles];
+  if (!result.some(item => item.key === "classifier")) result.unshift(role(
+    "classifier",
+    "Classify only against this package's registered routes; never perform productive work.",
+    routedWorkTypes,
+    ["none"],
+    { schema: "classification.v1", corrections: 0, boundaries: { productive_work: false, keyword_routing: false } }
+  ));
+  if (!result.some(item => item.key === "researcher")) result.push(role(
+    "researcher",
+    "Answer bounded questions only from context and source evidence supplied by WorkflowPlatform; never edit the project.",
+    ["research", "conversation", "continuation"],
+    ["document"],
+    { schema: "research.v1", corrections: 0, boundaries: { writes: false, direct_project_access: false } }
+  ));
+  return result.map(item => {
+    if (item.key === "classifier") return { ...item, contract: { ...item.contract, result_schema_key: "classification.v1", allowed_tools: [], boundaries: { ...item.contract.boundaries, writes: false } } };
+    if (item.key === "researcher") return { ...item, contract: { ...item.contract, result_schema_key: "research.v1", allowed_tools: [], boundaries: { ...item.contract.boundaries, writes: false } } };
+    return item;
+  });
+}
+
 function finalize({ key, purpose, roles, workflows, routes, checks, operationalLevels, documents, scenarios, evidenceFlows = [], resources = [], domains = ["software"], disciplines = ["software"], version = PACKAGE_VERSION }) {
+  roles = withDirectRuntimeRoles(roles, routes);
+  documents = documents.map(item => ({
+    ...item,
+    bindings: [...item.bindings, ...["classifier", "researcher"].filter(roleKey => !item.bindings.some(value => value.role_key === roleKey)).map(roleKey => binding(roleKey))]
+  }));
   roles = roles.map(item => ({ ...item, contract: { ...item.contract, allowed_profile_keys: [`${key}.${item.key}.mvp`] } }));
   const workTypes = [...new Set([...roles.flatMap(item => item.contract.allowed_work_types), ...routes.map(item => item.work_type_key)])];
   const artifacts = [...new Set([...roles.flatMap(item => item.contract.allowed_artifact_types), ...workflows.flatMap(item => item.steps.flatMap(value => value.artifact_type_keys)), ...checks.flatMap(item => item.bindings.map(value => value.artifact_type_key).filter(Boolean))])];

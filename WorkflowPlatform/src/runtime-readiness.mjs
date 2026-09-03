@@ -9,7 +9,7 @@ function roleAssignments(db, projectId, roleIds, operationalLevel = null) {
   if (!roleIds.length) return [];
   const placeholders = roleIds.map(() => "?").join(",");
   const levelClause = operationalLevel ? "AND a.operational_level=?" : "";
-  return db.prepare(`SELECT a.role_id,a.operational_level,p.id AS profile_id,p.provider,p.name AS profile_name,rc.boundaries_json,rc.allowed_tools_json
+  return db.prepare(`SELECT a.role_id,a.operational_level,p.id AS profile_id,p.provider,p.name AS profile_name,rc.id AS contract_id,rc.boundaries_json,rc.allowed_tools_json
     FROM role_profile_assignments a JOIN profiles p ON p.id=a.profile_id
     LEFT JOIN role_contracts rc ON rc.project_id=a.project_id AND rc.role_id=a.role_id AND rc.status='active'
     WHERE a.project_id=? AND a.enabled=1 AND a.role_id IN (${placeholders}) ${levelClause}
@@ -40,6 +40,7 @@ function inspectRequirements(profileCheck, requirements, missing, missingReason)
 function readinessReasons(readiness) {
   const reasons = [];
   if (readiness.missing_role_assignments.length) reasons.push(`missing ${readiness.missing_role_assignments.join(",")}`);
+  if (readiness.missing_role_contracts?.length) reasons.push(`missing active role contracts ${readiness.missing_role_contracts.join(",")}`);
   for (const conflict of readiness.profile_capability_requirements.conflicts ?? []) reasons.push(`${conflict.code}: role=${conflict.role}; profile=${conflict.profile}`);
   if (readiness.profile_capability_requirements.status === "unavailable") reasons.push(`${readiness.profile_capability_requirements.reason}: ${readiness.profile_capability_requirements.message}`);
   for (const kind of readiness.external_operations?.missing ?? []) reasons.push(`missing registered external ${kind} operation`);
@@ -64,14 +65,16 @@ export function projectRuntimeReadiness(db, projectId, { profileCheck = profileC
   const assignments = roleAssignments(db, projectId, [...DIRECT_RUNTIME_ROLES]);
   const directRoles = Object.fromEntries(DIRECT_RUNTIME_ROLES.map(roleId => {
     const bindings = assignments.filter(row => row.role_id === roleId);
+    const contracted = bindings.filter(row => row.contract_id);
     return [roleId, {
-      status: bindings.length ? "configured" : "missing",
+      status: !bindings.length ? "missing" : contracted.length ? "configured" : "missing_contract",
       bindings: bindings.map(({ role_id, ...binding }) => binding)
     }];
   }));
   const missing = DIRECT_RUNTIME_ROLES.filter(roleId => directRoles[roleId].status === "missing");
-  const requirements = DIRECT_RUNTIME_ROLES.map(roleId => assignments.find(item => item.role_id === roleId)).filter(Boolean).map(item => requirement(item, true));
-  const profileRequirements = inspectRequirements(profileCheck, requirements, missing, "direct_runtime_roles_missing");
+  const missingContracts = DIRECT_RUNTIME_ROLES.filter(roleId => directRoles[roleId].status === "missing_contract");
+  const requirements = DIRECT_RUNTIME_ROLES.map(roleId => assignments.find(item => item.role_id === roleId && item.contract_id)).filter(Boolean).map(item => requirement(item, true));
+  const profileRequirements = inspectRequirements(profileCheck, requirements, [...missing, ...missingContracts], missing.length ? "direct_runtime_roles_missing" : "direct_runtime_role_contracts_missing");
   const context = db.prepare(`SELECT COUNT(DISTINCT d.id) AS registered_documents,
       COUNT(DISTINCT CASE WHEN rd.role_id='researcher' AND rd.read_access=1 THEN d.id END) AS researcher_documents
     FROM project_documents d LEFT JOIN role_documents rd ON rd.project_id=d.project_id AND rd.document_id=d.id
@@ -83,10 +86,11 @@ export function projectRuntimeReadiness(db, projectId, { profileCheck = profileC
     : researcherDocuments === 0 ? "no_read_access" : "available";
 
   return {
-    status: missing.length || !PROFILE_REQUIREMENTS_READY.has(profileRequirements.status) ? "unavailable" : "ready",
+    status: missing.length || missingContracts.length || !PROFILE_REQUIREMENTS_READY.has(profileRequirements.status) ? "unavailable" : "ready",
     project: { id: project.id, name: project.name },
     direct_roles: directRoles,
     missing_role_assignments: missing,
+    missing_role_contracts: missingContracts,
     profile_capability_requirements: profileRequirements,
     profile_write_requirements: profileRequirements,
     registered_context: {
@@ -108,16 +112,18 @@ export function workflowRuntimeReadiness(db, projectId, workflowId, operationalL
   const roleIds = db.prepare("SELECT DISTINCT role_id FROM workflow_step_templates WHERE project_id=? AND workflow_id=? AND role_id IS NOT NULL ORDER BY role_id").all(projectId, workflowId).map(row => row.role_id);
   const assignments = roleAssignments(db, projectId, roleIds, operationalLevel);
   const missing = roleIds.filter(roleId => !assignments.some(item => item.role_id === roleId));
-  const requirements = assignments.map(item => requirement(item, DIRECT_RUNTIME_ROLES.includes(item.role_id)));
-  const profileRequirements = inspectRequirements(profileCheck, requirements, missing, "workflow_role_assignments_missing");
+  const missingContracts = roleIds.filter(roleId => assignments.some(item => item.role_id === roleId) && !assignments.some(item => item.role_id === roleId && item.contract_id));
+  const requirements = assignments.filter(item => item.contract_id).map(item => requirement(item, DIRECT_RUNTIME_ROLES.includes(item.role_id)));
+  const profileRequirements = inspectRequirements(profileCheck, requirements, [...missing, ...missingContracts], missing.length ? "workflow_role_assignments_missing" : "workflow_role_contracts_missing");
   const externalOperations = workflowExternalOperations(db, projectId, workflowId);
   return {
-    status: missing.length || !PROFILE_REQUIREMENTS_READY.has(profileRequirements.status) || externalOperations.status === "unavailable" ? "unavailable" : "ready",
+    status: missing.length || missingContracts.length || !PROFILE_REQUIREMENTS_READY.has(profileRequirements.status) || externalOperations.status === "unavailable" ? "unavailable" : "ready",
     project_id: projectId,
     workflow: { id: workflow.id, name: workflow.name },
     operational_level: operationalLevel,
     required_roles: roleIds,
     missing_role_assignments: missing,
+    missing_role_contracts: missingContracts,
     profile_capability_requirements: profileRequirements,
     profile_write_requirements: profileRequirements,
     external_operations: externalOperations
