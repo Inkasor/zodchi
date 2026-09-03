@@ -52,6 +52,9 @@
 - Separate retained Windows Codex probes record model-reported native-reader availability independently from the provider/process error. Together they establish that this read-only Codex contour exposes no native reader to the model and rejects its remaining local-process route by policy; neither probe is presented as stronger evidence than it contains.
 - Codex capability probes hash the complete raw provider error before bounding its displayed text, and record both its original byte count and whether the retained excerpt was truncated.
 - External executors and their release/access operations can be registered and inspected through the CLI. Existing installations must change the affected operator profiles to read-only and register their deterministic operations before those two routes can run; unrelated routes remain available.
+- Existing installations with owner-defined packages now have a rehearsed 0.6.12 upgrade path: copy the complete data root, apply migrations 035-036, regenerate from the configured definitions, bump every package whose manifest changed, and import each proposal only after explicit confirmation. Reusing an old version with changed content remains a fail-closed collision.
+- The validated owner installation upgrades its three active packages to prompt builder 3.2.0 and patch versions `zodchi.product-development` 2.9.1, `shared-lore.canon` 2.9.1 and `shared-map-engine.core` 2.5.1. Documentator and operator profiles are read-only; the two Kimi reviewer exceptions remain visible as eight `accepted_declarative` assignments, with no profile conflicts.
+- Browser evidence from an isolated Claude Playwright probe is not copied into the live owner policy without a selected target role and profile. Release and access routes likewise remain explicitly unavailable until real signed external operations are registered; neither absence is reported as a passed capability.
 
 </section>
 
