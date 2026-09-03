@@ -21,7 +21,7 @@ function fixture(prefix) {
   fs.mkdirSync(project);
   const db = openDb(dbFile);
   db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('project','Project',?,?)").run(project, now());
-  db.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status,discovery_json,history_budget_bytes) VALUES('workflow','Workflow','project','mvp','L2','active','{\"git\":false}',4096)").run();
+  db.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status,discovery_json) VALUES('workflow','Workflow','project','mvp','L2','active','{\"git\":false}')").run();
   for (const [table, values] of [["work_types", ["implementation", "conversation", "clarification", "research"]], ["artifact_types", ["code", "none"]], ["domains", ["workflow"]], ["disciplines", ["software"]]]) {
     for (const value of values) db.prepare(`INSERT OR IGNORE INTO ${table}(id,name${table === "artifact_types" || table === "work_types" ? ",category" : ""}) VALUES(?,?${table === "artifact_types" || table === "work_types" ? ",'general'" : ""})`).run(value, value);
   }

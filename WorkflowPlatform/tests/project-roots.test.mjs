@@ -28,7 +28,7 @@ function fixture(prefix, { sources = [] } = {}) {
   const db = openDb(path.join(root, "workflow.sqlite"));
   db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('integration','Integration',?,?)").run(producer, now());
   db.prepare("INSERT INTO project_roots(project_id,root_key,path,access,is_primary,created_at) VALUES('integration','consumer',?,'read',0,?)").run(consumer, now());
-  db.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status,discovery_json,history_budget_bytes) VALUES('workflow','Workflow','integration','mvp','L2','active',?,4096)")
+  db.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status,discovery_json) VALUES('workflow','Workflow','integration','mvp','L2','active',?)")
     .run(JSON.stringify({ git: false, sources }));
   return { root, producer, consumer, db };
 }
@@ -466,7 +466,7 @@ test("collection covers the project by default and never its credentials", () =>
   fs.mkdirSync(project);
   const db = openDb(path.join(root, "workflow.sqlite"));
   db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('project','Project',?,?)").run(project, now());
-  db.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status,discovery_json,history_budget_bytes) VALUES('workflow','Workflow','project','mvp','L2','active','{\"git\":false}',4096)").run();
+  db.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status,discovery_json) VALUES('workflow','Workflow','project','mvp','L2','active','{\"git\":false}')").run();
   fs.writeFileSync(path.join(project, "plan.md"), semanticDocument("plan"));
   fs.writeFileSync(path.join(project, "notes.md"), "ordinary project file");
   fs.writeFileSync(path.join(project, ".env"), "TOKEN=secret-value");

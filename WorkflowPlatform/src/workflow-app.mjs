@@ -488,6 +488,10 @@ export async function processMessage({
       throw new Error(`WORKFLOW_RUNTIME_NOT_READY: ${workflow}: missing ${missing.join(",")}`);
     }
   }
+  if (!classificationResult && (!Number.isInteger(definition.roles?.classifier?.contract?.context_limit_bytes) || definition.roles.classifier.contract.context_limit_bytes < 1024)) {
+    runtime.db.close();
+    throw new Error(`WORKFLOW_RUNTIME_NOT_READY: ${workflow}: classifier contract context_limit_bytes is required`);
+  }
   const accepted = runtime.accept(message, { project_id: project, workflow_id: workflow, client, chat_session: resolvedSemanticScope.mode === "session" ? resolvedSemanticScope : null, event_source: eventSource, event_key: eventKey, event_fields: eventFields, binding: bindingEvidence(binding, settings) });
   const runId = accepted.runId;
   const run = runtime.get(runId);
@@ -508,7 +512,13 @@ export async function processMessage({
 
   const workflowRow = runtime.db.prepare("SELECT * FROM workflows WHERE id=? AND project_id=? AND status='active'").get(workflow, run.project_id);
   if (!workflowRow) return classificationFailure(runtime, runId, new Error(`DISCOVERY_WORKFLOW_NOT_REGISTERED: ${workflow}`), finish, responseLanguage);
-  const historyContext = conversationContext(runtime.db, run.project_id, workflowRow.history_budget_bytes, resolvedSemanticScope);
+  const classifierContextLimit = definition.roles?.classifier?.contract?.context_limit_bytes;
+  // A caller-supplied classification bypasses the classifier entirely. It does not receive a synthetic
+  // history allowance merely to keep old embedded test definitions alive; no classifier call means no
+  // classifier context. Normal intake must always bind the budget to the active classifier contract.
+  const historyContext = classificationResult && !Number.isInteger(classifierContextLimit)
+    ? { accepted_decisions: [], history: [], bytes: 0, budget_bytes: null }
+    : conversationContext(runtime.db, run.project_id, classifierContextLimit, resolvedSemanticScope);
   responseLanguage = resolveResponseLanguage({ message, preferredLanguage: preferredLanguage ?? settings.responseLanguage, history: historyContext.history });
   runtime.db.prepare("UPDATE workflow_runs SET response_language=?,updated_at=? WHERE id=?").run(responseLanguage, now(), runId);
   const discovery = readProjectContext(project, runtime.db);

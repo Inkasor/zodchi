@@ -141,7 +141,8 @@ export function selectProjectContext(discovery, classification = {}, _workingDoc
   };
 }
 
-export function conversationContext(db, projectId, historyBudgetBytes = 24_000, semanticScope = null) {
+export function conversationContext(db, projectId, historyBudgetBytes, semanticScope = null) {
+  if (!Number.isInteger(historyBudgetBytes) || historyBudgetBytes < 1) throw new Error("CONVERSATION_CONTEXT_BUDGET_REQUIRED");
   // Accepted owner decisions are project truth and intentionally cross chat boundaries. Conversational
   // wording is not. A caller must name either one exact chat or a stateless automation scope; omission
   // is a contract error rather than a silent return to project-wide conversation history.

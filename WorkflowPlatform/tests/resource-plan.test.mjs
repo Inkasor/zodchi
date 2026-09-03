@@ -56,7 +56,7 @@ function fixture(prefix) {
   const roles = [["planner", "planner.v1"], ["worker", "worker.v1"], ["reviewer", "reviewer.v1"]];
   onboardProject(dbFile, {
     project: { id: "project", name: "Project", root_path: project },
-    workflow: { id: "workflow", name: "Workflow", discovery: { git: false }, history_budget_bytes: 8192 },
+    workflow: { id: "workflow", name: "Workflow", discovery: { git: false } },
     profiles: roles.map(([role]) => ({ id: `profile-${role}`, provider: "codex", name: `local-${role}`, role_id: role })),
     routes: [{ work_type_id: "implementation" }],
     checks: [{ id: "check-ok", name: "Test check", runner: "fixture", kind: "fixture", config: { status: "passed" } }],

@@ -17,7 +17,7 @@ function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "zodchi-external-control-")), dbFile = path.join(root, "workflow.sqlite"), db = openDb(dbFile), timestamp = now();
   fs.mkdirSync(path.join(root, "project"));
   db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('project','Project',?,?)").run(path.join(root, "project"), timestamp);
-  db.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status,discovery_json,history_budget_bytes) VALUES('workflow','Workflow','project','mvp','L2','active','{\"git\":false}',4096)").run();
+  db.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status,discovery_json) VALUES('workflow','Workflow','project','mvp','L2','active','{\"git\":false}')").run();
   db.prepare("INSERT INTO tasks(id,project_id,title,state,created_at,updated_at) VALUES('task','project','Task','executing',?,?)").run(timestamp, timestamp);
   db.prepare("INSERT INTO workflow_runs(id,task_id,project_id,workflow_id,state,operational_level,user_message,created_at,updated_at) VALUES('run','task','project','workflow','external_evidence_required','mvp','work',?,?)").run(timestamp, timestamp);
   db.prepare("INSERT INTO workflow_steps(id,run_id,step_key,ordinal,state,required,idempotency_key,created_at,updated_at) VALUES('step','run','external',1,'blocked',1,'run:external',?,?)").run(timestamp, timestamp);
