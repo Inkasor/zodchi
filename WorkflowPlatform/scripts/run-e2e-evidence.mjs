@@ -7,6 +7,7 @@ import { processMessage } from "../src/workflow-app.mjs";
 import { callGateway } from "../src/gateway.mjs";
 import { workflowRunStatistics } from "../src/statistics.mjs";
 import { registerImplicitResources, registerProjectResource } from "../src/project-resources.mjs";
+import { registerExternalTool } from "../src/external-tools.mjs";
 import { assertProjectBaselineUnchanged, captureProjectBaseline } from "./project-baseline.mjs";
 import { registerCanaryChecks } from "./canary-checks.mjs";
 
@@ -31,7 +32,8 @@ fs.mkdirSync(path.join(providerHome, "plugins", "cache", "fixture", "browser", "
 fs.writeFileSync(path.join(providerHome, "plugins", "cache", "fixture", "browser", "1.0.0", "fixture.txt"), "deterministic browser capability fixture\n", "utf8");
 fs.writeFileSync(path.join(providerHome, "config.toml"), [
   '[plugins."browser@fixture"]', "enabled = true", "[marketplaces.fixture]", `source = ${JSON.stringify(providerHome.replaceAll("\\", "/"))}`,
-  "[mcp_servers.node_repl]", `command = ${JSON.stringify(process.execPath)}`
+  "[mcp_servers.node_repl]", `command = ${JSON.stringify(process.execPath)}`,
+  "[mcp_servers.playwright]", `command = ${JSON.stringify(process.execPath)}`
 ].join("\n") + "\n", "utf8");
 process.env.CODEX_SOURCE_HOME = providerHome; process.env.AGENT_GATEWAY_TEMP = gatewayTemp;
 let db = openDb(dbFile);
@@ -49,6 +51,7 @@ db.close();
 // reconstructed from a naming convention.
 const profileKeys = new Set();
 const profileReadOnly = new Map();
+const profileMcpServers = new Map();
 const prepared = [];
 for (const item of config.projects) {
   const proposalFile = path.join(outputRoot, `${item.project_id}.import-proposal.json`);
@@ -62,11 +65,25 @@ for (const item of config.projects) {
   deterministicScenarioMessage(item);
   const routed = db.prepare("SELECT 1 FROM workflow_routes WHERE project_id=? AND workflow_id=? AND work_type_id=? AND enabled=1").get(item.project_id, workflowId, item.classification?.work_type);
   if (!routed) throw new Error(`CANARY_CLASSIFICATION_ROUTE_MISMATCH: ${item.project_id}: ${item.classification?.work_type ?? "missing"}: ${item.workflow_key}`);
-  const requirements = db.prepare("SELECT role_id,profile_key FROM portable_profile_requirements WHERE project_id=? AND package_key=?").all(item.project_id, item.package_key);
+  const requirements = db.prepare(`SELECT p.role_id,p.profile_key,rc.allowed_mcp_servers_json
+    FROM portable_profile_requirements p
+    JOIN role_contracts rc ON rc.project_id=p.project_id AND rc.role_id=p.role_id AND rc.status='active'
+    WHERE p.project_id=? AND p.package_key=?`).all(item.project_id, item.package_key);
   if (!requirements.length) throw new Error(`PACKAGE_PROFILE_REQUIREMENTS_MISSING: ${item.package_key}`);
+  const mcpServers = new Set();
+  for (const requirement of requirements) {
+    let names;
+    try { names = JSON.parse(requirement.allowed_mcp_servers_json ?? "[]"); } catch { throw new Error(`PACKAGE_MCP_ALLOWLIST_INVALID: ${item.package_key}:${requirement.role_id}`); }
+    if (!Array.isArray(names) || names.some(name => typeof name !== "string")) throw new Error(`PACKAGE_MCP_ALLOWLIST_INVALID: ${item.package_key}:${requirement.role_id}`);
+    for (const name of names) mcpServers.add(name);
+  }
+  for (const name of mcpServers) {
+    if (name !== "playwright") throw new Error(`EVIDENCE_UNSUPPORTED_MCP_FIXTURE: ${name}`);
+    registerExternalTool(db, { projectId: item.project_id, name, transport: "stdio", endpoint: process.execPath, readOnlyMode: { browser: "bounded-fixture" }, pinnedVersion: "fixture" });
+  }
   const bindings = [...requirements];
   for (const roleId of ["classifier", "researcher"]) {
-    if (!bindings.some(binding => binding.role_id === roleId)) bindings.push({ role_id: roleId, profile_key: `${item.package_key}.${roleId}.mvp`, direct: true });
+    if (!bindings.some(binding => binding.role_id === roleId)) bindings.push({ role_id: roleId, profile_key: `${item.package_key}.${roleId}.mvp`, allowed_mcp_servers_json: "[]", direct: true });
   }
   for (const binding of bindings) {
     db.prepare("INSERT OR IGNORE INTO profiles(id,provider,name,role_id) VALUES(?,'codex',?,?)").run(binding.profile_key, binding.profile_key, binding.role_id);
@@ -74,6 +91,11 @@ for (const item of config.projects) {
     profileKeys.add(binding.profile_key);
     const requiresWrite = binding.direct ? false : JSON.parse(db.prepare("SELECT boundaries_json FROM role_contracts WHERE project_id=? AND role_id=? AND status='active'").get(item.project_id, binding.role_id).boundaries_json).writes === true;
     const readOnly = !requiresWrite;
+    let allowedMcpServers;
+    try { allowedMcpServers = JSON.parse(binding.allowed_mcp_servers_json ?? "[]"); } catch { throw new Error(`PACKAGE_MCP_ALLOWLIST_INVALID: ${item.package_key}:${binding.role_id}`); }
+    if (!Array.isArray(allowedMcpServers) || allowedMcpServers.some(name => typeof name !== "string")) throw new Error(`PACKAGE_MCP_ALLOWLIST_INVALID: ${item.package_key}:${binding.role_id}`);
+    if (profileMcpServers.has(binding.profile_key) && JSON.stringify(profileMcpServers.get(binding.profile_key)) !== JSON.stringify(allowedMcpServers)) throw new Error(`EVIDENCE_PROFILE_MCP_REQUIREMENT_CONFLICT: ${binding.profile_key}`);
+    profileMcpServers.set(binding.profile_key, allowedMcpServers);
     if (profileReadOnly.has(binding.profile_key) && profileReadOnly.get(binding.profile_key) !== readOnly) throw new Error(`EVIDENCE_PROFILE_WRITE_REQUIREMENT_CONFLICT: ${binding.profile_key}`);
     profileReadOnly.set(binding.profile_key, readOnly);
   }
@@ -83,13 +105,28 @@ for (const item of config.projects) {
   prepared.push({ item, workflowId, checks, directProfiles: Object.fromEntries(bindings.filter(binding => ["classifier", "researcher"].includes(binding.role_id)).map(binding => [binding.role_id, binding.profile_key])) });
 }
 
-const profiles = Object.fromEntries([...profileKeys].map(key => [key, {
-  model: "deterministic-contract-v1", reasoningEffort: "low", readOnly: profileReadOnly.get(key),
-  ...(key.includes(".browser_worker.") ? { allowedPlugins: ["browser@fixture"], allowedMcpServers: ["node_repl"], capabilities: {
-    browser_automation: { status: "available", enforcement: "technical", access: "direct", evidenceRef: "fixture:deterministic-browser-worker" },
-    screen_capture: { status: "available", enforcement: "technical", access: "direct", evidenceRef: "fixture:deterministic-browser-worker" }
-  } } : {})
-}]));
+const profiles = Object.fromEntries([...profileKeys].map(key => {
+  const declaredMcpServers = profileMcpServers.get(key) ?? [];
+  const allowedMcpServers = declaredMcpServers.length || !key.includes(".browser_worker.") ? declaredMcpServers : ["node_repl"];
+  const capabilities = {
+    ...(allowedMcpServers.includes("playwright") ? {
+      // The fixture's Playwright process is a bounded read-only contour. Keep the provider's
+      // otherwise-unknown MCP mutation surface explicit in this temporary acceptance policy.
+      external_mutation: { status: "unavailable", enforcement: "technical", access: "none", evidenceRef: "fixture:bounded-playwright-read-only" }
+    } : {}),
+    ...(key.includes(".browser_worker.") ? {
+      browser_automation: { status: "available", enforcement: "technical", access: "direct", evidenceRef: "fixture:deterministic-browser-worker" },
+      screen_capture: { status: "available", enforcement: "technical", access: "direct", evidenceRef: "fixture:deterministic-browser-worker" }
+    } : {})
+  };
+  return [key, {
+    model: "deterministic-contract-v1", reasoningEffort: "low", readOnly: profileReadOnly.get(key),
+    ...(allowedMcpServers.length ? { allowedMcpServers } : {}),
+    ...(allowedMcpServers.includes("playwright") ? { browserMcpServer: "playwright" } : {}),
+    ...(key.includes(".browser_worker.") ? { allowedPlugins: ["browser@fixture"] } : {}),
+    ...(Object.keys(capabilities).length ? { capabilities } : {})
+  }];
+}));
 fs.writeFileSync(policyFile, JSON.stringify({ schemaVersion: 1, levels: { prototype: { maxCalls: 2, maxCorrectionCycles: 0, timeoutSec: 60 }, mvp: { maxCalls: 2, maxCorrectionCycles: 1, timeoutSec: 3600 } }, providers: { codex: { command: process.execPath, args: [fakeProvider], profiles } } }, null, 2), "utf8");
 
 const results = [];

@@ -35,7 +35,7 @@ export default function definePackages(b) {
   };
   const software = composedPackage(
     coreLifecycle({
-      key: "software.web-application", version: "1.6.0", purpose: "Portable Web application workflow for bounded source and data changes, evidence-grounded API-to-UI review, incidents, access and approved release.", rolePreset: "full",
+      key: "software.web-application", version: "1.7.0", purpose: "Portable Web application workflow for bounded source and data changes, evidence-grounded API-to-UI review, incidents, access and approved release.", rolePreset: "full",
       domains: ["software"], disciplines: ["software"], checks: webChecks,
       documents: []
     }),
@@ -51,9 +51,11 @@ export default function definePackages(b) {
     documentationCapability({ checkKeys: ["web_lint"] }),
     securityReview({ checkKeys: ["web_gitleaks", "web_osv"] })
   );
-  // Every Web check above is platform-owned. Keep model-side skills and MCP explicit and empty instead
-  // of making an ordinary worker depend on a browser profile for unrelated implementation routes.
-  for (const roleKey of ["researcher", "worker", "reviewer"]) configureRoleInputs(software, roleKey, { skills: [], mcpServers: [] });
+  // Web checks remain platform-owned, while the productive worker may inspect a browser-facing change
+  // through one explicitly registered Playwright MCP server. Research and review never inherit it.
+  configureRoleInputs(software, "researcher", { skills: [], mcpServers: [] });
+  configureRoleInputs(software, "worker", { skills: [], mcpServers: ["playwright"] });
+  configureRoleInputs(software, "reviewer", { skills: [], mcpServers: [] });
   const bslCheck = {
     key: "bsl_language_server", name: "BSL Language Server policy against the accepted diagnostic baseline",
     runner: "requires_local_bsl_language_server", kind: "disabled", config: { reason: "requires_local_bsl_binding" }, timeout_seconds: 1800,
@@ -171,7 +173,7 @@ export default function definePackages(b) {
   );
 
   const dataChecks = [
-    sqliteCheck("data_readonly_query", "Registered read-only SQLite query", "data.primary", "SELECT 1 AS readonly_probe", 1, [checkBinding("mvp", "test_report")]),
+    sqliteCheck("data_readonly_query", "SQLite catalog read-only probe", "data.primary", "SELECT COUNT(*) AS registered_table_count FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'", undefined, [checkBinding("mvp", "test_report")]),
     sqliteCheck("data_invariant", "SQLite integrity invariant", "data.primary", "PRAGMA integrity_check", "ok", [checkBinding("mvp", "test_report"), checkBinding("production", "data_migration")]),
     disabledCheck("data_backup", "Backup or isolated-copy evidence before live mutation", "requires_local_data_backup_binding", [checkBinding("production", "data_migration")])
   ];
@@ -194,7 +196,7 @@ export default function definePackages(b) {
   };
   const dataAnalytics = composedPackage(
     coreLifecycle({
-      key: "data.analytics", version: "0.7.0", purpose: "Executable preview for read-only data discovery, deterministic invariants and approval-bound migration preparation without persisting source rows or prompts.", rolePreset: "reviewed",
+      key: "data.analytics", version: "0.7.1", purpose: "Executable preview for read-only data discovery, deterministic invariants and approval-bound migration preparation without persisting source rows or prompts.", rolePreset: "reviewed",
       domains: ["data"], disciplines: ["data_engineering", "software", "testing"], checks: dataChecks,
       resources: [{ alias: "data.primary", kind: "db", purpose: "Registered database or isolated analytical copy" }],
       documents: []

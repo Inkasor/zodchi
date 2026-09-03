@@ -137,13 +137,16 @@ test("the canonical Web package is SDK-composed and requires anchored API-to-UI 
   assert.deepEqual(flow.transition, { adapter: "typescript-compiler", method: "assignment_continuity" });
 });
 
-test("the Web package keeps model-side skills and MCP empty because its checks are platform-owned", () => {
+test("the Web package binds only its productive worker to the registered Playwright MCP", () => {
   const web = PACKAGE_DEFINITIONS.find(item => item.key === "software.web-application");
-  for (const roleKey of ["researcher", "worker", "reviewer"]) {
+  for (const roleKey of ["researcher", "reviewer"]) {
     const contract = web.roles.find(item => item.key === roleKey).contract;
     assert.deepEqual(contract.allowed_skills, []);
     assert.deepEqual(contract.allowed_mcp_servers, []);
   }
+  assert.deepEqual(web.roles.find(item => item.key === "worker").contract.allowed_skills, []);
+  assert.deepEqual(web.roles.find(item => item.key === "worker").contract.allowed_mcp_servers, ["playwright"]);
+  assert.equal(web.profiles.find(item => item.role_key === "worker").capabilities.includes("mcp"), true);
 });
 
 test("an installation catalog is generated and checked from its named definitions", () => {
@@ -200,6 +203,22 @@ test("the support-grade 1C package exposes exactly the seven domain routes and a
   assert.equal(flow.transition.adapter, "bsl-structural");
 });
 
+test("the support-grade 1C package exports the declared cc-1c-skills split in source and generated XML", () => {
+  const expectedInfo = ["cf-info", "form-info", "meta-info", "mxl-info", "role-info", "skd-info", "subsystem-info"];
+  const expectedWorker = ["cf-edit", "cf-init", "cfe-borrow", "cfe-init", "cfe-patch-method", "epf-build", "epf-dump", "epf-init", "erf-build", "erf-dump", "erf-init", "form-add", "form-compile", "form-edit", "form-remove", "interface-edit", "meta-compile", "meta-edit", "meta-remove", "mxl-compile", "mxl-decompile", "role-compile", "skd-compile", "skd-edit", "subsystem-compile", "subsystem-edit"];
+  const source = PACKAGE_DEFINITIONS.find(item => item.key === "one-c.development");
+  const generated = parseWorkflowPackage(fs.readFileSync(generatedFile("one-c.development"), "utf8"));
+  for (const packageValue of [source, generated]) {
+    assert.deepEqual(packageValue.roles.find(item => item.key === "researcher").contract.allowed_skills, expectedInfo);
+    assert.deepEqual(packageValue.roles.find(item => item.key === "worker").contract.allowed_skills, expectedWorker);
+    assert.deepEqual(packageValue.roles.find(item => item.key === "reviewer").contract.allowed_skills, []);
+    assert.deepEqual(packageValue.roles.filter(item => !["researcher", "worker", "reviewer"].includes(item.key)).flatMap(item => item.contract.allowed_skills), []);
+    assert.deepEqual(packageValue.roles.find(item => item.key === "researcher").contract.allowed_mcp_servers, []);
+    assert.deepEqual(packageValue.roles.find(item => item.key === "worker").contract.allowed_mcp_servers, []);
+    assert.deepEqual(packageValue.roles.find(item => item.key === "reviewer").contract.allowed_mcp_servers, []);
+  }
+});
+
 test("the Unity preview keeps technical evidence and owner acceptance independent", () => {
   const packageValue = PACKAGE_DEFINITIONS.find(item => item.key === "game.unity");
   assert.ok(packageValue);
@@ -248,7 +267,7 @@ test("the Web-game preview traces design to browser proof without folding produc
 
 test("browser assistance is optional for Web workers and other external runtimes do not inherit it", () => {
   const byKey = new Map(PACKAGE_DEFINITIONS.map(item => [item.key, item]));
-  for (const key of ["software.web-application", "game.web"]) {
+  for (const key of ["game.web"]) {
     const packageValue = byKey.get(key);
     const worker = packageValue.roles.find(item => item.key === "worker");
     assert.equal(packageValue.roles.some(item => item.key === "browser_worker"), false, key);

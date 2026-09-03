@@ -61,7 +61,8 @@ export function runSqliteCheck(check) {
     const rows = db.prepare(sql).all();
     const serialized = JSON.stringify(rows);
     const expected = check.config.expected;
-    const passed = expected === undefined || rows.some(row => Object.values(row).some(value => value === expected));
+    const values = rows.length === 1 ? Object.values(rows[0]) : [];
+    const passed = expected === undefined || (values.length === 1 && values[0] === expected);
     return { status: passed ? "passed" : "failed", failure: passed ? null : "SQLite invariant did not match", evidence: { rows: rows.length, result_sha256: hash(serialized), database_sha256: hash(fs.readFileSync(file)) } };
   } catch (error) { return { status: "unavailable", failure: compact(error.message) }; }
   finally { try { db?.close(); } catch {} }
