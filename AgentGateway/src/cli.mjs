@@ -13,7 +13,7 @@ import { loadGatewayPolicy } from "./policy.mjs";
 import { assertMetadataOnlyReceipt, DEFAULT_PRIVACY_MODE, privacyAttestation } from "./receipt-privacy.mjs";
 import { inspectCapabilityRequirements, normalizeCapabilityRequirements, profileCapabilities } from "./profile-capabilities.mjs";
 import { observeToolUsage } from "./tool-usage.mjs";
-import { buildInputManifest, includedInstructionText } from "./input-inventory.mjs";
+import { buildInputManifest, includedInstructionText, skillIdentity } from "./input-inventory.mjs";
 import { estimateCostUsd } from "./pricing.mjs";
 
 const paths = resolveGatewayPaths();
@@ -216,7 +216,7 @@ function inspectProfileRequirement({ provider, profile, role = "worker", project
   catch (error) { return { code: error.message.split(":", 1)[0], role, provider, profile, ...scope, value: capabilityRequirements ?? null }; }
   const skillEntries = (profileConfig.allowedSkills ?? []).map(item => {
     const file = fs.existsSync(item) && fs.statSync(item).isDirectory() ? path.join(item, "SKILL.md") : item;
-    return { name: path.basename(path.dirname(file)), file };
+    return { name: skillIdentity(item), file };
   });
   const skillCapabilities = new Set();
   for (const skill of skillEntries.filter(item => requirements.allowed_skills.includes(item.name))) {
@@ -302,7 +302,7 @@ const contractSkillNames = new Set(capabilityRequirements.allowed_skills ?? []);
 const contractMcpServers = new Set(capabilityRequirements.allowed_mcp_servers ?? []);
 const runProfileConfig = {
   ...profileConfig,
-  allowedSkills: (profileConfig.allowedSkills ?? []).filter(item => contractSkillNames.has(path.basename(fs.existsSync(item) && fs.statSync(item).isFile() ? path.dirname(item) : item))),
+  allowedSkills: (profileConfig.allowedSkills ?? []).filter(item => contractSkillNames.has(skillIdentity(item))),
   allowedSkillNames: (profileConfig.allowedSkillNames ?? []).filter(item => contractSkillNames.has(item)),
   allowedMcpServers: (profileConfig.allowedMcpServers ?? []).filter(item => contractMcpServers.has(item)),
   allowedInstructionFiles: capabilityRequirements.native_instruction_files ?? [],

@@ -22,15 +22,43 @@ function gitValue(directory, args) {
   catch { return null; }
 }
 
-function skillRecord(entry) {
+function skillDirectory(entry) {
   const resolved = path.resolve(entry);
-  const directory = fs.existsSync(resolved) && fs.statSync(resolved).isDirectory() ? resolved : path.dirname(resolved);
+  return fs.existsSync(resolved) && fs.statSync(resolved).isDirectory() ? resolved : path.dirname(resolved);
+}
+
+function pluginNameForSkill(directory) {
+  let current = directory;
+  while (true) {
+    if (path.basename(current).toLowerCase() === "skills") {
+      const manifest = path.join(current, "..", ".codex-plugin", "plugin.json");
+      try {
+        const name = JSON.parse(fs.readFileSync(manifest, "utf8")).name;
+        if (typeof name === "string" && name.trim()) return name.trim();
+      } catch { /* ordinary standalone skill or malformed plugin metadata */ }
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
+}
+
+export function skillIdentity(entry) {
+  const directory = skillDirectory(entry);
+  const name = path.basename(directory);
+  const pluginName = pluginNameForSkill(directory);
+  return pluginName ? `${pluginName}:${name}` : name;
+}
+
+function skillRecord(entry) {
+  const directory = skillDirectory(entry);
   const files = walk(directory).map(file => ({ path: slash(path.relative(directory, file)), sha256: sha256(fs.readFileSync(file)) }));
   const marker = path.join(directory, ".zodchi-skill.json");
   let installation = null;
   try { installation = fs.existsSync(marker) ? JSON.parse(fs.readFileSync(marker, "utf8")) : null; } catch { /* malformed marker remains visible as null */ }
   return {
-    name: path.basename(directory), source: installation?.application_root ? "zodchi-installation" : gitValue(directory, ["rev-parse", "--show-toplevel"]) ? "git" : "local",
+    name: skillIdentity(directory), source: installation?.application_root ? "zodchi-installation" : gitValue(directory, ["rev-parse", "--show-toplevel"]) ? "git" : "local",
     repository: gitValue(directory, ["config", "--get", "remote.origin.url"]),
     revision: gitValue(directory, ["describe", "--tags", "--exact-match"]) ?? gitValue(directory, ["rev-parse", "HEAD"]),
     content_hash: sha256(JSON.stringify(files)), files

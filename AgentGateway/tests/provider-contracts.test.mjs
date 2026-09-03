@@ -41,8 +41,18 @@ test("CLI harness adapters preserve identity, usage and never fall back", () => 
       "kimi-declarative-reviewer": { model: "kimi-fixture-model", modelProvider: "kimi-model-provider", reasoningEffort: "low", readOnly: true, acceptedDeclarativeBoundaries: [{ capability: "project_write", roles: ["evidence_reviewer", "strategy_reviewer"], reason: "Owner accepted Kimi's declarative boundary for reviewer roles." }] }
     } : {})
   } }])) });
-  fs.writeFileSync(path.join(root, "policy-pass.json"), JSON.stringify(policy("pass"), null, 2));
-  fs.writeFileSync(path.join(root, "policy-fail.json"), JSON.stringify(policy("fail"), null, 2));
+  const pluginSkill = path.join(root, "plugins", "game-production", "0.1.0", "skills", "shared-map-engine");
+  const pluginVersion = path.join(pluginSkill, "..", "..");
+  fs.mkdirSync(path.join(pluginVersion, ".codex-plugin"), { recursive: true });
+  fs.writeFileSync(path.join(pluginVersion, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "game-production" }));
+  fs.mkdirSync(pluginSkill, { recursive: true });
+  fs.writeFileSync(path.join(pluginSkill, "SKILL.md"), "---\nname: shared-map-engine\n---\nBounded namespaced skill", "utf8");
+  const passPolicy = policy("pass"), failPolicy = policy("fail");
+  for (const currentPolicy of [passPolicy, failPolicy]) currentPolicy.providers.codex.profiles["codex-plugin-skill"] = {
+    model: "codex-fixture-model", modelProvider: "codex-model-provider", reasoningEffort: "low", readOnly: true, allowedSkills: [pluginSkill]
+  };
+  fs.writeFileSync(path.join(root, "policy-pass.json"), JSON.stringify(passPolicy, null, 2));
+  fs.writeFileSync(path.join(root, "policy-fail.json"), JSON.stringify(failPolicy, null, 2));
 
   const missingRequirement = execute(root, "codex", "missing-capability-requirement", "pass", { capabilityRequirements: null });
   assert.equal(missingRequirement.result.status, 77);
@@ -79,6 +89,12 @@ test("CLI harness adapters preserve identity, usage and never fall back", () => 
   assert.equal(matched.result.status, 0, matched.result.stderr); assert.equal(matched.receipt.status, "completed");
   const writer = execute(root, "codex", "writer-match", "pass", { profile: "codex-writable", capabilityRequirements: { required: ["context_input", "project_write"], forbidden: [] } });
   assert.equal(writer.result.status, 0, writer.result.stderr);
+  const namespacedSkill = execute(root, "codex", "namespaced-skill", "pass", { profile: "codex-plugin-skill", capabilityRequirements: { required: ["context_input", "skills"], forbidden: ["project_write"], allowed_skills: ["game-production:shared-map-engine"] } });
+  assert.equal(namespacedSkill.result.status, 0, namespacedSkill.result.stderr);
+  assert.equal(namespacedSkill.receipt.environment.profile_capabilities.skills.status, "available");
+  assert.equal(namespacedSkill.receipt.environment.profile_capabilities.skills.enforcement, "technical");
+  assert.deepEqual(namespacedSkill.receipt.environment.input_manifest.skills.map(item => item.name), ["game-production:shared-map-engine"]);
+  assert.equal(namespacedSkill.receipt.environment.input_manifest.skills[0].files[0].sha256.length, 64);
   const kimiReviewer = execute(root, "kimi", "accepted-declarative-reviewer", "pass", { profile: "kimi-declarative-reviewer", role: "evidence_reviewer" });
   assert.equal(kimiReviewer.result.status, 0, kimiReviewer.result.stderr);
   assert.equal(kimiReviewer.receipt.environment.profile_capabilities.project_write.boundary_acceptance.status, "accepted_declarative");
