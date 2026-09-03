@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "finding": "The 0.6.12 data upgrade was rehearsed on an exact copy before the live data root was changed. Migrations 035-036 and three owner package upgrades completed with database integrity preserved. Executor profile conflicts are closed; release and access routes remain unavailable until the owner registers real external operations.",
+  "release": "0.6.12",
+  "recorded_at": "2026-09-03T05:05:00Z",
+  "stage4_rehearsal": {
+    "source": "<live-data-root>",
+    "copy": "<stage4-copy>",
+    "initial_files": 61,
+    "initial_hash_differences": 0,
+    "database_before": {
+      "schema_version": 34,
+      "integrity": "ok",
+      "foreign_key_violations": 0
+    },
+    "database_after": {
+      "schema_version": 36,
+      "integrity": "ok",
+      "foreign_key_violations": 0
+    },
+    "package_version_collision_observed": true,
+    "package_version_collision": "Generated package content changed under prompt builder 3.2.0 while the owner package versions were unchanged. PACKAGE_VERSION_COLLISION correctly rejected the import, so each changed package received a patch version.",
+    "rehearsed_packages": [
+      {
+        "project_id": "zodchi",
+        "package_key": "zodchi.product-development",
+        "from": "2.9.0",
+        "to": "2.9.1"
+      },
+      {
+        "project_id": "shared-lore",
+        "package_key": "shared-lore.canon",
+        "from": "2.9.0",
+        "to": "2.9.1"
+      },
+      {
+        "project_id": "shared-map-engine",
+        "package_key": "shared-map-engine.core",
+        "from": "2.5.0",
+        "to": "2.5.1"
+      }
+    ],
+    "additional_required_profile_change": "The regenerated documentator contract is read-only, so the documentator profile must change to readOnly=true together with the two operator profiles. Changing only the operators leaves one conflict."
+  },
+  "stage5_live_application": {
+    "backup": "<stage5-backup>",
+    "backup_verified_before_change": true,
+    "backup_hashes": {
+      "workflow/workflow.sqlite": "42d5e061b021b5e5569cfcf8e1605eab8d59d683e8b415995d50650013d1d463",
+      "gateway/policy.local.json": "65b55718262b3cf9fe954f8e4b126ce82c7ef0dc6636d96702a2db4c6bba2ff4",
+      "packages/definitions.mjs": "dab0eb7a3d1dd1aea47fbceae24650fec2cb2f7b6fbb8ba93c09254e33e0bef3",
+      "config/runtime.json": "a2fa7514fbb7ef9a57825e6e55197431bce19e9b4095172d74fce07991b74bb5"
+    },
+    "database": {
+      "schema_version": 36,
+      "integrity": "ok",
+      "foreign_key_violations": 0,
+      "migrations": [
+        {
+          "version": 35,
+          "name": "035_external_operation_definitions.sql",
+          "checksum": "b8266875c4ee4cb50311d71bfc837ef4e8b66d41d4ba86fc9e20d1c1c3840d3b"
+        },
+        {
+          "version": 36,
+          "name": "036_external_operation_verification.sql",
+          "checksum": "00a2cc0b1e3d37e851466d09b3a479fda435120de2f4e610b7a0a9c473452fdd"
+        }
+      ]
+    },
+    "active_packages": [
+      {
+        "project_id": "zodchi",
+        "package_key": "zodchi.product-development",
+        "version": "2.9.1",
+        "prompt_builder_version": "3.2.0",
+        "manifest_hash": "sha256:cca6d2df200a74b013c0a2ea16dfa15e8c9aaf909673f22f45859f5cf307a378",
+        "proposal_id": "import_4154f7265497c0791bf3"
+      },
+      {
+        "project_id": "shared-lore",
+        "package_key": "shared-lore.canon",
+        "version": "2.9.1",
+        "prompt_builder_version": "3.2.0",
+        "manifest_hash": "sha256:65f20d8149976cc7eb013ee10b075236f777e1db302869bd75015090863cb613",
+        "proposal_id": "import_3165f4a83ae709ae39e7"
+      },
+      {
+        "project_id": "shared-map-engine",
+        "package_key": "shared-map-engine.core",
+        "version": "2.5.1",
+        "prompt_builder_version": "3.2.0",
+        "manifest_hash": "sha256:d9072e8365e42be7f78eb772a4c42c36473d355ed8447b5ee2f92e9478c92d03",
+        "proposal_id": "import_c703d41dcff7c0f6d22b"
+      }
+    ],
+    "confirmed_by": "stage5-owner-approved-update",
+    "profile_changes": {
+      "technical_read_only": [
+        "zodchi-documentator",
+        "zodchi-release-operator",
+        "zodchi-access-administrator"
+      ],
+      "accepted_declarative": [
+        {
+          "profile": "zodchi-kimi-evidence-reviewer",
+          "capability": "project_write",
+          "roles": [
+            "evidence_reviewer"
+          ]
+        },
+        {
+          "profile": "zodchi-kimi-strategy-reviewer",
+          "capability": "project_write",
+          "roles": [
+            "strategy_reviewer"
+          ]
+        }
+      ]
+    },
+    "profile_audit": {
+      "zodchi": {
+        "assignments": 68,
+        "compatible": 60,
+        "accepted_declarative": 8,
+        "conflicts": 0
+      },
+      "shared-lore": {
+        "assignments": 28,
+        "compatible": 28,
+        "accepted_declarative": 0,
+        "conflicts": 0
+      },
+      "shared-map-engine": {
+        "assignments": 32,
+        "compatible": 32,
+        "accepted_declarative": 0,
+        "conflicts": 0
+      }
+    },
+    "route_audit": {
+      "checks": 60,
+      "ready": 52,
+      "unavailable": 8,
+      "profile_conflicts": 0,
+      "unavailable_reason": "The zodchi release and access workflows require registered external release/access operations. No operation definition was invented during the upgrade; each workflow is unavailable at four operational levels until the owner registers a real executor and operation."
+    },
+    "live_hashes_after": {
+      "workflow/workflow.sqlite": "1c7ee0f91af97d57f006a675ff067ba98e06e125a41b9689a3de6dab62271441",
+      "gateway/policy.local.json": "11870b1cc4a4ed34cb6df9d8c0748ccec3a7c4162959721424216a2e427a961d",
+      "packages/definitions.mjs": "e02c3b929a51da1a6559654a0627064168941908b80d313b5562cf64d8a23fe1",
+      "config/runtime.json": "bcd9a92c09143902824f72f005ad390a95f2ea5c01268f157134b2f4aa9d5e77"
+    }
+  },
+  "generated_catalog_scope": "The installation generator deterministically rebuilt the complete twelve-package owner catalog and its bundle. Only the three versioned owner packages named above were imported into their projects.",
+  "playwright_registration": {
+    "status": "not_applied_to_live_policy",
+    "reason": "The accepted browser evidence proves the isolated Claude probe profile only. The owner installation has no selected live role/profile to receive that contour, and no Codex browser evidence was inferred from the Claude run."
+  },
+  "evidence_limits": "This record proves schema/package/profile readiness and database integrity. It does not prove a release or access operation, browser behavior for an untested profile, deterministic project gates, or owner product acceptance."
+}

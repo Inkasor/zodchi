@@ -1,0 +1,66 @@
+<document id="zodchi_update_0_6_12" status="working" authority="zodchi" version="1.0" language="ru" format="markdown+xml_semantic">
+
+# Обновление существующей установки до 0.6.12
+
+Эта инструкция предназначена для установки с пользовательским `definitions.mjs`. Она не подменяет явное подтверждение импорта пакетов и не регистрирует внешние операции за владельца.
+
+## До обновления
+
+1. Остановить приём новых сообщений Zodchi и дождаться завершения активных записей.
+2. Сделать полную копию data root, включая Workflow DB, Gateway policy, пользовательские definitions, generated packages и proposals.
+3. Проверить число файлов и SHA-256 между источником и копией. Откат выполняется восстановлением всего согласованного data root, а не отдельных таблиц или XML.
+4. Убедиться, что `runtime.json.packageDefinitions` указывает на пользовательский `definitions.mjs`, а не на пример из установленного релиза.
+
+## Репетиция на копии
+
+1. Открыть скопированную Workflow DB кодом версии 0.6.12 и применить миграции 035–036.
+2. Проверить `PRAGMA integrity_check`, `PRAGMA foreign_key_check` и schema version 36.
+3. Перегенерировать пользовательский каталог через `generate-packages.mjs --definitions <data-root>/packages/definitions.mjs`.
+4. Если содержимое пакета изменилось, увеличить его SemVer. Повторное использование прежней версии с другим manifest обязано завершиться `PACKAGE_VERSION_COLLISION`; обходить эту защиту нельзя.
+5. Для каждого изменённого пакета выполнить `workflow-import-propose`, показать владельцу diff и только после подтверждения выполнить `workflow-import-apply --confirmed-by <owner-reference>`.
+6. Запустить Gateway `profiles-check` сначала по всем активным назначениям, затем по ролям каждого workflow и operational level.
+
+## Изменения профилей для текущих контрактов
+
+Следующие профили должны быть технически read-only:
+
+- `zodchi-documentator`;
+- `zodchi-release-operator`;
+- `zodchi-access-administrator`.
+
+Для Kimi разрешается только принятое владельцем адресное исключение `acceptedDeclarativeBoundaries`:
+
+- `zodchi-kimi-evidence-reviewer`: `project_write` только для `evidence_reviewer`;
+- `zodchi-kimi-strategy-reviewer`: `project_write` только для `strategy_reviewer`.
+
+Причина исключения обязательна. Оно не удовлетворяет `required`, не применяется к чужой роли и должно оставаться видимым как `accepted_declarative` в readiness и receipt.
+
+## Применение к живой установке
+
+Только после успешной репетиции:
+
+1. Повторить полную резервную копию непосредственно перед изменением.
+2. Синхронно обновить source/runtime, пользовательские definitions, версии пакетов и профильную policy.
+3. Применить миграции 035–036.
+4. Перегенерировать каталог и импортировать только явно подтверждённые новые версии пакетов.
+5. Повторить проверки целостности, полный профильный аудит и аудит каждого маршрута.
+
+Для проверенной установки активированы:
+
+| Проект | Пакет | Версия | Prompt builder |
+| --- | --- | ---: | ---: |
+| `zodchi` | `zodchi.product-development` | 2.9.1 | 3.2.0 |
+| `shared-lore` | `shared-lore.canon` | 2.9.1 | 3.2.0 |
+| `shared-map-engine` | `shared-map-engine.core` | 2.5.1 | 3.2.0 |
+
+Итог profile audit: Zodchi — 60 совместимых назначений, 8 `accepted_declarative`, 0 конфликтов; Shared Lore — 28/28; Shared Map Engine — 32/32.
+
+Из 60 проверок маршрутов готовы 52. Восемь ожидаемо `unavailable`: release и access на четырёх уровнях. Их нельзя включать заглушкой — владелец должен зарегистрировать реальные external executor и operation, после чего отдельно проверить подпись результата и post-operation gates.
+
+## Playwright MCP
+
+Положительный smoke Claude подтверждает только изолированный профиль пробы. Он не регистрирует MCP в живой policy автоматически и не доказывает браузерную возможность другого провайдера или профиля. Добавлять Playwright в живую policy следует только вместе с выбранной ролью/профилем и отдельным live smoke именно этого назначения.
+
+Техническое evidence браузера, детерминированная browser-проверка проекта и визуальная/продуктовая приёмка владельца остаются тремя разными результатами.
+
+</document>
