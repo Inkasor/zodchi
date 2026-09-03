@@ -115,7 +115,7 @@
       "args": [
         "-p",
         "--output-format",
-        "json",
+        "stream-json",
         "--model",
         "{model}",
         "{prompt}"

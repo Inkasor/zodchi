@@ -27,6 +27,7 @@ import { assertProjectRuntimeReady, assertWorkflowRuntimeReady } from "./runtime
 import { normalizeSemanticScope } from "./semantic-scope.mjs";
 import { collectSourceFiles, expandTerms, isSourceCodePath, RESEARCH_SOURCE_RANKING, researchSourceRankingOptions, searchSources, sourceScope } from "./source-context.mjs";
 import { executorCapabilityRequirements } from "./executor-capabilities.mjs";
+import { reconcileRoleToolUsage } from "./tool-usage.mjs";
 
 export function loadWorkflow(id, workflowsRoot = resolveWorkflowSettings().workflowsRoot) {
   if (!id) throw new Error("workflow id is required");
@@ -56,6 +57,12 @@ function registryDefinition(db, projectId, workflowId) {
 }
 
 function parsedJson(text) { try { return JSON.parse(String(text).trim()); } catch { return null; } }
+function reconcileAndLinkDirectReceipt(runtime, runId, receipt, contract) {
+  let mismatch = null;
+  try { reconcileRoleToolUsage(receipt, contract); } catch (error) { mismatch = error; }
+  runtime.linkGateway(runId, receipt);
+  if (mismatch) throw mismatch;
+}
 function extractModelText(text) {
   const direct = parsedJson(text);
   if (typeof direct?.result === "string") return direct.result;
@@ -556,7 +563,7 @@ export async function processMessage({
       const role = definition.roles?.classifier;
       if (!role?.provider || !role.profile || !role.role) throw new Error("CLASSIFIER_ROLE_NOT_CONFIGURED");
       classifierReceipt = await gatewayCall({ provider: role.provider, profile: role.profile, level: "prototype", role: role.role, capabilityRequirements: executorCapabilityRequirements({}, { direct: true }), requiresWrite: false, taskFile: classifierTaskFile, outputSchemaFile: classifierSchemaFile, project: projectRoot, taskId: `${runId}:classifier`, workflowRunId: runId });
-      runtime.linkGateway(runId, classifierReceipt);
+      reconcileAndLinkDirectReceipt(runtime, runId, classifierReceipt, { role_id: role.role, allowed_tools: role.contract?.allowed_tools ?? [] });
       assertGatewayReceiptCompleted(classifierReceipt, "classifier");
       classification = parseClassificationReceipt(classifierReceipt, catalog);
     }
@@ -768,9 +775,9 @@ export async function processMessage({
       reserveDirectModelCall(runtime, runId, "researcher");
       researcher = await gatewayCall({ provider: role.provider, profile: role.profile, level: operationalLevel(classification.quality_mode), role: role.role, capabilityRequirements: executorCapabilityRequirements({}, { direct: true }), requiresWrite: false, taskFile: researchFile, outputSchemaFile: researchSchemaFile, project: projectRoot, taskId: `${runId}:researcher`, workflowRunId: runId });
       chargeDirectReceipt(runtime, runId, researcher, "researcher");
+      reconcileAndLinkDirectReceipt(runtime, runId, researcher, { role_id: role.role, allowed_tools: role.contract?.allowed_tools ?? [] });
     }
     catch (error) { return executionFailure(runtime, runId, error, finish, responseLanguage); }
-    runtime.linkGateway(runId, researcher);
     let research;
     try {
       assertGatewayReceiptCompleted(researcher, "researcher");

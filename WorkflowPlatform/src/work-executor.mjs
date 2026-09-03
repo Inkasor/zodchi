@@ -15,6 +15,7 @@ import { loadRoleContract, parseRoleReceipt, rolePrompt, structuredHash } from "
 import { WORKTREE_ALIAS, aliasDeclarations, registeredResources as registeredProjectResources } from "./project-resources.mjs";
 import { consumeCorrectionCycle, documentationOutcome, loadOperationalPolicy, loadQualityContract, operationalLevel, reviewerRequirement } from "./quality-contracts.mjs";
 import { executorCapabilityRequirements } from "./executor-capabilities.mjs";
+import { reconcileRoleToolUsage } from "./tool-usage.mjs";
 
 function runOperationalPolicy(runtime, runId, projectId, workflowId, level) {
   const legacy = loadOperationalPolicy(runtime.db, projectId, workflowId, level);
@@ -621,6 +622,7 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
       activeInvocations?.add(gatewayInvocation);
       return controlledGatewayReceipt(runtime, queue, runId, gatewayInvocation).finally(() => activeInvocations?.delete(gatewayInvocation));
     });
+    reconcileRoleToolUsage(receipt, contract);
     let result;
     try {
       result = parseRoleReceipt(receipt, schemaKey, { contract, ...parseOptions });
