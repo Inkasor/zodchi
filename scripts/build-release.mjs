@@ -52,7 +52,7 @@ export function buildRelease({ repositoryRoot, output, stageRoot = null, replace
     for (const tree of ["configs", "docs", "integrations", "tools/lib", "tools/tests"]) copyTree(repository, tree, stage);
     for (const file of ["README.md", "QUICKSTART.md", "ONBOARDING_PROMPT.md", "LICENSE", "CHANGELOG.md", "SECURITY.md", "CONTRIBUTING.md", "THIRD_PARTY_NOTICES.md", "UPDATE.md", "product.json", "package.json"]) copyFile(repository, file, stage);
     for (const file of ["build-release.mjs", "build-release-archive.mjs", "build-release-manifest.mjs", "build-release.ps1", "validate-source.mjs"]) copyFile(repository, `scripts/${file}`, stage, `scripts/${file}`);
-    for (const file of ["install.mjs", "installation-paths.mjs", "skill-installation.mjs", "session-hook-installation.mjs", "install-or-update.ps1", "install-latest.ps1", "install-latest.mjs", "install-latest.sh", "release-smoke.mjs", "platform-acceptance.mjs"]) copyFile(repository, `tools/${file}`, stage, `tools/${file}`);
+    for (const file of ["browser-sentinel.mjs", "codex-browser-smoke.mjs", "codex-readonly-smoke.mjs", "install.mjs", "installation-paths.mjs", "kimi-write-boundary-smoke.mjs", "mcp-browser-smoke.mjs", "skill-installation.mjs", "session-hook-installation.mjs", "install-or-update.ps1", "install-latest.ps1", "install-latest.mjs", "install-latest.sh", "release-smoke.mjs", "platform-acceptance.mjs"]) copyFile(repository, `tools/${file}`, stage, `tools/${file}`);
     const sourceReleaseLint = fs.existsSync(path.join(repository, "WorkflowPlatform", "scripts", "release-lint.mjs"))
       ? path.join(repository, "WorkflowPlatform")
       : repository;

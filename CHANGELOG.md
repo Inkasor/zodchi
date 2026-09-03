@@ -66,6 +66,7 @@
 - Pre-release hardening names and documents research, documentator and database-query safety ceilings instead of retaining unexplained numeric defaults. Package finalization now grants every controlled document body to the researcher only; classifier access requires an explicit document binding because its standard prompt receives document metadata, not bodies. Prompt builder 3.4.1 and regenerated package versions carry that narrower authority.
 - AgentGateway now states explicitly that shipped Claude single-JSON calls have technical `allowedTools` enforcement but no post-factum tool-event observation. A cross-component package test requires every portable `allowed_tools` value to have a matching Gateway canonicalization before it can ship.
 - The owner-data upgrade guide now requires the replaceable release to be installed and verified before a database is opened at the candidate's current schema. An older candidate that does not know an applied migration must fail closed with `MIGRATION_UNKNOWN_APPLIED_VERSION`; migration records must never be edited to bypass source/data mismatch.
+- Release archives now include the capability-probe entry points and their browser sentinel dependency. Release lint and the platform-neutral archive regression both fail if any shipped probe is omitted.
 
 </section>
 
