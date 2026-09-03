@@ -220,7 +220,7 @@ test("role result schemas reject extra fields, path escapes and false reviewer P
   const workerContract = loadRoleContract(db, "project", "worker", "mvp");
   assert.throws(() => validateWorkerResult({ schema_version: 1, status: "completed", summary: "x", changed_paths: ["../outside"], artifacts: [], evidence: [], questions: [], external_evidence_request: null }, { contract: workerContract, packageContract: { allowed_paths: ["src/output.txt"], artifact_keys: [] } }), /relative project path/);
   assert.throws(() => validateReviewerResult({ ...reviewerResult("PASS"), blockers: [{ code: "x", message: "hidden blocker", path: null }] }), /PASS cannot contain blockers/);
-  const judgePass = { schema_version: 1, decision: "PASS", rationale: "The admissible evidence supports completion.", evidence_refs: ["evidence-1"], primary_gap: null, verification_request: null };
+  const judgePass = { schema_version: 1, decision: "PASS", rationale: "The admissible evidence supports completion.", evidence_refs: ["evidence-1"], primary_gap: null, verification_request: null, state_patch: { schema_version: 1, patch_id: "state_patch_judge", base_projection_hash: "b".repeat(64), changes: [{ operation: "replace_active", path: "decisions.judge_resolution" }] } };
   assert.equal(validateJudgeResult(structuredClone(judgePass)).decision, "PASS");
   assert.throws(() => validateJudgeResult({ ...judgePass, decision: "TARGETED_VERIFICATION" }), /decision payload mismatch/);
   assert.throws(() => validateJudgeResult({ ...judgePass, rationale: "PRIMARY_GAP hidden in prose" , extra: true }), /fields mismatch/);

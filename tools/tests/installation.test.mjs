@@ -141,7 +141,7 @@ test("install and update diagnose role assignments whose profiles violate capabi
     updatedDb.close();
     fs.writeFileSync(gatewayPolicy, JSON.stringify({ schemaVersion: 1, providers: { kimi: { profiles: { "declarative-reviewer": {
       model: "fixture", modelProvider: "fixture", reasoningEffort: "low", readOnly: true,
-      acceptedDeclarativeBoundaries: [{ capability: "project_write", roles: ["evidence_reviewer"], reason: "Owner accepted the declarative reviewer boundary." }]
+      acceptedDeclarativeBoundaries: ["project_write", "local_endpoint", "external_mutation"].map(capability => ({ capability, roles: ["evidence_reviewer"], reason: "Owner accepted the declarative reviewer boundary." }))
     } } } } }));
     const updated = installRelease({ source, destination, dataRoot, workflowDatabase: database, gatewayPolicy, skillRoots: roots, sessionHookFiles: hooks, healthCheck });
     assert.equal(updated.profile_capability_diagnostics.status, "checked");

@@ -48,7 +48,8 @@ export const RESULT_SCHEMA_SHAPES = Object.freeze({
     rationale: "non-empty string",
     evidence_refs: ["string"],
     primary_gap: { kind: "string", message: "string", path: "path relative to the project root, or null", evidence_refs: ["string"], search_intent: "string" },
-    verification_request: { kind: "symbol_reference | exact_term | directed_relation | field_flow | path_change | gate_fact", subject: "string", from: "string or null", to: "string or null", path: "path relative to the project root, or null", evidence_refs: ["string"] }
+    verification_request: { kind: "symbol_reference | exact_term | directed_relation | field_flow | path_change | gate_fact", subject: "string", from: "string or null", to: "string or null", path: "path relative to the project root, or null", evidence_refs: ["string"] },
+    state_patch: { schema_version: 1, patch_id: "exact id from task_package.state_patch_contract", base_projection_hash: "exact task state projection hash", changes: [{ operation: "replace_active", path: "decisions.judge_resolution" }] }
   }),
   "strategy_review.v1": Object.freeze({
     schema_version: 1,
@@ -145,7 +146,10 @@ export function loadRoleContract(db, projectId, roleId, operationalLevel) {
     id: row.id, project_id: row.project_id, role_id: row.role_id, version: row.version, purpose: row.purpose,
     boundaries: parseJson(row.boundaries_json, {}), allowed_work_types: parseJson(row.allowed_work_types_json, []),
     allowed_artifact_types: parseJson(row.allowed_artifact_types_json, []), allowed_tools: parseJson(row.allowed_tools_json, []),
-    allowed_skills: parseJson(row.allowed_skills_json, []), required_checks: parseJson(row.required_checks_json, []),
+    allowed_skills: parseJson(row.allowed_skills_json, []),
+    allowed_mcp_servers: parseJson(row.allowed_mcp_servers_json, []),
+    native_instruction_files: parseJson(row.native_instruction_files_json, []),
+    required_checks: parseJson(row.required_checks_json, []),
     allowed_transitions: parseJson(row.allowed_transitions_json, []), allowed_profiles: allowedProfiles,
     context_limit_bytes: row.context_limit_bytes, max_calls: row.max_calls, max_correction_cycles: row.max_correction_cycles,
     timeout_seconds: row.timeout_seconds, result_schema_key: row.result_schema_key, prompt_template_version: row.prompt_template_version,
@@ -169,7 +173,7 @@ export function rolePrompt({ contract, qualityContract, packageContract, context
     ? "This independent review runs after worker evidence and deterministic gates but before the documentator. Compare the result first with task_package.review_evidence.owner_objective.verbatim and task_package.review_evidence.canonical_completion; planner completion criteria are advisory and never override owner intent, the quality contract, registered gates or completionBlockers. For change evidence, judge the run-relative delta and primary facts, never a builder or worker narrative. For analytical evidence, judge whether the conclusion follows from the supplied primary source ranges and scans. Truncated evidence is not absent evidence, incomplete collection is not a false fact, and failure to find a path in a bounded graph is not proof that the path is missing. A required final document is intentionally not created yet and its absence from worker artifacts or changed_paths is not a blocker. Final receipt totals, calls, tokens, cache, total duration and this invocation's full prompt measurement are platform-generated after review; their absence from review_evidence is not a blocker and they are supplied to the documentator and final run statistics later. Use CHANGES_REQUESTED for an evidence gap that a targeted correction can still address when task_package.remaining_correction_cycles is positive. Reserve REJECT for a fundamental unsafe, unauthorized or contradictory result that another bounded evidence collection cycle cannot repair. The decision fields are conditional and must agree: PASS requires blockers=[] and required_actions=[]; CHANGES_REQUESTED or REJECT requires at least one blocker. Never return PASS while describing a blocker or required action. If task_package.schema_repair is present, correct exactly the reported contract contradiction while preserving the evidence-grounded judgment."
     : null;
   const judgeInstruction = resultSchema === "judge.v1"
-    ? "Resolve only the evaluative conflict in the independently recorded opinions after considering task_package.blocker_admissibility. Unsupported, invalid or unknown factual blockers are not vetoes. Truncated evidence is not absence, incomplete collection is not falsehood, and no path in a bounded graph is not a missing edge. Use TARGETED_VERIFICATION for a fact that the deterministic verifier can resolve; use PRIMARY_GAP for an admissible correction gap; use OWNER_DECISION only for a genuine product or authority decision. Nullable payload rule is strict: PRIMARY_GAP requires primary_gap object and verification_request=null; TARGETED_VERIFICATION requires verification_request object and primary_gap=null; PASS and OWNER_DECISION require both fields=null. Never populate both nullable fields."
+    ? "Resolve only the evaluative conflict in the independently recorded opinions after considering task_package.blocker_admissibility. Unsupported, invalid or unknown factual blockers are not vetoes. Truncated evidence is not absence, incomplete collection is not falsehood, and no path in a bounded graph is not a missing edge. Use TARGETED_VERIFICATION for a fact that the deterministic verifier can resolve; use PRIMARY_GAP for an admissible correction gap; use OWNER_DECISION only for a genuine product or authority decision. Nullable payload rule is strict: PRIMARY_GAP requires primary_gap object and verification_request=null; TARGETED_VERIFICATION requires verification_request object and primary_gap=null; PASS and OWNER_DECISION require both fields=null. Never populate both nullable fields. Copy task_package.state_patch_contract.patch_id and base_projection_hash exactly into state_patch and propose only its listed canonical change; the platform rejects stale or broader patches before applying the resolution."
     : resultSchema === "strategy_review.v1"
     ? "Review only the correction strategy, never execute it. Select only keys listed in task_package.available_steps. SELECT_EXISTING_STEP requires one or more selected_step_keys and no replan or verification payload. REPLAN requires replan_intent and no selected steps or verification payload. TARGETED_VERIFICATION requires verification_request and no selected steps or replan. OWNER_DECISION and NO_VIABLE_STRATEGY require no selected steps, verification request or replan intent. NO_VIABLE_STRATEGY means no bounded evidence, existing-step, verification, replan or owner-decision path remains. Copy task_package.state_patch_contract.patch_id and base_projection_hash exactly into state_patch and propose only its listed canonical changes; the platform rejects stale or broader patches before applying the decision."
     : null;
@@ -188,6 +192,8 @@ export function rolePrompt({ contract, qualityContract, packageContract, context
     // asked the owner to paste them in, when the real fault was that collection had not supplied them.
     `    <supplied_context>Everything this role may use was collected for it and appears in project_context and task_package: the platform reads the project, not the role. Do not ask the owner for sources, history or paths that collection is expected to provide. If something needed is genuinely absent, say which path or which root is missing and stop; that is a gap in collection and it is fixed there.</supplied_context>\n`+
     `    <allowed_skills format="application/json">${escapeXml(stableJson(contract.allowed_skills))}</allowed_skills>\n`+
+    `    <allowed_mcp_servers format="application/json">${escapeXml(stableJson(contract.allowed_mcp_servers ?? []))}</allowed_mcp_servers>\n`+
+    `    <native_instruction_files format="application/json">${escapeXml(stableJson(contract.native_instruction_files ?? []))}</native_instruction_files>\n`+
     `  </role_contract>\n`+
     `${renderQualityContract(qualityContract, "  ")}\n`+
     `  <communication language="${responseLanguage}">Write summaries, questions and other human-facing values in ${languageName(responseLanguage)}. Keep JSON keys, enum values, paths and machine identifiers in English.</communication>\n`+
@@ -297,7 +303,7 @@ export function validateReviewerResult(value) {
   return value;
 }
 
-export function validateJudgeResult(value) {
+export function validateJudgeResult(value, { statePatchContract = null } = {}) {
   exactObject(value, schemaFields("judge.v1"), "judge.v1");
   if (value.schema_version !== 1 || !["PASS", "PRIMARY_GAP", "TARGETED_VERIFICATION", "OWNER_DECISION"].includes(value.decision) || typeof value.rationale !== "string" || !value.rationale.trim()) throw new Error("judge.v1: invalid scalar field");
   strings(value.evidence_refs, "judge.v1.evidence_refs");
@@ -319,6 +325,12 @@ export function validateJudgeResult(value) {
   if (requiresGap !== Boolean(value.primary_gap) || requiresVerification !== Boolean(value.verification_request)) throw new Error("judge.v1: decision payload mismatch");
   if (!["PRIMARY_GAP"].includes(value.decision) && value.primary_gap !== null) throw new Error("judge.v1: primary_gap only allowed for PRIMARY_GAP");
   if (!["TARGETED_VERIFICATION"].includes(value.decision) && value.verification_request !== null) throw new Error("judge.v1: verification_request only allowed for TARGETED_VERIFICATION");
+  exactObject(value.state_patch, ["schema_version", "patch_id", "base_projection_hash", "changes"], "judge.v1.state_patch");
+  if (value.state_patch.schema_version !== 1 || !/^[0-9a-f]{64}$/.test(value.state_patch.base_projection_hash) || typeof value.state_patch.patch_id !== "string" || !value.state_patch.patch_id) throw new Error("judge.v1: invalid state patch identity");
+  if (!Array.isArray(value.state_patch.changes) || value.state_patch.changes.length !== 1) throw new Error("judge.v1: invalid state patch changes");
+  exactObject(value.state_patch.changes[0], ["operation", "path"], "judge.v1.state_patch.change");
+  if (value.state_patch.changes[0].operation !== "replace_active" || value.state_patch.changes[0].path !== "decisions.judge_resolution") throw new Error("judge.v1: state patch field not allowed");
+  if (statePatchContract && (value.state_patch.patch_id !== statePatchContract.patch_id || value.state_patch.base_projection_hash !== statePatchContract.base_projection_hash)) throw new Error("judge.v1: state patch contract mismatch");
   return value;
 }
 

@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-09-03T10:36:50.687Z",
+  "claude_version": "2.1.259 (Claude Code)",
+  "probes": {
+    "normal": {
+      "exit_code": 0,
+      "signal": null,
+      "output_sha256": "576a097d12976a49e40f714d5b2d55afc9d3dea857fcd5f2f1eb03059b80d08e",
+      "output_bytes": 1775,
+      "top_token_observed": true,
+      "nested_token_observed": false
+    },
+    "safe_mode": {
+      "exit_code": 0,
+      "signal": null,
+      "output_sha256": "bd06736112906602cf89e6d748866463363169c56b8a11a061659f5757ff6428",
+      "output_bytes": 1096,
+      "top_token_observed": false,
+      "nested_token_observed": false
+    },
+    "nested_normal": {
+      "exit_code": 0,
+      "signal": null,
+      "output_sha256": "ebb27fba80b84e713581d4852a8fe009555c2fe61225cc43b1b9125470da56a3",
+      "output_bytes": 1775,
+      "top_token_observed": false,
+      "nested_token_observed": true
+    }
+  },
+  "finding": "safe_mode_withheld_customizations_but_ambient_allowlist_is_not_enumerable_before_lazy_nested_discovery",
+  "conclusion": {
+    "selected_skill_allowlist": "unknown",
+    "disable_all_customizations": "technical"
+  },
+  "source_hashes": {
+    "top_skill": "9952780abded0ce94c5c1108ffe30f978673296bddbfc00a54562c95e54fe092",
+    "nested_skill": "b81b08079716610922a7468e5f65be3ef3851b54d185aceaf5df6545182fc8b4"
+  }
+}

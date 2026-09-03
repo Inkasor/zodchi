@@ -21,7 +21,7 @@ test("platform-neutral builder produces a lintable archive root that the canonic
     assert.deepEqual(fs.readdirSync(path.join(root, ".zodchi-stage")), []);
     const manifest = JSON.parse(fs.readFileSync(path.join(output, "bundle-manifest.json"), "utf8"));
     assert.equal(manifest.files.some(item => item.path === "tools/install.mjs"), true);
-    for (const tool of ["browser-sentinel.mjs", "codex-browser-smoke.mjs", "codex-readonly-smoke.mjs", "kimi-write-boundary-smoke.mjs", "mcp-browser-smoke.mjs"]) {
+    for (const tool of ["browser-proof.mjs", "browser-sentinel.mjs", "claude-skill-boundary-smoke.mjs", "codex-browser-smoke.mjs", "codex-readonly-smoke.mjs", "kimi-write-boundary-smoke.mjs", "local-endpoint-boundary-smoke.mjs", "mcp-browser-smoke.mjs", "profile-policy-audit.mjs", "profile-policy-prune.mjs"]) {
       assert.equal(manifest.files.some(item => item.path === `tools/${tool}`), true, tool);
     }
     assert.equal(manifest.files.some(item => item.path === "WorkflowPlatform/src/command-resolver.mjs"), true);

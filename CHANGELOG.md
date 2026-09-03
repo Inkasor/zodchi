@@ -4,6 +4,21 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_6_13_2026_09_03" status="working">
+
+## 0.6.13 — 2026-09-03
+
+- Executor contracts now distinguish process execution, localhost access and mutation of external systems. Registered MCP and external check providers carry endpoint, read-only mode, arbitrary-execution, nested-model, boundary-lifting, provider-alias and pinned-version metadata; contradictory bindings fail before a model starts.
+- Portable role contracts now carry explicit skill, MCP-server and native-instruction allowlists. AgentGateway filters each run to those declarations, derives required write/process capabilities from skill frontmatter, and reconciles observed skill, MCP and native tool use after the call.
+- Technical receipts now include a hashed input manifest: exact skill contents and provenance, pinned MCP/endpoints, included and suppressed instruction files, and the provider environment. Equal prompts in different environments are therefore distinguishable.
+- WorkflowPlatform owns new pinned HTTP/stdio, browser-sentinel and read-only SQLite check runners. Missing endpoints and version mismatches remain `unavailable`; they never become synthetic passes.
+- `one-c.development` assigns declared read-only `cc-1c-skills` information skills only to research, source-tree modifying skills only to the worker, none to review, and keeps structural validation in a pinned platform check. `game.web` activates deterministic browser and screenshot evidence; `data.analytics` uses `node:sqlite` in read-only/query-only mode.
+- Claude 2.1.259 skill-boundary evidence shows that safe mode technically disables project and lazily discovered nested skills, while selective allowlisting remains unknown. The shipped Claude contour uses safe mode and refuses roles that require skills.
+- Added read-only policy-profile audit and a separate hash-bound, explicit `--apply` prune command. Package schema v4 rejects unknown tools during import. Prompt builder 3.5.0 and regenerated example packages carry the new contracts.
+- `judge.v1` is the next role migrated to a projection-hash-bound `StatePatch`; it may replace only the active canonical `judge_resolution` decision.
+
+</section>
+
 <section id="0_6_12_2026_09_02" status="working">
 
 ## 0.6.12 — 2026-09-02

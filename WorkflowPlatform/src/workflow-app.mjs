@@ -26,7 +26,7 @@ import { normalizeRunProfile, resolveRunProfile, storeRunProfile } from "./run-p
 import { assertProjectRuntimeReady, assertWorkflowRuntimeReady } from "./runtime-readiness.mjs";
 import { normalizeSemanticScope } from "./semantic-scope.mjs";
 import { collectSourceFiles, expandTerms, isSourceCodePath, RESEARCH_SOURCE_RANKING, researchSourceRankingOptions, searchSources, sourceScope } from "./source-context.mjs";
-import { executorCapabilityRequirements } from "./executor-capabilities.mjs";
+import { executorCapabilityRequirementsForProject } from "./executor-capabilities.mjs";
 import { reconcileRoleToolUsage } from "./tool-usage.mjs";
 
 export function loadWorkflow(id, workflowsRoot = resolveWorkflowSettings().workflowsRoot) {
@@ -37,7 +37,7 @@ export function loadWorkflow(id, workflowsRoot = resolveWorkflowSettings().workf
 function registryDefinition(db, projectId, workflowId) {
   const roles = {};
   for (const row of db.prepare(`SELECT rpa.role_id,p.provider,p.name,rpa.operational_level,
-      rc.id AS contract_id,rc.context_limit_bytes,rc.result_schema_key,rc.boundaries_json,rc.allowed_tools_json
+      rc.id AS contract_id,rc.context_limit_bytes,rc.result_schema_key,rc.boundaries_json,rc.allowed_tools_json,rc.allowed_skills_json,rc.allowed_mcp_servers_json,rc.native_instruction_files_json
     FROM role_profile_assignments rpa JOIN profiles p ON p.id=rpa.profile_id
     JOIN role_contracts rc ON rc.project_id=rpa.project_id AND rc.role_id=rpa.role_id AND rc.status='active'
     WHERE rpa.project_id=? AND rpa.enabled=1 AND rpa.role_id IN ('classifier','researcher')
@@ -49,7 +49,10 @@ function registryDefinition(db, projectId, workflowId) {
         context_limit_bytes: row.context_limit_bytes,
         result_schema_key: row.result_schema_key,
         boundaries: parsedJson(row.boundaries_json) ?? {},
-        allowed_tools: parsedJson(row.allowed_tools_json) ?? []
+        allowed_tools: parsedJson(row.allowed_tools_json) ?? [],
+        allowed_skills: parsedJson(row.allowed_skills_json) ?? [],
+        allowed_mcp_servers: parsedJson(row.allowed_mcp_servers_json) ?? [],
+        native_instruction_files: parsedJson(row.native_instruction_files_json) ?? []
       }
     };
   }
@@ -573,8 +576,8 @@ export async function processMessage({
       if (!execute) throw new Error("CLASSIFICATION_EXECUTION_REQUIRED: supply a validated contract result for dry-run tests");
       const role = definition.roles?.classifier;
       if (!role?.provider || !role.profile || !role.role) throw new Error("CLASSIFIER_ROLE_NOT_CONFIGURED");
-      classifierReceipt = await gatewayCall({ provider: role.provider, profile: role.profile, level: "prototype", role: role.role, capabilityRequirements: executorCapabilityRequirements({}, { direct: true }), requiresWrite: false, taskFile: classifierTaskFile, outputSchemaFile: classifierSchemaFile, project: projectRoot, taskId: `${runId}:classifier`, workflowRunId: runId });
-      reconcileAndLinkDirectReceipt(runtime, runId, classifierReceipt, { role_id: role.role, allowed_tools: role.contract?.allowed_tools ?? [] });
+      classifierReceipt = await gatewayCall({ provider: role.provider, profile: role.profile, level: "prototype", role: role.role, capabilityRequirements: executorCapabilityRequirementsForProject(runtime.db, project, role.contract ?? {}, { direct: true }), requiresWrite: false, taskFile: classifierTaskFile, outputSchemaFile: classifierSchemaFile, project: projectRoot, taskId: `${runId}:classifier`, workflowRunId: runId });
+      reconcileAndLinkDirectReceipt(runtime, runId, classifierReceipt, { role_id: role.role, ...(role.contract ?? {}) });
       assertGatewayReceiptCompleted(classifierReceipt, "classifier");
       classification = parseClassificationReceipt(classifierReceipt, catalog);
     }
@@ -784,9 +787,9 @@ export async function processMessage({
     let researcher;
     try {
       reserveDirectModelCall(runtime, runId, "researcher");
-      researcher = await gatewayCall({ provider: role.provider, profile: role.profile, level: operationalLevel(classification.quality_mode), role: role.role, capabilityRequirements: executorCapabilityRequirements({}, { direct: true }), requiresWrite: false, taskFile: researchFile, outputSchemaFile: researchSchemaFile, project: projectRoot, taskId: `${runId}:researcher`, workflowRunId: runId });
+      researcher = await gatewayCall({ provider: role.provider, profile: role.profile, level: operationalLevel(classification.quality_mode), role: role.role, capabilityRequirements: executorCapabilityRequirementsForProject(runtime.db, project, role.contract ?? {}, { direct: true }), requiresWrite: false, taskFile: researchFile, outputSchemaFile: researchSchemaFile, project: projectRoot, taskId: `${runId}:researcher`, workflowRunId: runId });
       chargeDirectReceipt(runtime, runId, researcher, "researcher");
-      reconcileAndLinkDirectReceipt(runtime, runId, researcher, { role_id: role.role, allowed_tools: role.contract?.allowed_tools ?? [] });
+      reconcileAndLinkDirectReceipt(runtime, runId, researcher, { role_id: role.role, ...(role.contract ?? {}) });
     }
     catch (error) { return executionFailure(runtime, runId, error, finish, responseLanguage); }
     let research;

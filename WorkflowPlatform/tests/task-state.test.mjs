@@ -67,3 +67,18 @@ test("strategy reviewer patch is hash-bound and cannot write a derived field", (
   assert.throws(() => applyRoleStatePatch(runtime.db, runId, "strategy_reviewer", staleResult, stale), /STATE_PATCH_STALE/);
   runtime.db.close(); fs.rmSync(root, { recursive: true, force: true });
 });
+
+test("judge is the next role migrated to a hash-bound canonical decision patch", () => {
+  const { root, runtime, runId } = fixture();
+  const contract = statePatchContract(runtime.db, runId, "judge");
+  const result = {
+    schema_version: 1, decision: "PASS", rationale: "The admissible opinions support completion.", evidence_refs: [], primary_gap: null, verification_request: null,
+    state_patch: { schema_version: 1, patch_id: contract.patch_id, base_projection_hash: contract.base_projection_hash, changes: [{ operation: "replace_active", path: "decisions.judge_resolution" }] }
+  };
+  const applied = applyRoleStatePatch(runtime.db, runId, "judge", result, contract);
+  assert.equal(applied.status, "applied");
+  assert.deepEqual({ ...runtime.db.prepare("SELECT kind,outcome,source FROM decisions WHERE id=?").get(contract.patch_id) }, { kind: "judge_resolution", outcome: "PASS", source: "judge" });
+  const broader = statePatchContract(runtime.db, runId, "judge");
+  assert.throws(() => applyRoleStatePatch(runtime.db, runId, "judge", { ...result, state_patch: { schema_version: 1, patch_id: broader.patch_id, base_projection_hash: broader.base_projection_hash, changes: [{ operation: "replace_active", path: "decisions.strategy_recovery" }] } }, broader), /FIELD_NOT_ALLOWED/);
+  runtime.db.close(); fs.rmSync(root, { recursive: true, force: true });
+});

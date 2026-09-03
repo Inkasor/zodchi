@@ -3,7 +3,7 @@ import { structuredHash } from "../src/role-contracts.mjs";
 import { portableCapabilitiesForContract } from "../src/executor-capabilities.mjs";
 import * as packageSdk from "./sdk.mjs";
 
-const PACKAGE_VERSION = "3.4.1";
+const PACKAGE_VERSION = "3.5.0";
 const REVIEW_CONTEXT_BYTES = 256 * 1024;
 
 const workTypeCatalog = {
@@ -28,7 +28,7 @@ function role(key, purpose, workTypes, artifacts, options = {}) {
   // `writes` is executable policy, not prose. Existing package roles that receive apply_patch are
   // write-capable by construction; custom roles may state the same fact explicitly.
   boundaries.writes = options.writes ?? boundaries.writes ?? tools.includes("apply_patch");
-  return { key, name: options.name ?? key.split("_").map(word => word[0].toUpperCase() + word.slice(1)).join(" "), contract: { version: PACKAGE_VERSION, purpose, boundaries, allowed_work_types: workTypes, allowed_artifact_types: artifacts, allowed_tools: tools, allowed_skills: options.skills ?? [], required_checks: options.checks ?? [], allowed_transitions: options.transitions ?? ["executing", "verifying", "review_required", "documenting"], allowed_profile_keys: [`${key}.mvp`], context_limit_bytes: options.context ?? 65536, max_calls: options.maxCalls ?? 2, max_correction_cycles: options.corrections ?? 1, timeout_seconds: options.timeout ?? 1800, result_schema_key: resultSchema, prompt_template_version: PACKAGE_VERSION, escalation: options.escalation ?? { after_failed_corrections: 1, owner_decisions: true } } };
+  return { key, name: options.name ?? key.split("_").map(word => word[0].toUpperCase() + word.slice(1)).join(" "), contract: { version: PACKAGE_VERSION, purpose, boundaries, allowed_work_types: workTypes, allowed_artifact_types: artifacts, allowed_tools: tools, allowed_skills: options.skills ?? [], allowed_mcp_servers: options.mcpServers ?? [], native_instruction_files: options.instructionFiles ?? [], required_checks: options.checks ?? [], allowed_transitions: options.transitions ?? ["executing", "verifying", "review_required", "documenting"], allowed_profile_keys: [`${key}.mvp`], context_limit_bytes: options.context ?? 65536, max_calls: options.maxCalls ?? 2, max_correction_cycles: options.corrections ?? 1, timeout_seconds: options.timeout ?? 1800, result_schema_key: resultSchema, prompt_template_version: PACKAGE_VERSION, escalation: options.escalation ?? { after_failed_corrections: 1, owner_decisions: true } } };
 }
 const profilesFor = (packageKey, roles) => roles.map(item => ({ key: `${packageKey}.${item.key}.mvp`, role_key: item.key, provider_family: null, capabilities: portableCapabilitiesForContract(item.contract), operational_levels: ["prototype", "mvp", "production", "security-audit"] }));
 const promptsFor = roles => roles.map(item => { const template = `ROLE ${item.key}. Follow the versioned role contract and the separately supplied quality contract. Return only ${item.contract.result_schema_key}. Do not make owner decisions or publish.`; return { key: `${item.key}.default`, version: PACKAGE_VERSION, role_key: item.key, result_schema_key: item.contract.result_schema_key, template, content_hash: promptHash(template) }; });
@@ -40,9 +40,22 @@ function addRoleToPackage(packageValue, item) {
   for (const document of packageValue.documents ?? []) document.bindings.push(binding(item.key));
   return packageValue;
 }
+function configureRoleInputs(packageValue, roleKey, { skills = [], mcpServers = [], instructionFiles = [], boundaries = {} } = {}) {
+  const roleIndex = packageValue.roles.findIndex(item => item.key === roleKey);
+  if (roleIndex < 0) throw new Error(`PACKAGE_ROLE_NOT_FOUND: ${packageValue.key}:${roleKey}`);
+  const current = packageValue.roles[roleIndex];
+  const contract = { ...current.contract, allowed_skills: [...new Set(skills)].sort(), allowed_mcp_servers: [...new Set(mcpServers)].sort(), native_instruction_files: [...new Set(instructionFiles)].sort(), boundaries: { ...current.contract.boundaries, ...boundaries } };
+  packageValue.roles[roleIndex] = { ...current, contract };
+  const profileIndex = packageValue.profiles.findIndex(item => item.role_key === roleKey);
+  if (profileIndex >= 0) packageValue.profiles[profileIndex] = { ...packageValue.profiles[profileIndex], capabilities: portableCapabilitiesForContract(contract) };
+  return packageValue;
+}
 const checkBinding = (quality, artifact, required = true) => ({ quality_mode_key: quality, artifact_type_key: artifact, required });
 const commandCheck = (key, name, command, args, bindings, timeout = 900) => ({ key, name, runner: key, kind: "command", config: { command, args }, timeout_seconds: timeout, bindings });
 const capabilityCheck = (key, name, capability, args, bindings, timeout = 900) => ({ key, name, runner: key, kind: "command", config: { capability, args }, timeout_seconds: timeout, bindings });
+const externalToolCheck = (key, name, externalTool, config, bindings, timeout = 900) => ({ key, name, runner: key, kind: "external_tool", config: { external_tool: externalTool, ...config }, timeout_seconds: timeout, bindings });
+const browserSentinelCheck = (key, name, externalTool, bindings, timeout = 900) => ({ key, name, runner: key, kind: "browser_sentinel", config: { external_tool: externalTool }, timeout_seconds: timeout, bindings });
+const sqliteCheck = (key, name, resource, sql, expected, bindings, timeout = 300) => ({ key, name, runner: key, kind: "sqlite", config: { resource, sql, ...(expected === undefined ? {} : { expected }) }, timeout_seconds: timeout, bindings });
 const projectCommandCheck = (key, name, projectId, command, args, bindings, timeout = 900) => ({ key, name, runner: key, kind: "project_command", config: { project_id: projectId, command, args }, timeout_seconds: timeout, bindings });
 // A disabled check is declared so its absence stays visible, but it never blocks: it cannot pass, and
 // gate coverage is measured by the executable required checks instead.
@@ -136,7 +149,7 @@ function finalize({ key, purpose, roles, workflows, routes, checks, operationalL
   const artifacts = [...new Set([...roles.flatMap(item => item.contract.allowed_artifact_types), ...workflows.flatMap(item => item.steps.flatMap(value => value.artifact_type_keys)), ...checks.flatMap(item => item.bindings.map(value => value.artifact_type_key).filter(Boolean))])];
   const qualities = Object.keys(qualityCatalog);
   const levels = [...new Set(workflows.map(item => item.default_level))];
-  return { schema_version: 3, key, version, purpose, prompt_builder_version: PACKAGE_VERSION, catalogs: { domains: domains.map(value => ({ key: value, name: domainCatalog[value] })), disciplines: disciplines.map(value => ({ key: value, name: disciplineCatalog[value] })), work_types: catalog(workTypeCatalog, workTypes, "category"), artifact_types: catalog(artifactCatalog, artifacts, "category"), quality_modes: catalog(qualityCatalog, qualities, "ordinal"), planning_levels: catalog(levelCatalog, levels, "ordinal") }, resources: resources.map(resource => ({ alias: resource.alias, kind: resource.kind, purpose: resource.purpose ?? null })), roles, profiles: profilesFor(key, roles), workflows, state_machine: stateMachine(), routes, checks, operational_levels: normalizeOperationalLevels(operationalLevels, checks), evidence_flows: evidenceFlows, documents, prompt_templates: promptsFor(roles), test_scenarios: scenarios };
+  return { schema_version: 4, key, version, purpose, prompt_builder_version: PACKAGE_VERSION, catalogs: { domains: domains.map(value => ({ key: value, name: domainCatalog[value] })), disciplines: disciplines.map(value => ({ key: value, name: disciplineCatalog[value] })), work_types: catalog(workTypeCatalog, workTypes, "category"), artifact_types: catalog(artifactCatalog, artifacts, "category"), quality_modes: catalog(qualityCatalog, qualities, "ordinal"), planning_levels: catalog(levelCatalog, levels, "ordinal") }, resources: resources.map(resource => ({ alias: resource.alias, kind: resource.kind, purpose: resource.purpose ?? null })), roles, profiles: profilesFor(key, roles), workflows, state_machine: stateMachine(), routes: routes, checks, operational_levels: normalizeOperationalLevels(operationalLevels, checks), evidence_flows: evidenceFlows, documents, prompt_templates: promptsFor(roles), test_scenarios: scenarios };
 }
 
 function companyWebPackage(spec) {
@@ -388,4 +401,4 @@ function composedPackage(core, ...components) {
 
 
 const { coreLifecycle, sourceChange, dataChange, contentProduction, release: releaseCapability, incident: incidentCapability, externalRuntime, experiment, accessManagement, projectBootstrap, documentation: documentationCapability, securityReview, ownerAcceptance, backupRestore, activityOperations, domainAdapter, composeLifecycle } = packageSdk;
-export { PACKAGE_VERSION, role, addRoleToPackage, checkBinding, commandCheck, capabilityCheck, projectCommandCheck, disabledCheck, secretCheck, securityChecks, withBroadSecretScan, addBinding, completeSoftwareChecks, step, workflow, question, route, binding, document, scenario, finalize, companyWebPackage, coreLifecycle, sourceChange, dataChange, contentProduction, releaseCapability, incidentCapability, externalRuntime, experiment, accessManagement, projectBootstrap, documentationCapability, securityReview, ownerAcceptance, backupRestore, activityOperations, domainAdapter, composeLifecycle, composedPackage };
+export { PACKAGE_VERSION, role, addRoleToPackage, configureRoleInputs, checkBinding, commandCheck, capabilityCheck, externalToolCheck, browserSentinelCheck, sqliteCheck, projectCommandCheck, disabledCheck, secretCheck, securityChecks, withBroadSecretScan, addBinding, completeSoftwareChecks, step, workflow, question, route, binding, document, scenario, finalize, companyWebPackage, coreLifecycle, sourceChange, dataChange, contentProduction, releaseCapability, incidentCapability, externalRuntime, experiment, accessManagement, projectBootstrap, documentationCapability, securityReview, ownerAcceptance, backupRestore, activityOperations, domainAdapter, composeLifecycle, composedPackage };
