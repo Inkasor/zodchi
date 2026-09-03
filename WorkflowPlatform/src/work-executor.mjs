@@ -16,7 +16,7 @@ import { WORKTREE_ALIAS, aliasDeclarations, registeredResources as registeredPro
 import { consumeCorrectionCycle, documentationOutcome, loadOperationalPolicy, loadQualityContract, operationalLevel, reviewerRequirement } from "./quality-contracts.mjs";
 import { executorCapabilityRequirements } from "./executor-capabilities.mjs";
 import { reconcileRoleToolUsage } from "./tool-usage.mjs";
-import { strategicRunContext } from "./strategic-state.mjs";
+import { applyRoleStatePatch, statePatchContract, taskStateProjection, taskStateRoleContext } from "./task-state.mjs";
 
 function runOperationalPolicy(runtime, runId, projectId, workflowId, level) {
   const legacy = loadOperationalPolicy(runtime.db, projectId, workflowId, level);
@@ -573,7 +573,6 @@ async function controlledGatewayReceipt(runtime, queue, runId, invocation) {
 }
 
 async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, packageContract, context, schemaKey, parseOptions, gatewayCall, activeInvocations = null }) {
-  packageContract = { ...(packageContract ?? {}), strategic_context: strategicRunContext(runtime.db, runId) };
   const contract = loadRoleContract(runtime.db, runtime.get(runId).project_id, roleId, level);
   const qualityContract = loadQualityContract(runtime.db, level);
   if (contract.result_schema_key !== schemaKey) throw new Error(`ROLE_SCHEMA_NOT_ALLOWED: ${roleId}:${schemaKey}`);
@@ -583,6 +582,13 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
   if (step.role_id !== roleId) throw new Error(`ROLE_STEP_MISMATCH: expected ${step.role_id}, got ${roleId}`);
   queue.start(lease.token);
   const reflection = maybeOpenGoalReflection(runtime, runId, roleId);
+  const taskState = taskStateProjection(runtime.db, runId);
+  const patchContract = statePatchContract(runtime.db, runId, roleId, taskState);
+  packageContract = {
+    ...(packageContract ?? {}),
+    task_state: taskStateRoleContext(taskState),
+    ...(patchContract ? { state_patch_contract: patchContract } : {})
+  };
   const promptContext = reflection ? { ...(context ?? {}), reflection_checkpoint: { sequence: reflection.sequence, elapsed_ms: reflection.elapsed_ms, state_hash: reflection.state_hash, instruction: reflection.instruction } } : (context ?? {});
   let prompt;
   try { prompt = promptWithinContract(contract, qualityContract, packageContract, promptContext, schemaKey); }
@@ -627,7 +633,7 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
     reconcileRoleToolUsage(receipt, contract);
     let result;
     try {
-      result = parseRoleReceipt(receipt, schemaKey, { contract, ...parseOptions });
+      result = parseRoleReceipt(receipt, schemaKey, { contract, ...parseOptions, ...(patchContract ? { statePatchContract: patchContract } : {}) });
     } catch (error) {
       error.code = "ROLE_RESULT_SCHEMA_INVALID";
       error.invalidRoleOutput = utf8Prefix(String(receipt.output ?? ""), 16_384);
@@ -654,7 +660,7 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
     runtime.linkGateway(runId, { ...receipt, step_id: step.id, attempt_id: lease.attemptId, contract_hash: contractHash, result_hash: resultHash });
     storeStepPayload(runtime.db, step.id, packageContract, schemaKey, result);
     return {
-      contract, qualityContract, lease, step, receipt, result, costSettlement,
+      contract, qualityContract, lease, step, receipt, result, costSettlement, statePatchContract: patchContract,
       complete: details => queue.complete(lease.token, { receiptId: receipt.receiptId ?? receipt.receipt_id, details }),
       fail: (category, retryable = true) => queue.fail(lease.token, { category, retryable })
     };
@@ -1097,6 +1103,7 @@ async function executeStrategyRecovery({ runtime, queue, runId, projectId, level
     correction_cycle: cycle
   };
   const strategy = await invokeRole({ runtime, queue, runId, roleId: "strategy_reviewer", level, taskRoot, packageContract: strategyPackage, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "strategy_review.v1", parseOptions: { availableStepKeys: plan.steps.map(step => step.key) }, gatewayCall });
+  applyRoleStatePatch(runtime.db, runId, "strategy_reviewer", strategy.result, strategy.statePatchContract);
   strategy.complete({ decision: strategy.result.decision });
   recordRunEvidence(runtime.db, runId, strategy.step.id, "strategy_review", strategy.result);
   if (strategy.result.decision === "SELECT_EXISTING_STEP") {

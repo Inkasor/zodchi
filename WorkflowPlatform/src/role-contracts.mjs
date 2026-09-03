@@ -57,7 +57,8 @@ export const RESULT_SCHEMA_SHAPES = Object.freeze({
     selected_step_keys: ["existing planner step key"],
     verification_request: { kind: "symbol_reference | exact_term | directed_relation | field_flow | path_change | gate_fact", subject: "string", from: "string or null", to: "string or null", path: "path relative to the project root, or null", evidence_refs: ["string"] },
     replan_intent: "non-empty string or null",
-    evidence_refs: ["string"]
+    evidence_refs: ["string"],
+    state_patch: { schema_version: 1, patch_id: "exact id from task_package.state_patch_contract", base_projection_hash: "exact task state projection hash", changes: [{ operation: "replace_active", path: "decisions.strategy_recovery" }] }
   }),
   "documentator.v1": Object.freeze({
     schema_version: 1,
@@ -170,7 +171,7 @@ export function rolePrompt({ contract, qualityContract, packageContract, context
   const judgeInstruction = resultSchema === "judge.v1"
     ? "Resolve only the evaluative conflict in the independently recorded opinions after considering task_package.blocker_admissibility. Unsupported, invalid or unknown factual blockers are not vetoes. Truncated evidence is not absence, incomplete collection is not falsehood, and no path in a bounded graph is not a missing edge. Use TARGETED_VERIFICATION for a fact that the deterministic verifier can resolve; use PRIMARY_GAP for an admissible correction gap; use OWNER_DECISION only for a genuine product or authority decision. Nullable payload rule is strict: PRIMARY_GAP requires primary_gap object and verification_request=null; TARGETED_VERIFICATION requires verification_request object and primary_gap=null; PASS and OWNER_DECISION require both fields=null. Never populate both nullable fields."
     : resultSchema === "strategy_review.v1"
-    ? "Review only the correction strategy, never execute it. Select only keys listed in task_package.available_steps. SELECT_EXISTING_STEP requires one or more selected_step_keys and no replan or verification payload. REPLAN requires replan_intent and no selected steps or verification payload. TARGETED_VERIFICATION requires verification_request and no selected steps or replan. OWNER_DECISION and NO_VIABLE_STRATEGY require no selected steps, verification request or replan intent. NO_VIABLE_STRATEGY means no bounded evidence, existing-step, verification, replan or owner-decision path remains."
+    ? "Review only the correction strategy, never execute it. Select only keys listed in task_package.available_steps. SELECT_EXISTING_STEP requires one or more selected_step_keys and no replan or verification payload. REPLAN requires replan_intent and no selected steps or verification payload. TARGETED_VERIFICATION requires verification_request and no selected steps or replan. OWNER_DECISION and NO_VIABLE_STRATEGY require no selected steps, verification request or replan intent. NO_VIABLE_STRATEGY means no bounded evidence, existing-step, verification, replan or owner-decision path remains. Copy task_package.state_patch_contract.patch_id and base_projection_hash exactly into state_patch and propose only its listed canonical changes; the platform rejects stale or broader patches before applying the decision."
     : null;
   const toolAuthorityInstruction = contract.allowed_tools.length
     ? "Only the tools listed in allowed_tools are authorized. The supplied context remains the primary evidence package."
@@ -321,7 +322,7 @@ export function validateJudgeResult(value) {
   return value;
 }
 
-export function validateStrategyReviewResult(value, { availableStepKeys = [] } = {}) {
+export function validateStrategyReviewResult(value, { availableStepKeys = [], statePatchContract = null } = {}) {
   exactObject(value, schemaFields("strategy_review.v1"), "strategy_review.v1");
   if (value.schema_version !== 1 || !["SELECT_EXISTING_STEP", "REPLAN", "TARGETED_VERIFICATION", "OWNER_DECISION", "NO_VIABLE_STRATEGY"].includes(value.decision) || typeof value.rationale !== "string" || !value.rationale.trim()) throw new Error("strategy_review.v1: invalid scalar field");
   strings(value.selected_step_keys, "strategy_review.v1.selected_step_keys");
@@ -337,6 +338,12 @@ export function validateStrategyReviewResult(value, { availableStepKeys = [] } =
   }
   const selected = value.selected_step_keys.length > 0, verification = Boolean(value.verification_request), replan = Boolean(value.replan_intent);
   if ((value.decision === "SELECT_EXISTING_STEP") !== selected || (value.decision === "TARGETED_VERIFICATION") !== verification || (value.decision === "REPLAN") !== replan) throw new Error("strategy_review.v1: decision payload mismatch");
+  exactObject(value.state_patch, ["schema_version", "patch_id", "base_projection_hash", "changes"], "strategy_review.v1.state_patch");
+  if (value.state_patch.schema_version !== 1 || !/^[0-9a-f]{64}$/.test(value.state_patch.base_projection_hash) || typeof value.state_patch.patch_id !== "string" || !value.state_patch.patch_id) throw new Error("strategy_review.v1: invalid state patch identity");
+  if (!Array.isArray(value.state_patch.changes) || value.state_patch.changes.length !== 1) throw new Error("strategy_review.v1: invalid state patch changes");
+  exactObject(value.state_patch.changes[0], ["operation", "path"], "strategy_review.v1.state_patch.change");
+  if (value.state_patch.changes[0].operation !== "replace_active" || value.state_patch.changes[0].path !== "decisions.strategy_recovery") throw new Error("strategy_review.v1: state patch field not allowed");
+  if (statePatchContract && (value.state_patch.patch_id !== statePatchContract.patch_id || value.state_patch.base_projection_hash !== statePatchContract.base_projection_hash)) throw new Error("strategy_review.v1: state patch contract mismatch");
   return value;
 }
 

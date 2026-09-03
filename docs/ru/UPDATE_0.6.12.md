@@ -18,7 +18,7 @@
 
 1. Открыть скопированную Workflow DB кодом версии 0.6.12 и применить миграции 035–037.
 2. Проверить `PRAGMA integrity_check`, `PRAGMA foreign_key_check` и schema version 37.
-3. Перегенерировать пользовательский каталог через `generate-packages.mjs --definitions <data-root>/packages/definitions.mjs`. Новый формат workflow package имеет schema v3 и prompt builder 3.3.0; поле `history_budget_bytes` больше не переносится, а лимит контекста классификатора берётся из его role contract.
+3. Перегенерировать пользовательский каталог через `generate-packages.mjs --definitions <data-root>/packages/definitions.mjs`. Новый формат workflow package имеет schema v3 и prompt builder 3.4.0; поле `history_budget_bytes` больше не переносится, лимит контекста классификатора берётся из его role contract, а `strategy_review.v1` несёт hash-bound `StatePatch`.
 4. Если содержимое пакета изменилось, увеличить его SemVer. Повторное использование прежней версии с другим manifest обязано завершиться `PACKAGE_VERSION_COLLISION`; обходить эту защиту нельзя.
 5. Для каждого изменённого пакета выполнить `workflow-import-propose`, показать владельцу diff и только после подтверждения выполнить `workflow-import-apply --confirmed-by <owner-reference>`.
 6. Запустить Gateway `profiles-check` сначала по всем активным назначениям, затем по ролям каждого workflow и operational level.
@@ -59,7 +59,7 @@
 | `shared-lore` | `shared-lore.canon` | 2.9.1 | 3.2.0 |
 | `shared-map-engine` | `shared-map-engine.core` | 2.5.1 | 3.2.0 |
 
-Это состояние живой установки до финального обновления schema v3. Перед следующим импортом все три пользовательских definitions нужно собрать prompt builder 3.3.0, повысить package SemVer из-за изменившегося manifest и показать владельцу новый proposal. Пакет schema v1/v2 кандидат отклоняет с `WORKFLOW_PACKAGE_SCHEMA_MIGRATION_REQUIRED`; старую миграцию 004 с историческим default переписывать нельзя, колонку удаляет новая миграция 037.
+Это состояние живой установки до финального обновления schema v3. Перед следующим импортом все три пользовательских definitions нужно собрать prompt builder 3.4.0, повысить package SemVer из-за изменившегося manifest и показать владельцу новый proposal. Пакет schema v1/v2 кандидат отклоняет с `WORKFLOW_PACKAGE_SCHEMA_MIGRATION_REQUIRED`; старую миграцию 004 с историческим default переписывать нельзя, колонку удаляет новая миграция 037.
 
 Итог profile audit: Zodchi — 60 совместимых назначений, 8 `accepted_declarative`, 0 конфликтов; Shared Lore — 28/28; Shared Map Engine — 32/32.
 

@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { openDb, now } from "../src/db.mjs";
 import { RUN_PROFILE_CONFIRMATION_ID, RUN_PROFILE_CONFIRMATION_KIND, classificationCatalog, classificationJsonSchema, classifierPrompt, parseClassificationReceipt, validateClassificationDecision } from "../src/classifier.mjs";
-import { compactProjectSnapshot, conversationContext, readProjectContext, selectProjectContext } from "../src/document-context.mjs";
+import { classifierStateContext, compactProjectSnapshot, readProjectContext, selectProjectContext } from "../src/document-context.mjs";
 import { processMessage as scopedProcessMessage } from "../src/workflow-app.mjs";
 import { onboardProject, registerProject } from "../src/onboarding.mjs";
 import { Runtime } from "../src/runtime.mjs";
@@ -509,7 +509,7 @@ test("discovery and role context read only registered documents and explicit per
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("classifier context keeps accepted decisions, ordered bounded history, pending interactions and current message last", () => {
+test("classifier context keeps accepted decisions and one bounded current session state instead of a message trail", () => {
   const { root, db } = fixture("workflow-context-order-");
   const runtimeTask = "task-history";
   const semanticScope = { mode: "session", client: "codex", session_id: "history-chat" };
@@ -523,24 +523,25 @@ test("classifier context keeps accepted decisions, ordered bounded history, pend
   setPendingMessage(db, { client: semanticScope.client, sessionId: semanticScope.session_id, message: "Провести архитектурный анализ репозитория.", profile: { quality_mode: "mvp", execution_mode: "standard", verification_mode: "baseline", planning_mode: "single" } });
   for (let index = 0; index < 8; index += 1) db.prepare("INSERT INTO conversation_messages(id,project_id,run_id,role,content,created_at) VALUES(?,'project','history-run',?,?,?)")
     .run(`message-${index}`, index % 2 ? "assistant" : "user", `history-${index}-${"x".repeat(120)}`, `2026-01-01T00:00:0${index}.000Z`);
-  assert.throws(() => conversationContext(db, "project", undefined, semanticScope), /CONVERSATION_CONTEXT_BUDGET_REQUIRED/);
-  assert.throws(() => conversationContext(db, "project", 500), /ZODCHI_SEMANTIC_SCOPE_REQUIRED/);
+  assert.throws(() => classifierStateContext(db, "project", undefined, semanticScope), /STATE_CONTEXT_BUDGET_REQUIRED/);
+  assert.throws(() => classifierStateContext(db, "project", 500), /ZODCHI_SEMANTIC_SCOPE_REQUIRED/);
   assert.throws(() => classificationCatalog(db, "project"), /ZODCHI_SEMANTIC_SCOPE_REQUIRED/);
-  assert.deepEqual(conversationContext(db, "project", 500, { mode: "stateless" }).history, []);
+  assert.equal(classifierStateContext(db, "project", 500, { mode: "stateless" }).current_session_state, null);
   assert.deepEqual(classificationCatalog(db, "project", { mode: "stateless" }).pending_interactions, []);
-  const context = conversationContext(db, "project", 500, semanticScope);
+  const context = classifierStateContext(db, "project", 4096, semanticScope);
   assert.equal(context.accepted_decisions[0].id, "accepted-decision");
   assert.equal(context.accepted_decisions.some(item => item.id === "classifier-decision"), false);
-  assert.equal(context.history.at(-1).id, "message-7");
-  assert.ok(context.history.length < 8);
+  assert.equal(context.current_session_state.owner_objective.verbatim, "History");
+  assert.match(context.current_session_state.last_response, /^history-7-/);
+  assert.equal(JSON.stringify(context).includes("history-5-"), false);
   const catalog = classificationCatalog(db, "project", semanticScope);
   const profileInteraction = catalog.pending_interactions.find(item => item.kind === RUN_PROFILE_CONFIRMATION_KIND);
   assert.equal(profileInteraction.id, RUN_PROFILE_CONFIRMATION_ID);
   assert.equal(profileInteraction.objective, "Провести архитектурный анализ репозитория.");
   assert.equal(profileInteraction.profile.verification_mode, "baseline");
   const snapshot = { project: { id: "project", name: "Project" } };
-  const first = classifierPrompt({ message: "Да", catalog, projectSnapshot: snapshot, acceptedDecisions: context.accepted_decisions, history: context.history });
-  const second = classifierPrompt({ message: "Продолжай", catalog, projectSnapshot: snapshot, acceptedDecisions: context.accepted_decisions, history: context.history });
+  const first = classifierPrompt({ message: "Да", catalog, projectSnapshot: snapshot, acceptedDecisions: context.accepted_decisions, currentState: context.current_session_state });
+  const second = classifierPrompt({ message: "Продолжай", catalog, projectSnapshot: snapshot, acceptedDecisions: context.accepted_decisions, currentState: context.current_session_state });
   assert.match(first, /pending-approval/);
   assert.match(first, /pending_run_profile/);
   assert.match(first, /run_profile_confirmation/);
@@ -614,7 +615,7 @@ test("project registration is idempotent and rejects conflicting identity", () =
 test("the classifier prompt keeps run state below an invariant head long enough for a provider to cache", () => {
   const { root, db } = fixture("workflow-classification-prefix-");
   const catalog = classificationCatalog(db, "project", { mode: "stateless" });
-  const build = (message, head) => classifierPrompt({ message, catalog, projectSnapshot: { git: { head } }, acceptedDecisions: [], history: [], responseLanguage: "ru" });
+  const build = (message, head) => classifierPrompt({ message, catalog, projectSnapshot: { git: { head } }, acceptedDecisions: [], currentState: null, responseLanguage: "ru" });
   const first = build("first message", "aaa"), second = build("second message", "bbb");
   let shared = 0;
   while (shared < first.length && shared < second.length && first[shared] === second[shared]) shared += 1;
@@ -624,7 +625,7 @@ test("the classifier prompt keeps run state below an invariant head long enough 
   assert.equal(shared >= first.indexOf("PROJECT_SNAPSHOT"), true, `two runs share only ${shared} bytes`);
   assert.match(first, /Never ask the user to paste source files/);
   assert.match(first, /inspect registered project code and write the findings/);
-  for (const field of ["PROJECT_SNAPSHOT", "ACCEPTED_DECISIONS", "PENDING_INTERACTIONS", "ORDERED_HISTORY", "CURRENT_USER_MESSAGE"]) {
+  for (const field of ["PROJECT_SNAPSHOT", "ACCEPTED_DECISIONS", "PENDING_INTERACTIONS", "CURRENT_SESSION_STATE", "CURRENT_USER_MESSAGE"]) {
     assert.equal(first.indexOf(field) > first.indexOf("REGISTERED_ROUTES"), true, `${field} must follow the invariant head`);
   }
   db.close();
@@ -663,7 +664,7 @@ test("a clarification stops being pending once the next message answers or super
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("two chats in one project keep history and interactions isolated while downstream receives resolved objectives", async () => {
+test("two chats in one project keep current state and interactions isolated while downstream receives resolved objectives", async () => {
   const { root, project, dbFile, db } = fixture("workflow-session-semantic-context-");
   activateChatSession(db, { client: "codex", sessionId: "chat-a", origin: project, turnKey: "a-1" });
   activateChatSession(db, { client: "codex", sessionId: "chat-b", origin: project, turnKey: "b-1" });
@@ -687,10 +688,10 @@ test("two chats in one project keep history and interactions isolated while down
   const state = openDb(dbFile);
   const pendingA = state.prepare("SELECT id FROM approvals WHERE run_id=?").get(firstA.run_id).id;
   const pendingB = state.prepare("SELECT id FROM approvals WHERE run_id=?").get(firstB.run_id).id;
-  const contextA = conversationContext(state, "project", 24_000, { mode: "session", client: "codex", session_id: "chat-a" });
-  const contextB = conversationContext(state, "project", 24_000, { mode: "session", client: "codex", session_id: "chat-b" });
-  assert.equal(JSON.stringify(contextA.history).includes("Markdown или JSON"), false);
-  assert.equal(JSON.stringify(contextB.history).includes("архитектуру"), false);
+  const contextA = classifierStateContext(state, "project", 65_536, { mode: "session", client: "codex", session_id: "chat-a" });
+  const contextB = classifierStateContext(state, "project", 65_536, { mode: "session", client: "codex", session_id: "chat-b" });
+  assert.equal(JSON.stringify(contextA.current_session_state).includes("Markdown или JSON"), false);
+  assert.equal(JSON.stringify(contextB.current_session_state).includes("архитектуру"), false);
   assert.deepEqual(classificationCatalog(state, "project", { mode: "session", client: "codex", session_id: "chat-a" }).pending_interactions.map(item => item.id), [pendingA]);
   assert.deepEqual(classificationCatalog(state, "project", { mode: "session", client: "codex", session_id: "chat-b" }).pending_interactions.map(item => item.id), [pendingB]);
   state.close();

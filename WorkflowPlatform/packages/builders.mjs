@@ -3,7 +3,7 @@ import { structuredHash } from "../src/role-contracts.mjs";
 import { portableCapabilitiesForContract } from "../src/executor-capabilities.mjs";
 import * as packageSdk from "./sdk.mjs";
 
-const PACKAGE_VERSION = "3.3.0";
+const PACKAGE_VERSION = "3.4.0";
 const REVIEW_CONTEXT_BYTES = 256 * 1024;
 
 const workTypeCatalog = {

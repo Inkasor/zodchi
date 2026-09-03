@@ -7,7 +7,7 @@ import { RUN_PROFILE_CONFIRMATION_KIND, classificationCatalog, classificationJso
 import { buildPrompt } from "./prompt-builder.mjs";
 import { callGateway } from "./gateway.mjs";
 import { workflowLint } from "./lint.mjs";
-import { compactProjectSnapshot, conversationContext, readProjectContext, selectProjectContext } from "./document-context.mjs";
+import { classifierStateContext, compactProjectSnapshot, readProjectContext, selectProjectContext } from "./document-context.mjs";
 import { formatClassification, formatQuestions, workflowMessage } from "./response-formatter.mjs";
 import { languageName, resolveResponseLanguage } from "./language.mjs";
 import { id, now } from "./db.mjs";
@@ -520,19 +520,20 @@ export async function processMessage({
   const workflowRow = runtime.db.prepare("SELECT * FROM workflows WHERE id=? AND project_id=? AND status='active'").get(workflow, run.project_id);
   if (!workflowRow) return classificationFailure(runtime, runId, new Error(`DISCOVERY_WORKFLOW_NOT_REGISTERED: ${workflow}`), finish, responseLanguage);
   const classifierContextLimit = definition.roles?.classifier?.contract?.context_limit_bytes;
-  // A caller-supplied classification bypasses the classifier entirely. It does not receive a synthetic
-  // history allowance merely to keep old embedded test definitions alive; no classifier call means no
-  // classifier context. Normal intake must always bind the budget to the active classifier contract.
-  const historyContext = classificationResult && !Number.isInteger(classifierContextLimit)
-    ? { accepted_decisions: [], history: [], bytes: 0, budget_bytes: null }
-    : conversationContext(runtime.db, run.project_id, classifierContextLimit, resolvedSemanticScope);
-  responseLanguage = resolveResponseLanguage({ message, preferredLanguage: preferredLanguage ?? settings.responseLanguage, history: historyContext.history });
+  // Expiry changes current truth, so apply it before projecting that truth for the classifier.
+  expireInteractions(runtime.db, run.project_id);
+  // A caller-supplied classification bypasses the classifier entirely. Normal intake receives one
+  // current session snapshot bounded by the classifier contract; it never receives a trailing message
+  // window. The preceding response is used only as a language hint for an otherwise ambiguous reply.
+  const classifierState = classificationResult && !Number.isInteger(classifierContextLimit)
+    ? { accepted_decisions: [], current_session_state: null, bytes: 0, budget_bytes: null }
+    : classifierStateContext(runtime.db, run.project_id, classifierContextLimit, resolvedSemanticScope, { excludeRunId: runId });
+  const languageHistory = classifierState.current_session_state?.last_response
+    ? [{ role: "assistant", content: classifierState.current_session_state.last_response }]
+    : [];
+  responseLanguage = resolveResponseLanguage({ message, preferredLanguage: preferredLanguage ?? settings.responseLanguage, history: languageHistory });
   runtime.db.prepare("UPDATE workflow_runs SET response_language=?,updated_at=? WHERE id=?").run(responseLanguage, now(), runId);
   const discovery = readProjectContext(project, runtime.db);
-  // A wait ends by an answer, a cancellation, a supersede or its own declared deadline — never by an
-  // unrelated message arriving. The deadline is the only one of the four that nobody sends, so it is
-  // applied here, before the classifier is shown what is still open.
-  expireInteractions(runtime.db, run.project_id);
   const catalog = classificationCatalog(runtime.db, run.project_id, resolvedSemanticScope);
   runtime.db.prepare("INSERT INTO conversation_messages(id,project_id,run_id,role,content,created_at,language) VALUES(?,?,?,'user',?,?,?)")
     .run(`${runId}:user`, run.project_id, runId, String(message), now(), responseLanguage);
@@ -544,7 +545,7 @@ export async function processMessage({
   fs.mkdirSync(taskDirectory, { recursive: true });
   const classifierTaskFile = path.join(taskDirectory, "classifier-task.md");
   const classifierSchemaFile = path.join(taskDirectory, "classifier-output.schema.json");
-  fs.writeFileSync(classifierTaskFile, classifierPrompt({ message, catalog, projectSnapshot: compactProjectSnapshot(discovery), acceptedDecisions: historyContext.accepted_decisions, history: historyContext.history, responseLanguage }), "utf8");
+  fs.writeFileSync(classifierTaskFile, classifierPrompt({ message, catalog, projectSnapshot: compactProjectSnapshot(discovery), acceptedDecisions: classifierState.accepted_decisions, currentState: classifierState.current_session_state, responseLanguage }), "utf8");
   fs.writeFileSync(classifierSchemaFile, `${JSON.stringify(classificationJsonSchema(catalog), null, 2)}\n`, "utf8");
   runtime.setState(runId, "classifying", { reason: "deterministic discovery complete" });
 

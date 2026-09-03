@@ -23,13 +23,15 @@ const resultSchema = input.match(/<result_contract schema="([^"]+)"/)?.[1] ?? nu
 
 let result;
 if (resultSchema === "strategy_review.v1") {
+  const patch = contractEnvelope()?.package?.state_patch_contract ?? {};
   // Required checks that could not run are not a strategy problem: no bounded step this role may
   // select would make an unavailable tool available, and inventing one would report progress.
   result = {
     schema_version: 1, decision: "NO_VIABLE_STRATEGY",
     rationale: "The required project gate did not pass and no registered step within this role's authority can change that outcome.",
     selected_step_keys: [], verification_request: null, replan_intent: null,
-    evidence_refs: ["project-gate:not-green"]
+    evidence_refs: ["project-gate:not-green"],
+    state_patch: { schema_version: 1, patch_id: patch.patch_id, base_projection_hash: patch.base_projection_hash, changes: [{ operation: "replace_active", path: "decisions.strategy_recovery" }] }
   };
 } else if (resultSchema === "judge.v1") {
   result = {
