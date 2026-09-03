@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "finding": "Release 0.6.12 was built from the pushed release branch, rehearsed on an exact full copy of the owner data root, backed up again before live mutation, and installed with all three active owner packages regenerated under prompt builder 3.4.1. The rehearsal and live audits agree: all three projects are ready, 120 profile assignments are technically compatible, eight Kimi reviewer assignments are explicitly accepted_declarative, and no profile conflicts remain. Exactly eight workflow-level checks remain unavailable because the owner intentionally did not register release or access external operations.",
+  "release": "0.6.12",
+  "recorded_at": "2026-09-03T08:05:01.524Z",
+  "source": {
+    "branch": "codex/cursor-openrouter-support",
+    "branch_pushed": true,
+    "candidate_commit": "c08f2295d4ddef10c686ebf8a6d32b201f552a8d",
+    "candidate_manifest_sha256": "b7de5865f48a0f79c6277431d0178405dc467e0b2ee5e8b4be643cc7b0d11241",
+    "candidate_product_sha256": "8a12b8601cbc15ba02c78df8e6e5a9dca3114fa00e2ed48e4bca50513194be04",
+    "installed_product_sha256": "8a12b8601cbc15ba02c78df8e6e5a9dca3114fa00e2ed48e4bca50513194be04",
+    "full_test": {
+      "status": "passed",
+      "tools": 48,
+      "workflow_platform": 415,
+      "packages_check": "passed",
+      "agent_gateway": 34,
+      "exit_code": 0
+    }
+  },
+  "rehearsal": {
+    "source": "<live-data-root>",
+    "copy": "<stage8-rehearsal-copy>",
+    "application": "<stage8-rehearsal-application>",
+    "copy_verification": {
+      "source_files": 64,
+      "copied_files": 64,
+      "source_bytes": 7258212,
+      "copied_bytes": 7258212,
+      "path_size_or_sha256_mismatches": 0,
+      "verified_at": "2026-09-03T07:56:18.892Z"
+    },
+    "isolated_installation": {
+      "version": "0.6.12",
+      "real_client_skills_or_hooks_changed": false,
+      "profile_checks_before_package_import": 128,
+      "profile_admission_before_package_import": "accepted_declarative",
+      "profile_conflicts_before_package_import": 0
+    },
+    "database_after": {
+      "schema_version": 37,
+      "migration_count": 37,
+      "integrity": "ok",
+      "foreign_key_violations": 0
+    },
+    "packages_after": [
+      {
+        "project_id": "zodchi",
+        "package_key": "zodchi.product-development",
+        "version": "2.9.2",
+        "prompt_builder_version": "3.4.1",
+        "manifest_hash": "sha256:58126bc877c5c7bbd1d81903868b0ffc0741396131690d0b1595faf034ed50db",
+        "proposal_id": "import_c4849973345fd1ba6ca7"
+      },
+      {
+        "project_id": "shared-lore",
+        "package_key": "shared-lore.canon",
+        "version": "2.9.2",
+        "prompt_builder_version": "3.4.1",
+        "manifest_hash": "sha256:4a071b7616c3e125ffe73e1bc378a428017eff2bf78a23c90f4536821eacdae3",
+        "proposal_id": "import_41913ded803b30a95973"
+      },
+      {
+        "project_id": "shared-map-engine",
+        "package_key": "shared-map-engine.core",
+        "version": "2.5.2",
+        "prompt_builder_version": "3.4.1",
+        "manifest_hash": "sha256:5e235524a78845d7b60e057cdaae0275b479782d30bb4dcde9742e6a97d8d223",
+        "proposal_id": "import_8e88591f653e4fba615f"
+      }
+    ],
+    "audit_matches_live_result": true
+  },
+  "backup_before_live_change": {
+    "full_copy": "<stage8-full-data-backup>",
+    "full_copy_files": 64,
+    "full_copy_bytes": 7258212,
+    "path_size_or_sha256_mismatches": 0,
+    "verified_at": "2026-09-03T08:00:46.331Z",
+    "critical_source_hashes": {
+      "workflow/workflow.sqlite": "1c7ee0f91af97d57f006a675ff067ba98e06e125a41b9689a3de6dab62271441",
+      "gateway/gateway.sqlite": "6b56e2c6957c971fc94f3720944f24077a3d96fc495a06bbb68da4eaa8c19fd7",
+      "gateway/policy.local.json": "11870b1cc4a4ed34cb6df9d8c0748ccec3a7c4162959721424216a2e427a961d",
+      "packages/definitions.mjs": "e02c3b929a51da1a6559654a0627064168941908b80d313b5562cf64d8a23fe1",
+      "packages/catalog.json": "2f6f5d434a2b766eb82c564459c0fef99fba322ebe273d56d3a6aa7b3f548964",
+      "installation-state.json": "45f9df2fbd3e10e7f65e3245ee25a4868b342436cd7803309724cac30718c371"
+    },
+    "sqlite_backup": {
+      "created_at": "2026-09-03T08:00:53.666Z",
+      "contains_secrets": false,
+      "files": [
+        {
+          "name": "gateway.sqlite",
+          "size": 114688,
+          "sha256": "0fd588d3a28f35140d899a00e38b3c8d655a123e44ff63d88ccde09efc1a7ab1",
+          "integrity": "ok",
+          "matches_manifest": true
+        },
+        {
+          "name": "workflow.sqlite",
+          "size": 1585152,
+          "sha256": "a6b36171e9b50b5be2ca30f3cd2db04eeab6a1ad511a30d0f1998eea8aad37c8",
+          "integrity": "ok",
+          "matches_manifest": true
+        }
+      ],
+      "note": "The SQLite backup API emits a transactionally consistent database image, so its file digest is independently recorded and need not equal the raw live file digest copied above."
+    }
+  },
+  "live_installation": {
+    "application": "<live-application-root>",
+    "data": "<live-data-root>",
+    "installed_version": "0.6.12",
+    "previous_version": "0.6.12",
+    "rollback_release_retained": true,
+    "installed_at": "2026-09-03T08:01:24.789Z",
+    "skills_updated": 2,
+    "session_hooks_updated": 2,
+    "database_after": {
+      "schema_version": 37,
+      "migration_count": 37,
+      "integrity": "ok",
+      "foreign_key_violations": 0
+    },
+    "packages_after": [
+      {
+        "project_id": "zodchi",
+        "package_key": "zodchi.product-development",
+        "version": "2.9.2",
+        "prompt_builder_version": "3.4.1",
+        "manifest_hash": "sha256:58126bc877c5c7bbd1d81903868b0ffc0741396131690d0b1595faf034ed50db",
+        "proposal_id": "import_ee1c03ac9c118eb84d7b",
+        "proposal_hash": "sha256:c1e6846e1bf7a34928dd9cef61d1ffbefd2be6b526a896410b6e434d60d980e9"
+      },
+      {
+        "project_id": "shared-lore",
+        "package_key": "shared-lore.canon",
+        "version": "2.9.2",
+        "prompt_builder_version": "3.4.1",
+        "manifest_hash": "sha256:4a071b7616c3e125ffe73e1bc378a428017eff2bf78a23c90f4536821eacdae3",
+        "proposal_id": "import_70b7e913e4f13b087a69",
+        "proposal_hash": "sha256:96d3c76e5cf1cf51ddb4fb57690cf92f10ce16ff88d7e58a830526f513f22778"
+      },
+      {
+        "project_id": "shared-map-engine",
+        "package_key": "shared-map-engine.core",
+        "version": "2.5.2",
+        "prompt_builder_version": "3.4.1",
+        "manifest_hash": "sha256:5e235524a78845d7b60e057cdaae0275b479782d30bb4dcde9742e6a97d8d223",
+        "proposal_id": "import_1176264755a365e5437c",
+        "proposal_hash": "sha256:f37f2b292cefa14aac1e0ab65c813afe75ca7ebc6ff2c3f9bc760eec2c0eac11"
+      }
+    ],
+    "project_readiness": {
+      "zodchi": "ready",
+      "shared-lore": "ready",
+      "shared-map-engine": "ready",
+      "missing_role_assignments": 0,
+      "missing_role_contracts": 0
+    },
+    "profile_readiness": {
+      "checks": 128,
+      "compatible": 120,
+      "accepted_declarative": 8,
+      "incompatible": 0,
+      "conflicts": 0,
+      "by_project": {
+        "zodchi": {
+          "compatible": 60,
+          "accepted_declarative": 8,
+          "incompatible": 0
+        },
+        "shared-lore": {
+          "compatible": 28,
+          "accepted_declarative": 0,
+          "incompatible": 0
+        },
+        "shared-map-engine": {
+          "compatible": 32,
+          "accepted_declarative": 0,
+          "incompatible": 0
+        }
+      }
+    },
+    "workflow_readiness": {
+      "total": 60,
+      "ready": 52,
+      "unavailable": 8,
+      "by_project": {
+        "zodchi": {
+          "total": 40,
+          "ready": 32,
+          "unavailable": 8
+        },
+        "shared-lore": {
+          "total": 8,
+          "ready": 8,
+          "unavailable": 0
+        },
+        "shared-map-engine": {
+          "total": 12,
+          "ready": 12,
+          "unavailable": 0
+        }
+      },
+      "unavailable_only": [
+        {
+          "workflow_id": "imp_workflow_07bb7c841677c69c4c84",
+          "operation": "release",
+          "levels": [
+            "prototype",
+            "mvp",
+            "production",
+            "security-audit"
+          ],
+          "registered_definitions": 0
+        },
+        {
+          "workflow_id": "imp_workflow_7a7d9814c06c2a62d71c",
+          "operation": "access",
+          "levels": [
+            "prototype",
+            "mvp",
+            "production",
+            "security-audit"
+          ],
+          "registered_definitions": 0
+        }
+      ]
+    },
+    "critical_hashes_after": {
+      "workflow/workflow.sqlite": "ec5b0961d848398cac406c33de1dc7e097de11ceba99763a9399554ee4201a8c",
+      "gateway/gateway.sqlite": "6b56e2c6957c971fc94f3720944f24077a3d96fc495a06bbb68da4eaa8c19fd7",
+      "gateway/policy.local.json": "11870b1cc4a4ed34cb6df9d8c0748ccec3a7c4162959721424216a2e427a961d",
+      "packages/definitions.mjs": "021d45a36961e185c8b03c1d3afe9d577c27cde8661efb49827f28e2a22f41ae",
+      "packages/catalog.json": "98eb2a05abfd80aa02c059e3b55a7384282e4c03c9ebf12ec8402c12f925c1be",
+      "installation-state.json": "7ac57c23a851668d96b5c836f87d6e8625f74dad47ddd1d69d0298fdc42a03f5"
+    },
+    "unchanged_live_policy_and_gateway_database": true
+  },
+  "evidence_limits": "This record proves source tests, release installation, data migration, package import, database integrity, profile admission and static runtime readiness. It does not prove execution of a release or access operation, browser behavior for a live role, every deterministic project gate, a productive model run, deployment, publication, or owner product acceptance."
+}
