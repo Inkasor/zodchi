@@ -719,9 +719,12 @@ test("the classifier prompt keeps run state below an invariant head long enough 
   // with room to spare on the narrowest project in the registry.
   assert.equal(first.indexOf("PROJECT_SNAPSHOT") > 3800, true, `invariant head is only ${first.indexOf("PROJECT_SNAPSHOT")} bytes`);
   assert.equal(shared >= first.indexOf("PROJECT_SNAPSHOT"), true, `two runs share only ${shared} bytes`);
+  assert.match(first, /WORKFLOW CLASSIFICATION CONTRACT v7/);
   assert.match(first, /Never ask the user to paste source files/);
   assert.match(first, /inspect registered project code and write the findings/);
   assert.match(first, /explicitly says not to read files, source or the repository is ordinary conversation/);
+  assert.match(first, /asks to run registered checks, registered validations, or acceptance checks/);
+  assert.match(first, /not testing/);
   for (const field of ["PROJECT_SNAPSHOT", "ACCEPTED_DECISIONS", "PENDING_INTERACTIONS", "CURRENT_SESSION_STATE", "CURRENT_USER_MESSAGE"]) {
     assert.equal(first.indexOf(field) > first.indexOf("REGISTERED_ROUTES"), true, `${field} must follow the invariant head`);
   }
