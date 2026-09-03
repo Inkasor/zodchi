@@ -12,6 +12,7 @@ import { providerCommandInvocation, resolveProviderCommand } from "./command.mjs
 import { loadGatewayPolicy } from "./policy.mjs";
 import { assertMetadataOnlyReceipt, DEFAULT_PRIVACY_MODE, privacyAttestation } from "./receipt-privacy.mjs";
 import { inspectCapabilityRequirements, normalizeCapabilityRequirements, profileCapabilities } from "./profile-capabilities.mjs";
+import { observeToolUsage } from "./tool-usage.mjs";
 
 const paths = resolveGatewayPaths();
 const root = paths.root;
@@ -367,6 +368,8 @@ const sessionId = usage?.session_id ?? extractSessionId(`${result.stdout}\n${res
 const finishedAt = new Date().toISOString();
 const status = result.timedOut ? "timed_out" : result.exitCode === 0 ? "completed" : "failed";
 const failureCategory = cli["failure-category"] ?? (result.timedOut ? "timeout" : result.exitCode === 0 ? null : "provider_exit");
+const toolUsage = observeToolUsage(provider, result.stdout, providerConfig);
+environment = { ...environment, tool_usage: toolUsage };
 const receipt = {
   receiptId, taskId, provider, profile, level, role: cli.role ?? "worker",
   harness: provider,
@@ -390,7 +393,7 @@ const receipt = {
   artifactRef: cli["artifact-ref"] ?? null,
   decisionRef: cli["decision-ref"] ?? null,
   privacyMode,
-  persistenceAttestation: privacyAttestation(privacyMode),
+  persistenceAttestation: privacyAttestation(privacyMode), toolUsage,
   environment
 };
 if (!Number.isInteger(receipt.attemptNo) || receipt.attemptNo < 1) fail(`ATTEMPT_NUMBER_INVALID: ${receipt.attemptNo}`);

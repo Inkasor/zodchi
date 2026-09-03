@@ -107,6 +107,23 @@ test("invalid classifier output fails closed before any productive role", async 
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("classifier output is rejected when its structured trace used a contract-forbidden tool", async () => {
+  const { root, project, dbFile, db } = fixture("workflow-classifier-tool-mismatch-");
+  db.close();
+  const conversation = decision({ work_type: "conversation", artifact_type: "none", discipline: "general", planning_level: "L0", planning_required: false, reply_mode: "conversation", reason: "Answer.", human_response: "Hello." });
+  const result = await statelessProcessMessage({
+    message: "Hello", project, dbFile, workflowDefinition: definition(), execute: true,
+    gatewayCall: async () => ({ ...receipt(JSON.stringify(conversation)), environment: { tool_usage: { status: "complete", enforcement: "technical", source: "fixture", native_tools: [{ native_name: "Write", canonical_tool: "apply_patch", count: 1 }], canonical_tools: ["apply_patch"], unknown_native_tools: [] } } })
+  });
+  assert.equal(result.route, "classification_failed");
+  const verified = openDb(dbFile);
+  const call = verified.prepare("SELECT environment_json FROM gateway_calls WHERE run_id=?").get(result.run_id);
+  assert.equal(JSON.parse(call.environment_json).tool_usage.contract_check.status, "mismatch");
+  assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(result.run_id).state, "classification_failed");
+  verified.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("ordinary conversation invokes only the classifier and returns a plain human response", async () => {
   const { root, project, dbFile, db } = fixture("workflow-conversation-");
   db.close();
