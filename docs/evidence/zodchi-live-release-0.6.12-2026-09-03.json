@@ -2,17 +2,26 @@
   "schema_version": 1,
   "finding": "Release 0.6.12 was built from the pushed release branch, rehearsed on an exact full copy of the owner data root, backed up again before live mutation, and installed with all three active owner packages regenerated under prompt builder 3.4.1. The rehearsal and live audits agree: all three projects are ready, 120 profile assignments are technically compatible, eight Kimi reviewer assignments are explicitly accepted_declarative, and no profile conflicts remain. Exactly eight workflow-level checks remain unavailable because the owner intentionally did not register release or access external operations.",
   "release": "0.6.12",
-  "recorded_at": "2026-09-03T08:05:01.524Z",
+  "recorded_at": "2026-09-03T08:20:02.224Z",
   "source": {
     "branch": "codex/cursor-openrouter-support",
     "branch_pushed": true,
-    "candidate_commit": "c08f2295d4ddef10c686ebf8a6d32b201f552a8d",
-    "candidate_manifest_sha256": "b7de5865f48a0f79c6277431d0178405dc467e0b2ee5e8b4be643cc7b0d11241",
+    "candidate_commit": "3c9e9cf8ece17944f9c9eb7163b6db80c533092d",
+    "candidate_manifest_sha256": "f7507f75cc2b9c84929a0d51b705c309036b04d27243bf203696b59c82d1494a",
     "candidate_product_sha256": "8a12b8601cbc15ba02c78df8e6e5a9dca3114fa00e2ed48e4bca50513194be04",
     "installed_product_sha256": "8a12b8601cbc15ba02c78df8e6e5a9dca3114fa00e2ed48e4bca50513194be04",
     "full_test": {
       "status": "passed",
       "tools": 48,
+      "workflow_platform": 415,
+      "packages_check": "passed",
+      "agent_gateway": 34,
+      "exit_code": 0
+    },
+    "release_archive_full_test": {
+      "status": "passed",
+      "tools_passed": 46,
+      "tools_skipped_source_only": 2,
       "workflow_platform": 415,
       "packages_check": "passed",
       "agent_gateway": 34,
@@ -114,7 +123,7 @@
     "installed_version": "0.6.12",
     "previous_version": "0.6.12",
     "rollback_release_retained": true,
-    "installed_at": "2026-09-03T08:01:24.789Z",
+    "installed_at": "2026-09-03T08:20:02.224Z",
     "skills_updated": 2,
     "session_hooks_updated": 2,
     "database_after": {
@@ -235,7 +244,7 @@
       "gateway/policy.local.json": "11870b1cc4a4ed34cb6df9d8c0748ccec3a7c4162959721424216a2e427a961d",
       "packages/definitions.mjs": "021d45a36961e185c8b03c1d3afe9d577c27cde8661efb49827f28e2a22f41ae",
       "packages/catalog.json": "98eb2a05abfd80aa02c059e3b55a7384282e4c03c9ebf12ec8402c12f925c1be",
-      "installation-state.json": "7ac57c23a851668d96b5c836f87d6e8625f74dad47ddd1d69d0298fdc42a03f5"
+      "installation-state.json": "aefa92a3750c3a0b8c9ca0fa8fb399c3930316963051a402ed5611be1cf07e82"
     },
     "unchanged_live_policy_and_gateway_database": true
   },
