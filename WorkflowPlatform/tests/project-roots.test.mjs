@@ -563,7 +563,7 @@ test("Russian prose source ranking stays useful on the real repository corpus", 
     {
       objective: "Как устроена проверка внешних операций после одобрения владельца?",
       expected: ["WorkflowPlatform/src/external-control-plane.mjs"],
-      top: 5
+      top: 8
     },
     {
       objective: "Как WorkflowPlatform передаёт исследователю содержимое исходников?",

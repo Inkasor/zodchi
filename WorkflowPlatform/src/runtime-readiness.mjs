@@ -1,7 +1,7 @@
 import { checkGatewayProfileRequirements } from "./gateway.mjs";
 import { executorCapabilityRequirements } from "./executor-capabilities.mjs";
 
-const DIRECT_RUNTIME_ROLES = Object.freeze(["classifier", "researcher"]);
+const DIRECT_RUNTIME_ROLES = Object.freeze(["classifier", "researcher", "conversation_responder"]);
 const PROFILE_REQUIREMENTS_READY = new Set(["compatible", "accepted_declarative"]);
 const profileCheckDefault = requirements => checkGatewayProfileRequirements({ requirements });
 

@@ -128,9 +128,20 @@ function withDirectRuntimeRoles(roles, routes) {
     ["document"],
     { schema: "research.v1", corrections: 0, boundaries: { writes: false, direct_project_access: false } }
   ));
+  if (!result.some(item => item.key === "conversation_responder")) result.push(role(
+    "conversation_responder",
+    "Answer the owner's conversational question directly from the supplied dialog history; never classify, plan, edit or invoke tools.",
+    ["conversation", "continuation"],
+    ["none"],
+    {
+      schema: "conversation.v1", maxCalls: 1, corrections: 0,
+      boundaries: { writes: false, project_write: false, external_mutation: false, local_endpoint: false, context_input: true }
+    }
+  ));
   return result.map(item => {
     if (item.key === "classifier") return { ...item, contract: { ...item.contract, result_schema_key: "classification.v1", allowed_tools: [], boundaries: { ...item.contract.boundaries, writes: false } } };
     if (item.key === "researcher") return { ...item, contract: { ...item.contract, result_schema_key: "research.v1", allowed_tools: [], boundaries: { ...item.contract.boundaries, writes: false } } };
+    if (item.key === "conversation_responder") return { ...item, contract: { ...item.contract, result_schema_key: "conversation.v1", allowed_tools: [], allowed_skills: [], allowed_mcp_servers: [], native_instruction_files: [], boundaries: { ...item.contract.boundaries, writes: false, project_write: false, external_mutation: false, local_endpoint: false, context_input: true } } };
     return item;
   });
 }

@@ -5,7 +5,7 @@ import { renderQualityContract, validateQualityContract } from "./quality-contra
 import { languageName, normalizeLanguage } from "./language.mjs";
 import { validateEvidenceContract } from "./interactions.mjs";
 
-const RESULT_SCHEMAS = new Set(["planner.v1", "worker.v1", "reviewer.v1", "judge.v1", "strategy_review.v1", "documentator.v1", "release_operation.v1", "access_change.v1"]);
+const RESULT_SCHEMAS = new Set(["planner.v1", "worker.v1", "reviewer.v1", "judge.v1", "strategy_review.v1", "documentator.v1", "release_operation.v1", "access_change.v1", "conversation.v1"]);
 
 // The validator accepts an exact field set, so the prompt has to state that set. Naming the schema and
 // leaving the fields unsaid asks the model to guess a shape that is then rejected for guessing wrong.
@@ -80,6 +80,9 @@ export const RESULT_SCHEMA_SHAPES = Object.freeze({
     schema_version: 1, status: "proposed", operation_id: "registered external access operation id",
     subject: "non-empty identity", resource: "non-empty registered resource", grant: ["permission"], revoke: ["permission"],
     expires_at: "ISO timestamp or null", evidence_refs: ["string"], summary: "non-empty string"
+  }),
+  "conversation.v1": Object.freeze({
+    schema_version: 1, status: "answered", answer: "non-empty human-facing answer"
   })
 });
 
@@ -177,6 +180,9 @@ export function rolePrompt({ contract, qualityContract, packageContract, context
     : resultSchema === "strategy_review.v1"
     ? "Review only the correction strategy, never execute it. Select only keys listed in task_package.available_steps. SELECT_EXISTING_STEP requires one or more selected_step_keys and no replan or verification payload. REPLAN requires replan_intent and no selected steps or verification payload. TARGETED_VERIFICATION requires verification_request and no selected steps or replan. OWNER_DECISION and NO_VIABLE_STRATEGY require no selected steps, verification request or replan intent. NO_VIABLE_STRATEGY means no bounded evidence, existing-step, verification, replan or owner-decision path remains. Copy task_package.state_patch_contract.patch_id and base_projection_hash exactly into state_patch and propose only its listed canonical changes; the platform rejects stale or broader patches before applying the decision."
     : null;
+  const conversationInstruction = resultSchema === "conversation.v1"
+    ? "Answer the owner's current question directly and use the supplied conversation history to resolve short follow-ups. Do not classify the message, describe a route, repeat a private reason, invent a tool result or expose internal workflow state. Return only the human-facing answer in the answer field."
+    : null;
   const toolAuthorityInstruction = contract.allowed_tools.length
     ? "Only the tools listed in allowed_tools are authorized. The supplied context remains the primary evidence package."
     : "No tool calls are authorized for this role. Do not invoke shell, search, file-read, file-write or network tools; analyze only the evidence already present in project_context and task_package.";
@@ -203,6 +209,7 @@ export function rolePrompt({ contract, qualityContract, packageContract, context
     (workerCompletionInstruction ? `    <completion_semantics>${escapeXml(workerCompletionInstruction)}</completion_semantics>\n` : "")+
     (reviewerPhaseInstruction ? `    <review_phase>${escapeXml(reviewerPhaseInstruction)}</review_phase>\n` : "")+
     (judgeInstruction ? `    <judge_semantics>${escapeXml(judgeInstruction)}</judge_semantics>\n` : "")+
+    (conversationInstruction ? `    <conversation_semantics>${escapeXml(conversationInstruction)}</conversation_semantics>\n` : "")+
     (documentProposalInstruction ? `    <document_proposal>${escapeXml(documentProposalInstruction)}</document_proposal>\n` : "")+
     `    <shape format="application/json">${escapeXml(stableJson(RESULT_SCHEMA_SHAPES[resultSchema] ?? {}))}</shape>\n`+
     `  </result_contract>\n`+
@@ -394,6 +401,13 @@ export function validateAccessChangeResult(value, { allowedOperationIds = [] } =
   return value;
 }
 
+export function validateConversationResult(value) {
+  exactObject(value, schemaFields("conversation.v1"), "conversation.v1");
+  if (value.schema_version !== 1 || value.status !== "answered") throw new Error("conversation.v1: invalid version or status");
+  if (typeof value.answer !== "string" || !value.answer.trim() || value.answer.length > 20000) throw new Error("conversation.v1: non-empty answer required");
+  return { ...value, answer: value.answer.trim() };
+}
+
 export function parseRoleReceipt(receipt, schemaKey, options) {
   const value = receiptObject(receipt);
   if (schemaKey === "planner.v1") return validatePlannerResult(value, options);
@@ -404,5 +418,6 @@ export function parseRoleReceipt(receipt, schemaKey, options) {
   if (schemaKey === "documentator.v1") return validateDocumentatorResult(value, options);
   if (schemaKey === "release_operation.v1") return validateReleaseOperationResult(value, options);
   if (schemaKey === "access_change.v1") return validateAccessChangeResult(value, options);
+  if (schemaKey === "conversation.v1") return validateConversationResult(value, options);
   throw new Error(`ROLE_RESULT_SCHEMA_UNKNOWN: ${schemaKey}`);
 }

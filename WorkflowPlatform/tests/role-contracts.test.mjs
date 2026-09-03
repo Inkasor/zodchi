@@ -718,12 +718,16 @@ async function approvalScenario(prefix, ownerResponse, beforeDecision = null) {
   if (beforeDecision) beforeDecision(env.dbFile, approval.id);
   const calls = [];
   const second = await scopedProcessMessage({
-    message: "ответ владельца", project: env.project, dbFile: env.dbFile, workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true, semanticScope,
+    message: "ответ владельца", project: env.project, dbFile: env.dbFile,
+    workflowDefinition: { id: "workflow", authority: "test", roles: {
+      conversation_responder: { provider: "codex", profile: "local-conversation_responder", role: "conversation_responder", contract: roleContract("conversation_responder", "conversation.v1", ["none"]) }
+    } }, execute: true, semanticScope,
     classificationResult: { ...classification(false), work_type: "conversation", artifact_type: "none", planning_required: false, reply_mode: "conversation", human_response: "Записал.", pending_interaction_id: approval.id, pending_interaction_response: ownerResponse },
     gatewayCall: async request => {
       calls.push(request.role);
       if (request.role === "worker") return receipt("worker", { schema_version: 1, status: "completed", summary: "Applied.", changed_paths: [], artifacts: [], evidence: ["bounded"], questions: [], external_evidence_request: null });
       if (request.role === "reviewer") return receipt("reviewer", reviewerResult("PASS"));
+      if (request.role === "conversation_responder") return receipt("conversation_responder", { schema_version: 1, status: "answered", answer: "Решение пока не подтверждено; действие не выполняю." });
       throw new Error(`unexpected role ${request.role}`);
     },
     gateRunner: async () => ({ task_id: "gate", project: env.project, level: "mvp", files: [], status: "passed", checks: [{ id: "check-ok", required: true, status: "passed" }], summary: "passed" })
@@ -761,7 +765,7 @@ test("doubt is neither consent nor refusal: the decision stays open and nothing 
   const { env, first, second, calls, state } = await approvalScenario("workflow-owner-undecided-", "undecided");
   assert.equal(state.approval, "pending");
   assert.equal(state.run, "approval_required");
-  assert.deepEqual(calls, []);
+  assert.deepEqual(calls, ["conversation_responder"]);
   assert.equal(second.route, "conversation");
   assert.notEqual(second.run_id, first.run_id);
   fs.rmSync(env.root, { recursive: true, force: true });

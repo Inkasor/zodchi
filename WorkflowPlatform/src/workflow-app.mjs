@@ -28,6 +28,7 @@ import { normalizeSemanticScope } from "./semantic-scope.mjs";
 import { collectSourceFiles, expandTerms, isSourceCodePath, RESEARCH_SOURCE_RANKING, researchSourceRankingOptions, searchSources, sourceScope } from "./source-context.mjs";
 import { executorCapabilityRequirementsForProject } from "./executor-capabilities.mjs";
 import { reconcileRoleToolUsage } from "./tool-usage.mjs";
+import { conversationHistory, conversationJsonSchema, conversationPrompt, fitConversationPrompt, parseConversationReceipt } from "./conversation-responder.mjs";
 
 export function loadWorkflow(id, workflowsRoot = resolveWorkflowSettings().workflowsRoot) {
   if (!id) throw new Error("workflow id is required");
@@ -40,7 +41,7 @@ function registryDefinition(db, projectId, workflowId) {
       rc.id AS contract_id,rc.context_limit_bytes,rc.result_schema_key,rc.boundaries_json,rc.allowed_tools_json,rc.allowed_skills_json,rc.allowed_mcp_servers_json,rc.native_instruction_files_json
     FROM role_profile_assignments rpa JOIN profiles p ON p.id=rpa.profile_id
     JOIN role_contracts rc ON rc.project_id=rpa.project_id AND rc.role_id=rpa.role_id AND rc.status='active'
-    WHERE rpa.project_id=? AND rpa.enabled=1 AND rpa.role_id IN ('classifier','researcher')
+    WHERE rpa.project_id=? AND rpa.enabled=1 AND rpa.role_id IN ('classifier','researcher','conversation_responder')
     ORDER BY rpa.role_id,CASE rpa.operational_level WHEN 'prototype' THEN 0 WHEN 'mvp' THEN 1 ELSE 2 END`).all(projectId)) {
     if (!roles[row.role_id]) roles[row.role_id] = {
       provider: row.provider, profile: row.name, role: row.role_id,
@@ -325,10 +326,56 @@ function executionFailure(runtime, runId, error, finish, responseLanguage = "en"
 function structuredExecutionError(error) {
   const message = String(error?.message ?? error).replace(/[\r\n\t]+/g, " ").trim();
   const category = message.split(":")[0].slice(0, 120);
-  const diagnostic = /^(?:(?:planner|worker|reviewer|judge|strategy_review|documentator|release_operation|access_change)\.v1(?:\.|:)|PROFILE_(?:CAPABILITY|CAPABILITIES)_[A-Z_]+:)/u.test(message)
+  const diagnostic = /^(?:(?:planner|worker|reviewer|judge|strategy_review|documentator|release_operation|access_change|conversation)\.v1(?:\.|:)|PROFILE_(?:CAPABILITY|CAPABILITIES)_[A-Z_]+:)/u.test(message)
     ? message.slice(0, 500)
     : category;
   return { category, diagnostic };
+}
+
+async function executeConversationResponse({ runtime, runId, definition, projectId, projectRoot, message, semanticScope, responseLanguage, taskDirectory, gatewayCall, saveAssistant, finish }) {
+  const role = definition.roles?.conversation_responder;
+  if (!role?.provider || !role.profile || !role.role) return executionFailure(runtime, runId, new Error("CONVERSATION_RESPONDER_NOT_CONFIGURED"), finish, responseLanguage);
+  const contextLimitBytes = role.contract?.context_limit_bytes;
+  if (!Number.isInteger(contextLimitBytes) || contextLimitBytes < 1024) return executionFailure(runtime, runId, new Error("CONVERSATION_RESPONDER_CONTEXT_LIMIT_REQUIRED"), finish, responseLanguage);
+  let history, fitted;
+  try {
+    history = conversationHistory(runtime.db, { projectId, semanticScope, excludeRunId: runId });
+    fitted = fitConversationPrompt({ message, history, responseLanguage, context: { project_id: projectId }, contextLimitBytes });
+  } catch (error) { return executionFailure(runtime, runId, error, finish, responseLanguage); }
+  const taskFile = path.join(taskDirectory, "conversation-responder-task.md");
+  const outputSchemaFile = path.join(taskDirectory, "conversation-responder-output.schema.json");
+  fs.writeFileSync(taskFile, fitted.prompt, "utf8");
+  fs.writeFileSync(outputSchemaFile, `${JSON.stringify(conversationJsonSchema(), null, 2)}\n`, "utf8");
+  recordRunEvidence(runtime.db, runId, null, "conversation_prompt_metrics", {
+    prompt_bytes: fitted.bytes, context_limit_bytes: fitted.limit_bytes,
+    history_messages_available: history.length, history_messages_supplied: fitted.history.length,
+    history_truncated: history.length !== fitted.history.length
+  });
+  runtime.setState(runId, "executing", { reason: "conversation responder authorized" });
+  let responderReceipt;
+  try {
+    reserveDirectModelCall(runtime, runId, "conversation_responder");
+    responderReceipt = await gatewayCall({
+      provider: role.provider, profile: role.profile, level: runtime.get(runId).operational_level ?? "mvp", role: role.role,
+      capabilityRequirements: executorCapabilityRequirementsForProject(runtime.db, projectId, role.contract ?? {}, { direct: true }),
+      requiresWrite: false, taskFile, outputSchemaFile, project: projectRoot,
+      taskId: `${runId}:conversation_responder`, workflowRunId: runId
+    });
+    chargeDirectReceipt(runtime, runId, responderReceipt, "conversation_responder");
+    reconcileAndLinkDirectReceipt(runtime, runId, responderReceipt, { role_id: role.role, ...(role.contract ?? {}) });
+  } catch (error) { return executionFailure(runtime, runId, error, finish, responseLanguage); }
+  let answer;
+  try {
+    assertGatewayReceiptCompleted(responderReceipt, "conversation_responder");
+    answer = parseConversationReceipt(responderReceipt);
+  } catch (error) { return executionFailure(runtime, runId, error, finish, responseLanguage); }
+  recordRunEvidence(runtime.db, runId, null, "conversation_response", {
+    status: answer.status, answer_bytes: Buffer.byteLength(answer.answer), history_messages: fitted.history.length
+  });
+  runtime.setState(runId, "verifying", { reason: "conversation answer contract verified" });
+  runtime.setState(runId, "completed", { reason: "conversation answer delivered" });
+  const response = saveAssistant(answer.answer);
+  return { route: "conversation", response, responder: answer, gateway: { mode: "executed", receipts: [{ step: "classifier", receipt: null }, { step: "conversation_responder", receipt: responderReceipt }] } };
 }
 
 // Where the answer arrives decides how the run continues. A run that had not produced work yet re-enters
@@ -499,7 +546,7 @@ export async function processMessage({
     catch (error) { runtime.db.close(); throw error; }
   }
   if (execute && !registryBackedDefinition && !classificationResult) {
-    const missing = ["classifier", "researcher"].filter(roleId => {
+    const missing = ["classifier", "researcher", "conversation_responder"].filter(roleId => {
       const role = definition.roles?.[roleId];
       return !role?.provider || !role.profile || !role.role;
     });
@@ -614,7 +661,7 @@ export async function processMessage({
       workflow_quality_floor: workflowQualityFloor
     });
     const profileQuality = operationalLevel(classification.quality_mode);
-    // Only the classifier and researcher are known before classification. Once the classifier has
+    // Only the direct runtime roles are known before classification. Once the classifier has
     // selected a route, fail closed on that route's actual roles and level before any planner, worker,
     // reviewer or documentator is invoked. An incompatible release operator must not disable an
     // unrelated implementation or research route.
@@ -768,9 +815,18 @@ export async function processMessage({
   }
 
   if (classification.reply_mode === "conversation") {
-    runtime.setState(runId, "completed", { reason: "conversation response delivered" });
-    const response = saveAssistant(classification.human_response?.trim() || classification.reason);
-    return finish({ route: "conversation", classification, response, gateway: classifierReceipt ? { mode: "executed", receipts: [{ step: "classifier", receipt: classifierReceipt }] } : { mode: "contract-test" } });
+    if (!execute) {
+      runtime.setState(runId, "completed", { reason: "conversation route prepared" });
+      const response = responseLanguage === "ru" ? "Разговорный маршрут выбран; отвечающая роль будет вызвана при выполнении." : "The conversation route is selected; its responder will be invoked during execution.";
+      saveAssistant(response);
+      return finish({ route: "conversation", classification, response, gateway: { mode: "dry-run", steps: [{ role: "conversation_responder", status: "deferred" }] } });
+    }
+    const conversationResult = await executeConversationResponse({ runtime, runId, definition, projectId: run.project_id, projectRoot, message, semanticScope: resolvedSemanticScope, responseLanguage, taskDirectory, gatewayCall, saveAssistant, finish });
+    if (conversationResult?.route === "failed") return conversationResult;
+    const receipts = classifierReceipt
+      ? { mode: "executed", receipts: [{ step: "classifier", receipt: classifierReceipt }, ...(conversationResult.gateway?.receipts?.slice(1) ?? [])] }
+      : { mode: "contract-test", receipts: conversationResult.gateway?.receipts?.slice(1) ?? [] };
+    return finish({ ...conversationResult, classification, gateway: receipts });
   }
 
   if (classification.reply_mode === "research") {

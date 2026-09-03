@@ -14,6 +14,7 @@ import { assertMetadataOnlyReceipt, DEFAULT_PRIVACY_MODE, privacyAttestation } f
 import { inspectCapabilityRequirements, normalizeCapabilityRequirements, profileCapabilities } from "./profile-capabilities.mjs";
 import { observeToolUsage } from "./tool-usage.mjs";
 import { buildInputManifest, includedInstructionText } from "./input-inventory.mjs";
+import { estimateCostUsd } from "./pricing.mjs";
 
 const paths = resolveGatewayPaths();
 const root = paths.root;
@@ -425,7 +426,11 @@ try {
   };
 }
 const stats = combinedDiffStats([projectPath, ...writeDirs].filter(Boolean));
-const usage = normalizeUsage(extractUsage(result.stdout, provider));
+let usage = normalizeUsage(extractUsage(result.stdout, provider));
+if (usage && (usage.cost_usd === null || !Number.isFinite(Number(usage.cost_usd)))) {
+  const estimate = estimateCostUsd({ model: cli.model ?? profileConfig.model ?? null, usage, pricing: policy.pricing });
+  if (estimate) usage = { ...usage, ...estimate };
+}
 const sessionId = usage?.session_id ?? extractSessionId(`${result.stdout}\n${result.stderr}`);
 const finishedAt = new Date().toISOString();
 const status = result.timedOut ? "timed_out" : result.exitCode === 0 ? "completed" : "failed";

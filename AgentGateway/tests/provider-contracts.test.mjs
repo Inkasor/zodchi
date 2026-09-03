@@ -30,7 +30,7 @@ test("CLI harness adapters preserve identity, usage and never fall back", () => 
   fs.writeFileSync(path.join(root, "task.md"), "bounded provider contract fixture", "utf8");
   fs.writeFileSync(path.join(root, "result.schema.json"), JSON.stringify({ type: "object", additionalProperties: false, required: ["status"], properties: { status: { type: "string", enum: ["ok"] } } }), "utf8");
   const harnesses = ["codex", "claude", "kimi", "opencode", "cursor"];
-  const policy = mode => ({ schemaVersion: 1, levels: { mvp: { maxCalls: 1, maxCorrectionCycles: 0, timeoutSec: 10 } }, providers: Object.fromEntries(harnesses.map(provider => [provider, { command: process.execPath, args: [fakeProvider, provider, mode], ...(provider === "claude" ? { outputSchemaArg: "--json-schema", outputSchemaFormat: "json" } : {}), profiles: {
+  const policy = mode => ({ schemaVersion: 1, levels: { mvp: { maxCalls: 1, maxCorrectionCycles: 0, timeoutSec: 10 } }, pricing: { schemaVersion: 1, unit: "usd_per_million_tokens", models: Object.fromEntries(harnesses.map(provider => [`${provider}-fixture-model`, { input_usd_per_million: 1, cached_input_usd_per_million: 0.1, output_usd_per_million: 2 }])) }, providers: Object.fromEntries(harnesses.map(provider => [provider, { command: process.execPath, args: [fakeProvider, provider, mode], ...(provider === "claude" ? { outputSchemaArg: "--json-schema", outputSchemaFormat: "json" } : {}), profiles: {
     [`${provider}-contract`]: { model: `${provider}-fixture-model`, modelProvider: `${provider}-model-provider`, reasoningEffort: "low", readOnly: true, capabilities: { project_write: { status: "unavailable", enforcement: "technical", access: "none", evidenceRef: `fixture:${provider}-readonly` } } },
     [`${provider}-writable`]: { model: `${provider}-fixture-model`, modelProvider: `${provider}-model-provider`, reasoningEffort: "low", readOnly: false },
     ...(provider === "claude" ? {
@@ -61,6 +61,11 @@ test("CLI harness adapters preserve identity, usage and never fall back", () => 
       assert.equal(call.receipt.sessionId, "cursor-contract-session");
     } else {
       assert.equal(call.receipt.usage.input_tokens, expectedInput[provider]);
+      if (provider === "opencode") assert.equal(call.receipt.usage.cost_usd, 0.001);
+      else {
+        assert.equal(call.receipt.usage.cost_source, "configured_model_pricing");
+        assert.ok(call.receipt.usage.cost_usd > 0);
+      }
     }
     assert.match(call.receipt.output, new RegExp(`${provider}-contract-result`));
   }

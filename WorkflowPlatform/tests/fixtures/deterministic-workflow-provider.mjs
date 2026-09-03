@@ -50,6 +50,11 @@ if (resultSchema === "strategy_review.v1") {
     section_id: existing ? "summary" : null, decision_id: null, evidence_id: null, status_value: null,
     target_tag: null, target_id: null, replacement_id: null
   };
+} else if (resultSchema === "conversation.v1" || role === "conversation_responder") {
+  result = {
+    schema_version: 1, status: "answered",
+    answer: "Ответ подготовлен отвечающей ролью на основе текущего сообщения и доступной истории диалога."
+  };
 } else if (role === "classifier") {
   const conversation = input.includes("SCENARIO:conversation"), research = input.includes("SCENARIO:research");
   const scenario = Object.fromEntries([...input.matchAll(/SCENARIO_([A-Z_]+)=([a-z0-9._-]+)/g)].map(match => [match[1].toLowerCase(), match[2]]));

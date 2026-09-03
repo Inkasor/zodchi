@@ -168,6 +168,28 @@ test("bounded retries enter dead-letter and an explicit retry restores reversibl
   cleanup(root, runtime);
 });
 
+test("a scheduled retry keeps its run selectable until the second attempt is consumed", () => {
+  const { root, runtime, queue } = fixture("workflow-live-retry-");
+  const runId = plannedRun(runtime, "live retry", [{ key: "worker", max_attempts: 2 }]);
+  queue.enqueueRun(runId, "2026-01-01T00:00:00.000Z");
+  const first = queue.checkout({ ownerId: "worker", leaseMs: 60_000, at: "2026-01-01T00:00:00.100Z" });
+  queue.start(first.token, "2026-01-01T00:00:00.200Z");
+  const scheduled = queue.fail(first.token, { category: "ROLE_RESULT_SCHEMA_INVALID", retryDelayMs: 1_000, at: "2026-01-01T00:00:00.300Z" });
+  assert.equal(scheduled.action, "retry_scheduled");
+  assert.equal(scheduled.runState, "retry_scheduled");
+  assert.equal(runtime.get(runId).state, "retry_scheduled");
+  assert.equal(runtime.db.prepare("SELECT state FROM workflow_steps WHERE id=?").get(first.stepId).state, "retry_scheduled");
+  assert.equal(queue.checkout({ ownerId: "too-early", leaseMs: 60_000, at: "2026-01-01T00:00:00.900Z" }), null);
+  const second = queue.checkout({ ownerId: "worker-retry", leaseMs: 60_000, at: "2026-01-01T00:00:01.400Z" });
+  assert.equal(second.attemptNo, 2);
+  assert.equal(runtime.get(runId).state, "executing");
+  queue.start(second.token, "2026-01-01T00:00:01.500Z");
+  queue.complete(second.token, { at: "2026-01-01T00:00:01.600Z" });
+  assert.equal(runtime.db.prepare("SELECT COUNT(*) AS count FROM workflow_steps WHERE run_id=? AND state='retry_scheduled'").get(runId).count, 0);
+  assert.equal(runtime.db.prepare("SELECT COUNT(*) AS count FROM workflow_runs WHERE id=? AND state='failed'").get(runId).count, 0);
+  cleanup(root, runtime);
+});
+
 test("irreversible work never retries without an explicit recorded approval", () => {
   const { root, runtime, queue } = fixture("workflow-irreversible-");
   const runId = plannedRun(runtime, "irreversible", [{ key: "publish-like-step", irreversible: true, max_attempts: 3 }]);

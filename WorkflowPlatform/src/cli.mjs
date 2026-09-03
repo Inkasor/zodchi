@@ -30,6 +30,7 @@ import { projectRuntimeReadiness } from "./runtime-readiness.mjs";
 import { createGoal, createStage, listStrategicState, setGoalStatus, setStageStatus } from "./strategic-state.mjs";
 import { addressedEvent, addressedInteraction, taskStateProjection } from "./task-state.mjs";
 import { externalTools, registerExternalTool } from "./external-tools.mjs";
+import { cleanupHistory } from "./history-cleanup.mjs";
 const args = Object.fromEntries(process.argv.slice(3).reduce((a, v, i, x) => { if (v.startsWith("--")) { const next = x[i + 1]; a.push([v.slice(2), next === undefined || next.startsWith("--") ? true : next]); } return a; }, []));
 const settings = resolveWorkflowSettings();
 if (process.argv[2] === "configure") { console.log(JSON.stringify(configureInstallation(JSON.parse(fs.readFileSync(args.config, "utf8"))), null, 2)); }
@@ -149,6 +150,7 @@ else if (process.argv[2] === "experience-propose") { console.log(JSON.stringify(
 else if (process.argv[2] === "experience-evaluate") { const results = JSON.parse(fs.readFileSync(args.results, "utf8")); console.log(JSON.stringify(await evaluateExperienceProposal(args.db, args.proposal, request => results[request.scenario_key]?.[request.variant]), null, 2)); }
 else if (process.argv[2] === "experience-apply") { console.log(JSON.stringify(applyExperienceProposal(args.db, args.proposal, { confirmedBy: args["confirmed-by"] }), null, 2)); }
 else if (process.argv[2] === "run-statistics") { console.log(JSON.stringify(workflowRunStatistics(args.db ?? settings.databasePath, args.run), null, 2)); }
+else if (process.argv[2] === "history-cleanup") { console.log(JSON.stringify(await cleanupHistory({ workflowDatabase: args.db ?? settings.databasePath, gatewayDatabase: args["gateway-db"] ?? settings.gatewayDatabasePath, apply: args.apply === true }), null, 2)); }
 else if (process.argv[2] === "run-status") {
   const runtime = new Runtime(args.db ?? settings.databasePath);
   try { console.log(JSON.stringify(runControlStatus(runtime.db, args.run), null, 2)); } finally { runtime.db.close(); }
@@ -190,4 +192,4 @@ else if (["queue-recover", "run-pause", "run-resume", "run-cancel", "dead-letter
     else console.log(JSON.stringify(queue.retryDeadLetter(args["dead-letter"], { approved: args.approved === true, actor: args.actor ?? "CLI operator" }), null, 2));
   } finally { runtime.db.close(); }
 }
-else console.log("Usage: node src/cli.mjs configure --config <file> | register-project | register-root | project-readiness | document-list | document-register | document-unregister | document-status-register|unregister | document-evidence-register|unregister | strategy-list | strategy-set | goal-list|create|status | stage-create|status | task-state | interaction-read | event-read | external-tool-list|register | run-profile-list | run-profile-set | onboard | lint | quality-contracts-lint | quality-policy-lint | one-c-bsl-baseline | one-c-bsl-configure | prompt | run | interactions | evidence-deliver | external-control-create|pending|cancel|deliver | preset-lint|inspect|propose | run-statistics|status|watch | backup | restore | queue-recover | run-pause|resume|cancel | dead-letter-retry | workflow-export | workflow-import-propose|apply | workflow-migration-propose | workflow-bundle-inspect | experience-record|propose|evaluate|apply");
+else console.log("Usage: node src/cli.mjs configure --config <file> | register-project | register-root | project-readiness | document-list | document-register | document-unregister | document-status-register|unregister | document-evidence-register|unregister | strategy-list | strategy-set | goal-list|create|status | stage-create|status | task-state | interaction-read | event-read | external-tool-list|register | run-profile-list | run-profile-set | onboard | lint | quality-contracts-lint | quality-policy-lint | one-c-bsl-baseline | one-c-bsl-configure | prompt | run | interactions | evidence-deliver | external-control-create|pending|cancel|deliver | preset-lint|inspect|propose | run-statistics | history-cleanup [--apply] | status|watch | backup | restore | queue-recover | run-pause|resume|cancel | dead-letter-retry | workflow-export | workflow-import-propose|apply | workflow-migration-propose | workflow-bundle-inspect | experience-record|propose|evaluate|apply");

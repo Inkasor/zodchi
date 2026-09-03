@@ -30,12 +30,12 @@ const workflowId = db.prepare(`SELECT m.local_id FROM package_import_mappings m 
 if (!workflowId) throw new Error(`WORKFLOW_MAPPING_MISSING: ${config.workflow_key}`);
 const requirements = db.prepare("SELECT role_id,profile_key FROM portable_profile_requirements WHERE project_id=? AND package_key=? ORDER BY role_id").all(config.project_id, config.package_key);
 if (!requirements.length) throw new Error(`PACKAGE_PROFILE_REQUIREMENTS_MISSING: ${config.package_key}`);
-// Classifier and researcher are host-runtime roles. A portable package can use them without containing a
+// Classifier, researcher and conversation responder are host-runtime roles. A portable package can use them without containing a
 // productive researcher step, so its portable requirements are not sufficient to construct a runnable
 // chat installation. Acceptance must bind both explicitly or it can mistake a failed research route for
 // a successful invocation merely because the platform returned a human-readable controlled-stop message.
 const bindings = [...requirements];
-for (const roleId of ["classifier", "researcher"]) {
+for (const roleId of ["classifier", "researcher", "conversation_responder"]) {
   if (!bindings.some(binding => binding.role_id === roleId)) bindings.push({ role_id: roleId, profile_key: `${config.package_key}.${roleId}.mvp`, direct: true });
 }
 const contractWrites = new Map(db.prepare("SELECT role_id,boundaries_json FROM role_contracts WHERE project_id=? AND status='active'").all(config.project_id).map(row => {

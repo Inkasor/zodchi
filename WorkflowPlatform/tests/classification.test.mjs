@@ -26,6 +26,7 @@ function definition() {
     roles: {
       classifier: { provider: "codex", profile: "test-classifier", role: "classifier", contract: { context_limit_bytes: 8192 } },
       researcher: { provider: "codex", profile: "test-researcher", role: "researcher" },
+      conversation_responder: { provider: "codex", profile: "test-conversation-responder", role: "conversation_responder", contract: { context_limit_bytes: 8192 } },
       planner: { provider: "codex", profile: "test-planner", role: "planner" },
       worker: { provider: "codex", profile: "test-worker", role: "worker" },
       reviewer: { provider: "codex", profile: "test-reviewer", role: "reviewer" },
@@ -55,9 +56,9 @@ function decision(overrides = {}) {
   };
 }
 
-function receipt(output, receiptId = "receipt") {
+function receipt(output, receiptId = "receipt", overrides = {}) {
   const timestamp = now();
-  return { receiptId, taskId: `${receiptId}-task`, provider: "codex", profile: "test-classifier", role: "classifier", status: "completed", exitCode: 0, startedAt: timestamp, finishedAt: timestamp, usage: {}, output, error: "" };
+  return { receiptId, taskId: `${receiptId}-task`, provider: "codex", profile: overrides.profile ?? "test-classifier", role: overrides.role ?? "classifier", status: "completed", exitCode: 0, startedAt: timestamp, finishedAt: timestamp, usage: {}, output, error: "" };
 }
 
 test("workflow intake requires one exact semantic scope", async () => {
@@ -124,21 +125,28 @@ test("classifier output is rejected when its structured trace used a contract-fo
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("ordinary conversation invokes only the classifier and returns a plain human response", async () => {
+test("ordinary conversation invokes the classifier and responder and returns the responder answer", async () => {
   const { root, project, dbFile, db } = fixture("workflow-conversation-");
   db.close();
-  let calls = 0;
+  const calls = [];
   const conversation = decision({
     work_type: "conversation", artifact_type: "none", discipline: "general", planning_level: "L0",
     planning_required: false, reply_mode: "conversation", reason: "Пользователь здоровается.", human_response: "Привет! Чем помочь?"
   });
   const result = await statelessProcessMessage({
     message: "Привет", project, dbFile, workflowDefinition: definition(), execute: true,
-    gatewayCall: async request => { calls += 1; assert.equal(request.project, project); return receipt(JSON.stringify(conversation)); }
+    gatewayCall: async request => {
+      calls.push(request.role);
+      assert.equal(request.project, project);
+      if (request.role === "classifier") return receipt(JSON.stringify(conversation), "classifier-receipt");
+      assert.equal(request.role, "conversation_responder");
+      assert.match(fs.readFileSync(request.taskFile, "utf8"), /CURRENT_USER_MESSAGE/);
+      return receipt(JSON.stringify({ schema_version: 1, status: "answered", answer: "Ответ по существу от отвечающей роли." }), "responder-receipt", { profile: "test-conversation-responder", role: "conversation_responder" });
+    }
   });
-  assert.equal(calls, 1);
+  assert.deepEqual(calls, ["classifier", "conversation_responder"]);
   assert.equal(result.route, "conversation");
-  assert.equal(result.response, "Привет! Чем помочь?");
+  assert.equal(result.response, "Ответ по существу от отвечающей роли.");
   assert.equal(result.response_language, "ru");
   const verified = openDb(dbFile);
   assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM workflow_steps").get().count, 0);
@@ -147,6 +155,62 @@ test("ordinary conversation invokes only the classifier and returns a plain huma
   assert.deepEqual(verified.prepare("SELECT DISTINCT language FROM conversation_messages WHERE run_id=?").all(result.run_id).map(row => row.language), ["ru"]);
   verified.close();
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("conversation responder receives the preceding turns of the same active session", async () => {
+  const { root, project, dbFile, db } = fixture("workflow-conversation-history-");
+  const semanticScope = { mode: "session", client: "codex", session_id: "conversation-history" };
+  activateChatSession(db, { client: semanticScope.client, sessionId: semanticScope.session_id, origin: project, turnKey: "turn-1" });
+  db.close();
+  const conversation = decision({
+    work_type: "conversation", artifact_type: "none", discipline: "general", planning_level: "L0",
+    planning_required: false, reply_mode: "conversation", reason: "Internal routing reason", human_response: null
+  });
+  const answer = value => receipt(JSON.stringify({ schema_version: 1, status: "answered", answer: value }), "responder-receipt", { profile: "test-conversation-responder", role: "conversation_responder" });
+  await scopedProcessMessage({
+    message: "Первый вопрос про архитектуру", project, dbFile, workflowDefinition: definition(), execute: true,
+    semanticScope, classificationResult: conversation, gatewayCall: async request => answer("Первый ответ с опорным контекстом")
+  });
+  const next = openDb(dbFile);
+  activateChatSession(next, { client: semanticScope.client, sessionId: semanticScope.session_id, origin: project, turnKey: "turn-2" });
+  next.close();
+  let responderPrompt = "";
+  const result = await scopedProcessMessage({
+    message: "А что ты имел в виду?", project, dbFile, workflowDefinition: definition(), execute: true,
+    semanticScope, classificationResult: conversation,
+    gatewayCall: async request => { responderPrompt = fs.readFileSync(request.taskFile, "utf8"); return answer("Второй ответ с учётом истории"); }
+  });
+  assert.equal(result.route, "conversation");
+  assert.match(responderPrompt, /Первый вопрос про архитектуру/);
+  assert.match(responderPrompt, /Первый ответ с опорным контекстом/);
+  assert.match(responderPrompt, /А что ты имел в виду\?/);
+  assert.doesNotMatch(responderPrompt, /Internal routing reason/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("empty or null classifier human_response never leaks reason into the conversation", async () => {
+  for (const humanResponse of [null, ""]) {
+    const { root, project, dbFile, db } = fixture(`workflow-conversation-no-reason-${humanResponse === null ? "null" : "empty"}-`);
+    db.close();
+    const conversation = decision({
+      work_type: "conversation", artifact_type: "none", discipline: "general", planning_level: "L0",
+      planning_required: false, reply_mode: "conversation", reason: "INTERNAL_CLASSIFIER_REASON_MUST_NOT_REACH_OWNER", human_response: humanResponse
+    });
+    const result = await statelessProcessMessage({
+      message: "Что ты думаешь?", project, dbFile, workflowDefinition: definition(), execute: true,
+      gatewayCall: async request => request.role === "classifier"
+        ? receipt(JSON.stringify(conversation), "classifier-receipt")
+        : receipt(JSON.stringify({ schema_version: 1, status: "answered", answer: "Ответ без внутренней мотивировки." }), "responder-receipt", { profile: "test-conversation-responder", role: "conversation_responder" })
+    });
+    assert.equal(result.route, "conversation");
+    const verified = openDb(dbFile);
+    const messages = verified.prepare("SELECT role,content FROM conversation_messages WHERE run_id=? ORDER BY created_at,id").all(result.run_id);
+    assert.equal(messages.filter(item => item.role === "assistant").length, 1);
+    assert.equal(messages.find(item => item.role === "assistant").content, "Ответ без внутренней мотивировки.");
+    assert.equal(messages.some(item => item.content.includes("INTERNAL_CLASSIFIER_REASON_MUST_NOT_REACH_OWNER")), false);
+    verified.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("the classifier is offered only routed work types plus the direct answers that never enter a workflow", () => {
@@ -187,7 +251,9 @@ test("a project without a conversation route still answers a conversation instea
   });
   const result = await statelessProcessMessage({
     message: "Как дела с каноном?", project, dbFile, workflowDefinition: definition(), execute: true,
-    gatewayCall: async () => receipt(JSON.stringify(conversation))
+    gatewayCall: async request => request.role === "classifier"
+      ? receipt(JSON.stringify(conversation), "classifier-receipt")
+      : receipt(JSON.stringify({ schema_version: 1, status: "answered", answer: "Отвечаю по существу." }), "responder-receipt", { profile: "test-conversation-responder", role: "conversation_responder" })
   });
   assert.equal(result.route, "conversation");
   assert.equal(result.response, "Отвечаю по существу.");

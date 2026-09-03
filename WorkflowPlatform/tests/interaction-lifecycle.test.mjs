@@ -41,10 +41,11 @@ function fixture(prefix) {
   const dbFile = path.join(root, "workflow.sqlite");
   fs.mkdirSync(path.join(project, "src"), { recursive: true });
   fs.writeFileSync(path.join(project, "src", "context.mjs"), "export function inspect(value) { return value; }\n");
-  const roles = [["planner", "planner.v1", ["code"]], ["worker", "worker.v1", ["code"]], ["reviewer", "reviewer.v1", ["code"]]];
+  const roles = [["planner", "planner.v1", ["code"]], ["worker", "worker.v1", ["code"]], ["reviewer", "reviewer.v1", ["code"]], ["conversation_responder", "conversation.v1", ["none"]]];
   onboardProject(dbFile, {
     project: { id: "project", name: "Project", root_path: project },
     workflow: { id: "workflow", name: "Workflow", discovery: { git: false } },
+    roles: roles.map(([role]) => ({ id: role, name: role })),
     profiles: roles.map(([role]) => ({ id: `profile-${role}`, provider: "codex", name: `local-${role}`, role_id: role })),
     routes: [{ work_type_id: "implementation" }],
     checks: [{ id: "check-ok", name: "Test check", runner: "fixture", kind: "fixture", config: { status: "passed" } }],
@@ -372,6 +373,7 @@ test("a message that answers nothing stays its own run and leaves the open quest
   const env = fixture("workflow-unrelated-message-");
   const gatewayCall = async request => {
     if (request.role === "planner") return receipt("planner", { ...readyPlan(), outcome: "questions", steps: [], artifacts: [], questions: ["Куда писать результат?"] });
+    if (request.role === "conversation_responder") return receipt("conversation_responder", { schema_version: 1, status: "answered", answer: "Всё в порядке." });
     return receipt(request.role, {});
   };
   const asked = await statelessProcessMessage({ message: "Сделай ограниченный вывод", project: env.project, dbFile: env.dbFile, execute: true, classificationResult: classification(), gatewayCall, gateRunner: async () => ({ status: "passed", checks: [] }) });

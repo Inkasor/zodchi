@@ -22,6 +22,23 @@
       "timeoutSec": 1800
     }
   },
+  "pricing": {
+    "schemaVersion": 1,
+    "unit": "usd_per_million_tokens",
+    "source": "owner_configured_accounting_rates",
+    "models": {
+      "gpt-5.6-luna": {
+        "input_usd_per_million": 1.25,
+        "cached_input_usd_per_million": 0.125,
+        "output_usd_per_million": 10
+      },
+      "gpt-5.6-sol": {
+        "input_usd_per_million": 2.5,
+        "cached_input_usd_per_million": 0.25,
+        "output_usd_per_million": 15
+      }
+    }
+  },
   "providers": {
     "codex": {
       "command": "codex",

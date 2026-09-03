@@ -82,7 +82,7 @@ for (const item of config.projects) {
     registerExternalTool(db, { projectId: item.project_id, name, transport: "stdio", endpoint: process.execPath, readOnlyMode: { browser: "bounded-fixture" }, pinnedVersion: "fixture" });
   }
   const bindings = [...requirements];
-  for (const roleId of ["classifier", "researcher"]) {
+  for (const roleId of ["classifier", "researcher", "conversation_responder"]) {
     if (!bindings.some(binding => binding.role_id === roleId)) bindings.push({ role_id: roleId, profile_key: `${item.package_key}.${roleId}.mvp`, allowed_mcp_servers_json: "[]", direct: true });
   }
   for (const binding of bindings) {
@@ -102,7 +102,7 @@ for (const item of config.projects) {
   db.close();
   const checks = registerCanaryChecks(dbFile, item);
   if (checks) fs.writeFileSync(path.join(outputRoot, `${item.project_id}.checks.json`), JSON.stringify(checks, null, 2), "utf8");
-  prepared.push({ item, workflowId, checks, directProfiles: Object.fromEntries(bindings.filter(binding => ["classifier", "researcher"].includes(binding.role_id)).map(binding => [binding.role_id, binding.profile_key])) });
+  prepared.push({ item, workflowId, checks, directProfiles: Object.fromEntries(bindings.filter(binding => ["classifier", "researcher", "conversation_responder"].includes(binding.role_id)).map(binding => [binding.role_id, binding.profile_key])) });
 }
 
 const profiles = Object.fromEntries([...profileKeys].map(key => {
@@ -138,7 +138,8 @@ for (const { item, workflowId, checks, directProfiles } of prepared) {
     project: path.resolve(item.root_path), dbFile, workflow: workflowId,
     workflowDefinition: { id: workflowId, authority: "registered project documents", roles: {
       classifier: { provider: "codex", profile: directProfiles.classifier, role: "classifier", contract: { context_limit_bytes: 65536 } },
-      researcher: { provider: "codex", profile: directProfiles.researcher, role: "researcher" }
+      researcher: { provider: "codex", profile: directProfiles.researcher, role: "researcher" },
+      conversation_responder: { provider: "codex", profile: directProfiles.conversation_responder, role: "conversation_responder", contract: { context_limit_bytes: 65536 } }
     } },
     execute: true, eventSource: "checkpoint9", eventKey: item.project_id, gatewayCall: gateway,
     semanticScope: { mode: "stateless" }

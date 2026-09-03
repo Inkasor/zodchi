@@ -4,6 +4,19 @@
 
 [English](CHANGELOG.md) · [Русский](docs/ru/CHANGELOG.md)
 
+<section id="0_6_14_2026_09_03" status="working">
+
+## 0.6.14 — 2026-09-03
+
+- Conversation routing now performs classification followed by a dedicated `conversation_responder` call with session history. Only its validated `answer` is persisted; classifier `reason` and empty `human_response` never become owner-facing assistant messages.
+- Retry scheduling keeps the run selectable while a retry is available, passes schema-validation details into the repair call, and leaves no scheduled step attached to a terminal run.
+- Planner packets state the artifact-path rule explicitly, avoid duplicating the registered-check catalog in `following_phases`, and record a visible prompt-context warning at 85% of the byte limit.
+- Added an explicit history-cleanup command with dry-run as the default, adjacent timestamped database backups before `--apply`, an allowlisted deletion order, registry hash protection, and foreign-key/integrity checks.
+- AgentGateway can estimate cost from a local, owner-configured model-rate table when a provider reports valid input and output tokens without a price. Unknown models or incomplete usage remain unpriced rather than becoming zero-cost calls.
+- Generated packages include the responder role and preserve the existing fail-closed handling for unresolved Kimi capability mismatches. Cache-sensitive prompt structure remains stable; the input manifest is receipt metadata, not an injected prompt prefix.
+
+</section>
+
 <section id="0_6_13_2026_09_03" status="working">
 
 ## 0.6.13 — 2026-09-03

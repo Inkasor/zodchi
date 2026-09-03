@@ -490,6 +490,9 @@ function promptWithinContract(contract, qualityContract, packageContract, contex
     error.prompt_metrics = {
       prompt_bytes: measured,
       context_limit_bytes: contract.context_limit_bytes,
+      warning_threshold_bytes: Math.floor(contract.context_limit_bytes * 0.85),
+      utilization_ratio: measured / contract.context_limit_bytes,
+      warning: measured >= contract.context_limit_bytes * 0.85 ? "context_near_limit" : null,
       fixed_prompt_floor_bytes: fixedPromptFloorBytes,
       mandatory_context_floor_bytes: mandatoryContextFloorBytes,
       dynamic_context_bytes: 0
@@ -522,6 +525,9 @@ function promptWithinContract(contract, qualityContract, packageContract, contex
     error.prompt_metrics = {
       prompt_bytes: Buffer.byteLength(prompt),
       context_limit_bytes: contract.context_limit_bytes,
+      warning_threshold_bytes: Math.floor(contract.context_limit_bytes * 0.85),
+      utilization_ratio: Buffer.byteLength(prompt) / contract.context_limit_bytes,
+      warning: "context_overflow",
       fixed_prompt_floor_bytes: fixedPromptFloorBytes,
       mandatory_context_floor_bytes: mandatoryContextFloorBytes,
       dynamic_context_bytes: Math.max(0, Buffer.byteLength(prompt) - mandatoryContextFloorBytes),
@@ -555,6 +561,12 @@ function roleBudgetRequest(runtime, runId, stepId, roleId, attemptId, contract, 
       metric: "calls", amount: 1, idempotencyKey: callKey, taskId: task.id, runId, reason: `role:${roleId}`
     }
   };
+}
+
+function retryableRoleFailure(error) {
+  // Admission failures are deterministic: retrying the same call cannot make an exhausted
+  // budget available, and leaving the step retryable would create a queue entry under a blocked run.
+  return !String(error?.message ?? error).startsWith("BUDGET_EXHAUSTED");
 }
 
 async function controlledGatewayReceipt(runtime, queue, runId, invocation) {
@@ -606,12 +618,22 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
     const failure = queue.fail(lease.token, { category: "context_budget_exceeded", retryable: false });
     throw new Error(`${error.message}: ${JSON.stringify(failure)}`);
   }
-  recordRunEvidence(runtime.db, runId, step.id, "role_prompt_metrics", {
+  const promptBytes = Buffer.byteLength(prompt), warningThresholdBytes = Math.floor(contract.context_limit_bytes * 0.85);
+  const promptWarning = promptBytes >= warningThresholdBytes ? "context_near_limit" : null;
+  const promptMetrics = {
     step_key: step.step_key,
     role_id: roleId,
-    prompt_bytes: Buffer.byteLength(prompt),
+    prompt_bytes: promptBytes,
     context_limit_bytes: contract.context_limit_bytes,
+    warning_threshold_bytes: warningThresholdBytes,
+    utilization_ratio: promptBytes / contract.context_limit_bytes,
+    warning: promptWarning,
     review_evidence_bytes: packageContract?.review_evidence ? Buffer.byteLength(JSON.stringify(packageContract.review_evidence)) : null
+  };
+  recordRunEvidence(runtime.db, runId, step.id, "role_prompt_metrics", promptMetrics);
+  if (promptWarning) recordRunEvidence(runtime.db, runId, step.id, "prompt_context_warning", {
+    ...promptMetrics,
+    message: `role prompt reached ${Math.round(promptMetrics.utilization_ratio * 1000) / 10}% of its byte limit before invocation`
   });
   fs.mkdirSync(taskRoot, { recursive: true });
   const taskFile = path.join(taskRoot, `${step.ordinal}-${roleId}.md`);
@@ -681,7 +703,7 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
         raw_result_hash: crypto.createHash("sha256").update(String(receipt.output ?? "")).digest("hex")
       });
     }
-    try { error.queueFailure = queue.fail(lease.token, { category: error.code ?? String(error.message).split(":")[0].slice(0, 120), retryable: true }); } catch {}
+    try { error.queueFailure = queue.fail(lease.token, { category: error.code ?? String(error.message).split(":")[0].slice(0, 120), retryable: retryableRoleFailure(error) }); } catch {}
     throw error;
   }
 }
@@ -1343,22 +1365,22 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   // the planner would be validated against a role it was never shown.
   const roleCapabilities = registeredRoles.map(role => {
     let contract; try { contract = loadRoleContract(runtime.db, projectId, role, level); } catch { return { id: role }; }
-    return { id: role, purpose: contract.purpose, boundaries: contract.boundaries, allowed_work_types: contract.allowed_work_types, allowed_artifact_types: contract.allowed_artifact_types, allowed_tools: contract.allowed_tools };
+    return { id: role, boundaries: contract.boundaries, allowed_work_types: contract.allowed_work_types, allowed_artifact_types: contract.allowed_artifact_types, allowed_tools: contract.allowed_tools };
   });
   // Review and documentation run as their own phases after the worker steps, so a plan that assigns
   // a document write to a worker step asks a role to do work the route never gave it. The planner has
   // to know what happens after its steps in order to stop at the right place.
   const followingPhases = [
-    { phase: "verification", runs: "runs every registered check listed below and records the gate", role: null, checks: registeredChecks },
-    { phase: "review", runs: "independent review when the quality contract requires it", role: reviewerRole },
-    { phase: "documentation", runs: classification.document_required ? "applies the required registered document change" : "applies a registered document change when one is required", role: documentatorRole }
+    { phase: "verification", owner: "platform", boundary: "platform-owned registered checks; do not plan a worker step" },
+    { phase: "review", owner: reviewerRole, boundary: "independent read-only review after verification" },
+    { phase: "documentation", owner: documentatorRole, boundary: "registered document proposal applied after review when required" }
   ];
   // Naming the later phases was not enough on its own: a plan still spent a worker step on defining the
   // verification gates, which is the verification phase's own work given to a role that may not do it.
   // The boundary has to be stated, not left to be inferred from the list.
   const planBoundary = {
     covers: "only the steps the worker roles below execute before verification",
-    excludes: followingPhases.map(item => `${item.phase}: ${item.runs}`),
+    excludes: followingPhases.map(item => `${item.phase} (${item.owner}): ${item.boundary}`),
     rule: "Do not plan a step for work a following phase already performs, and assign every step to a role whose allowed_work_types and boundaries permit that step."
   };
   // A plan step is rejected when its role is not one the route may execute, so the planner has to be

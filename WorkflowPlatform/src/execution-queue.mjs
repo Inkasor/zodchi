@@ -50,6 +50,13 @@ function pairedState(db, runId, toState, at, payload = {}, { remember = false, c
   return toState;
 }
 
+function scheduleRunRetry(db, runId, at, payload) {
+  const run = db.prepare("SELECT state FROM workflow_runs WHERE id=?").get(runId);
+  if (run && run.state !== "retry_scheduled" && canTransition("workflow_run", run.state, "retry_scheduled")) {
+    pairedState(db, runId, "retry_scheduled", at, payload, { remember: true });
+  }
+}
+
 function activateNextPhase(db, runId, at) {
   const runnableOrdinal = db.prepare(`SELECT MIN(ws.ordinal) AS ordinal FROM workflow_steps ws
     WHERE ws.run_id=? AND ws.state='pending'
@@ -113,6 +120,7 @@ function recoverExpiredInternal(db, at) {
       if (!step.irreversible && attemptCount < step.max_attempts) {
         entityState(db, "workflow_step", step.id, "retry_scheduled", at, { reason: "recover after expired execution lease" });
         db.prepare("UPDATE workflow_steps SET next_attempt_at=?,last_error_category='lease_expired' WHERE id=?").run(at, step.id);
+        scheduleRunRetry(db, step.run_id, at, { reason: "step retry scheduled after expired execution lease", step_id: step.id });
         action = "retry_scheduled";
       } else {
         entityState(db, "workflow_step", step.id, "blocked", at, { reason: "lease recovery requires escalation" });
@@ -305,7 +313,8 @@ export class ExecutionQueue {
         entityState(this.db, "workflow_step", step.id, "retry_scheduled", timestamp, { category, attempt: attemptCount, max_attempts: step.max_attempts });
         const nextAttemptAt = iso(Date.parse(timestamp) + Math.max(0, retryDelayMs));
         this.db.prepare("UPDATE workflow_steps SET next_attempt_at=?,last_error_category=? WHERE id=?").run(nextAttemptAt, category, step.id);
-        return { stepId: step.id, attemptId: attempt.id, action: "retry_scheduled", nextAttemptAt, idempotent: false };
+        scheduleRunRetry(this.db, step.run_id, timestamp, { reason: "step retry scheduled", step_id: step.id, category, attempt: attemptCount, max_attempts: step.max_attempts });
+        return { stepId: step.id, attemptId: attempt.id, action: "retry_scheduled", nextAttemptAt, runState: this.db.prepare("SELECT state FROM workflow_runs WHERE id=?").get(step.run_id)?.state ?? null, idempotent: false };
       }
       entityState(this.db, "workflow_step", step.id, "blocked", timestamp, { category, reason: step.irreversible ? "irreversible replay requires approval" : "retry budget exhausted" });
       const deadLetterId = blockForDeadLetter(this.db, step, attempt.id, category, { ...details, attempts: attemptCount, max_attempts: step.max_attempts }, timestamp);
