@@ -56,6 +56,7 @@
 - The validated owner installation upgrades its three active packages to prompt builder 3.2.0 and patch versions `zodchi.product-development` 2.9.1, `shared-lore.canon` 2.9.1 and `shared-map-engine.core` 2.5.1. Documentator and operator profiles are read-only; the two Kimi reviewer exceptions remain visible as eight `accepted_declarative` assignments, with no profile conflicts.
 - Browser evidence from an isolated Claude Playwright probe is not copied into the live owner policy without a selected target role and profile. Release and access routes likewise remain explicitly unavailable until real signed external operations are registered; neither absence is reported as a passed capability.
 - Install/update diagnostics now recognize Gateway's explicit `accepted_declarative` aggregate and preserve it as `admission_status` instead of misreporting an admitted owner exception as a preflight transport failure.
+- The owner-data upgrade guide now requires the replaceable release to be installed and verified before a database is opened at schema 36. An older candidate that knows only schema 34 must fail closed with `MIGRATION_UNKNOWN_APPLIED_VERSION`; migration records must never be edited to bypass source/data mismatch.
 
 </section>
 

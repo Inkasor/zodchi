@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "finding": "The 0.6.12 data upgrade was rehearsed on an exact copy before the live data root was changed. Migrations 035-036 and three owner package upgrades completed with database integrity preserved. Executor profile conflicts are closed; release and access routes remain unavailable until the owner registers real external operations.",
+  "finding": "The 0.6.12 data upgrade was rehearsed on an exact copy before the live data root was changed. The replaceable release and live data are now synchronized at source commit c94b3dc: migrations 035-036 and three owner package upgrades completed with database integrity preserved. Executor profile conflicts are closed; release and access routes remain unavailable until the owner registers real external operations.",
   "release": "0.6.12",
-  "recorded_at": "2026-09-03T05:05:00Z",
+  "recorded_at": "2026-09-03T05:25:08Z",
   "stage4_rehearsal": {
     "source": "<live-data-root>",
     "copy": "<stage4-copy>",
@@ -151,6 +151,33 @@
       "packages/definitions.mjs": "e02c3b929a51da1a6559654a0627064168941908b80d313b5562cf64d8a23fe1",
       "config/runtime.json": "bcd9a92c09143902824f72f005ad390a95f2ea5c01268f157134b2f4aa9d5e77"
     }
+  },
+  "replaceable_release": {
+    "source_commit": "c94b3dc",
+    "candidate": "<local-candidate-built-from-source-commit>",
+    "installed_version": "0.6.12",
+    "previous_version": "0.6.12",
+    "previous_release": "<installer-managed-previous-release>",
+    "installed_migration_files": 36,
+    "profile_capability_model_present": true,
+    "source_hash_matches": [
+      "tools/install.mjs",
+      "AgentGateway/src/profile-capabilities.mjs",
+      "WorkflowPlatform/src/runtime-readiness.mjs",
+      "WorkflowPlatform/migrations/035_external_operation_definitions.sql",
+      "WorkflowPlatform/migrations/036_external_operation_verification.sql"
+    ],
+    "profile_capability_diagnostics": {
+      "status": "checked",
+      "admission_status": "accepted_declarative",
+      "checks": 112,
+      "compatible": 104,
+      "accepted_declarative": 8,
+      "conflicts": 0
+    },
+    "installation_state_sha256": "45f9df2fbd3e10e7f65e3245ee25a4868b342436cd7803309724cac30718c371",
+    "updated_at": "2026-09-03T05:20:38.983Z",
+    "ordering_guard": "An earlier candidate also labelled 0.6.12 contained only migrations through 034. Opening the upgraded database with that source failed closed as MIGRATION_UNKNOWN_APPLIED_VERSION: 35. Update and verify the replaceable release before opening or migrating the live database; never alter migration records to bypass this guard."
   },
   "generated_catalog_scope": "The installation generator deterministically rebuilt the complete twelve-package owner catalog and its bundle. Only the three versioned owner packages named above were imported into their projects.",
   "playwright_registration": {
