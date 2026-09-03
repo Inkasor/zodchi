@@ -143,6 +143,12 @@ export function validateClassificationDecision(value, catalog) {
   if (value.work_type === "continuation" && value.reply_mode === "work" && value.artifact_type === "document" && value.document_required && catalog.work_types.includes("documentation")) {
     value = { ...value, work_type: "documentation" };
   }
+  // A registered verification run produces a report even when the owner did not name a file. Keeping
+  // `none` here makes artifact-bound checks disappear from the run and lets identical messages select
+  // different gate sets depending on a model's incidental artifact choice.
+  if (value.work_type === "verification" && value.reply_mode === "work" && value.artifact_type === "none" && catalog.artifact_types.includes("test_report")) {
+    value = { ...value, artifact_type: "test_report" };
+  }
   const keys = Object.keys(value).sort();
   const expected = [...REQUIRED_FIELDS].sort();
   if (JSON.stringify(keys) !== JSON.stringify(expected)) {
@@ -255,7 +261,7 @@ export function classifierPrompt({ message, catalog, projectSnapshot, acceptedDe
   // reuse a cached prompt prefix once it passes their minimum length, so the whole invariant contract
   // is stated here and every field that carries run state is kept below it.
   const invariant = [
-    "WORKFLOW CLASSIFICATION CONTRACT v7",
+    "WORKFLOW CLASSIFICATION CONTRACT v8",
     "You classify the current user message. Do not plan work, edit files, invoke tools, or invent registry values.",
     "Return exactly one JSON object and no Markdown.",
     `OUTPUT_FIELDS:${JSON.stringify(REQUIRED_FIELDS)}`,
@@ -267,6 +273,7 @@ export function classifierPrompt({ message, catalog, projectSnapshot, acceptedDe
     "- reply_mode: conversation for ordinary talk, research for bounded read-only investigation of registered project sources, clarification when required information is missing, work when a registered route must run.",
     "- work_type=conversation forces artifact_type=none, planning_required=false and reply_mode=conversation.",
     "- work_type=continuation is only a short conversational follow-up with artifact_type=none, document_required=false, planning_required=false and reply_mode=conversation. A detailed task remains the underlying registered work type even when the same subject appeared earlier; a request to create a document is documentation, not continuation.",
+    "- A verification request that explicitly asks to run registered checks, validations, or acceptance checks produces artifact_type=test_report when that registry value exists, even if the owner did not name a report file.",
     "- reply_mode=work requires planning_required=true and a work_type that REGISTERED_ROUTES actually routes.",
     "- planning_required: the answer needs ordered steps rather than a single response.",
     "- human_required: a person must decide or approve before the result can stand.",

@@ -5,7 +5,7 @@ import { id, now } from "./db.mjs";
 import { ExecutionQueue } from "./execution-queue.mjs";
 import { BudgetManager, invokeWithinBudget } from "./budget.mjs";
 import { applyRegisteredPatch, documentVersion } from "./documentator.mjs";
-import { registeredProjectCheckKeys, runProjectGate } from "./gates.mjs";
+import { registeredProjectCheckKeys, resolveProjectChecks, runProjectGate } from "./gates.mjs";
 import { selectProjectContext } from "./document-context.mjs";
 import { collectGitHistory, collectSourceFiles, expandTerms, inventorySummary, scanSourceCorpus, searchSources, sourceScope } from "./source-context.mjs";
 import { buildCodeIntelligence, mergeGraphMatches } from "./code-intelligence.mjs";
@@ -737,6 +737,35 @@ function applyPlannerToDatabase(runtime, runId, plannerResult) {
     .run(plannerResult.outcome, JSON.stringify(plannerResult.scope), JSON.stringify(plannerResult.allowed_paths), JSON.stringify(plannerResult.inputs), JSON.stringify(plannerResult.checks), JSON.stringify(plannerResult.risks), JSON.stringify(plannerResult.artifacts), JSON.stringify(plannerResult.completion_criteria), JSON.stringify(plannerResult.questions), JSON.stringify(plannerResult.steps), plannerResult.outcome === "ready" ? "authorized" : "clarification_required", plan.id);
 }
 
+function verificationCheckCatalog(db, projectId, level, artifactType, registeredChecks) {
+  const allowed = new Set(registeredChecks);
+  return resolveProjectChecks(db, projectId, level, artifactType)
+    .filter(check => allowed.has(check.semantic_id))
+    .map(check => ({
+      id: check.semantic_id,
+      name: check.name,
+      kind: check.kind,
+      runner: check.runner,
+      required: Boolean(check.required),
+      quality_modes: check.quality_sources,
+      artifact_types: check.artifact_sources,
+      result_contract: {
+        statuses: ["passed", "failed", "timed_out", "unavailable"],
+        fields: ["status", "exit_code", "duration_ms", "failure", "execution_project_id", "execution_root"]
+      }
+    }));
+}
+
+function normalizeVerificationPlan(plan, registeredChecks) {
+  if (!plan || !Array.isArray(registeredChecks)) return plan;
+  const checks = [...registeredChecks];
+  return {
+    ...plan,
+    checks,
+    steps: (plan.steps ?? []).map(step => ({ ...step, check_ids: checks }))
+  };
+}
+
 function storedAuthorizedPlan(db, runId) {
   const row = db.prepare("SELECT * FROM plans WHERE run_id=? AND status='authorized'").get(runId);
   if (!row) return null;
@@ -1382,6 +1411,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   if (!registeredRoles.length && !documentOnlyRoute) throw new Error(`WORKFLOW_ROUTE_HAS_NO_EXECUTABLE_ROLE: ${runtime.get(runId).workflow_id}`);
   const allRegisteredChecks = registeredProjectCheckKeys(runtime.db, projectId, level, classification.artifact_type);
   const registeredChecks = routeContract?.check_keys.length ? allRegisteredChecks.filter(check => routeContract.check_keys.includes(check)) : allRegisteredChecks;
+  const registeredCheckCatalog = verificationCheckCatalog(runtime.db, projectId, level, classification.artifact_type, registeredChecks);
   const registeredArtifactTypes = runtime.db.prepare("SELECT id FROM artifact_types ORDER BY id").all().map(row => row.id);
   // Naming the roles is not enough: a role that may not edit will refuse an editing step, and the plan
   // is then unsatisfiable from the moment it is written. The planner needs each role's purpose and its
@@ -1482,6 +1512,18 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     }
   }
   let plan = preparedPlan ?? (planner ? planner.result : derivePlanFromTemplates(runtime, projectId, routeContract, message, registeredChecks, level, classification.document_required, documentatorRole, approvalGranted || approvalBeforeWork));
+  if (classification.work_type === "verification" && !preparedPlan) {
+    const plannedChecks = plan.checks ?? [];
+    plan = normalizeVerificationPlan(plan, registeredChecks);
+    if (JSON.stringify(plannedChecks) !== JSON.stringify(plan.checks)) {
+      recordRunEvidence(runtime.db, runId, null, "verification_check_set", {
+        source: "registered_project_checks",
+        original_checks: plannedChecks,
+        enforced_checks: plan.checks,
+        reason: "verification runs the complete applicable registered check set"
+      });
+    }
+  }
   if (!preparedPlan) {
     if (classification.document_required) registerNewPlannedDocument(runtime, projectId, projectRoot, plan, documentatorRole);
     applyPlannerToDatabase(runtime, runId, plan);
@@ -1516,7 +1558,18 @@ export async function executeStructuredWork({ runtime, runId, classification, de
     const reviewGap = correctionReview ? { blockers: correctionReview.blockers ?? [], required_actions: correctionReview.required_actions ?? [], evidence_refs: correctionReview.evidence_refs ?? [] } : null;
     const operationKind = operationKindForSchema(contract.result_schema_key);
     const operations = operationCatalog(runtime.db, projectId, contract.result_schema_key);
-    const packageContract = { objective: plannedStep.objective, allowed_paths: plannedStep.allowed_paths, artifact_keys: plannedStep.artifact_keys, check_ids: plannedStep.check_ids, plan_hash: structuredHash(plan), correction_cycle: cycle, gate_failures: priorGate?.checks?.filter(check => check.required && check.status !== "passed") ?? [], review_gap: reviewGap, ...(operationKind ? { registered_operations: operations.map(item => ({ id: item.id, action: item.action, operation_kind: item.operation_kind, definition_hash: item.definition_hash })) } : {}) };
+    const packageContract = {
+      objective: plannedStep.objective,
+      allowed_paths: plannedStep.allowed_paths,
+      artifact_keys: plannedStep.artifact_keys,
+      check_ids: plannedStep.check_ids,
+      ...(classification.work_type === "verification" ? { registered_checks: registeredCheckCatalog } : {}),
+      plan_hash: structuredHash(plan),
+      correction_cycle: cycle,
+      gate_failures: priorGate?.checks?.filter(check => check.required && check.status !== "passed") ?? [],
+      review_gap: reviewGap,
+      ...(operationKind ? { registered_operations: operations.map(item => ({ id: item.id, action: item.action, operation_kind: item.operation_kind, definition_hash: item.definition_hash })) } : {})
+    };
     // A planner commonly shortens the worker objective and leaves exact paths, identifiers or line
     // ranges in the original request and its evidence inputs. Source selection needs that complete
     // search intent even though the worker's authority remains the narrower package contract.

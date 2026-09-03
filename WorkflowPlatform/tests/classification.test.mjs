@@ -568,6 +568,8 @@ test("registered contract covers decision, documentation, implementation, verifi
     decision({ work_type: "continuation", artifact_type: "none", discipline: "general", planning_required: false, reply_mode: "conversation" })
   ];
   assert.deepEqual(cases.map(item => validateClassificationDecision(item, catalog).work_type), ["decision", "documentation", "implementation", "verification", "asset", "continuation"]);
+  const verificationWithoutNamedArtifact = validateClassificationDecision(decision({ work_type: "verification", artifact_type: "none", discipline: "testing" }), catalog);
+  assert.equal(verificationWithoutNamedArtifact.artifact_type, "test_report");
   const detailedDocumentContinuation = decision({ work_type: "continuation", artifact_type: "document", discipline: "documentation", document_required: true });
   assert.equal(validateClassificationDecision(detailedDocumentContinuation, catalog).work_type, "documentation");
   assert.throws(() => validateClassificationDecision(decision({ work_type: "continuation", artifact_type: "code" }), catalog), /continuation contract/);
@@ -752,7 +754,7 @@ test("the classifier prompt keeps run state below an invariant head long enough 
   // with room to spare on the narrowest project in the registry.
   assert.equal(first.indexOf("PROJECT_SNAPSHOT") > 3800, true, `invariant head is only ${first.indexOf("PROJECT_SNAPSHOT")} bytes`);
   assert.equal(shared >= first.indexOf("PROJECT_SNAPSHOT"), true, `two runs share only ${shared} bytes`);
-  assert.match(first, /WORKFLOW CLASSIFICATION CONTRACT v7/);
+  assert.match(first, /WORKFLOW CLASSIFICATION CONTRACT v8/);
   assert.match(first, /Never ask the user to paste source files/);
   assert.match(first, /inspect registered project code and write the findings/);
   assert.match(first, /explicitly says not to read files, source or the repository is ordinary conversation/);
