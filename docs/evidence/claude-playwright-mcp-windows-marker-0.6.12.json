@@ -1,0 +1,98 @@
+{
+  "schema_version": 2,
+  "finding": "The MCP smoke independently observes the browser request sequence and verifies that the retained PNG contains a random sentinel marker. A deliberately adversarial writable profile can still emulate the protocol and forge both signals, so this is bounded capability evidence rather than a deterministic project gate or owner acceptance.",
+  "probe": "registered_mcp_browser",
+  "registration_scope": "isolated_probe_policy",
+  "supersedes": "claude-playwright-mcp-windows-0.6.12.json",
+  "status": "browser_confirmed",
+  "provider": "claude",
+  "profile": "zodchi-playwright-smoke",
+  "browser_mcp_server": "playwright",
+  "receipt_id": "2026-09-03T04-48-52.794Z-claude-ad591acb-af9a-43eb-9caf-16623c5cb382",
+  "gateway_exit_code": 0,
+  "provider_status": "completed",
+  "expected": {
+    "title": "Zodchi 10382352-59dd-4655-b62a-18fdf014fd81",
+    "body": "Body ad1c4dca-b49b-4e79-be93-31c5b5f53683"
+  },
+  "reported": {
+    "status": "observed",
+    "title": "Zodchi 10382352-59dd-4655-b62a-18fdf014fd81",
+    "body": "Body ad1c4dca-b49b-4e79-be93-31c5b5f53683",
+    "screenshot": true,
+    "evidence": "Registered playwright MCP server only; no shell, subprocess, HTTP client, browser plugin, or other agent used. Steps: mcp__playwright__browser_resize -> page.setViewportSize({width:1280,height:800}) (>= 800x600, confirmed in-page as window.innerWidth/innerHeight = 1280x800); mcp__playwright__browser_navigate -> http://127.0.0.1:64642/zodchi-browser-ac16c821-8022-4201-b878-792f610b0468, reported Page URL identical to target and Page Title \"Zodchi 10382352-59dd-4655-b62a-18fdf014fd81\"; mcp__playwright__browser_evaluate returned document.readyState=\"complete\" (page script executed), document.title=\"Zodchi 10382352-59dd-4655-b62a-18fdf014fd81\", document.body.innerText=\"Body ad1c4dca-b49b-4e79-be93-31c5b5f53683\". mcp__playwright__browser_take_screenshot (type=png, scale=css, viewport capture) was given the absolute filename <project>\\docs\\evidence\\claude-playwright-mcp-windows-marker-0.6.12.png; the server reported the saved artifact as docs\\evidence\\claude-playwright-mcp-windows-marker-0.6.12.png relative to project root <project> (server-side call: page.screenshot({path:'docs\\\\evidence\\\\claude-playwright-mcp-windows-marker-0.6.12.png', scale:'css', type:'png'})). This read-only profile has no file-read tool available, so on-disk existence of the PNG was not independently verified beyond the MCP server's own save confirmation. Console: 1 error only — 404 for http://127.0.0.1:64642/favicon.ico, unrelated to the marker content. Note: the title UUID (10382352-...) and body UUID (ad1c4dca-...) both differ from the URL path UUID (ac16c821-...), as rendered."
+  },
+  "capability_evidence": {
+    "browser_automation": {
+      "status": "available",
+      "enforcement": "technical",
+      "source": "sentinel_request_sequence"
+    },
+    "screen_capture": {
+      "status": "available",
+      "enforcement": "technical",
+      "source": "retained_sentinel_png_artifact",
+      "artifact": {
+        "path": "docs/evidence/claude-playwright-mcp-windows-marker-0.6.12.png",
+        "bytes": 17870,
+        "width": 1280,
+        "height": 800,
+        "sha256": "9d9d84fdcbb965dbbc5ce2ccc8489d79a4d86c8fc68b5ef9ea77a9b26f5364eb",
+        "marker_sha256": "1c5983651b9937d916ea4304b3bb988308884dd1c9955bc13e40b1f8c9580456",
+        "marker_scale": 1
+      }
+    }
+  },
+  "sentinel_evidence": {
+    "confirmed": true,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0",
+    "requests": [
+      {
+        "method": "GET",
+        "url": "/zodchi-browser-ac16c821-8022-4201-b878-792f610b0468",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0",
+        "sec_fetch_mode": "navigate",
+        "sec_fetch_dest": "document",
+        "referer": null
+      },
+      {
+        "method": "GET",
+        "url": "/zodchi-browser-ac16c821-8022-4201-b878-792f610b0468/pixel-3bc10791-d632-4b8c-8407-60b99fff2cee.png",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0",
+        "sec_fetch_mode": "no-cors",
+        "sec_fetch_dest": "image",
+        "referer": "http://127.0.0.1:64642/zodchi-browser-ac16c821-8022-4201-b878-792f610b0468"
+      },
+      {
+        "method": "GET",
+        "url": "/zodchi-browser-ac16c821-8022-4201-b878-792f610b0468/runtime-3bc10791-d632-4b8c-8407-60b99fff2cee.js",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0",
+        "sec_fetch_mode": "no-cors",
+        "sec_fetch_dest": "script",
+        "referer": "http://127.0.0.1:64642/zodchi-browser-ac16c821-8022-4201-b878-792f610b0468"
+      },
+      {
+        "method": "GET",
+        "url": "/zodchi-browser-ac16c821-8022-4201-b878-792f610b0468/executed-3bc10791-d632-4b8c-8407-60b99fff2cee",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0",
+        "sec_fetch_mode": "cors",
+        "sec_fetch_dest": "empty",
+        "referer": "http://127.0.0.1:64642/zodchi-browser-ac16c821-8022-4201-b878-792f610b0468"
+      },
+      {
+        "method": "GET",
+        "url": "/favicon.ico",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0",
+        "sec_fetch_mode": "no-cors",
+        "sec_fetch_dest": "image",
+        "referer": "http://127.0.0.1:64642/zodchi-browser-ac16c821-8022-4201-b878-792f610b0468"
+      }
+    ]
+  },
+  "carried_mcp_servers": [
+    "playwright"
+  ],
+  "provider_error": "",
+  "database_retained": true,
+  "temporary_database": "<probe-root>/gateway.sqlite"
+}
