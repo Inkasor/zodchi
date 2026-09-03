@@ -9,6 +9,7 @@ import { applyWorkflowImport, parseWorkflowPackage, proposeWorkflowImport, seria
 import { inspectWorkflowBundle, parseWorkflowBundle } from "../src/workflow-bundle.mjs";
 import { loadPackageDefinitions } from "../packages/definitions.mjs";
 import { companyWebPackage, role } from "../packages/builders.mjs";
+import { canonicalTool } from "../../AgentGateway/src/tool-usage.mjs";
 
 // Package definitions are an installation's own material and a configured source may be private, so
 // these tests assert the contract every package must satisfy rather than the content of any one
@@ -33,6 +34,16 @@ test("documentator contracts propose from a read-only profile while the platform
   assert.equal(documentator.contract.result_schema_key, "documentator.v1");
   assert.equal(documentator.contract.boundaries.writes, false);
   assert.equal(documentator.contract.allowed_tools.includes("apply_patch"), false);
+});
+
+test("controlled document bodies default to researcher access and classifier access stays explicit", () => {
+  const packageValue = companyWebPackage({
+    key: "sdk.document-authority", version: "1.0.0", purpose: "Document authority fixture.", checks: [],
+    documents: [{ key: "authority", path: "docs/authority.md", type: "reference", authority: "owner" }]
+  });
+  const documentValue = packageValue.documents[0];
+  assert.equal(documentValue.bindings.some(item => item.role_key === "researcher" && item.read === true), true);
+  assert.equal(documentValue.bindings.some(item => item.role_key === "classifier"), false);
 });
 
 test("release and access operators are read-only proposal roles before exact owner approval", () => {
@@ -83,6 +94,11 @@ test("at least one package is configured and every one is generated and free of 
     assert.equal(packageValue.workflows.every(workflow => workflow.steps.length && workflow.transitions.length === workflow.steps.length - 1), true);
     assert.equal(packageValue.documents.every(item => !path.isAbsolute(item.path)), true);
   }
+});
+
+test("every portable role tool has a matching Gateway canonicalization", () => {
+  const contractTools = [...new Set(PACKAGE_DEFINITIONS.flatMap(packageValue => packageValue.roles.flatMap(roleValue => roleValue.contract.allowed_tools)))];
+  for (const tool of contractTools) assert.equal(canonicalTool(tool), tool, `Gateway canonicalization is missing for contract tool ${tool}`);
 });
 
 test("public catalog versions and files are generated from the package definitions", () => {
@@ -409,7 +425,7 @@ test("one project reuses versioned role contracts composed by multiple packages"
   }
   const verified = openDb(dbFile);
   assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflow_package_releases WHERE project_id='combined' AND status='active'").get().count, 2);
-  assert.equal(verified.prepare("SELECT COUNT(*) count FROM role_contracts WHERE project_id='combined' AND role_id='reviewer' AND version='3.4.0'").get().count, 1);
+  assert.equal(verified.prepare("SELECT COUNT(*) count FROM role_contracts WHERE project_id='combined' AND role_id='reviewer' AND version='3.4.1'").get().count, 1);
   assert.equal(verified.prepare(`SELECT COUNT(DISTINCT m.local_id) count FROM package_import_mappings m JOIN workflow_import_proposals p ON p.id=m.proposal_id
     WHERE p.target_project_id='combined' AND m.entity_type='role_contract' AND m.semantic_key='reviewer'`).get().count, 1);
   verified.close();

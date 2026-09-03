@@ -6,6 +6,17 @@ import { documentLint } from "./lint.mjs";
 import { projectRoots, primaryRoot, findRoot, resolveInRoot, displayPath } from "./project-roots.mjs";
 import { sourceInventory, inventorySummary, sourceScope } from "./source-context.mjs";
 
+// These caps only bound database reads before the role contract's byte budget is applied. They are
+// deliberately generous safety ceilings, not estimates of how much context a model needs.
+export const CONTEXT_QUERY_LIMITS = Object.freeze({
+  project_active_decisions: 50,
+  project_artifacts: 200,
+  classifier_accepted_decisions: 50,
+  classifier_run_artifacts: 50,
+  classifier_run_checks: 50,
+  classifier_run_evidence: 20
+});
+
 const values = (text, pattern) => [...text.matchAll(pattern)].map(match => match[1]).filter(Boolean);
 
 function summarize(file, text) {
@@ -95,10 +106,10 @@ export function readProjectContext(projectSelector, db, _workingDocuments = [], 
   // Every run records a decision, so an unbounded history grows into every role prompt until nothing
   // fits. Artifacts are already bounded the same way; the most recent decisions are the ones a role can
   // still act on, and they are returned oldest-first so the reading order stays chronological.
-  const decisions = db.prepare("SELECT id,kind,outcome,source,structured_json,created_at FROM decisions WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND active=1 ORDER BY created_at DESC,id DESC LIMIT 50").all(project.id)
+  const decisions = db.prepare("SELECT id,kind,outcome,source,structured_json,created_at FROM decisions WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND active=1 ORDER BY created_at DESC,id DESC LIMIT ?").all(project.id, CONTEXT_QUERY_LIMITS.project_active_decisions)
     .map(row => ({ ...row, structured: parseJson(row.structured_json, null), structured_json: undefined })).reverse();
   const pending = db.prepare("SELECT id,kind,question,status,created_at FROM approvals WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND status='pending' ORDER BY created_at,id").all(project.id);
-  const artifacts = db.prepare("SELECT id,kind,uri,content_hash,status,provenance_json FROM artifacts WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND status NOT IN ('rejected','superseded') ORDER BY created_at,id LIMIT 200").all(project.id)
+  const artifacts = db.prepare("SELECT id,kind,uri,content_hash,status,provenance_json FROM artifacts WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND status NOT IN ('rejected','superseded') ORDER BY created_at,id LIMIT ?").all(project.id, CONTEXT_QUERY_LIMITS.project_artifacts)
     .map(row => ({ ...row, provenance: parseJson(row.provenance_json, null), provenance_json: undefined }));
   return {
     project: { id: project.id, name: project.name, root_path: project.root_path }, workflows, goals, stages, checks, roles, profiles,
@@ -148,7 +159,7 @@ export function classifierStateContext(db, projectId, contextBudgetBytes, semant
   // conversation_messages for audit and can be retrieved by exact run or interaction id.
   const scope = normalizeSemanticScope(semanticScope);
   const sessionBound = scope.mode === "session";
-  const acceptedDecisions = db.prepare("SELECT id,kind,outcome,source,structured_json FROM decisions WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND active=1 AND outcome='APPROVE' ORDER BY created_at DESC,id DESC LIMIT 50").all(projectId)
+  const acceptedDecisions = db.prepare("SELECT id,kind,outcome,source,structured_json FROM decisions WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND active=1 AND outcome='APPROVE' ORDER BY created_at DESC,id DESC LIMIT ?").all(projectId, CONTEXT_QUERY_LIMITS.classifier_accepted_decisions)
     .map(row => ({ id: row.id, kind: row.kind, outcome: row.outcome, source: row.source, structured: parseJson(row.structured_json, null) })).reverse();
   const previous = sessionBound ? db.prepare(`SELECT wr.id AS run_id,wr.task_id,wr.workflow_id,wr.state AS run_state,wr.user_message,
       wr.resolved_objective,wr.response_language,t.state AS task_state,t.goal_id,t.stage_id,g.title AS goal_title,s.stage_key,s.title AS stage_title
@@ -163,9 +174,9 @@ export function classifierStateContext(db, projectId, contextBudgetBytes, semant
     strategic_binding: previous.goal_id ? { goal_id: previous.goal_id, goal_title: previous.goal_title, stage_id: previous.stage_id, stage_key: previous.stage_key, stage_title: previous.stage_title } : null,
     last_response: db.prepare("SELECT content FROM conversation_messages WHERE run_id=? AND role='assistant' ORDER BY created_at DESC,id DESC LIMIT 1").get(previous.run_id)?.content ?? null,
     open_interactions: db.prepare("SELECT id,kind,question,status FROM approvals WHERE task_id=? AND status='pending' ORDER BY created_at,id").all(previous.task_id),
-    artifacts: db.prepare("SELECT id,kind,uri,content_hash,status FROM artifacts WHERE run_id=? AND status NOT IN ('rejected','superseded') ORDER BY created_at DESC,id DESC LIMIT 50").all(previous.run_id).reverse(),
-    checks: db.prepare("SELECT id,kind,required,status FROM gates WHERE run_id=? ORDER BY rowid DESC LIMIT 50").all(previous.run_id).reverse().map(row => ({ ...row, required: Boolean(row.required) })),
-    evidence: db.prepare("SELECT id,kind,evidence_hash FROM run_evidence WHERE run_id=? ORDER BY created_at DESC,id DESC LIMIT 20").all(previous.run_id).reverse()
+    artifacts: db.prepare("SELECT id,kind,uri,content_hash,status FROM artifacts WHERE run_id=? AND status NOT IN ('rejected','superseded') ORDER BY created_at DESC,id DESC LIMIT ?").all(previous.run_id, CONTEXT_QUERY_LIMITS.classifier_run_artifacts).reverse(),
+    checks: db.prepare("SELECT id,kind,required,status FROM gates WHERE run_id=? ORDER BY rowid DESC LIMIT ?").all(previous.run_id, CONTEXT_QUERY_LIMITS.classifier_run_checks).reverse().map(row => ({ ...row, required: Boolean(row.required) })),
+    evidence: db.prepare("SELECT id,kind,evidence_hash FROM run_evidence WHERE run_id=? ORDER BY created_at DESC,id DESC LIMIT ?").all(previous.run_id, CONTEXT_QUERY_LIMITS.classifier_run_evidence).reverse()
   } : null;
   const result = { accepted_decisions: acceptedDecisions, current_session_state: currentSessionState, budget_bytes: contextBudgetBytes };
   const bytes = () => Buffer.byteLength(JSON.stringify(result));

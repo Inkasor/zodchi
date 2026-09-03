@@ -24,4 +24,5 @@ test("a transport without structured tool events remains unavailable instead of 
   assert.equal(cursorJson.status, "unavailable");
   const claude = observeToolUsage("claude", JSON.stringify({ type: "result", result: "done" }), { args: ["--output-format", "json"] });
   assert.equal(claude.status, "unavailable");
+  assert.equal(claude.source, "claude:single-json-tool-events-not-exposed");
 });
