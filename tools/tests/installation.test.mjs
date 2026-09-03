@@ -117,14 +117,21 @@ test("install and update diagnose role assignments whose profiles violate capabi
     db.prepare("INSERT INTO profiles VALUES('profile','codex','writable-documentator','documentator')").run();
     db.prepare("INSERT INTO role_profile_assignments VALUES('project','documentator','profile','mvp',1)").run();
     db.prepare("INSERT INTO role_contracts VALUES('project','documentator',?,'active')").run(JSON.stringify({}));
+    db.prepare("INSERT INTO profiles VALUES('research-profile','codex','read-only-researcher','researcher')").run();
+    db.prepare("INSERT INTO role_profile_assignments VALUES('project','researcher','research-profile','mvp',1)").run();
     db.close();
-    fs.writeFileSync(gatewayPolicy, JSON.stringify({ schemaVersion: 1, providers: { codex: { profiles: { "writable-documentator": { readOnly: false } } } } }));
+    fs.writeFileSync(gatewayPolicy, JSON.stringify({ schemaVersion: 1, providers: { codex: { profiles: {
+      "writable-documentator": { readOnly: false },
+      "read-only-researcher": { readOnly: true }
+    } } } }));
     const installed = installRelease({ source, destination, dataRoot, workflowDatabase: database, gatewayPolicy, skillRoots: roots, sessionHookFiles: hooks, healthCheck });
     assert.equal(installed.profile_capability_diagnostics.status, "checked");
     assert.equal(installed.profile_capability_diagnostics.admission_status, "incompatible");
     assert.equal(installed.profile_capability_diagnostics.conflicts.length, 1);
     assert.equal(installed.profile_capability_diagnostics.conflicts[0].code, "PROFILE_CAPABILITY_MISMATCH");
     assert.deepEqual(installed.profile_capability_diagnostics.conflicts[0].mismatches.map(item => [item.capability, item.expectation]), [["project_write", "forbidden"]]);
+    assert.equal(installed.profile_capability_diagnostics.checks.length + installed.profile_capability_diagnostics.conflicts.length, 2);
+    assert.equal(installed.profile_capability_diagnostics.checks.some(item => item.role_id === "researcher" && item.profile === "read-only-researcher"), true);
 
     const updatedDb = new DatabaseSync(database);
     updatedDb.prepare("UPDATE role_profile_assignments SET enabled=0").run();
@@ -140,8 +147,9 @@ test("install and update diagnose role assignments whose profiles violate capabi
     assert.equal(updated.profile_capability_diagnostics.status, "checked");
     assert.equal(updated.profile_capability_diagnostics.admission_status, "accepted_declarative");
     assert.equal(updated.profile_capability_diagnostics.conflicts.length, 0);
-    assert.equal(updated.profile_capability_diagnostics.checks[0].status, "accepted_declarative");
-    assert.equal(updated.profile_capability_diagnostics.checks[0].accepted_declarative[0].reason, "Owner accepted the declarative reviewer boundary.");
+    const reviewerCheck = updated.profile_capability_diagnostics.checks.find(item => item.role_id === "evidence_reviewer");
+    assert.equal(reviewerCheck.status, "accepted_declarative");
+    assert.equal(reviewerCheck.accepted_declarative[0].reason, "Owner accepted the declarative reviewer boundary.");
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
