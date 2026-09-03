@@ -16,6 +16,7 @@ import { WORKTREE_ALIAS, aliasDeclarations, registeredResources as registeredPro
 import { consumeCorrectionCycle, documentationOutcome, loadOperationalPolicy, loadQualityContract, operationalLevel, reviewerRequirement } from "./quality-contracts.mjs";
 import { executorCapabilityRequirements } from "./executor-capabilities.mjs";
 import { reconcileRoleToolUsage } from "./tool-usage.mjs";
+import { strategicRunContext } from "./strategic-state.mjs";
 
 function runOperationalPolicy(runtime, runId, projectId, workflowId, level) {
   const legacy = loadOperationalPolicy(runtime.db, projectId, workflowId, level);
@@ -572,6 +573,7 @@ async function controlledGatewayReceipt(runtime, queue, runId, invocation) {
 }
 
 async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, packageContract, context, schemaKey, parseOptions, gatewayCall, activeInvocations = null }) {
+  packageContract = { ...(packageContract ?? {}), strategic_context: strategicRunContext(runtime.db, runId) };
   const contract = loadRoleContract(runtime.db, runtime.get(runId).project_id, roleId, level);
   const qualityContract = loadQualityContract(runtime.db, level);
   if (contract.result_schema_key !== schemaKey) throw new Error(`ROLE_SCHEMA_NOT_ALLOWED: ${roleId}:${schemaKey}`);

@@ -84,8 +84,11 @@ function eventReferences(db, entityType, entityId) {
   if (entityType === "task") return { taskId: entityId, runId: null, stepId: null, attemptId: null };
   if (entityType === "workflow_run") { const row = db.prepare("SELECT task_id FROM workflow_runs WHERE id=?").get(entityId); return { taskId: row?.task_id ?? null, runId: entityId, stepId: null, attemptId: null }; }
   if (entityType === "workflow_step") { const row = db.prepare("SELECT wr.task_id,ws.run_id FROM workflow_steps ws JOIN workflow_runs wr ON wr.id=ws.run_id WHERE ws.id=?").get(entityId); return { taskId: row?.task_id ?? null, runId: row?.run_id ?? null, stepId: entityId, attemptId: null }; }
-  const row = db.prepare("SELECT wr.task_id,ws.run_id,a.step_id FROM attempts a JOIN workflow_steps ws ON ws.id=a.step_id JOIN workflow_runs wr ON wr.id=ws.run_id WHERE a.id=?").get(entityId);
-  return { taskId: row?.task_id ?? null, runId: row?.run_id ?? null, stepId: row?.step_id ?? null, attemptId: entityId };
+  if (entityType === "attempt") {
+    const row = db.prepare("SELECT wr.task_id,ws.run_id,a.step_id FROM attempts a JOIN workflow_steps ws ON ws.id=a.step_id JOIN workflow_runs wr ON wr.id=ws.run_id WHERE a.id=?").get(entityId);
+    return { taskId: row?.task_id ?? null, runId: row?.run_id ?? null, stepId: row?.step_id ?? null, attemptId: entityId };
+  }
+  return { taskId: null, runId: null, stepId: null, attemptId: null };
 }
 
 export function appendEvent(db, { entityType, entityId, kind, fromState = null, toState = null, payload = {} }) {

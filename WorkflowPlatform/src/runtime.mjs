@@ -4,6 +4,7 @@ import { validateClassification } from "../contracts/schemas.mjs";
 import { appendEvent, transitionRunAndTask } from "./state-machine.mjs";
 import { CLARIFICATION_KINDS, settleInteraction } from "./interactions.mjs";
 import { normalizeResourceDeclaration } from "./resource-locks.mjs";
+import { bindTaskToCurrentStrategy } from "./strategic-state.mjs";
 
 // A malformed resource declaration is rejected where it is written, not where it is used: a step created
 // with an unknown kind would otherwise sit in the queue until a worker picked it up and only then say so.
@@ -112,6 +113,7 @@ export class Runtime {
       this.db.exec("COMMIT");
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
     transitionRunAndTask(this.db, runId, "classified", { reason: "classification decision stored" });
+    if (value.reply_mode !== "conversation") bindTaskToCurrentStrategy(this.db, taskId);
     this.settleAnsweredClarifications(runId, value.pending_interaction_ids ?? value.pending_interaction_id ?? null);
     return value;
   }
