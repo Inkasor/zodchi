@@ -3,6 +3,10 @@ import { structuredHash } from "./role-contracts.mjs";
 import { completionBlockers, appendEvent } from "./state-machine.mjs";
 import { strategicRunContext } from "./strategic-state.mjs";
 
+// This is a defensive database-read ceiling before role-specific projection compaction. The task-state
+// hash covers every retained current artifact; callers must use addressed lookup for older audit data.
+export const TASK_STATE_QUERY_LIMITS = Object.freeze({ active_artifacts: 200, run_checks: 200 });
+
 function parseJson(value, fallback) {
   try { return value === null || value === undefined ? fallback : JSON.parse(value); } catch { return fallback; }
 }
@@ -55,9 +59,9 @@ export function taskStateProjection(db, runId) {
     WHERE task_id=? AND status='pending' ORDER BY created_at,id`).all(run.task_id)
     .map(row => ({ id: row.id, kind: row.kind, question: row.question, status: row.status, detail: parseJson(row.detail_json, null), affected_steps: parseJson(row.affected_steps_json, []), binding_hash: row.binding_hash }));
   const artifacts = db.prepare(`SELECT id,step_id,kind,uri,content_hash,status,provenance_json FROM artifacts
-    WHERE task_id=? AND status NOT IN ('rejected','superseded') ORDER BY created_at,id LIMIT 200`).all(run.task_id)
+    WHERE task_id=? AND status NOT IN ('rejected','superseded') ORDER BY created_at,id LIMIT ?`).all(run.task_id, TASK_STATE_QUERY_LIMITS.active_artifacts)
     .map(row => ({ id: row.id, step_id: row.step_id, kind: row.kind, uri: row.uri, content_hash: row.content_hash, status: row.status, provenance: parseJson(row.provenance_json, null) }));
-  const checks = db.prepare("SELECT id,step_id,kind,required,status,details_json FROM gates WHERE run_id=? ORDER BY rowid,id LIMIT 200").all(runId)
+  const checks = db.prepare("SELECT id,step_id,kind,required,status,details_json FROM gates WHERE run_id=? ORDER BY rowid,id LIMIT ?").all(runId, TASK_STATE_QUERY_LIMITS.run_checks)
     .map(row => ({ id: row.id, step_id: row.step_id, kind: row.kind, required: Boolean(row.required), status: row.status, details_hash: structuredHash(parseJson(row.details_json, {})) }));
   const evidenceRows = db.prepare(`SELECT id,step_id,kind,evidence_hash FROM run_evidence
     WHERE run_id=? AND kind NOT IN ('role_prompt_metrics','role_prompt_overflow','reflection_checkpoint') ORDER BY created_at,id`).all(runId);

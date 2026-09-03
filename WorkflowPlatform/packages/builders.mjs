@@ -3,7 +3,7 @@ import { structuredHash } from "../src/role-contracts.mjs";
 import { portableCapabilitiesForContract } from "../src/executor-capabilities.mjs";
 import * as packageSdk from "./sdk.mjs";
 
-const PACKAGE_VERSION = "3.4.0";
+const PACKAGE_VERSION = "3.4.1";
 const REVIEW_CONTEXT_BYTES = 256 * 1024;
 
 const workTypeCatalog = {
@@ -126,7 +126,10 @@ function finalize({ key, purpose, roles, workflows, routes, checks, operationalL
   roles = withDirectRuntimeRoles(roles, routes);
   documents = documents.map(item => ({
     ...item,
-    bindings: [...item.bindings, ...["classifier", "researcher"].filter(roleKey => !item.bindings.some(value => value.role_key === roleKey)).map(roleKey => binding(roleKey))]
+    // Research needs the contents of every owner-registered controlled document. Classification receives
+    // document metadata through compactProjectSnapshot, not document bodies; a package that truly needs a
+    // routing document may still bind classifier explicitly in item.bindings.
+    bindings: [...item.bindings, ...["researcher"].filter(roleKey => !item.bindings.some(value => value.role_key === roleKey)).map(roleKey => binding(roleKey))]
   }));
   roles = roles.map(item => ({ ...item, contract: { ...item.contract, allowed_profile_keys: [`${key}.${item.key}.mvp`] } }));
   const workTypes = [...new Set([...roles.flatMap(item => item.contract.allowed_work_types), ...routes.map(item => item.work_type_key)])];
@@ -204,7 +207,7 @@ function companyWebPackage(spec) {
   const documents = spec.documents.map(item => {
     const readOnlyRoot = (spec.roots ?? []).some(root => root.key === item.root && root.access !== "write");
     const writes = value => value.key === "documentator" && item.type !== "reference" && !readOnlyRoot;
-    return document(item.key, item.path, item.type, item.authority, roles.map(value => binding(value.key, writes(value), writes(value) ? "accepted project record" : "registered project context", writes(value) ? 20 : 0)), item.root ?? "primary");
+    return document(item.key, item.path, item.type, item.authority, roles.filter(value => value.key !== "classifier").map(value => binding(value.key, writes(value), writes(value) ? "accepted project record" : "registered project context", writes(value) ? 20 : 0)), item.root ?? "primary");
   });
   const requiredMvpChecks = [...new Set([...codeChecks, ...dataChecks, ...contentChecks])];
   return finalize({
@@ -364,7 +367,7 @@ function composedPackage(core, ...components) {
     }
     scenarios.push(scenario(`${item.key}_route`, { work_type: (item.options.workTypes ?? moduleWorkTypes[item.key])[0] }, { route: workflows.at(-1).key, mechanics: "executable" }));
   }
-  const roleBindings = roles.map(item => binding(item.key, item.key === "editor", item.key === "editor" ? "accepted project document" : "registered project context", item.key === "editor" ? 20 : 0));
+  const roleBindings = roles.filter(item => item.key !== "classifier").map(item => binding(item.key, item.key === "editor", item.key === "editor" ? "accepted project document" : "registered project context", item.key === "editor" ? 20 : 0));
   // A package defines executable capability, not the documents a person must keep. Project onboarding
   // may suggest useful existing files, but only an explicit owner registration puts one under lint and
   // role read/write control. This keeps a package portable across projects with different documentation.

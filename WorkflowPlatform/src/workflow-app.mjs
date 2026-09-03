@@ -77,7 +77,16 @@ function extractModelText(text) {
   return String(text ?? "").trim();
 }
 
-function boundedDocuments(discovery, maxBytes = 32_000) {
+// The direct-research envelope is 64 KiB by default. Reserve 12 KiB for controlled documents,
+// 8 KiB for the path inventory and 32 KiB for selected source excerpts, leaving the rest for the
+// objective, contract, schema and result instructions. These are packet partitions, not model limits.
+const RESEARCH_CONTEXT_BUDGETS = Object.freeze({ documents_bytes: 12_000, inventory_bytes: 8_000, source_bytes: 32_000 });
+// The legacy prepare-only planner receives document text in one field; cap that field at half of the
+// standard 64 KiB role envelope so the plan, constraints and output contract retain equal room.
+const PLANNER_DOCUMENT_CONTEXT_BYTES = 32 * 1024;
+
+function boundedDocuments(discovery, maxBytes) {
+  if (!Number.isInteger(maxBytes) || maxBytes < 1) throw new Error("RESEARCH_DOCUMENT_BUDGET_REQUIRED");
   const result = [];
   let used = 0;
   for (const document of discovery.documents) {
@@ -90,7 +99,8 @@ function boundedDocuments(discovery, maxBytes = 32_000) {
   return result;
 }
 
-function boundedResearchInventory(discovery, maxBytes = 24_000) {
+function boundedResearchInventory(discovery, maxBytes) {
+  if (!Number.isInteger(maxBytes) || maxBytes < 1) throw new Error("RESEARCH_INVENTORY_BUDGET_REQUIRED");
   const roots = (discovery.roots ?? []).map(root => ({ key: root.key, path: root.path, access: "read", primary: root.primary }));
   const files = [];
   let used = Buffer.byteLength(JSON.stringify(roots));
@@ -112,7 +122,7 @@ const SOURCE_RESEARCH_DISCIPLINES = new Set([
 ]);
 function requiresSourceEvidence(classification) { return SOURCE_RESEARCH_DISCIPLINES.has(classification?.discipline); }
 
-function researchSourceContext(discovery, objective, { sourceBytes = 32_000, maxFiles = RESEARCH_SOURCE_RANKING.selected_files, sourceRequired = false } = {}) {
+function researchSourceContext(discovery, objective, { sourceBytes = RESEARCH_CONTEXT_BUDGETS.source_bytes, maxFiles = RESEARCH_SOURCE_RANKING.selected_files, sourceRequired = false } = {}) {
   const scope = sourceScope(discovery.source_scope);
   const ranking = researchSourceRankingOptions(maxFiles);
   const expanded = expandTerms(discovery.roots ?? [], scope, objective, ranking.expansion);
@@ -155,14 +165,14 @@ function researchSourceContext(discovery, objective, { sourceBytes = 32_000, max
 }
 
 function researchContext(discovery, objective, classification) {
-  const documents = boundedDocuments(discovery, 12_000);
+  const documents = boundedDocuments(discovery, RESEARCH_CONTEXT_BUDGETS.documents_bytes);
   const sourceRequired = requiresSourceEvidence(classification);
   const sources = researchSourceContext(discovery, objective, { sourceRequired });
   const readableDocuments = new Set((discovery.documents ?? []).filter(document => document.exists && document.text).map(document => document.path));
   const documentPaths = documents.filter(document => readableDocuments.has(document.path) && document.text).map(document => document.path);
   return {
     documents,
-    inventory: boundedResearchInventory(discovery, 8_000),
+    inventory: boundedResearchInventory(discovery, RESEARCH_CONTEXT_BUDGETS.inventory_bytes),
     sources,
     document_paths: documentPaths,
     source_paths: sources.supplied_paths,
@@ -833,7 +843,7 @@ export async function processMessage({
   runtime.plan(runId, plan);
   const selected = selectProjectContext(discovery, classification, [], runtime.db, run.project_id, "planner");
   const plannerFile = path.join(taskDirectory, "planner-task.md");
-  fs.writeFileSync(plannerFile, buildPrompt({ role: "planner", stage: "planning", intent: resolvedObjective, classification, quality: classification.quality_mode, plan, document: JSON.stringify(boundedDocuments(selected)), constraints: ["use registered context only", "do not edit files", "return a bounded structured package"], format: "JSON plan contract", responseLanguage }), "utf8");
+  fs.writeFileSync(plannerFile, buildPrompt({ role: "planner", stage: "planning", intent: resolvedObjective, classification, quality: classification.quality_mode, plan, document: JSON.stringify(boundedDocuments(selected, PLANNER_DOCUMENT_CONTEXT_BYTES)), constraints: ["use registered context only", "do not edit files", "return a bounded structured package"], format: "JSON plan contract", responseLanguage }), "utf8");
   const response = saveAssistant([profileLine(runProfile, responseLanguage), formatClassification({ summary: classification.reason, quality: classification.quality_mode, nextStep: responseLanguage === "ru" ? "подготовить проверяемый план выполнения" : "prepare a verifiable execution plan", language: responseLanguage })].filter(Boolean).join("\n\n"));
   return finish({ route: "work", classification, run_profile: runProfile, plan, response, gateway: { mode: execute ? "planned" : "dry-run", steps: [
     { role: "planner", profile: definition.roles?.planner?.profile ?? null, task_file: plannerFile },

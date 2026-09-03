@@ -393,6 +393,10 @@ export function compactPriorWorkerResults(results, maxBytes = 16_000) {
   return { items, retained_results: items.length, total_results: results?.length ?? 0, truncated: items.length < (results?.length ?? 0) };
 }
 
+// The default documentator envelope is 64 KiB. Prior worker summaries may consume at most 24 KiB,
+// reserving 40 KiB for the role contract, task state, registered documents, gate and output schema.
+const DOCUMENTATOR_PRIOR_EVIDENCE_BYTES = 24 * 1024;
+
 export function priorWorkerResultsForStep(results, stepKey, correctionReview = null) {
   if (!correctionReview) return results ?? [];
   // A correction already carries the review gap. Repeating every earlier worker narrative starves the
@@ -1725,7 +1729,7 @@ async function documentAndComplete({ runtime, queue, runId, projectId, projectRo
       semantic_format: "markdown+xml_semantic",
       plan_hash: structuredHash(plan), reviewer_decision: reviewerResult?.decision ?? "NOT_REQUIRED", quality_outcome: qualityOutcome,
       completion_criteria: plan.completion_criteria,
-      document_evidence: compactPriorWorkerResults(workerResults, 24_000),
+      document_evidence: compactPriorWorkerResults(workerResults, DOCUMENTATOR_PRIOR_EVIDENCE_BYTES),
       run_telemetry: preDocumentationTelemetry(runtime.db, runId),
       gate: {
         status: gate.status,
