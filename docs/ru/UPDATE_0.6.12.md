@@ -51,7 +51,7 @@
 
 Установщик сохраняет предыдущий заменяемый выпуск для отката. После обновления `profile_capability_diagnostics` должен иметь `status: checked`, `admission_status: accepted_declarative`, 0 конфликтов и явно показывать все принятые декларативные границы; это не то же самое, что безусловная техническая совместимость.
 
-Для проверенной установки активированы:
+До финального schema-v3 обновления в проверенной установке были активированы:
 
 | Проект | Пакет | Версия | Prompt builder |
 | --- | --- | ---: | ---: |
@@ -59,7 +59,7 @@
 | `shared-lore` | `shared-lore.canon` | 2.9.1 | 3.2.0 |
 | `shared-map-engine` | `shared-map-engine.core` | 2.5.1 | 3.2.0 |
 
-Это состояние живой установки до финального обновления schema v3. Перед следующим импортом все три пользовательских definitions нужно собрать prompt builder 3.4.1, повысить package SemVer из-за изменившегося manifest и показать владельцу новый proposal. Пакет schema v1/v2 кандидат отклоняет с `WORKFLOW_PACKAGE_SCHEMA_MIGRATION_REQUIRED`; старую миграцию 004 с историческим default переписывать нельзя, колонку удаляет новая миграция 037.
+Это исходное состояние живой установки для описанного обслуживания. Все три пользовательских definitions нужно собрать prompt builder 3.4.1, повысить package SemVer из-за изменившегося manifest и показать владельцу новый proposal. После успешного импорта ожидаются версии `zodchi.product-development` 2.9.2, `shared-lore.canon` 2.9.2 и `shared-map-engine.core` 2.5.2. Пакет schema v1/v2 кандидат отклоняет с `WORKFLOW_PACKAGE_SCHEMA_MIGRATION_REQUIRED`; старую миграцию 004 с историческим default переписывать нельзя, колонку удаляет новая миграция 037.
 
 Итог profile audit: Zodchi — 60 совместимых назначений, 8 `accepted_declarative`, 0 конфликтов; Shared Lore — 28/28; Shared Map Engine — 32/32.
 
