@@ -137,6 +137,15 @@ test("the canonical Web package is SDK-composed and requires anchored API-to-UI 
   assert.deepEqual(flow.transition, { adapter: "typescript-compiler", method: "assignment_continuity" });
 });
 
+test("the Web package keeps model-side skills and MCP empty because its checks are platform-owned", () => {
+  const web = PACKAGE_DEFINITIONS.find(item => item.key === "software.web-application");
+  for (const roleKey of ["researcher", "worker", "reviewer"]) {
+    const contract = web.roles.find(item => item.key === roleKey).contract;
+    assert.deepEqual(contract.allowed_skills, []);
+    assert.deepEqual(contract.allowed_mcp_servers, []);
+  }
+});
+
 test("an installation catalog is generated and checked from its named definitions", () => {
   const installation = temporaryRoot("workflow-installation-packages-");
   const definitionsFile = path.join(installation, "definitions.mjs");
@@ -425,7 +434,7 @@ test("one project reuses versioned role contracts composed by multiple packages"
   }
   const verified = openDb(dbFile);
   assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflow_package_releases WHERE project_id='combined' AND status='active'").get().count, 2);
-  assert.equal(verified.prepare("SELECT COUNT(*) count FROM role_contracts WHERE project_id='combined' AND role_id='reviewer' AND version='3.4.1'").get().count, 1);
+  assert.equal(verified.prepare("SELECT COUNT(*) count FROM role_contracts WHERE project_id='combined' AND role_id='reviewer' AND version='3.5.0'").get().count, 1);
   assert.equal(verified.prepare(`SELECT COUNT(DISTINCT m.local_id) count FROM package_import_mappings m JOIN workflow_import_proposals p ON p.id=m.proposal_id
     WHERE p.target_project_id='combined' AND m.entity_type='role_contract' AND m.semantic_key='reviewer'`).get().count, 1);
   verified.close();

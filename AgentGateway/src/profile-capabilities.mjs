@@ -4,6 +4,8 @@ const CAPABILITY_NAMES = Object.freeze([
   "file_search",
   "language_server",
   "process_execution",
+  "local_endpoint",
+  "external_mutation",
   "long_lived_process",
   "project_write",
   "network",
@@ -48,7 +50,7 @@ function providerCapabilities(provider, providerConfig, profileConfig, platform 
   const browserMcp = configuredBrowserMcp(provider, profileConfig);
 
   if (providerConfig.type === "openai-compatible" || provider === "openai-compatible" || provider === "openrouter") {
-    for (const name of ["project_read", "file_search", "language_server", "process_execution", "long_lived_process", "project_write", "browser_automation", "screen_capture", "mcp", "skills"]) result[name] = unavailable("gateway:api-context-only");
+    for (const name of ["project_read", "file_search", "language_server", "process_execution", "local_endpoint", "external_mutation", "long_lived_process", "project_write", "browser_automation", "screen_capture", "mcp", "skills"]) result[name] = unavailable("gateway:api-context-only");
     result.network = available("direct", "gateway:provider-api");
     return result;
   }
@@ -58,6 +60,11 @@ function providerCapabilities(provider, providerConfig, profileConfig, platform 
     result.process_execution = readOnly
       ? (platform === "win32" ? unavailable("codex:windows-read-only-process-policy") : unknown("codex:read-only-process-unverified"))
       : available("direct", "codex:sandbox-workspace-write");
+    const networkAllowed = profileConfig.allowNetwork === true;
+    result.local_endpoint = networkAllowed ? available("direct", "codex:sandbox-network-enabled") : unavailable("codex:sandbox-network-disabled");
+    result.external_mutation = networkAllowed || (profileConfig.allowedMcpServers ?? []).length
+      ? unknown("codex:external-mutation-tool-registry-required")
+      : unavailable("codex:no-network-or-mcp");
     result.project_read = readOnly
       ? (platform === "win32" ? unavailable("codex:windows-read-only-no-reader") : unknown("codex:read-only-reader-unverified"))
       : available("direct", "codex:process-access");
@@ -80,6 +87,10 @@ function providerCapabilities(provider, providerConfig, profileConfig, platform 
     result.project_read = read === "denied" ? unavailable("claude:tool-denylist") : read === "allowed" ? available("direct", "claude:tool-allowlist") : unknown("claude:read-tools-unbounded");
     result.file_search = result.project_read;
     result.process_execution = shell === "denied" ? unavailable("claude:tool-denylist") : shell === "allowed" ? available("direct", "claude:tool-allowlist") : unknown("claude:bash-unbounded");
+    result.local_endpoint = result.process_execution.status === "unavailable" && !(profileConfig.allowedMcpServers ?? []).length
+      ? unavailable("claude:no-shell-or-mcp") : unknown("claude:local-endpoint-unverified");
+    result.external_mutation = result.local_endpoint.status === "unavailable"
+      ? unavailable("claude:no-shell-or-mcp") : unknown("claude:external-mutation-tool-registry-required");
     result.long_lived_process = result.process_execution;
     result.browser_automation = browserMcp ? unknown(`claude:browser-mcp-configured-unverified:${browserMcp}`) : result.process_execution.status === "unavailable" ? result.process_execution : unknown("claude:browser-tooling-unverified");
     result.screen_capture = browserMcp ? unknown(`claude:browser-mcp-configured-unverified:${browserMcp}`) : result.process_execution.status === "unavailable" ? result.process_execution : unknown("claude:screen-capture-unverified");
@@ -88,7 +99,9 @@ function providerCapabilities(provider, providerConfig, profileConfig, platform 
     result.mcp = Array.isArray(profileConfig.allowedMcpServers)
       ? profileConfig.allowedMcpServers.length ? available("direct", "claude:strict-mcp-allowlist") : unavailable("claude:strict-mcp-allowlist")
       : unknown("claude:mcp-unverified");
-    result.skills = unknown("claude:skills-unverified");
+    // AgentGateway invokes Claude with --safe-mode. The 0.6.13 observation proves that project and
+    // lazily discovered nested skills are withheld; selective skill allowlisting remains unknown.
+    result.skills = unavailable("claude:safe-mode-customizations-disabled");
     return result;
   }
 
@@ -97,6 +110,10 @@ function providerCapabilities(provider, providerConfig, profileConfig, platform 
     result.file_search = available("direct", "opencode:permission-search");
     result.language_server = available("direct", "opencode:permission-lsp");
     result.process_execution = readOnly && profileConfig.allowShell !== true ? unavailable("opencode:permission-bash") : available("direct", "opencode:permission-bash");
+    result.local_endpoint = result.process_execution.status === "unavailable" && !(profileConfig.allowedMcpServers ?? []).length
+      ? unavailable("opencode:no-shell-or-mcp") : unknown("opencode:local-endpoint-unverified");
+    result.external_mutation = result.local_endpoint.status === "unavailable" && profileConfig.allowWeb !== true
+      ? unavailable("opencode:no-shell-web-or-mcp") : unknown("opencode:external-mutation-tool-registry-required");
     result.long_lived_process = result.process_execution;
     result.browser_automation = browserMcp ? unknown(`opencode:browser-mcp-configured-unverified:${browserMcp}`) : result.process_execution.status === "unavailable" ? result.process_execution : unknown("opencode:browser-tooling-unverified");
     result.screen_capture = browserMcp ? unknown(`opencode:browser-mcp-configured-unverified:${browserMcp}`) : result.process_execution.status === "unavailable" ? result.process_execution : unknown("opencode:screen-capture-unverified");
@@ -108,7 +125,7 @@ function providerCapabilities(provider, providerConfig, profileConfig, platform 
   }
 
   if (provider === "kimi") {
-    for (const name of ["project_read", "file_search", "process_execution", "long_lived_process", "project_write", "network", "browser_automation", "screen_capture", "mcp"]) result[name] = available("direct", "kimi:inherited-config", "declarative");
+    for (const name of ["project_read", "file_search", "process_execution", "local_endpoint", "external_mutation", "long_lived_process", "project_write", "network", "browser_automation", "screen_capture", "mcp"]) result[name] = available("direct", "kimi:inherited-config", "declarative");
     result.skills = unavailable("kimi:ephemeral-skills-withheld");
     return result;
   }
@@ -164,7 +181,8 @@ export function profileCapabilities(provider, providerConfig, profileConfig, opt
 export function normalizeCapabilityRequirements(value) {
   if (!value || Array.isArray(value) || typeof value !== "object") throw new Error("PROFILE_CAPABILITY_REQUIREMENTS_INVALID");
   const keys = Object.keys(value).sort();
-  if (JSON.stringify(keys) !== JSON.stringify(["forbidden", "required"])) throw new Error("PROFILE_CAPABILITY_REQUIREMENTS_INVALID");
+  const supported = new Set(["allowed_mcp_servers", "allowed_skills", "external_tools", "forbidden", "native_instruction_files", "required"]);
+  if (!keys.includes("required") || !keys.includes("forbidden") || keys.some(key => !supported.has(key))) throw new Error("PROFILE_CAPABILITY_REQUIREMENTS_INVALID");
   const normalize = (items, field) => {
     if (!Array.isArray(items) || items.some(item => typeof item !== "string" || !CAPABILITY_SET.has(item))) throw new Error(`PROFILE_CAPABILITY_REQUIREMENTS_INVALID: ${field}`);
     return [...new Set(items)].sort();
@@ -172,7 +190,14 @@ export function normalizeCapabilityRequirements(value) {
   const required = normalize(value.required, "required"), forbidden = normalize(value.forbidden, "forbidden");
   const overlap = required.find(name => forbidden.includes(name));
   if (overlap) throw new Error(`PROFILE_CAPABILITY_REQUIREMENTS_CONTRADICTORY: ${overlap}`);
-  return Object.freeze({ required: Object.freeze(required), forbidden: Object.freeze(forbidden) });
+  const names = field => {
+    const items = value[field] ?? [];
+    if (!Array.isArray(items) || items.some(item => typeof item !== "string" || !item.trim())) throw new Error(`PROFILE_CAPABILITY_REQUIREMENTS_INVALID: ${field}`);
+    return Object.freeze([...new Set(items.map(item => item.trim()))].sort());
+  };
+  const externalTools = value.external_tools ?? [];
+  if (!Array.isArray(externalTools) || externalTools.some(item => !item || typeof item !== "object" || Array.isArray(item) || typeof item.name !== "string")) throw new Error("PROFILE_CAPABILITY_REQUIREMENTS_INVALID: external_tools");
+  return Object.freeze({ required: Object.freeze(required), forbidden: Object.freeze(forbidden), allowed_skills: names("allowed_skills"), allowed_mcp_servers: names("allowed_mcp_servers"), native_instruction_files: names("native_instruction_files"), external_tools: Object.freeze(externalTools.map(item => Object.freeze({ ...item }))) });
 }
 
 export function inspectCapabilityRequirements(capabilities, requirements, { role = "worker", acceptedDeclarativeBoundaries = undefined } = {}) {

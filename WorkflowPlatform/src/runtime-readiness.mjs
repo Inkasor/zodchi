@@ -9,7 +9,7 @@ function roleAssignments(db, projectId, roleIds, operationalLevel = null) {
   if (!roleIds.length) return [];
   const placeholders = roleIds.map(() => "?").join(",");
   const levelClause = operationalLevel ? "AND a.operational_level=?" : "";
-  return db.prepare(`SELECT a.role_id,a.operational_level,p.id AS profile_id,p.provider,p.name AS profile_name,rc.id AS contract_id,rc.boundaries_json,rc.allowed_tools_json
+  return db.prepare(`SELECT a.role_id,a.operational_level,a.project_id,p.id AS profile_id,p.provider,p.name AS profile_name,rc.id AS contract_id,rc.boundaries_json,rc.allowed_tools_json,rc.allowed_skills_json,rc.allowed_mcp_servers_json,rc.native_instruction_files_json
     FROM role_profile_assignments a JOIN profiles p ON p.id=a.profile_id
     LEFT JOIN role_contracts rc ON rc.project_id=a.project_id AND rc.role_id=a.role_id AND rc.status='active'
     WHERE a.project_id=? AND a.enabled=1 AND a.role_id IN (${placeholders}) ${levelClause}
@@ -17,16 +17,28 @@ function roleAssignments(db, projectId, roleIds, operationalLevel = null) {
     .all(projectId, ...roleIds, ...(operationalLevel ? [operationalLevel] : []));
 }
 
-function requirement(assignment, direct = false) {
+function requirement(db, assignment, direct = false) {
   let boundaries = {};
   let allowedTools = [];
+  let allowedSkills = [], allowedMcpServers = [], nativeInstructionFiles = [];
   try { boundaries = JSON.parse(assignment.boundaries_json ?? "{}"); } catch { /* active contract validation owns malformed JSON */ }
   try { allowedTools = JSON.parse(assignment.allowed_tools_json ?? "[]"); } catch { /* active contract validation owns malformed JSON */ }
+  try { allowedSkills = JSON.parse(assignment.allowed_skills_json ?? "[]"); } catch { /* active contract validation owns malformed JSON */ }
+  try { allowedMcpServers = JSON.parse(assignment.allowed_mcp_servers_json ?? "[]"); } catch { /* active contract validation owns malformed JSON */ }
+  try { nativeInstructionFiles = JSON.parse(assignment.native_instruction_files_json ?? "[]"); } catch { /* active contract validation owns malformed JSON */ }
+  const externalTools = allowedMcpServers.map(name => db.prepare(`SELECT name,transport,endpoint,read_only_mode_json,arbitrary_execution,contains_model,self_liftable_boundary,doubles_as_provider,pinned_version
+    FROM external_tool_registry WHERE project_id=? AND name=? AND active=1`).get(assignment.project_id, name) ?? { name, missing: true }).map(row => ({
+      name: row.name, transport: row.transport, endpoint: row.endpoint,
+      read_only_mode: row.read_only_mode_json ? JSON.parse(row.read_only_mode_json) : null,
+      arbitrary_execution: Boolean(row.arbitrary_execution), contains_model: Boolean(row.contains_model),
+      self_liftable_boundary: Boolean(row.self_liftable_boundary), doubles_as_provider: Boolean(row.doubles_as_provider), pinned_version: row.pinned_version,
+      missing: row.missing === true, nested_model_allowed: boundaries.nested_model_calls === true
+    }));
   return {
     role: assignment.role_id,
     provider: assignment.provider,
     profile: assignment.profile_name,
-    capability_requirements: executorCapabilityRequirements({ boundaries, allowed_tools: allowedTools }, { direct }),
+    capability_requirements: executorCapabilityRequirements({ boundaries, allowed_tools: allowedTools, allowed_skills: allowedSkills, allowed_mcp_servers: allowedMcpServers, native_instruction_files: nativeInstructionFiles, external_tools: externalTools }, { direct }),
     operational_level: assignment.operational_level
   };
 }
@@ -73,7 +85,7 @@ export function projectRuntimeReadiness(db, projectId, { profileCheck = profileC
   }));
   const missing = DIRECT_RUNTIME_ROLES.filter(roleId => directRoles[roleId].status === "missing");
   const missingContracts = DIRECT_RUNTIME_ROLES.filter(roleId => directRoles[roleId].status === "missing_contract");
-  const requirements = DIRECT_RUNTIME_ROLES.map(roleId => assignments.find(item => item.role_id === roleId && item.contract_id)).filter(Boolean).map(item => requirement(item, true));
+  const requirements = DIRECT_RUNTIME_ROLES.map(roleId => assignments.find(item => item.role_id === roleId && item.contract_id)).filter(Boolean).map(item => requirement(db, item, true));
   const profileRequirements = inspectRequirements(profileCheck, requirements, [...missing, ...missingContracts], missing.length ? "direct_runtime_roles_missing" : "direct_runtime_role_contracts_missing");
   const context = db.prepare(`SELECT COUNT(DISTINCT d.id) AS registered_documents,
       COUNT(DISTINCT CASE WHEN rd.role_id='researcher' AND rd.read_access=1 THEN d.id END) AS researcher_documents
@@ -113,7 +125,7 @@ export function workflowRuntimeReadiness(db, projectId, workflowId, operationalL
   const assignments = roleAssignments(db, projectId, roleIds, operationalLevel);
   const missing = roleIds.filter(roleId => !assignments.some(item => item.role_id === roleId));
   const missingContracts = roleIds.filter(roleId => assignments.some(item => item.role_id === roleId) && !assignments.some(item => item.role_id === roleId && item.contract_id));
-  const requirements = assignments.filter(item => item.contract_id).map(item => requirement(item, DIRECT_RUNTIME_ROLES.includes(item.role_id)));
+  const requirements = assignments.filter(item => item.contract_id).map(item => requirement(db, item, DIRECT_RUNTIME_ROLES.includes(item.role_id)));
   const profileRequirements = inspectRequirements(profileCheck, requirements, [...missing, ...missingContracts], missing.length ? "workflow_role_assignments_missing" : "workflow_role_contracts_missing");
   const externalOperations = workflowExternalOperations(db, projectId, workflowId);
   return {

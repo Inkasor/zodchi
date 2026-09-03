@@ -5,7 +5,7 @@
 // Point `packageDefinitions` in the runtime configuration at your own file to replace it. That file
 // exports the same default function and receives the same builder module, so it needs no import path.
 export default function definePackages(b) {
-  const { accessManagement, activityOperations, backupRestore, checkBinding, capabilityCheck, composedPackage, contentProduction, coreLifecycle, dataChange, disabledCheck, documentationCapability, domainAdapter, experiment, externalRuntime, incidentCapability, ownerAcceptance, projectBootstrap, releaseCapability, securityChecks, securityReview, sourceChange } = b;
+  const { accessManagement, activityOperations, backupRestore, browserSentinelCheck, checkBinding, capabilityCheck, composedPackage, configureRoleInputs, contentProduction, coreLifecycle, dataChange, disabledCheck, documentationCapability, domainAdapter, experiment, externalRuntime, externalToolCheck, incidentCapability, ownerAcceptance, projectBootstrap, releaseCapability, securityChecks, securityReview, sourceChange, sqliteCheck } = b;
 
   const webChecks = [
     capabilityCheck("web_lint", "Web application lint", "node.package_manager", ["run", "lint"], [checkBinding("prototype", null), checkBinding("mvp", "code"), checkBinding("production", "release_package")], 900),
@@ -35,7 +35,7 @@ export default function definePackages(b) {
   };
   const software = composedPackage(
     coreLifecycle({
-      key: "software.web-application", version: "1.4.4", purpose: "Portable Web application workflow for bounded source and data changes, evidence-grounded API-to-UI review, incidents, access and approved release.", rolePreset: "full",
+      key: "software.web-application", version: "1.6.0", purpose: "Portable Web application workflow for bounded source and data changes, evidence-grounded API-to-UI review, incidents, access and approved release.", rolePreset: "full",
       domains: ["software"], disciplines: ["software"], checks: webChecks,
       documents: []
     }),
@@ -51,15 +51,15 @@ export default function definePackages(b) {
     documentationCapability({ checkKeys: ["web_lint"] }),
     securityReview({ checkKeys: ["web_gitleaks", "web_osv"] })
   );
+  // Every Web check above is platform-owned. Keep model-side skills and MCP explicit and empty instead
+  // of making an ordinary worker depend on a browser profile for unrelated implementation routes.
+  for (const roleKey of ["researcher", "worker", "reviewer"]) configureRoleInputs(software, roleKey, { skills: [], mcpServers: [] });
   const bslCheck = {
-    key: "bsl_language_server",
-    name: "BSL Language Server policy against the accepted diagnostic baseline",
-    runner: "requires_local_bsl_language_server",
-    kind: "disabled",
-    config: { reason: "requires_local_bsl_binding" },
-    timeout_seconds: 1800,
+    key: "bsl_language_server", name: "BSL Language Server policy against the accepted diagnostic baseline",
+    runner: "requires_local_bsl_language_server", kind: "disabled", config: { reason: "requires_local_bsl_binding" }, timeout_seconds: 1800,
     bindings: [checkBinding("mvp", "code"), checkBinding("production", "release_package")]
   };
+  const oneCSkillValidation = externalToolCheck("one_c_skill_validation", "Pinned cc-1c-skills structural validators", "cc-1c-skills-validate", { operation: "validate" }, [checkBinding("mvp", "code"), checkBinding("production", "release_package")], 1800);
   const oneCPrefix = "one_c_development";
   const oneCEvidenceFlow = {
     key: "bsl.source_to_ui",
@@ -80,15 +80,23 @@ export default function definePackages(b) {
   };
   const oneC = composedPackage(
     coreLifecycle({
-      key: "one-c.development", version: "1.4.4", purpose: "Support-grade 1C source diagnosis, change, integration, module build, functional verification and release with external evidence boundaries.", rolePreset: "reviewed",
-      domains: ["one-c"], disciplines: ["one-c-development"], checks: [bslCheck],
+      key: "one-c.development", version: "1.6.0", purpose: "Support-grade 1C source diagnosis, change, integration, module build, functional verification and release with external evidence boundaries.", rolePreset: "reviewed",
+      domains: ["one-c"], disciplines: ["one-c-development"], checks: [bslCheck, oneCSkillValidation],
       documents: []
     }),
     domainAdapter({ key: "bsl", domains: ["one-c"], disciplines: ["one-c-development"], materialClaims: true, evidenceFlows: [oneCEvidenceFlow] }),
-    sourceChange({ workTypes: ["one-c.change", "one-c.integration", "one-c.module-build"], checkKeys: ["bsl_language_server"] }),
+    sourceChange({ workTypes: ["one-c.change", "one-c.integration", "one-c.module-build"], checkKeys: ["bsl_language_server", "one_c_skill_validation"] }),
     externalRuntime({ workTypes: ["one-c.resume", "one-c.diagnosis", "one-c.functional-test"], checkKeys: ["bsl_language_server"] }),
     releaseCapability({ workTypes: ["one-c.release"], checkKeys: ["bsl_language_server"] })
   );
+  const oneCInfoSkills = ["cf-info", "form-info", "meta-info", "mxl-info", "role-info", "skd-info", "subsystem-info"];
+  // Keep this list to source-tree transforms. Skills that mutate an information base or a web
+  // publication need an external_mutation boundary and a registered external contour; this package
+  // deliberately does not smuggle those actions in through a broadly capable worker.
+  const oneCWorkerSkills = ["cf-edit", "cf-init", "cfe-borrow", "cfe-init", "cfe-patch-method", "epf-build", "epf-dump", "epf-init", "erf-build", "erf-dump", "erf-init", "form-add", "form-compile", "form-edit", "form-remove", "interface-edit", "meta-compile", "meta-edit", "meta-remove", "mxl-compile", "mxl-decompile", "role-compile", "skd-compile", "skd-edit", "subsystem-compile", "subsystem-edit"];
+  configureRoleInputs(oneC, "researcher", { skills: oneCInfoSkills });
+  configureRoleInputs(oneC, "worker", { skills: oneCWorkerSkills });
+  configureRoleInputs(oneC, "reviewer", { skills: [] });
 
   const unityChecks = [
     disabledCheck("unity_csharp_boundary", "Pinned C# semantic provider and attested Unity solution boundary", "requires_local_csharp_provider_binding", [checkBinding("mvp", "code"), checkBinding("production", "release_package")]),
@@ -114,7 +122,7 @@ export default function definePackages(b) {
   };
   const unity = composedPackage(
     coreLifecycle({
-      key: "game.unity", version: "0.5.4", purpose: "Executable preview for bounded Unity design research, C# change, build and technical QA with separate visual, gameplay and owner acceptance.", rolePreset: "reviewed",
+      key: "game.unity", version: "0.7.0", purpose: "Executable preview for bounded Unity design research, C# change, build and technical QA with separate visual, gameplay and owner acceptance.", rolePreset: "reviewed",
       domains: ["game-development"], disciplines: ["software", "game_design", "technical_art", "art_direction", "testing", "release"], checks: unityChecks,
       resources: [{ alias: "unity.project", kind: "project.worktree", purpose: "Explicit single-machine Unity project runtime boundary" }],
       documents: []
@@ -129,7 +137,7 @@ export default function definePackages(b) {
   const gameWebChecks = [
     capabilityCheck("game_web_tests", "Browser game tests", "node.package_manager", ["test"], [checkBinding("mvp", "code"), checkBinding("production", "release_package")], 1800),
     capabilityCheck("game_web_build", "Browser game build", "node.package_manager", ["run", "build"], [checkBinding("production", "release_package")], 1800),
-    disabledCheck("game_web_browser_proof", "Deterministic browser state and screenshot capture", "requires_local_browser_evidence_binding", [checkBinding("mvp", "test_report"), checkBinding("production", "release_package")])
+    browserSentinelCheck("game_web_browser_proof", "Deterministic browser state and screenshot capture", "playwright", [checkBinding("mvp", "test_report"), checkBinding("production", "release_package")])
   ];
   const gameWebPrefix = "game_web";
   const gameWebEvidenceFlow = {
@@ -150,7 +158,7 @@ export default function definePackages(b) {
   };
   const gameWeb = composedPackage(
     coreLifecycle({
-      key: "game.web", version: "0.5.4", purpose: "Executable preview for browser-game design, implementation and deterministic browser proof with separate technical and owner product acceptance.", rolePreset: "full",
+      key: "game.web", version: "0.7.0", purpose: "Executable preview for browser-game design, implementation and deterministic browser proof with separate technical and owner product acceptance.", rolePreset: "full",
       domains: ["game-development"], disciplines: ["software", "game_design", "content", "marketing"], checks: gameWebChecks,
       documents: []
     }),
@@ -163,8 +171,8 @@ export default function definePackages(b) {
   );
 
   const dataChecks = [
-    disabledCheck("data_readonly_query", "Registered read-only SQL or Python execution", "requires_local_data_query_binding", [checkBinding("mvp", "test_report")]),
-    disabledCheck("data_invariant", "Deterministic row-count, reconciliation or schema invariant", "requires_local_data_invariant_binding", [checkBinding("mvp", "test_report"), checkBinding("production", "data_migration")]),
+    sqliteCheck("data_readonly_query", "Registered read-only SQLite query", "data.primary", "SELECT 1 AS readonly_probe", 1, [checkBinding("mvp", "test_report")]),
+    sqliteCheck("data_invariant", "SQLite integrity invariant", "data.primary", "PRAGMA integrity_check", "ok", [checkBinding("mvp", "test_report"), checkBinding("production", "data_migration")]),
     disabledCheck("data_backup", "Backup or isolated-copy evidence before live mutation", "requires_local_data_backup_binding", [checkBinding("production", "data_migration")])
   ];
   const dataPrefix = "data_analytics";
@@ -186,7 +194,7 @@ export default function definePackages(b) {
   };
   const dataAnalytics = composedPackage(
     coreLifecycle({
-      key: "data.analytics", version: "0.5.4", purpose: "Executable preview for read-only data discovery, deterministic invariants and approval-bound migration preparation without persisting source rows or prompts.", rolePreset: "reviewed",
+      key: "data.analytics", version: "0.7.0", purpose: "Executable preview for read-only data discovery, deterministic invariants and approval-bound migration preparation without persisting source rows or prompts.", rolePreset: "reviewed",
       domains: ["data"], disciplines: ["data_engineering", "software", "testing"], checks: dataChecks,
       resources: [{ alias: "data.primary", kind: "db", purpose: "Registered database or isolated analytical copy" }],
       documents: []
@@ -222,7 +230,7 @@ export default function definePackages(b) {
   };
   const infra = composedPackage(
     coreLifecycle({
-      key: "infra.operations", version: "0.5.4", purpose: "Executable preview for read-only operations, incident diagnosis and approval-bound access, restore and delivery changes with redacted receipts.", rolePreset: "reviewed",
+      key: "infra.operations", version: "0.7.0", purpose: "Executable preview for read-only operations, incident diagnosis and approval-bound access, restore and delivery changes with redacted receipts.", rolePreset: "reviewed",
       domains: ["infrastructure"], disciplines: ["devops", "security", "access_administration"], checks: infraChecks,
       resources: [{ alias: "infra.target", kind: "project.worktree", purpose: "Registered infrastructure configuration and local execution boundary" }],
       documents: []
@@ -265,7 +273,7 @@ export default function definePackages(b) {
   };
   const marketing = composedPackage(
     coreLifecycle({
-      key: "marketing.content-operations", version: "0.5.4", purpose: "Executable preview for grounded research, edited content and planned-to-measured marketing activity without multiplying permanent roles or documents.", rolePreset: "full",
+      key: "marketing.content-operations", version: "0.7.0", purpose: "Executable preview for grounded research, edited content and planned-to-measured marketing activity without multiplying permanent roles or documents.", rolePreset: "full",
       domains: ["marketing", "content"], disciplines: ["marketing", "content", "documentation"], checks: marketingChecks,
       resources: [{ alias: "marketing.state", kind: "project.worktree", purpose: "Canonical project claims, content and activity-state boundary" }],
       documents: []

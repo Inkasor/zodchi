@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { resolveWorkflowSettings } from "./paths.mjs";
 import { qualityModesThrough } from "./quality-contracts.mjs";
 import { resolveCommandConfiguration } from "./command-resolver.mjs";
+import { runBrowserSentinelCheck, runRegisteredExternalCheck, runSqliteCheck } from "./external-check-runner.mjs";
 
 const CHECKED_ARTIFACTS = new Set(["code", "prototype", "data_migration", "release_package", "deployment_evidence", "security_report", "access_change", "test_report"]);
 const ARTIFACT_CASCADE = Object.freeze({
@@ -67,7 +68,14 @@ function configuredChecks(project, level, dbFile, artifactType = null) {
         ? db.prepare("SELECT root_path FROM projects WHERE id=?").get(config.project_id)?.root_path ?? null
         : row.kind === "command" ? project : null;
       const executionProjectId = row.kind === "project_command" && typeof config.project_id === "string" ? config.project_id : projectId;
-      return { ...row, config, execution_root: executionRoot, execution_project_id: executionProjectId };
+      const externalTool = ["external_tool", "browser_sentinel"].includes(row.kind) && typeof config.external_tool === "string"
+        ? db.prepare("SELECT * FROM external_tool_registry WHERE project_id=? AND name=? AND active=1").get(executionProjectId, config.external_tool) ?? null : null;
+      let sqliteDatabase = null;
+      if (row.kind === "sqlite" && typeof config.resource === "string") {
+        const resource = db.prepare("SELECT declaration_json FROM project_resources WHERE project_id=? AND alias=?").get(executionProjectId, config.resource);
+        try { sqliteDatabase = JSON.parse(resource?.declaration_json ?? "null")?.database ?? null; } catch { sqliteDatabase = null; }
+      }
+      return { ...row, config, execution_root: executionRoot, execution_project_id: executionProjectId, external_tool: externalTool, sqlite_database: sqliteDatabase };
     });
   } finally { db.close(); }
 }
@@ -142,6 +150,9 @@ async function executeCheck(check, project, allowedPaths, context) {
     return { status, exit_code: status === "passed" ? 0 : status === "timed_out" ? 124 : 1, failure: status === "passed" ? null : check.config.failure ?? `fixture ${status}` };
   }
   if (check.kind === "secret_scan") return secretScan(project, allowedPaths);
+  if (check.kind === "external_tool") return runRegisteredExternalCheck(check, { ...context, project });
+  if (check.kind === "browser_sentinel") return runBrowserSentinelCheck(check, { ...context, project });
+  if (check.kind === "sqlite") return runSqliteCheck(check);
   if (check.kind !== "command" && check.kind !== "project_command") return { status: "unavailable", exit_code: 1, failure: `unsupported check kind: ${check.kind}` };
   if (!check.execution_root || !fs.existsSync(check.execution_root)) return { status: "unavailable", exit_code: 1, failure: check.kind === "project_command" ? `registered project is unavailable: ${check.config.project_id ?? "unknown"}` : "project root is unavailable" };
   if (!Array.isArray(check.config.args) || check.config.args.some(arg => typeof arg !== "string")) return { status: "unavailable", exit_code: 1, failure: "invalid command check configuration" };
@@ -175,7 +186,7 @@ export async function runProjectGate(project, level = "mvp", dbFile = resolveWor
   for (const check of configured) {
     const started = Date.now();
     const result = await executeCheck(check, resolvedProject, allowedPaths, { level, artifactType: options.artifactType ?? null });
-    checks.push({ id: check.check_id, name: check.name, required: check.required, inherited_from: check.quality_sources, execution_project_id: check.execution_project_id, execution_root: check.execution_root, status: result.status, exit_code: result.exit_code, duration_ms: Date.now() - started, ...(result.capability ? { command_capability: result.capability } : {}), ...(result.resolved_command ? { resolved_command: result.resolved_command } : {}), ...(result.failure ? { failure: result.failure } : {}) });
+    checks.push({ id: check.check_id, name: check.name, required: check.required, inherited_from: check.quality_sources, execution_project_id: check.execution_project_id, execution_root: check.execution_root, status: result.status, exit_code: result.exit_code ?? (result.status === "passed" ? 0 : 1), duration_ms: Date.now() - started, ...(result.capability ? { command_capability: result.capability } : {}), ...(result.resolved_command ? { resolved_command: result.resolved_command } : {}), ...(result.evidence ? { evidence: result.evidence } : {}), ...(result.failure ? { failure: result.failure } : {}) });
   }
   const blocking = checks.filter(check => check.required && check.status !== "passed");
   const status = blocking.some(check => check.status === "failed") ? "failed"

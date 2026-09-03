@@ -34,10 +34,12 @@ if (resultSchema === "strategy_review.v1") {
     state_patch: { schema_version: 1, patch_id: patch.patch_id, base_projection_hash: patch.base_projection_hash, changes: [{ operation: "replace_active", path: "decisions.strategy_recovery" }] }
   };
 } else if (resultSchema === "judge.v1") {
+  const patch = contractEnvelope()?.package?.state_patch_contract ?? {};
   result = {
     schema_version: 1, decision: "PASS",
     rationale: "The bounded contract was fulfilled and no source path was changed.",
-    evidence_refs: ["worker:zero-change"], primary_gap: null, verification_request: null
+    evidence_refs: ["worker:zero-change"], primary_gap: null, verification_request: null,
+    state_patch: { schema_version: 1, patch_id: patch.patch_id, base_projection_hash: patch.base_projection_hash, changes: [{ operation: "replace_active", path: "decisions.judge_resolution" }] }
   };
 } else if (resultSchema === "documentator.v1") {
   const packageValue = contractEnvelope()?.package ?? {};

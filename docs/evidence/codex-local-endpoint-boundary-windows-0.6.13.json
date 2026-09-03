@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-09-03T11:01:03.872Z",
+  "exit_code": 0,
+  "receipt_id": "2026-09-03T11-00-51.807Z-codex-6d1938e3-06fd-4021-8d88-ae22a73e7d7e",
+  "receipt_status": "completed",
+  "process_execution_observed": false,
+  "model_status": "blocked",
+  "local_document_requests": 0,
+  "provider_error_sha256": "ea0e53a291c0a5e406b80b85e1fadafd317f94ed7378fb25bad77215c98270b5",
+  "finding": "inconclusive_model_reported_blocked_without_an_observable_process_event",
+  "database_retained_outside_release": true
+}

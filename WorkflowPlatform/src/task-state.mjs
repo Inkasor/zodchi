@@ -126,9 +126,10 @@ export function taskStateRoleContext(projection) {
 }
 
 export function statePatchContract(db, runId, roleId, projection = null) {
-  if (roleId !== "strategy_reviewer") return null;
+  const paths = Object.freeze({ strategy_reviewer: "decisions.strategy_recovery", judge: "decisions.judge_resolution" });
+  if (!paths[roleId]) return null;
   const current = projection ?? taskStateProjection(db, runId);
-  return Object.freeze({ schema_version: 1, patch_id: id("state_patch"), base_projection_hash: current.projection_hash, allowed_changes: [{ operation: "replace_active", path: "decisions.strategy_recovery" }] });
+  return Object.freeze({ schema_version: 1, patch_id: id("state_patch"), base_projection_hash: current.projection_hash, allowed_changes: [{ operation: "replace_active", path: paths[roleId] }] });
 }
 
 function validatePatch(patch, contract) {
@@ -148,7 +149,9 @@ function validatePatch(patch, contract) {
 }
 
 export function applyRoleStatePatch(db, runId, roleId, result, contract) {
-  if (roleId !== "strategy_reviewer") throw new Error(`STATE_PATCH_ROLE_NOT_ALLOWED: ${roleId}`);
+  const kinds = Object.freeze({ strategy_reviewer: "strategy_recovery", judge: "judge_resolution" });
+  const kind = kinds[roleId];
+  if (!kind) throw new Error(`STATE_PATCH_ROLE_NOT_ALLOWED: ${roleId}`);
   validatePatch(result?.state_patch, contract);
   const nested = db.isTransaction, savepoint = "apply_role_state_patch";
   db.exec(nested ? `SAVEPOINT ${savepoint}` : "BEGIN IMMEDIATE");
@@ -157,9 +160,9 @@ export function applyRoleStatePatch(db, runId, roleId, result, contract) {
     if (current.projection_hash !== contract.base_projection_hash) throw new Error(`STATE_PATCH_STALE: ${contract.base_projection_hash} != ${current.projection_hash}`);
     const run = db.prepare("SELECT task_id FROM workflow_runs WHERE id=?").get(runId);
     const timestamp = now(), stored = { ...result };
-    db.prepare("UPDATE decisions SET active=0 WHERE run_id=? AND kind='strategy_recovery' AND active=1").run(runId);
+    db.prepare("UPDATE decisions SET active=0 WHERE run_id=? AND kind=? AND active=1").run(runId, kind);
     db.prepare("INSERT INTO decisions(id,task_id,run_id,kind,outcome,source,structured_json,active,created_at) VALUES(?,?,?,?,?,?,?,1,?)")
-      .run(contract.patch_id, run.task_id, runId, "strategy_recovery", result.decision, roleId, JSON.stringify(stored), timestamp);
+      .run(contract.patch_id, run.task_id, runId, kind, result.decision, roleId, JSON.stringify(stored), timestamp);
     appendEvent(db, { entityType: "workflow_run", entityId: runId, kind: "state_patch_applied", payload: { patch_id: contract.patch_id, role_id: roleId, base_projection_hash: contract.base_projection_hash, changes: contract.allowed_changes } });
     const appliedProjectionHash = taskStateProjection(db, runId).projection_hash;
     db.exec(nested ? `RELEASE ${savepoint}` : "COMMIT");

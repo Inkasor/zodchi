@@ -28,7 +28,9 @@ function collectEvent(value, calls, ordinal) {
     addCall(calls, value.item.type === "mcp_tool_call" ? `mcp:${value.item.server ?? "unknown"}:${value.item.tool ?? value.item.name ?? "unknown"}` : value.item.type, value.item.id, ordinal);
   }
   if (["tool_use", "tool"].includes(value.type) || ["tool_use", "tool"].includes(value.part?.type)) {
-    addCall(calls, value.part?.tool ?? value.part?.name ?? value.tool ?? value.name, value.part?.callID ?? value.part?.call_id ?? value.callID ?? value.call_id ?? value.id, ordinal);
+    const nativeName = value.part?.tool ?? value.part?.name ?? value.tool ?? value.name;
+    const input = value.part?.input ?? value.input ?? value.part?.args ?? value.args;
+    addCall(calls, /^skill$/iu.test(String(nativeName)) && typeof input?.name === "string" ? `skill:${input.name}` : nativeName, value.part?.callID ?? value.part?.call_id ?? value.callID ?? value.call_id ?? value.id, ordinal);
   }
 }
 
@@ -65,6 +67,8 @@ export function observeToolUsage(provider, stdout, providerConfig = {}) {
     parse_errors: parseErrors,
     native_tools: nativeTools,
     canonical_tools: [...new Set(nativeTools.map(item => item.canonical_tool).filter(Boolean))].sort(),
+    mcp_servers: [...new Set(nativeTools.map(item => /^mcp:([^:]+):/u.exec(item.native_name)?.[1]).filter(Boolean))].sort(),
+    skills: [...new Set(nativeTools.map(item => /^skill:(.+)$/u.exec(item.native_name)?.[1]).filter(Boolean))].sort(),
     unknown_native_tools: nativeTools.filter(item => !item.canonical_tool).map(item => item.native_name)
   });
 }

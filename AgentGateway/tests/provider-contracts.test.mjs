@@ -80,7 +80,7 @@ test("CLI harness adapters preserve identity, usage and never fall back", () => 
   assert.equal(kimiReviewer.receipt.environment.profile_capabilities.project_write.boundary_acceptance.reason, "Owner accepted Kimi's declarative boundary for reviewer roles.");
   const kimiWrongRole = execute(root, "kimi", "rejected-declarative-worker", "pass", { profile: "kimi-declarative-reviewer", role: "worker" });
   assert.equal(kimiWrongRole.result.status, 77);
-  const claudeBrowser = execute(root, "claude", "claude-browser-mcp", "pass", { profile: "claude-browser-mcp", outputSchema: true });
+  const claudeBrowser = execute(root, "claude", "claude-browser-mcp", "pass", { profile: "claude-browser-mcp", outputSchema: true, capabilityRequirements: { required: ["context_input"], forbidden: ["project_write"], allowed_mcp_servers: ["playwright"] } });
   assert.equal(claudeBrowser.result.status, 0, claudeBrowser.result.stderr);
   assert.match(claudeBrowser.receipt.output, /--strict-mcp-config/);
   assert.match(claudeBrowser.receipt.output, /--mcp-config/);
@@ -88,7 +88,7 @@ test("CLI harness adapters preserve identity, usage and never fall back", () => 
   assert.match(claudeBrowser.receipt.output, /additionalProperties/);
   assert.deepEqual(claudeBrowser.receipt.environment.provider_environment.mcp_servers.carried, [{ scope: "home", name: "playwright" }]);
   assert.deepEqual(claudeBrowser.receipt.environment.provider_environment.mcp_servers.withheld, [{ scope: "home", name: "personal" }]);
-  const missingClaudeBrowser = execute(root, "claude", "claude-browser-missing", "pass", { profile: "claude-browser-missing" });
+  const missingClaudeBrowser = execute(root, "claude", "claude-browser-missing", "pass", { profile: "claude-browser-missing", capabilityRequirements: { required: ["context_input"], forbidden: ["project_write"], allowed_mcp_servers: ["missing"] } });
   assert.equal(missingClaudeBrowser.result.status, 77);
   assert.match(missingClaudeBrowser.receipt.error, /PROFILE_CAPABILITY_MISMATCH/);
   assert.match(missingClaudeBrowser.receipt.error, /BROWSER_MCP_SERVER_NOT_CARRIED: missing/);
@@ -118,6 +118,17 @@ test("CLI harness adapters preserve identity, usage and never fall back", () => 
   assert.equal(acceptedPreflightResult.status, "accepted_declarative");
   assert.equal(acceptedPreflightResult.checks[0].status, "accepted_declarative");
   assert.equal(acceptedPreflightResult.checks[0].accepted_declarative[0].reason, "Owner accepted Kimi's declarative boundary for reviewer roles.");
+  const boundaryPreflight = spawnSync(process.execPath, [cli, "profiles-check"], {
+    cwd: repositoryRoot, encoding: "utf8", windowsHide: true,
+    input: JSON.stringify([
+      { provider: "codex", profile: "codex-contract", role: "researcher", capability_requirements: { required: ["context_input", "skills"], forbidden: ["project_write"], allowed_skills: ["missing-info"] } },
+      { provider: "claude", profile: "claude-browser-mcp", role: "worker", capability_requirements: { required: ["context_input", "mcp"], forbidden: ["external_mutation", "project_write"], allowed_mcp_servers: ["playwright"], external_tools: [{ name: "playwright", transport: "stdio", endpoint: "playwright", pinned_version: "1", arbitrary_execution: true, contains_model: false, self_liftable_boundary: false, read_only_mode: null }] } }
+    ]),
+    env: { ...process.env, AGENT_GATEWAY_POLICY: path.join(root, "policy-pass.json") }
+  });
+  assert.equal(boundaryPreflight.status, 77);
+  const boundaryResult = JSON.parse(boundaryPreflight.stdout);
+  assert.deepEqual(boundaryResult.conflicts.map(item => item.code), ["PROFILE_SKILL_MISSING", "PROFILE_EXTERNAL_TOOL_CONTRADICTORY"]);
   const db = openGatewayDb(path.join(root, "data", "gateway.sqlite"));
   assert.equal(db.prepare("SELECT COUNT(*) count FROM receipts WHERE task_id='write-mismatch'").get().count, 0);
   assert.deepEqual(db.prepare("SELECT provider,status FROM receipts WHERE task_id='fail-codex'").all().map(row => ({ ...row })), [{ provider: "codex", status: "failed" }]);

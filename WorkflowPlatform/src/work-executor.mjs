@@ -14,7 +14,7 @@ import { normalizeResourceDeclaration } from "./resource-locks.mjs";
 import { loadRoleContract, parseRoleReceipt, rolePrompt, structuredHash } from "./role-contracts.mjs";
 import { WORKTREE_ALIAS, aliasDeclarations, registeredResources as registeredProjectResources } from "./project-resources.mjs";
 import { consumeCorrectionCycle, documentationOutcome, loadOperationalPolicy, loadQualityContract, operationalLevel, reviewerRequirement } from "./quality-contracts.mjs";
-import { executorCapabilityRequirements } from "./executor-capabilities.mjs";
+import { executorCapabilityRequirementsForProject } from "./executor-capabilities.mjs";
 import { reconcileRoleToolUsage } from "./tool-usage.mjs";
 import { applyRoleStatePatch, statePatchContract, taskStateProjection, taskStateRoleContext } from "./task-state.mjs";
 
@@ -623,7 +623,7 @@ async function invokeRole({ runtime, queue, runId, roleId, level, taskRoot, pack
     receipt = await invokeWithinBudget(manager, request, () => {
       const gatewayInvocation = gatewayCall({
         provider: contract.provider, profile: contract.profile, level, role: roleId, taskFile,
-        capabilityRequirements: executorCapabilityRequirements(contract),
+        capabilityRequirements: executorCapabilityRequirementsForProject(runtime.db, runtime.get(runId).project_id, contract),
         requiresWrite: contract.boundaries.writes === true,
         project: runtime.db.prepare("SELECT root_path FROM projects WHERE id=?").get(runtime.get(runId).project_id).root_path,
         // Only the writable roots go to the provider, and the primary one is already there as --project.
@@ -1056,6 +1056,7 @@ async function executeIndependentReview({ runtime, queue, runId, projectId, revi
       queue.enqueueRun(runId);
       const judgePackage = { objective: "Resolve the evaluative conflict after deterministic blocker admissibility.", base_evidence: reviewEvidence, opinions: opinions.map(item => ({ role: item.role, result: item.result })), blocker_admissibility: admissibility, conflicts: effectiveOpinions.map(item => ({ role: item.role, effective_decision: item.effective_decision })) };
       const judge = await invokeRole({ runtime, queue, runId, roleId: "judge", level, taskRoot, packageContract: judgePackage, context: reviewerPromptContext(classification, responseLanguage), schemaKey: "judge.v1", parseOptions: {}, gatewayCall });
+      applyRoleStatePatch(runtime.db, runId, "judge", judge.result, judge.statePatchContract);
       judge.complete({ outcome: judge.result.decision });
       if (judge.result.decision === "PASS") final = { decision: "PASS", summary: judge.result.rationale, blockers: [], evidence_refs: judge.result.evidence_refs, required_actions: [], schema_version: 1 };
       else if (judge.result.decision === "PRIMARY_GAP") final = { decision: "CHANGES_REQUESTED", summary: judge.result.rationale, blockers: [{ code: judge.result.primary_gap.kind, message: judge.result.primary_gap.message, path: judge.result.primary_gap.path }], evidence_refs: judge.result.primary_gap.evidence_refs, required_actions: [judge.result.primary_gap.search_intent], schema_version: 1 };

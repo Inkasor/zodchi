@@ -227,7 +227,7 @@ export function createProviderEnvironment(provider, { tempRoot, sourceHome, sour
         directory,
         env: { AGENT_GATEWAY_CLAUDE_MCP_CONFIG: mcpConfig },
         capabilities: capabilityReport(provider, {
-          skills: { policy: "ambient", allowed: [], withheld: [] },
+          skills: { policy: "disabled", allowed: [], withheld: projectSkills(projectRoot) },
           mcp: { policy: "allowlist", carried: mcp.carried, withheld: mcp.withheld, shadowed: mcp.shadowed }
         }),
         cleanup: () => removeDirectory(directory)
@@ -260,8 +260,11 @@ export function createProviderEnvironment(provider, { tempRoot, sourceHome, sour
       fs.writeFileSync(path.join(directory, "config.toml"), [
         ...(profileConfig.model ? [`model = ${JSON.stringify(profileConfig.model)}`] : []),
         `model_reasoning_effort = ${JSON.stringify(profileConfig.reasoningEffort ?? "low")}`,
+        "project_doc_max_bytes = 0",
         `sandbox_mode = ${JSON.stringify(profileConfig.readOnly ? "read-only" : "workspace-write")}`,
         'approval_policy = "never"',
+        "[sandbox_workspace_write]",
+        `network_access = ${profileConfig.allowNetwork === true}`,
         "[features]",
         "memories = false",
         "multi_agent = false",

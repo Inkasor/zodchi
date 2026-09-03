@@ -30,6 +30,14 @@ export function isSourceCodePath(value) {
   return SOURCE_CODE.test(normalized) && !GENERATED_PATH.test(normalized);
 }
 
+function isVocabularyBridgePath(value) {
+  const normalized = String(value ?? "").replaceAll("\\", "/");
+  // Changelogs and retained evidence intentionally mention many unrelated subsystems on one line.
+  // They are audit material, not a project-owned bilingual glossary, and letting them seed terms makes
+  // the newest release note dominate every prose query as the repository grows.
+  return !isSourceCodePath(normalized) && !/(?:^|\/)(?:changelog(?:\.[^/]*)?|docs\/evidence)(?:\/|$)/iu.test(normalized);
+}
+
 // Git pathspec magic `:(glob)` shares this scope's wildcard semantics: `*` stops at a separator and a
 // `**` segment crosses them. It does not share character classes or brace expansion, and it rejects a
 // `**` mixed into a segment, so a pattern using any of those cannot be pushed down without changing
@@ -458,10 +466,10 @@ export function searchSources(roots, scope, terms, { maxFiles = 40, maxMatchesPe
     if (!preferSourceCode) return 0;
     const basename = path.basename(file.path).toLowerCase();
     const matches = affinityTerms.filter(term => basename.includes(term)).length;
-    // One accidental word in a filename is weak evidence. Two independently harvested corpus terms
-    // in the same basename form a measurable phrase-level bridge (external + control, state + machine)
-    // and may influence ranking without letting a generic name such as approval dominate by itself.
-    return matches >= 2 ? matches : 0;
+    // A single rare corpus-owned term in an implementation basename is weak but useful evidence. The
+    // implementation-directory discriminator is applied first below, so this cannot make a migration
+    // or smoke script outrank product source merely because both words occur in its filename.
+    return matches >= 2 ? matches * 2 : matches;
   };
   const implementationAffinity = file => {
     if (!preferSourceCode) return 0;
@@ -477,8 +485,8 @@ export function searchSources(roots, scope, terms, { maxFiles = 40, maxMatchesPe
     ? [...new Set(file.matches.map(match => match.term))].reduce((score, term) => score + 1 / Math.max(1, matchedFilesByTerm.get(term) ?? 1), 0)
     : 0;
   files.sort((a, b) => (preferSourceCode ? Number(!isSourceCodePath(a.path)) - Number(!isSourceCodePath(b.path)) : 0)
-    || pathAffinity(b) - pathAffinity(a)
     || implementationAffinity(b) - implementationAffinity(a)
+    || pathAffinity(b) - pathAffinity(a)
     || rarity(b) - rarity(a)
     || priority(a) - priority(b)
     || new Set(b.matches.map(match => match.term)).size - new Set(a.matches.map(match => match.term)).size
@@ -537,7 +545,7 @@ export function expandTerms(roots, scope, message, options = {}) {
       text: contextualText(file, match),
       // Bare Latin words bridge human languages only in prose documents. Source files continue to
       // contribute explicit identifiers, but syntax such as const/return cannot become vocabulary.
-      cross_language: !isSourceCodePath(file.path)
+      cross_language: isVocabularyBridgePath(file.path)
     })))
     .filter(lines => lines.length);
   const harvested = harvestIdentifiers(hitsByFile, [...prose, ...stems], options.identifierTerms ?? 32, subject);

@@ -526,7 +526,7 @@ test("Russian prose uses bilingual corpus terms to rank the relevant implementat
   const root = temporaryRoot("workflow-cross-language-source-ranking-");
   fs.mkdirSync(path.join(root, "docs", "ru"), { recursive: true });
   fs.mkdirSync(path.join(root, "WorkflowPlatform", "src"), { recursive: true });
-  fs.writeFileSync(path.join(root, "docs", "ru", "CHANGELOG.md"), [
+  fs.writeFileSync(path.join(root, "docs", "ru", "Architecture.md"), [
     "Проверка внешних операций после одобрения владельца описана в следующей строке.",
     "Implementation: external control plane, approval binding и payload сверяются до записи результата."
   ].join("\n"), "utf8");
