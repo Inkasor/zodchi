@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "provider": "kimi",
+  "provider_version": "0.40.1",
+  "mode": "plan",
+  "invocation": {
+    "prompt_mode": true,
+    "auto": false,
+    "plan": true,
+    "workspace_trusted_before": false,
+    "workspace_trusted_after": false
+  },
+  "observation": {
+    "status": "write_not_observed",
+    "marker_before_sha256": "40cea43395f4e20cd8d84c966d2755cb36e73882393c99e42fe5c9beaa9113de",
+    "marker_expected_sha256": "0e6398b279d8f311605ae0d40102c7f57bf49a8f2a32173d0087bad15b58d048",
+    "marker_after_sha256": "40cea43395f4e20cd8d84c966d2755cb36e73882393c99e42fe5c9beaa9113de",
+    "process_exit_code": 1,
+    "process_signal": null,
+    "timed_out": false
+  },
+  "conclusion": "plan mode is incompatible with the non-interactive prompt contour used by AgentGateway and cannot enforce its write boundary",
+  "technical_boundary": "unavailable",
+  "provider_output": "",
+  "provider_output_raw_bytes": 0,
+  "provider_output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "provider_error": "error: Cannot combine --prompt with --plan.\n",
+  "provider_error_raw_bytes": 44,
+  "provider_error_sha256": "d92ae63c9365a97c713bd5b0f933a320f7a46dec02423752168536063f228502",
+  "retained_root": null
+}
