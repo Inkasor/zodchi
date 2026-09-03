@@ -110,7 +110,7 @@ test("the canonical Web package is SDK-composed and requires anchored API-to-UI 
   const packageValue = PACKAGE_DEFINITIONS.find(item => item.key === "software.web-application");
   assert.ok(packageValue);
   for (const workType of ["implementation", "data_change", "release", "incident", "access_management", "project_bootstrap", "documentation", "security_review"]) assert.equal(packageValue.routes.some(item => item.work_type_key === workType), true, workType);
-  assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["access_administrator", "adversarial_reviewer", "classifier", "coordinator", "editor", "evidence_reviewer", "judge", "release_operator", "reviewer", "strategy_reviewer", "worker"]);
+  assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["access_administrator", "adversarial_reviewer", "classifier", "coordinator", "editor", "evidence_reviewer", "judge", "release_operator", "researcher", "reviewer", "strategy_reviewer", "worker"]);
   assert.equal(packageValue.documents.length, 0);
   assert.equal(packageValue.operational_levels.find(item => item.level === "prototype").improvement_strategy, "gauntlet");
   assert.equal(packageValue.operational_levels.find(item => item.level === "prototype").correction_limit, 3);
@@ -212,7 +212,7 @@ test("the Web-game preview traces design to browser proof without folding produc
   for (const workType of ["game.design-research", "game.change", "game.build-test", "game.technical-qa", "game.visual-acceptance", "game.product-acceptance", "game.release-readiness", "game.pipeline-audit", "content", "marketing"]) {
     assert.equal(packageValue.routes.some(item => item.work_type_key === workType), true, workType);
   }
-  assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["adversarial_reviewer", "classifier", "coordinator", "editor", "evidence_reviewer", "judge", "reviewer", "strategy_reviewer", "worker"]);
+  assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["adversarial_reviewer", "classifier", "coordinator", "editor", "evidence_reviewer", "judge", "researcher", "reviewer", "strategy_reviewer", "worker"]);
   assert.equal(packageValue.documents.length, 0);
   const flow = packageValue.evidence_flows.find(item => item.key === "game.feature_to_browser_proof");
   assert.deepEqual(flow.required_edges, ["design_decision->technical_task", "technical_task->browser_proof"]);
@@ -267,7 +267,7 @@ test("the infrastructure preview has a two-step read-only route and approval-bou
   const packageValue = PACKAGE_DEFINITIONS.find(item => item.key === "infra.operations");
   assert.ok(packageValue);
   for (const workType of ["infra.inventory", "infra.backup-restore", "incident", "access_management", "release", "deployment", "implementation", "fix"]) assert.equal(packageValue.routes.some(item => item.work_type_key === workType), true, workType);
-  assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["access_administrator", "adversarial_reviewer", "classifier", "coordinator", "evidence_reviewer", "judge", "release_operator", "reviewer", "strategy_reviewer", "worker"]);
+  assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["access_administrator", "adversarial_reviewer", "classifier", "coordinator", "evidence_reviewer", "judge", "release_operator", "researcher", "reviewer", "strategy_reviewer", "worker"]);
   assert.equal(packageValue.documents.length, 0);
   assert.deepEqual(packageValue.workflows.find(item => item.key.endsWith(".runtime")).steps.map(item => item.key), ["coordinate", "verify", "review"]);
   const restore = packageValue.workflows.find(item => item.key.endsWith(".backup_restore"));
@@ -289,7 +289,7 @@ test("the infrastructure preview has a two-step read-only route and approval-bou
 test("the marketing preview leaves document selection to the owner and connects edited claims to measured execution", () => {
   const packageValue = PACKAGE_DEFINITIONS.find(item => item.key === "marketing.content-operations");
   assert.ok(packageValue);
-  assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["adversarial_reviewer", "classifier", "coordinator", "editor", "evidence_reviewer", "judge", "reviewer", "strategy_reviewer", "worker"]);
+  assert.deepEqual(packageValue.roles.map(item => item.key).sort(), ["adversarial_reviewer", "classifier", "coordinator", "editor", "evidence_reviewer", "judge", "researcher", "reviewer", "strategy_reviewer", "worker"]);
   assert.deepEqual(packageValue.documents, []);
   assert.deepEqual(packageValue.workflows.find(item => item.key.endsWith(".content")).steps.map(item => item.key), ["coordinate", "produce", "review", "edit", "owner_acceptance"]);
   assert.deepEqual(packageValue.workflows.find(item => item.key.endsWith(".activity")).steps.map(item => item.key), ["coordinate", "schedule", "execution_approval", "execute", "measure"]);
@@ -300,7 +300,11 @@ test("the marketing preview leaves document selection to the owner and connects 
 test("classification is routed by the model and every declared route reaches a declared workflow", () => {
   for (const packageValue of PACKAGE_DEFINITIONS) {
     const classifier = packageValue.roles.find(item => item.key === "classifier");
-    if (classifier) assert.equal(classifier.contract.boundaries.keyword_routing, false);
+    const researcher = packageValue.roles.find(item => item.key === "researcher");
+    assert.equal(classifier.contract.boundaries.keyword_routing, false);
+    assert.equal(classifier.contract.result_schema_key, "classification.v1");
+    assert.equal(researcher.contract.result_schema_key, "research.v1");
+    assert.equal(researcher.contract.boundaries.writes, false);
     const workflowKeys = new Set(packageValue.workflows.map(item => item.key));
     for (const route of packageValue.routes) assert.equal(workflowKeys.has(route.workflow_key), true, `${packageValue.key}: ${route.work_type_key}`);
   }

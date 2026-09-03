@@ -28,6 +28,14 @@ function fixture() {
   return { root, project, dbFile, db };
 }
 
+function registerDirectContract(db, roleId) {
+  const schema = roleId === "classifier" ? "classification.v1" : "research.v1";
+  db.prepare("INSERT OR IGNORE INTO roles(id,name) VALUES(?,?)").run(roleId, roleId);
+  db.prepare(`INSERT INTO role_contracts(id,project_id,role_id,version,purpose,boundaries_json,allowed_work_types_json,allowed_artifact_types_json,allowed_tools_json,allowed_skills_json,required_checks_json,allowed_transitions_json,allowed_profiles_json,context_limit_bytes,max_calls,max_correction_cycles,timeout_seconds,result_schema_key,prompt_template_version,escalation_json,status)
+    VALUES(?, 'project', ?, '1', ?, '{"writes":false}', '[]', '[]', '[]', '[]', '[]', '[]', '[]', 65536, 1, 0, 60, ?, '1', '{}', 'active')`)
+    .run(`${roleId}-contract`, roleId, `${roleId} direct runtime contract`, schema);
+}
+
 test("runtime readiness requires direct classifier and researcher assignments and reports researcher document access", () => {
   const { root, db } = fixture();
   let readiness = projectRuntimeReadiness(db, "project");
@@ -40,6 +48,11 @@ test("runtime readiness requires direct classifier and researcher assignments an
   db.prepare("INSERT INTO role_profile_assignments(project_id,role_id,profile_id,operational_level,enabled) VALUES('project','classifier','classifier-profile','prototype',1)").run();
   db.prepare("INSERT INTO role_profile_assignments(project_id,role_id,profile_id,operational_level,enabled) VALUES('project','researcher','researcher-profile','mvp',1)").run();
   db.prepare("INSERT INTO project_documents(id,project_id,path,root_key,document_type,authority,status,active) VALUES('readme','project','README.md','primary','reference','owner','active',1)").run();
+  readiness = projectRuntimeReadiness(db, "project", { profileCheck: compatibleProfileCheck });
+  assert.equal(readiness.status, "unavailable");
+  assert.deepEqual(readiness.missing_role_contracts, ["classifier", "researcher"]);
+  registerDirectContract(db, "classifier");
+  registerDirectContract(db, "researcher");
   readiness = projectRuntimeReadiness(db, "project", { profileCheck: compatibleProfileCheck });
   assert.equal(readiness.status, "ready");
   assert.equal(readiness.registered_context.status, "no_read_access");
@@ -62,6 +75,8 @@ test("runtime readiness isolates an incompatible profile to the selected workflo
   const { root, project, dbFile, db } = fixture();
   for (const role of ["classifier", "researcher", "documentator"]) db.prepare("INSERT INTO profiles(id,provider,name,role_id) VALUES(?, 'codex', ?, ?)").run(`${role}-profile`, `${role}-profile`, role);
   for (const role of ["classifier", "researcher", "documentator"]) db.prepare("INSERT INTO role_profile_assignments(project_id,role_id,profile_id,operational_level,enabled) VALUES('project',?,?, 'mvp',1)").run(role, `${role}-profile`);
+  registerDirectContract(db, "classifier");
+  registerDirectContract(db, "researcher");
   db.prepare(`INSERT INTO role_contracts(id,project_id,role_id,version,purpose,boundaries_json,allowed_work_types_json,allowed_artifact_types_json,allowed_tools_json,allowed_skills_json,required_checks_json,allowed_transitions_json,allowed_profiles_json,context_limit_bytes,max_calls,max_correction_cycles,timeout_seconds,result_schema_key,prompt_template_version,escalation_json,status)
     VALUES('documentator-contract','project','documentator','1','documentation','{}','[]','[]','[]','[]','[]','[]','[]',65536,1,0,60,'documentator.v1','1','{}','active')`).run();
   db.prepare(`INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json)
@@ -137,6 +152,30 @@ test("registry-backed intake fails before accepting a run or spending a classifi
     execute: true,
     gatewayCall: async () => { calls += 1; throw new Error("must not be called"); }
   }), /PROJECT_RUNTIME_NOT_READY: project: missing classifier,researcher/);
+  assert.equal(calls, 0);
+  const verified = openDb(dbFile);
+  assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM workflow_runs").get().count, 0);
+  verified.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("registry-backed intake refuses a direct researcher assignment without an active contract", async () => {
+  const { root, project, dbFile, db } = fixture();
+  for (const role of ["classifier", "researcher"]) {
+    db.prepare("INSERT INTO profiles(id,provider,name,role_id) VALUES(?, 'codex', ?, ?)").run(`${role}-profile`, `${role}-profile`, role);
+    db.prepare("INSERT INTO role_profile_assignments(project_id,role_id,profile_id,operational_level,enabled) VALUES('project',?,?, 'mvp',1)").run(role, `${role}-profile`);
+  }
+  registerDirectContract(db, "classifier");
+  db.close();
+  let calls = 0;
+  await assert.rejects(() => statelessProcessMessage({
+    message: "Research the registered context",
+    project,
+    dbFile,
+    execute: true,
+    gatewayProfileCheck: compatibleProfileCheck,
+    gatewayCall: async () => { calls += 1; throw new Error("must not be called"); }
+  }), /PROJECT_RUNTIME_NOT_READY: project: missing active role contracts researcher/);
   assert.equal(calls, 0);
   const verified = openDb(dbFile);
   assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM workflow_runs").get().count, 0);

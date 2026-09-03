@@ -35,10 +35,22 @@ export function loadWorkflow(id, workflowsRoot = resolveWorkflowSettings().workf
 
 function registryDefinition(db, projectId, workflowId) {
   const roles = {};
-  for (const row of db.prepare(`SELECT rpa.role_id,p.provider,p.name,rpa.operational_level FROM role_profile_assignments rpa JOIN profiles p ON p.id=rpa.profile_id
+  for (const row of db.prepare(`SELECT rpa.role_id,p.provider,p.name,rpa.operational_level,
+      rc.id AS contract_id,rc.context_limit_bytes,rc.result_schema_key,rc.boundaries_json,rc.allowed_tools_json
+    FROM role_profile_assignments rpa JOIN profiles p ON p.id=rpa.profile_id
+    JOIN role_contracts rc ON rc.project_id=rpa.project_id AND rc.role_id=rpa.role_id AND rc.status='active'
     WHERE rpa.project_id=? AND rpa.enabled=1 AND rpa.role_id IN ('classifier','researcher')
     ORDER BY rpa.role_id,CASE rpa.operational_level WHEN 'prototype' THEN 0 WHEN 'mvp' THEN 1 ELSE 2 END`).all(projectId)) {
-    if (!roles[row.role_id]) roles[row.role_id] = { provider: row.provider, profile: row.name, role: row.role_id };
+    if (!roles[row.role_id]) roles[row.role_id] = {
+      provider: row.provider, profile: row.name, role: row.role_id,
+      contract: {
+        id: row.contract_id,
+        context_limit_bytes: row.context_limit_bytes,
+        result_schema_key: row.result_schema_key,
+        boundaries: parsedJson(row.boundaries_json) ?? {},
+        allowed_tools: parsedJson(row.allowed_tools_json) ?? []
+      }
+    };
   }
   return { id: workflowId, authority: "registered portable package and project documents", roles, gates: [] };
 }

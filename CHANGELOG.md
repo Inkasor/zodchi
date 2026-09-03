@@ -57,6 +57,7 @@
 - Browser evidence from an isolated Claude Playwright probe is not copied into the live owner policy without a selected target role and profile. Release and access routes likewise remain explicitly unavailable until real signed external operations are registered; neither absence is reported as a passed capability.
 - Install/update diagnostics now recognize Gateway's explicit `accepted_declarative` aggregate and preserve it as `admission_status` instead of misreporting an admitted owner exception as a preflight transport failure.
 - Install/update capability diagnostics now include enabled profile assignments that do not yet have an active role contract, matching runtime readiness instead of silently omitting them from the owner-visible count.
+- Direct classifier and researcher assignments now require active project-scoped contracts before intake. Package finalization supplies both contracts and their document bindings when a project package omitted them, and registry-backed calls carry the selected contract metadata instead of bypassing it.
 - The owner-data upgrade guide now requires the replaceable release to be installed and verified before a database is opened at schema 36. An older candidate that knows only schema 34 must fail closed with `MIGRATION_UNKNOWN_APPLIED_VERSION`; migration records must never be edited to bypass source/data mismatch.
 
 </section>
