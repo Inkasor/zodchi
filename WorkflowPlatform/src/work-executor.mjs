@@ -756,13 +756,24 @@ function verificationCheckCatalog(db, projectId, level, artifactType, registered
     }));
 }
 
-function normalizeVerificationPlan(plan, registeredChecks) {
+export function normalizeVerificationPlan(plan, registeredChecks) {
   if (!plan || !Array.isArray(registeredChecks)) return plan;
   const checks = [...registeredChecks];
   return {
     ...plan,
     checks,
-    steps: (plan.steps ?? []).map(step => ({ ...step, check_ids: checks }))
+    steps: (plan.steps ?? []).map(step => {
+      // Verification workers inspect the registered project tree. The model may omit the
+      // resource (or choose a write-style mode) even though the gate must still run under a
+      // real, auditable lease. Keep other declarations, but canonicalize the tree binding to
+      // the shared read-only form used by this route.
+      const resources = (step.resources ?? []).filter(resource => resource?.alias !== WORKTREE_ALIAS && resource?.kind !== "project.worktree");
+      return {
+        ...step,
+        check_ids: checks,
+        resources: [...resources, { alias: WORKTREE_ALIAS, mode: "shared" }]
+      };
+    })
   };
 }
 

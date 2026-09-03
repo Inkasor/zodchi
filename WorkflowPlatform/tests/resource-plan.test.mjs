@@ -12,6 +12,7 @@ const statelessProcessMessage = input => scopedProcessMessage({ semanticScope: {
 import { validatePlannerResult } from "../src/role-contracts.mjs";
 import { resourceIdentity } from "../src/resource-locks.mjs";
 import { projectResources, registeredResources } from "../src/project-resources.mjs";
+import { normalizeVerificationPlan } from "../src/work-executor.mjs";
 
 // The lock core is exercised in resource-locks.test.mjs by holding leases directly. These cases are
 // about the other half: whether a resource declared by a real project reaches a real step through a real
@@ -162,4 +163,23 @@ test("a plan chooses among registered aliases and cannot name an authority of it
   assert.throws(() => validatePlannerResult(structuredClone(plan([{ alias: "erp", mode: "write" }])), options), /invalid mode write/);
   db.close();
   fs.rmSync(env.root, { recursive: true, force: true });
+});
+
+test("verification normalization always binds the shared project tree and full check set", () => {
+  const planResult = normalizeVerificationPlan({
+    outcome: "ready",
+    checks: ["model-chosen-check"],
+    steps: [{
+      key: "prepare_verification_scope",
+      role: "tester",
+      resources: [{ alias: "project.worktree", mode: "exclusive" }, { alias: "other", mode: "shared" }]
+    }]
+  }, ["check-a", "check-b"]);
+
+  assert.deepEqual(planResult.checks, ["check-a", "check-b"]);
+  assert.deepEqual(planResult.steps[0].check_ids, ["check-a", "check-b"]);
+  assert.deepEqual(planResult.steps[0].resources, [
+    { alias: "other", mode: "shared" },
+    { alias: "project.worktree", mode: "shared" }
+  ]);
 });
