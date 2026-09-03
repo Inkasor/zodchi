@@ -250,12 +250,12 @@ export function resolveWorkflowRoute(catalog, workType, requestedWorkflowId = nu
   return matches[0].workflow_id;
 }
 
-export function classifierPrompt({ message, catalog, projectSnapshot, acceptedDecisions = [], history = [], responseLanguage = "en" }) {
+export function classifierPrompt({ message, catalog, projectSnapshot, acceptedDecisions = [], currentState = null, responseLanguage = "en" }) {
   // Everything above the run state is identical between runs of the same project, and providers only
   // reuse a cached prompt prefix once it passes their minimum length, so the whole invariant contract
   // is stated here and every field that carries run state is kept below it.
   const invariant = [
-    "WORKFLOW CLASSIFICATION CONTRACT v4",
+    "WORKFLOW CLASSIFICATION CONTRACT v5",
     "You classify the current user message. Do not plan work, edit files, invoke tools, or invent registry values.",
     "Return exactly one JSON object and no Markdown.",
     `OUTPUT_FIELDS:${JSON.stringify(REQUIRED_FIELDS)}`,
@@ -276,12 +276,12 @@ export function classifierPrompt({ message, catalog, projectSnapshot, acceptedDe
     "- The supplied project snapshot is proof that downstream roles can use the registered roots and sources. You only route the request; the platform collects matching file contents and Git history after a work route is selected. Never ask the user to paste source files, repository content, diffs or logs that are inside those registered roots.",
     "- A request to inspect registered project code and write the findings into a project document is documentation work: reply_mode=work, planning_required=true and document_required=true. The classifier's own lack of tools is not missing user information and never justifies clarification.",
     "- A request to inspect, understand, explain, or analyze the registered repository without changing it or producing a registered project artifact is bounded research: reply_mode=research. The researcher may inspect the registered project source inventory under a read-only contract and must name the files supporting its answer. Verification means running registered checks against a claim or result; the word analysis alone never turns repository research into verification.",
-    "- pending_interaction_id: the id from PENDING_INTERACTIONS that this message answers, or null. One message often answers every question that was asked, so when it answers several give the list of their ids instead of a single one. A short confirmation is resolved from pending interactions and ordered history, never from a keyword rule. A new detailed task does not answer an older interaction merely because it mentions the same subject.",
+    "- pending_interaction_id: the id from PENDING_INTERACTIONS that this message answers, or null. One message often answers every question that was asked, so when it answers several give the list of their ids instead of a single one. A short confirmation is resolved from pending interactions and CURRENT_SESSION_STATE, never from a keyword rule. A new detailed task does not answer an older interaction merely because it mentions the same subject.",
     "- An interaction of kind run_profile_confirmation is the pending next action for this chat. Its objective is the authoritative task and its profile is the exact proposed execution profile. If the current message unambiguously accepts it, name that interaction, set pending_interaction_response=approve, classify the stored objective on its registered work route, and copy the complete stored objective into resolved_objective. If the user refuses or cancels it, set decline and answer conversationally. If the user asks what the profile means, hesitates, adds a condition, or requests a change, set undecided and answer conversationally; the pending action remains open. An unrelated detailed request names no pending profile interaction and is classified as a new request.",
     "- An interaction of kind external_evidence asks for a fact from a live information base, a runtime, a device or a closed contour, described by the evidence contract carried beside it. It cannot be answered in words: only a delivered evidence packet closes it. Set pending_interaction_response to decline when the user refuses or cancels the request, and undecided otherwise, including when the user asserts the fact is true.",
     "- pending_interaction_response: null when pending_interaction_id is null or names an interaction of kind clarification or planner_clarification. When it names any other kind, the user is being asked to decide whether an action may happen, and this field says what they decided: approve only for an unambiguous yes to that exact action, decline for a refusal, undecided for anything else. Doubt, a question back, a condition, a partial agreement and thinking aloud are all undecided: the decision stays open and the user is answered. Treating hesitation as approval takes an action the user never authorized, so undecided is the answer whenever both readings are possible.",
     "- reason: why this classification, in RESPONSE_LANGUAGE.",
-    "- resolved_objective: a standalone formulation of exactly what downstream roles must answer or do. Resolve pronouns, confirmations, item numbers and phrases such as 'all three' against ORDERED_HISTORY and PENDING_INTERACTIONS. Preserve every requested item and its order. Do not include internal ids. For a self-contained message, restate it without adding scope.",
+    "- resolved_objective: a standalone formulation of exactly what downstream roles must answer or do. Resolve pronouns, confirmations, item numbers and phrases such as 'all three' against CURRENT_SESSION_STATE and PENDING_INTERACTIONS. Preserve every requested item and its order. Do not include internal ids. For a self-contained message, restate it without adding scope. Older events are not present unless requested separately by exact id.",
     "- human_response: the reply text when reply_mode is conversation, otherwise null.",
     "LEVEL_SELECTION:",
     "- planning_level measures how much ordered work the answer needs, not how important it is. L0 one response with no steps. L1 one bounded step. L2 a few dependent steps inside one area. L3 work crossing areas, releases, or anything irreversible. L4 a full audit.",
@@ -297,7 +297,7 @@ export function classifierPrompt({ message, catalog, projectSnapshot, acceptedDe
     `PROJECT_SNAPSHOT:${JSON.stringify(projectSnapshot)}`,
     `ACCEPTED_DECISIONS:${JSON.stringify(acceptedDecisions)}`,
     `PENDING_INTERACTIONS:${JSON.stringify(catalog.pending_interactions)}`,
-    `ORDERED_HISTORY:${JSON.stringify(history)}`,
+    `CURRENT_SESSION_STATE:${JSON.stringify(currentState)}`,
     `CURRENT_USER_MESSAGE:${JSON.stringify(String(message))}`
   ].join("\n");
   return `${invariant}\n${runState}`;

@@ -141,32 +141,40 @@ export function selectProjectContext(discovery, classification = {}, _workingDoc
   };
 }
 
-export function conversationContext(db, projectId, historyBudgetBytes, semanticScope = null) {
-  if (!Number.isInteger(historyBudgetBytes) || historyBudgetBytes < 1) throw new Error("CONVERSATION_CONTEXT_BUDGET_REQUIRED");
-  // Accepted owner decisions are project truth and intentionally cross chat boundaries. Conversational
-  // wording is not. A caller must name either one exact chat or a stateless automation scope; omission
-  // is a contract error rather than a silent return to project-wide conversation history.
+export function classifierStateContext(db, projectId, contextBudgetBytes, semanticScope = null, { excludeRunId = null } = {}) {
+  if (!Number.isInteger(contextBudgetBytes) || contextBudgetBytes < 1) throw new Error("CLASSIFIER_STATE_CONTEXT_BUDGET_REQUIRED");
+  // Accepted owner decisions are project truth and intentionally cross chat boundaries. The chat itself
+  // contributes one current semantic snapshot, not a trailing message window. Older wording remains in
+  // conversation_messages for audit and can be retrieved by exact run or interaction id.
   const scope = normalizeSemanticScope(semanticScope);
   const sessionBound = scope.mode === "session";
-  const decisions = db.prepare("SELECT id,kind,outcome,source,structured_json,created_at FROM decisions WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND active=1 AND outcome='APPROVE' ORDER BY created_at,id").all(projectId)
-    .map(row => ({ id: row.id, kind: row.kind, outcome: row.outcome, source: row.source, structured: parseJson(row.structured_json, null), created_at: row.created_at }));
-  const messages = sessionBound
-    ? db.prepare(`SELECT cm.id,cm.role,cm.content,cm.created_at FROM conversation_messages cm
-        JOIN zodchi_chat_session_runs csr ON csr.run_id=cm.run_id
-        WHERE cm.project_id=? AND csr.client=? AND csr.session_id=? ORDER BY cm.created_at,cm.id`)
-      .all(projectId, scope.client, scope.session_id)
-    : [];
-  const selected = [];
-  let used = 0;
-  for (const message of [...messages].reverse()) {
-    const bytes = Buffer.byteLength(JSON.stringify(message));
-    if (selected.length && used + bytes > historyBudgetBytes) break;
-    if (!selected.length && bytes > historyBudgetBytes) {
-      selected.push({ ...message, content: message.content.slice(-Math.max(256, Math.floor(historyBudgetBytes / 2))) });
-      break;
-    }
-    selected.push(message);
-    used += bytes;
+  const acceptedDecisions = db.prepare("SELECT id,kind,outcome,source,structured_json FROM decisions WHERE task_id IN (SELECT id FROM tasks WHERE project_id=?) AND active=1 AND outcome='APPROVE' ORDER BY created_at DESC,id DESC LIMIT 50").all(projectId)
+    .map(row => ({ id: row.id, kind: row.kind, outcome: row.outcome, source: row.source, structured: parseJson(row.structured_json, null) })).reverse();
+  const previous = sessionBound ? db.prepare(`SELECT wr.id AS run_id,wr.task_id,wr.workflow_id,wr.state AS run_state,wr.user_message,
+      wr.resolved_objective,wr.response_language,t.state AS task_state,t.goal_id,t.stage_id,g.title AS goal_title,s.stage_key,s.title AS stage_title
+    FROM zodchi_chat_session_runs csr JOIN workflow_runs wr ON wr.id=csr.run_id JOIN tasks t ON t.id=wr.task_id
+    LEFT JOIN goals g ON g.id=t.goal_id LEFT JOIN stages s ON s.id=t.stage_id
+    WHERE csr.client=? AND csr.session_id=? AND wr.project_id=? AND (? IS NULL OR wr.id<>?)
+    ORDER BY csr.bound_at DESC,wr.created_at DESC,wr.id DESC LIMIT 1`).get(scope.client, scope.session_id, projectId, excludeRunId, excludeRunId) : null;
+  const currentSessionState = previous ? {
+    run_id: previous.run_id, task_id: previous.task_id, workflow_id: previous.workflow_id,
+    current_state: { task: previous.task_state, run: previous.run_state },
+    owner_objective: { verbatim: previous.user_message }, resolved_objective: previous.resolved_objective ?? previous.user_message,
+    strategic_binding: previous.goal_id ? { goal_id: previous.goal_id, goal_title: previous.goal_title, stage_id: previous.stage_id, stage_key: previous.stage_key, stage_title: previous.stage_title } : null,
+    last_response: db.prepare("SELECT content FROM conversation_messages WHERE run_id=? AND role='assistant' ORDER BY created_at DESC,id DESC LIMIT 1").get(previous.run_id)?.content ?? null,
+    open_interactions: db.prepare("SELECT id,kind,question,status FROM approvals WHERE task_id=? AND status='pending' ORDER BY created_at,id").all(previous.task_id),
+    artifacts: db.prepare("SELECT id,kind,uri,content_hash,status FROM artifacts WHERE run_id=? AND status NOT IN ('rejected','superseded') ORDER BY created_at DESC,id DESC LIMIT 50").all(previous.run_id).reverse(),
+    checks: db.prepare("SELECT id,kind,required,status FROM gates WHERE run_id=? ORDER BY rowid DESC LIMIT 50").all(previous.run_id).reverse().map(row => ({ ...row, required: Boolean(row.required) })),
+    evidence: db.prepare("SELECT id,kind,evidence_hash FROM run_evidence WHERE run_id=? ORDER BY created_at DESC,id DESC LIMIT 20").all(previous.run_id).reverse()
+  } : null;
+  const result = { accepted_decisions: acceptedDecisions, current_session_state: currentSessionState, budget_bytes: contextBudgetBytes };
+  const bytes = () => Buffer.byteLength(JSON.stringify(result));
+  while (bytes() > contextBudgetBytes && result.current_session_state?.evidence.length) result.current_session_state.evidence.shift();
+  while (bytes() > contextBudgetBytes && result.current_session_state?.artifacts.length) result.current_session_state.artifacts.shift();
+  while (bytes() > contextBudgetBytes && result.accepted_decisions.length) result.accepted_decisions.shift();
+  if (bytes() > contextBudgetBytes && result.current_session_state?.last_response) result.current_session_state.last_response = null;
+  if (bytes() > contextBudgetBytes) {
+    throw new Error(`CLASSIFIER_STATE_CONTEXT_OVERFLOW: ${bytes()}/${contextBudgetBytes}`);
   }
-  return { accepted_decisions: decisions, history: selected.reverse(), bytes: used, budget_bytes: historyBudgetBytes };
+  return { ...result, bytes: bytes() };
 }
