@@ -721,6 +721,7 @@ test("the classifier prompt keeps run state below an invariant head long enough 
   assert.equal(shared >= first.indexOf("PROJECT_SNAPSHOT"), true, `two runs share only ${shared} bytes`);
   assert.match(first, /Never ask the user to paste source files/);
   assert.match(first, /inspect registered project code and write the findings/);
+  assert.match(first, /explicitly says not to read files, source or the repository is ordinary conversation/);
   for (const field of ["PROJECT_SNAPSHOT", "ACCEPTED_DECISIONS", "PENDING_INTERACTIONS", "CURRENT_SESSION_STATE", "CURRENT_USER_MESSAGE"]) {
     assert.equal(first.indexOf(field) > first.indexOf("REGISTERED_ROUTES"), true, `${field} must follow the invariant head`);
   }
