@@ -18,7 +18,7 @@ function temporaryRoot(prefix) {
 test("clean database applies numbered normalized migrations and SQLite safety pragmas", () => {
   const root = temporaryRoot("workflow-migrations-clean-");
   const db = openDb(path.join(root, "workflow.sqlite"));
-  assert.equal(schemaVersion(db), 36);
+  assert.equal(schemaVersion(db), 37);
   assert.equal(db.prepare("PRAGMA foreign_keys").get().foreign_keys, 1);
   assert.equal(db.prepare("PRAGMA journal_mode").get().journal_mode, "wal");
   assert.equal(db.prepare("PRAGMA busy_timeout").get().timeout, 5000);
@@ -27,6 +27,7 @@ test("clean database applies numbered normalized migrations and SQLite safety pr
   assert.equal(new Set(db.prepare("PRAGMA table_info(gateway_calls)").all().map(row => row.name)).has("model_provider"), true);
   assert.equal(new Set(db.prepare("PRAGMA table_info(workflow_step_templates)").all().map(row => row.name)).has("resources_json"), true);
   assert.equal(new Set(db.prepare("PRAGMA table_info(workflow_runs)").all().map(row => row.name)).has("resolved_objective"), true);
+  assert.equal(new Set(db.prepare("PRAGMA table_info(workflows)").all().map(row => row.name)).has("history_budget_bytes"), false);
   assert.equal(db.prepare("SELECT name FROM domains WHERE id='one-c'").get().name, "1C");
   assert.equal(db.prepare("SELECT name FROM disciplines WHERE id='one-c-development'").get().name, "1C development");
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM work_types WHERE id LIKE 'one-c.%'").get().count, 7);
@@ -45,7 +46,7 @@ test("the known pre-publication migration 7 newline checksum remains readable", 
   db.prepare("UPDATE schema_migrations SET checksum=? WHERE version=7").run("8080e01be11bc8882303b50e3d51dc00d1dffcd23c3f08691dee6d7452770c1c");
   db.close();
   db = openDb(file);
-  assert.equal(schemaVersion(db), 36);
+  assert.equal(schemaVersion(db), 37);
   db.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -66,6 +67,26 @@ test("database upgrades sequentially and verifies applied checksums", () => {
   db.close();
   fs.writeFileSync(path.join(migrations, "001_alpha.sql"), "CREATE TABLE changed(id TEXT PRIMARY KEY);\n");
   assert.throws(() => openDb(file, { migrationsDirectory: migrations }), /MIGRATION_CHECKSUM_MISMATCH/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("workflow history budget removal preserves existing workflow rows", () => {
+  const root = temporaryRoot("workflow-migration-history-budget-");
+  const partial = path.join(root, "migrations");
+  const all = fs.readdirSync(migrationsDirectory).filter(name => /^\d{3}_/.test(name)).sort();
+  fs.mkdirSync(partial);
+  for (const name of all.filter(name => !name.startsWith("037_"))) fs.copyFileSync(path.join(migrationsDirectory, name), path.join(partial, name));
+  const file = path.join(root, "workflow.sqlite");
+  const before = openDb(file, { migrationsDirectory: partial });
+  before.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('project','Project',?,?)").run(root, now());
+  before.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status,discovery_json,history_budget_bytes) VALUES('workflow','Workflow','project','mvp','L2','active','{}',12345)").run();
+  before.close();
+  const after = openDb(file);
+  assert.equal(schemaVersion(after), 37);
+  assert.deepEqual({ ...after.prepare("SELECT id,name,project_id,status FROM workflows WHERE id='workflow'").get() }, { id: "workflow", name: "Workflow", project_id: "project", status: "active" });
+  assert.equal(new Set(after.prepare("PRAGMA table_info(workflows)").all().map(row => row.name)).has("history_budget_bytes"), false);
+  assert.equal(after.prepare("PRAGMA foreign_key_check").all().length, 0);
+  after.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -130,7 +151,7 @@ test("session context migration preserves an exact relay and cancels an unbound 
   const partial = path.join(root, "migrations");
   const all = fs.readdirSync(migrationsDirectory).filter(name => /^\d{3}_/.test(name)).sort();
   fs.mkdirSync(partial);
-  for (const name of all.filter(name => !name.startsWith("033_") && !name.startsWith("034_") && !name.startsWith("035_") && !name.startsWith("036_"))) fs.copyFileSync(path.join(migrationsDirectory, name), path.join(partial, name));
+  for (const name of all.filter(name => !name.startsWith("033_") && !name.startsWith("034_") && !name.startsWith("035_") && !name.startsWith("036_") && !name.startsWith("037_"))) fs.copyFileSync(path.join(migrationsDirectory, name), path.join(partial, name));
   const file = path.join(root, "workflow.sqlite"), timestamp = now();
   const before = openDb(file, { migrationsDirectory: partial });
   before.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('project','Project',?,?)").run(root, timestamp);

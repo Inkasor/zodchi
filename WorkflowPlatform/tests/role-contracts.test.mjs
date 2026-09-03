@@ -57,7 +57,7 @@ function fixture(prefix, { document = false, externalOperation = false } = {}) {
   ];
   onboardProject(dbFile, {
     project: { id: "project", name: "Project", root_path: project },
-    workflow: { id: "workflow", name: "Workflow", discovery: { git: false }, history_budget_bytes: 8192 },
+    workflow: { id: "workflow", name: "Workflow", discovery: { git: false } },
     roles: roles.map(([role]) => ({ id: role, name: role })),
     profiles: roles.map(([role]) => ({ id: `profile-${role}`, provider: role === "coordinator" ? "claude-code" : "codex", name: `local-${role}`, role_id: role })),
     routes: [{ work_type_id: "implementation" }, { work_type_id: "documentation" }, ...(externalOperation ? [{ work_type_id: "release" }] : [])],

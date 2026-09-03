@@ -23,7 +23,7 @@ function fixture() {
   fs.writeFileSync(path.join(project, "README.md"), "# Project\n", "utf8");
   const db = openDb(dbFile);
   db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('project','Project',?,?)").run(project, now());
-  db.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status,discovery_json,history_budget_bytes) VALUES('workflow','Workflow','project','mvp','L2','active','{}',4096)").run();
+  db.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status,discovery_json) VALUES('workflow','Workflow','project','mvp','L2','active','{}')").run();
   db.prepare("INSERT INTO workflow_routes(project_id,work_type_id,workflow_id,enabled,priority) VALUES('project','implementation','workflow',1,0)").run();
   return { root, project, dbFile, db };
 }
@@ -198,6 +198,31 @@ test("a file-backed workflow also declares both direct roles before a classifier
     execute: true,
     gatewayCall: async () => { calls += 1; throw new Error("must not be called"); }
   }), /WORKFLOW_RUNTIME_NOT_READY: workflow: missing researcher/);
+  assert.equal(calls, 0);
+  const verified = openDb(dbFile);
+  assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM workflow_runs").get().count, 0);
+  verified.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("a file-backed classifier cannot invent its own context budget", async () => {
+  const { root, project, dbFile, db } = fixture();
+  db.close();
+  let calls = 0;
+  await assert.rejects(() => statelessProcessMessage({
+    message: "Classify this request",
+    project,
+    dbFile,
+    workflowDefinition: {
+      id: "workflow",
+      roles: {
+        classifier: { provider: "codex", profile: "classifier-profile", role: "classifier" },
+        researcher: { provider: "codex", profile: "researcher-profile", role: "researcher" }
+      }
+    },
+    execute: true,
+    gatewayCall: async () => { calls += 1; throw new Error("must not be called"); }
+  }), /classifier contract context_limit_bytes is required/);
   assert.equal(calls, 0);
   const verified = openDb(dbFile);
   assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM workflow_runs").get().count, 0);

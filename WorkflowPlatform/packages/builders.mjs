@@ -3,7 +3,7 @@ import { structuredHash } from "../src/role-contracts.mjs";
 import { portableCapabilitiesForContract } from "../src/executor-capabilities.mjs";
 import * as packageSdk from "./sdk.mjs";
 
-const PACKAGE_VERSION = "3.2.0";
+const PACKAGE_VERSION = "3.3.0";
 const REVIEW_CONTEXT_BYTES = 256 * 1024;
 
 const workTypeCatalog = {
@@ -91,7 +91,7 @@ function normalizeOperationalLevels(levels = [], checks = []) {
 }
 function step(key, ordinal, roleKey, artifacts = [], checks = [], options = {}) { return { key, ordinal, role_key: roleKey, required: options.required !== false, irreversible: Boolean(options.irreversible), input_schema_key: options.input ?? "package.v1", output_schema_key: options.output ?? (roleKey?.includes("reviewer") || roleKey === "reviewer" ? "reviewer.v1" : roleKey?.includes("documentator") || roleKey === "documentator" || roleKey === "editor" ? "documentator.v1" : roleKey?.includes("planner") || roleKey === "planner" || roleKey === "coordinator" ? "planner.v1" : roleKey ? "worker.v1" : "approval.v1"), artifact_type_keys: artifacts, check_keys: checks, resources: options.resources ?? [], correction: options.correction ?? { max_cycles: roleKey && !roleKey.includes("reviewer") ? 1 : 0 }, escalation: options.escalation ?? { human_required_for_owner_decision: true } }; }
 const transitions = steps => steps.slice(1).map((item, index) => ({ from: steps[index].key, to: item.key, condition: { previous_required_step: "completed" } }));
-function workflow(key, name, steps, questions = [], options = {}) { return { key, name, default_quality: options.quality ?? "mvp", default_level: options.level ?? "L2", status: "active", discovery: { git: true }, history_budget_bytes: options.history ?? 24000, steps, transitions: transitions(steps), questions }; }
+function workflow(key, name, steps, questions = [], options = {}) { return { key, name, default_quality: options.quality ?? "mvp", default_level: options.level ?? "L2", status: "active", discovery: { git: true }, steps, transitions: transitions(steps), questions }; }
 const question = (key, prompt, phase = "planning", required = true) => ({ key, phase, prompt, answer_schema: { type: "string", min_length: 1 }, required });
 const route = (workType, workflowKey, priority = 10) => ({ work_type_key: workType, workflow_key: workflowKey, enabled: true, priority });
 const binding = (roleKey, write = false, purpose = "registered context", priority = 0) => ({ role_key: roleKey, read: true, write, purpose, priority });
@@ -133,7 +133,7 @@ function finalize({ key, purpose, roles, workflows, routes, checks, operationalL
   const artifacts = [...new Set([...roles.flatMap(item => item.contract.allowed_artifact_types), ...workflows.flatMap(item => item.steps.flatMap(value => value.artifact_type_keys)), ...checks.flatMap(item => item.bindings.map(value => value.artifact_type_key).filter(Boolean))])];
   const qualities = Object.keys(qualityCatalog);
   const levels = [...new Set(workflows.map(item => item.default_level))];
-  return { schema_version: 2, key, version, purpose, prompt_builder_version: PACKAGE_VERSION, catalogs: { domains: domains.map(value => ({ key: value, name: domainCatalog[value] })), disciplines: disciplines.map(value => ({ key: value, name: disciplineCatalog[value] })), work_types: catalog(workTypeCatalog, workTypes, "category"), artifact_types: catalog(artifactCatalog, artifacts, "category"), quality_modes: catalog(qualityCatalog, qualities, "ordinal"), planning_levels: catalog(levelCatalog, levels, "ordinal") }, resources: resources.map(resource => ({ alias: resource.alias, kind: resource.kind, purpose: resource.purpose ?? null })), roles, profiles: profilesFor(key, roles), workflows, state_machine: stateMachine(), routes, checks, operational_levels: normalizeOperationalLevels(operationalLevels, checks), evidence_flows: evidenceFlows, documents, prompt_templates: promptsFor(roles), test_scenarios: scenarios };
+  return { schema_version: 3, key, version, purpose, prompt_builder_version: PACKAGE_VERSION, catalogs: { domains: domains.map(value => ({ key: value, name: domainCatalog[value] })), disciplines: disciplines.map(value => ({ key: value, name: disciplineCatalog[value] })), work_types: catalog(workTypeCatalog, workTypes, "category"), artifact_types: catalog(artifactCatalog, artifacts, "category"), quality_modes: catalog(qualityCatalog, qualities, "ordinal"), planning_levels: catalog(levelCatalog, levels, "ordinal") }, resources: resources.map(resource => ({ alias: resource.alias, kind: resource.kind, purpose: resource.purpose ?? null })), roles, profiles: profilesFor(key, roles), workflows, state_machine: stateMachine(), routes, checks, operational_levels: normalizeOperationalLevels(operationalLevels, checks), evidence_flows: evidenceFlows, documents, prompt_templates: promptsFor(roles), test_scenarios: scenarios };
 }
 
 function companyWebPackage(spec) {
@@ -169,7 +169,7 @@ function companyWebPackage(spec) {
 
   const flow = (key, name, items, questions = [], options = {}) => workflow(`${prefix}.${key}`, name, items, questions, options);
   const workflows = [
-    flow("research", "Human conversation and bounded research", [step("research", 1, "researcher", ["document"])], [], { level: "L1", history: 20000 }),
+    flow("research", "Human conversation and bounded research", [step("research", 1, "researcher", ["document"])], [], { level: "L1" }),
     flow("change", "Bounded product change", [step("plan", 1, "planner", ["document"]), step("implement", 2, "web_developer", ["code"], codeChecks), step("checks", 3, "tester", ["test_report"], codeChecks), step("review", 4, "reviewer", ["test_report"], codeChecks), step("document", 5, "documentator", ["document"])], [question("expected_result", "Which observable result should change?"), question("protected_work", "Which existing changes and data must remain untouched?")]),
     flow("data", "Reversible data change", [step("plan", 1, "planner", ["data_migration"]), step("implement", 2, "data_engineer", ["code", "data_migration"], dataChecks), step("checks", 3, "tester", ["test_report"], dataChecks), step("review", 4, "reviewer", ["test_report"], dataChecks), step("apply_approval", 5, null, ["decision"], [], { irreversible: true }), step("document", 6, "documentator", ["document"])], [question("data_boundary", "Which data, time range, and invariants are affected?"), question("rollback", "How can rollback be tested without changing production data?")]),
     flow("release", "Verified release and deployment", [step("plan", 1, "planner", ["release_package"]), step("preflight", 2, "tester", ["test_report"], releaseChecks), step("review", 3, "reviewer", ["test_report"], releaseChecks), step("proposal", 4, "release_operator", ["release_package"], releaseChecks, { output: "release_operation.v1" }), step("deployment_approval", 5, null, ["decision"], [], { irreversible: true }), step("document", 6, "documentator", ["document"])], [question("release_scope", "Which exact result and revision should be deployed?")], { quality: "production", level: "L3" }),
@@ -293,7 +293,7 @@ function composedPackage(core, ...components) {
   if (moduleKeys.has("accessManagement")) roles.push(role("access_administrator", "Propose the smallest registered access operation; the platform binds approval and dispatches execution outside the model.", ["access_management"], ["access_change", "test_report"], { schema: "access_change.v1", boundaries: { explicit_approval_required: true, least_privilege: true, secrets_in_output: false, execution: false } }));
   const workflows = [], routes = [], scenarios = [];
   const optionalReview = items => reviewed ? [...items, step("review", items.length + 1, "reviewer", ["test_report"], baselineKeys)] : items;
-  workflows.push(workflow(`${prefix}.research`, "Bounded research", [step("coordinate", 1, "coordinator", ["document"])], [], { level: "L1", history: 20000 }));
+  workflows.push(workflow(`${prefix}.research`, "Bounded research", [step("coordinate", 1, "coordinator", ["document"])], [], { level: "L1" }));
   for (const workType of ["conversation", "continuation", "research"]) routes.push(route(workType, `${prefix}.research`, workType === "research" ? 90 : 100));
   for (const item of capabilities) {
     const customChecks = item.options.checkKeys?.length ? item.options.checkKeys : baselineKeys;

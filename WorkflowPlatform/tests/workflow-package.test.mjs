@@ -61,16 +61,18 @@ test("limited package grammar rejects declarations, unknown envelope fields and 
   assert.throws(() => parseWorkflowPackage("<workflow_package key=\"a\" version=\"1.0.0\" schema_version=\"1\"><purpose>&boom;</purpose><payload format=\"application\/json\">{}</payload></workflow_package>"), /ENTITY_FORBIDDEN/);
 });
 
-test("schema v1 packages fail with an explicit migration requirement", () => {
-  assert.throws(() => validateWorkflowPackage({ schema_version: 1 }), /WORKFLOW_PACKAGE_SCHEMA_MIGRATION_REQUIRED: schema_version 1 -> 2/);
-  assert.throws(() => parseWorkflowPackage('<workflow_package key="tj-analyzer.desktop-software" version="1.0.0" schema_version="1"><purpose>Legacy private package contract fixture</purpose><payload format="application/json">{&quot;schema_version&quot;:1}</payload></workflow_package>'), /WORKFLOW_PACKAGE_SCHEMA_MIGRATION_REQUIRED: schema_version 1 -> 2/);
+test("schema v1 and v2 packages fail with an explicit migration requirement", () => {
+  assert.throws(() => validateWorkflowPackage({ schema_version: 1 }), /WORKFLOW_PACKAGE_SCHEMA_MIGRATION_REQUIRED: schema_version 1 -> 3/);
+  assert.throws(() => validateWorkflowPackage({ schema_version: 2 }), /WORKFLOW_PACKAGE_SCHEMA_MIGRATION_REQUIRED: schema_version 2 -> 3/);
+  assert.throws(() => parseWorkflowPackage('<workflow_package key="tj-analyzer.desktop-software" version="1.0.0" schema_version="1"><purpose>Legacy private package contract fixture</purpose><payload format="application/json">{&quot;schema_version&quot;:1}</payload></workflow_package>'), /WORKFLOW_PACKAGE_SCHEMA_MIGRATION_REQUIRED: schema_version 1 -> 3/);
+  assert.throws(() => parseWorkflowPackage('<workflow_package key="tj-analyzer.desktop-software" version="1.0.0" schema_version="2"><purpose>Legacy private package contract fixture</purpose><payload format="application/json">{&quot;schema_version&quot;:2}</payload></workflow_package>'), /WORKFLOW_PACKAGE_SCHEMA_MIGRATION_REQUIRED: schema_version 2 -> 3/);
 });
 
 test("complete package exports deterministically without local profile or model identifiers", () => {
   const root = temporaryRoot("workflow-package-export-"), dbFile = seedSource(root), first = path.join(root, "first.xml"), second = path.join(root, "second.xml");
   const one = exportWorkflowPackage(dbFile, first, "source", "demo.package"), two = exportWorkflowPackage(dbFile, second, "source", "demo.package");
   assert.equal(one.package_hash, two.package_hash); assert.equal(fs.readFileSync(first, "utf8"), fs.readFileSync(second, "utf8"));
-  const lint = inspectWorkflowPackage(first); assert.equal(lint.status, "passed"); assert.equal(lint.package.schema_version, 2); assert.equal(lint.package.workflows[0].steps.length, 4); assert.equal(lint.package.workflows[0].questions.length, 1); assert.equal(lint.package.state_machine.step_states.includes("changes_requested"), true); assert.equal(lint.package.test_scenarios[0].anonymized, true);
+  const lint = inspectWorkflowPackage(first); assert.equal(lint.status, "passed"); assert.equal(lint.package.schema_version, 3); assert.equal(lint.package.workflows[0].steps.length, 4); assert.equal(lint.package.workflows[0].questions.length, 1); assert.equal("history_budget_bytes" in lint.package.workflows[0], false); assert.equal(lint.package.state_machine.step_states.includes("changes_requested"), true); assert.equal(lint.package.test_scenarios[0].anonymized, true);
   assert.deepEqual(lint.package.resources, [{ alias: "runtime.ib", kind: "1c.server", purpose: "Isolated test information base" }]);
   assert.deepEqual(lint.package.workflows[0].steps.find(step => step.key === "implement").resources, [{ alias: "runtime.ib", mode: "shared" }]);
   assert.deepEqual(lint.package.catalogs.domains.map(item => item.key), ["software"]);

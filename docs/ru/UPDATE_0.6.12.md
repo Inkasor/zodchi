@@ -10,15 +10,15 @@
 2. Сделать полную копию data root, включая Workflow DB, Gateway policy, пользовательские definitions, generated packages и proposals.
 3. Проверить число файлов и SHA-256 между источником и копией. Откат выполняется восстановлением всего согласованного data root, а не отдельных таблиц или XML.
 4. Убедиться, что `runtime.json.packageDefinitions` указывает на пользовательский `definitions.mjs`, а не на пример из установленного релиза.
-5. Собрать кандидат из нужного коммита и сначала обновить заменяемый source/runtime. До открытия живой БД проверить, что установленный каталог содержит миграции 035–036 и `AgentGateway/src/profile-capabilities.mjs`.
+5. Собрать кандидат из нужного коммита и сначала обновить заменяемый source/runtime. До открытия живой БД проверить, что установленный каталог содержит миграции 035–037 и `AgentGateway/src/profile-capabilities.mjs`.
 
-Нельзя сначала перевести БД на schema 36, а затем запускать её старым кандидатом, который знает только schema 34. Такой кандидат правильно завершится `MIGRATION_UNKNOWN_APPLIED_VERSION: 35`. В этом случае нужно остановиться и обновить source; удалять или переписывать строки `schema_migrations` нельзя.
+Нельзя сначала перевести БД на schema 37, а затем запускать её старым кандидатом, который знает только schema 36. Такой кандидат правильно завершится `MIGRATION_UNKNOWN_APPLIED_VERSION: 37`. В этом случае нужно остановиться и обновить source; удалять или переписывать строки `schema_migrations` нельзя.
 
 ## Репетиция на копии
 
-1. Открыть скопированную Workflow DB кодом версии 0.6.12 и применить миграции 035–036.
-2. Проверить `PRAGMA integrity_check`, `PRAGMA foreign_key_check` и schema version 36.
-3. Перегенерировать пользовательский каталог через `generate-packages.mjs --definitions <data-root>/packages/definitions.mjs`.
+1. Открыть скопированную Workflow DB кодом версии 0.6.12 и применить миграции 035–037.
+2. Проверить `PRAGMA integrity_check`, `PRAGMA foreign_key_check` и schema version 37.
+3. Перегенерировать пользовательский каталог через `generate-packages.mjs --definitions <data-root>/packages/definitions.mjs`. Новый формат workflow package имеет schema v3 и prompt builder 3.3.0; поле `history_budget_bytes` больше не переносится, а лимит контекста классификатора берётся из его role contract.
 4. Если содержимое пакета изменилось, увеличить его SemVer. Повторное использование прежней версии с другим manifest обязано завершиться `PACKAGE_VERSION_COLLISION`; обходить эту защиту нельзя.
 5. Для каждого изменённого пакета выполнить `workflow-import-propose`, показать владельцу diff и только после подтверждения выполнить `workflow-import-apply --confirmed-by <owner-reference>`.
 6. Запустить Gateway `profiles-check` сначала по всем активным назначениям, затем по ролям каждого workflow и operational level.
@@ -45,7 +45,7 @@
 1. Повторить полную резервную копию непосредственно перед изменением.
 2. Установить и проверить заменяемый source/runtime до первого открытия обновляемой БД.
 3. Обновить пользовательские definitions, версии пакетов и профильную policy.
-4. Применить миграции 035–036 уже установленным кандидатом.
+4. Применить миграции 035–037 уже установленным кандидатом.
 5. Перегенерировать каталог и импортировать только явно подтверждённые новые версии пакетов.
 6. Повторить проверки целостности, полный профильный аудит и аудит каждого маршрута.
 
@@ -58,6 +58,8 @@
 | `zodchi` | `zodchi.product-development` | 2.9.1 | 3.2.0 |
 | `shared-lore` | `shared-lore.canon` | 2.9.1 | 3.2.0 |
 | `shared-map-engine` | `shared-map-engine.core` | 2.5.1 | 3.2.0 |
+
+Это состояние живой установки до финального обновления schema v3. Перед следующим импортом все три пользовательских definitions нужно собрать prompt builder 3.3.0, повысить package SemVer из-за изменившегося manifest и показать владельцу новый proposal. Пакет schema v1/v2 кандидат отклоняет с `WORKFLOW_PACKAGE_SCHEMA_MIGRATION_REQUIRED`; старую миграцию 004 с историческим default переписывать нельзя, колонку удаляет новая миграция 037.
 
 Итог profile audit: Zodchi — 60 совместимых назначений, 8 `accepted_declarative`, 0 конфликтов; Shared Lore — 28/28; Shared Map Engine — 32/32.
 

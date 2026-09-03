@@ -58,7 +58,8 @@
 - Install/update diagnostics now recognize Gateway's explicit `accepted_declarative` aggregate and preserve it as `admission_status` instead of misreporting an admitted owner exception as a preflight transport failure.
 - Install/update capability diagnostics now include enabled profile assignments that do not yet have an active role contract, matching runtime readiness instead of silently omitting them from the owner-visible count.
 - Direct classifier and researcher assignments now require active project-scoped contracts before intake. Package finalization supplies both contracts and their document bindings when a project package omitted them, and registry-backed calls carry the selected contract metadata instead of bypassing it.
-- The owner-data upgrade guide now requires the replaceable release to be installed and verified before a database is opened at schema 36. An older candidate that knows only schema 34 must fail closed with `MIGRATION_UNKNOWN_APPLIED_VERSION`; migration records must never be edited to bypass source/data mismatch.
+- Classifier conversation context now uses the active classifier role contract's `context_limit_bytes`; the unrelated workflow-level `history_budget_bytes` setting and database column are removed. Portable workflow packages move to schema v3 and prompt builder 3.3.0, so schema-v1/v2 packages must be regenerated and version-bumped before import.
+- The owner-data upgrade guide now requires the replaceable release to be installed and verified before a database is opened at the candidate's current schema. An older candidate that does not know an applied migration must fail closed with `MIGRATION_UNKNOWN_APPLIED_VERSION`; migration records must never be edited to bypass source/data mismatch.
 
 </section>
 

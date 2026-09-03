@@ -24,7 +24,7 @@ function workflowDefinition() {
     domain: "workflow",
     authority: "registered test documents",
     roles: {
-      classifier: { provider: "test", profile: "local-classifier", role: "classifier" },
+      classifier: { provider: "test", profile: "local-classifier", role: "classifier", contract: { context_limit_bytes: 65536 } },
       researcher: { provider: "test", profile: "local-researcher", role: "researcher" },
       documentator: { provider: "test", profile: "local-documentator", role: "documentator" },
       planner: { provider: "test", profile: "local-planner", role: "planner" },

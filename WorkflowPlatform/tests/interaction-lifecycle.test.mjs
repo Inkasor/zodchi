@@ -44,7 +44,7 @@ function fixture(prefix) {
   const roles = [["planner", "planner.v1", ["code"]], ["worker", "worker.v1", ["code"]], ["reviewer", "reviewer.v1", ["code"]]];
   onboardProject(dbFile, {
     project: { id: "project", name: "Project", root_path: project },
-    workflow: { id: "workflow", name: "Workflow", discovery: { git: false }, history_budget_bytes: 8192 },
+    workflow: { id: "workflow", name: "Workflow", discovery: { git: false } },
     profiles: roles.map(([role]) => ({ id: `profile-${role}`, provider: "codex", name: `local-${role}`, role_id: role })),
     routes: [{ work_type_id: "implementation" }],
     checks: [{ id: "check-ok", name: "Test check", runner: "fixture", kind: "fixture", config: { status: "passed" } }],
@@ -62,7 +62,7 @@ function bareFixture(prefix) {
   fs.mkdirSync(project);
   const db = openDb(dbFile);
   db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('project','Project',?,?)").run(project, now());
-  db.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status,discovery_json,history_budget_bytes) VALUES('workflow','Workflow','project','mvp','L2','active','{\"git\":false}',4096)").run();
+  db.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status,discovery_json) VALUES('workflow','Workflow','project','mvp','L2','active','{\"git\":false}')").run();
   db.prepare("INSERT INTO tasks(id,project_id,title,state,created_at,updated_at) VALUES('task','project','waiting','executing',?,?)").run(now(), now());
   db.prepare("INSERT INTO workflow_runs(id,task_id,project_id,workflow_id,state,operational_level,user_message,created_at,updated_at) VALUES('waiting','task','project','workflow','executing','mvp','waiting',?,?)").run(now(), now());
   return { root, project, dbFile, db };

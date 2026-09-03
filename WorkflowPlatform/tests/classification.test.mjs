@@ -24,7 +24,7 @@ function definition() {
   return {
     id: "workflow", domain: "workflow", authority: "registered test documents", gates: [],
     roles: {
-      classifier: { provider: "codex", profile: "test-classifier", role: "classifier" },
+      classifier: { provider: "codex", profile: "test-classifier", role: "classifier", contract: { context_limit_bytes: 8192 } },
       researcher: { provider: "codex", profile: "test-researcher", role: "researcher" },
       planner: { provider: "codex", profile: "test-planner", role: "planner" },
       worker: { provider: "codex", profile: "test-worker", role: "worker" },
@@ -41,7 +41,7 @@ function fixture(prefix = "workflow-classification-") {
   fs.mkdirSync(project);
   const db = openDb(dbFile);
   db.prepare("INSERT INTO projects(id,name,root_path,created_at) VALUES('project','Project',?,?)").run(project, now());
-  db.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status,discovery_json,history_budget_bytes) VALUES('workflow','Workflow','project','mvp','L2','active','{\"git\":false}',4096)").run();
+  db.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status,discovery_json) VALUES('workflow','Workflow','project','mvp','L2','active','{\"git\":false}')").run();
   for (const row of db.prepare("SELECT id FROM work_types ORDER BY id").all()) db.prepare("INSERT INTO workflow_routes(project_id,work_type_id,workflow_id,enabled,priority) VALUES('project',?,'workflow',1,0)").run(row.id);
   return { root, project, dbFile, db };
 }
@@ -431,7 +431,7 @@ test("registered contract covers decision, documentation, implementation, verifi
 
 test("an unpinned project hook lets the classifier select the registered workflow route", async () => {
   const { root, project, dbFile, db } = fixture("workflow-classification-route-selection-");
-  db.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status,discovery_json,history_budget_bytes) VALUES('implementation-workflow','Implementation','project','mvp','L2','active','{\"git\":false}',4096)").run();
+  db.prepare("INSERT INTO workflows(id,name,project_id,default_quality,default_level,status,discovery_json) VALUES('implementation-workflow','Implementation','project','mvp','L2','active','{\"git\":false}')").run();
   db.prepare("UPDATE workflow_routes SET workflow_id='implementation-workflow',priority=100 WHERE project_id='project' AND work_type_id='implementation'").run();
   db.close();
   const result = await statelessProcessMessage({ message: "Исправь ошибку", project, dbFile, classificationResult: decision() });
@@ -506,6 +506,7 @@ test("classifier context keeps accepted decisions, ordered bounded history, pend
   setPendingMessage(db, { client: semanticScope.client, sessionId: semanticScope.session_id, message: "Провести архитектурный анализ репозитория.", profile: { quality_mode: "mvp", execution_mode: "standard", verification_mode: "baseline", planning_mode: "single" } });
   for (let index = 0; index < 8; index += 1) db.prepare("INSERT INTO conversation_messages(id,project_id,run_id,role,content,created_at) VALUES(?,'project','history-run',?,?,?)")
     .run(`message-${index}`, index % 2 ? "assistant" : "user", `history-${index}-${"x".repeat(120)}`, `2026-01-01T00:00:0${index}.000Z`);
+  assert.throws(() => conversationContext(db, "project", undefined, semanticScope), /CONVERSATION_CONTEXT_BUDGET_REQUIRED/);
   assert.throws(() => conversationContext(db, "project", 500), /ZODCHI_SEMANTIC_SCOPE_REQUIRED/);
   assert.throws(() => classificationCatalog(db, "project"), /ZODCHI_SEMANTIC_SCOPE_REQUIRED/);
   assert.deepEqual(conversationContext(db, "project", 500, { mode: "stateless" }).history, []);
@@ -568,7 +569,7 @@ test("onboarding registers workflow routes, documents and role permissions as da
   fs.writeFileSync(path.join(project, "authority.md"), "# Authority");
   const result = onboardProject(dbFile, {
     project: { id: "project", name: "Project", root_path: project },
-    workflow: { id: "workflow", name: "Workflow", discovery: { git: false }, history_budget_bytes: 8192 },
+    workflow: { id: "workflow", name: "Workflow", discovery: { git: false } },
     documents: [{ id: "authority", path: "authority.md", document_type: "authority", authority: "owner" }],
     role_documents: [{ role_id: "classifier", document_id: "authority", read_access: true, write_access: false }],
     routes: [{ work_type_id: "conversation" }, { work_type_id: "implementation" }]

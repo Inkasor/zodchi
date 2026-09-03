@@ -100,7 +100,7 @@ for (const { item, workflowId, checks, directProfiles } of prepared) {
     message: providerMessage,
     project: path.resolve(item.root_path), dbFile, workflow: workflowId,
     workflowDefinition: { id: workflowId, authority: "registered project documents", roles: {
-      classifier: { provider: "codex", profile: directProfiles.classifier, role: "classifier" },
+      classifier: { provider: "codex", profile: directProfiles.classifier, role: "classifier", contract: { context_limit_bytes: 65536 } },
       researcher: { provider: "codex", profile: directProfiles.researcher, role: "researcher" }
     } },
     execute: true, eventSource: "checkpoint9", eventKey: item.project_id, gatewayCall: gateway,

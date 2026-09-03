@@ -409,7 +409,7 @@ test("one project reuses versioned role contracts composed by multiple packages"
   }
   const verified = openDb(dbFile);
   assert.equal(verified.prepare("SELECT COUNT(*) count FROM workflow_package_releases WHERE project_id='combined' AND status='active'").get().count, 2);
-  assert.equal(verified.prepare("SELECT COUNT(*) count FROM role_contracts WHERE project_id='combined' AND role_id='reviewer' AND version='3.2.0'").get().count, 1);
+  assert.equal(verified.prepare("SELECT COUNT(*) count FROM role_contracts WHERE project_id='combined' AND role_id='reviewer' AND version='3.3.0'").get().count, 1);
   assert.equal(verified.prepare(`SELECT COUNT(DISTINCT m.local_id) count FROM package_import_mappings m JOIN workflow_import_proposals p ON p.id=m.proposal_id
     WHERE p.target_project_id='combined' AND m.entity_type='role_contract' AND m.semantic_key='reviewer'`).get().count, 1);
   verified.close();

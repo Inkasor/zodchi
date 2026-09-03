@@ -44,6 +44,7 @@ export function registerProjectRoot(dbFile, { project, key, path: rootPath, acce
 export function onboardProject(dbFile, spec) {
   if (!spec?.project?.id || !spec.project.name || !spec.project.root_path) throw new Error("onboarding: project.id, name and root_path are required");
   if (!spec.workflow?.id) throw new Error("onboarding: workflow.id is required");
+  for (const contract of spec.role_contracts ?? []) if (!Number.isInteger(contract.context_limit_bytes) || contract.context_limit_bytes < 1024) throw new Error(`onboarding: role contract ${contract.id ?? contract.role_id ?? "missing"} requires context_limit_bytes`);
   for (const document of spec.documents ?? []) if (!document.id || !document.path || path.isAbsolute(document.path) || document.path.split(/[\\/]/).includes("..")) throw new Error(`onboarding: document path must be a registered relative path: ${document.path ?? "missing"}`);
   const db = openDb(dbFile);
   const normalizedPolicies = (spec.operational_levels ?? []).map(policy => {
@@ -68,7 +69,7 @@ export function onboardProject(dbFile, spec) {
     registerImplicitResources(db, { projectId: spec.project.id, rootPath: spec.project.root_path });
     for (const resource of spec.resources ?? []) registerProjectResource(db, { projectId: spec.project.id, alias: resource.alias, kind: resource.kind, purpose: resource.purpose ?? null, declaration: resource.declaration ?? null });
     rows(db, "INSERT OR IGNORE INTO work_types (id,name,category) VALUES (?, ?, ?)", (spec.work_types ?? []).map(x => [x.id, x.name ?? x.id, x.category ?? "general"]));
-    rows(db, "INSERT OR IGNORE INTO workflows (id,name,project_id,package_key,package_version,default_quality,default_level,status,discovery_json,history_budget_bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [[spec.workflow.id, spec.workflow.name ?? spec.workflow.id, spec.project.id, spec.workflow.package_key ?? null, spec.workflow.package_version ?? null, spec.workflow.default_quality ?? "mvp", spec.workflow.default_level ?? "L2", "active", JSON.stringify(spec.workflow.discovery ?? { git: false }), spec.workflow.history_budget_bytes ?? 24000]]);
+    rows(db, "INSERT OR IGNORE INTO workflows (id,name,project_id,package_key,package_version,default_quality,default_level,status,discovery_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [[spec.workflow.id, spec.workflow.name ?? spec.workflow.id, spec.project.id, spec.workflow.package_key ?? null, spec.workflow.package_version ?? null, spec.workflow.default_quality ?? "mvp", spec.workflow.default_level ?? "L2", "active", JSON.stringify(spec.workflow.discovery ?? { git: false })]]);
     rows(db, "INSERT OR IGNORE INTO domains (id,name) VALUES (?, ?)", (spec.domains ?? []).map(x => [x.id, x.name ?? x.id]));
     rows(db, "INSERT OR IGNORE INTO disciplines (id,name) VALUES (?, ?)", (spec.disciplines ?? []).map(x => [x.id, x.name ?? x.id]));
     rows(db, "INSERT OR IGNORE INTO quality_modes (id,name,ordinal) VALUES (?, ?, ?)", (spec.quality_modes ?? []).map(x => [x.id, x.name ?? x.id, x.ordinal ?? 0]));
@@ -89,7 +90,7 @@ export function onboardProject(dbFile, spec) {
       x.id, spec.project.id, x.role_id, x.version ?? "1.0.0", x.purpose,
       JSON.stringify(x.boundaries ?? {}), JSON.stringify(x.allowed_work_types ?? []), JSON.stringify(x.allowed_artifact_types ?? []),
       JSON.stringify(x.allowed_tools ?? []), JSON.stringify(x.allowed_skills ?? []), JSON.stringify(x.required_checks ?? []),
-      JSON.stringify(x.allowed_transitions ?? []), JSON.stringify(x.allowed_profiles ?? ["*"]), x.context_limit_bytes ?? 24000,
+      JSON.stringify(x.allowed_transitions ?? []), JSON.stringify(x.allowed_profiles ?? ["*"]), x.context_limit_bytes,
       x.max_calls ?? 1, x.max_correction_cycles ?? 0, x.timeout_seconds ?? 1800, x.result_schema_key,
       x.prompt_template_version ?? "1.0.0", JSON.stringify(x.escalation ?? {}), x.status ?? "active"
     ]));
