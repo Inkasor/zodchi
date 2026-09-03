@@ -126,6 +126,15 @@ const SOURCE_RESEARCH_DISCIPLINES = new Set([
 ]);
 function requiresSourceEvidence(classification) { return SOURCE_RESEARCH_DISCIPLINES.has(classification?.discipline); }
 
+function isImplementationSourcePath(value) {
+  const normalized = String(value ?? "").replaceAll("\\", "/");
+  const segments = normalized.split("/");
+  const basename = segments.at(-1) ?? "";
+  return isSourceCodePath(normalized)
+    && !segments.some(segment => /^(?:test|tests|fixture|fixtures|__tests__)$/iu.test(segment))
+    && !/(?:\.test|\.spec)\.[^/]+$/iu.test(basename);
+}
+
 function researchSourceContext(discovery, objective, { sourceBytes = RESEARCH_CONTEXT_BUDGETS.source_bytes, maxFiles = RESEARCH_SOURCE_RANKING.selected_files, sourceRequired = false } = {}) {
   const scope = sourceScope(discovery.source_scope);
   const ranking = researchSourceRankingOptions(maxFiles);
@@ -135,7 +144,19 @@ function researchSourceContext(discovery, objective, { sourceBytes = RESEARCH_CO
     ...ranking.search, indexedTerms: expanded.code,
     sourceCodeOnly: sourceRequired, preferSourceCode: sourceRequired
   });
-  let selectedPaths = located.files.slice(0, maxFiles).map(file => file.path);
+  // A request's explicit identifier is an anchor, not just another ranking term. If an implementation
+  // file that owns or publishes that identifier falls just outside the bounded candidate slice, the
+  // researcher receives every surrounding test and caller but not the definition it asked about. Keep
+  // bounded implementation anchors ahead of the lexical slice; ordinary prose and harvested terms
+  // still fill the remaining slots.
+  const exactTerms = new Set((expanded.code ?? []).map(term => String(term).toLowerCase()));
+  const exactSourcePaths = new Set((located.exact_term_index ?? [])
+    .filter(item => exactTerms.has(String(item.term).toLowerCase()))
+    .flatMap(item => item.paths ?? [])
+    .filter(isImplementationSourcePath));
+  const explicitAnchors = located.files.map(file => file.path).filter(file => exactSourcePaths.has(file));
+  for (const file of exactSourcePaths) if (!explicitAnchors.includes(file)) explicitAnchors.push(file);
+  let selectedPaths = [...new Set([...explicitAnchors, ...located.files.map(file => file.path)])].slice(0, maxFiles);
   let strategy = selectedPaths.length ? (sourceRequired ? "ranked_source_matches" : "ranked_objective_matches") : "no_relevant_match";
   const inventoryFiles = (discovery.sources ?? []).flatMap(source => source.files ?? []);
   const eligibleInventoryFiles = sourceRequired ? inventoryFiles.filter(file => isSourceCodePath(file.path)) : inventoryFiles;

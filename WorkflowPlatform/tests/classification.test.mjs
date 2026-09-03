@@ -341,6 +341,39 @@ test("research invokes classifier then researcher without planner, worker or rev
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("research keeps an explicitly named implementation anchor in the bounded source packet", async () => {
+  const { root, project, dbFile, db } = fixture("workflow-research-explicit-anchor-");
+  fs.mkdirSync(path.join(project, "src", "publish"), { recursive: true });
+  fs.mkdirSync(path.join(project, "src", "core"), { recursive: true });
+  fs.mkdirSync(path.join(project, "src", "compose"), { recursive: true });
+  fs.writeFileSync(path.join(project, "src", "publish", "mapCorePackage.ts"), "export type MapCorePackage = unknown;\nexport function validateMapCorePackage() { return []; }\n", "utf8");
+  fs.writeFileSync(path.join(project, "src", "publish", "publishMapCore.ts"), "import type { MapCorePackage } from \"./mapCorePackage.ts\";\nexport function publish(pkg: MapCorePackage) { return pkg; }\n", "utf8");
+  fs.writeFileSync(path.join(project, "src", "core", "mapCore.ts"), "import { publish } from \"../publish/publishMapCore.ts\";\nexport function generateMapCore() { return publish({}); }\n", "utf8");
+  fs.writeFileSync(path.join(project, "src", "core", "blueprintFromMapCore.ts"), "import type { MapCorePackage } from \"../publish/mapCorePackage.ts\";\nexport function blueprintFromMapCore(pkg: MapCorePackage) { return pkg; }\n", "utf8");
+  fs.writeFileSync(path.join(project, "src", "compose", "composeFromMapCore.ts"), "import { blueprintFromMapCore } from \"../core/blueprintFromMapCore.ts\";\nexport function composeFromMapCore(pkg) { return blueprintFromMapCore(pkg); }\n", "utf8");
+  for (let index = 0; index < 8; index += 1) fs.writeFileSync(path.join(project, "src", `noise-${index}.ts`), "export const mapCorePackageNoise = true;\n", "utf8");
+  db.close();
+  const research = decision({
+    work_type: "research", artifact_type: "test_report", discipline: "architecture", planning_required: false,
+    reply_mode: "research", resolved_objective: "Определить, как публикуется mapCorePackage и назвать файл с publish.", reason: "Нужно проверить явно названный контракт по исходникам."
+  });
+  let researcherPrompt = null;
+  const result = await statelessProcessMessage({
+    message: "Как публикуется mapCorePackage?", project, dbFile, workflowDefinition: definition(), execute: true,
+    gatewayCall: async request => {
+      if (request.role === "classifier") return receipt(JSON.stringify(research), "classifier-explicit-anchor");
+      researcherPrompt = fs.readFileSync(request.taskFile, "utf8");
+      const context = JSON.parse(researcherPrompt.split("REGISTERED_SOURCE_EVIDENCE:")[1].split("\nREGISTERED_PROJECT_CORPUS:")[0]);
+      assert.equal(context.files.some(file => file.path === "src/publish/publishMapCore.ts" && file.status === "read"), true, "explicit implementation anchor must be supplied");
+      return receipt(JSON.stringify({ schema_version: 1, status: "answered", answer: "publish находится в publishMapCore.ts.", inspected_paths: ["src/publish/publishMapCore.ts"], limitations: [] }), "research-explicit-anchor");
+    }
+  });
+  assert.equal(result.route, "research");
+  assert.equal(result.research.status, "answered");
+  assert.match(researcherPrompt, /publishMapCore\.ts/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("insufficient research is recorded but cannot complete as an answered result", async () => {
   const { root, project, dbFile, db } = fixture("workflow-research-insufficient-");
   fs.writeFileSync(path.join(project, "engine.ts"), "export const ready = false;\n", "utf8");
