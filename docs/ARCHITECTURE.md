@@ -6,7 +6,7 @@
   </purpose>
 
   <components status="accepted">
-    <component id="workflow_platform" responsibility="workflow">Classifies the request, assembles registered context, selects a route, and manages stages, documents, and deterministic checks.</component>
+    <component id="workflow_platform" responsibility="workflow">Classifies the request, assembles registered context, selects a route, and manages owner-confirmed strategic goals and stages, documents, and deterministic checks.</component>
     <component id="code_intelligence" responsibility="source_retrieval">Maps natural-language evidence to code identifiers, expands them through bounded BSL or TypeScript/JavaScript structure, and can query a registered external C# LSP provider over an attested Unity solution boundary. It returns measured source locations without embeddings.</component>
     <component id="agent_gateway" responsibility="model_calls">Performs one bounded call to the assigned model and stores a technical receipt without the full request or response.</component>
     <component id="explicit_skill" responsibility="chat_entry">Activates Zodchi mode for one explicit client session with `/zodchi`; the conditional router validates the host's managed skill reference and is a no-op for every inactive session. Codex command hooks additionally require owner-approved current trust hashes.</component>
