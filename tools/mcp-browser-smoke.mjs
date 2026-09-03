@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import zlib from "node:zlib";
 import { spawnSync } from "node:child_process";
 import { loadGatewayPolicy } from "../AgentGateway/src/policy.mjs";
 import { readBrowserSentinelEvidence, startBrowserSentinel } from "./browser-sentinel.mjs";
@@ -62,7 +63,51 @@ function portableReportValue(value, replacements) {
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, portableReportValue(item, replacements)]));
   return value;
 }
-function screenshotEvidence(file, artifactPath = "<probe-root>/browser-proof.png") {
+function paethPredictor(left, up, upperLeft) {
+  const estimate = left + up - upperLeft;
+  const leftDistance = Math.abs(estimate - left), upDistance = Math.abs(estimate - up), upperLeftDistance = Math.abs(estimate - upperLeft);
+  return leftDistance <= upDistance && leftDistance <= upperLeftDistance ? left : upDistance <= upperLeftDistance ? up : upperLeft;
+}
+function decodePngPixels(content) {
+  const width = content.readUInt32BE(16), height = content.readUInt32BE(20), bitDepth = content[24], colorType = content[25], interlace = content[28];
+  if (bitDepth !== 8 || ![2, 6].includes(colorType) || interlace !== 0) throw new Error("PNG_PIXEL_FORMAT_UNSUPPORTED");
+  const chunks = [];
+  for (let offset = 8; offset + 12 <= content.length;) {
+    const length = content.readUInt32BE(offset), type = content.subarray(offset + 4, offset + 8).toString("ascii"), end = offset + 12 + length;
+    if (end > content.length) throw new Error("PNG_CHUNK_TRUNCATED");
+    if (type === "IDAT") chunks.push(content.subarray(offset + 8, offset + 8 + length));
+    offset = end;
+  }
+  if (chunks.length === 0) throw new Error("PNG_IDAT_MISSING");
+  const channels = colorType === 2 ? 3 : 4, stride = width * channels, encoded = zlib.inflateSync(Buffer.concat(chunks));
+  if (encoded.length !== height * (stride + 1)) throw new Error("PNG_SCANLINES_INVALID");
+  const pixels = Buffer.alloc(width * height * channels);
+  for (let y = 0; y < height; y += 1) {
+    const encodedOffset = y * (stride + 1), rowOffset = y * stride, filter = encoded[encodedOffset];
+    if (filter > 4) throw new Error("PNG_FILTER_UNSUPPORTED");
+    for (let x = 0; x < stride; x += 1) {
+      const raw = encoded[encodedOffset + 1 + x], left = x >= channels ? pixels[rowOffset + x - channels] : 0, up = y > 0 ? pixels[rowOffset - stride + x] : 0, upperLeft = y > 0 && x >= channels ? pixels[rowOffset - stride + x - channels] : 0;
+      const predictor = filter === 0 ? 0 : filter === 1 ? left : filter === 2 ? up : filter === 3 ? Math.floor((left + up) / 2) : paethPredictor(left, up, upperLeft);
+      pixels[rowOffset + x] = (raw + predictor) & 0xff;
+    }
+  }
+  return { width, height, channels, pixels };
+}
+function screenshotContainsMarker(decoded, marker) {
+  for (const scale of [1, 2, 3]) {
+    const right = (marker.left + marker.columns * marker.cellSize) * scale, bottom = (marker.top + marker.rows * marker.cellSize) * scale;
+    if (right > decoded.width || bottom > decoded.height) continue;
+    const matched = marker.bits.every((bit, index) => {
+      const column = index % marker.columns, row = Math.floor(index / marker.columns);
+      const x = Math.floor((marker.left + column * marker.cellSize + marker.cellSize / 2) * scale), y = Math.floor((marker.top + row * marker.cellSize + marker.cellSize / 2) * scale);
+      const pixel = (y * decoded.width + x) * decoded.channels;
+      return marker.colors[bit].every((channel, channelIndex) => decoded.pixels[pixel + channelIndex] === channel);
+    });
+    if (matched) return { matched: true, scale };
+  }
+  return { matched: false, scale: null };
+}
+function screenshotEvidence(file, marker, artifactPath = "<probe-root>/browser-proof.png") {
   if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) return { status: "unknown", enforcement: "unknown", source: "artifact_missing", artifact: null };
   const content = fs.readFileSync(file), signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
   if (content.length < signature.length || !content.subarray(0, signature.length).equals(signature)) return { status: "unknown", enforcement: "unknown", source: "artifact_not_png", artifact: null };
@@ -71,11 +116,19 @@ function screenshotEvidence(file, artifactPath = "<probe-root>/browser-proof.png
   if (width < PROBE_VIEWPORT.width || height < PROBE_VIEWPORT.height) {
     return { status: "unknown", enforcement: "unknown", source: "artifact_below_probe_viewport", artifact: { path: artifactPath, bytes: content.length, width, height, sha256: crypto.createHash("sha256").update(content).digest("hex") } };
   }
+  let markerMatch;
+  try { markerMatch = screenshotContainsMarker(decodePngPixels(content), marker); }
+  catch (error) {
+    return { status: "unknown", enforcement: "unknown", source: "artifact_pixels_unverifiable", artifact: { path: artifactPath, bytes: content.length, width, height, sha256: crypto.createHash("sha256").update(content).digest("hex"), marker_sha256: marker.sha256, detail: error.message } };
+  }
+  if (!markerMatch.matched) {
+    return { status: "unknown", enforcement: "unknown", source: "sentinel_marker_missing", artifact: { path: artifactPath, bytes: content.length, width, height, sha256: crypto.createHash("sha256").update(content).digest("hex"), marker_sha256: marker.sha256 } };
+  }
   return {
     status: "available",
     enforcement: "technical",
-    source: "retained_png_artifact",
-    artifact: { path: artifactPath, bytes: content.length, width, height, sha256: crypto.createHash("sha256").update(content).digest("hex") }
+    source: "retained_sentinel_png_artifact",
+    artifact: { path: artifactPath, bytes: content.length, width, height, sha256: crypto.createHash("sha256").update(content).digest("hex"), marker_sha256: marker.sha256, marker_scale: markerMatch.scale }
   };
 }
 
@@ -137,13 +190,14 @@ try {
   const carried = receipt?.environment?.provider_environment?.mcp_servers?.carried?.map(item => item.name) ?? [];
   const sentinelEvidence = readBrowserSentinelEvidence(requestLog, sentinel.routes);
   const browserConfirmed = receipt?.status === "completed" && modelResult?.status === "observed" && modelResult.title === title && modelResult.body === body && sentinelEvidence.confirmed && carried.includes(server);
-  const captureEvidence = capture ? screenshotEvidence(screenshotFile, screenshotArtifactPath) : { status: "not_probed", enforcement: "none", source: "capture_disabled", artifact: null };
+  const captureEvidence = capture ? screenshotEvidence(screenshotFile, sentinel.screenshotMarker, screenshotArtifactPath) : { status: "not_probed", enforcement: "none", source: "capture_disabled", artifact: null };
   const modelReportedUnavailable = receipt?.status === "completed" && ["unavailable", "blocked", "failed"].includes(modelResult?.status) && carried.includes(server);
   const portableReported = portableReportValue(modelResult, [[project, "<project>"], [root, "<probe-root>"], [os.tmpdir(), "<system-temp>"]]);
   const report = {
-    schema_version: 1,
-    finding: "The MCP smoke observes the browser request sequence and retained screenshot artifact independently, but a deliberately adversarial writable profile can still replay requests or forge a PNG. Deterministic WorkflowPlatform checks and owner acceptance remain separate authorities.",
+    schema_version: 2,
+    finding: "The MCP smoke independently observes the browser request sequence and verifies that the retained PNG contains a random sentinel marker. A deliberately adversarial writable profile can still emulate the protocol and forge both signals, so this is bounded capability evidence rather than a deterministic project gate or owner acceptance.",
     probe: "registered_mcp_browser",
+    registration_scope: "isolated_probe_policy",
     status: browserConfirmed ? "browser_confirmed" : modelReportedUnavailable ? "model_reported_unavailable" : "inconclusive",
     provider, profile: profileName, browser_mcp_server: server, receipt_id: receipt?.receiptId ?? null, gateway_exit_code: child.status, provider_status: receipt?.status ?? null,
     expected: { title, body }, reported: portableReported,

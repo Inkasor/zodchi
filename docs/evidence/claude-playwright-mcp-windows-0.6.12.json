@@ -1,5 +1,7 @@
 {
   "schema_version": 1,
+  "superseded_by": "claude-playwright-mcp-windows-marker-0.6.12.json",
+  "superseded_reason": "The retained PNG had valid dimensions and a digest, but its content was not programmatically bound to the sentinel page.",
   "finding": "The MCP smoke observes the browser request sequence and retained screenshot artifact independently, but a deliberately adversarial writable profile can still replay requests or forge a PNG. Deterministic WorkflowPlatform checks and owner acceptance remain separate authorities.",
   "probe": "registered_mcp_browser",
   "status": "browser_confirmed",
