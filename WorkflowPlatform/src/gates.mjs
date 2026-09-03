@@ -89,7 +89,19 @@ function runCommand(command, args, cwd, timeoutSeconds) {
       if (/[\0\r\n]/.test(text)) throw new Error("COMMAND_ARGUMENT_INVALID");
       return `"${text.replaceAll("%", "%%").replaceAll('"', '""')}"`;
     };
-    const commandLine = windowsScript ? `"${[command, ...args].map(quote).join(" ")}"` : null;
+    // cmd.exe needs an outer quote pair when the batch path itself contains spaces. Quoting a bare
+    // command as the first token is different: with /s /c it makes cmd pass the quote as part of the
+    // batch invocation and wrappers such as corepack.cmd resolve their node_modules from the cwd.
+    // Keep the first token bare unless its path actually needs quoting, while arguments remain quoted
+    // so spaces and metacharacters cannot become shell syntax.
+    const commandLine = windowsScript
+      ? (() => {
+          const needsOuterQuotes = /[\s&()^!]/.test(command);
+          const first = needsOuterQuotes ? quote(command) : command;
+          const body = [first, ...args.map(quote)].join(" ");
+          return needsOuterQuotes ? `"${body}"` : body;
+        })()
+      : null;
     const commandArgs = windowsScript ? ["/d", "/s", "/c", commandLine] : args;
     try {
       execFile(executable, commandArgs, { cwd, windowsHide: true, shell: false, windowsVerbatimArguments: windowsScript, timeout: timeoutSeconds * 1000 }, (error, stdout, stderr) => {

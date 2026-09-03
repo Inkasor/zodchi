@@ -279,6 +279,7 @@ test("structured planner-worker-gate-reviewer PASS completes and raw planner pro
   assert.match(env.plannerPrompt, /only the one final path requested by the owner/);
   const db = openDb(env.dbFile);
   assert.equal(db.prepare("SELECT state FROM workflow_runs WHERE id=?").get(env.result.run_id).state, "completed");
+  assert.equal(db.prepare("SELECT max_attempts FROM workflow_steps WHERE run_id=? AND role_id='worker'").get(env.result.run_id).max_attempts, 2);
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM workflow_steps WHERE run_id=? AND state='completed'").get(env.result.run_id).count, 4);
   assert.equal(db.prepare("SELECT COUNT(*) AS count FROM gateway_calls WHERE run_id=? AND length(contract_hash)=64 AND length(result_hash)=64").get(env.result.run_id).count, 3);
   assert.equal(JSON.stringify(db.prepare("SELECT result_json FROM workflow_steps WHERE run_id=?").all(env.result.run_id)).includes("RAW_PLANNER_PROSE_MARKER"), false);
@@ -694,6 +695,44 @@ test("a declared route whose worker may write is refused without a planning step
   });
   assert.equal(calls, 0);
   assert.equal(result.execution.error, "WORKFLOW_WRITING_STEP_REQUIRES_PLANNING");
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
+test("a documentation-only declared route remains executable without a worker role", async () => {
+  const env = fixture("workflow-documentation-only-route-", { document: true });
+  const db = openDb(env.dbFile);
+  const insert = db.prepare("INSERT INTO workflow_step_templates(project_id,workflow_id,step_key,ordinal,role_id,required,irreversible,input_schema_key,output_schema_key,artifact_types_json,check_keys_json,correction_json,escalation_json) VALUES('project','workflow',?,?,?,1,0,'package.v1',?,'[]','[]','{}','{}')");
+  insert.run("plan", 1, "planner", "planner.v1");
+  insert.run("review", 2, "reviewer", "reviewer.v1");
+  insert.run("document", 3, "documentator", "documentator.v1");
+  db.close();
+  const calls = [];
+  const result = await statelessProcessMessage({
+    message: "Обнови зарегистрированный документ", project: env.project, dbFile: env.dbFile,
+    workflowDefinition: { id: "workflow", authority: "test", roles: {} }, execute: true,
+    classificationResult: classification(true),
+    gatewayCall: async request => {
+      calls.push(request.role);
+      if (request.role === "planner") return receipt("planner", { ...plannerResult({ document: true }), steps: [] });
+      if (request.role === "reviewer") return receipt("reviewer", reviewerResult("PASS"));
+      if (request.role === "documentator") {
+        const file = path.join(env.project, "docs", "control.md");
+        const version = `sha256:${crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex")}`;
+        return receipt("documentator", {
+          schema_version: 1, status: "proposed", document_id: "control", expected_version: version,
+          operation: "update_section", authority: "owner", content: "new accepted content", section_id: "summary", decision_id: null,
+          evidence_id: null, status_value: null, target_tag: null, target_id: null, replacement_id: null
+        });
+      }
+      throw new Error(`unexpected role ${request.role}`);
+    },
+    gateRunner: async () => ({ task_id: "gate", project: env.project, level: "mvp", files: ["docs/control.md"], status: "passed", checks: [], summary: "passed" })
+  });
+  assert.equal(result.execution.status, "completed");
+  assert.deepEqual(calls, ["planner", "reviewer", "documentator"]);
+  const verified = openDb(env.dbFile);
+  assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM document_operations WHERE run_id=? AND status='applied'").get(result.run_id).count, 1);
+  verified.close();
   fs.rmSync(env.root, { recursive: true, force: true });
 });
 

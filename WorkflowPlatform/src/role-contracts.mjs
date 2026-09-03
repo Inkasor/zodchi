@@ -217,7 +217,7 @@ export function rolePrompt({ contract, qualityContract, packageContract, context
     `</workflow_role_prompt>`;
 }
 
-export function validatePlannerResult(value, { contract, registeredRoles = [], registeredChecks = [], registeredArtifactTypes = [], registeredResources = [], maxStepAttempts = null }) {
+export function validatePlannerResult(value, { contract, registeredRoles = [], registeredChecks = [], registeredArtifactTypes = [], registeredResources = [], maxStepAttempts = null, allowEmptyReadyPlan = false }) {
   exactObject(value, schemaFields("planner.v1"), "planner.v1");
   if (value.schema_version !== 1 || !["ready", "questions"].includes(value.outcome)) throw new Error("planner.v1: invalid version or outcome");
   exactObject(value.scope, ["included", "excluded"], "planner.v1.scope");
@@ -267,7 +267,10 @@ export function validatePlannerResult(value, { contract, registeredRoles = [], r
     return { ...item, allowed_paths: allowed, artifact_keys: producibleArtifactKeys };
   });
   if (value.outcome === "questions" && !value.questions.length) throw new Error("planner.v1: questions outcome requires questions");
-  if (value.outcome === "ready" && (!value.steps.length || value.questions.length)) throw new Error("planner.v1: ready outcome requires steps and no questions");
+  // A documentation-only route has no pre-documentation worker: the platform itself runs the gate,
+  // review and documentator phases after the planner. Keep the normal non-empty-plan rule everywhere
+  // else, and require the executor to opt into this narrow route explicitly.
+  if (value.outcome === "ready" && ((!value.steps.length && !allowEmptyReadyPlan) || value.questions.length)) throw new Error("planner.v1: ready outcome requires steps and no questions");
   return value;
 }
 

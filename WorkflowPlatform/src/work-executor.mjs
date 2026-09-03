@@ -198,10 +198,28 @@ function promptBytes(value) { return Buffer.byteLength(JSON.stringify(value)); }
 function compactCodeIntelligenceEvidence(sourceMatches) {
   const intelligence = sourceMatches?.code_intelligence;
   if (!intelligence) return null;
+  // The full compiler adapter contains path-local definitions and every resolved edge. That is useful
+  // while building the planner locator, but repeating it in every worker packet consumes the context
+  // that the worker needs for the actual allowed files. Keep the run-wide facts and a few compact
+  // transition anchors; the complete source evidence remains in the worker_source receipt.
   return {
     schema_version: intelligence.schema_version,
     strategy: intelligence.strategy,
-    adapters: intelligence.adapters,
+    primary_terms: intelligence.primary_terms ?? [],
+    adapters: (intelligence.adapters ?? []).map(adapter => ({
+      name: adapter.name,
+      files: adapter.files,
+      compiler_available: adapter.compiler_available,
+      definitions: adapter.definitions,
+      resolved_references: adapter.resolved_references,
+      unresolved_calls: adapter.unresolved_calls,
+      unresolved_call_categories: adapter.unresolved_call_categories,
+      semantic_diagnostics: adapter.semantic_diagnostics,
+      transitions: (adapter.transitions ?? []).slice(0, 6).map(transition => ({
+        kind: transition.kind, path: transition.path, line: transition.line,
+        symbol_from: transition.symbol_from, symbol_to: transition.symbol_to
+      }))
+    })),
     completeness: intelligence.completeness,
     statistics: intelligence.statistics
   };
@@ -485,12 +503,17 @@ function promptWithinContract(contract, qualityContract, packageContract, contex
   const fixedPromptFloorBytes = Buffer.byteLength(rolePrompt({ contract, qualityContract, packageContract: {}, context: {}, resultSchema: schemaKey }));
   const mandatoryContext = Object.fromEntries(Object.entries(fitted).filter(([key]) => !new Set(["documents", "decisions", "pending_interactions", "source_inventory", "source_matches", "sources"]).has(key)));
   const mandatoryContextFloorBytes = Buffer.byteLength(rolePrompt({ contract, qualityContract, packageContract, context: mandatoryContext, resultSchema: schemaKey }));
+  // A prompt that merely fits under the hard limit has already left too little room for a model to
+  // follow the result contract. Fit dynamic evidence below the warning threshold so acceptance can
+  // distinguish a usable invocation from a technically non-overflowing one.
+  const warningThresholdBytes = Math.floor(contract.context_limit_bytes * 0.85);
+  const fittingLimit = Math.max(0, warningThresholdBytes - 1);
   const floorError = (code, measured) => {
     const error = new Error(`${code}: role envelope is ${measured}/${contract.context_limit_bytes} bytes`);
     error.prompt_metrics = {
       prompt_bytes: measured,
       context_limit_bytes: contract.context_limit_bytes,
-      warning_threshold_bytes: Math.floor(contract.context_limit_bytes * 0.85),
+      warning_threshold_bytes: warningThresholdBytes,
       utilization_ratio: measured / contract.context_limit_bytes,
       warning: measured >= contract.context_limit_bytes * 0.85 ? "context_near_limit" : null,
       fixed_prompt_floor_bytes: fixedPromptFloorBytes,
@@ -505,27 +528,27 @@ function promptWithinContract(contract, qualityContract, packageContract, contex
   // History gives way before authority. Registered documents are what a role reasons from, while
   // decisions accumulate with every run, so trimming documents first would drop the authority to keep
   // an ever-growing log and the role would fail on a project purely because it had been used a lot.
-  while (Buffer.byteLength(prompt) > contract.context_limit_bytes && Array.isArray(fitted.decisions) && fitted.decisions.length) {
+  while (Buffer.byteLength(prompt) > fittingLimit && Array.isArray(fitted.decisions) && fitted.decisions.length) {
     fitted.decisions.shift();
     prompt = rolePrompt({ contract, qualityContract, packageContract, context: fitted, resultSchema: schemaKey });
   }
-  fitSourceEvidence(fitted, contract.context_limit_bytes, value => Buffer.byteLength(rolePrompt({ contract, qualityContract, packageContract, context: value, resultSchema: schemaKey })));
+  fitSourceEvidence(fitted, fittingLimit, value => Buffer.byteLength(rolePrompt({ contract, qualityContract, packageContract, context: value, resultSchema: schemaKey })));
   prompt = rolePrompt({ contract, qualityContract, packageContract, context: fitted, resultSchema: schemaKey });
-  while (Buffer.byteLength(prompt) > contract.context_limit_bytes && Array.isArray(fitted.documents) && fitted.documents.length) {
-    const overflow = Buffer.byteLength(prompt) - contract.context_limit_bytes;
+  while (Buffer.byteLength(prompt) > fittingLimit && Array.isArray(fitted.documents) && fitted.documents.length) {
+    const overflow = Buffer.byteLength(prompt) - fittingLimit;
     const document = fitted.documents.at(-1), text = String(document.text ?? "");
     if (Buffer.byteLength(text) > overflow + 512) document.text = utf8Prefix(text, Math.max(0, Buffer.byteLength(text) - overflow - 256));
     else fitted.documents.pop();
     prompt = rolePrompt({ contract, qualityContract, packageContract, context: fitted, resultSchema: schemaKey });
   }
-  fitWorkerSources(fitted, contract.context_limit_bytes, value => Buffer.byteLength(rolePrompt({ contract, qualityContract, packageContract, context: value, resultSchema: schemaKey })));
+  fitWorkerSources(fitted, fittingLimit, value => Buffer.byteLength(rolePrompt({ contract, qualityContract, packageContract, context: value, resultSchema: schemaKey })));
   prompt = rolePrompt({ contract, qualityContract, packageContract, context: fitted, resultSchema: schemaKey });
   if (Buffer.byteLength(prompt) > contract.context_limit_bytes) {
     const error = new Error(`ROLE_CONTEXT_DYNAMIC_OVERFLOW: compacted role envelope is ${Buffer.byteLength(prompt)}/${contract.context_limit_bytes} bytes`);
     error.prompt_metrics = {
       prompt_bytes: Buffer.byteLength(prompt),
       context_limit_bytes: contract.context_limit_bytes,
-      warning_threshold_bytes: Math.floor(contract.context_limit_bytes * 0.85),
+      warning_threshold_bytes: warningThresholdBytes,
       utilization_ratio: Buffer.byteLength(prompt) / contract.context_limit_bytes,
       warning: "context_overflow",
       fixed_prompt_floor_bytes: fixedPromptFloorBytes,
@@ -790,10 +813,11 @@ function plannedStepResources(db, projectId, writers, step) {
 }
 
 function executionStep(runtime, projectId, level, writers, step, key, correctionCycle = null) {
-  const schema = loadRoleContract(runtime.db, projectId, step.role, level).result_schema_key;
+  const roleContract = loadRoleContract(runtime.db, projectId, step.role, level);
+  const schema = roleContract.result_schema_key;
   const operations = operationCatalog(runtime.db, projectId, schema);
   return {
-    ...step, key, schema, resources: plannedStepResources(runtime.db, projectId, writers, step),
+    ...step, key, schema, max_attempts: Math.max(1, Number(roleContract.max_correction_cycles) + 1), resources: plannedStepResources(runtime.db, projectId, writers, step),
     contract: {
       objective: step.objective, allowed_paths: step.allowed_paths, artifact_keys: step.artifact_keys, check_ids: step.check_ids,
       ...(correctionCycle === null ? {} : { correction_cycle: correctionCycle }),
@@ -1354,7 +1378,8 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   const allRegisteredRoles = runtime.db.prepare("SELECT id FROM roles ORDER BY id").all().map(row => row.id);
   const routeRoles = (approvalGranted || approvalBeforeWork) && routeContract?.worker_roles_after_approval.length ? routeContract.worker_roles_after_approval : routeContract?.worker_roles;
   const registeredRoles = routeContract ? routeRoles.filter(role => allRegisteredRoles.includes(role)) : allRegisteredRoles;
-  if (!registeredRoles.length) throw new Error(`WORKFLOW_ROUTE_HAS_NO_EXECUTABLE_ROLE: ${runtime.get(runId).workflow_id}`);
+  const documentOnlyRoute = Boolean(classification.document_required && routeContract?.rows.some(row => row.output_schema_key === "documentator.v1"));
+  if (!registeredRoles.length && !documentOnlyRoute) throw new Error(`WORKFLOW_ROUTE_HAS_NO_EXECUTABLE_ROLE: ${runtime.get(runId).workflow_id}`);
   const allRegisteredChecks = registeredProjectCheckKeys(runtime.db, projectId, level, classification.artifact_type);
   const registeredChecks = routeContract?.check_keys.length ? allRegisteredChecks.filter(check => routeContract.check_keys.includes(check)) : allRegisteredChecks;
   const registeredArtifactTypes = runtime.db.prepare("SELECT id FROM artifact_types ORDER BY id").all().map(row => row.id);
@@ -1419,7 +1444,7 @@ export async function executeStructuredWork({ runtime, runId, classification, de
   }
   let planner = null;
   if (!preparedPlan && plannerContract) {
-    const parseOptions = { registeredRoles, registeredChecks, registeredArtifactTypes, registeredResources: registeredStepResources, maxStepAttempts: policy.limits.correction_cycles + 1 };
+    const parseOptions = { registeredRoles, registeredChecks, registeredArtifactTypes, registeredResources: registeredStepResources, maxStepAttempts: policy.limits.correction_cycles + 1, allowEmptyReadyPlan: documentOnlyRoute };
     const plannerContext = role => {
       const contract = loadRoleContract(runtime.db, projectId, role, level);
       return boundedContext(discovery, role, classification, Math.floor(contract.context_limit_bytes / 2), responseLanguage, {
