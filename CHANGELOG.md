@@ -55,6 +55,7 @@
 - Existing installations with owner-defined packages now have a rehearsed 0.6.12 upgrade path: copy the complete data root, apply migrations 035-036, regenerate from the configured definitions, bump every package whose manifest changed, and import each proposal only after explicit confirmation. Reusing an old version with changed content remains a fail-closed collision.
 - The validated owner installation upgrades its three active packages to prompt builder 3.2.0 and patch versions `zodchi.product-development` 2.9.1, `shared-lore.canon` 2.9.1 and `shared-map-engine.core` 2.5.1. Documentator and operator profiles are read-only; the two Kimi reviewer exceptions remain visible as eight `accepted_declarative` assignments, with no profile conflicts.
 - Browser evidence from an isolated Claude Playwright probe is not copied into the live owner policy without a selected target role and profile. Release and access routes likewise remain explicitly unavailable until real signed external operations are registered; neither absence is reported as a passed capability.
+- Install/update diagnostics now recognize Gateway's explicit `accepted_declarative` aggregate and preserve it as `admission_status` instead of misreporting an admitted owner exception as a preflight transport failure.
 
 </section>
 
