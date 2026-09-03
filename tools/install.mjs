@@ -206,14 +206,14 @@ export function profileCapabilityDiagnostics({ workflowDatabase, gatewayPolicy, 
     });
     let result = null;
     try { result = JSON.parse(String(child.stdout ?? "").trim()); } catch { /* reported below */ }
-    if (!result || !["compatible", "incompatible"].includes(result.status)) {
+    if (!result || !["compatible", "accepted_declarative", "incompatible"].includes(result.status)) {
       return { status: "unavailable", reason: "gateway_preflight_failed", conflicts: [], message: String(child.stderr || child.stdout || child.error?.message || "unknown failure").trim() };
     }
     const normalize = item => {
       const { role, ...rest } = item;
       return { ...rest, role_id: role };
     };
-    return { status: "checked", reason: null, conflicts: result.conflicts.map(normalize), checks: result.checks.map(normalize) };
+    return { status: "checked", admission_status: result.status, reason: null, conflicts: result.conflicts.map(normalize), checks: result.checks.map(normalize) };
   } finally { db.close(); }
 }
 

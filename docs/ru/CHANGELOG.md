@@ -56,6 +56,7 @@
 - В проверенной установке владельца три активных пакета переведены на prompt builder 3.2.0 и patch-версии `zodchi.product-development` 2.9.1, `shared-lore.canon` 2.9.1 и `shared-map-engine.core` 2.5.1. Профили documentator и операторов read-only; два исключения Kimi остаются видимыми как восемь назначений `accepted_declarative`, конфликтов профилей нет.
 - Browser evidence из изолированной Claude-пробы Playwright не переносится в live policy без выбранной целевой роли и профиля.
 - Маршруты release и access остаются явно недоступными до регистрации реальных подписанных `external operations`; отсутствие не выдаётся за пройденную возможность.
+- Диагностика install/update распознаёт явный итог Gateway `accepted_declarative` и сохраняет его как `admission_status`, а не выдаёт принятое владельцем исключение за транспортную ошибку preflight.
 
 </section>
 
