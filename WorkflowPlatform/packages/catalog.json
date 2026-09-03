@@ -3,7 +3,7 @@
   "packages": [
     {
       "key": "software.web-application",
-      "version": "1.6.0",
+      "version": "1.7.0",
       "support_status": "support-grade",
       "work_types": [
         "access_management",
@@ -96,7 +96,7 @@
     },
     {
       "key": "data.analytics",
-      "version": "0.7.0",
+      "version": "0.7.1",
       "support_status": "preview",
       "work_types": [
         "continuation",

@@ -20,8 +20,10 @@
 - Для роли с `allowed_skills` каждый скилл должен быть явно указан в профиле AgentGateway; отсутствующий скилл даёт `PROFILE_SKILL_MISSING` до вызова модели.
 - Для `allowed_mcp_servers` сервер должен одновременно присутствовать в профиле и локальном `external_tool_registry` с закреплённой версией и описанием границ.
 - Внешний инструмент регистрируется командой `WorkflowPlatform/src/cli.mjs external-tool-register`; это локальное решение владельца и оно не переносится внутри пакета.
+- В `software.web-application` только профиль `worker` должен объявить `playwright` в `allowedMcpServers` и `browserMcpServer`; `researcher` и рецензенты этот MCP не получают. Профиль без локальной регистрации и закреплённой версии не допускается до вызова.
+- Если этот MCP-контур действительно read-only, профиль также должен иметь отдельно подтверждённый технический override `external_mutation: { status: "unavailable", enforcement: "technical", access: "none", evidenceRef: "<owner-evidence>" }`: один только `read_only_mode` registry не доказывает техническое отсутствие мутации у провайдера. Без такого подтверждения readiness остаётся `PROFILE_CAPABILITY_MISMATCH`.
 - `game.web` требует локальной регистрации Playwright для browser-sentinel gate; 1С-валидатор требует локального `cc-1c-skills-validate`. Без регистрации проверка честно остаётся `unavailable`.
-- `data.analytics` читает только зарегистрированный ресурс `data.primary`; SQLite открывается с `readOnly: true` и `PRAGMA query_only=ON`.
+- `data.analytics` читает только зарегистрированный ресурс `data.primary`; SQLite открывается с `readOnly: true` и `PRAGMA query_only=ON`, а ожидаемый scalar-результат сравнивается только для единственной строки и единственной колонки.
 
 </section>
 

@@ -27,6 +27,8 @@ test("SQLite checks open the registered database read-only", () => {
   const passed = runSqliteCheck({ sqlite_database: file, config: { sql: "SELECT value FROM facts", expected: "ok" } });
   assert.equal(passed.status, "passed");
   assert.equal(fs.statSync(file).size, before);
+  const weakMatch = runSqliteCheck({ sqlite_database: file, config: { sql: "SELECT value FROM facts UNION ALL SELECT 'ok'", expected: "ok" } });
+  assert.equal(weakMatch.status, "failed");
   const mutation = runSqliteCheck({ sqlite_database: file, config: { sql: "DELETE FROM facts" } });
   assert.equal(mutation.status, "unavailable");
   fs.rmSync(root, { recursive: true, force: true });
