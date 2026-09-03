@@ -507,7 +507,7 @@ function registeredRoot(db, candidate) {
 
 export async function processMessage({
   message, project, origin = null, dbFile, workflow, workflowDefinition, execute = false, eventSource = "user", eventKey = null, eventFields = [],
-  classificationResult = null, gatewayCall = callGateway, gatewayProfileCheck = undefined, gateRunner = undefined, preferredLanguage = null, client = "codex", semanticScope, prepareOnly = false, runProfileOverrides = {}
+  classificationResult = null, gatewayCall = callGateway, gatewayProfileCheck = undefined, gateRunner = undefined, preferredLanguage = null, client = "codex", semanticScope, prepareOnly = false, runProfileOverrides = {}, classifyOnly = false
 }) {
   const resolvedSemanticScope = normalizeSemanticScope(semanticScope);
   const settings = resolveWorkflowSettings();
@@ -620,7 +620,7 @@ export async function processMessage({
     // this fallback: parseClassificationReceipt still requires the field and fails closed when absent.
     if (classificationResult) classification = validateClassificationDecision({ ...classificationResult, resolved_objective: classificationResult.resolved_objective ?? String(message) }, catalog);
     else {
-      if (!execute) throw new Error("CLASSIFICATION_EXECUTION_REQUIRED: supply a validated contract result for dry-run tests");
+      if (!execute && !classifyOnly) throw new Error("CLASSIFICATION_EXECUTION_REQUIRED: supply a validated contract result for dry-run tests");
       const role = definition.roles?.classifier;
       if (!role?.provider || !role.profile || !role.role) throw new Error("CLASSIFIER_ROLE_NOT_CONFIGURED");
       classifierReceipt = await gatewayCall({ provider: role.provider, profile: role.profile, level: "prototype", role: role.role, capabilityRequirements: executorCapabilityRequirementsForProject(runtime.db, project, role.contract ?? {}, { direct: true }), requiresWrite: false, taskFile: classifierTaskFile, outputSchemaFile: classifierSchemaFile, project: projectRoot, taskId: `${runId}:classifier`, workflowRunId: runId });
@@ -699,6 +699,10 @@ export async function processMessage({
 
   const receiptsOf = () => classifierReceipt ? { mode: "executed", receipts: [{ step: "classifier", receipt: classifierReceipt }] } : { mode: "contract-test" };
   const resolvedObjective = classification.resolved_objective;
+  if (classifyOnly) {
+    runtime.setState(runId, "completed", { reason: "classification-only dry run" });
+    return finish({ route: "classification_dry_run", classification, workflow, productive_roles: [], gateway: receiptsOf() });
+  }
   const profileMismatch = ["quality_mode", "execution_mode", "verification_mode", "planning_mode"]
     .some(axis => effectiveRunProfileOverrides[axis] !== undefined && runProfile[axis] !== effectiveRunProfileOverrides[axis]);
   const approvedPendingProfile = answeredProfileInteraction && classification.pending_interaction_response === "approve";

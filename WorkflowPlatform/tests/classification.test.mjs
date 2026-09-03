@@ -125,6 +125,36 @@ test("classifier output is rejected when its structured trace used a contract-fo
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("classification-only execution calls the classifier without dispatching a productive role", async () => {
+  const { root, project, dbFile, db } = fixture("workflow-classification-only-");
+  db.close();
+  const calls = [];
+  const conversation = decision({
+    work_type: "conversation", artifact_type: "none", discipline: "general", planning_level: "L0",
+    planning_required: false, reply_mode: "conversation", reason: "Внутреннее решение маршрутизации.", human_response: null
+  });
+  const result = await statelessProcessMessage({
+    message: "Объясни границы общего движка и проектов-потребителей.", project, dbFile,
+    workflowDefinition: definition(), classifyOnly: true,
+    gatewayCall: async request => {
+      calls.push(request.role);
+      return receipt(JSON.stringify(conversation), "classifier-receipt");
+    }
+  });
+  assert.deepEqual(calls, ["classifier"]);
+  assert.equal(result.route, "classification_dry_run");
+  assert.equal(result.workflow, "workflow");
+  assert.deepEqual(result.productive_roles, []);
+  assert.equal(result.gateway.mode, "executed");
+  const verified = openDb(dbFile);
+  assert.equal(verified.prepare("SELECT state FROM workflow_runs WHERE id=?").get(result.run_id).state, "completed");
+  assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM workflow_steps WHERE run_id=?").get(result.run_id).count, 0);
+  assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM gateway_calls WHERE run_id=?").get(result.run_id).count, 1);
+  assert.equal(verified.prepare("SELECT COUNT(*) AS count FROM conversation_messages WHERE run_id=? AND role='assistant'").get(result.run_id).count, 0);
+  verified.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("ordinary conversation invokes the classifier and responder and returns the responder answer", async () => {
   const { root, project, dbFile, db } = fixture("workflow-conversation-");
   db.close();
