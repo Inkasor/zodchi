@@ -11,6 +11,9 @@ const a = args || {}
 for (const k of ['role', 'repo', 'label', 'tmp', 'frames']) if (!a[k]) throw new Error(`rubric-probe needs args.${k}`)
 // Every command in these prompts is POSIX shell, run with bash. q() quotes one argument for it: single quotes, with a
 // quote inside written as ''' - no expansion of $, backticks or globs.
+// norm() makes a frame path comparable: slash direction and edges only. Frames are matched by this exact identity, never by a suffix.
+const norm = (s) => String(s).trim().replace(/[\\]/g, '/')
+const frameOf = (file) => a.frames.find(f => norm(f.file) === norm(file))
 const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
 // One gateway call, worded once for every step that makes one. The shell of a step has its own time limit and the
 // worker of a job can end with the shell that started it, so the wait is made of foreground calls of 540 seconds.
@@ -50,7 +53,7 @@ const rows = await step(
   `Probe the Decisions rubric "${a.role}" from ${a.repo}. Frames: ${JSON.stringify(a.frames)}. ` +
   `For frame N write its "note" as a one-line prompt file in ${a.tmp}, then run ` +
   gatewayCall({ role: a.role, key: `${a.label}-probe-N`, totalMin: 20, out: `${a.tmp}/probe-N.json`, args: `--prompt <prompt file> --image <file> --paid` }) + ` ` +
-  `From each output take verdict.questions (name, outcome, agreement). Return ok true with one row per question and frame, and the input tokens of all calls together. ` +
+  `From each output take verdict.questions (name, outcome, agreement). Return ok true with one row per question and frame, each row's "frame" being exactly the <file> string given for that frame in the Frames list (not a shortened or resolved path), and the input tokens of all calls together. ` +
   `If any frame's call fails, times out or has no verdict.questions, return ok false, rows [], inputTokens 0 and summary naming the frame and the job status. Judge nothing yourself.`,
   {
     agentType: 'zodchi-gamedev-unity:unity-runner', label: `probe ${a.role}`,
@@ -66,14 +69,16 @@ const rows = await step(
   })
 if (!rows || !rows.ok) return { stoppedAt: 'ask', error: rows ? rows.summary || 'a frame call failed' : 'the step returned nothing' }
 // Every frame needs at least one row: a frame without rows is a call that did not come back whole.
-const missing = a.frames.filter(f => !rows.rows.some(r => r.frame.endsWith(f.file) || f.file.endsWith(r.frame)))
+const unknown = rows.rows.filter(r => !frameOf(r.frame))
+if (unknown.length) return { stoppedAt: 'ask', error: `rows for frames not in the input (the frame must be the exact supplied path): ${[...new Set(unknown.map(r => r.frame))].join(', ')}` }
+const missing = a.frames.filter(f => !rows.rows.some(r => norm(r.frame) === norm(f.file)))
 if (missing.length) return { stoppedAt: 'ask', error: `no rows for frames: ${missing.map(f => f.file).join(', ')}` }
 
 // A question earns its place when it passes on every sound frame and fails on every frame listed as having its defect.
 const byQuestion = {}
 for (const r of rows.rows) (byQuestion[r.question] = byQuestion[r.question] || []).push(r)
 const verdicts = Object.entries(byQuestion).map(([question, rs]) => {
-  const of = (file) => a.frames.find(f => file.endsWith(f.file) || f.file.endsWith(file)) || {}
+  const of = (file) => frameOf(file) || {}
   const sound = rs.filter(r => of(r.frame).sound)
   const defect = rs.filter(r => (of(r.frame).defects || []).includes(question))
   const passesSound = sound.length > 0 && sound.every(r => r.outcome === 'pass')

@@ -75,13 +75,15 @@ mod windows {
         fn new(breakaway_ok: bool) -> Self {
             let job = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
             assert!(!job.is_null(), "CreateJobObjectW: {}", std::io::Error::last_os_error());
+            // Owned from here on, so a failed assertion below unwinds through Drop and closes the handle.
+            let job = JobObject(job);
             // JOBOBJECT_EXTENDED_LIMIT_INFORMATION is 144 bytes on 64-bit Windows; LimitFlags sits at offset 16.
             let mut info = [0u64; 18];
             let flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | if breakaway_ok { JOB_OBJECT_LIMIT_BREAKAWAY_OK } else { 0 };
             info[2] = flags as u64;
-            let ok = unsafe { SetInformationJobObject(job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, info.as_mut_ptr().cast(), 144) };
+            let ok = unsafe { SetInformationJobObject(job.0, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, info.as_mut_ptr().cast(), 144) };
             assert!(ok != 0, "SetInformationJobObject: {}", std::io::Error::last_os_error());
-            JobObject(job)
+            job
         }
         fn assign(&self, child: &Child) {
             let ok = unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle().cast()) };
