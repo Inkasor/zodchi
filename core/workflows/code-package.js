@@ -54,24 +54,27 @@ const norm = (p) => {
   return lead + parts.join('/')
 }
 const repoKey = norm(a.repo)
+// A Windows path (drive letter) is compared without case, as Windows does; any other path keeps its case.
+const caseless = /^[A-Za-z]:\//.test(repoKey)
+const fold = (p) => caseless ? p.toLowerCase() : p
 function rel(p) {
   const s = String(p).replace(/\\/g, '/')
   const full = norm(/^([A-Za-z]:)?\//.test(s) ? s : `${repoKey}/${s}`)
-  if (full.toLowerCase() === repoKey.toLowerCase()) throw new Error(`path ${p} is the repository itself, not a file in it`)
-  if (!full.toLowerCase().startsWith(repoKey.toLowerCase() + '/')) throw new Error(`path ${p} is outside the repository ${a.repo}`)
+  if (fold(full) === fold(repoKey)) throw new Error(`path ${p} is the repository itself, not a file in it`)
+  if (!fold(full).startsWith(fold(repoKey) + '/')) throw new Error(`path ${p} is outside the repository ${a.repo}`)
   return full.slice(repoKey.length + 1)
 }
 const key = (p) => rel(p).toLowerCase()
 const abs = (p) => `${repoKey}/${rel(p)}`
-const myPaths = [...new Map(a.files.map(f => [key(f), rel(f)])).values()]
-const myKeys = myPaths.map(p => p.toLowerCase())
+const myPaths = [...new Set(a.files.map(rel))]
+const myKeys = [...new Set(myPaths.map(p => p.toLowerCase()))]
 
 // The machine may lose power or the session may be cut. A finished agent() comes back from the journal when the
 // run is resumed (resumeFromRunId); an unfinished one starts over, so every step keeps a progress file that the
 // restarted agent reads first. step() is agent() with that rule added.
 const progressFile = (o) => `${a.tmp}/progress/${String((o && (o.progress || o.label || o.phase)) || 'step').replace(/[^\w.-]+/g, '-')}.md`
 const step = (prompt, opts) => agent(prompt +
-  `\n\nResume rule: this run may have been cut off and restarted. If ${progressFile(opts)} exists and its last line is not DONE, read it first and go on from its last line; ` +
+  `\n\nShell rule: run every command with bash (Git Bash on Windows, never PowerShell or cmd); the quoting in these commands is for bash. Resume rule: this run may have been cut off and restarted. If ${progressFile(opts)} exists and its last line is not DONE, read it first and go on from its last line; ` +
   `if its last line is DONE, it is from an earlier finished run: rename it to .old and start fresh. ` +
   `Do not redo finished work or overwrite its outputs blindly, and for a gateway call it records as submitted, wait on that key (zodchi wait --key <key>) instead of submitting again. ` +
   `After each finished step append one line to it (create the folder if needed): what is done, the paths it produced, what comes next. When your whole task is finished, append a last line DONE.`, opts)
@@ -217,14 +220,14 @@ async function body() {
   async function continued(prompt, opts) {
     const pinned = { ...opts, progress: opts.label }
     let res = null
-    const changedSoFar = []
+    const changedSoFar = [], questionsSoFar = []
     for (let c = 0; c <= (a.continuations ?? 2); c++) {
       const o = c ? { ...pinned, label: `${opts.label} (cont ${c})` } : pinned
       try { res = await step(prompt, o) } catch (e) { log(`${o.label}: ${e.message}`); res = null }
-      if (res) changedSoFar.push(...(res.changed || []))
+      if (res) { changedSoFar.push(...(res.changed || [])); questionsSoFar.push(...(res.questions || [])) }
       if (res && !res.more) break
     }
-    return res && { ...res, changed: [...new Set(changedSoFar)] }
+    return res && { ...res, changed: [...new Set(changedSoFar)], questions: [...new Set(questionsSoFar)] }
   }
 
   // One writing turn by the resolved writer: a Claude coder, a Codex work call, or an expert answer applied by the
@@ -294,7 +297,7 @@ async function body() {
         `Read the logs and fix the code with the smallest change. done is true when the failing command passes. changed: files changed in this fix.`,
         `fix checks ${n}.${f}`, 'Close', checks.logs || [])
       noteQuestions(fix)
-      if (!fix || !fix.done) break
+      if (!fix || !fix.done) { if (questions.length) out.question = questions.join(' | '); break }
       noteChanged(fix.changed)
       checks = await runChecks(`${n}.${f}`)
     }

@@ -26,7 +26,7 @@ const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
 
 const progressFile = (o) => `${a.tmp}/progress/${String((o && (o.label || o.phase)) || 'step').replace(/[^\w.-]+/g, '-')}.md`
 const step = (prompt, opts) => agent(prompt +
-  `\n\nResume rule: this run may have been cut off and restarted. If ${progressFile(opts)} exists and its last line is not DONE, read it first and go on from its last line; ` +
+  `\n\nShell rule: run every command with bash (Git Bash on Windows, never PowerShell or cmd); the quoting in these commands is for bash. Resume rule: this run may have been cut off and restarted. If ${progressFile(opts)} exists and its last line is not DONE, read it first and go on from its last line; ` +
   `if its last line is DONE, it is from an earlier finished run: rename it to .old and start fresh. ` +
   `For a gateway call it records as submitted, wait on that key (zodchi wait --key <key>) instead of submitting again. ` +
   `After each finished step append one line to it (create the folder if needed). When your whole task is finished, append a last line DONE.`, opts)
