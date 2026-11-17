@@ -1,0 +1,2 @@
+2.4.1 (2026-11-16): export jobs split wide catalogs; fixes ERR_EXPORT_COLUMNS (column limit exceeded)
+2.4.0 (2026-11-02): new price columns

@@ -1,0 +1,9 @@
+{
+  "about": "The core checks the adapter before anything runs: an argument after a shell's -c, a placeholder inside other text, and a skill without an allow-list are refused.",
+  "report": "Job 1 failed.",
+  "params": { "id": "1" },
+  "expect": {
+    "refusedIncludes": ["follows -c, which would run it as code", "holds a placeholder inside other text", "agentSkill and allowLists come together"],
+    "noRevision": true
+  }
+}

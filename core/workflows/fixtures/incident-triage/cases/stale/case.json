@@ -1,0 +1,13 @@
+{
+  "about": "An error older than the release that fixed it: stale, the reply says retry.",
+  "report": "The export of the spring catalog stopped yesterday with an error, job 4711. My login is anna, password=hunter2-secret, if you need it.",
+  "params": { "id": "4711" },
+  "expect": {
+    "state": "drafted",
+    "route": "reply",
+    "kinds": ["stale"],
+    "outcomes": { "E1": "ok", "E2": "ok", "E3": "ok", "E4": "ok", "E5": "ok", "E6": "ok", "E7": "ok" },
+    "draftIncludes": ["Retry", "press Retry on the job page"],
+    "evidenceExcludes": ["hunter2-secret", "abcdefghijklmnop0123456789"]
+  }
+}
