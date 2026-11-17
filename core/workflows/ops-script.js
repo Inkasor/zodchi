@@ -95,9 +95,13 @@ function forHuman() {
   const all = [a.script, ...files]
   let cmd, steps = ''
   if (a.remote) {
-    cmd = `ssh -t ${q(a.remote)} ${q(a.sudo.split('{script}').join(`$HOME/ops-run/${name}`))}`
-    steps = `1. Copy the script${files.length ? ' and its files' : ''} to the host and make the script executable:\n` +
-      `   ssh ${q(a.remote)} 'mkdir -p -m 700 ops-run' && scp ${all.map(q).join(' ')} ${q(a.remote)}:ops-run/ && ssh ${q(a.remote)} 'chmod u+x ops-run/${name}'\n2. Run it:\n`
+    // The folder is made by `mktemp -d` on the host (exclusive, unpredictable, mode 700) and its printed path is kept in $d,
+    // so the upload, the chmod and the sudo command all use that one path: a fixed folder could be shared with another run,
+    // or pre-created (even as a symlink) by someone, and the human would then run something that was not checked.
+    // The command is the sudo text with {script} replaced by "$d"/<name>, every other part single-quoted for the remote shell.
+    cmd = `ssh -t ${q(a.remote)} ` + a.sudo.split('{script}').map(q).join(`"$d"'/${name}'`)
+    steps = `1. In ONE terminal window (it keeps $d), make a new folder on the host, copy the script${files.length ? ' and its files' : ''} into it and make the script executable:\n` +
+      `   d=$(ssh ${q(a.remote)} 'mktemp -d "$HOME/ops-run.XXXXXXXX"') && [ -n "$d" ] && scp ${all.map(q).join(' ')} ${q(a.remote)}:"$d"/ && ssh ${q(a.remote)} 'chmod u+x "'"$d"'/${name}"'\n2. Run it, in the same window:\n`
   } else {
     cmd = a.sudo.split('{script}').join(q(a.script))
     if (files.length) steps = `Files it needs, which stay next to it: ${files.map(q).join(' ')}\n`
