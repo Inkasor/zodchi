@@ -46,9 +46,10 @@ if (new Set([name, ...names]).size !== names.length + 1) throw new Error('ops-sc
 // Paths are compared absolute, with /, "." and ".." resolved and, on Windows, without case.
 const absPath = (p) => /^([A-Za-z]:)?[\\/]/.test(String(p))
 for (const p of [a.script, a.tmp, ...files]) if (!absPath(p)) throw new Error(`ops-script: paths must be absolute, got ${p}`)
+if (String(a.tmp).includes("'")) throw new Error('ops-script: args.tmp must not contain a single quote (the local command quotes paths under it)')
 const fold = (p) => {
   const s = String(p).replace(/\\/g, '/')
-  const lead = /^[A-Za-z]:\//.test(s) ? s.slice(0, 3) : '/'
+  const lead = /^[A-Za-z]:\//.test(s) ? s.slice(0, 3) : s.startsWith('/') ? '/' : ''
   const parts = []
   for (const seg of s.slice(lead.length).split('/')) {
     if (!seg || seg === '.') continue
@@ -59,7 +60,7 @@ const fold = (p) => {
 }
 // The local staging folder is made fresh by mktemp -d under {tmp}; the runner reports its path, checked against this shape.
 const stagingOk = (d) => {
-  if (typeof d !== 'string') return false
+  if (typeof d !== 'string' || !absPath(d)) return false
   const prefix = fold(`${a.tmp}/copy`) + '.'
   const got = fold(d)
   return got.startsWith(prefix) && /^[A-Za-z0-9]{8}$/.test(got.slice(prefix.length))
@@ -91,13 +92,15 @@ const dryRun = (tag) => {
   // used for the copy, the run and the cleanup; a fixed name could be shared with another run or pre-created by someone.
   const dir = 'DIR'
   const copy = `${dir}/${name}`
-  const cmd = check.split('{copy}').join(copy)
+  // Locally the whole copy path is single-quoted (DIR is replaced inside the quotes; tmp holds no quote, see above);
+  // remotely the names are plain and the command is quoted once more for the remote shell.
+  const cmd = check.split('{copy}').join(a.remote ? copy : q(copy))
   const all = [a.script, ...files]
   return step(
     `Dry run of a sudo script without root. ` +
     (a.remote
       ? `Make a new folder on ${a.remote} with \`ssh ${q(a.remote)} 'mktemp -d /tmp/ops-XXXXXXXX'\` (it must be created, never reused; stop and report if that fails) and keep the path it prints as DIR; use that exact path everywhere below, never a name you chose. Copy ${all.map(q).join(' ')} into DIR with scp under their own names so the companion files lie next to the script, make the script executable (\`ssh ${q(a.remote)} "chmod u+x DIR/${name}"\`), then run the command \`${cmd}\` with DIR replaced by that path, as \`ssh ${q(a.remote)} '<that command, quoted once more for the remote shell>'\`, as that user. Never use sudo. Remove DIR afterwards (\`ssh ${q(a.remote)} "rm -rf DIR"\`, only that path). `
-      : `Make a new folder with \`mktemp -d ${q(`${a.tmp}/copy.`)}XXXXXXXX\` (it must be created, never reused or emptied; stop and report if that fails) and keep the path it prints as DIR; use that exact path everywhere below and return it as dir. Copy ${all.map(q).join(' ')} into DIR under their own names so the companion files lie next to the script copy, make the script copy executable, then run \`${cmd}\` with DIR replaced by that path (quoted), as the current user. Never use sudo. Leave DIR in place: the human runs the command from it. `) +
+      : `Make a new folder with \`mktemp -d ${q(`${a.tmp}/copy.`)}XXXXXXXX\` (it must be created, never reused or emptied; stop and report if that fails) and keep the path it prints as DIR; use that exact path everywhere below and return it as dir. Copy ${all.map(q).join(' ')} into DIR under their own names so the companion files lie next to the script copy, make the script copy executable, then run \`${cmd}\` with DIR replaced by that path inside the quotes, as the current user. Never use sudo. Leave DIR in place: the human runs the command from it. `) +
     `Log to ${a.tmp}/logs/dry-${tag}.log. ok is true when it exits 0 and its output shows no error. ` +
     `A failure that only says root is required means the script has no real check mode: report it as a failure with that reason. ` +
     `failures: the decisive error lines. summary: what the script said it would do.`,
