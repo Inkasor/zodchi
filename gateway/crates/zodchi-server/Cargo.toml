@@ -1,0 +1,21 @@
+[package]
+name = "zodchi-server"
+description = "The zodchi gateway over HTTP for several people, each on their own ChatGPT subscription"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "zodchi-server"
+path = "src/main.rs"
+
+[dependencies]
+zodchi-core = { path = "../zodchi-core" }
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+base64.workspace = true
+rand.workspace = true
+# HTTP/1.1 without TLS (the server sits behind a reverse proxy) and without an async runtime; pure Rust.
+tiny_http = "0.12"

@@ -12,7 +12,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -285,6 +285,8 @@ struct Shared {
     stdin: Mutex<Option<ChildStdin>>,
     pending: Mutex<HashMap<u64, (String, Sender<Reply>)>>,
     threads: Mutex<HashMap<String, Sender<Value>>>,
+    /// Listeners of account-level notifications (`account/...`) and of the exit of the process.
+    accounts: Mutex<Vec<Sender<Value>>>,
     audit: Mutex<Audit>,
     on_audit: Mutex<Option<AuditHook>>,
     gone: Mutex<bool>,
@@ -314,6 +316,9 @@ impl Shared {
             let _ = tx.send(Err(json!({ "__gone__": true })));
         }
         for tx in self.threads.lock().unwrap().values() {
+            let _ = tx.send(json!({ "method": "__gone__", "params": {} }));
+        }
+        for tx in self.accounts.lock().unwrap().iter() {
             let _ = tx.send(json!({ "method": "__gone__", "params": {} }));
         }
     }
@@ -357,6 +362,11 @@ impl Shared {
                             drop(audit);
                             self.notify_audit();
                         }
+                    }
+                }
+                if method.starts_with("account/") {
+                    for tx in self.accounts.lock().unwrap().iter() {
+                        let _ = tx.send(json!({ "method": method, "params": params }));
                     }
                 }
                 let thread_id = params.get("threadId").and_then(Value::as_str)
@@ -430,6 +440,7 @@ impl AppServer {
                 stdin: Mutex::new(None),
                 pending: Mutex::new(HashMap::new()),
                 threads: Mutex::new(HashMap::new()),
+                accounts: Mutex::new(Vec::new()),
                 audit: Mutex::new(Audit::default()),
                 on_audit: Mutex::new(None),
                 gone: Mutex::new(false),
@@ -447,6 +458,19 @@ impl AppServer {
 
     pub fn snapshot(&self) -> Value {
         self.shared.snapshot()
+    }
+
+    /// Account-level notifications of this process (`account/login/completed`, `account/updated`, ...) as
+    /// `{method, params}`, and `{"method": "__gone__"}` once the process has exited or was stopped. Subscribe before
+    /// the request whose outcome arrives as a notification, so a notification that comes before its answer is kept.
+    /// A subscription made after the process is gone gets `__gone__` at once.
+    pub fn subscribe_account(&self) -> Receiver<Value> {
+        let (tx, rx) = channel();
+        self.shared.accounts.lock().unwrap().push(tx.clone());
+        if *self.shared.gone.lock().unwrap() {
+            let _ = tx.send(json!({ "method": "__gone__", "params": {} }));
+        }
+        rx
     }
 
     /// A feature to disable that this Codex does not know is skipped; a feature the role enables must exist.

@@ -89,11 +89,29 @@ pub fn read_stored(file: &Path) -> Option<Value> {
     None
 }
 
-/// Writes `value` to `file` through a temporary file and a rename. On Windows a rename over a file that a reader
-/// holds open fails for a moment, so it is tried again.
+/// Writes `value` to `file` through a temporary file and a rename. Every write has a temporary file of its own
+/// (pid, a counter of the process and a random suffix, opened create-new), so two threads or processes writing the
+/// same file never write into one temporary file, and each renames only what it wrote whole. On Windows a rename
+/// over a file that a reader holds open fails for a moment, so it is tried again.
 pub fn write_json_atomic(file: &Path, value: &Value) -> Result<()> {
-    let temp = file.with_extension(format!("json.{}.tmp", std::process::id()));
-    fs::write(&temp, pretty(value))?;
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let (temp, mut handle) = loop {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let temp = file.with_extension(format!("json.{}.{n}.{:08x}.tmp", std::process::id(), rand::random::<u32>()));
+        match fs::OpenOptions::new().write(true).create_new(true).open(&temp) {
+            Ok(handle) => break (temp, handle),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    };
+    let written = handle.write_all(pretty(value).as_bytes()).and_then(|_| handle.flush());
+    drop(handle);
+    if let Err(error) = written {
+        let _ = fs::remove_file(&temp);
+        return Err(error.into());
+    }
     for attempt in 0.. {
         match fs::rename(&temp, file) {
             Ok(()) => return Ok(()),
@@ -143,6 +161,12 @@ pub fn is_key(text: &str) -> bool {
         && bytes.len() <= 96
         && bytes[0].is_ascii_alphanumeric()
         && bytes.iter().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// A user of the server: 1-40 characters a-z 0-9 -, checked before the id becomes part of a path.
+pub fn is_user_id(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    !bytes.is_empty() && bytes.len() <= 40 && bytes.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
 }
 
 pub fn is_role_name(text: &str) -> bool {

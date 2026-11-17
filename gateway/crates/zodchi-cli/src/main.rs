@@ -115,6 +115,7 @@ fn request(cfg: &Config, o: &Options) -> Result<Request> {
         paid: o.has("paid"),
         resume: o.get("resume").map(String::from),
         keep_thread: if o.has("keep-thread") { Some(true) } else if o.has("no-keep-thread") { Some(false) } else { None },
+        fingerprint: None,
     })
 }
 
