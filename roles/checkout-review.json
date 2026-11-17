@@ -2,7 +2,7 @@
   "description": "Codex reads a finished change in the checkout itself, with the consumers around it, and changes nothing.",
   "mode": "work",
   "model": "gpt-6.2-sol",
-  "effort": "high",
+  "effort": "medium",
   "timeoutMin": 30,
   "sandbox": "read-only",
   "mcpServers": [],

@@ -13,20 +13,20 @@
       "use": "A package the lead marked hard: no reference to follow, silent failure modes, or two blocked reviews",
       "candidates": [
         { "provider": "claude", "model": "opus", "effort": "high" },
-        { "provider": "codex", "model": "gpt-6.2-sol", "effort": "high" }
+        { "provider": "codex", "model": "gpt-6.2-sol", "effort": "medium" }
       ]
     },
     "expertWriter": {
       "use": "One-pass code from a strong model, no tools; the applier puts it into the files",
       "candidates": [
-        { "provider": "codex", "model": "gpt-6.2-sol", "effort": "high" },
+        { "provider": "codex", "model": "gpt-6.2-sol", "effort": "medium" },
         { "provider": "codex", "model": "gpt-6.2-astra", "effort": "high" }
       ]
     },
     "reviewer": {
       "use": "Independent code review. Never the author of the change",
       "candidates": [
-        { "provider": "codex", "model": "gpt-6.2-sol", "effort": "high" },
+        { "provider": "codex", "model": "gpt-6.2-sol", "effort": "medium" },
         { "provider": "claude", "model": "opus", "effort": "high" }
       ]
     },
@@ -62,7 +62,7 @@
     },
     "artCritic": {
       "use": "Judges a picture against its brief and names one diagnosis",
-      "candidates": [{ "provider": "codex", "model": "gpt-6.2-astra", "effort": "medium" }]
+      "candidates": [{ "provider": "codex", "model": "gpt-6.2-astra", "effort": "high" }]
     },
     "secondCritic": {
       "use": "Second opinion on art when the first verdict is mixed or before a showing",
