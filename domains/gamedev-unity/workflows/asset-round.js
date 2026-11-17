@@ -125,7 +125,7 @@ if (a.change) {
 
 // The coder's own check counts only with evidence: the same command, exit code 0, a log.
 const coderChecked = Boolean(a.check && out.change && out.change.checkRun && out.change.checkRun.exitCode === 0 &&
-  out.change.checkRun.log && String(out.change.checkRun.command).includes(a.check.command))
+  out.change.checkRun.log && String(out.change.checkRun.command).trim() === String(a.check.command).trim())
 if (a.check && !coderChecked) {
   phase('Check')
   out.check = await step(

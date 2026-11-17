@@ -22,7 +22,9 @@ export const meta = {
 //   repo      repository of the script, for the writer to read its AGENTS.md
 const a = args || {}
 for (const k of ['script', 'tmp', 'sudo']) if (!a[k]) throw new Error(`ops-script needs args.${k}`)
-const q = (s) => JSON.stringify(String(s)) // double-quoted paths work in bash and PowerShell
+// Every command in these prompts is POSIX shell, run with bash (Git Bash on Windows). q() quotes one argument for it:
+// single quotes, with a quote inside written as '\'' - no expansion of $, backticks or globs.
+const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
 const py = /\.py$/i.test(a.script)
 const check = a.check || (py ? 'python3 {copy} --check' : '{copy} --check')
 const name = a.script.replace(/\\/g, '/').split('/').pop()
@@ -50,7 +52,7 @@ const dryRun = (tag) => {
   return step(
     `Dry run of a sudo script without root. ` +
     (a.remote
-      ? `Copy ${q(a.script)} to ${a.remote}:${q(copy)} with scp, make it executable, then run \`ssh ${a.remote} '${cmd}'\` as that user. Never use sudo. Remove the copy afterwards. `
+      ? `Copy ${q(a.script)} to ${a.remote}:${q(copy)} with scp, make it executable, then run \`ssh ${q(a.remote)} ${q(cmd)}\` as that user (the command is quoted once more for the remote shell). Never use sudo. Remove the copy afterwards. `
       : `Copy ${q(a.script)} to ${q(copy)}, make it executable, then run \`${cmd}\` as the current user. Never use sudo. `) +
     `Log to ${a.tmp}/logs/dry-${tag}.log. ok is true when it exits 0 and its output shows no error. ` +
     `A failure that only says root is required means the script has no real check mode: report it as a failure with that reason. ` +

@@ -38,23 +38,33 @@ const mode = a.mode || 'agent'
 if (!['agent', 'expert'].includes(mode)) throw new Error('args.mode is "agent" or "expert"')
 const rounds = a.rounds || 3
 
-// Paths in shell commands are double-quoted: that keeps spaces in one argument in bash and in PowerShell alike.
-const q = (s) => JSON.stringify(String(s))
-// One canonical form for comparing paths: relative to the repository, forward slashes, no dot segments, lower case.
-const repoKey = String(a.repo).replace(/\\/g, '/').replace(/\/+$/, '')
-function rel(p) {
-  let s = String(p).replace(/\\/g, '/')
-  if (s.toLowerCase().startsWith(repoKey.toLowerCase() + '/')) s = s.slice(repoKey.length + 1)
+// Every command in these prompts is POSIX shell, run with bash (Git Bash on Windows). q() quotes one argument for it:
+// single quotes, with a quote inside written as '\'' - no expansion of $, backticks or globs.
+const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
+// Paths: resolved to absolute form with dot segments removed, then made relative to the repository. rel() keeps the
+// case of the name for Git and the file system; key() is its lower-case form, used only to compare and to claim.
+const norm = (p) => {
+  const s = String(p).replace(/\\/g, '/')
+  const lead = /^[A-Za-z]:\//.test(s) ? s.slice(0, 3) : s.startsWith('/') ? '/' : ''
   const parts = []
-  for (const seg of s.split('/')) {
+  for (const seg of s.slice(lead.length).split('/')) {
     if (!seg || seg === '.') continue
-    if (seg === '..') parts.pop(); else parts.push(seg)
+    if (seg === '..') { if (!parts.length) throw new Error(`path ${p} leaves the file system root`); parts.pop() } else parts.push(seg)
   }
-  return parts.join('/')
+  return lead + parts.join('/')
+}
+const repoKey = norm(a.repo)
+function rel(p) {
+  const s = String(p).replace(/\\/g, '/')
+  const full = norm(/^([A-Za-z]:)?\//.test(s) ? s : `${repoKey}/${s}`)
+  if (full.toLowerCase() === repoKey.toLowerCase()) throw new Error(`path ${p} is the repository itself, not a file in it`)
+  if (!full.toLowerCase().startsWith(repoKey.toLowerCase() + '/')) throw new Error(`path ${p} is outside the repository ${a.repo}`)
+  return full.slice(repoKey.length + 1)
 }
 const key = (p) => rel(p).toLowerCase()
 const abs = (p) => `${repoKey}/${rel(p)}`
-const myFiles = [...new Set(a.files.map(key))]
+const myPaths = [...new Map(a.files.map(f => [key(f), rel(f)])).values()]
+const myKeys = myPaths.map(p => p.toLowerCase())
 
 // The machine may lose power or the session may be cut. A finished agent() comes back from the journal when the
 // run is resumed (resumeFromRunId); an unfinished one starts over, so every step keeps a progress file that the
@@ -76,6 +86,7 @@ const WRITE = {
     done: { type: 'boolean' }, summary: { type: 'string' },
     changed: { type: 'array', items: { type: 'string' } },
     unverified: { type: 'array', items: { type: 'string' } },
+    // each open question as one readable line: the question, its options and the recommendation
     questions: { type: 'array', items: { type: 'string' } },
     // true: the agent stopped at a clean point with work left (its context was running out); a fresh agent goes on
     more: { type: 'boolean' },
@@ -148,21 +159,26 @@ const reviewer = resolve('reviewer', writer) // the reviewer is never the author
 out.models = { [writerRole]: writer, reviewer }
 if (!writer || !reviewer) { out.refused = `No available candidate for ${!writer ? writerRole : 'reviewer'} (the reviewer may not be the writer's model).`; return out }
 
-const dirtyOverlap = (gate.dirty || []).filter(f => myFiles.includes(key(f)))
+const dirtyOverlap = (gate.dirty || []).filter(f => myKeys.includes(key(f)))
 if (dirtyOverlap.length) { out.refused = `Uncommitted changes in package files: ${dirtyOverlap.join(', ')}. Commit or stash them first.`; return out }
 
 const git = Boolean(gate.git)
 const commit = git && a.commit !== false
 const base = gate.head
 
-// Claiming happens under a lock folder (mkdir is atomic), so two packages started at once cannot both pass.
+// Claiming happens under a lock folder (mkdir is atomic), so two packages started at once cannot both pass. From the
+// claim on, whatever happens, the claim is closed at the end and the closing is checked; only a refusal for
+// conflicts, which writes no claim, skips that.
+let claimStatus = 'stopped'
+let claimWritten = true
+try {
 const claim = await step(
   `Claim files for the package ${a.label} in ${a.repo}. Follow these steps exactly.\n` +
   `1. Lock: run \`mkdir ${q(claimsDir + '/.lock')}\` (create ${claimsDir} first if it is missing). If the lock folder already exists, wait 10 seconds and try again, ` +
   `for at most 2 minutes; a lock folder older than 10 minutes is stale: remove it and try again. If you cannot take the lock, return ok false with conflicts ["lock busy"].\n` +
   `2. Read every *.json file in ${claimsDir}. For each one whose "status" is "open" and whose "label" is not "${a.label}", compare its "files" list with this list, ` +
-  `entry by entry, as exact strings: ${JSON.stringify(myFiles)}. Every equal pair is a conflict "<its label>: <file>".\n` +
-  `3. If there is no conflict, write ${claimFile}: ${JSON.stringify({ label: a.label, status: 'open', files: myFiles, brief: a.brief, base })}, plus "openedAt" with \`date -u +%Y-%m-%dT%H:%M:%SZ\`.\n` +
+  `entry by entry, as exact strings: ${JSON.stringify(myKeys)}. Every equal pair is a conflict "<its label>: <file>".\n` +
+  `3. If there is no conflict, write ${claimFile}: ${JSON.stringify({ label: a.label, status: 'open', files: myKeys, brief: a.brief, base })}, plus "openedAt" with \`date -u +%Y-%m-%dT%H:%M:%SZ\`.\n` +
   `4. Always remove the lock folder (\`rmdir ${q(claimsDir + '/.lock')}\`), whatever happened above.\n` +
   (git && a.branch ? `5. If there was no conflict, switch to the Git branch ${a.branch}: \`git switch ${q(a.branch)}\`, or \`git switch -c ${q(a.branch)}\` when it does not exist.\n` : '') +
   `ok is true when the claim file was written${git && a.branch ? ` and \`git branch --show-current\` prints ${a.branch}` : ''}. conflicts: the conflicts found, [] when none.`,
@@ -170,27 +186,28 @@ const claim = await step(
     agentType: 'runner', label: `claim ${a.label}`,
     schema: { type: 'object', required: ['ok', 'conflicts'], properties: { ok: { type: 'boolean' }, conflicts: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' } } },
   })
-if (claim && claim.conflicts && claim.conflicts.length && claim.conflicts[0] !== 'lock busy') {
+if (claim && claim.conflicts && claim.conflicts.length && claim.conflicts[0] !== 'lock busy' && !claim.ok) {
+  claimWritten = false
   out.refused = `Open packages claim the same files: ${claim.conflicts.join('; ')}. Finish them, or close a stale one (status "closed" in ${claimsDir}/<label>.json).`
   return out
 }
-
-// From here on the claim may exist: whatever happens, it is closed at the end and the closing is checked.
-let claimStatus = 'stopped'
-try {
   if (!claim || !claim.ok) { out.stoppedAt = `claim (${claim ? claim.summary || claim.conflicts.join(', ') : 'no result'})`; return out }
   await body()
   return out
 } finally {
+  if (claimWritten) {
   const closed = await step(
     `If ${claimFile} exists, set its "status" to "${claimStatus}" and add "closedAt" with \`date -u +%Y-%m-%dT%H:%M:%SZ\`; keep every other field. ` +
     `ok is true when the file does not exist, or when it parses and its status is "${claimStatus}".`,
     { agentType: 'runner', schema: STEP, label: `close claim ${a.label}` }).catch(() => null)
   if (!closed || !closed.ok) out.claimLeftOpen = `${claimFile}: set "status" to "closed" by hand`
+  }
 }
 
 async function body() {
-  const changed = new Set(myFiles.map(abs))
+  const changed = new Set(myPaths.map(abs))
+  const questions = []
+  const noteQuestions = (res) => { for (const x of (res && res.questions) || []) if (!questions.includes(x)) questions.push(x); if (questions.length) out.questions = questions }
   const noteChanged = (list) => (list || []).forEach(f => changed.add(abs(f)))
   const HANDOVER = ` If your context is running out before the task is done, stop at a clean point (files consistent, the progress file says what is done and what remains, precisely enough for a stranger), and return done false with more true; a fresh agent will go on.`
   const BEFORE = git ? '' : ` Before your first edit of a file, copy it to ${a.tmp}/before/ keeping its file name, so the review can diff it.`
@@ -237,7 +254,7 @@ async function body() {
         `Then run \`zodchi run --role package-work --model ${writer.model} --effort ${writer.effort} --key ${a.label}-work-${n} --prompt ${q(`${a.tmp}/work-${n}.md`)} ${attach} ` +
         `--wait-sec 3600 --out ${q(`${a.tmp}/work-${n}.json`)}\`. The answer is JSON with status, summary, criteria, questions, changedFiles, checks. Map it exactly: ` +
         `done = (status is "done"); summary = its summary; changed = each entry of changedFiles prefixed with "${repoKey}/"; ` +
-        `unverified = every criterion that is not done, as one line each, plus every check with a non-zero exit code; questions = its questions. ` +
+        `unverified = every criterion that is not done, as one line each, plus every check with a non-zero exit code; questions = each entry of its questions as one readable line (the question, its options, the recommendation). ` +
         `If the job did not succeed, done is false and summary says the job status.`,
         { agentType: 'runner', schema: WRITE, phase: phaseName, label: `${tag}` })
     }
@@ -251,9 +268,11 @@ async function body() {
     `write ${a.label}`, 'Write')
   if (!out.write || !out.write.done) {
     out.stoppedAt = 'write'
-    if (out.write && out.write.questions && out.write.questions.length) out.question = out.write.questions.join(' | ')
+    noteQuestions(out.write)
+    if (questions.length) out.question = questions.join(' | ')
     return
   }
+  noteQuestions(out.write)
   noteChanged(out.write.changed)
 
   const checkList = (a.checks || []).map(c => typeof c === 'string' ? { cmd: c, pass: 'exit code 0' } : { pass: 'exit code 0', ...c })
@@ -274,6 +293,7 @@ async function body() {
         `The checks of the package ${a.brief} failed after the change. Results: ${JSON.stringify(checks.results)}. Logs: ${JSON.stringify(checks.logs || [])}. ` +
         `Read the logs and fix the code with the smallest change. done is true when the failing command passes. changed: files changed in this fix.`,
         `fix checks ${n}.${f}`, 'Close', checks.logs || [])
+      noteQuestions(fix)
       if (!fix || !fix.done) break
       noteChanged(fix.changed)
       checks = await runChecks(`${n}.${f}`)
@@ -349,7 +369,8 @@ async function body() {
       `Close the findings of the review ${a.tmp}/review-${n}.json for the package ${a.brief}. Fix each finding in the reviewer's sense with the smallest change; ` +
       `a finding you reject, say why instead of changing code. done is true when every finding is closed or answered. changed: files changed this round.`,
       `close ${n}`, 'Close', [`${a.tmp}/review-${n}.json`])
-    if (!fix || !fix.done) { out.stoppedAt = 'close'; return }
+    noteQuestions(fix)
+    if (!fix || !fix.done) { out.stoppedAt = 'close'; if (questions.length) out.question = questions.join(' | '); return }
     noteChanged(fix.changed)
     out.write = { ...out.write, summary: `${out.write.summary} | round ${n} fixes: ${fix.summary}`, unverified: fix.unverified || out.write.unverified }
   }
