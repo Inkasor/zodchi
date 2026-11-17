@@ -13,7 +13,7 @@ export const meta = {
 //   repo       repository (absolute path), checked out on the branch to review
 //   base       the commit or branch the change starts from, e.g. "origin/main"
 //   tmp        folder for prompts and reviews (absolute)
-//   author     the models that wrote the change, e.g. ["claude/sonnet"] or ["codex/gpt-6.1-sol"]; the reviewer is never one of them
+//   author     the models that wrote the change, e.g. ["claude/sonnet"] or ["codex/gpt-6.2-sol"]; the reviewer is never one of them
 //   brief      optional: path of the brief or PR description the change must meet
 //   architecture  true when the change moves module boundaries, contracts, storage or authority
 //   models     optional role table entries for this run

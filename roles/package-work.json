@@ -1,7 +1,7 @@
 {
   "description": "Codex does one package in the checkout: code, scripts, documents. It writes inside the repository, has no MCP servers and does not commit.",
   "mode": "work",
-  "model": "gpt-6.1-sol",
+  "model": "gpt-6.2-sol",
   "effort": "high",
   "timeoutMin": 60,
   "sandbox": "workspace-write",
