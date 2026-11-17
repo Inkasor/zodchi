@@ -54,16 +54,19 @@ args: {
    - an evidence id that is not in the bundle refuses the answer;
    - a finding about what agents may do must cite both the agent skill and an allow-list;
    - a text the reporter, the lead or a later package acts on (the reply, the line for the lead, the route's reason and
-     question, a gap proposal, every field and list entry of the fix brief, the agent skill change) that asks for
-     access, says someone has none or proposes working around a refusal refuses the answer, and so does a reply that
-     promises a time;
+     question, each gap's what and proposal, every field and list entry of the fix brief, the agent skill change) that
+     asks for access, says someone has none or proposes working around a refusal refuses the answer, and so does a
+     reply that promises a time; a prohibition ("the command must not grant access", "the test must not bypass the
+     allow-list refusal") is not a proposal and passes;
    - a fix brief with an empty or blank entry in files, done or checks refuses the answer;
-   - a retry is recommended only when the adapter documents one, and a reply that speaks of retrying without that
-     recommendation refuses the answer; the draft names a retry (next step, note for the log) only for a recommended
-     one;
+   - a retry is recommended only when the adapter documents one; without that recommendation a reply that speaks of
+     retrying, or a line for the lead or a route's reason or question that tells someone to retry ("press Retry", "try
+     again"), refuses the answer (running this workflow again, an operator's restart or a command named in backticks is
+     no retry); the draft names a retry (next step, note for the log) only for a recommended one;
    - `stale` without evidence that a specific release fixes the error and that the environment runs it becomes
-     `unknown` (hypothesis `stale`); the reply written on that premise is withheld (the draft says that none may be
-     sent) and its retry recommendation is dropped;
+     `unknown` (hypothesis `stale`); every text written on that premise is replaced: the reply is withheld (the draft
+     says that none may be sent), the finding's summary (also the log's cause), the line for the lead and the route's
+     reason are the workflow's own words, and the retry recommendation is dropped;
    - a refused read the answer left out is added as a gap; a gap that names an operation the adapter does not have
      loses it (nothing the model says adds an operation);
    - a route the findings do not carry becomes `needs-evidence`.

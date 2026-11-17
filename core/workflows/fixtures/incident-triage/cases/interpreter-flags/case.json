@@ -1,8 +1,8 @@
 {
-  "about": "Acceptance extra (review F2): a placeholder after a combined code flag (sh -lc, bash -ec), an abbreviated one (pwsh -com), a launcher (env, ssh) or a code subcommand (deno eval) refuses the adapter, so a value made only of permitted characters (\"touch /tmp/triage-probe\") never becomes shell code.",
+  "about": "Acceptance extra (review F2, rounds 1 and 2): a placeholder after a combined code flag (sh -lc, bash -ec), an abbreviated one (pwsh -com), a launcher (env, ssh), a code subcommand (deno eval), or after sed, awk or Windows PowerShell even when a file comes first (GNU sed takes \"-ee touch /tmp/triage-probe\" from any position as an option and runs it) refuses the adapter, so a value made only of permitted characters never becomes shell code or an option.",
   "report": "Job 4711 failed.",
   "params": {
-    "id": "touch /tmp/triage-probe"
+    "id": "-ee touch /tmp/triage-probe"
   },
   "expect": {
     "noRevision": true,
@@ -12,7 +12,10 @@
       "operation pwsh-com: {id} reaches the interpreter pwsh without a script file",
       "operation env-sh: {id} reaches the interpreter sh without a script file",
       "operation deno-eval: {id} reaches the interpreter deno without a script file",
-      "operation ssh-remote: {id} reaches ssh, which passes its arguments on"
+      "operation ssh-remote: {id} reaches ssh, which passes its arguments on",
+      "operation sed-file: {id} reaches sed, which takes its program or options from any of its arguments",
+      "operation awk-file: {id} reaches awk, which takes its program or options",
+      "operation powershell-file: {id} reaches powershell, which takes its program or options"
     ],
     "refusedExcludes": [
       "operation node-script"
