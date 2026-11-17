@@ -124,19 +124,29 @@ async function main() {
     if (!fs.existsSync(gatewayCli)) throw new Error(`No gateway CLI at ${gatewayCli}; nothing was installed.`);
   }
   // The Rust gateway is built before anything is written: a failed build installs nothing.
+  // cargo that is not found means no Rust gateway; cargo that is found and fails stops the install before any write.
   let binary = null;
-  const cargo = spawnSync("cargo --version", { encoding: "utf8", shell: true, windowsHide: true });
-  if (!o.noBuild && !gatewayCli && cargo.status === 0) {
-    const target = path.join(SRC, "gateway", "target", "release", process.platform === "win32" ? "zodchi.exe" : "zodchi");
+  const cargo = spawnSync("cargo", ["--version"], { encoding: "utf8", windowsHide: true });
+  const cargoFound = !(cargo.error && cargo.error.code === "ENOENT");
+  if (!o.noBuild && !gatewayCli && cargoFound) {
+    if (cargo.status !== 0) throw new Error(`cargo is installed but does not run (${(cargo.error && cargo.error.message) || (cargo.stderr || "").trim() || `exit ${cargo.status}`}); nothing was installed. Fix it, or rerun with --no-build.`);
+    binary = path.join(SRC, "gateway", "target", "release", process.platform === "win32" ? "zodchi.exe" : "zodchi");
     if (o.dryRun) say("would build the gateway (cargo build --release)");
     else {
       console.log("Building the gateway (cargo build --release)...");
       const built = spawnSync("cargo", ["build", "--release", "--manifest-path", path.join(SRC, "gateway", "Cargo.toml")], { stdio: "inherit", windowsHide: true });
-      if (built.status !== 0 || !fs.existsSync(target)) throw new Error("The gateway did not build; nothing was installed. Rerun with --no-build to install the rest.");
+      if (built.status !== 0 || !fs.existsSync(binary)) throw new Error("The gateway did not build; nothing was installed. Rerun with --no-build to install the rest.");
     }
-    if (fs.existsSync(target)) binary = target;
+  }
+  // --no-build keeps a Rust gateway an earlier install put there, unchanged, instead of falling back.
+  if (o.noBuild && !gatewayCli) {
+    const installed = path.join(home, "bin", process.platform === "win32" ? "zodchi.exe" : "zodchi");
+    const known = (manifest.files || {})[installed];
+    if (fs.existsSync(installed) && known && sha(fs.readFileSync(installed)) === known && !fs.readFileSync(installed).subarray(0, 2).equals(Buffer.from("#!"))) binary = installed;
   }
   const items = plan(domains, claudeDir, home, binary);
+  const nativeDest = binary ? path.join(home, "bin", path.basename(binary)) : null;
+  const FORWARDING = ["zodchi.mjs", "zodchi.cmd", "zodchi"].map(f => path.resolve(home, "bin", f));
   const owned = manifest.files || {};
   const isOwned = (dest, buf) => Object.prototype.hasOwnProperty.call(owned, dest) && owned[dest] === sha(buf);
   const next = { version: VERSION, domains, claudeDir, files: { ...owned } };
@@ -150,6 +160,8 @@ async function main() {
     next.files[dest] = sha(body); written++;
   };
   for (const it of items) {
+    // A dry run of a fresh checkout has no built gateway yet: the plan names it without reading it.
+    if (it.src && o.dryRun && !fs.existsSync(it.src)) { say(`${fs.existsSync(it.dest) ? "update" : "add"} ${it.dest} (after the build)`); continue; }
     const body = it.content != null ? Buffer.from(it.content) : fs.readFileSync(it.src);
     const exists = fs.existsSync(it.dest);
     const current = exists ? fs.readFileSync(it.dest) : null;
@@ -173,8 +185,14 @@ async function main() {
   // Files from an earlier install that this one no longer plans (a domain was dropped): remove them when unchanged.
   const planned = new Set(items.map(it => path.resolve(it.dest)));
   const inside = (f) => [claudeDir, home].some(d => path.resolve(f).toLowerCase().startsWith(path.resolve(d).toLowerCase() + path.sep));
+  // The forwarding command goes only once the Rust gateway is really in place; a skipped binary keeps it.
+  const nativeInPlace = Boolean(nativeDest) && (o.dryRun
+    ? !fs.existsSync(nativeDest) || isOwned(nativeDest, fs.readFileSync(nativeDest)) || o.force
+    : fs.existsSync(nativeDest) && fs.existsSync(binary) && sha(fs.readFileSync(nativeDest)) === sha(fs.readFileSync(binary)));
+  if (nativeDest && !nativeInPlace) say(`the Rust gateway was not installed at ${nativeDest} (a file of yours is there); the forwarding command stays`);
   for (const [dest, hash] of Object.entries(manifest.files || {})) {
     if (planned.has(path.resolve(dest)) || dest.endsWith(".new") || !inside(dest)) continue;
+    if (FORWARDING.includes(path.resolve(dest)) && !nativeInPlace) continue;
     if (fs.existsSync(dest) && sha(fs.readFileSync(dest)) !== hash) { say(`keep (changed by you, no longer installed): ${dest}`); delete next.files[dest]; continue; }
     if (fs.existsSync(dest)) { say(`remove ${dest}`); if (!o.dryRun) fs.rmSync(dest); }
     delete next.files[dest];
@@ -197,7 +215,7 @@ async function main() {
   console.log(`\nzodchi ${VERSION}: ${written} file(s) written, ${skipped} skipped. Domains: core${domains.length ? ", " + domains.join(", ") : ""}.`);
   console.log(`Agents and workflows: ${claudeDir}`);
   console.log(`Codex CLI: ${codex.status === 0 ? codex.stdout.trim() : "not found - install it and run `codex login` for gateway roles"}`);
-  if (binary) console.log(`Gateway: the Rust gateway, ${path.join(home, "bin", path.basename(binary))}. Subscriptions: ~/.zodchi/accounts.json (see gateway/README.md).`);
+  if (binary && nativeInPlace) console.log(`Gateway: the Rust gateway, ${path.join(home, "bin", path.basename(binary))}. Subscriptions: ~/.zodchi/accounts.json (see gateway/README.md).`);
   else if (cfg.gatewayCli) console.log(`Gateway: forwarding to ${cfg.gatewayCli}.`);
   else console.log("Gateway: not installed - install Rust (https://rustup.rs) and rerun, or pass --gateway-cli <path to a Node gateway cli.mjs>.");
   const bin = path.join(home, "bin");
