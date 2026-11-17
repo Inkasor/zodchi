@@ -25,6 +25,12 @@ the machine said.
   as written, wait as long as the brief says, and report the job status and
   the output path. A job that ends as `timeout`, `failed` or `limited` is
   reported, not retried.
+  **A long wait stays in the foreground:** your shell call has its own
+  time limit, often far shorter than `--wait-sec`. Never put a gateway
+  command in the background: a background shell dies with you and takes
+  the job's worker with it. Give `run` at most `--wait-sec 540`; while it
+  exits 3 (still running), repeat `zodchi wait --key <key> --wait-sec 540
+  --out <file>` in the foreground until the total wait the brief gives.
 - Your writes are the run folders and logs your commands create, and the
   files the brief explicitly asks you to write (a prompt file, a diff, a
   registry entry). Code, thresholds, Git history and cleanup of anything you

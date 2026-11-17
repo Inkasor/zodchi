@@ -33,6 +33,12 @@ and bring back what the machine said.
   it. Save captures to the temporary folder and give their paths.
 - **Gateway calls** (`zodchi run ...`) run as written; a job that ends as
   `timeout`, `failed` or `limited` is reported, not retried.
+  **A long wait stays in the foreground:** your shell call has its own
+  time limit, often far shorter than `--wait-sec`. Never put a gateway
+  command in the background: a background shell dies with you and takes
+  the job's worker with it. Give `run` at most `--wait-sec 540`; while it
+  exits 3 (still running), repeat `zodchi wait --key <key> --wait-sec 540
+  --out <file>` in the foreground until the total wait the brief gives.
 - Your writes are the run folders and logs your commands create, and the
   files the brief explicitly asks you to write. Code, thresholds, Git and
   cleanup of anything you did not create belong to the brief's owner.
