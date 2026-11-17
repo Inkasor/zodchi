@@ -59,10 +59,19 @@ const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
 // One gateway call, worded once for every step that makes one. The shell of a step has its own time limit and the
 // worker of a job can end with the shell that started it, so the wait is made of foreground calls of 540 seconds.
 // attach: the files the request must carry, listed by the workflow; attachIfExists: files attached only when they exist.
-const gatewayCall = ({ role, key, args, attach = [], attachIfExists = [], out, totalMin, repo = a.repo }) => {
+// label: the step's label. A rerun after an infrastructure failure (attempt 2 and on) submits under a base key of its
+// own, <key>-a<attempt>: its prompt differs, and the earlier keys end in a final job that gave no usable result. Only an
+// earlier job that is still running is waited on instead.
+const gatewayCall = ({ role, key: baseKey, label, args, attach = [], attachIfExists = [], out, totalMin, repo = a.repo }) => {
+  const n = attempt(label)
+  const key = n > 1 ? `${baseKey}-a${n}` : baseKey
   const flags = [...attach, ...attachIfExists].map(f => `--attach ${q(f)}`).join(' ')
   const run = `zodchi run --role ${role} --key ${key} ${args}${flags ? ' ' + flags : ''} --wait-sec 540 --out ${q(out)}`
-  return `Gateway call, base key ${key}. Run it in the foreground from ${repo}: \`${run}\`. ` +
+  return `Gateway call, base key ${key}. ` +
+    (n > 1 ? `This is attempt ${n} after an infrastructure failure; earlier attempts used other keys (${baseKey}${n > 2 ? `, ${baseKey}-a2` : ''}${n > 3 ? ' and on' : ''}, with their -r2 and -r3). ` +
+      `Unless the progress file already records a key that starts with ${key}: take the latest key it records for this call; if \`zodchi job --key <that key>\` shows the job not final yet, it is the active key: wait on it as below instead of submitting; if it then dies before its turn (the rule below), the next submission is ${key}, not a suffix of that key. ` +
+      `Otherwise (it is final, whatever its status, or there is none) never wait on it or reuse it: submit under ${key}. ` : '') +
+    `Run it in the foreground from ${repo}: \`${run}\`. ` +
     (attachIfExists.length ? `Before every submission, retries included, drop the --attach of each optional file that does not exist on disk: ${JSON.stringify(attachIfExists)}; keep every other --attach. ` : '') +
     `Never in the background (no &, nohup or run_in_background), never through Monitor: the worker of the job ends with your shell. ` +
     `The active key is the key of the latest submission: ${key} at first, then ${key}-r2, then ${key}-r3 (at most 2 retries in all). Every wait, \`zodchi job\` and request.json check below names the active key, never an earlier one, also after a resume (the progress file holds the latest key). ` +
@@ -112,9 +121,9 @@ const myKeys = [...new Set(myPaths.map(p => p.toLowerCase()))]
 // Resume note: a step that threw runs again on resume. An infrastructure failure (the gateway created no job or
 // refused, a review without a verdict) is not a result: the workflow throws, naming the step's label. The journal
 // still holds that step's answer, so resume with args.rerun naming the step's label and its attempt number: the
-// step's prompt then carries that attempt, it runs live, and every step after it too. A rerun that fails the same way
-// names the next attempt, so every resume differs from the one before. Its progress file ends with an "INFRA:" line,
-// and it goes on from there.
+// step's prompt then carries that attempt, its gateway call a base key of its own (<key>-a<attempt>), it runs live,
+// and every step after it too. A rerun that fails the same way names the next attempt, so every resume differs from
+// the one before. Its progress file ends with an "INFRA:" line, and it goes on from there.
 // args.rerun: { "<label>": <attempt> }, attempt 2 for the first rerun; a plain list of labels means attempt 2 for each.
 const reruns = Array.isArray(a.rerun) || typeof a.rerun === 'string'
   ? Object.fromEntries([].concat(a.rerun).map(l => [l, 2]))
@@ -122,7 +131,7 @@ const reruns = Array.isArray(a.rerun) || typeof a.rerun === 'string'
 const attempt = (label) => Number(reruns[label]) || 1
 const progressFile = (o) => `${a.tmp}/progress/${String((o && (o.progress || o.label || o.phase)) || 'step').replace(/[^\w.-]+/g, '-')}.md`
 const step = (prompt, opts) => agent(prompt +
-  (opts && attempt(opts.label) > 1 ? `\n\nThis step runs again after an infrastructure failure, attempt ${attempt(opts.label)}: read the last line of its progress file, then submit or wait as the rules below say.` : '') +
+  (opts && attempt(opts.label) > 1 ? `\n\nThis step runs again after an infrastructure failure, attempt ${attempt(opts.label)}: read its progress file. A key recorded by an earlier attempt is not a submission of this one: the gateway call says when an earlier job is still waited on and which new base key to submit under.` : '') +
   `\n\nShell rule: run every command with bash (Git Bash on Windows, never PowerShell or cmd); the quoting in these commands is for bash. Resume rule: this run may have been cut off and restarted. If ${progressFile(opts)} exists and its last line is not DONE, read it first and go on from its last line; ` +
   `if its last line is DONE, it is from an earlier finished run: rename it to .old and start fresh. ` +
   `Do not redo finished work or overwrite its outputs blindly. For a gateway call it records as submitted, wait on the latest key recorded for that call in the foreground (zodchi wait --key <key> --wait-sec 540 --out <file>, repeated while it exits 3) instead of submitting again; ` +
@@ -133,6 +142,8 @@ const STEP = {
   type: 'object', required: ['ok', 'summary'],
   properties: { ok: { type: 'boolean' }, summary: { type: 'string' }, paths: { type: 'array', items: { type: 'string' } } },
 }
+// A Git status answer: paths is required, [] for a clean work tree, so a missing list is never read as clean.
+const STATUS = { ...STEP, required: ['ok', 'summary', 'paths'] }
 const WRITE = {
   type: 'object', required: ['done', 'summary', 'changed'],
   properties: {
@@ -200,12 +211,12 @@ const gate = await step(
   `- repoModels: the file ${repoKey}/.zodchi/models.json.\n` +
   `- account: the output of \`zodchi account\` (JSON), or "" when the command fails; put its error into accountError.\n` +
   `- git: true when ${a.repo} is inside a Git work tree. head: \`git rev-parse HEAD\`. ` +
-  `dirty: every path \`git status --porcelain -uall\` lists, relative to the repository, without the status letters and quotes (a rename gives both paths).\n` +
+  `dirty: every path \`git status --porcelain -uall\` lists, relative to the repository, without the status letters and quotes (a rename gives both paths); [] when it lists nothing or ${a.repo} is not in a Git work tree.\n` +
   `- ignoreExit: the exit code of \`git check-ignore -q .agent-tmp/gateway/x\` run from ${a.repo} (0: the gateway's job folder is ignored, 1: it is not, anything else: Git could not check).`,
   {
     agentType: 'zodchi-core:runner', label: `gate ${a.label}`,
     schema: {
-      type: 'object', required: ['homeModels', 'repoModels', 'account', 'git', 'ignoreExit'],
+      type: 'object', required: ['homeModels', 'repoModels', 'account', 'git', 'dirty', 'ignoreExit'],
       properties: {
         homeModels: { type: 'string' }, repoModels: { type: 'string' }, account: { type: 'string' }, accountError: { type: 'string' },
         git: { type: 'boolean' }, head: { type: 'string' }, dirty: { type: 'array', items: { type: 'string' } },
@@ -214,6 +225,8 @@ const gate = await step(
     },
   })
 if (!gate) { out.stoppedAt = 'gate'; return out }
+// The dirty list guards the commits and the claim: a gate answer without it is no answer, never a clean work tree.
+if (!Array.isArray(gate.dirty)) { out.stoppedAt = 'gate (no dirty list: the Git state is unknown)'; return out }
 
 const parse = (text, what) => { if (!text || !text.trim()) return null; try { return JSON.parse(text) } catch { log(`${what} is not JSON; ignored`); return null } }
 const table = { ...((parse(gate.homeModels, '~/.zodchi/models.json') || {}).roles || {}), ...((parse(gate.repoModels, '.zodchi/models.json') || {}).roles || {}), ...(a.models || {}) }
@@ -236,7 +249,7 @@ const reviewer = resolve('reviewer', writer) // the reviewer is never the author
 out.models = { [writerRole]: writer, reviewer }
 if (!writer || !reviewer) { out.refused = `No available candidate for ${!writer ? writerRole : 'reviewer'} (the reviewer may not be the writer's model).`; return out }
 
-const dirtyOverlap = (gate.dirty || []).filter(f => myKeys.includes(key(f)))
+const dirtyOverlap = gate.dirty.filter(f => myKeys.includes(key(f)))
 if (dirtyOverlap.length) { out.refused = `Uncommitted changes in package files: ${dirtyOverlap.join(', ')}. Commit or stash them first.`; return out }
 
 const git = Boolean(gate.git)
@@ -250,7 +263,7 @@ const needIgnore = usesGateway && gate.ignoreExit !== 0
 if (needIgnore) {
   if (!git || gate.ignoreExit !== 1) { out.refused = `Git could not check the ignore rules of ${a.repo} (git check-ignore exit ${gate.ignoreExit}); the gateway works only inside a Git repository.`; return out }
   if (!a.fixIgnore) { out.refused = `${a.repo} does not ignore .agent-tmp/, so the gateway would refuse this package's calls. Add ".agent-tmp/" to its .gitignore and commit it, or run again with args.fixIgnore true.`; return out }
-  if ((gate.dirty || []).some(f => key(f) === '.gitignore')) { out.refused = `${a.repo} does not ignore .agent-tmp/ and its .gitignore has uncommitted changes: add ".agent-tmp/" to it by hand.`; return out }
+  if (gate.dirty.some(f => key(f) === '.gitignore')) { out.refused = `${a.repo} does not ignore .agent-tmp/ and its .gitignore has uncommitted changes: add ".agent-tmp/" to it by hand.`; return out }
 }
 
 // Claiming happens under a lock folder (mkdir is atomic), so two packages started at once cannot both pass. From the
@@ -356,7 +369,7 @@ async function body() {
         `Ask an expert for the code through the gateway. Work from ${a.repo}. Write ${a.tmp}/expert-${n}.md: ${task} ` +
         `The expert has no tools: everything it needs is attached. Then ` +
         gatewayCall({
-          role: 'code-patch', key: `${a.label}-expert-${n}`, totalMin: 55, out: `${a.tmp}/expert-${n}.answer.md`,
+          role: 'code-patch', key: `${a.label}-expert-${n}`, label: `${tag} ask`, totalMin: 55, out: `${a.tmp}/expert-${n}.answer.md`,
           args: `--model ${writer.model} --effort ${writer.effort} --prompt ${q(`${a.tmp}/expert-${n}.md`)}`,
           attach: [a.brief], attachIfExists: [...evidence, ...changed],
         }) + ` ` +
@@ -375,7 +388,7 @@ async function body() {
         `Have Codex do this through the gateway. Work from ${a.repo}. Write ${a.tmp}/work-${n}.md: ${task} ` +
         `Then ` +
         gatewayCall({
-          role: 'package-work', key: `${a.label}-work-${n}`, totalMin: 60, out: `${a.tmp}/work-${n}.json`,
+          role: 'package-work', key: `${a.label}-work-${n}`, label: tag, totalMin: 60, out: `${a.tmp}/work-${n}.json`,
           args: `--model ${writer.model} --effort ${writer.effort} --prompt ${q(`${a.tmp}/work-${n}.md`)}`,
           attach: [a.brief, ...evidence],
         }) + ` The answer is JSON with status, summary, criteria, questions, changedFiles, checks. Map it exactly: ` +
@@ -393,7 +406,7 @@ async function body() {
   // sees changed join the claim and the package. Neither source brings in the job folder .agent-tmp/ or a file already
   // dirty at the gate; a reported file of that second kind stops the run, because committing it would commit somebody
   // else's changes. A file another open package claims stops the run too. Either way the work stays uncommitted for a human.
-  const atGate = new Set((gate.dirty || []).map(f => { try { return key(f) } catch { return '' } }))
+  const atGate = new Set(gate.dirty.map(f => { try { return key(f) } catch { return '' } }))
   const jobFolder = (r) => /^\.agent-tmp(\/|$)/i.test(r)
   const claimed = new Set(claimKeys)
   async function follow(res, tag, phaseName) {
@@ -412,10 +425,11 @@ async function body() {
     if (git) {
       const st = await step(
         `List what changed in the work tree of ${a.repo}; change nothing. Run \`git status --porcelain -uall\`. ` +
-        `paths: every path it lists, relative to the repository, without the status letters and quotes (a rename gives both paths). ok is true when the command ran.`,
-        { agentType: 'zodchi-core:runner', schema: STEP, phase: phaseName, label: `status ${tag}` })
-      if (!st || !st.ok) { out.stoppedAt = `git status after ${tag}`; return false }
-      for (const p of st.paths || []) {
+        `paths: every path it lists, relative to the repository, without the status letters and quotes (a rename gives both paths); [] when it lists nothing. ok is true when the command ran.`,
+        { agentType: 'zodchi-core:runner', schema: STATUS, phase: phaseName, label: `status ${tag}` })
+      // A missing list is not a clean work tree: unreported files would escape the claim and the review.
+      if (!st || !st.ok || !Array.isArray(st.paths)) { out.stoppedAt = `git status after ${tag}${st && st.ok ? ' (no paths list)' : ''}`; return false }
+      for (const p of st.paths) {
         let r
         try { r = rel(p) } catch { continue }
         if (!atGate.has(r.toLowerCase()) && !jobFolder(r)) found.push(r)
@@ -536,7 +550,7 @@ async function body() {
         `Get an independent review of a finished change through the gateway. Work from ${a.repo}. Write ${a.tmp}/review-${n}.md: ${context}. ` +
         `Save the change as ${a.tmp}/change-${n}.diff with ${diffHow}: ${JSON.stringify(files.map(rel))}. Then ` +
         gatewayCall({
-          role: 'code-review', key: `${a.label}-review-${n}`, totalMin: 55, out: `${a.tmp}/review-${n}.json`,
+          role: 'code-review', key: `${a.label}-review-${n}`, label: `review ${n}`, totalMin: 55, out: `${a.tmp}/review-${n}.json`,
           args: `--model ${reviewer.model} --effort ${reviewer.effort} --prompt ${q(`${a.tmp}/review-${n}.md`)}`,
           attach: [`${a.tmp}/change-${n}.diff`, a.brief, ...(n > 1 ? [`${a.tmp}/review-${n - 1}.json`] : [])],
           attachIfExists: files,
