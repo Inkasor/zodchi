@@ -354,6 +354,70 @@ fn admission_refuses_over_the_limit_and_leaves_the_key_free() {
     assert_eq!(server.submit(&token, json!({ "key": "next-1", "role": "ask", "prompt": "two" })).status, 201);
 }
 
+/// The 429 answers are fixed text: no count of unfinished jobs and no configured limit reaches a caller. The key is the
+/// caller's own and may be named; the counts and the limits go to the server's log.
+#[test]
+fn busy_answers_show_no_counts_and_no_limits() {
+    let env = Env::new();
+    let (_, token_a) = env.user("Anna", true);
+    let (_, token_b) = env.user("Boris", true);
+    // Limits whose digits (73, 59) cannot come from anything else in the answer.
+    let server = env.serve(&["--max-user-jobs", "73", "--max-jobs", "2"]);
+    assert_eq!(server.submit(&token_a, json!({ "key": "slow-a1", "role": "ask", "prompt": "SLOW one" })).status, 201);
+    assert_eq!(server.submit(&token_a, json!({ "key": "slow-a2", "role": "ask", "prompt": "SLOW two" })).status, 201);
+    // The server limit: user A filled it, user B is refused.
+    let over = server.submit(&token_b, json!({ "key": "b-key-7", "role": "ask", "prompt": "three" }));
+    assert_eq!(over.status, 429, "{}", String::from_utf8_lossy(&over.body));
+    let (code, message) = over.error();
+    assert_eq!(code, "busy");
+    assert_eq!(message, "The server is busy; try again later. The key b-key-7 is still free.");
+    let without_key = message.replace("b-key-7", "");
+    assert!(!without_key.chars().any(|c| c.is_ascii_digit()), "a number in {message}");
+    assert!(!message.contains("73"), "the user limit in {message}");
+    let log = server.stderr();
+    assert!(log.contains("2 unfinished on the server, at most 2"), "the counts did not reach the log: {log}");
+    assert_eq!(server.call("GET", "/v1/jobs/b-key-7", Some(&token_b), None).status, 404, "the refused key was taken");
+    server.finished(&token_a, "slow-a1");
+    server.finished(&token_a, "slow-a2");
+    drop(server);
+
+    // The per-user limit.
+    let server = env.serve(&["--max-user-jobs", "1", "--max-jobs", "59"]);
+    assert_eq!(server.submit(&token_a, json!({ "key": "slow-a3", "role": "ask", "prompt": "SLOW one" })).status, 201);
+    let over = server.submit(&token_a, json!({ "key": "a-key-8", "role": "ask", "prompt": "two" }));
+    assert_eq!(over.status, 429, "{}", String::from_utf8_lossy(&over.body));
+    let (code, message) = over.error();
+    assert_eq!(code, "busy");
+    assert_eq!(message, "You have too many unfinished jobs; wait for one to finish. The key a-key-8 is still free.");
+    let without_key = message.replace("a-key-8", "");
+    assert!(!without_key.chars().any(|c| c.is_ascii_digit()), "a number in {message}");
+    assert!(!message.contains("59"), "the server limit in {message}");
+    assert!(server.stderr().contains("1 unfinished, at most 1"), "the counts did not reach the log: {}", server.stderr());
+    server.finished(&token_a, "slow-a3");
+}
+
+/// The prompt limit is the core's: the composed prompt (trailing whitespace trimmed, one newline added) is at most
+/// LIMIT_PROMPT bytes. At the limit the job is made; one byte over is a 400 of the client, never a 500 of storage.
+#[test]
+fn the_composed_prompt_limit_is_exact() {
+    let limit = zodchi_core::job::LIMIT_PROMPT;
+    let env = Env::new();
+    let (_, token) = env.user("Anna", true);
+    let server = env.serve(&[]);
+    // limit - 1 bytes plus the newline of the composition: exactly the limit.
+    let at = server.submit(&token, json!({ "key": "at-limit", "role": "ask", "prompt": "a".repeat(limit - 1) }));
+    assert_eq!(at.status, 201, "{}", String::from_utf8_lossy(&at.body));
+    // limit bytes plus the newline: one over.
+    let over = server.submit(&token, json!({ "key": "over-limit", "role": "ask", "prompt": "a".repeat(limit) }));
+    assert_eq!(over.status, 400, "{}", String::from_utf8_lossy(&over.body));
+    assert_eq!(over.error().0, "bad_request");
+    assert_eq!(server.call("GET", "/v1/jobs/over-limit", Some(&token), None).status, 404, "the refused key was taken");
+    // Whitespace at the end does not count: the core trims it, so the composed prompt is at the limit again.
+    let trimmed = server.submit(&token, json!({ "key": "trimmed", "role": "ask", "prompt": format!("{}   ", "a".repeat(limit - 1)) }));
+    assert_eq!(trimmed.status, 201, "{}", String::from_utf8_lossy(&trimmed.body));
+    assert_eq!(server.finished(&token, "at-limit")["status"], json!("succeeded"));
+}
+
 /// Admission fails closed: a job folder whose record cannot be read counts as unfinished, and a jobs folder that
 /// cannot be listed refuses the job (500) instead of counting nothing; either way the key stays free.
 #[test]

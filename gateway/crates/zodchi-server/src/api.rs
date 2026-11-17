@@ -177,7 +177,10 @@ fn job_request(body: &[u8]) -> std::result::Result<JobRequest, String> {
     if prompt.trim().is_empty() {
         return Err("prompt is required.".into());
     }
-    if prompt.len() > LIMIT_PROMPT {
+    // The core checks the composed prompt (trailing whitespace trimmed, one newline added): the same rule here, so a
+    // prompt the core would refuse is a 400 of the client, never a 500 of the server's storage.
+    let composed = compose_prompt(&prompt, &[]).map_err(|e| e.0)?;
+    if composed.len() > LIMIT_PROMPT {
         return Err(format!("The prompt is larger than {} KB.", LIMIT_PROMPT / 1024));
     }
     let mut images = Vec::new();
@@ -459,10 +462,13 @@ impl App {
                 Err(e) => return storage(format!("The unfinished jobs cannot be counted; the job is refused. The key {} is still free.", req.key), &e.0),
             };
             if mine >= self.max_user_jobs {
-                return Reply::error(429, "busy", format!("You have {mine} unfinished jobs; at most {} at once. The key {} is still free.", self.max_user_jobs, req.key));
+                // The counts and the limits are the server's business: they go to the log, never to the caller.
+                log("A user is over the unfinished-job limit.", &format!("user {}: {mine} unfinished, at most {}", who.id, self.max_user_jobs));
+                return Reply::error(429, "busy", format!("You have too many unfinished jobs; wait for one to finish. The key {} is still free.", req.key));
             }
             if all >= self.max_jobs {
-                return Reply::error(429, "busy", format!("The server has {all} unfinished jobs; at most {} at once. The key {} is still free.", self.max_jobs, req.key));
+                log("The server is over the unfinished-job limit.", &format!("user {}: {all} unfinished on the server, at most {}", who.id, self.max_jobs));
+                return Reply::error(429, "busy", format!("The server is busy; try again later. The key {} is still free.", req.key));
             }
             let prompt = match compose_prompt(&req.prompt, &[]) {
                 Ok(p) => p,
