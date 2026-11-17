@@ -19,7 +19,7 @@ same everywhere lives in `core/`.
 
 | Folder | What is inside |
 | --- | --- |
-| `core/` | Agents every domain uses: `coder`, `runner`, `applier`, `researcher`. Workflows: `code-package`, `ops-script` |
+| `core/` | Agents every domain uses: `coder`, `runner`, `applier`, `researcher`. Workflows: `code-package`, `ops-script`, `incident-triage` (a user's error report to a draft reply or fix brief, see [docs/incident-triage.md](docs/incident-triage.md)) |
 | `domains/web-apps/` | Web application work: `branch-review` before a release |
 | `domains/gamedev-unity/` | Game asset pipeline in Blender and Unity: `asset-round`, `method-question`, `rubric-probe`, `unity-check`, and the `modeller`, `unity-runner`, `art-critic` agents |
 | `models.json` | The role table: which model plays each role, in order of preference |

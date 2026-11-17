@@ -1,0 +1,22 @@
+{
+  "adapterVersion": 1,
+  "product": "Example Catalog",
+  "owner": "product owner of Example Catalog",
+  "operations": {
+    "form": {
+      "description": "a product card form by id: its fields and what the assistant asked",
+      "provides": ["job", "status"],
+      "argv": ["node", "../../product.mjs", "form", "{id}"],
+      "args": { "id": "F-[0-9]{1,9}" }
+    },
+    "release": {
+      "description": "the release the production environment runs, with its time",
+      "provides": ["release"],
+      "argv": ["node", "../../product.mjs", "release"]
+    }
+  },
+  "agentSkill": { "path": "skill.md" },
+  "allowLists": [{ "name": "agent-tools", "path": "allow-list.txt" }],
+  "releaseCommand": "the product's own release command, run by its operator",
+  "incidentLog": "the incident log of the product"
+}

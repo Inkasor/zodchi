@@ -1,0 +1,18 @@
+{
+  "adapterVersion": 1,
+  "product": "Example Catalog",
+  "owner": "product owner of Example Catalog",
+  "operations": {
+    "job": {
+      "description": "the job by id, through a shell",
+      "argv": ["sh", "-c", "{id}"],
+      "args": { "id": "[0-9]+" }
+    },
+    "log": {
+      "description": "the log of a job",
+      "argv": ["node", "../../product.mjs", "log-{id}"],
+      "args": { "id": "[0-9]+" }
+    }
+  },
+  "agentSkill": { "path": "skill.md" }
+}

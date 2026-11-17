@@ -1,0 +1,11 @@
+{
+  "about": "Acceptance extra: the classifier cites an evidence id that the bundle does not have; the answer is refused.",
+  "adapterFrom": "stale",
+  "report": "The export of the spring catalog stopped yesterday with an error, job 4711.",
+  "params": { "id": "4711" },
+  "expect": {
+    "state": "failed",
+    "refusedIncludes": ["\"E99\", which is not an evidence id of this bundle"],
+    "draftIncludes": ["## No draft"]
+  }
+}

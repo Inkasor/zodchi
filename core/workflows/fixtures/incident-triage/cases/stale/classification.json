@@ -1,0 +1,20 @@
+{
+  "findings": [
+    {
+      "kind": "stale",
+      "hypothesis": "",
+      "about": "code",
+      "confidence": "high",
+      "summary": "Job 4711 failed at 2026-11-15T18:00:41Z with ERR_EXPORT_COLUMNS; release 2.4.1 fixes that error and production runs 2.4.1 since 2026-11-16T09:00:00Z.",
+      "evidence": ["E2", "E3", "E4"],
+      "fixedBy": ["E4"],
+      "deployedIn": ["E3"]
+    }
+  ],
+  "gaps": [],
+  "next": { "route": "reply", "role": "", "question": "", "reason": "The error predates the release that fixed it." },
+  "reply": "Your export (job 4711) stopped because of an error that the update of 16 November fixed. The job wrote no file, so it is safe to start again: press Retry on the job page.",
+  "leadLine": "4711: stale, ERR_EXPORT_COLUMNS fixed in 2.4.1 (deployed); reporter retries.",
+  "recommendRetry": true,
+  "fixBrief": { "goal": "", "files": [], "done": [], "checks": [], "agentsAffected": false, "agentSkillChange": "" }
+}

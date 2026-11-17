@@ -18,7 +18,7 @@ Zodchi — набор рабочих приёмов для Claude Code. В нё�
 
 | Папка | Что в ней |
 | --- | --- |
-| `core/` | Агенты для всех разделов: `coder`, `runner`, `applier`, `researcher`. Процессы: `code-package`, `ops-script` |
+| `core/` | Агенты для всех разделов: `coder`, `runner`, `applier`, `researcher`. Процессы: `code-package`, `ops-script`, `incident-triage` (сообщение пользователя об ошибке — в черновик ответа или задания на исправление, см. [docs/incident-triage.md](docs/incident-triage.md)) |
 | `domains/web-apps/` | Веб-приложения: `branch-review` перед выпуском |
 | `domains/gamedev-unity/` | Ассеты игры в Blender и Unity: `asset-round`, `method-question`, `rubric-probe`, `unity-check`, агенты `modeller`, `unity-runner`, `art-critic` |
 | `models.json` | Таблица ролей: какая модель играет какую роль, по порядку предпочтения |
