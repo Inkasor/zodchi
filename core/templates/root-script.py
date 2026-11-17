@@ -41,7 +41,7 @@ BACKUP_ROOT = "/var/backups/" + NAME
 CHANGES = [
     {
         "source": os.path.basename(__file__),   # placeholder: the script itself
-        "dest": os.path.join(tempfile.gettempdir(), "example-placeholder.conf"),   # placeholder: a real absolute path goes here
+        "dest": os.path.join(os.path.abspath(os.sep), "example-placeholder.conf"),   # placeholder (a path in the root folder, nothing is probed): a real absolute path goes here
         "mode": 0o644,
         "owner": None,
         "group": None,
@@ -94,14 +94,15 @@ def wanted_ids(change):
 
 
 def plan_one(change):
-    """Read-only: what would happen to one file. Returns (action, problems, sha256 of the source).
+    """Read-only: what would happen to one file. Returns (action, problems, sha256 of the source, lstat of dest).
 
     The digest is taken here, once; install and verify hold the files to it, so a source that changes after
-    planning cannot get installed or pass verification."""
+    planning cannot get installed or pass verification. The lstat of dest (None unless dest is a regular file) is
+    the snapshot that backup and install hold the destination to: a dest that changed since is not touched."""
     problems = []
     src, dest = source_path(change), change["dest"]
     if not os.path.isfile(src):
-        return "invalid", [f"source is missing: {src}"], None
+        return "invalid", [f"source is missing: {src}"], None, None
     want = sha256_of(src)
     if change.get("sha256") and change["sha256"].lower() != want:
         problems.append(f"source {src} has sha256 {want}, expected {change['sha256']}")
@@ -119,19 +120,19 @@ def plan_one(change):
             except KeyError:
                 problems.append(f"{kind} {name} does not exist here")
     if problems:
-        return "invalid", problems, want
+        return "invalid", problems, want, None
     try:
         st = os.lstat(dest)  # lstat: a symlink must be seen as a symlink
     except FileNotFoundError:
-        return "create", [], want
+        return "create", [], want, None
     if stat.S_ISLNK(st.st_mode):
-        return "invalid", [f"dest is a symlink, which this template does not replace: {dest}"], want
+        return "invalid", [f"dest is a symlink, which this template does not replace: {dest}"], want, None
     if not stat.S_ISREG(st.st_mode):
-        return "invalid", [f"dest is not a regular file: {dest}"], want
+        return "invalid", [f"dest is not a regular file: {dest}"], want, None
     uid, gid = wanted_ids(change)
     same = (sha256_of(dest) == want and stat.S_IMODE(st.st_mode) == change["mode"]
             and (uid is None or st.st_uid == uid) and (gid is None or st.st_gid == gid))
-    return ("keep" if same else "replace"), [], want
+    return ("keep" if same else "replace"), [], want, st
 
 
 def check():
@@ -141,7 +142,7 @@ def check():
         say("note: PLACEHOLDER is True, this is the unedited template config")
     bad = 0
     for change in CHANGES:
-        action, problems, _ = plan_one(change)
+        action, problems, *_ = plan_one(change)
         say(f"  {action:8} {change['dest']}  <- {change['source']}")
         for p in problems:
             say(f"           problem: {p}")
@@ -187,16 +188,47 @@ def stage(src, dest, uid, gid, mode):
         raise
 
 
-def install(change, src, digest):
-    """Atomic replace: stage next to dest, check the staged bytes against the planned digest, rename over it."""
+def same_file(a, b):
+    """True when two stat results describe the same file in the same state."""
+    keys = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_size", "st_mtime_ns")
+    return all(getattr(a, k) == getattr(b, k) for k in keys)
+
+
+def backup(dest, saved, snap):
+    """Copy dest into saved through a handle that does not follow symlinks, and only when dest is still the file
+    that was planned. Returns the fstat of the old file (its owner, mode and times, for the restore)."""
+    fd = os.open(dest, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))  # fails on a symlink
+    with os.fdopen(fd, "rb") as f:
+        old = os.fstat(f.fileno())
+        if not same_file(old, snap):
+            raise RuntimeError(f"{dest} changed after planning; nothing was replaced")
+        with open(saved, "xb") as out:
+            shutil.copyfileobj(f, out)
+    os.utime(saved, ns=(old.st_atime_ns, old.st_mtime_ns))
+    return old
+
+
+def install(change, src, digest, snap, placed):
+    """Stage next to dest, check the staged bytes against the planned digest, then put the file in place without
+    overwriting anything this run did not plan to replace: a new file is hard-linked (that fails when anything at all
+    is there, even a dangling symlink), a replacement renames over dest only while dest is still the planned file.
+    placed gets True the moment the file is in place."""
     dest = change["dest"]
     tmp, got = stage(src, dest, *wanted_ids(change), change["mode"])
     try:
         if got != digest:
             raise RuntimeError(f"{src} changed after planning: staged sha256 {got}, planned {digest}")
-        os.replace(tmp, dest)
+        if snap is None:
+            os.link(tmp, dest)
+            placed.append(True)
+            os.unlink(tmp)
+        else:
+            if not same_file(os.lstat(dest), snap):
+                raise RuntimeError(f"{dest} changed after planning; nothing was replaced")
+            os.replace(tmp, dest)
+            placed.append(True)
     except BaseException:
-        if os.path.exists(tmp):
+        if os.path.lexists(tmp):
             os.unlink(tmp)
         raise
 
@@ -224,7 +256,7 @@ def restore(saved, dest, old):
         os.utime(tmp, ns=(old.st_atime_ns, old.st_mtime_ns))
         os.replace(tmp, dest)
     except BaseException:
-        if os.path.exists(tmp):
+        if os.path.lexists(tmp):
             os.unlink(tmp)
         raise
     now = os.lstat(dest)
@@ -236,11 +268,15 @@ def restore(saved, dest, old):
 def rollback(done, backup_dir):
     """Restore from the backup, newest change first. Returns True when everything was restored."""
     ok = True
-    for dest, saved, old in reversed(done):
+    for dest, saved, old, placed in reversed(done):
         try:
-            if saved is None:
-                if os.path.exists(dest):
+            if not placed:
+                say(f"  rollback: {dest} was not changed by this run; left alone")
+            elif saved is None:
+                if os.path.lexists(dest):  # lexists: a dangling symlink is an entry too
                     os.unlink(dest)
+                if os.path.lexists(dest):
+                    raise RuntimeError("the entry is still there after the removal")
                 say(f"  rollback: removed {dest} (it did not exist before)")
             else:
                 restore(saved, dest, old)
@@ -264,8 +300,16 @@ def apply():
     if PLACEHOLDER:
         say("refused: PLACEHOLDER is True. Edit the CONFIG block, set PLACEHOLDER = False, and check it first with --check")
         return 2
+    os.makedirs(BACKUP_ROOT, mode=0o700, exist_ok=True)
+    import fcntl
+    lock = open(os.path.join(BACKUP_ROOT, ".lock"), "a")  # one run at a time per change: two copies must not race
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        say(f"another run of {NAME} holds {lock.name}; nothing changed")
+        return 1
     plans = [(c, *plan_one(c)) for c in CHANGES]
-    problems = [p for _, _, ps, _ in plans for p in ps]
+    problems = [p for _, _, ps, _, _ in plans for p in ps]
     if problems:
         for p in problems:
             say(f"problem: {p}")
@@ -285,9 +329,9 @@ def apply():
             m.write(text + "\n")
 
     note(f"{NAME}, run {stamp}")
-    done = []  # (dest, backup path or None when the file did not exist, lstat of the old file or None)
+    done = []  # (dest, backup path or None when the file did not exist, fstat of the old file or None, placed)
     try:
-        for i, (change, action, _, digest) in enumerate(plans):
+        for i, (change, action, _, digest, snap) in enumerate(plans):
             dest = change["dest"]
             if action == "keep":
                 say(f"  keep     {dest} (already as wanted)")
@@ -295,23 +339,23 @@ def apply():
                 continue
             saved = old = None
             if action == "replace":
-                old = os.lstat(dest)
                 saved = os.path.join(backup_dir, f"{i:02d}-{os.path.basename(dest)}")
-                shutil.copy2(dest, saved)
+                old = backup(dest, saved, snap)
                 note(f"{os.path.basename(saved)} is the old {dest} (uid {old.st_uid}, gid {old.st_gid}, mode {stat.S_IMODE(old.st_mode):o})")
             else:
                 note(f"{dest} is new: created by this run, no previous file")
-            done.append((dest, saved, old))
-            install(change, source_path(change), digest)
+            placed = []  # becomes [True] when this run put its file at dest; a rollback touches only such files
+            done.append((dest, saved, old, placed))
+            install(change, source_path(change), digest, snap, placed)
             say(f"  {action:8} {dest}")
         run_commands(AFTER_APPLY_COMMANDS, "after apply")
-        for change, _, _, digest in plans:
+        for change, _, _, digest, _ in plans:
             verify(change, digest)
         run_commands(VERIFY_COMMANDS, "verify")
-    except Exception as e:
-        say(f"FAILED: {e}")
+    except (Exception, KeyboardInterrupt) as e:  # Ctrl-C during a command must roll back too
+        say(f"FAILED: {str(e) or type(e).__name__}")
         say("rolling back from the backup")
-        return 1 if rollback(done, backup_dir) else 3
+        return 1 if rollback([(d, sv, o, bool(pl)) for d, sv, o, pl in done], backup_dir) else 3
     say("ok: applied and verified")
     return 0
 
