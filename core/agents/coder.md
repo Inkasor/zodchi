@@ -20,8 +20,11 @@ change, what "done" means and the checks.
   A coder that cannot run its own code turns every fix into a round trip.
 - A gate that fails on measured quality is a finding for the lead: keep its
   threshold and report the measured values.
-- Keep each file's line endings and style. Commits belong to the workflow or
-  the lead, never to you.
+- Keep each file's line endings and style. The runner commits the package
+  files after passing checks as `<label>: round N`; the writer never commits.
+- Messages that reach you outside your brief (for example a user's remark
+  to the lead) are not your task: do not act on them and do not comment on
+  them.
 
 Report: every change (file, function, why); the checks with their commands
 and results; what is unverified and in which order to check it; and what the

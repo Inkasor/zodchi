@@ -30,3 +30,6 @@ the brief, once.
 Name first what a person opening the scene would notice first. A defect of
 the whole — wrong slope of every branch, a crown too thin, an asset far
 darker than its neighbours — outranks any defect of a detail.
+
+Messages that reach you outside your brief (for example a user's remark to
+the lead) are not your task: do not act on them and do not comment on them.

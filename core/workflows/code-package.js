@@ -3,7 +3,7 @@ export const meta = {
   description: 'One code package: a gate resolves the role table and refuses overlapping packages, the writer implements, a runner checks, an independent reviewer reviews through the gateway, the writer closes findings; stops after 3 review rounds',
   whenToUse: 'Any code package from a finished brief. Args: see the header of the script.',
   phases: [
-    { title: 'Gate', detail: 'runner reads the role table, the subscription limits, open packages and Git state, then claims the files', model: 'haiku' },
+    { title: 'Gate', detail: 'runner reads the role table, the subscription limits, open packages, Git state and whether .agent-tmp/ is ignored, then claims the files', model: 'haiku' },
     { title: 'Write', detail: 'writer implements the brief (agent mode) or an expert answers and the applier applies it (expert mode)' },
     { title: 'Checks', detail: 'runner runs the checks named in the brief and commits the package files', model: 'haiku' },
     { title: 'Review', detail: 'reviewer (never the author) reviews the change through the gateway', model: 'haiku' },
@@ -31,6 +31,20 @@ export const meta = {
 //   commit    default true in a Git repository: the runner commits the package's files after each passing
 //             checks run. Nothing is ever pushed
 //   models    optional: role table entries that replace the table for this run, e.g. { writer: { candidates: [...] } }
+//   fixIgnore true: when the repository does not ignore .agent-tmp/ and the package calls the gateway, the runner
+//             appends ".agent-tmp/" to .gitignore and commits that line on its own before the package starts.
+//             Default false: the gate refuses
+//   closeShouldFix  true: when the last review approves with should_fix findings, the same writer closes them and
+//             one more short review checks only those (it counts against rounds). Default false: the run ends
+//             approved, with those findings in openFindings
+//   rerun     labels of steps that threw for an infrastructure failure (the error names the label): on resume these
+//             steps run again instead of coming back from the journal
+//
+// result: { label, mode, models, rounds[], write, verdict, approved, openFindings[], next, stoppedAt, refused,
+//           question, questions, conflicts, claimAdded, outsideRepo, claimLeftOpen }
+//   openFindings  always present: every finding of the last review that no later round closed, any severity, as
+//                 "<id> <severity> <location>: <problem>"; [] when there was no review or it had none
+//   next          what the lead does next when the run ends with something left open
 const a = args || {}
 for (const k of ['label', 'brief', 'repo', 'files', 'tmp']) if (!a[k]) throw new Error(`code-package needs args.${k}`)
 if (!/^[\w.-]+$/.test(a.label)) throw new Error('args.label may hold letters, digits, ".", "_" and "-" only')
@@ -94,8 +108,14 @@ const myKeys = [...new Set(myPaths.map(p => p.toLowerCase()))]
 // The machine may lose power or the session may be cut. A finished agent() comes back from the journal when the
 // run is resumed (resumeFromRunId); an unfinished one starts over, so every step keeps a progress file that the
 // restarted agent reads first. step() is agent() with that rule added.
+// Resume note: a step that threw runs again on resume. An infrastructure failure (the gateway created no job or
+// refused, a review without a verdict) is not a result: the workflow throws, naming the step's label. The journal
+// still holds that step's answer, so resume with the label in args.rerun: the step's prompt then differs, it runs
+// live, and every step after it too. Its progress file ends with an "INFRA:" line, and it goes on from there.
+const reruns = new Set([].concat(a.rerun || []))
 const progressFile = (o) => `${a.tmp}/progress/${String((o && (o.progress || o.label || o.phase)) || 'step').replace(/[^\w.-]+/g, '-')}.md`
 const step = (prompt, opts) => agent(prompt +
+  (opts && reruns.has(opts.label) ? `\n\nThis step runs again after an infrastructure failure: read the last line of its progress file, then submit or wait as the rules below say.` : '') +
   `\n\nShell rule: run every command with bash (Git Bash on Windows, never PowerShell or cmd); the quoting in these commands is for bash. Resume rule: this run may have been cut off and restarted. If ${progressFile(opts)} exists and its last line is not DONE, read it first and go on from its last line; ` +
   `if its last line is DONE, it is from an earlier finished run: rename it to .old and start fresh. ` +
   `Do not redo finished work or overwrite its outputs blindly. For a gateway call it records as submitted, wait on the latest key recorded for that call in the foreground (zodchi wait --key <key> --wait-sec 540 --out <file>, repeated while it exits 3) instead of submitting again; ` +
@@ -138,8 +158,25 @@ const REVIEW = {
     blocking: { type: 'number' },
   },
 }
+// A step that makes a gateway call also says whether the gateway worked at all. infra is "" for a job that reached a
+// final status, whatever that status is; anything else is an infrastructure failure, and the workflow throws on it.
+const withInfra = (s) => ({ ...s, properties: { ...s.properties, infra: { type: 'string' } } })
+const INFRA = `infra: "" when the gateway created the job and it reached a final status (any status). Otherwise say what happened, quoting the gateway: ` +
+  `it created no job, it refused (for example the repository does not ignore .agent-tmp/, an unknown role, sign-in), every submission died before its turn started, ` +
+  `or the wait ran out with the job still running (name its active key). When infra is not "", append the line "INFRA: <what happened>" to the progress file as its last line instead of DONE.`
+// The severity is the second word of a finding line "<id> <severity> <location>: <problem>".
+const severity = (f) => (String(f).trim().split(/\s+/)[1] || '').toLowerCase()
 
-const out = { label: a.label, mode, rounds: [] }
+const out = { label: a.label, mode, rounds: [], openFindings: [] }
+// Set by an infrastructure failure: the claim stays open, because the package goes on when the run is resumed.
+let keepClaim = false
+function infraFail(label, what) {
+  keepClaim = true
+  out.stoppedAt = `infrastructure at ${label}`
+  out.infra = what
+  out.next = `Fix the cause, then resume this run with args.rerun including ${JSON.stringify(label)}. The claim ${claimFile} stays open meanwhile.`
+  throw new Error(`Infrastructure failure at step "${label}": ${what}. Not a result. Run result so far: ${JSON.stringify(out)}`)
+}
 // Claims live outside the repository, in the shell's home folder, so that no .gitignore matters: one folder per
 // repository, named by its path with every character outside [A-Za-z0-9] replaced by "-" (case folded on Windows).
 // $HOME is written for the shell, which expands it: commands name the folder in double quotes.
@@ -154,14 +191,16 @@ const gate = await step(
   `- repoModels: the file ${repoKey}/.zodchi/models.json.\n` +
   `- account: the output of \`zodchi account\` (JSON), or "" when the command fails; put its error into accountError.\n` +
   `- git: true when ${a.repo} is inside a Git work tree. head: \`git rev-parse HEAD\`. ` +
-  `dirty: the paths \`git status --porcelain\` lists (path only, relative to the repository).`,
+  `dirty: the paths \`git status --porcelain\` lists (path only, relative to the repository).\n` +
+  `- ignoreExit: the exit code of \`git check-ignore -q .agent-tmp/gateway/x\` run from ${a.repo} (0: the gateway's job folder is ignored, 1: it is not, anything else: Git could not check).`,
   {
     agentType: 'zodchi-core:runner', label: `gate ${a.label}`,
     schema: {
-      type: 'object', required: ['homeModels', 'repoModels', 'account', 'git'],
+      type: 'object', required: ['homeModels', 'repoModels', 'account', 'git', 'ignoreExit'],
       properties: {
         homeModels: { type: 'string' }, repoModels: { type: 'string' }, account: { type: 'string' }, accountError: { type: 'string' },
         git: { type: 'boolean' }, head: { type: 'string' }, dirty: { type: 'array', items: { type: 'string' } },
+        ignoreExit: { type: 'number' },
       },
     },
   })
@@ -195,20 +234,33 @@ const git = Boolean(gate.git)
 const commit = git && a.commit !== false
 const base = gate.head
 
+// The gateway refuses a job in a repository that does not ignore .agent-tmp/. Found here, before any writing, instead
+// of at the first gateway call. Only a package that calls the gateway needs it.
+const usesGateway = mode === 'expert' || writer.provider === 'codex' || reviewer.provider === 'codex'
+const needIgnore = usesGateway && gate.ignoreExit !== 0
+if (needIgnore) {
+  if (!git || gate.ignoreExit !== 1) { out.refused = `Git could not check the ignore rules of ${a.repo} (git check-ignore exit ${gate.ignoreExit}); the gateway works only inside a Git repository.`; return out }
+  if (!a.fixIgnore) { out.refused = `${a.repo} does not ignore .agent-tmp/, so the gateway would refuse this package's calls. Add ".agent-tmp/" to its .gitignore and commit it, or run again with args.fixIgnore true.`; return out }
+  if ((gate.dirty || []).some(f => key(f) === '.gitignore')) { out.refused = `${a.repo} does not ignore .agent-tmp/ and its .gitignore has uncommitted changes: add ".agent-tmp/" to it by hand.`; return out }
+}
+
 // Claiming happens under a lock folder (mkdir is atomic), so two packages started at once cannot both pass. From the
 // claim on, whatever happens, the claim is closed at the end and the closing is checked; only a refusal for
-// conflicts, which writes no claim, skips that.
+// conflicts, which writes no claim, skips that, and an infrastructure failure, after which the run is resumed.
 let claimStatus = 'stopped'
 let claimWritten = true
+// The lock and the comparison with other open claims, worded once for the claim and for every later extension of it.
+const LOCK = `1. Lock: run \`mkdir "${claimsDir}/.lock"\` (create "${claimsDir}" with \`mkdir -p\` first if it is missing; $HOME is the shell's home folder, so keep the path in double quotes). If the lock folder already exists, wait 10 seconds and try again, ` +
+  `for at most 2 minutes; a lock folder older than 10 minutes is stale: remove it and try again. If you cannot take the lock, return ok false with conflicts ["lock busy"].\n`
+const compare = (list) => `2. Read every *.json file in "${claimsDir}". For each one whose "status" is "open" and whose "label" is not "${a.label}", compare its "files" list with this list, ` +
+  `entry by entry, as exact strings: ${JSON.stringify(list)}. Every equal pair is a conflict "<its label>: <file>".\n`
+const UNLOCK = `4. Always remove the lock folder (\`rmdir "${claimsDir}/.lock"\`), whatever happened above.\n`
 try {
 const claim = await step(
   `Claim files for the package ${a.label} in ${a.repo}. Follow these steps exactly.\n` +
-  `1. Lock: run \`mkdir "${claimsDir}/.lock"\` (create "${claimsDir}" with \`mkdir -p\` first if it is missing; $HOME is the shell's home folder, so keep the path in double quotes). If the lock folder already exists, wait 10 seconds and try again, ` +
-  `for at most 2 minutes; a lock folder older than 10 minutes is stale: remove it and try again. If you cannot take the lock, return ok false with conflicts ["lock busy"].\n` +
-  `2. Read every *.json file in "${claimsDir}". For each one whose "status" is "open" and whose "label" is not "${a.label}", compare its "files" list with this list, ` +
-  `entry by entry, as exact strings: ${JSON.stringify(myKeys)}. Every equal pair is a conflict "<its label>: <file>".\n` +
+  LOCK + compare(myKeys) +
   `3. If there is no conflict, write "${claimFile}": ${JSON.stringify({ label: a.label, status: 'open', files: myKeys, brief: a.brief, base })}, plus "openedAt" with \`date -u +%Y-%m-%dT%H:%M:%SZ\`.\n` +
-  `4. Always remove the lock folder (\`rmdir "${claimsDir}/.lock"\`), whatever happened above.\n` +
+  UNLOCK +
   (git && a.branch ? `5. If there was no conflict, switch to the Git branch ${a.branch}: \`git switch ${q(a.branch)}\`, or \`git switch -c ${q(a.branch)}\` when it does not exist.\n` : '') +
   `ok is true when the claim file was written${git && a.branch ? ` and \`git branch --show-current\` prints ${a.branch}` : ''}. conflicts: the conflicts found, [] when none.`,
   {
@@ -221,10 +273,21 @@ if (claim && claim.conflicts && claim.conflicts.length && claim.conflicts[0] !==
   return out
 }
   if (!claim || !claim.ok) { out.stoppedAt = `claim (${claim ? claim.summary || claim.conflicts.join(', ') : 'no result'})`; return out }
+  if (needIgnore) {
+    const ignored = await step(
+      `Make ${a.repo} ignore the zodchi job folders, in a commit of its own; never push.\n` +
+      `1. Append the line \`.agent-tmp/\` to ${repoKey}/.gitignore (create the file when it is missing; when its last line has no line break, add one first, with the line endings the file already uses).\n` +
+      `2. Run \`git add -- .gitignore\`, then \`git commit -m "Ignore .agent-tmp (zodchi job folders)" -- .gitignore\`.\n` +
+      `3. \`git check-ignore -q .agent-tmp/gateway/x\` must exit 0, and \`git show --name-only --format= HEAD\` must list .gitignore only. ok is true only then. summary: the commit hash.`,
+      { agentType: 'zodchi-core:runner', schema: STEP, label: `ignore ${a.label}` })
+    if (!ignored || !ignored.ok) { out.stoppedAt = `ignore .agent-tmp (${ignored ? ignored.summary : 'no result'})`; return out }
+    log(`Committed ".agent-tmp/" in .gitignore: ${ignored.summary}`)
+  }
   await body()
+  if (out.openFindings.length && !out.next) out.next = `The last review left ${out.openFindings.length} finding(s) open (openFindings): close them with the writer, or decide on them.`
   return out
 } finally {
-  if (claimWritten) {
+  if (claimWritten && !keepClaim) {
   const closed = await step(
     `If "${claimFile}" exists ($HOME is the shell's home folder: keep the path in double quotes), set its "status" to "${claimStatus}" and add "closedAt" with \`date -u +%Y-%m-%dT%H:%M:%SZ\`; keep every other field. ` +
     `ok is true when the file does not exist, or when it parses and its status is "${claimStatus}".`,
@@ -250,6 +313,10 @@ async function body() {
     out.outsideRepo = outside
   })
   const HANDOVER = ` If your context is running out before the task is done, stop at a clean point (files consistent, the progress file says what is done and what remains, precisely enough for a stranger), and return done false with more true; a fresh agent will go on.`
+  // One truth about commits, in every prompt that touches the writer's commit state.
+  const COMMITS = commit
+    ? `The runner commits the package files after passing checks as "${a.label}: round N"; the writer never commits.`
+    : `Nothing is committed in this run; the writer never commits.`
   const BEFORE = git ? '' : ` Before your first edit of a file, copy it to ${a.tmp}/before/ keeping its file name, so the review can diff it.`
 
   // A long package can outgrow one agent's context. The agent may hand over (more: true) at a clean point, or it may
@@ -270,8 +337,9 @@ async function body() {
   // One writing turn by the resolved writer: a Claude coder, a Codex work call, or an expert answer applied by the
   // applier. evidence: files the task refers to (review, logs); a tool-free expert gets them attached.
   let calls = 0
-  async function write(task, tag, phaseName, evidence = []) {
+  async function write(job, tag, phaseName, evidence = []) {
     const n = ++calls
+    const task = `${job} ${COMMITS}`
     if (mode === 'expert') {
       const ask = await step(
         `Ask an expert for the code through the gateway. Work from ${a.repo}. Write ${a.tmp}/expert-${n}.md: ${task} ` +
@@ -281,8 +349,9 @@ async function body() {
           args: `--model ${writer.model} --effort ${writer.effort} --prompt ${q(`${a.tmp}/expert-${n}.md`)}`,
           attach: [a.brief], attachIfExists: [...evidence, ...changed],
         }) + ` ` +
-        `ok is true when the job succeeded and the answer file exists. paths: the answer file.`,
-        { agentType: 'zodchi-core:runner', schema: STEP, phase: phaseName, label: `${tag} ask` })
+        `ok is true when the job succeeded and the answer file exists. paths: the answer file. ${INFRA}`,
+        { agentType: 'zodchi-core:runner', schema: withInfra(STEP), phase: phaseName, label: `${tag} ask` })
+      if (ask && ask.infra) infraFail(`${tag} ask`, ask.infra)
       if (!ask || !ask.ok) return null
       return step(
         `Apply one expert answer. Answer file: ${a.tmp}/expert-${n}.answer.md. Target files: the ones the answer names, relative to ${a.repo}. ` +
@@ -291,7 +360,7 @@ async function body() {
         { agentType: 'zodchi-core:applier', schema: WRITE, phase: phaseName, label: `${tag} apply` })
     }
     if (writer.provider === 'codex') {
-      return step(
+      const work = await step(
         `Have Codex do this through the gateway. Work from ${a.repo}. Write ${a.tmp}/work-${n}.md: ${task} ` +
         `Then ` +
         gatewayCall({
@@ -301,10 +370,59 @@ async function body() {
         }) + ` The answer is JSON with status, summary, criteria, questions, changedFiles, checks. Map it exactly: ` +
         `done = (status is "done"); summary = its summary; changed = each entry of changedFiles prefixed with "${repoKey}/"; ` +
         `unverified = every criterion that is not done, as one line each, plus every check with a non-zero exit code; questions = each entry of its questions as one readable line (the question, its options, the recommendation). ` +
-        `If the job did not succeed, done is false and summary says the job status.`,
-        { agentType: 'zodchi-core:runner', schema: WRITE, phase: phaseName, label: `${tag}` })
+        `If the job did not succeed, done is false and summary says the job status. ${INFRA}`,
+        { agentType: 'zodchi-core:runner', schema: withInfra(WRITE), phase: phaseName, label: `${tag}` })
+      if (work && work.infra) infraFail(tag, work.infra)
+      return work
     }
     return continued(task + BEFORE + HANDOVER, { agentType: 'zodchi-core:coder', model: writer.model, schema: WRITE, phase: phaseName, label: tag })
+  }
+
+  // The claim follows the real change: after every Write and Close, the files the writer reports and the files Git
+  // sees changed (except those already dirty at the gate) join the claim and the package. A file another open package
+  // claims stops the run, with the work left uncommitted for a human.
+  const atGate = new Set((gate.dirty || []).map(f => { try { return key(f) } catch { return '' } }))
+  const claimed = new Set(myKeys)
+  async function follow(res, tag, phaseName) {
+    noteChanged(res.changed)
+    const found = []
+    for (const f of res.changed || []) { try { found.push(rel(f)) } catch {} }
+    if (git) {
+      const st = await step(
+        `List what changed in the work tree of ${a.repo}; change nothing. Run \`git status --porcelain -uall\`. ` +
+        `paths: every path it lists, relative to the repository, without the status letters and quotes (a rename gives both paths). ok is true when the command ran.`,
+        { agentType: 'zodchi-core:runner', schema: STEP, phase: phaseName, label: `status ${tag}` })
+      if (!st || !st.ok) { out.stoppedAt = `git status after ${tag}`; return false }
+      for (const p of st.paths || []) {
+        let r
+        try { r = rel(p) } catch { continue }
+        if (!atGate.has(r.toLowerCase()) && !/^\.agent-tmp\//i.test(r)) found.push(r)
+      }
+    }
+    const extra = [...new Map(found.filter(r => !claimed.has(r.toLowerCase())).map(r => [r.toLowerCase(), r])).values()]
+    if (!extra.length) return true
+    const keys = extra.map(r => r.toLowerCase())
+    const more = await step(
+      `Extend the claim of the package ${a.label} by files its work changed. Follow these steps exactly.\n` +
+      LOCK + compare(keys) +
+      `3. If there is no conflict, add each of ${JSON.stringify(keys)} that is missing to the "files" list of "${claimFile}"; keep every other field and entry.\n` +
+      UNLOCK +
+      `ok is true when there was no conflict and "${claimFile}" lists every one of them. conflicts: the conflicts found, [] when none.`,
+      {
+        agentType: 'zodchi-core:runner', phase: phaseName, label: `claim more ${tag}`,
+        schema: { type: 'object', required: ['ok', 'conflicts'], properties: { ok: { type: 'boolean' }, conflicts: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' } } },
+      })
+    if (more && !more.ok && more.conflicts && more.conflicts.length && more.conflicts[0] !== 'lock busy') {
+      out.conflicts = more.conflicts
+      out.stoppedAt = 'claim conflict'
+      out.next = `The work changed files that another open package claims: ${more.conflicts.join('; ')}. This round's work is not committed: it stays in ${a.repo} for a human to settle with that package.`
+      return false
+    }
+    if (!more || !more.ok) { out.stoppedAt = `claim more (${more ? more.summary || (more.conflicts || []).join(', ') : 'no result'})`; return false }
+    for (const r of extra) { claimed.add(r.toLowerCase()); changed.add(abs(r)) }
+    out.claimAdded = [...(out.claimAdded || []), ...extra]
+    log(`Claim of ${a.label} extended by ${extra.join(', ')}`)
+    return true
   }
 
   phase('Write')
@@ -312,6 +430,7 @@ async function body() {
     `Implement the package described in ${a.brief}. Read it first; it is the whole task. ` +
     `done is true only when everything the brief calls "done" holds and you ran what it tells you to run. changed: every file you changed, absolute paths. unverified: what you could not verify, in the order to check it.`,
     `write ${a.label}`, 'Write')
+  if (out.write && !(await follow(out.write, `write ${a.label}`, 'Write'))) return
   if (!out.write || !out.write.done) {
     out.stoppedAt = 'write'
     noteQuestions(out.write)
@@ -319,7 +438,6 @@ async function body() {
     return
   }
   noteQuestions(out.write)
-  noteChanged(out.write.changed)
 
   const checkList = (a.checks || []).map(c => typeof c === 'string' ? { cmd: c, pass: 'exit code 0' } : { pass: 'exit code 0', ...c })
   const runChecks = (tag) => checkList.length
@@ -340,8 +458,8 @@ async function body() {
         `Read the logs and fix the code with the smallest change. done is true when the failing command passes. changed: files changed in this fix.`,
         `fix checks ${n}.${f}`, 'Close', checks.logs || [])
       noteQuestions(fix)
+      if (fix && !(await follow(fix, `fix checks ${n}.${f}`, 'Close'))) return 'halted'
       if (!fix || !fix.done) { if (questions.length) out.question = questions.join(' | '); break }
-      noteChanged(fix.changed)
       checks = await runChecks(`${n}.${f}`)
     }
     return checks
@@ -366,8 +484,13 @@ async function body() {
     ? `\`git diff ${base} -- <files>\` over the package paths below (this includes deleted files), plus \`git diff --no-index /dev/null <file>\` for each untracked new one`
     : `\`git diff --no-index ${a.tmp}/before/<name> <file>\` for every file with a copy in ${a.tmp}/before/ (a deleted file: diff its copy against /dev/null), and \`git diff --no-index /dev/null <file>\` for new files`
 
+  // focus: the should_fix findings of an approved review that the writer closed (args.closeShouldFix); the next review
+  // checks only those. carried: open findings of the earlier review that a focused review does not look at again.
+  let focus = null
+  let carried = []
   for (let n = 1; n <= rounds; n++) {
     const checks = await checked(n)
+    if (checks === 'halted') return
     if (!checks || !checks.ok) {
       out.rounds.push({ n, checks })
       out.stoppedAt = `checks (${checks ? checks.cause : 'no result'})`
@@ -376,7 +499,9 @@ async function body() {
     if (!(await commitRound(n))) { out.stoppedAt = 'commit'; return }
 
     const context = `what the change does and why (from ${a.brief} and this summary: ${JSON.stringify(out.write.summary)}), what is verified and what is not ` +
-      `(${JSON.stringify(out.write.unverified || [])})${outside.length ? `, and the files changed outside the repository, not attached: ${JSON.stringify(outside)}` : ''}${n > 1 ? `, and which findings of the previous review (${a.tmp}/review-${n - 1}.json) were closed and how` : ''}`
+      `(${JSON.stringify(out.write.unverified || [])})${outside.length ? `, and the files changed outside the repository, not attached: ${JSON.stringify(outside)}` : ''}${n > 1 ? `, and which findings of the previous review (${a.tmp}/review-${n - 1}.json) were closed and how` : ''}` +
+      (focus ? `. This is a short review of the approved change: check only whether these findings of ${a.tmp}/review-${n - 1}.json are closed and whether their fixes break anything: ${JSON.stringify(focus)}; approved when they are closed and nothing broke` : '') +
+      (commit ? `. The round's commit exists: "${a.label}: round ${n}" (a round that changed nothing has none); the package's commits sit on top of ${base}` : '')
     const files = [...changed]
     const VERDICT = `verdict: the "verdict" field of the review exactly ("approved", "changes_requested" or "blocked"; "missing" when the review file has none). ` +
       `summary: its summary. findings holds the reviewer's findings only, each as "<id> <severity> <location>: <problem>": an empty array when it has none. blocking: the count of blocking findings.`
@@ -391,8 +516,8 @@ async function body() {
           attachIfExists: files,
         }) + ` ` +
         `A changed file that does not exist now is left out of --attach (the diff already carries deletions). ` +
-        `${VERDICT} reviewFile: the review file path. Change no code.`,
-        { agentType: 'zodchi-core:runner', schema: REVIEW, phase: 'Review', label: `review ${n}` })
+        `${VERDICT} reviewFile: the review file path. Change no code. ${INFRA}`,
+        { agentType: 'zodchi-core:runner', schema: withInfra(REVIEW), phase: 'Review', label: `review ${n}` })
       : await step(
         `You are an independent code reviewer; you did not write this change. Work from ${a.repo} and change nothing. Read ${a.brief}, then the change: ${diffHow}, for these paths: ${JSON.stringify(files.map(rel))}. ` +
         `Context: ${context}. Look for correctness bugs, broken contracts, missing checks and unsafe operations; style only when it hides a bug. ` +
@@ -401,26 +526,44 @@ async function body() {
         { model: reviewer.model, schema: REVIEW, phase: 'Review', label: `review ${n}` })
     out.rounds.push({ n, checks, review })
     if (!review) { out.stoppedAt = 'review'; return }
+    if (review.infra || review.verdict === 'missing') infraFail(`review ${n}`, review.infra || `the review has no verdict (${review.summary || 'no summary'}; ${review.reviewFile || `${a.tmp}/review-${n}.json`})`)
     out.verdict = review.verdict
-    if (review.verdict === 'approved') { out.approved = true; claimStatus = 'done'; return }
-    if (review.verdict !== 'changes_requested') {
+    out.openFindings = [...carried, ...(review.findings || [])]
+    carried = []
+    let task
+    if (review.verdict === 'approved') {
+      const shouldFix = (review.findings || []).filter(f => severity(f) === 'should_fix')
+      if (!shouldFix.length || !a.closeShouldFix || n === rounds) {
+        out.approved = true
+        claimStatus = 'done'
+        if (out.openFindings.length) out.next = `Approved with ${out.openFindings.length} open finding(s) in openFindings` +
+          (!shouldFix.length ? ' (none is should_fix): read them and decide.'
+            : a.closeShouldFix ? `; the ${rounds} review rounds are used up, so the should_fix ones stay open: close them in a new package or by hand.`
+            : '; the should_fix ones were not closed: run again with closeShouldFix true, or close them by hand.')
+        return
+      }
+      focus = shouldFix
+      carried = out.openFindings.filter(f => !shouldFix.includes(f))
+      task = `Close these should_fix findings of the approved review ${a.tmp}/review-${n}.json for the package ${a.brief}: ${JSON.stringify(shouldFix)}. Fix each in the reviewer's sense with the smallest change; ` +
+        `a finding you reject, say why instead of changing code. Leave every other finding alone. done is true when each of them is closed or answered. changed: files changed this round.`
+    } else if (review.verdict !== 'changes_requested') {
       out.stoppedAt = `review verdict ${review.verdict}`
       out.question = `The reviewer could not approve or ask for changes (${review.verdict}): ${review.summary || ''} See ${a.tmp}/review-${n}.json.`
       return
-    }
-    if (n === rounds) {
+    } else if (n === rounds) {
       out.stoppedAt = `stop rule: ${rounds} review rounds without approval`
       out.question = `The package has findings after ${rounds} rounds: ${review.findings.join(' | ')}. Decide: accept as is, change the brief, or mark it hard and start again.`
       return
+    } else {
+      focus = null
+      task = `Close the findings of the review ${a.tmp}/review-${n}.json for the package ${a.brief}. Fix each finding in the reviewer's sense with the smallest change; ` +
+        `a finding you reject, say why instead of changing code. done is true when every finding is closed or answered. changed: files changed this round.`
     }
 
-    const fix = await write(
-      `Close the findings of the review ${a.tmp}/review-${n}.json for the package ${a.brief}. Fix each finding in the reviewer's sense with the smallest change; ` +
-      `a finding you reject, say why instead of changing code. done is true when every finding is closed or answered. changed: files changed this round.`,
-      `close ${n}`, 'Close', [`${a.tmp}/review-${n}.json`])
+    const fix = await write(task, `close ${n}`, 'Close', [`${a.tmp}/review-${n}.json`])
     noteQuestions(fix)
+    if (fix && !(await follow(fix, `close ${n}`, 'Close'))) return
     if (!fix || !fix.done) { out.stoppedAt = 'close'; if (questions.length) out.question = questions.join(' | '); return }
-    noteChanged(fix.changed)
     out.write = { ...out.write, summary: `${out.write.summary} | round ${n} fixes: ${fix.summary}`, unverified: fix.unverified || out.write.unverified }
   }
 }
