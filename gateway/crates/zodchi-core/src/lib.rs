@@ -7,6 +7,10 @@
 //! - [`process`]: processes by pid and start time, stopping process trees.
 //! - [`config`]: where the repository, the roles, Codex and the subscriptions are.
 
+// A failed model call (`TurnFailed`) carries Codex's JSON-RPC error by value; it is returned once per call, so its
+// size costs nothing worth boxing every signature for.
+#![allow(clippy::result_large_err)]
+
 pub mod appserver;
 pub mod config;
 pub mod decisions;

@@ -211,6 +211,9 @@ pub struct Request {
     pub resume: Option<String>,
     /// The caller's word for this call; None leaves it to the role.
     pub keep_thread: Option<bool>,
+    /// The caller's own fingerprint of the request (the server's hash of the client request). When set it replaces
+    /// the hash of the resolved request as the idempotency check of the key; the CLI leaves it None.
+    pub fingerprint: Option<String>,
 }
 
 /// Stores a job and starts its worker. Returns the job and whether it was created now.
@@ -290,9 +293,9 @@ Submit the earlier request again under a new key with --keep-thread, or make a n
         request.insert("keepThread".into(), json!(keep));
     }
     let request = Value::Object(request);
-    let request_sha = sha256_hex(request.to_string());
+    let request_sha = req.fingerprint.clone().unwrap_or_else(|| sha256_hex(request.to_string()));
 
-    if !dir.exists() {
+    if !dir.exists() && !cfg.standalone {
         ensure_ignored(cfg)?;
     }
     fs::create_dir_all(cfg.jobs_dir.as_ref().unwrap())?;
@@ -327,9 +330,10 @@ Submit the earlier request again under a new key with --keep-thread, or make a n
             rest.insert("role".into(), Value::Object(role_before));
             sha256_hex(Value::Object(rest).to_string())
         };
+        // A caller's fingerprint is the whole check; the older forms of the hash are those of the CLI's jobs.
         let same = stored == request_sha
-            || (older && stored == sha256_hex(Value::Object(unasked.clone()).to_string()))
-            || (found.get("kind").is_none() && kind == "text" && stored == before());
+            || (req.fingerprint.is_none() && older && stored == sha256_hex(Value::Object(unasked.clone()).to_string()))
+            || (req.fingerprint.is_none() && found.get("kind").is_none() && kind == "text" && stored == before());
         if !same {
             return fail(format!("Key {} already belongs to a different request. A new request needs a new key.", req.key));
         }
@@ -362,12 +366,19 @@ Submit the earlier request again under a new key with --keep-thread, or make a n
 
 /// The worker outlives the command that submitted the job, so a caller's timeout never interrupts a model call.
 fn spawn_detached_worker(cfg: &Config, key: &str, kind: &str) -> Result<()> {
+    let args: Vec<std::ffi::OsString> = vec!["work".into(), "--root".into(), cfg.root.as_ref().unwrap().into(), "--key".into(), key.into()];
+    // The API key reaches only the worker of a decisions job.
+    spawn_detached(&args, kind == "decisions")
+}
+
+/// Starts this program again with `args`, detached from the caller (its own process group, no console, no stdio).
+/// The OpenAI API key of the caller's environment reaches it only with `keep_api_key`.
+pub fn spawn_detached(args: &[std::ffi::OsString], keep_api_key: bool) -> Result<()> {
     let exe = std::env::current_exe()?;
     let mut command = Command::new(exe);
-    command.args(["work", "--root"]).arg(cfg.root.as_ref().unwrap()).args(["--key", key]);
+    command.args(args);
     command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    // The API key reaches only the worker of a decisions job.
-    if kind != "decisions" {
+    if !keep_api_key {
         command.env_remove("OPENAI_API_KEY");
     }
     #[cfg(windows)]
@@ -772,7 +783,7 @@ impl Call {
         };
         let state_s = self.state.clone();
         let mut on_turn_start = || state_s.keep(json!({ "turnStartedAt": iso() }));
-        let result = server.run_turn(&self.request["prompt"].as_str().unwrap_or(""), &self.role, &model, &effort, &cwd, &images,
+        let result = server.run_turn(self.request["prompt"].as_str().unwrap_or(""), &self.role, &model, &effort, &cwd, &images,
             resume.as_deref(), keep_thread, Duration::from_millis(self.timeout_ms),
             TurnHooks { on_thread: &mut on_thread, on_turn_request: &mut on_turn_request, on_turn_start: &mut on_turn_start })?;
         // ChatGPT settles the balance some time after the call, so this figure may still be the old one.
@@ -857,7 +868,8 @@ pub fn deliver(done: &Value, out: &Path) -> Result<Vec<String>> {
     Ok(vec![target.display().to_string()])
 }
 
-fn mask_email(email: Option<&str>) -> Value {
+/// An e-mail address as the gateway shows it: the first letter and the domain.
+pub fn mask_email(email: Option<&str>) -> Value {
     match email {
         Some(e) if e.contains('@') => {
             let first: String = e.chars().take(1).collect();

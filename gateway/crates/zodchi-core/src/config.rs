@@ -25,6 +25,8 @@ pub struct Config {
     /// The Codex program: a native executable, or the `codex.js` of the npm package run by Node.
     pub codex_bin: PathBuf,
     pub accounts: Vec<Account>,
+    /// A job root of its own, outside any repository (a user of the server): no Git, no ignore check.
+    pub standalone: bool,
 }
 
 /// An environment variable that is set and not empty: an empty value counts as unset.
@@ -129,6 +131,28 @@ impl Config {
             home,
             codex_bin: find_codex(),
             accounts,
+            standalone: false,
+        })
+    }
+
+    /// The Config of one user of the server, and nothing else: jobs in `<data>/users/<id>/jobs`, the only account
+    /// `<data>/users/<id>/codex-home`. It never reads `accounts.json` and needs no repository. Fails closed: a user id
+    /// outside `[a-z0-9-]{1,40}` or a data folder that cannot be made absolute builds no Config.
+    pub fn tenant(data_root: &Path, user_id: &str) -> Result<Config> {
+        if !crate::util::is_user_id(user_id) {
+            return fail(format!("Not a user id: {user_id:?}; a user id is 1-40 characters a-z 0-9 -."));
+        }
+        let data = std::path::absolute(data_root)?;
+        let user = data.join("users").join(user_id);
+        let home = var_set("ZODCHI_HOME").map(PathBuf::from).unwrap_or_else(|| user_home().join(".zodchi"));
+        Ok(Config {
+            root: None,
+            jobs_dir: Some(user.join("jobs")),
+            roles_dir: var_set("ZODCHI_ROLES").map(PathBuf::from).unwrap_or_else(|| home.join("roles")),
+            home,
+            codex_bin: find_codex(),
+            accounts: vec![Account { name: user_id.to_string(), codex_home: user.join("codex-home") }],
+            standalone: true,
         })
     }
 
