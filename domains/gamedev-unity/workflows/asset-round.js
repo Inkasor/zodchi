@@ -34,6 +34,29 @@ export const meta = {
 //   accepted the word an owner verdict starts with when the asset is accepted, default "accepted"
 const a = args || {}
 for (const k of ['ledger', 'label', 'stage', 'tmp', 'summary']) if (!a[k]) throw new Error(`asset-round needs args.${k}`)
+// Every command in these prompts is POSIX shell, run with bash. q() quotes one argument for it: single quotes, with a
+// quote inside written as ''' - no expansion of $, backticks or globs.
+const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
+// One gateway call, worded once for every step that makes one. The shell of a step has its own time limit and the
+// worker of a job can end with the shell that started it, so the wait is made of foreground calls of 540 seconds.
+// attach: the files the request must carry, listed by the workflow; attachIfExists: files attached only when they exist.
+const gatewayCall = ({ role, key, args, attach = [], attachIfExists = [], out, totalMin, repo = a.repo }) => {
+  const flags = [...attach, ...attachIfExists].map(f => `--attach ${q(f)}`).join(' ')
+  const run = `zodchi run --role ${role} --key ${key} ${args}${flags ? ' ' + flags : ''} --wait-sec 540 --out ${q(out)}`
+  return `Gateway call, key ${key}. Run it in the foreground from ${repo}: \`${run}\`. ` +
+    `Never in the background (no &, nohup or run_in_background), never through Monitor: the worker of the job ends with your shell. ` +
+    `While it exits 3 (still running), repeat \`zodchi wait --key ${key} --wait-sec 540 --out ${q(out)}\` in the foreground, up to ${totalMin} minutes in all since the first command; ` +
+    `never return before the job is final (exit 0 or 2); if the ${totalMin} minutes run out, report failure (ok false; verdict "missing" for a review) and say the job still runs under ${key}. ` +
+    `A dead job gets a new key: when the job is final with status "unknown", or "failed" with no turnStartedAt in \`zodchi job --key ${key}\` (it died before its turn started), ` +
+    `run the same full command again with the key ${key}-r2 (then ${key}-r3; at most 2 retries in all), wait for it the same way, and write each new key into the progress file at once. ` +
+    `Any other final status is not retried: report it. ` +
+    (attach.length || attachIfExists.length
+      ? `After the job is final, read ${repo}/.agent-tmp/gateway/${key}/request.json: its "prompt" must contain \`<attachment path="...">\` (the path as given to --attach, slash direction aside) for every required attachment: ${JSON.stringify(attach)}` +
+        `${attachIfExists.length ? `, and for each of these that exists on disk: ${JSON.stringify(attachIfExists)}` : ''}. ` +
+        `If one is missing, put "attachment missing: <path>" into your summary and run the full command above again under the next key (${key}-r2, ${key}-r3, counted with the retries), every attachment included; the result you return is that of the last job, and when an attachment is still missing after the last retry it reports failure the same way.`
+      : '')
+}
+
 // The machine may lose power or the session may be cut. A finished agent() comes back from the journal when the run is
 // resumed (resumeFromRunId); an unfinished one starts over, so every step keeps a progress file that the
 // restarted agent reads first. step() is agent() with that rule added.
@@ -41,7 +64,8 @@ const progressFile = (o) => `${a.tmp}/progress/${String((o && (o.label || o.phas
 const step = (prompt, opts) => agent(prompt +
   `\n\nResume rule: this run may have been cut off and restarted. If ${progressFile(opts)} exists and its last line is not DONE, read it first and go on from its last line; ` +
   `if its last line is DONE, it is from an earlier finished run: rename it to .old and start fresh. ` +
-  `do not redo finished work or overwrite its outputs blindly, and for a gateway call it records as submitted, wait on that key (zodchi wait --key <key>) instead of submitting again. ` +
+  `do not redo finished work or overwrite its outputs blindly. For a gateway call it records as submitted, wait on that key in the foreground (zodchi wait --key <key> --wait-sec 540 --out <file>, repeated while it exits 3) instead of submitting again; ` +
+  `if that job is final with status "unknown", or "failed" with no turnStartedAt in \`zodchi job --key <key>\`, submit again with the next key suffix (<key>-r2, <key>-r3; at most 2 retries) and record the new key in the progress file. ` +
   `After each finished step append one line to it (create the folder if needed): what is done, the paths it produced, what comes next. When your whole task is finished, append a last line DONE.`, opts)
 
 const STEP = {
@@ -162,7 +186,7 @@ if (a.rubric && out.engine && (out.engine.paths || []).length) {
   phase('Rubric')
   out.rubric = await step(
     `Ask the Decisions rubric "${a.rubric.role}" about each frame: ${JSON.stringify(out.engine.paths)}. From ${a.rubric.repo}, for frame N write a one-line prompt file in ${a.tmp} naming its camera and "${a.label}", then run ` +
-    `\`zodchi run --role ${a.rubric.role} --key ${a.label}-rubric-N --prompt <prompt file> --image <frame> --paid --out ${a.tmp}/rubric-N.json\`. ` +
+    `for each frame, ` + gatewayCall({ role: a.rubric.role, key: `${a.label}-rubric-N`, totalMin: 20, out: `${a.tmp}/rubric-N.json`, args: `--prompt <prompt file> --image <frame> --paid`, repo: a.rubric.repo }) + ` ` +
     `ok is true only when every frame's verdict.outcome is "pass". summary: outcome per frame and total input tokens. failures: "<frame>: <question> <outcome> <agreement>" for every question that is not pass.`,
     { agentType: 'zodchi-gamedev-unity:unity-runner', schema: STEP, label: `rubric ${a.label}` })
 }

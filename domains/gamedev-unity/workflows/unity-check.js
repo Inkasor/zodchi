@@ -16,7 +16,8 @@ const progressFile = (o) => `${a.tmp}/progress/${String((o && (o.label || o.phas
 const step = (prompt, opts) => agent(prompt +
   `\n\nResume rule: this run may have been cut off and restarted. If ${progressFile(opts)} exists and its last line is not DONE, read it first and go on from its last line; ` +
   `if its last line is DONE, it is from an earlier finished run: rename it to .old and start fresh. ` +
-  `do not redo finished work or overwrite its outputs blindly, and for a gateway call it records as submitted, wait on that key (zodchi wait --key <key>) instead of submitting again. ` +
+  `do not redo finished work or overwrite its outputs blindly. For a gateway call it records as submitted, wait on that key in the foreground (zodchi wait --key <key> --wait-sec 540 --out <file>, repeated while it exits 3) instead of submitting again; ` +
+  `if that job is final with status "unknown", or "failed" with no turnStartedAt in \`zodchi job --key <key>\`, submit again with the next key suffix (<key>-r2, <key>-r3; at most 2 retries) and record the new key in the progress file. ` +
   `After each finished step append one line to it (create the folder if needed): what is done, the paths it produced, what comes next. When your whole task is finished, append a last line DONE.`, opts)
 
 phase('Editor')

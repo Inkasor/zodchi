@@ -404,9 +404,19 @@ fn spawn_detached_worker(cfg: &Config, key: &str, kind: &str) -> Result<()> {
     spawn_detached(&args, kind == "decisions").map(drop)
 }
 
-/// Starts this program again with `args`, detached from the caller (its own process group, no console, no stdio).
-/// The OpenAI API key of the caller's environment reaches it only with `keep_api_key`. A long-lived caller waits on
-/// the returned child (on a thread of its own) so that a finished worker does not stay behind as a zombie.
+/// Windows creation flags of a worker: no console, its own process group, and out of the job object of the caller.
+/// The shell of an agent runs inside a job object that ends its children when the shell ends; a worker that stays in
+/// it dies with the shell, and the job it was running ends as `unknown`.
+#[cfg(windows)]
+pub const WORKER_FLAGS: u32 = 0x0000_0008 /* DETACHED_PROCESS */ | 0x0000_0200 /* CREATE_NEW_PROCESS_GROUP */ | WORKER_BREAKAWAY;
+/// CREATE_BREAKAWAY_FROM_JOB: the child leaves the job object of its parent when that job allows it.
+#[cfg(windows)]
+pub const WORKER_BREAKAWAY: u32 = 0x0100_0000;
+
+/// Starts this program again with `args`, detached from the caller (its own session or process group, no console, no
+/// stdio, out of the caller's job object on Windows). The OpenAI API key of the caller's environment reaches it only
+/// with `keep_api_key`. A long-lived caller waits on the returned child (on a thread of its own) so that a finished
+/// worker does not stay behind as a zombie.
 pub fn spawn_detached(args: &[std::ffi::OsString], keep_api_key: bool) -> Result<std::process::Child> {
     let exe = std::env::current_exe()?;
     let mut command = Command::new(exe);
@@ -418,16 +428,31 @@ pub fn spawn_detached(args: &[std::ffi::OsString], keep_api_key: bool) -> Result
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+        const ERROR_ACCESS_DENIED: i32 = 5;
+        command.creation_flags(WORKER_FLAGS);
+        match command.spawn() {
+            // The job object of the caller forbids breakaway: the worker then starts inside it, as before.
+            Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
+                command.creation_flags(WORKER_FLAGS & !WORKER_BREAKAWAY);
+                Ok(command.spawn()?)
+            }
+            spawned => Ok(spawned?),
+        }
     }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        command.process_group(0);
+        extern "C" {
+            fn setsid() -> i32;
+        }
+        // A new session: the worker is its own process group leader and has no controlling terminal, so the hangup
+        // that ends the caller's terminal does not reach it.
+        // SAFETY: setsid is async-signal-safe and touches no memory of this process; it runs in the forked child.
+        unsafe {
+            command.pre_exec(|| if setsid() < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) });
+        }
+        Ok(command.spawn()?)
     }
-    Ok(command.spawn()?)
 }
 
 /// The other jobs that hold a place. With `settle_them`, jobs without a worker are settled first.
