@@ -82,19 +82,27 @@ This installs `zodchi-core` for you in every project, builds the gateway
   only in the projects you name, for you alone (it goes into the project's
   `.claude/settings.local.json`, which is not committed). `--domains` without
   `--project` turns a domain on everywhere.
-- Plugins are read from a copy, not from your clone. The installer copies the
-  plugin files into `~/.zodchi/plugins/<commit>/` and registers that folder
-  as the marketplace, so switching a branch or editing files in the clone
-  changes nothing for the Claude Code sessions on your machine. It refuses to
-  copy from a branch other than the default one, or from a tree with
-  uncommitted changes to tracked files (`--force` copies anyway; only
-  tracked changes make the folder `<commit>-dirty`, a clean forced branch is
-  named by its commit alone). After a `git pull`, rerun the installer: it makes a new
-  copy, points the marketplace at it, updates the plugins and rebuilds the
-  gateway. The previous copy stays for a session that still uses it, and
-  copies older than the last two are removed (the copy the marketplace read
-  before this run is kept as well, even if it is older, so you may see three). An install made by an earlier
-  version, which read the clone itself, is moved to a copy on the next run.
+- Plugins are read from a copy, not from your clone. The installer takes the
+  commit your clone's HEAD points at and has git write its plugin files
+  (`.claude-plugin`, `core`, `domains`) into
+  `~/.zodchi/plugins/<commit hash>/`, which it registers as the marketplace.
+  The copy comes only from that commit, never from the working tree:
+  uncommitted changes are left out (the installer says so in one line), and
+  switching a branch or editing files in the clone changes nothing for the
+  Claude Code sessions on your machine. It refuses to copy from a branch
+  other than the default one (the branch `refs/remotes/origin/HEAD` points
+  at), from a detached HEAD, or when that default is not set (`git remote
+  set-head origin --auto` sets it); `--force` copies the commit anyway. A
+  folder that is not a git clone is refused unless `--dev`. A copy is
+  written under a temporary name, marked complete last and then renamed, so a
+  copy folder without its `.complete` mark is made again. After a
+  `git pull`, rerun the installer: it makes a new copy, points the
+  marketplace at it, updates `zodchi-core` and the domains you name in that
+  run, and rebuilds the gateway. The copy the marketplace reads and the two
+  newest complete copies are kept, older ones are removed. If the marketplace
+  cannot be moved, it stays registered as it was and the new copy stays
+  beside it. An install made by an earlier version, which read the clone
+  itself, is moved to a copy on the next run.
 - `--dev` is for working on zodchi itself: the clone is the marketplace, as
   before. Every Claude Code session on the machine that starts or reloads
   then reads the clone's working tree as it is, including a branch that is

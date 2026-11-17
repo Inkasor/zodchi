@@ -8,13 +8,16 @@
 //   1. Claude Code plugins (the marketplace "zodchi"): zodchi-core for you in every project (user scope). --domains
 //      adds domain plugins: with --project <repo> only in that repository, for you alone (local scope:
 //      .claude/settings.local.json, nothing to commit); without --project in every project.
-//      The plugins are read from a copy of this repository's plugin files, ~/.zodchi/plugins/<commit>/, not from the
-//      clone, so a branch switch or a half-done edit in the clone changes nothing for other Claude sessions. The
-//      installer refuses to copy from a branch other than the default one, or from a tree with tracked changes
-//      (the copy would be named <commit>-dirty), unless --force. A rerun after `git pull` makes a new copy and moves
-//      the marketplace to it; the last two copies are kept (and the one the marketplace read before, if older), the
-//      rest are removed. Only tracked changes make a copy -dirty; a forced non-default branch with a clean tree is
-//      named by its commit alone.
+//      The plugins are read from a copy of the plugin files (.claude-plugin, core, domains) of the commit HEAD points
+//      at, ~/.zodchi/plugins/<full commit hash>/, made by git from the commit, never from the working tree: a branch
+//      switch or an uncommitted edit in the clone changes nothing for other Claude sessions, and uncommitted changes
+//      are left out of the copy (a note says so). The installer refuses a branch other than the default one (the
+//      target of refs/remotes/origin/HEAD), a detached HEAD, or a clone where that default is unknown, unless
+//      --force; a folder without .git is refused unless --dev. A copy is staged beside its final name, gets a
+//      .complete file last and is renamed into place; a folder without .complete is made again. A rerun after
+//      `git pull` makes a new copy, moves the marketplace to it and updates zodchi-core and the domains named in that
+//      run; the registered copy and the two newest complete ones are kept, the rest are removed. When the marketplace
+//      cannot be moved, its registration stays as it was and the new copy stays beside it.
 //      --dev registers the clone itself as the marketplace instead (for working on zodchi: every session on this
 //      machine then sees the clone's working tree as it is).
 //   2. The gateway: with cargo on PATH the Rust gateway is built from gateway/ and installed as ~/.zodchi/bin/zodchi.
@@ -116,246 +119,116 @@ const samePath = (a, b) => {
   return process.platform === "win32" ? n(a).toLowerCase() === n(b).toLowerCase() : n(a) === n(b);
 };
 
-// ---- The plugin copy: what Claude Code reads is a folder of its own, never the working clone ----
+// ---- The plugin copy: what Claude Code reads is a folder of its own, made from a commit, never the working tree ----
 
-// Names of the folders the installer makes under <home>/plugins: a commit (short), or a hash of the files when the
-// source is not a git checkout, with "-dirty" for a tree with tracked changes. Nothing else there is ever removed.
-const COPY_NAME = /^(?:[0-9a-f]{7,40}|src-[0-9a-f]{12})(?:-dirty)?$/;
+// The folders of the repository a copy holds. Every plugin source in the manifest must be inside them.
+const ROOTS = [".claude-plugin", "core", "domains"];
+// A copy is named by the full hash of its commit (SHA-1 or SHA-256). Nothing else under <home>/plugins is touched,
+// and a copy counts only with its .complete file, which is written last, before the folder gets this name.
+const COPY_NAME = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const COMPLETE = ".complete";
 const KEEP_COPIES = 2;
 
-// Git is asked in this clone. A failed call is never an answer: `git` (soft) lets the caller look at the exit status,
-// gitMust stops the install with git's own diagnostic.
-function git(args) {
-  const r = spawnSync("git", args, { cwd: SRC, encoding: "utf8", windowsHide: true, maxBuffer: 1 << 28 });
-  return { ok: r.status === 0 && !r.error, status: r.status, out: (r.stdout || "").trim(), raw: r.stdout || "", err: ((r.error && r.error.message) || r.stderr || "").trim() };
+// One git call in this clone. Every call is checked: a failure stops the install with git's own message, except
+// where the caller asks for the result (soft) to look at the exit status itself.
+function git(args, { soft = false, env, input } = {}) {
+  const r = spawnSync("git", args, { cwd: SRC, encoding: "utf8", windowsHide: true, maxBuffer: 1 << 28, env, input });
+  const res = { ok: r.status === 0 && !r.error, status: r.status, out: (r.stdout || "").trim(), raw: r.stdout || "", err: ((r.error && r.error.message) || r.stderr || "").trim() };
+  if (!res.ok && !soft) throw gitFailed(args, res);
+  return res;
 }
-function gitMust(args) {
-  const r = git(args);
-  if (!r.ok) throw new Error(`git ${args.join(" ")} failed${r.status == null ? "" : ` (exit ${r.status})`}: ${r.err || "no message"}\nNothing was installed; fix the repository, or use --dev to read the clone itself.`);
-  return r;
-}
-
-// The folders of the repository the plugins need: the manifest folder, core/, domains/ and every plugin source the
-// manifest names (first path segment). A source that leaves the repository is refused.
-function copyRoots(manifestText) {
-  const roots = new Set([".claude-plugin", "core", "domains"]);
-  const manifest = JSON.parse(manifestText ?? fs.readFileSync(path.join(SRC, ".claude-plugin", "marketplace.json"), "utf8"));
-  for (const p of manifest.plugins || []) {
-    if (typeof p.source !== "string") continue;
-    const parts = path.posix.normalize(p.source.replace(/\\/g, "/")).split("/").filter(x => x && x !== ".");
-    if (!parts.length || parts[0] === ".." || path.isAbsolute(p.source)) throw new Error(`plugin ${p.name}: source ${p.source} is outside this repository`);
-    roots.add(parts[0]);
-  }
-  return [...roots].filter(r => manifestText != null || fs.existsSync(path.join(SRC, r))).sort();
-}
-
-// A folder with its own .git is a checkout: every git answer is then required, and a failure stops the install.
-// Without one (a downloaded archive) the files are walked: everything under the roots except .git, node_modules, target.
-function walkFiles(roots) {
-  const out = [];
-  const walk = (rel) => {
-    for (const d of fs.readdirSync(path.join(SRC, rel), { withFileTypes: true })) {
-      if ([".git", "node_modules", "target"].includes(d.name)) continue;
-      const r = path.posix.join(rel, d.name);
-      if (d.isDirectory()) walk(r);
-      else if (d.isFile()) out.push(r);
-    }
-  };
-  for (const r of roots) walk(r);
-  return out.sort();
-}
-
-// The files of a commit under the roots: [{ file, mode, sha }]. Symlinks and submodules cannot be copied faithfully.
-function treeOf(commit, roots) {
-  const entries = gitMust(["ls-tree", "-r", "-z", commit, "--", ...roots]).raw.split("\0").filter(Boolean).map(line => {
-    const tab = line.indexOf("\t");
-    const [mode, type, sha] = line.slice(0, tab).split(" ");
-    return { file: line.slice(tab + 1), mode, type, sha };
-  });
-  const odd = entries.filter(e => e.type !== "blob" || e.mode === "120000");
-  if (odd.length) throw new Error(`the plugin files include a symlink or submodule, which the copy cannot hold: ${odd.map(e => e.file).join(", ")}`);
-  return entries.sort((a, b) => (a.file < b.file ? -1 : 1));
-}
-
-// The bytes of those blobs, from the object database in one call: `<sha> blob <size>\n<bytes>\n` for each.
-function readBlobs(shas) {
-  const unique = [...new Set(shas)];
-  const r = spawnSync("git", ["cat-file", "--batch"], { cwd: SRC, input: unique.join("\n") + "\n", windowsHide: true, maxBuffer: 1 << 30 });
-  if (r.error || r.status !== 0) throw new Error(`git cat-file failed: ${(r.error && r.error.message) || String(r.stderr || "").trim()}`);
-  const buf = r.stdout, blobs = new Map();
-  let at = 0;
-  for (const sha of unique) {
-    const nl = buf.indexOf(10, at);
-    const head = nl < 0 ? [] : buf.subarray(at, nl).toString("latin1").split(" ");
-    if (head[0] !== sha || head[1] !== "blob") throw new Error(`git cat-file: no blob ${sha}`);
-    const size = Number(head[2]);
-    blobs.set(sha, buf.subarray(nl + 1, nl + 1 + size));
-    at = nl + 1 + size + 1;
-  }
-  return blobs;
-}
+const gitFailed = (args, r) => new Error(`git ${args.join(" ")} failed${r.status == null ? "" : ` (exit ${r.status})`}: ${r.err || "no message"}\nNothing was installed.`);
 
 // What the plugin copy would be, and whether it may be made. Nothing is written. null for --dev and --no-plugins.
-// A clean checkout is copied from the objects of the recorded commit, never from the working tree, so an edit made
-// while the installer runs (the gateway build takes a while) cannot get into a copy named for a clean commit. Only a
-// forced copy of a tree with tracked changes reads the working tree (the tracked files, as they are now).
+// HEAD is resolved here, once, to a full hash; the copy is that commit whatever happens in the clone afterwards.
 function copyPlan(o, home) {
   if (o.dev || o.noPlugins) return null;
-  const plan = { dirty: false, forced: [] };
-  if (fs.existsSync(path.join(SRC, ".git"))) {
-    if (!samePath(gitMust(["rev-parse", "--show-toplevel"]).out, SRC)) throw new Error(`${SRC} has a .git but is not the top of its repository; nothing was installed. Use --dev to read the clone itself.`);
-    // The full HEAD ref ("" when detached) and the commit, read together; read again after the status below.
-    const readHead = () => {
-      const head = git(["rev-parse", "--verify", "-q", "HEAD^{commit}"]);
-      if (!head.ok) throw new Error(`This repository has no readable commit yet; commit first, or use --dev to work from the clone.${head.err ? `\n${head.err}` : ""}`);
-      // Exit 1 of symbolic-ref -q is a detached HEAD; any other failure is an error.
-      const sym = git(["symbolic-ref", "-q", "HEAD"]);
-      if (!sym.ok && sym.status !== 1) gitMust(["symbolic-ref", "-q", "HEAD"]);
-      return { commit: head.out, ref: sym.ok ? sym.out : "" };
-    };
-    // Exit 1 of a -q lookup is "not there"; any other failure is an error, never a guess.
-    const lookup = (args) => { const r = git(args); if (!r.ok && r.status !== 1) gitMust(args); return r.ok ? r.out : ""; };
-    const first = readHead();
-    const commit = first.commit;
-    const short = gitMust(["rev-parse", "--short=12", commit]).out;
-    const branch = first.ref.replace(/^refs\/heads\//, "");
-    // origin/HEAD names the default branch of the remote; without it main, then master.
-    let main = lookup(["symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"]).replace(/^origin\//, "");
-    if (!main) main = ["main", "master"].find(b => lookup(["rev-parse", "--verify", "-q", "refs/heads/" + b])) || "main";
-    plan.dirty = gitMust(["status", "--porcelain", "--untracked-files=no"]).out !== "";
-    const again = readHead();
-    if (again.commit !== first.commit || again.ref !== first.ref) throw new Error("HEAD changed while the installer was reading the repository (a checkout is running?); nothing was installed. Rerun it.");
-    const why = [];
-    if (!branch) why.push("HEAD is detached, so the copy would be of a state that no branch holds");
-    else if (branch !== main) why.push(`the branch is "${branch}", not the default "${main}"`);
-    if (plan.dirty) why.push("tracked files have uncommitted changes");
-    if (why.length && !o.force) {
-      const refusal = (`will not copy plugins from this clone: ${why.join("; ")}. Every Claude Code session on this machine would run what is in the copy, unreviewed. ` +
-        `Switch to "${main}" with a clean tree and rerun, or use --force to copy it anyway${plan.dirty ? " (named <commit>-dirty)" : ""}, or --dev to read the clone itself.`);
-      // A dry run still shows the rest of the plan, with the refusal said up front; a real run stops here.
-      if (!o.dryRun) throw new Error(refusal);
-      plan.refusal = refusal;
-    }
-    plan.forced = why;
-    plan.name = short + (plan.dirty ? "-dirty" : "");
-    if (plan.dirty) {
-      const roots = copyRoots();
-      // Index entries: "<mode> <sha> <stage>\t<file>". A symlink or submodule cannot be copied faithfully.
-      const entries = gitMust(["ls-files", "-s", "-z", "--", ...roots]).raw.split("\0").filter(Boolean).map(l => ({ mode: l.slice(0, 6), file: l.slice(l.indexOf("\t") + 1) }));
-      const odd = entries.filter(e => e.mode === "120000" || e.mode === "160000");
-      if (odd.length) throw new Error(`the plugin files include a symlink or submodule, which the copy cannot hold: ${odd.map(e => e.file).join(", ")}`);
-      // A tracked file deleted in the working tree is left out; anything else there is checked when it is copied.
-      const present = (f) => { try { fs.lstatSync(path.join(SRC, f)); return true; } catch { return false; } };
-      plan.files = [...new Set(entries.map(e => e.file))].filter(present).sort();
-    } else {
-      // The roots come from the manifest of that commit too; a root that the commit does not hold has no files.
-      plan.tree = treeOf(commit, copyRoots(gitMust(["show", `${commit}:.claude-plugin/marketplace.json`]).raw));
-      plan.files = plan.tree.map(e => e.file);
-    }
-  } else {
-    plan.archive = true;
-    plan.files = walkFiles(copyRoots());
-    const h = crypto.createHash("sha256");
-    for (const f of plan.files) h.update(f + "\0").update(fs.readFileSync(path.join(SRC, f)));
-    plan.name = "src-" + h.digest("hex").slice(0, 12);
+  if (!fs.existsSync(path.join(SRC, ".git"))) throw new Error(`${SRC} is not a git checkout, so there is no commit to copy the plugins from; nothing was installed. Clone the repository, or use --dev to read this folder itself.`);
+  if (!samePath(git(["rev-parse", "--show-toplevel"]).out, SRC)) throw new Error(`${SRC} has a .git but is not the top of its repository; nothing was installed. Use --dev to read the folder itself.`);
+  const commit = git(["rev-parse", "--verify", "HEAD^{commit}"]).out;
+  // Exit 1 of symbolic-ref -q is a detached HEAD; any other failure stops the install.
+  const head = git(["symbolic-ref", "-q", "--short", "HEAD"], { soft: true });
+  if (!head.ok && head.status !== 1) throw gitFailed(["symbolic-ref", "-q", "--short", "HEAD"], head);
+  const branch = head.ok ? head.out : "";
+  const why = [];
+  let main = "";
+  const origin = git(["symbolic-ref", "refs/remotes/origin/HEAD"], { soft: true });
+  if (origin.ok) main = origin.out.replace(/^refs\/remotes\/origin\//, "");
+  else why.push(`the default branch is unknown: git symbolic-ref refs/remotes/origin/HEAD failed (${origin.err || `exit ${origin.status}`}); \`git remote set-head origin --auto\` sets it`);
+  if (!branch) why.push("HEAD is detached, so the copy would be of a commit that no branch holds");
+  else if (main && branch !== main) why.push(`the branch is "${branch}", not the default "${main}"`);
+  const plan = { commit, forced: [], dir: path.join(home, "plugins", commit) };
+  if (why.length && !o.force) {
+    const refusal = `will not copy plugins from this clone: ${why.join("; ")}. Every Claude Code session on this machine would run what is in the copy, unreviewed. ` +
+      `Switch to ${main ? `"${main}"` : "the default branch"} and rerun, or use --force to copy commit ${commit} anyway, or --dev to read the clone itself.`;
+    // A dry run still shows the rest of the plan, with the refusal said up front; a real run stops here.
+    if (!o.dryRun) throw new Error(refusal);
+    plan.refusal = refusal;
+  } else plan.forced = why;
+  // The files of the commit under the roots: "<mode> <type> <object>\t<path>". A symlink or a submodule is refused.
+  const entries = git(["ls-tree", "-r", "-z", commit, "--", ...ROOTS]).raw.split("\0").filter(Boolean)
+    .map(line => ({ mode: line.slice(0, 6), file: line.slice(line.indexOf("\t") + 1) }));
+  const odd = entries.filter(e => e.mode === "120000" || e.mode === "160000");
+  if (odd.length) throw new Error(`commit ${commit} has a symlink or a submodule among the plugin files, which the copy does not take: ${odd.map(e => e.file).join(", ")}. Nothing was installed.`);
+  plan.files = entries.map(e => e.file);
+  if (!plan.files.includes(".claude-plugin/marketplace.json")) throw new Error(`commit ${commit} has no .claude-plugin/marketplace.json; nothing was installed.`);
+  for (const p of JSON.parse(git(["show", `${commit}:.claude-plugin/marketplace.json`]).raw).plugins || []) {
+    if (typeof p.source !== "string") continue;
+    const first = path.posix.normalize(p.source.replace(/\\/g, "/")).split("/").filter(x => x && x !== ".")[0];
+    if (!ROOTS.includes(first) || path.isAbsolute(p.source)) throw new Error(`plugin ${p.name}: source ${p.source} is outside ${ROOTS.join(", ")}, which is all the copy holds. Nothing was installed.`);
   }
-  plan.dir = path.join(home, "plugins", plan.name);
+  // Uncommitted changes are not in the commit, so they are not in the copy either: a note, not a refusal.
+  if (git(["status", "--porcelain", "--", ...ROOTS]).out) plan.note = `uncommitted changes in ${ROOTS.join(", ")} are left out: the copy is commit ${commit}`;
   return plan;
 }
 
-// Makes the copy: into a folder of its own that is renamed into place, so an interrupted run leaves no half copy.
-// A copy of a clean commit that is already there is reused. A -dirty one (or a broken one) is made again, but the
-// folder that is there stays, renamed aside, until finishCopy says the marketplace reads the new one: a failed run
-// puts it back (undoCopy), because the registered marketplace may be reading it.
+// Makes the copy with git alone: a temporary index holds the commit, checkout-index writes its plugin files into
+// <hash>.tmp-<pid>, .complete is written last, and the folder is renamed to <hash>. A <hash> folder with .complete is
+// reused; one without it is a broken copy and is made again.
 function makeCopy(plan) {
-  const { dir } = plan;
+  const { dir, commit } = plan;
+  const done = path.join(dir, COMPLETE);
   const now = new Date();
-  if (!plan.dirty && fs.existsSync(path.join(dir, ".claude-plugin", "marketplace.json"))) {
-    fs.utimesSync(dir, now, now);
-    return { dir, reused: true };
-  }
-  const base = path.dirname(dir);
-  const tmp = path.join(base, `.tmp-${plan.name}-${process.pid}`);
-  const aside = path.join(base, `.old-${plan.name}-${process.pid}`);
-  fs.rmSync(tmp, { recursive: true, force: true });
-  try {
-    const blobs = plan.tree ? readBlobs(plan.tree.map(e => e.sha)) : null;
-    const digest = plan.archive ? crypto.createHash("sha256") : null;
-    for (const [i, f] of plan.files.entries()) {
-      const to = path.join(tmp, f);
-      fs.mkdirSync(path.dirname(to), { recursive: true });
-      if (blobs) {
-        fs.writeFileSync(to, blobs.get(plan.tree[i].sha));
-        fs.chmodSync(to, plan.tree[i].mode === "100755" ? 0o755 : 0o644);
-      } else {
-        const from = path.join(SRC, f);
-        // Only a regular file reached without a symlink on the way (a working-tree edit may have swapped one in).
-        let at = SRC;
-        for (const part of f.split("/")) {
-          at = path.join(at, part);
-          if (fs.lstatSync(at).isSymbolicLink()) throw new Error(`${at} is a symlink now; the copy takes only regular files of the clone. Nothing was installed.`);
-        }
-        const st = fs.lstatSync(from);
-        if (!st.isFile()) throw new Error(`${from} is not a regular file; nothing was installed.`);
-        const body = fs.readFileSync(from);
-        if (digest) digest.update(f + "\0").update(body);
-        fs.writeFileSync(to, body);
-        fs.chmodSync(to, st.mode & 0o777);
-      }
-    }
-    // A source without git is named for its hash: the bytes staged here must be the ones that were hashed.
-    if (digest && "src-" + digest.digest("hex").slice(0, 12) !== plan.name) throw new Error("the source files changed while the installer ran; nothing was installed. Rerun it.");
-    // Everything that can fail is done before the copy is published; renaming a folder keeps its times.
-    fs.utimesSync(tmp, now, now);
-    fs.rmSync(aside, { recursive: true, force: true });
-  } catch (e) { fs.rmSync(tmp, { recursive: true, force: true }); throw e; }
-  let hadOld = false;
+  if (fs.existsSync(done)) { fs.utimesSync(done, now, now); return { reused: true }; }
   if (fs.existsSync(dir)) {
-    try { fs.renameSync(dir, aside); hadOld = true; }
-    catch (e) { fs.rmSync(tmp, { recursive: true, force: true }); throw new Error(`could not replace ${dir} (${e.code || e.message}); it is probably in use. Nothing was changed.`); }
+    try { fs.rmSync(dir, { recursive: true, force: true }); }
+    catch (e) { throw new Error(`${dir} is an incomplete copy and could not be removed (${e.code || e.message}); remove it by hand and rerun. Nothing was installed.`); }
   }
-  try { fs.renameSync(tmp, dir); }
-  catch (e) {
-    if (hadOld) try { fs.renameSync(aside, dir); } catch (e2) { throw new Error(`could not publish ${dir} (${e.code || e.message}) and could not put the old copy back (${e2.code || e2.message}); it is kept at ${aside}. Move it back to ${dir} by hand.`); }
+  const tmp = `${dir}.tmp-${process.pid}`;
+  const index = `${dir}.index-${process.pid}`;
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
+  try {
     fs.rmSync(tmp, { recursive: true, force: true });
+    fs.mkdirSync(tmp);
+    const env = { ...process.env, GIT_INDEX_FILE: index };
+    git(["read-tree", commit], { env });
+    git(["checkout-index", `--prefix=${tmp.replace(/\\/g, "/")}/`, "-z", "--stdin"], { env, input: plan.files.join("\0") + "\0" });
+    const missing = plan.files.filter(f => !fs.existsSync(path.join(tmp, f)));
+    if (missing.length) throw new Error(`git checkout-index did not write ${missing.length} file(s), first ${missing[0]}; nothing was installed.`);
+    fs.writeFileSync(path.join(tmp, COMPLETE), commit + "\n");
+    fs.renameSync(tmp, dir);
+  } catch (e) {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e2) { console.log(`could not remove ${tmp} (${e2.code || e2.message}); remove it by hand`); }
+    // Another run that made the same commit at the same time: its folder is as good as this one.
+    if (e.code && fs.existsSync(done)) return { reused: true };
     throw e;
+  } finally {
+    for (const f of [index, index + ".lock"]) try { fs.rmSync(f, { force: true }); } catch { /* a stray index file beside the copies is harmless */ }
   }
-  return { dir, reused: false, aside: hadOld ? aside : null };
-}
-// The marketplace reads the new copy: the folder that was set aside is not needed any more. One that cannot be
-// removed now is swept by the next run (sweepLeftovers) or by --uninstall.
-function finishCopy(made) {
-  if (made && made.aside) try { fs.rmSync(made.aside, { recursive: true, force: true }); } catch { /* swept later */ }
-}
-// The run failed before the marketplace moved: the folder that was there before is put back. The replacement is moved
-// out of the registered path first, so a failed delete cannot leave the path serving it or half removed.
-function undoCopy(made) {
-  if (!made || made.reused) return;
-  const bad = path.join(path.dirname(made.dir), `.bad-${path.basename(made.dir)}-${process.pid}`);
-  try { fs.rmSync(bad, { recursive: true, force: true }); } catch { /* the rename below says if it matters */ }
-  try { fs.renameSync(made.dir, bad); }
-  catch (e) { throw new Error(`could not move the new copy ${made.dir} out of the way (${e.code || e.message})${made.aside ? `; the previous copy is at ${made.aside}, move it back by hand` : ""}`); }
-  if (made.aside) {
-    try { fs.renameSync(made.aside, made.dir); }
-    catch (e) { throw new Error(`could not restore the previous copy (${e.code || e.message}); it is at ${made.aside}, move it back to ${made.dir} by hand`); }
-  }
-  try { fs.rmSync(bad, { recursive: true, force: true }); } catch { /* swept later */ }
-}
-// Folders a run left behind (.old-*: a set-aside copy, .bad-*: a rejected one); only these names, never a copy's.
-const LEFTOVER = /^\.(?:old|bad)-/;
-function sweepLeftovers(home, say, dryRun = false) {
-  const base = path.join(home, "plugins");
-  let names = [];
-  try { names = fs.readdirSync(base, { withFileTypes: true }).filter(d => d.isDirectory() && LEFTOVER.test(d.name)).map(d => d.name); } catch { /* none */ }
-  for (const n of names) removeCopy({ dir: path.join(base, n) }, say, dryRun);
+  return { reused: false };
 }
 
+// The copy folders under <home>/plugins, newest first by the time of .complete (made or reused); incomplete ones last.
 function listCopies(home) {
   const base = path.join(home, "plugins");
   let names = [];
   try { names = fs.readdirSync(base, { withFileTypes: true }).filter(d => d.isDirectory() && COPY_NAME.test(d.name)).map(d => d.name); } catch { /* none */ }
-  return names.map(n => ({ name: n, dir: path.join(base, n), time: fs.statSync(path.join(base, n)).mtimeMs }))
-    .sort((a, b) => b.time - a.time || (a.name < b.name ? 1 : -1));
+  return names.map(n => {
+    const dir = path.join(base, n);
+    let time = -1;
+    try { time = fs.statSync(path.join(dir, COMPLETE)).mtimeMs; } catch { /* incomplete */ }
+    return { name: n, dir, complete: time >= 0, time };
+  }).sort((a, b) => b.time - a.time || (a.name < b.name ? 1 : -1));
 }
 
 const isCopyPath = (p, home) => Boolean(p) && samePath(path.dirname(p), path.join(home, "plugins")) && COPY_NAME.test(path.basename(p));
@@ -363,17 +236,14 @@ const isCopyPath = (p, home) => Boolean(p) && samePath(path.dirname(p), path.joi
 function removeCopy(c, say, dryRun = false) {
   say(`remove plugin copy ${c.dir}`);
   if (dryRun) return;
-  try { fs.rmSync(c.dir, { recursive: true, force: true }); } catch (e) { console.log(`could not remove ${c.dir} (${e.code || e.message}); it is probably in use, the next run tries again`); }
+  try { fs.rmSync(c.dir, { recursive: true, force: true }); } catch (e) { console.log(`could not remove ${c.dir} (${e.code || e.message}); it is probably in use and is left, the next run tries again`); }
 }
 
-// The newest two copies stay, and the one the marketplace pointed at before this run (a session may still use it);
-// the rest go. Only folders with a copy's name are looked at.
-function pruneCopies(home, keep, say) {
+// The registered copy and the two newest complete ones stay; every other copy folder goes.
+function pruneCopies(home, registered, say) {
   const all = listCopies(home);
-  const key = (p) => path.resolve(p).toLowerCase();
-  const kept = new Set(all.slice(0, KEEP_COPIES).map(c => key(c.dir)));
-  for (const k of keep) if (k) kept.add(key(k));
-  for (const c of all) if (!kept.has(key(c.dir))) removeCopy(c, say);
+  const kept = all.filter(c => c.complete).slice(0, KEEP_COPIES);
+  for (const c of all) if (!kept.includes(c) && !samePath(c.dir, registered)) removeCopy(c, say);
 }
 
 // The registered marketplace of this name: { entry } (null when there is none) or { error }.
@@ -408,11 +278,11 @@ function plugins(o, domains, say, home, copy) {
   if (copy) {
     if (copy.refusal) say(`a real run would stop: ${copy.refusal}`);
     else if (copy.forced.length) say(`--force: copying although ${copy.forced.join("; ")}`);
-    if (!copy.dirty && fs.existsSync(path.join(copy.dir, ".claude-plugin", "marketplace.json"))) say(`the plugin copy ${copy.dir} is already there; it is reused`);
-    else say(`copy ${copy.files.length} plugin file(s) from ${SRC} to ${copy.dir}`);
+    if (copy.note) say(`note: ${copy.note}`);
+    if (fs.existsSync(path.join(copy.dir, COMPLETE))) say(`the plugin copy ${copy.dir} is already there; it is reused`);
+    else say(`copy ${copy.files.length} plugin file(s) of commit ${copy.commit} to ${copy.dir}`);
   } else say(`--dev: the clone ${SRC} is the marketplace; every Claude session on this machine reads its working tree as it is`);
   const steps = [];
-  let previous = null;
   const present = claude(["--version"]).ok;
   if (!present && !o.dryRun) throw new Error("Claude Code (`claude`) does not run here; install it, or rerun with --no-plugins.");
   if (!present) {
@@ -424,7 +294,6 @@ function plugins(o, domains, say, home, copy) {
     if (found.error) throw new Error(found.error);
     const change = marketplaceChange(found.entry, target, home);
     if (change.action === "refuse") throw new Error(change.text);
-    if (change.action === "move" && isCopyPath(change.from, home)) previous = change.from;
     steps.push({ what: change.text, run: () => claude(change.action === "update" ? ["plugin", "marketplace", "update", MARKETPLACE] : ["plugin", "marketplace", "add", target]) });
   }
   const install = (plugin, scope, cwd) => () => {
@@ -443,20 +312,16 @@ function plugins(o, domains, say, home, copy) {
     for (const s of steps) say(`plugin: ${s.what}`);
     return;
   }
-  // The copy is made before the first step; when the marketplace step fails, the folder that was there is put back.
-  const made = copy ? makeCopy(copy) : null;
+  // The copy is made before the first step. When the marketplace step fails, the registration stays as it was and
+  // the new copy stays too: it is complete, and nothing reads it.
+  if (copy) makeCopy(copy);
   for (const [i, s] of steps.entries()) {
     const r = s.run();
     if (r.missing) throw new Error("Claude Code (`claude`) is not on PATH; install it, or rerun with --no-plugins.");
-    if (!r.ok) {
-      let extra = "";
-      if (i === 0) try { undoCopy(made); } catch (e) { extra = `\n${e.message}`; }
-      throw new Error(`plugin step failed: ${s.what}\n${r.out}${extra}`);
-    }
-    if (i === 0) finishCopy(made);
+    if (!r.ok) throw new Error(`plugin step failed: ${s.what}\n${r.out}${i === 0 && copy ? `\nThe marketplace registration was left as it was; the copy ${copy.dir} stays.` : ""}`);
     console.log(`plugin: ${s.what} - ok`);
   }
-  if (copy) { pruneCopies(home, [copy.dir, previous], say); sweepLeftovers(home, say); }
+  if (copy) pruneCopies(home, copy.dir, say);
 }
 
 async function main() {
@@ -498,7 +363,6 @@ async function main() {
     if (o.noPlugins) { if (copies.length) console.log(`Plugin copies kept in ${path.join(home, "plugins")} (--no-plugins leaves Claude Code's plugins alone).`); }
     else {
       for (const c of copies) removeCopy(c, say, o.dryRun);
-      sweepLeftovers(home, say, o.dryRun);
       if (!o.dryRun) try { fs.rmdirSync(path.join(home, "plugins")); } catch { /* not empty or not there */ }
     }
     for (const [dest, hash] of Object.entries(manifest.files || {})) {
