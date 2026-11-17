@@ -108,36 +108,51 @@ async function main() {
   }
 
   const domains = await chooseDomains(o.domains);
+  // Everything that can fail on a wrong argument is checked before the first write.
+  let gatewayCli = null;
+  if (o["gateway-cli"]) {
+    gatewayCli = path.resolve(o["gateway-cli"]);
+    if (!fs.existsSync(gatewayCli)) throw new Error(`No gateway CLI at ${gatewayCli}; nothing was installed.`);
+  }
   const items = plan(domains, claudeDir, home);
-  const next = { version: VERSION, domains, claudeDir, files: { ...(manifest.files || {}) } };
+  const owned = manifest.files || {};
+  const isOwned = (dest, buf) => Object.prototype.hasOwnProperty.call(owned, dest) && owned[dest] === sha(buf);
+  const next = { version: VERSION, domains, claudeDir, files: { ...owned } };
   let written = 0, skipped = 0;
+  const put = (dest, body, mode) => {
+    if (!o.dryRun) {
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, body);
+      if (mode) fs.chmodSync(dest, mode);
+    }
+    next.files[dest] = sha(body); written++;
+  };
   for (const it of items) {
     const body = it.content != null ? Buffer.from(it.content) : fs.readFileSync(it.src);
     const exists = fs.existsSync(it.dest);
     const current = exists ? fs.readFileSync(it.dest) : null;
-    if (current && sha(current) === sha(body)) { next.files[it.dest] = sha(body); continue; }
-    const ours = exists && manifest.files?.[it.dest] === sha(current);
-    if (exists && !ours && !o.force) {
-      if (it.kind === "user-owned") {
-        say(`keep your ${it.dest}; the new table is ${it.dest}.new`);
-        if (!o.dryRun) fs.writeFileSync(it.dest + ".new", body);
-      } else { say(`skip (not installed by zodchi or changed by you): ${it.dest}`); skipped++; }
+    // Identical content is never adopted: only a file the installer itself wrote is ever removed later.
+    if (current && sha(current) === sha(body)) continue;
+    if (exists && it.kind === "user-owned" && !o.force) {
+      // Your table stays as it is on every upgrade; the new one is offered beside it.
+      const prop = it.dest + ".new";
+      const propNow = fs.existsSync(prop) ? fs.readFileSync(prop) : null;
+      if (propNow && sha(propNow) === sha(body)) continue;
+      if (propNow && !isOwned(prop, propNow)) { say(`keep your ${it.dest} and your ${prop}; move ${prop} away to receive the new table`); skipped++; continue; }
+      say(`keep your ${it.dest}; the new table is ${prop}`);
+      put(prop, body);
       continue;
     }
+    if (exists && !isOwned(it.dest, current) && !o.force) { say(`skip (not installed by zodchi or changed by you): ${it.dest}`); skipped++; continue; }
     say(`${exists ? "update" : "add"} ${it.dest}`);
-    if (!o.dryRun) {
-      fs.mkdirSync(path.dirname(it.dest), { recursive: true });
-      fs.writeFileSync(it.dest, body);
-      if (it.mode) fs.chmodSync(it.dest, it.mode);
-    }
-    next.files[it.dest] = sha(body); written++;
+    put(it.dest, body, it.mode);
   }
 
   // Files from an earlier install that this one no longer plans (a domain was dropped): remove them when unchanged.
   const planned = new Set(items.map(it => path.resolve(it.dest)));
   const inside = (f) => [claudeDir, home].some(d => path.resolve(f).toLowerCase().startsWith(path.resolve(d).toLowerCase() + path.sep));
   for (const [dest, hash] of Object.entries(manifest.files || {})) {
-    if (planned.has(path.resolve(dest)) || !inside(dest)) continue;
+    if (planned.has(path.resolve(dest)) || dest.endsWith(".new") || !inside(dest)) continue;
     if (fs.existsSync(dest) && sha(fs.readFileSync(dest)) !== hash) { say(`keep (changed by you, no longer installed): ${dest}`); delete next.files[dest]; continue; }
     if (fs.existsSync(dest)) { say(`remove ${dest}`); if (!o.dryRun) fs.rmSync(dest); }
     delete next.files[dest];
@@ -146,11 +161,9 @@ async function main() {
   const cfgFile = path.join(home, "config.json");
   let cfg = {};
   try { cfg = JSON.parse(fs.readFileSync(cfgFile, "utf8")); } catch { /* new */ }
-  if (o["gateway-cli"]) {
-    const cli = path.resolve(o["gateway-cli"]);
-    if (!fs.existsSync(cli)) throw new Error(`No gateway CLI at ${cli}`);
-    cfg.gatewayCli = cli;
-    say(`gateway: ${cli}`);
+  if (gatewayCli) {
+    cfg.gatewayCli = gatewayCli;
+    say(`gateway: ${gatewayCli}`);
   }
   if (!o.dryRun) {
     fs.mkdirSync(home, { recursive: true });

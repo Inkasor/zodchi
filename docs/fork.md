@@ -9,9 +9,9 @@ Everything that belongs to one company lives in its fork:
 - **Sign-in for the gateway server.** The server has an authorization trait.
   The public default is simple tokens, and a fork plugs in the company's
   identity provider.
-- **Policies of its products**: which repositories may use which roles,
-  which accounts carry the `work` label, and whether falling back to personal
-  plans is allowed at all (see [subscriptions](subscriptions.md)).
+- **Policies of its products**: which repositories may use which roles.
+  Every person still runs jobs on their own subscription (see
+  [subscriptions](subscriptions.md)).
 - **Its own role table** in the fork's `models.json`, matching the plans the
   company pays for.
 

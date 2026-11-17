@@ -15,8 +15,11 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const problems = [];
 const bad = (file, msg) => problems.push(`${path.relative(ROOT, file).replace(/\\/g, "/")}: ${msg}`);
-const tracked = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard"], { cwd: ROOT, encoding: "utf8" })
-  .split("\n").filter(Boolean).map(f => path.join(ROOT, f)).filter(f => fs.existsSync(f));
+// -z: NUL-separated and unquoted, so names with spaces or non-ASCII letters come through as they are.
+const tracked = execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { cwd: ROOT, encoding: "utf8" })
+  .split("\0").filter(Boolean).map(f => path.join(ROOT, f));
+for (const f of tracked.filter(f => !fs.existsSync(f))) problems.push(`${path.relative(ROOT, f)}: listed by git but not on disk (commit or restore the deletion)`);
+tracked.splice(0, tracked.length, ...tracked.filter(f => fs.existsSync(f)));
 
 // 1. workflows
 for (const f of tracked.filter(f => /[\\/]workflows[\\/][^\\/]+\.js$/.test(f))) {
