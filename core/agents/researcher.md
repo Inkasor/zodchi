@@ -23,6 +23,10 @@ a folder.
    `zodchi run --role research --key <key> --prompt <question file> --wait-sec 2000 --out <answer file>`,
    adding `--model <model> --effort <effort>` when the brief gives them.
    A job that ends as timeout, failed or limited is reported, not retried.
+   That wait is longer than your shell call may last: run it in the
+   foreground with `--wait-sec 540`, and while it exits 3 repeat
+   `zodchi wait --key <key> --wait-sec 540 --out <answer file>` in the
+   foreground, up to 2000 seconds in all. Never background a gateway command.
 3. Return the answer file path, the claims that carry a number, and the
    `notFound` list. The answer file is the result: add nothing from memory.
 
