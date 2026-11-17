@@ -9,7 +9,7 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -50,6 +50,8 @@ pub struct Logins {
     states: Mutex<HashMap<String, Slot>>,
     accounts: Arc<Mutex<HashMap<String, (Instant, Value)>>>,
     attempts: AtomicU64,
+    /// Set by [`Logins::shutdown`] before it collects the open attempts; no attempt starts after that.
+    closed: AtomicBool,
 }
 
 fn pending_json(p: &Pending) -> Value {
@@ -76,7 +78,7 @@ impl Logins {
 
     /// With another life of the code (tests).
     pub fn with_life(data: &Path, life: Duration) -> Logins {
-        Logins { data: data.to_path_buf(), life, states: Mutex::new(HashMap::new()), accounts: Arc::new(Mutex::new(HashMap::new())), attempts: AtomicU64::new(0) }
+        Logins { data: data.to_path_buf(), life, states: Mutex::new(HashMap::new()), accounts: Arc::new(Mutex::new(HashMap::new())), attempts: AtomicU64::new(0), closed: AtomicBool::new(false) }
     }
 
     fn slot(&self, user: &str) -> Slot {
@@ -95,6 +97,11 @@ impl Logins {
     pub fn start(&self, user: &str) -> Result<Value> {
         let slot = self.slot(user);
         let mut state = slot.lock().unwrap();
+        // Checked under the slot's lock: either shutdown has closed admission (and this start is refused), or it has
+        // not yet collected this slot and will wait for this lock, find the attempt and cancel it.
+        if self.closed.load(Ordering::SeqCst) {
+            return fail("The server is stopping; no sign-in is started.");
+        }
         if let State::Pending(p) = &*state {
             if Instant::now() < p.deadline {
                 return Ok(pending_json(p));
@@ -185,9 +192,14 @@ impl Logins {
         Ok(json!({ "status": "none" }))
     }
 
-    /// Shutdown: every pending attempt is cancelled and its app-server stopped.
+    /// Shutdown: admission of new attempts is closed, then every pending attempt is cancelled and its app-server
+    /// stopped. A start already past the check holds its slot's lock, so it is found here once it is pending.
     pub fn shutdown(&self) {
-        let slots: Vec<Slot> = self.states.lock().unwrap().values().cloned().collect();
+        let slots: Vec<Slot> = {
+            let states = self.states.lock().unwrap();
+            self.closed.store(true, Ordering::SeqCst);
+            states.values().cloned().collect()
+        };
         for slot in slots {
             let mut state = slot.lock().unwrap();
             if let State::Pending(p) = std::mem::replace(&mut *state, State::None) {

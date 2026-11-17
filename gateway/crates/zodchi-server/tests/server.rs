@@ -104,6 +104,11 @@ impl Answer {
 }
 
 impl Server {
+    #[cfg(unix)]
+    fn child_alive(&self) -> bool {
+        Command::new("kill").args(["-0", &self.child.id().to_string()]).status().map(|s| s.success()).unwrap_or(false)
+    }
+
     fn call(&self, method: &str, path: &str, token: Option<&str>, body: Option<&Value>) -> Answer {
         let mut stream = TcpStream::connect(&self.address).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(120))).unwrap();
@@ -292,6 +297,57 @@ fn admission_refuses_over_the_limit_and_leaves_the_key_free() {
     assert!(["queued", "running"].contains(&early.json()["status"].as_str().unwrap()));
     assert_eq!(server.finished(&token, "slow-1")["status"], json!("succeeded"));
     assert_eq!(server.submit(&token, json!({ "key": "next-1", "role": "ask", "prompt": "two" })).status, 201);
+}
+
+/// Admission fails closed: a job folder whose record cannot be read counts as unfinished, and a jobs folder that
+/// cannot be listed refuses the job (500) instead of counting nothing; either way the key stays free.
+#[test]
+fn admission_counts_fail_closed() {
+    let env = Env::new();
+    let (id, token) = env.user("Anna", true);
+    let server = env.serve(&["--max-user-jobs", "1"]);
+    let broken = env.data.join("users").join(&id).join("jobs").join("broken-1");
+    std::fs::create_dir_all(&broken).unwrap();
+    std::fs::write(broken.join("job.json"), "{").unwrap();
+    let over = server.submit(&token, json!({ "key": "next-1", "role": "ask", "prompt": "one" }));
+    assert_eq!(over.status, 429, "an unreadable record is not a finished job: {}", String::from_utf8_lossy(&over.body));
+    std::fs::remove_dir_all(&broken).unwrap();
+
+    // A (removed) user's jobs folder that is not a folder: the count cannot be established.
+    let ghost = env.data.join("users").join("ghost-1");
+    std::fs::create_dir_all(&ghost).unwrap();
+    std::fs::write(ghost.join("jobs"), "not a folder").unwrap();
+    let unknown = server.submit(&token, json!({ "key": "next-1", "role": "ask", "prompt": "one" }));
+    assert_eq!(unknown.status, 500, "{}", String::from_utf8_lossy(&unknown.body));
+    assert!(unknown.json()["error"].as_str().unwrap().contains("cannot be counted"));
+    assert_eq!(server.call("GET", "/v1/jobs/next-1", Some(&token), None).status, 404, "the refused key was taken");
+    std::fs::remove_file(ghost.join("jobs")).unwrap();
+    assert_eq!(server.submit(&token, json!({ "key": "next-1", "role": "ask", "prompt": "one" })).status, 201);
+}
+
+/// The server outlives its workers and reaps each one: a finished worker is not left as a zombie.
+#[cfg(unix)]
+#[test]
+fn finished_workers_are_reaped() {
+    let env = Env::new();
+    let (_, token) = env.user("Anna", true);
+    let server = env.serve(&[]);
+    assert_eq!(server.submit(&token, json!({ "key": "reap-1", "role": "ask", "prompt": "hello" })).status, 201);
+    let done = server.finished(&token, "reap-1");
+    assert_eq!(done["status"], json!("succeeded"));
+    let pid = done["workerPid"].as_u64().expect("the worker's pid").to_string();
+    // The state of the worker's pid: empty once it is reaped, "Z" while it is a zombie.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let out = Command::new("ps").args(["-o", "stat=", "-p", &pid]).output().unwrap();
+        let stat = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if stat.is_empty() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "worker {pid} is still there as {stat:?} while the server runs");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(server.child_alive(), "the server stays running");
 }
 
 #[test]
