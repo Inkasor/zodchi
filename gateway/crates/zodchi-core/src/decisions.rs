@@ -177,24 +177,32 @@ fn post(call: &Call, key: &str, body: &str, s: &Scrubber) -> Result<(u16, String
         TurnFailed::new("failed", format!("{e}; the API was not asked and nothing was spent."))
     };
     // curl is recorded like Codex: whoever settles a dead worker stops it by pid and start before deciding.
-    call.note_spawn(&call.state).map_err(|e| unspent(e.message))?;
-    let mut child = command.spawn().map_err(|e| {
-        let _ = Call::note_pid(&call.state, None);
-        unspent(format!("curl could not be started: {e}"))
-    })?;
-    let pid = child.id();
-    let stdin = child.stdin.take();
-    let mut stdout = child.stdout.take().expect("piped stdout");
-    let mut stderr = child.stderr.take().expect("piped stderr");
-    *call.helper.lock().unwrap() = Some(child);
-    if let Err(e) = Call::note_pid(&call.state, Some(pid)) {
-        call.stop();
-        return Err(unspent(format!("curl could not be recorded: {}", e.message)));
-    }
-    if call.abort.load(std::sync::atomic::Ordering::SeqCst) {
-        call.stop();
-        return Err(unspent("The call was cut off before the API was asked".into()));
-    }
+    // The cancellation check, the spawn, the identity and the registration happen under the helper lock. Call::stop
+    // sets `abort` before it takes this lock, so it either prevents the spawn or finds the child registered and kills
+    // it. curl reads its key header from stdin before it sends anything, so nothing is sent until the key is written.
+    let (pid, stdin, mut stdout, mut stderr) = {
+        let mut slot = call.helper.lock().unwrap();
+        if call.abort.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(unspent("The call was cut off before the API was asked".into()));
+        }
+        call.note_spawn(&call.state).map_err(|e| unspent(e.message))?;
+        let mut child = command.spawn().map_err(|e| {
+            let _ = Call::note_pid(&call.state, None);
+            unspent(format!("curl could not be started: {e}"))
+        })?;
+        let pid = child.id();
+        let stdin = child.stdin.take();
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+        *slot = Some(child);
+        if let Err(e) = Call::note_pid(&call.state, Some(pid)) {
+            drop(slot);
+            call.stop();
+            return Err(unspent(format!("curl could not be recorded: {}", e.message)));
+        }
+        (pid, stdin, stdout, stderr)
+    };
+    let _ = pid;
     if let Some(mut stdin) = stdin {
         let _ = stdin.write_all(format!("authorization: Bearer {key}\n").as_bytes());
     }

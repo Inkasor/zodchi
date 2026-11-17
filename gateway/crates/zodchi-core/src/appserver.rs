@@ -151,8 +151,9 @@ fn launcher(codex_bin: &Path) -> Command {
     }
 }
 
-/// Codex rejects unknown feature flags at startup and the set changes between versions.
-fn supported_features(codex_bin: &Path, codex_home: &Path) -> Option<Vec<String>> {
+/// Codex rejects unknown feature flags at startup and the set changes between versions. The probe gets 30 seconds in
+/// all, output included, and stops early when `cancelled` says so; a probe that overruns is killed with its tree.
+fn supported_features(codex_bin: &Path, codex_home: &Path, cancelled: &dyn Fn() -> bool) -> Option<Vec<String>> {
     static CACHE: OnceLock<Mutex<HashMap<PathBuf, Option<Vec<String>>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(found) = cache.lock().unwrap().get(codex_bin) {
@@ -166,29 +167,40 @@ fn supported_features(codex_bin: &Path, codex_home: &Path) -> Option<Vec<String>
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    // The probe gets 30 seconds, as in the reference; a probe that hangs is killed and reaped.
-    let names = command.spawn().ok().and_then(|mut child| {
-        let mut stdout = child.stdout.take()?;
-        let reader = thread::spawn(move || {
-            let mut text = String::new();
-            let _ = std::io::Read::read_to_string(&mut stdout, &mut text);
-            text
-        });
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
-                _ => {
-                    kill_tree(child.id());
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break None;
-                }
-            }
-        };
-        let text = reader.join().unwrap_or_default();
-        status.filter(|s| s.success()).map(|_| text.lines().filter_map(|l| l.split_whitespace().next().map(String::from)).collect::<Vec<_>>())
+    let mut child = command.spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let (tx, rx) = channel();
+    thread::spawn(move || {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(&mut stdout, &mut text);
+        let _ = tx.send(text);
+    });
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut text = None;
+    let mut status = None;
+    while Instant::now() < deadline && !cancelled() {
+        if status.is_none() {
+            status = child.try_wait().ok().flatten();
+        }
+        if text.is_none() {
+            text = rx.recv_timeout(Duration::from_millis(50)).ok();
+        }
+        if status.is_some() && text.is_some() {
+            break;
+        }
+        if text.is_some() {
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+    if status.is_none() || text.is_none() {
+        // Overran or cancelled: the tree goes, which also closes a pipe a descendant held; the reader is abandoned.
+        kill_tree(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    }
+    let names = status.filter(|s| s.success()).map(|_| {
+        text.unwrap_or_default().lines().filter_map(|l| l.split_whitespace().next().map(String::from)).collect::<Vec<_>>()
     });
     cache.lock().unwrap().insert(codex_bin.to_path_buf(), names.clone());
     names
@@ -417,7 +429,7 @@ impl AppServer {
 
     /// A feature to disable that this Codex does not know is skipped; a feature the role enables must exist.
     fn arguments(&self) -> TurnResult<Vec<String>> {
-        let known = supported_features(&self.codex_bin, &self.codex_home);
+        let known = supported_features(&self.codex_bin, &self.codex_home, &|| self.life.lock().unwrap().stopping);
         let (settings, disable, enable) = launch_flags(self.role.as_ref());
         let mut args = vec!["app-server".to_string()];
         for s in settings {
