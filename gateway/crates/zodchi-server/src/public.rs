@@ -129,10 +129,9 @@ pub fn job_view(job: &Value) -> Value {
         }
         out.insert(name.to_string(), value.clone());
     }
+    // Only a final status other than `succeeded` has an error; the stored text never decides it.
     let status = job.get("status").and_then(Value::as_str).unwrap_or("");
-    let stored_error = job.get("error").is_some_and(|e| !e.is_null());
-    let error = job_error(status).or_else(|| stored_error.then(|| job_error("failed").unwrap_or(Value::Null)));
-    out.insert("error".into(), error.unwrap_or(Value::Null));
+    out.insert("error".into(), job_error(status).unwrap_or(Value::Null));
     Value::Object(out)
 }
 
@@ -159,8 +158,12 @@ mod tests {
         }
         assert!(job_error("succeeded").is_none() && job_error("running").is_none());
         assert_eq!(job_view(&json!({ "status": "succeeded", "error": null }))["error"], Value::Null);
-        // A stored error on a job that has no failure status is still not shown.
-        assert_eq!(job_view(&json!({ "status": "running", "error": "x /etc/passwd" }))["error"]["code"], json!("job_failed"));
+        // A stored error on a job that is not final, or that succeeded, is not shown: `error` is null.
+        for status in ["queued", "running", "succeeded"] {
+            let shown = job_view(&json!({ "status": status, "error": "x /etc/passwd" }));
+            assert_eq!(shown["error"], Value::Null, "{status}: {shown}");
+            assert!(!shown.to_string().contains("passwd"), "{shown}");
+        }
     }
 
     #[test]

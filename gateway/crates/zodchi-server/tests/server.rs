@@ -694,7 +694,10 @@ fn one_http_thread_is_refused_and_two_leave_one_free() {
     assert!(message.contains("--threads is at least 2"), "{message}");
     assert!(refused.stdout.is_empty(), "the server announced itself: {}", String::from_utf8_lossy(&refused.stdout));
     let zero = env.command().args(["serve", "--threads", "0", "--listen", "127.0.0.1:0", "--data"]).arg(&env.data).output().unwrap();
-    assert!(!zero.status.success());
+    assert!(!zero.status.success(), "--threads 0 was accepted");
+    let message = String::from_utf8_lossy(&zero.stderr).to_string();
+    assert!(message.contains("--threads is at least 2"), "{message}");
+    assert!(zero.stdout.is_empty(), "the server announced itself: {}", String::from_utf8_lossy(&zero.stdout));
 
     let server = env.serve(&["--threads", "2"]);
     assert_eq!(server.submit(&token, json!({ "key": "slow-1", "role": "ask", "prompt": "SLOW one" })).status, 201);
