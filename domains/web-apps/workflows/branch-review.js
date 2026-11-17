@@ -20,7 +20,9 @@ export const meta = {
 const a = args || {}
 for (const k of ['label', 'repo', 'base', 'tmp', 'author']) if (!a[k]) throw new Error(`branch-review needs args.${k}`)
 const authors = new Set([].concat(a.author))
-const q = (s) => JSON.stringify(String(s)) // double-quoted paths work in bash and PowerShell
+// Every command in these prompts is POSIX shell, run with bash (Git Bash on Windows). q() quotes one argument for it:
+// single quotes, with a quote inside written as '\'' - no expansion of $, backticks or globs.
+const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
 
 const progressFile = (o) => `${a.tmp}/progress/${String((o && (o.label || o.phase)) || 'step').replace(/[^\w.-]+/g, '-')}.md`
 const step = (prompt, opts) => agent(prompt +
