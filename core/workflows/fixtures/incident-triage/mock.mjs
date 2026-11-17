@@ -159,6 +159,8 @@ function verify(name, run) {
     if (JSON.stringify(r).includes(s)) bad.push(`the workflow's result holds ${JSON.stringify(s)}`)
   }
   for (const s of e.classificationExcludes || []) if (cls && JSON.stringify(cls).includes(s)) bad.push(`classification.json holds ${JSON.stringify(s)}`)
+  // Findings in classification.json hold no model text (its summaries are kept apart, under modelWording).
+  for (const s of e.findingsExclude || []) if (cls && JSON.stringify(cls.findings || []).includes(s)) bad.push(`classification.json findings hold ${JSON.stringify(s)}`)
   for (const s of e.draftExcludes || [])if (draft.toLowerCase().includes(s.toLowerCase())) bad.push(`the draft holds ${JSON.stringify(s)}`)
   // The reply the workflow assembled for the reporter (classification.json and the draft's reply section).
   const reply = cls && typeof cls.reporterReply === 'string' ? cls.reporterReply : null

@@ -28,7 +28,7 @@
     "draftIncludes": [
       "Who verifies: not settled",
       "May be stale, not confirmed",
-      "Cause: unknown: May be stale",
+      "Cause: unknown (hypothesis: stale), high confidence; evidence",
       "Missing evidence: the deployment of the fix in the affected environment",
       "Operation that supplies it: release.",
       "everything the classifier wrote was discarded"
