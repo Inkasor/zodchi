@@ -41,6 +41,26 @@ const rounds = a.rounds || 3
 // Every command in these prompts is POSIX shell, run with bash (Git Bash on Windows). q() quotes one argument for it:
 // single quotes, with a quote inside written as '\'' - no expansion of $, backticks or globs.
 const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
+// One gateway call, worded once for every step that makes one. The shell of a step has its own time limit and the
+// worker of a job can end with the shell that started it, so the wait is made of foreground calls of 540 seconds.
+// attach: the files the request must carry, listed by the workflow; attachIfExists: files attached only when they exist.
+const gatewayCall = ({ role, key, args, attach = [], attachIfExists = [], out, totalMin, repo = a.repo }) => {
+  const flags = [...attach, ...attachIfExists].map(f => `--attach ${q(f)}`).join(' ')
+  const run = `zodchi run --role ${role} --key ${key} ${args}${flags ? ' ' + flags : ''} --wait-sec 540 --out ${q(out)}`
+  return `Gateway call, key ${key}. Run it in the foreground from ${repo}: \`${run}\`. ` +
+    `Never in the background (no &, nohup or run_in_background), never through Monitor: the worker of the job ends with your shell. ` +
+    `While it exits 3 (still running), repeat \`zodchi wait --key ${key} --wait-sec 540 --out ${q(out)}\` in the foreground, up to ${totalMin} minutes in all since the first command; ` +
+    `never return before the job is final (exit 0 or 2); if the ${totalMin} minutes run out, report failure (ok false; verdict "missing" for a review) and say the job still runs under ${key}. ` +
+    `A dead job gets a new key: when the job is final with status "unknown", or "failed" with no turnStartedAt in \`zodchi job --key ${key}\` (it died before its turn started), ` +
+    `run the same full command again with the key ${key}-r2 (then ${key}-r3; at most 2 retries in all), wait for it the same way, and write each new key into the progress file at once. ` +
+    `Any other final status is not retried: report it. ` +
+    (attach.length || attachIfExists.length
+      ? `After the job is final, read ${repo}/.agent-tmp/gateway/${key}/request.json: its "prompt" must contain \`<attachment path="...">\` (the path as given to --attach, slash direction aside) for every required attachment: ${JSON.stringify(attach)}` +
+        `${attachIfExists.length ? `, and for each of these that exists on disk: ${JSON.stringify(attachIfExists)}` : ''}. ` +
+        `If one is missing, put "attachment missing: <path>" into your summary and run the full command above again under the next key (${key}-r2, ${key}-r3, counted with the retries), every attachment included; the result you return is that of the last job, and when an attachment is still missing after the last retry it reports failure the same way.`
+      : '')
+}
+
 // Paths: resolved to absolute form with dot segments removed, then made relative to the repository. rel() keeps the
 // case of the name for Git and the file system; key() is its lower-case form, used only to compare and to claim.
 const norm = (p) => {
@@ -76,7 +96,8 @@ const progressFile = (o) => `${a.tmp}/progress/${String((o && (o.progress || o.l
 const step = (prompt, opts) => agent(prompt +
   `\n\nShell rule: run every command with bash (Git Bash on Windows, never PowerShell or cmd); the quoting in these commands is for bash. Resume rule: this run may have been cut off and restarted. If ${progressFile(opts)} exists and its last line is not DONE, read it first and go on from its last line; ` +
   `if its last line is DONE, it is from an earlier finished run: rename it to .old and start fresh. ` +
-  `Do not redo finished work or overwrite its outputs blindly, and for a gateway call it records as submitted, wait on that key (zodchi wait --key <key>) instead of submitting again. ` +
+  `Do not redo finished work or overwrite its outputs blindly. For a gateway call it records as submitted, wait on that key in the foreground (zodchi wait --key <key> --wait-sec 540 --out <file>, repeated while it exits 3) instead of submitting again; ` +
+  `if that job is final with status "unknown", or "failed" with no turnStartedAt in \`zodchi job --key <key>\`, submit again with the next key suffix (<key>-r2, <key>-r3; at most 2 retries) and record the new key in the progress file. ` +
   `After each finished step append one line to it (create the folder if needed): what is done, the paths it produced, what comes next. When your whole task is finished, append a last line DONE.`, opts)
 
 const STEP = {
@@ -117,7 +138,10 @@ const REVIEW = {
 }
 
 const out = { label: a.label, mode, rounds: [] }
-const claimsDir = `${repoKey}/.agent-tmp/zodchi/packages`
+// Claims live outside the repository, in the shell's home folder, so that no .gitignore matters: one folder per
+// repository, named by its path with every character outside [A-Za-z0-9] replaced by "-" (case folded on Windows).
+// $HOME is written for the shell, which expands it: commands name the folder in double quotes.
+const claimsDir = `$HOME/.zodchi/packages/${fold(repoKey).replace(/[^A-Za-z0-9]/g, '-')}`
 const claimFile = `${claimsDir}/${a.label}.json`
 
 // ---------------------------------------------------------------- Gate
@@ -177,12 +201,12 @@ let claimWritten = true
 try {
 const claim = await step(
   `Claim files for the package ${a.label} in ${a.repo}. Follow these steps exactly.\n` +
-  `1. Lock: run \`mkdir ${q(claimsDir + '/.lock')}\` (create ${claimsDir} first if it is missing). If the lock folder already exists, wait 10 seconds and try again, ` +
+  `1. Lock: run \`mkdir "${claimsDir}/.lock"\` (create "${claimsDir}" with \`mkdir -p\` first if it is missing; $HOME is the shell's home folder, so keep the path in double quotes). If the lock folder already exists, wait 10 seconds and try again, ` +
   `for at most 2 minutes; a lock folder older than 10 minutes is stale: remove it and try again. If you cannot take the lock, return ok false with conflicts ["lock busy"].\n` +
-  `2. Read every *.json file in ${claimsDir}. For each one whose "status" is "open" and whose "label" is not "${a.label}", compare its "files" list with this list, ` +
+  `2. Read every *.json file in "${claimsDir}". For each one whose "status" is "open" and whose "label" is not "${a.label}", compare its "files" list with this list, ` +
   `entry by entry, as exact strings: ${JSON.stringify(myKeys)}. Every equal pair is a conflict "<its label>: <file>".\n` +
-  `3. If there is no conflict, write ${claimFile}: ${JSON.stringify({ label: a.label, status: 'open', files: myKeys, brief: a.brief, base })}, plus "openedAt" with \`date -u +%Y-%m-%dT%H:%M:%SZ\`.\n` +
-  `4. Always remove the lock folder (\`rmdir ${q(claimsDir + '/.lock')}\`), whatever happened above.\n` +
+  `3. If there is no conflict, write "${claimFile}": ${JSON.stringify({ label: a.label, status: 'open', files: myKeys, brief: a.brief, base })}, plus "openedAt" with \`date -u +%Y-%m-%dT%H:%M:%SZ\`.\n` +
+  `4. Always remove the lock folder (\`rmdir "${claimsDir}/.lock"\`), whatever happened above.\n` +
   (git && a.branch ? `5. If there was no conflict, switch to the Git branch ${a.branch}: \`git switch ${q(a.branch)}\`, or \`git switch -c ${q(a.branch)}\` when it does not exist.\n` : '') +
   `ok is true when the claim file was written${git && a.branch ? ` and \`git branch --show-current\` prints ${a.branch}` : ''}. conflicts: the conflicts found, [] when none.`,
   {
@@ -200,7 +224,7 @@ if (claim && claim.conflicts && claim.conflicts.length && claim.conflicts[0] !==
 } finally {
   if (claimWritten) {
   const closed = await step(
-    `If ${claimFile} exists, set its "status" to "${claimStatus}" and add "closedAt" with \`date -u +%Y-%m-%dT%H:%M:%SZ\`; keep every other field. ` +
+    `If "${claimFile}" exists ($HOME is the shell's home folder: keep the path in double quotes), set its "status" to "${claimStatus}" and add "closedAt" with \`date -u +%Y-%m-%dT%H:%M:%SZ\`; keep every other field. ` +
     `ok is true when the file does not exist, or when it parses and its status is "${claimStatus}".`,
     { agentType: 'zodchi-core:runner', schema: STEP, label: `close claim ${a.label}` }).catch(() => null)
   if (!closed || !closed.ok) out.claimLeftOpen = `${claimFile}: set "status" to "closed" by hand`
@@ -211,7 +235,18 @@ async function body() {
   const changed = new Set(myPaths.map(abs))
   const questions = []
   const noteQuestions = (res) => { for (const x of (res && res.questions) || []) if (!questions.includes(x)) questions.push(x); if (questions.length) out.questions = questions }
-  const noteChanged = (list) => (list || []).forEach(f => changed.add(abs(f)))
+  // A file the writer reports outside the repository (a smoke test, say) cannot be diffed, attached or committed:
+  // it is recorded in out.outsideRepo and named in the review prompt instead of failing the package.
+  const outside = []
+  const noteChanged = (list) => (list || []).forEach(f => {
+    let inside = true
+    try { rel(f) } catch { inside = false }
+    if (inside) { changed.add(abs(f)); return }
+    let shown = String(f).replace(/\\/g, '/')
+    try { shown = norm(shown) } catch {}
+    if (!outside.includes(shown)) outside.push(shown)
+    out.outsideRepo = outside
+  })
   const HANDOVER = ` If your context is running out before the task is done, stop at a clean point (files consistent, the progress file says what is done and what remains, precisely enough for a stranger), and return done false with more true; a fresh agent will go on.`
   const BEFORE = git ? '' : ` Before your first edit of a file, copy it to ${a.tmp}/before/ keeping its file name, so the review can diff it.`
 
@@ -236,11 +271,14 @@ async function body() {
   async function write(task, tag, phaseName, evidence = []) {
     const n = ++calls
     if (mode === 'expert') {
-      const attach = [a.brief, ...evidence, ...changed].map(f => `--attach ${q(f)}`).join(' ')
       const ask = await step(
         `Ask an expert for the code through the gateway. Work from ${a.repo}. Write ${a.tmp}/expert-${n}.md: ${task} ` +
-        `The expert has no tools: everything it needs is attached. Then run \`zodchi run --role code-patch --model ${writer.model} --effort ${writer.effort} --key ${a.label}-expert-${n} ` +
-        `--prompt ${q(`${a.tmp}/expert-${n}.md`)} ${attach} --wait-sec 3300 --out ${q(`${a.tmp}/expert-${n}.answer.md`)}\`; leave out of --attach any file that does not exist. ` +
+        `The expert has no tools: everything it needs is attached. Then ` +
+        gatewayCall({
+          role: 'code-patch', key: `${a.label}-expert-${n}`, totalMin: 55, out: `${a.tmp}/expert-${n}.answer.md`,
+          args: `--model ${writer.model} --effort ${writer.effort} --prompt ${q(`${a.tmp}/expert-${n}.md`)}`,
+          attach: [a.brief], attachIfExists: [...evidence, ...changed],
+        }) + ` ` +
         `ok is true when the job succeeded and the answer file exists. paths: the answer file.`,
         { agentType: 'zodchi-core:runner', schema: STEP, phase: phaseName, label: `${tag} ask` })
       if (!ask || !ask.ok) return null
@@ -251,11 +289,14 @@ async function body() {
         { agentType: 'zodchi-core:applier', schema: WRITE, phase: phaseName, label: `${tag} apply` })
     }
     if (writer.provider === 'codex') {
-      const attach = [a.brief, ...evidence].map(f => `--attach ${q(f)}`).join(' ')
       return step(
         `Have Codex do this through the gateway. Work from ${a.repo}. Write ${a.tmp}/work-${n}.md: ${task} ` +
-        `Then run \`zodchi run --role package-work --model ${writer.model} --effort ${writer.effort} --key ${a.label}-work-${n} --prompt ${q(`${a.tmp}/work-${n}.md`)} ${attach} ` +
-        `--wait-sec 3600 --out ${q(`${a.tmp}/work-${n}.json`)}\`. The answer is JSON with status, summary, criteria, questions, changedFiles, checks. Map it exactly: ` +
+        `Then ` +
+        gatewayCall({
+          role: 'package-work', key: `${a.label}-work-${n}`, totalMin: 60, out: `${a.tmp}/work-${n}.json`,
+          args: `--model ${writer.model} --effort ${writer.effort} --prompt ${q(`${a.tmp}/work-${n}.md`)}`,
+          attach: [a.brief, ...evidence],
+        }) + ` The answer is JSON with status, summary, criteria, questions, changedFiles, checks. Map it exactly: ` +
         `done = (status is "done"); summary = its summary; changed = each entry of changedFiles prefixed with "${repoKey}/"; ` +
         `unverified = every criterion that is not done, as one line each, plus every check with a non-zero exit code; questions = each entry of its questions as one readable line (the question, its options, the recommendation). ` +
         `If the job did not succeed, done is false and summary says the job status.`,
@@ -333,18 +374,21 @@ async function body() {
     if (!(await commitRound(n))) { out.stoppedAt = 'commit'; return }
 
     const context = `what the change does and why (from ${a.brief} and this summary: ${JSON.stringify(out.write.summary)}), what is verified and what is not ` +
-      `(${JSON.stringify(out.write.unverified || [])})${n > 1 ? `, and which findings of the previous review (${a.tmp}/review-${n - 1}.json) were closed and how` : ''}`
+      `(${JSON.stringify(out.write.unverified || [])})${outside.length ? `, and the files changed outside the repository, not attached: ${JSON.stringify(outside)}` : ''}${n > 1 ? `, and which findings of the previous review (${a.tmp}/review-${n - 1}.json) were closed and how` : ''}`
     const files = [...changed]
     const VERDICT = `verdict: the "verdict" field of the review exactly ("approved", "changes_requested" or "blocked"; "missing" when the review file has none). ` +
       `summary: its summary. findings holds the reviewer's findings only, each as "<id> <severity> <location>: <problem>": an empty array when it has none. blocking: the count of blocking findings.`
     const review = reviewer.provider === 'codex'
       ? await step(
         `Get an independent review of a finished change through the gateway. Work from ${a.repo}. Write ${a.tmp}/review-${n}.md: ${context}. ` +
-        `Save the change as ${a.tmp}/change-${n}.diff with ${diffHow}: ${JSON.stringify(files.map(rel))}. Then run ` +
-        `\`zodchi run --role code-review --model ${reviewer.model} --effort ${reviewer.effort} --key ${a.label}-review-${n} --prompt ${q(`${a.tmp}/review-${n}.md`)} ` +
-        `--attach ${q(`${a.tmp}/change-${n}.diff`)} --attach ${q(a.brief)} ${n > 1 ? `--attach ${q(`${a.tmp}/review-${n - 1}.json`)} ` : ''}` +
-        `${files.map(f => `--attach ${q(f)}`).join(' ')} --wait-sec 3300 --out ${q(`${a.tmp}/review-${n}.json`)}\`. ` +
-        `Leave out of --attach any current file that does not exist (the diff already carries deletions). ` +
+        `Save the change as ${a.tmp}/change-${n}.diff with ${diffHow}: ${JSON.stringify(files.map(rel))}. Then ` +
+        gatewayCall({
+          role: 'code-review', key: `${a.label}-review-${n}`, totalMin: 55, out: `${a.tmp}/review-${n}.json`,
+          args: `--model ${reviewer.model} --effort ${reviewer.effort} --prompt ${q(`${a.tmp}/review-${n}.md`)}`,
+          attach: [`${a.tmp}/change-${n}.diff`, a.brief, ...(n > 1 ? [`${a.tmp}/review-${n - 1}.json`] : [])],
+          attachIfExists: files,
+        }) + ` ` +
+        `A changed file that does not exist now is left out of --attach (the diff already carries deletions). ` +
         `${VERDICT} reviewFile: the review file path. Change no code.`,
         { agentType: 'zodchi-core:runner', schema: REVIEW, phase: 'Review', label: `review ${n}` })
       : await step(
