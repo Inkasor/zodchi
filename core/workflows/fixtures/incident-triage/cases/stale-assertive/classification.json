@@ -25,6 +25,7 @@
     "question": "",
     "reason": "Fixed and deployed."
   },
+  "facts": "The update that fixed this error is installed.",
   "reply": "The update that fixed this error is installed. Press Retry on the job page now.",
   "leadLine": "4711: stale, fixed in 2.4.1; reporter retries.",
   "recommendRetry": true,

@@ -20,6 +20,7 @@
     }
   ],
   "next": { "route": "fix-brief", "role": "", "question": "", "reason": "The product has no sanctioned report that explains a blocking process." },
+  "facts": "Release 2.5.0 waits for process P-7f3a2, which is still running.",
   "reply": "Release 2.5.0 waits for process P-7f3a2, which is still running. The release report will be extended so that it says what such a process is and who runs it; we will write to you as soon as the release can go on.",
   "leadLine": "2.5.0 blocked by P-7f3a2; no sanctioned way to learn what it is; fix the release status report.",
   "recommendRetry": false,

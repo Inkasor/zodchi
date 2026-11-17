@@ -27,10 +27,11 @@
     "route": "reply",
     "role": "",
     "question": "",
-    "reason": "Press Retry on the release page once P-7f3a2 ends."
+    "reason": "Tell the reporter to `press Retry`."
   },
+  "facts": "Release 2.5.0 waits for process P-7f3a2, which is still running.",
   "reply": "Release 2.5.0 waits for process P-7f3a2, which is still running. We will write to you as soon as the release can go on.",
-  "leadLine": "2.5.0 waits for P-7f3a2. Press Retry on the release page.",
+  "leadLine": "Tell the reporter to restart export 4711.",
   "recommendRetry": false,
   "fixBrief": {
     "goal": "",

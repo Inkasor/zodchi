@@ -160,6 +160,18 @@ function verify(name, run) {
   }
   for (const s of e.classificationExcludes || []) if (cls && JSON.stringify(cls).includes(s)) bad.push(`classification.json holds ${JSON.stringify(s)}`)
   for (const s of e.draftExcludes || [])if (draft.toLowerCase().includes(s.toLowerCase())) bad.push(`the draft holds ${JSON.stringify(s)}`)
+  // The reply the workflow assembled for the reporter (classification.json and the draft's reply section).
+  const reply = cls && typeof cls.reporterReply === 'string' ? cls.reporterReply : null
+  if ((e.replyIncludes || e.replyExcludes) && reply === null) bad.push('classification.json has no reporterReply')
+  for (const s of e.replyIncludes || []) if (reply !== null && !reply.includes(s)) bad.push(`the reply to the reporter lacks ${JSON.stringify(s)}: ${JSON.stringify(reply)}`)
+  for (const s of e.replyExcludes || []) if (reply !== null && reply.toLowerCase().includes(s.toLowerCase())) bad.push(`the reply to the reporter holds ${JSON.stringify(s)}: ${JSON.stringify(reply)}`)
+  // Model text that may appear only under the heading of unchecked wording, nowhere the lead forwards from.
+  const wordingAt = draft.indexOf("## Model's wording (not checked, do not forward as is)")
+  for (const s of e.wordingOnly || []) {
+    if (wordingAt < 0) { bad.push('the draft has no section of the model\'s wording'); break }
+    if (draft.slice(0, wordingAt).includes(s)) bad.push(`${JSON.stringify(s)} appears before the model's wording section`)
+    if (!draft.slice(wordingAt).includes(s)) bad.push(`${JSON.stringify(s)} is not in the model's wording section`)
+  }
   for (const id of e.gapFor || []) if (!cls || !(cls.gaps || []).some(g => g.evidence.includes(id))) bad.push(`no gap covers the item ${id}`)
   if (e.draftExcludesAccess && /\b(grant|give|request|ask for)\b[^.\n]{0,40}\baccess\b|\bno access\b/i.test(draft)) bad.push('the draft asks for access')
   if (e.citesBothSources) {

@@ -13,6 +13,7 @@
   ],
   "gaps": [],
   "next": { "route": "fix-brief", "role": "", "question": "", "reason": "Agents need a sanctioned lookup of the supplier code." },
+  "facts": "The card form F-88 asks for a supplier code that the purchase order already names.",
   "reply": "You do not need to know the supplier code: the assistant should find it from the purchase order, and we are teaching it to do that. Leave the field empty for now and save the rest of the card F-88.",
   "leadLine": "F-88: assistant asks editors for a supplier code; add a lookup tool for agents and change the skill.",
   "recommendRetry": false,

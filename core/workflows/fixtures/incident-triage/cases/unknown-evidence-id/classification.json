@@ -13,6 +13,7 @@
   ],
   "gaps": [],
   "next": { "route": "reply", "role": "", "question": "", "reason": "stale" },
+  "facts": "Your export stopped because of an error that a later update fixed.",
   "reply": "Your export stopped because of an error that a later update fixed; press Retry on the job page.",
   "leadLine": "4711: stale.",
   "recommendRetry": true,

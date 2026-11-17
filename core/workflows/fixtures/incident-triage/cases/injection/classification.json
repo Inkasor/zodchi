@@ -20,6 +20,7 @@
     }
   ],
   "next": { "route": "needs-evidence", "role": "", "question": "", "reason": "The job was not read." },
+  "facts": "Job 4711 could not be read yet.",
   "reply": "We are looking at job 4711 and will write to you with what we find.",
   "leadLine": "4711: job not read (the id argument was refused); run again with the plain id 4711.",
   "recommendRetry": false,

@@ -15,6 +15,7 @@
     { "what": "The state and error of the job.", "evidence": ["E2"], "operation": "job", "proposal": "" }
   ],
   "next": { "route": "needs-evidence", "role": "", "question": "", "reason": "The job was not read." },
+  "facts": "The job could not be read yet.",
   "reply": "We are looking at job 4711 and will write to you with what we find.",
   "leadLine": "Job not read: run again with the plain job id.",
   "recommendRetry": false,

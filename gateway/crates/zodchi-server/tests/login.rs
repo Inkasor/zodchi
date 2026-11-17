@@ -32,14 +32,20 @@ fn user(name: &str) -> (PathBuf, String, PathBuf) {
     (data, user.id, home)
 }
 
-/// The pids that have exited after their stdin closed.
-fn exited(home: &Path) -> Vec<String> {
-    std::fs::read_to_string(home.join("fake-exited")).unwrap_or_default().lines().map(String::from).collect()
+/// The pid of the fake app-server behind a loginId (`login-<pid>`).
+fn pid_of(started: &serde_json::Value) -> u32 {
+    started["loginId"].as_str().unwrap().strip_prefix("login-").unwrap().parse().unwrap()
 }
 
-/// The pid of the fake app-server behind a loginId (`login-<pid>`).
-fn pid_of(started: &serde_json::Value) -> String {
-    started["loginId"].as_str().unwrap().strip_prefix("login-").unwrap().to_string()
+/// Asserts that the process `pid` is gone, waiting up to 10 s. Liveness, not the fake's `fake-exited` marker: the
+/// marker is written only on a graceful exit, and a stop that has to kill the app-server (a slow machine) never
+/// writes it.
+fn assert_gone(pid: u32, what: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while zodchi_core::process::alive(pid) {
+        assert!(Instant::now() < deadline, "{what}: the app-server {pid} is still running 10 s later");
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn wait_for(file: &Path) {
@@ -61,8 +67,7 @@ fn shutdown_waits_for_a_completed_attempt_to_stop() {
     // The fake completes the sign-in 300 ms after the start; fake-closing appears once its stdin is closed.
     wait_for(&home.join("fake-closing"));
     logins.shutdown();
-    let pid = pid_of(&started);
-    assert!(exited(&home).contains(&pid), "the app-server {pid} of a completed sign-in outlived shutdown");
+    assert_gone(pid_of(&started), "a completed sign-in outlived shutdown");
     let _ = std::fs::remove_dir_all(&data);
 }
 
@@ -80,10 +85,10 @@ fn an_expired_attempt_is_stopped_before_it_is_replaced() {
     let second = logins.start(&id).unwrap();
     let (old, new) = (pid_of(&first), pid_of(&second));
     assert_ne!(old, new, "the expired attempt was returned again");
-    assert!(exited(&home).contains(&old), "the expired app-server {old} was still running when it was replaced");
+    assert_gone(old, "the expired attempt was not stopped when it was replaced");
     assert_eq!(std::fs::read_to_string(home.join("fake-login-cancelled")).ok(), first["loginId"].as_str().map(String::from));
     logins.shutdown();
-    let gone = exited(&home);
-    assert!(gone.contains(&old) && gone.contains(&new), "an app-server outlived shutdown: exited {gone:?}, started {old} and {new}");
+    assert_gone(old, "the expired attempt outlived shutdown");
+    assert_gone(new, "the replacing attempt outlived shutdown");
     let _ = std::fs::remove_dir_all(&data);
 }

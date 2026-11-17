@@ -1,0 +1,67 @@
+{
+  "findings": [
+    {
+      "kind": "stale",
+      "hypothesis": "",
+      "about": "code",
+      "confidence": "high",
+      "summary": "ERR_EXPORT_COLUMNS is fixed in 2.4.1, which production runs.",
+      "evidence": [
+        "E2",
+        "E5"
+      ],
+      "fixedBy": [
+        "E5"
+      ],
+      "deployedIn": [
+        "E3"
+      ]
+    },
+    {
+      "kind": "owner-decision",
+      "hypothesis": "",
+      "about": "process",
+      "confidence": "medium",
+      "summary": "Since the fix is out, the owner decides whether the incident is closed without the reporter checking it.",
+      "evidence": [
+        "E2"
+      ],
+      "fixedBy": [],
+      "deployedIn": []
+    }
+  ],
+  "gaps": [
+    {
+      "what": "Confirm with the reporter that the deployed fix works.",
+      "evidence": [
+        "E3"
+      ],
+      "operation": "release",
+      "proposal": ""
+    }
+  ],
+  "next": {
+    "route": "awaiting-owner",
+    "role": "product owner of Example Catalog",
+    "question": "Since the fix is already deployed, may we close the incident?",
+    "reason": "Fixed and deployed; only the owner's OK to close is missing."
+  },
+  "facts": "The fix for your export error is already deployed.",
+  "reply": "The fix is deployed. Press Retry on the job page now.",
+  "leadLine": "Fix deployed in 2.4.1; ask the owner to close it.",
+  "recommendRetry": true,
+  "fixBrief": {
+    "goal": "Close the incident as fixed by 2.4.1.",
+    "files": [
+      "the incident log"
+    ],
+    "done": [
+      "The incident is closed as fixed."
+    ],
+    "checks": [
+      "the reporter confirms"
+    ],
+    "agentsAffected": false,
+    "agentSkillChange": ""
+  }
+}
