@@ -100,7 +100,9 @@ no async runtime.
 
 ### API
 
-JSON in and out. Every route except `/health` needs authentication; another user's job is 404, never 403.
+JSON in and out. Every route except `/health` needs authentication; another user's job is 404, never 403. An
+answer never shows a path of the server: when the registry or the job folders cannot be read, the client gets the
+error without paths, and the details go to the server's standard error.
 
 | Route | Answer |
 |---|---|
@@ -117,9 +119,10 @@ JSON in and out. Every route except `/health` needs authentication; another user
 
 **Sign-in.** The app-server of an open sign-in lives in the caller's Codex home until `account/login/completed`
 arrives for its `loginId`, or until the code expires after 15 minutes; then the attempt is cancelled and the
-app-server stopped. Stopping the server first refuses new sign-ins and cancels every open one, then lets the HTTP
-threads finish the request at hand (a long poll ends early) before it releases `server.lock`; no sign-in survives a
-restart. `connected` is reported only from `account/read` of the caller's Codex home (reused for at most 60
+app-server stopped. A start after the code expired first cancels and stops the expired attempt. Stopping the server
+first refuses new sign-ins, cancels every open one and waits until every sign-in app-server has exited (also one
+that a completion or an expiry was stopping at that moment), then lets the HTTP threads finish the request at hand
+(a long poll ends early) before it releases `server.lock`; no sign-in survives a restart. `connected` is reported only from `account/read` of the caller's Codex home (reused for at most 60
 seconds), never from memory.
 
 **Keys.** `role` is the name of an installed role. The idempotency check of a key is the hash of the client's

@@ -5,7 +5,10 @@
 //   fake-auth.json        present = signed in to a ChatGPT subscription
 //   fake-login-mode       "early" (completion before the answer to account/login/start), "never", "slow" (the
 //                         answer comes after 1.5 s and no completion follows), else the completion after the answer
-// It writes fake-login-started when account/login/start arrives and fake-login-cancelled (the loginId) on a cancel.
+//   fake-slow-cancel      present = account/login/cancel is answered after 1 s
+//   fake-slow-exit        present = when its stdin closes, it writes fake-closing and exits only 1.5 s later
+// It writes fake-login-started when account/login/start arrives and fake-login-cancelled (the loginId) on a cancel,
+// and appends its pid to fake-exited when it exits after its stdin closed.
 // A prompt with SLOW takes four seconds; one with FAIL ends the turn as failed.
 import fs from "node:fs";
 import path from "node:path";
@@ -57,6 +60,7 @@ lines.on("line", (line) => {
     }
     case "account/login/cancel":
       fs.writeFileSync(path.join(home, "fake-login-cancelled"), String(p.loginId || ""));
+      if (fs.existsSync(path.join(home, "fake-slow-cancel"))) { setTimeout(() => reply({}), 1000); return; }
       return reply({});
     case "account/logout":
       try { fs.unlinkSync(authFile); } catch { /* not signed in */ }
@@ -90,4 +94,9 @@ lines.on("line", (line) => {
       return send({ id: msg.id, error: { code: -32601, message: "fake codex: no " + msg.method } });
   }
 });
-lines.on("close", () => process.exit(0));
+lines.on("close", () => {
+  const exit = () => { fs.appendFileSync(path.join(home, "fake-exited"), `${process.pid}\n`); process.exit(0); };
+  if (!fs.existsSync(path.join(home, "fake-slow-exit"))) return exit();
+  fs.appendFileSync(path.join(home, "fake-closing"), `${process.pid}\n`);
+  setTimeout(exit, 1500);
+});

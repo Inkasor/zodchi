@@ -58,6 +58,17 @@ impl Env {
         (id, added["token"].as_str().unwrap().to_string())
     }
 
+    /// An answer shows neither the data folder nor a path inside it (registry, users, jobs), in any separator.
+    fn assert_no_paths(&self, body: &[u8]) {
+        // The decoded error and the raw body, so an escaped separator hides nothing.
+        let decoded = serde_json::from_slice::<Value>(body).ok().and_then(|v| v["error"].as_str().map(String::from)).unwrap_or_default();
+        let text = format!("{decoded}\n{}", String::from_utf8_lossy(body));
+        let data = std::path::absolute(&self.data).unwrap().display().to_string();
+        for needle in [data.clone(), data.replace('\\', "/"), "server.json".into(), "users\\".into(), "users/".into()] {
+            assert!(!text.contains(&needle), "the answer names {needle}: {text}");
+        }
+    }
+
     fn codex_home(&self, id: &str) -> PathBuf {
         self.data.join("users").join(id).join("codex-home")
     }
@@ -262,9 +273,13 @@ fn stores_token_hashes_and_revokes_without_a_restart() {
     assert_eq!(server.call("GET", "/v1/roles", Some(fresh), None).status, 401, "a removed user still gets in");
     assert!(env.data.join("users").join(&id).is_dir(), "the folder of a removed user stays");
 
-    // A registry that cannot be read lets nobody in.
+    // A registry that cannot be read lets nobody in, and its answer names no server path.
     std::fs::write(env.data.join("server.json"), "{ broken").unwrap();
-    assert_eq!(server.call("GET", "/v1/roles", Some(fresh), None).status, 500);
+    for token in [Some(fresh), None] {
+        let broken = server.call("GET", "/v1/roles", token, None);
+        assert_eq!(broken.status, 500);
+        env.assert_no_paths(&broken.body);
+    }
 }
 
 #[test]
@@ -320,6 +335,8 @@ fn admission_counts_fail_closed() {
     let unknown = server.submit(&token, json!({ "key": "next-1", "role": "ask", "prompt": "one" }));
     assert_eq!(unknown.status, 500, "{}", String::from_utf8_lossy(&unknown.body));
     assert!(unknown.json()["error"].as_str().unwrap().contains("cannot be counted"));
+    env.assert_no_paths(&unknown.body);
+    assert!(!String::from_utf8_lossy(&unknown.body).contains("ghost-1"), "the answer names another user's folder");
     assert_eq!(server.call("GET", "/v1/jobs/next-1", Some(&token), None).status, 404, "the refused key was taken");
     std::fs::remove_file(ghost.join("jobs")).unwrap();
     assert_eq!(server.submit(&token, json!({ "key": "next-1", "role": "ask", "prompt": "one" })).status, 201);
