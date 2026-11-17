@@ -16,7 +16,13 @@ export const meta = {
 //             default "{copy} --check" ("python3 {copy} --check" for .py). It must touch nothing: the script's
 //             check mode reads, validates and prints what it would do
 //   remote    optional "user@host": the copy goes there (scp to /tmp) and the check runs there as that user, never sudo
+//   files     optional list of companion files the script needs next to itself (absolute, local), e.g. a payload it
+//             installs and checks by SHA-256. The dry run copies them next to the script copy under their own names;
+//             the static checks also cover the ones that are scripts (.py, .sh, .bash); the final command names them
 //   sudo      the command the human will run, with {script} for the installed path, e.g. "sudo {script} --apply"
+//   nopass    true only when that step needs no password (`sudo -n` works): then the final output also offers the
+//             `!` form of Claude Code. Without it the command is for the human's own terminal (a sudo password needs
+//             a TTY, which `!` does not have: "sudo: a terminal is required"); remote commands use `ssh -t`
 //   fixes     how many times a failure goes back to the writer, default 2; 0 to only report
 //   writer    optional Claude model for fixes, default "sonnet"
 //   repo      repository of the script, for the writer to read its AGENTS.md
@@ -27,7 +33,13 @@ for (const k of ['script', 'tmp', 'sudo']) if (!a[k]) throw new Error(`ops-scrip
 const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
 const py = /\.py$/i.test(a.script)
 const check = a.check || (py ? 'python3 {copy} --check' : '{copy} --check')
-const name = a.script.replace(/\\/g, '/').split('/').pop()
+const base = (p) => p.replace(/\\/g, '/').split('/').pop()
+const name = base(a.script)
+const files = Array.isArray(a.files) ? a.files : (a.files ? [a.files] : [])
+const names = files.map(base)
+// A remote command is assembled from these names without quoting, so they must be plain.
+if (a.remote) for (const n of [name, ...names]) if (!/^[\w.-]+$/.test(n)) throw new Error(`ops-script: with args.remote a file name must match [\\w.-]+, got ${n}`)
+if (new Set([name, ...names]).size !== names.length + 1) throw new Error('ops-script: the script and its files must have different names')
 
 const STEP = {
   type: 'object', required: ['ok', 'summary'],
@@ -43,17 +55,22 @@ const staticCheck = (tag) => step(
   (py
     ? `Run \`python3 -m py_compile ${q(a.script)}\` (or \`python -m py_compile\` where python3 is missing). `
     : `Run \`bash -n ${q(a.script)}\`, then \`shellcheck ${q(a.script)}\` when shellcheck is installed (say so when it is not; that is not a failure). `) +
+  (files.length
+    ? `Its companion files are checked the same way where they are scripts (.py with py_compile; .sh or .bash with bash -n and shellcheck); any other file is data and is only checked to exist: ${files.map(q).join(' ')}. `
+    : '') +
   `ok is true when no command reports an error (shellcheck warnings count as failures, notes and style do not). failures: each problem as "<line>: <message>".`,
   { agentType: 'zodchi-core:runner', schema: STEP, phase: 'Static', label: `static ${tag}` })
 
 const dryRun = (tag) => {
-  const copy = a.remote ? `/tmp/${tag}-${name}` : `${a.tmp}/copy/${name}`
-  const cmd = check.replace('{copy}', q(copy))
+  const dir = a.remote ? `/tmp/ops-${tag}` : `${a.tmp}/copy`
+  const copy = `${dir}/${name}`
+  const cmd = check.split('{copy}').join(q(copy))
+  const all = [a.script, ...files]
   return step(
     `Dry run of a sudo script without root. ` +
     (a.remote
-      ? `Copy ${q(a.script)} to ${a.remote}:${q(copy)} with scp, make it executable, then run \`ssh ${q(a.remote)} ${q(cmd)}\` as that user (the command is quoted once more for the remote shell). Never use sudo. Remove the copy afterwards. `
-      : `Copy ${q(a.script)} to ${q(copy)}, make it executable, then run \`${cmd}\` as the current user. Never use sudo. `) +
+      ? `Make the folder ${q(dir)} on ${a.remote} (\`ssh ${q(a.remote)} ${q(`mkdir -p -m 700 ${dir}`)}\`), copy ${all.map(q).join(' ')} into it with scp under their own names so the companion files lie next to the script, make the script executable, then run \`ssh ${q(a.remote)} ${q(cmd)}\` as that user (the command is quoted once more for the remote shell). Never use sudo. Remove the folder afterwards. `
+      : `Copy ${all.map(q).join(' ')} into the folder ${q(dir)} under their own names so the companion files lie next to the script copy, make the script copy executable, then run \`${cmd}\` as the current user. Never use sudo. `) +
     `Log to ${a.tmp}/logs/dry-${tag}.log. ok is true when it exits 0 and its output shows no error. ` +
     `A failure that only says root is required means the script has no real check mode: report it as a failure with that reason. ` +
     `failures: the decisive error lines. summary: what the script said it would do.`,
@@ -69,6 +86,25 @@ function step(prompt, opts) {
     `After each finished step append one line to it (create the folder if needed): what is done and what comes next. When your whole task is finished, append a last line DONE.`, opts)
 }
 
+// The final text for the human. A sudo password needs a TTY: Claude Code's `!` has none, so the command is for the
+// human's own terminal, with `ssh -t` when remote. Only a step that needs no password may be offered with `!`.
+function forHuman() {
+  const all = [a.script, ...files]
+  let cmd, steps = ''
+  if (a.remote) {
+    cmd = `ssh -t ${q(a.remote)} ${q(a.sudo.split('{script}').join(`$HOME/ops-run/${name}`))}`
+    steps = `1. Copy the script${files.length ? ' and its files' : ''} to the host:\n` +
+      `   ssh ${q(a.remote)} 'mkdir -p -m 700 ops-run' && scp ${all.map(q).join(' ')} ${q(a.remote)}:ops-run/\n2. Run it:\n`
+  } else {
+    cmd = a.sudo.split('{script}').join(q(a.script))
+    if (files.length) steps = `Files it needs, which stay next to it: ${files.map(q).join(' ')}\n`
+  }
+  const bang = a.nopass && !a.remote
+  return `Checks passed. ` + (bang
+    ? `This step needs no password (sudo -n works), so run it in your terminal, or in Claude Code as \`! ${cmd}\`.\n`
+    : `Run in your own terminal (not with \`!\` in Claude Code): sudo asks for a password and the \`!\` of Claude Code has no terminal for it ("sudo: a terminal is required").\n`) + steps + cmd
+}
+
 const out = { script: a.script, attempts: [] }
 for (let n = 0; n <= (a.fixes ?? 2); n++) {
   const st = await staticCheck(n)
@@ -76,7 +112,7 @@ for (let n = 0; n <= (a.fixes ?? 2); n++) {
   out.attempts.push({ n, static: st, dry })
   if (st && st.ok && dry && dry.ok) {
     out.ready = true
-    out.forHuman = `Checks passed. Run: ${a.sudo.replace('{script}', q(a.script))}`
+    out.forHuman = forHuman()
     out.wouldDo = dry.summary
     return out
   }
