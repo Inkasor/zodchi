@@ -44,10 +44,10 @@ const names = files.map(base)
 if (a.remote) for (const n of [name, ...names]) if (!/^[\w.-]+$/.test(n)) throw new Error(`ops-script: with args.remote a file name must match [\\w.-]+, got ${n}`)
 if (new Set([name, ...names]).size !== names.length + 1) throw new Error('ops-script: the script and its files must have different names')
 // Paths are compared absolute, with /, "." and ".." resolved and, on Windows, without case.
-const absPath = (p) => /^([A-Za-z]:)?[\\/]/.test(String(p))
+const absPath = (p) => /^([A-Za-z]:[\\/]|\/)/.test(String(p))
 for (const p of [a.script, a.tmp, ...files]) if (!absPath(p)) throw new Error(`ops-script: paths must be absolute, got ${p}`)
 if (String(a.tmp).includes("'")) throw new Error('ops-script: args.tmp must not contain a single quote (the local command quotes paths under it)')
-const fold = (p) => {
+const norm = (p) => {
   const s = String(p).replace(/\\/g, '/')
   const lead = /^[A-Za-z]:\//.test(s) ? s.slice(0, 3) : s.startsWith('/') ? '/' : ''
   const parts = []
@@ -55,15 +55,19 @@ const fold = (p) => {
     if (!seg || seg === '.') continue
     if (seg === '..') parts.pop(); else parts.push(seg)
   }
-  const out = lead + parts.join('/')
-  return /^[A-Za-z]:/.test(out) ? out.toLowerCase() : out
+  return lead + parts.join('/')
 }
-// The local staging folder is made fresh by mktemp -d under {tmp}; the runner reports its path, checked against this shape.
-const stagingOk = (d) => {
-  if (typeof d !== 'string' || !absPath(d)) return false
+const fold = (p) => { const out = norm(p); return /^[A-Za-z]:/.test(out) ? out.toLowerCase() : out }
+// The local staging folder is made fresh by mktemp -d under {tmp}; the runner reports its path. It must have exactly
+// that shape, and the folder the human runs from is rebuilt from args.tmp and the 8-character suffix, so the runner's
+// spelling of the path never reaches the command. Returns that folder, or null.
+const stagingDir = (d) => {
+  if (typeof d !== 'string' || !absPath(d)) return null
   const prefix = fold(`${a.tmp}/copy`) + '.'
   const got = fold(d)
-  return got.startsWith(prefix) && /^[A-Za-z0-9]{8}$/.test(got.slice(prefix.length))
+  const suffix = got.slice(prefix.length)
+  if (!got.startsWith(prefix) || !/^[A-Za-z0-9]{8}$/.test(suffix)) return null
+  return `${norm(a.tmp)}/copy.${norm(d).slice(-8)}`
 }
 
 const STEP = {
@@ -148,9 +152,10 @@ for (let n = 0; n <= (a.fixes ?? 2); n++) {
   const dry = st && st.ok ? await dryRun(n) : null
   out.attempts.push({ n, static: st, dry })
   if (st && st.ok && dry && dry.ok) {
-    if (!a.remote && !stagingOk(dry.dir)) { out.stoppedAt = `the runner did not report the fresh staging folder it made (got ${JSON.stringify(dry.dir)})`; return out }
+    const staged = a.remote ? null : stagingDir(dry.dir)
+    if (!a.remote && !staged) { out.stoppedAt = `the runner did not report the fresh staging folder it made (got ${JSON.stringify(dry.dir)})`; return out }
     out.ready = true
-    out.forHuman = forHuman(dry.dir)
+    out.forHuman = forHuman(staged)
     out.wouldDo = dry.summary
     return out
   }
