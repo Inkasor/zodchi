@@ -1,0 +1,57 @@
+name: Checks
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # The job name and matrix give the check names the protection of main requires: test (<os>).
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Repository checks (workflows, agents, JSON, roles, publish guard)
+        run: node scripts/check.mjs
+      - name: Build the gateway
+        run: cargo build --locked --manifest-path gateway/Cargo.toml
+      - name: Test the gateway
+        run: cargo test --locked --manifest-path gateway/Cargo.toml
+      - name: The gateway lists the roles of this repository
+        env:
+          ZODCHI_HOME: ${{ runner.temp }}/zodchi-home
+          ZODCHI_ROLES: ${{ github.workspace }}/roles
+        run: |
+          bin=gateway/target/debug/zodchi
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          "$bin" help > /dev/null
+          count=$("$bin" roles | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const r=JSON.parse(s);const bad=r.filter(x=>x.error);if(bad.length){console.error(JSON.stringify(bad));process.exit(1)}console.log(r.length)})")
+          echo "roles: $count"
+          [ "$count" -ge 10 ]
+      - name: Installer round trip in a scratch home
+        env:
+          ZODCHI_HOME: ${{ runner.temp }}/zodchi-home
+          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-home
+        run: |
+          node install/install.mjs --domains all --no-build
+          test -f "$CLAUDE_CONFIG_DIR/workflows/code-package.js"
+          test -f "$CLAUDE_CONFIG_DIR/agents/runner.md"
+          test -f "$ZODCHI_HOME/models.json"
+          node install/install.mjs --domains web-apps --no-build
+          test ! -f "$CLAUDE_CONFIG_DIR/workflows/asset-round.js"
+          node install/install.mjs --uninstall
+          test ! -f "$CLAUDE_CONFIG_DIR/workflows/code-package.js"
