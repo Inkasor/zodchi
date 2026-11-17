@@ -44,7 +44,7 @@ const staticCheck = (tag) => step(
     ? `Run \`python3 -m py_compile ${q(a.script)}\` (or \`python -m py_compile\` where python3 is missing). `
     : `Run \`bash -n ${q(a.script)}\`, then \`shellcheck ${q(a.script)}\` when shellcheck is installed (say so when it is not; that is not a failure). `) +
   `ok is true when no command reports an error (shellcheck warnings count as failures, notes and style do not). failures: each problem as "<line>: <message>".`,
-  { agentType: 'runner', schema: STEP, phase: 'Static', label: `static ${tag}` })
+  { agentType: 'zodchi-core:runner', schema: STEP, phase: 'Static', label: `static ${tag}` })
 
 const dryRun = (tag) => {
   const copy = a.remote ? `/tmp/${tag}-${name}` : `${a.tmp}/copy/${name}`
@@ -57,7 +57,7 @@ const dryRun = (tag) => {
     `Log to ${a.tmp}/logs/dry-${tag}.log. ok is true when it exits 0 and its output shows no error. ` +
     `A failure that only says root is required means the script has no real check mode: report it as a failure with that reason. ` +
     `failures: the decisive error lines. summary: what the script said it would do.`,
-    { agentType: 'runner', schema: STEP, phase: 'Dry run', label: `dry ${tag}` })
+    { agentType: 'zodchi-core:runner', schema: STEP, phase: 'Dry run', label: `dry ${tag}` })
 }
 
 // Resume rule, as in every zodchi workflow.
@@ -88,7 +88,7 @@ for (let n = 0; n <= (a.fixes ?? 2); n++) {
     `Fix the script ${a.script}${a.repo ? ` (repository ${a.repo}; read its AGENTS.md first)` : ''}. ${st.ok ? 'Its dry run without root failed' : 'Its static checks failed'}: ${JSON.stringify(failures || [])}. ` +
     `Logs: ${JSON.stringify((st.ok ? dry.logs : st.logs) || [])}. Fix with the smallest change. If the script has no check mode that runs without root, add one: ` +
     `the check flag validates inputs and prints what the script would do, and touches nothing. Do not run it with sudo. ok is true when the change is made.`,
-    { agentType: 'coder', model: a.writer || 'sonnet', schema: STEP, phase: 'Fix', label: `fix ${n}` })
+    { agentType: 'zodchi-core:coder', model: a.writer || 'sonnet', schema: STEP, phase: 'Fix', label: `fix ${n}` })
   if (!fix || !fix.ok) { out.stoppedAt = 'fix'; return out }
 }
 out.ready = false

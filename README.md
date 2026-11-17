@@ -24,6 +24,7 @@ same everywhere lives in `core/`.
 | `domains/gamedev-unity/` | Game asset pipeline in Blender and Unity: `asset-round`, `method-question`, `rubric-probe`, `unity-check`, and the `modeller`, `unity-runner`, `art-critic` agents |
 | `models.json` | The role table: which model plays each role, in order of preference |
 | `roles/` | Gateway roles: `code-review`, `checkout-review`, `architecture-review`, `code-patch`, `package-work`, `research`, `text`, `image`, `art-critic`, `decisions` |
+| `.claude-plugin/` | The marketplace: each of `core/` and `domains/*` is a Claude Code plugin |
 | `install/` | The installer and the `zodchi` command |
 | `gateway/` | The `zodchi` gateway in Rust: calls Codex models by role, over your own subscriptions |
 | `docs/` | How it works, subscriptions, forking for a company |
@@ -63,26 +64,36 @@ cd zodchi
 .\install\install.ps1                   # Windows PowerShell
 ```
 
-The installer asks which domains you want; `core` is always installed. You
-can also pass them directly: `--domains web-apps,gamedev-unity` or
-`--domains all`.
+This installs `zodchi-core` for you in every project, builds the gateway
+(when Rust is installed) and puts the role table and the gateway roles into
+`~/.zodchi`. Domains are switched on per project:
 
-- Agents and workflows go to `~/.claude/agents` and `~/.claude/workflows`,
-  where Claude Code finds them in every project. With `--project <repo>`
-  they go to that repository's `.claude/` instead. A project's own agent or
-  workflow with the same name wins over yours.
-- The role table, the gateway roles and the `zodchi` command go to
-  `~/.zodchi`. With Rust installed, the installer builds the gateway itself
-  (`--no-build` skips that). List your subscriptions in
-  `~/.zodchi/accounts.json`, see [gateway/README.md](gateway/README.md).
+```sh
+./install/install.sh --project ~/code/my-game --domains gamedev-unity
+```
+
+- Agents and workflows come as Claude Code plugins from this repository (the
+  marketplace `zodchi`): `zodchi-core`, `zodchi-web-apps`,
+  `zodchi-gamedev-unity`. The core is on in every project; a domain is on
+  only in the projects you name, for you alone (it goes into the project's
+  `.claude/settings.local.json`, which is not committed). `--domains` without
+  `--project` turns a domain on everywhere.
+- Plugins are read from your clone, so `git pull` updates them in every
+  project at once; rerun the installer after a pull to rebuild the gateway.
+- Workflows run as `/zodchi-core:code-package`, `/zodchi-gamedev-unity:asset-round`
+  and so on, and agents are named `zodchi-core:runner` and the like, so they
+  never clash with a project's own.
+- With Rust installed, the installer builds the gateway itself (`--no-build`
+  skips that). List your subscriptions in `~/.zodchi/accounts.json`, see
+  [gateway/README.md](gateway/README.md).
 - The installer never overwrites a file it did not put there, or one you
   changed. `~/.zodchi/models.json` is yours after the first install: a newer
   table is written next to it as `models.json.new`.
 - `--dry-run` shows what would change. `--uninstall` removes what the
   installer put there and leaves your changes in place.
 
-Then run a workflow from Claude Code, for example `/code-package`, or ask
-Claude to run it with your arguments. Each workflow's header lists its
+Then run a workflow from Claude Code, for example `/zodchi-core:code-package`,
+or ask Claude to run it with your arguments. Each workflow's header lists its
 arguments.
 
 ## Your models

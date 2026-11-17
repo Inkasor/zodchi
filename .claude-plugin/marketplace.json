@@ -1,0 +1,10 @@
+{
+  "name": "zodchi",
+  "owner": { "name": "Zodchi" },
+  "description": "Tuned Claude Code agents and workflows by domain. Install zodchi-core for every project and a domain per project.",
+  "plugins": [
+    { "name": "zodchi-core", "source": "./core", "description": "Agents and workflows every domain uses: coder, runner, applier, researcher; code-package, ops-script" },
+    { "name": "zodchi-web-apps", "source": "./domains/web-apps", "description": "Web applications: branch-review before a release" },
+    { "name": "zodchi-gamedev-unity", "source": "./domains/gamedev-unity", "description": "Game assets in Blender and Unity: asset-round, method-question, rubric-probe, unity-check; modeller, unity-runner, art-critic" }
+  ]
+}

@@ -1,6 +1,6 @@
 ---
 name: applier
-description: Applies one expert answer (a one-pass code answer from a strong model) to the files - every OLD/NEW replacement and every "add this block", verbatim, then proves each one landed. Use when an expert answer with a ready patch has arrived. It runs no builds; hand the run to `runner` afterwards.
+description: Applies one expert answer (a one-pass code answer from a strong model) to the files - every OLD/NEW replacement and every "add this block", verbatim, then proves each one landed. Use when an expert answer with a ready patch has arrived. It runs no builds; hand the run to `zodchi-core:runner` afterwards.
 model: haiku
 effort: medium
 maxTurns: 40

@@ -1,28 +1,29 @@
 #!/usr/bin/env node
-// zodchi installer. install.ps1 and install.sh call this; it needs Node 20+.
+// zodchi installer. install.ps1 and install.sh call this; it needs Node 20+ and Claude Code.
 //
-//   node install/install.mjs [--domains web-apps,gamedev-unity|all] [--project <repo>] [--no-build]
+//   node install/install.mjs [--domains web-apps,gamedev-unity|all] [--project <repo>] [--no-build] [--no-plugins]
 //                            [--gateway-cli <cli.mjs>] [--force] [--dry-run] [--uninstall]
 //
-// The gateway: with cargo on PATH the Rust gateway is built from gateway/ and installed as ~/.zodchi/bin/zodchi.
-// --no-build skips that; --gateway-cli instead installs a small command that forwards to a Node gateway.
-//
-// What goes where:
-//   core + chosen domains: agents -> <claude>/agents, workflows -> <claude>/workflows
-//     <claude> is ~/.claude (or $CLAUDE_CONFIG_DIR), or <repo>/.claude with --project
-//   models.json, roles/, the zodchi command -> ~/.zodchi (or $ZODCHI_HOME)
+// What it does:
+//   1. Claude Code plugins from this repository (the marketplace "zodchi"): zodchi-core for you in every project
+//      (user scope). --domains adds domain plugins: with --project <repo> only in that repository, for you alone
+//      (local scope: .claude/settings.local.json, nothing to commit); without --project in every project.
+//   2. The gateway: with cargo on PATH the Rust gateway is built from gateway/ and installed as ~/.zodchi/bin/zodchi.
+//      --no-build skips that; --gateway-cli instead installs a small command that forwards to a Node gateway.
+//   3. models.json and the gateway roles -> ~/.zodchi (or $ZODCHI_HOME).
 // A file the installer did not put there, or that you changed since, is left alone (use --force to replace it).
 // ~/.zodchi/models.json is yours once installed: a newer table is written beside it as models.json.new.
+// Rerun it after `git pull` to update everything; --uninstall removes what it installed.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import readline from "node:readline/promises";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const VERSION = JSON.parse(fs.readFileSync(path.join(SRC, "package.json"), "utf8")).version;
+const MARKETPLACE = JSON.parse(fs.readFileSync(path.join(SRC, ".claude-plugin", "marketplace.json"), "utf8")).name;
 
 function parseArgs(argv) {
   const o = { force: false, dryRun: false, uninstall: false };
@@ -32,6 +33,7 @@ function parseArgs(argv) {
     else if (a === "--dry-run") o.dryRun = true;
     else if (a === "--uninstall") o.uninstall = true;
     else if (a === "--no-build") o.noBuild = true;
+    else if (a === "--no-plugins") o.noPlugins = true;
     else if (["--domains", "--project", "--gateway-cli"].includes(a) && argv[i + 1]) o[a.slice(2)] = argv[++i];
     else if (a === "--help" || a === "-h") { o.help = true; }
     else throw new Error(`Unknown argument: ${a}`);
@@ -40,53 +42,28 @@ function parseArgs(argv) {
 }
 
 const sha = (buf) => crypto.createHash("sha256").update(buf).digest("hex");
-const listDir = (dir, ext) => fs.existsSync(dir) ? fs.readdirSync(dir).filter(f => f.endsWith(ext)).map(f => path.join(dir, f)) : [];
 const domainsAvailable = () => fs.readdirSync(path.join(SRC, "domains"), { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).sort();
 
-async function chooseDomains(given) {
+function chooseDomains(given) {
+  if (!given) return [];
   const all = domainsAvailable();
-  if (given) {
-    const picked = given === "all" ? all : given.split(",").map(s => s.trim()).filter(Boolean);
-    const unknown = picked.filter(d => !all.includes(d));
-    if (unknown.length) throw new Error(`Unknown domain(s): ${unknown.join(", ")}. Available: ${all.join(", ")}`);
-    return picked;
-  }
-  if (!process.stdin.isTTY) throw new Error(`Pass --domains (available: ${all.join(", ")}, or all).`);
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  console.log("Domains (core is always installed):");
-  all.forEach((d, i) => console.log(`  ${i + 1}. ${d}`));
-  const answer = await rl.question("Numbers separated by commas, 'all', or empty for core only: ");
-  rl.close();
-  if (answer.trim() === "all") return all;
-  return answer.split(",").map(s => s.trim()).filter(Boolean).map(s => {
-    const d = all[Number(s) - 1];
-    if (!d) throw new Error(`No domain number ${s}`);
-    return d;
-  });
+  const picked = given === "all" ? all : given.split(",").map(s => s.trim()).filter(Boolean);
+  const unknown = picked.filter(d => !all.includes(d));
+  if (unknown.length) throw new Error(`Unknown domain(s): ${unknown.join(", ")}. Available: ${all.join(", ")}`);
+  return picked;
 }
 
-function plan(domains, claudeDir, home, binary) {
+function plan(home, binary) {
   const items = []; // { src | content, dest, kind }
-  const seen = new Map();
-  const add = (src, dest, kind, origin) => {
-    const key = path.resolve(dest).toLowerCase();
-    if (seen.has(key)) throw new Error(`${path.basename(dest)} comes from both ${seen.get(key)} and ${origin}; a domain may not reuse a name.`);
-    seen.set(key, origin);
-    items.push({ src, dest, kind });
-  };
-  for (const origin of ["core", ...domains.map(d => `domains/${d}`)]) {
-    const base = path.join(SRC, origin);
-    for (const f of listDir(path.join(base, "agents"), ".md")) add(f, path.join(claudeDir, "agents", path.basename(f)), "managed", origin);
-    for (const f of listDir(path.join(base, "workflows"), ".js")) add(f, path.join(claudeDir, "workflows", path.basename(f)), "managed", origin);
-  }
-  for (const f of fs.readdirSync(path.join(SRC, "roles"))) add(path.join(SRC, "roles", f), path.join(home, "roles", f), "managed", "roles");
-  add(path.join(SRC, "models.json"), path.join(home, "models.json"), "user-owned", "models.json");
+  const add = (src, dest, kind, mode) => items.push({ src, dest, kind, mode });
+  for (const f of fs.readdirSync(path.join(SRC, "roles"))) add(path.join(SRC, "roles", f), path.join(home, "roles", f), "managed");
+  add(path.join(SRC, "models.json"), path.join(home, "models.json"), "user-owned");
   if (binary) {
     // The Rust gateway. The forwarding command of an earlier install is no longer planned, so it is removed.
-    items.push({ src: binary, dest: path.join(home, "bin", path.basename(binary)), kind: "managed", mode: 0o755 });
+    add(binary, path.join(home, "bin", path.basename(binary)), "managed", 0o755);
     return items;
   }
-  add(path.join(SRC, "install", "zodchi.mjs"), path.join(home, "bin", "zodchi.mjs"), "managed", "install");
+  add(path.join(SRC, "install", "zodchi.mjs"), path.join(home, "bin", "zodchi.mjs"), "managed");
   const mjs = path.join(home, "bin", "zodchi.mjs");
   items.push({ content: `@echo off\r\nnode "${mjs}" %*\r\n`, dest: path.join(home, "bin", "zodchi.cmd"), kind: "managed" });
   items.push({ content: `#!/bin/sh\nexec node "${mjs.replace(/\\/g, "/")}" "$@"\n`, dest: path.join(home, "bin", "zodchi"), kind: "managed", mode: 0o755 });
@@ -97,11 +74,53 @@ function readManifest(home) {
   try { return JSON.parse(fs.readFileSync(path.join(home, "installed.json"), "utf8")); } catch { return { files: {} }; }
 }
 
+// One `claude plugin ...` call. Arguments go as an array; on Windows the npm `claude` is a .cmd, so it runs through
+// the shell with every argument quoted.
+function claude(args, { cwd } = {}) {
+  const win = process.platform === "win32";
+  const quoted = win ? args.map(a => /^[\w@:./-]+$/.test(a) ? a : `"${a.replace(/"/g, '\\"')}"`) : args;
+  const r = spawnSync("claude", quoted, { cwd, encoding: "utf8", shell: win, windowsHide: true });
+  return { ok: r.status === 0, out: `${r.stdout || ""}${r.stderr || ""}`.trim() };
+}
+
+// Registers this checkout as the marketplace, or refreshes it when it is already there.
+function plugins(o, domains, say) {
+  if (!o.dryRun && !claude(["--version"]).ok) throw new Error("Claude Code (`claude`) does not run here; install it, or rerun with --no-plugins.");
+  const steps = [];
+  const project = o.project ? path.resolve(o.project) : null;
+  if (project && !fs.existsSync(project)) throw new Error(`No repository at ${project}`);
+  steps.push({ what: `marketplace ${MARKETPLACE} from ${SRC}`, run: () => {
+    const added = claude(["plugin", "marketplace", "add", SRC]);
+    if (added.ok) return added;
+    const updated = claude(["plugin", "marketplace", "update", MARKETPLACE]);
+    return updated.ok ? updated : { ...added, out: `${added.out}\n${updated.out}` };
+  } });
+  const install = (plugin, scope, cwd) => () => {
+    const r = claude(["plugin", "install", `${plugin}@${MARKETPLACE}`, "--scope", scope], { cwd });
+    if (r.ok || !/already/i.test(r.out)) return r;
+    // Installed before: bring it to the version in this checkout.
+    return claude(["plugin", "update", `${plugin}@${MARKETPLACE}`, "--scope", scope], { cwd });
+  };
+  steps.push({ what: "zodchi-core for you in every project (user scope)", run: install("zodchi-core", "user") });
+  for (const d of domains) {
+    steps.push(project
+      ? { what: `zodchi-${d} in ${project} only (local scope)`, run: install(`zodchi-${d}`, "local", project) }
+      : { what: `zodchi-${d} for you in every project (user scope)`, run: install(`zodchi-${d}`, "user") });
+  }
+  for (const s of steps) {
+    if (o.dryRun) { say(`plugin: ${s.what}`); continue; }
+    const r = s.run();
+    if (!r.ok) throw new Error(`plugin step failed: ${s.what}\n${r.out}`);
+    console.log(`plugin: ${s.what} - ok`);
+  }
+}
+
 async function main() {
   const o = parseArgs(process.argv.slice(2));
-  if (o.help) { console.log(fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 16).map(l => l.replace(/^\/\/ ?/, "")).join("\n")); return; }
+  if (o.help) { console.log(fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 17).map(l => l.replace(/^\/\/ ?/, "")).join("\n")); return; }
   const home = path.resolve(process.env.ZODCHI_HOME || path.join(os.homedir(), ".zodchi"));
-  const claudeDir = o.project ? path.join(path.resolve(o.project), ".claude") : path.resolve(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"));
+  // Agents and workflows of an earlier 1.0 install were copied here; they are removed now that plugins carry them.
+  const claudeDir = path.resolve(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"));
   const manifest = readManifest(home);
   const say = (s) => console.log((o.dryRun ? "[dry-run] " : "") + s);
 
@@ -113,11 +132,17 @@ async function main() {
       if (!o.dryRun) fs.rmSync(dest);
     }
     if (!o.dryRun) fs.rmSync(path.join(home, "installed.json"), { force: true });
+    if (!o.noPlugins && !o.dryRun) {
+      const r = claude(["plugin", "uninstall", `zodchi-core@${MARKETPLACE}`, "--scope", "user"]);
+      console.log(`plugin zodchi-core: ${r.ok ? "uninstalled" : r.out.split("\n")[0]}`);
+    }
+    console.log(`Domain plugins stay where you enabled them: claude plugin uninstall zodchi-<domain>@${MARKETPLACE} --scope local (in each project).`);
     return;
   }
 
-  const domains = await chooseDomains(o.domains);
+  const domains = chooseDomains(o.domains);
   // Everything that can fail on a wrong argument is checked before the first write.
+  if (o.project && !domains.length) throw new Error("--project needs --domains: the domains to enable in that repository.");
   let gatewayCli = null;
   if (o["gateway-cli"]) {
     gatewayCli = path.resolve(o["gateway-cli"]);
@@ -144,12 +169,16 @@ async function main() {
     const known = (manifest.files || {})[installed];
     if (fs.existsSync(installed) && known && sha(fs.readFileSync(installed)) === known && !fs.readFileSync(installed).subarray(0, 2).equals(Buffer.from("#!"))) binary = installed;
   }
-  const items = plan(domains, claudeDir, home, binary);
+
+  // Plugins first: when Claude Code refuses, nothing else has been changed yet.
+  if (!o.noPlugins) plugins(o, domains, say);
+
+  const items = plan(home, binary);
   const nativeDest = binary ? path.join(home, "bin", path.basename(binary)) : null;
   const FORWARDING = ["zodchi.mjs", "zodchi.cmd", "zodchi"].map(f => path.resolve(home, "bin", f));
   const owned = manifest.files || {};
   const isOwned = (dest, buf) => Object.prototype.hasOwnProperty.call(owned, dest) && owned[dest] === sha(buf);
-  const next = { version: VERSION, domains, claudeDir, files: { ...owned } };
+  const next = { version: VERSION, files: { ...owned } };
   let written = 0, skipped = 0;
   const put = (dest, body, mode) => {
     if (!o.dryRun) {
@@ -182,7 +211,7 @@ async function main() {
     put(it.dest, body, it.mode);
   }
 
-  // Files from an earlier install that this one no longer plans (a domain was dropped): remove them when unchanged.
+  // Files from an earlier install that this one no longer plans: removed when unchanged.
   const planned = new Set(items.map(it => path.resolve(it.dest)));
   const inside = (f) => [claudeDir, home].some(d => path.resolve(f).toLowerCase().startsWith(path.resolve(d).toLowerCase() + path.sep));
   // The forwarding command goes only once the Rust gateway is really in place; a skipped binary keeps it.
@@ -212,8 +241,9 @@ async function main() {
   }
 
   const codex = spawnSync("codex --version", { encoding: "utf8", shell: true, windowsHide: true });
-  console.log(`\nzodchi ${VERSION}: ${written} file(s) written, ${skipped} skipped. Domains: core${domains.length ? ", " + domains.join(", ") : ""}.`);
-  console.log(`Agents and workflows: ${claudeDir}`);
+  console.log(`\nzodchi ${VERSION}: ${written} file(s) written, ${skipped} skipped.`);
+  if (o.noPlugins) console.log("Plugins: skipped (--no-plugins).");
+  else console.log(`Plugins: zodchi-core everywhere${domains.length ? `; ${domains.map(d => `zodchi-${d}`).join(", ")} ${o.project ? `in ${path.resolve(o.project)}` : "everywhere"}` : ""}. A domain for one project: rerun with --project <repo> --domains <name>.`);
   console.log(`Codex CLI: ${codex.status === 0 ? codex.stdout.trim() : "not found - install it and run `codex login` for gateway roles"}`);
   if (binary && nativeInPlace) console.log(`Gateway: the Rust gateway, ${path.join(home, "bin", path.basename(binary))}. Subscriptions: ~/.zodchi/accounts.json (see gateway/README.md).`);
   else if (cfg.gatewayCli) console.log(`Gateway: forwarding to ${cfg.gatewayCli}.`);

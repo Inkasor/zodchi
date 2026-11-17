@@ -62,6 +62,25 @@ for (const [name, r] of Object.entries(models.roles || {})) {
   for (const c of r.candidates || []) if (!["claude", "codex"].includes(c.provider) || !c.model) bad(path.join(ROOT, "models.json"), `role ${name}: bad candidate ${JSON.stringify(c)}`);
 }
 
+// 5. plugins: every marketplace entry is a plugin folder with a matching plugin.json, and every agentType a workflow
+//    names is "<plugin>:<agent>" of an agent that exists (plugin agents answer only to the namespaced name).
+const market = JSON.parse(fs.readFileSync(path.join(ROOT, ".claude-plugin", "marketplace.json"), "utf8"));
+const pluginAgents = new Set();
+for (const p of market.plugins || []) {
+  const dir = path.join(ROOT, p.source);
+  const manifestFile = path.join(dir, ".claude-plugin", "plugin.json");
+  if (!fs.existsSync(manifestFile)) { bad(path.join(ROOT, ".claude-plugin", "marketplace.json"), `plugin ${p.name}: no ${p.source}/.claude-plugin/plugin.json`); continue; }
+  const own = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+  if (own.name !== p.name) bad(manifestFile, `name "${own.name}" differs from the marketplace entry "${p.name}"`);
+  const agentsDir = path.join(dir, "agents");
+  if (fs.existsSync(agentsDir)) for (const f of fs.readdirSync(agentsDir).filter(n => n.endsWith(".md"))) pluginAgents.add(`${p.name}:${f.slice(0, -3)}`);
+}
+for (const f of tracked.filter(f => /[\\/]workflows[\\/][^\\/]+\.js$/.test(f))) {
+  for (const m of fs.readFileSync(f, "utf8").matchAll(/agentType:\s*'([^']+)'/g)) {
+    if (!pluginAgents.has(m[1])) bad(f, `agentType '${m[1]}' is not "<plugin>:<agent>" of an agent in this marketplace`);
+  }
+}
+
 // 4. publish guard
 const PATTERNS = [
   [/\b[A-Za-z]:[\\/](?!\/)[^\s"'`]*/g, "a Windows path"],

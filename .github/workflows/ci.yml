@@ -47,11 +47,8 @@ jobs:
           ZODCHI_HOME: ${{ runner.temp }}/zodchi-home
           CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-home
         run: |
-          node install/install.mjs --domains all --no-build
-          test -f "$CLAUDE_CONFIG_DIR/workflows/code-package.js"
-          test -f "$CLAUDE_CONFIG_DIR/agents/runner.md"
+          node install/install.mjs --no-build --no-plugins
           test -f "$ZODCHI_HOME/models.json"
-          node install/install.mjs --domains web-apps --no-build
-          test ! -f "$CLAUDE_CONFIG_DIR/workflows/asset-round.js"
-          node install/install.mjs --uninstall
-          test ! -f "$CLAUDE_CONFIG_DIR/workflows/code-package.js"
+          test -f "$ZODCHI_HOME/roles/code-review.json"
+          node install/install.mjs --uninstall --no-plugins
+          test ! -f "$ZODCHI_HOME/roles/code-review.json"
