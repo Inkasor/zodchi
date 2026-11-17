@@ -7,7 +7,7 @@
 //! - [`login`]: the device-code sign-in of each user.
 //! - [`lock`]: lock files between processes.
 //! - [`signal`]: Ctrl+C and SIGTERM.
-//! - [`public`]: the filter that keeps server paths out of every answer.
+//! - [`public`]: public errors (a code and a fixed message) and the view of a job; no raw diagnostic reaches a client.
 
 pub mod api;
 pub mod auth;
