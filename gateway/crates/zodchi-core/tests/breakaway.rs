@@ -27,7 +27,9 @@ fn stand_in() {
             std::env::set_var("ZODCHI_STAND_IN", "worker");
             let args: Vec<std::ffi::OsString> = vec!["--exact".into(), "stand_in".into(), "--nocapture".into()];
             let mut child = zodchi_core::job::spawn_detached(&args, false).unwrap();
-            std::fs::write(dir.join("worker.pid"), child.id().to_string()).unwrap();
+            // Published whole: the file is written under another name and renamed, so a reader never sees half a pid.
+            std::fs::write(dir.join("worker.pid.tmp"), child.id().to_string()).unwrap();
+            std::fs::rename(dir.join("worker.pid.tmp"), dir.join("worker.pid")).unwrap();
             // As the server does: the worker is waited on from a thread of its own.
             std::thread::spawn(move || {
                 let _ = child.wait();
@@ -85,8 +87,24 @@ mod windows {
             let ok = unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle().cast()) };
             assert!(ok != 0, "AssignProcessToJobObject: {}", std::io::Error::last_os_error());
         }
-        fn close(self) {
+    }
+    impl Drop for JobObject {
+        fn drop(&mut self) {
             unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// Ends what a test started, also when an assertion fails halfway: the worker (it stops when the file `stop`
+    /// appears, wherever it runs) and the submitter.
+    struct Cleanup {
+        dir: PathBuf,
+        submitter: Child,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::write(self.dir.join("stop"), "");
+            let _ = self.submitter.kill();
+            let _ = self.submitter.wait();
         }
     }
 
@@ -105,20 +123,21 @@ mod windows {
         }
     }
 
-    /// Submitter inside a job object, worker through `spawn_detached`, the job object closed: returns the pids.
-    fn run(breakaway_ok: bool, dir: &Path) -> (u32, u32, Child) {
+    /// Submitter inside a job object, worker through `spawn_detached`, the job object closed: returns the pids and
+    /// the guard that cleans up.
+    fn run(breakaway_ok: bool, dir: &Path) -> (u32, u32, Cleanup) {
         let mut command = Command::new(std::env::current_exe().unwrap());
         command.args(["--exact", "stand_in", "--nocapture"]).env("ZODCHI_STAND_IN", "submitter").env("ZODCHI_STAND_IN_DIR", dir);
         command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        let submitter = command.spawn().unwrap();
+        let submitter = Cleanup { dir: dir.to_path_buf(), submitter: command.spawn().unwrap() };
         let job = JobObject::new(breakaway_ok);
-        job.assign(&submitter);
+        job.assign(&submitter.submitter);
         std::fs::write(dir.join("go"), "").unwrap();
         wait_for("the worker pid", 30, || dir.join("worker.pid").exists());
         let worker: u32 = std::fs::read_to_string(dir.join("worker.pid")).unwrap().trim().parse().unwrap();
         assert!(alive(worker), "the worker is not running before the job object closes");
-        job.close();
-        let submitter_pid = submitter.id();
+        drop(job);
+        let submitter_pid = submitter.submitter.id();
         (submitter_pid, worker, submitter)
     }
 
@@ -129,9 +148,9 @@ mod windows {
             return;
         }
         let dir = scratch();
-        let (submitter_pid, worker, mut submitter) = run(true, &dir);
+        let (submitter_pid, worker, mut guard) = run(true, &dir);
         // The job object ended the submitter ...
-        wait_for("the submitter to end", 20, || submitter.try_wait().unwrap().is_some());
+        wait_for("the submitter to end", 20, || guard.submitter.try_wait().unwrap().is_some());
         assert!(!alive(submitter_pid));
         // ... and the worker, which broke away, still runs.
         std::thread::sleep(Duration::from_secs(1));
@@ -146,8 +165,8 @@ mod windows {
     #[test]
     fn a_job_object_without_breakaway_still_gets_a_worker() {
         let dir = scratch();
-        let (_, worker, mut submitter) = run(false, &dir);
-        wait_for("the submitter to end", 20, || submitter.try_wait().unwrap().is_some());
+        let (_, worker, mut guard) = run(false, &dir);
+        wait_for("the submitter to end", 20, || guard.submitter.try_wait().unwrap().is_some());
         wait_for("the worker to end with the job object", 20, || !alive(worker));
     }
 }

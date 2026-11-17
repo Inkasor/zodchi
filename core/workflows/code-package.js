@@ -47,17 +47,19 @@ const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
 const gatewayCall = ({ role, key, args, attach = [], attachIfExists = [], out, totalMin, repo = a.repo }) => {
   const flags = [...attach, ...attachIfExists].map(f => `--attach ${q(f)}`).join(' ')
   const run = `zodchi run --role ${role} --key ${key} ${args}${flags ? ' ' + flags : ''} --wait-sec 540 --out ${q(out)}`
-  return `Gateway call, key ${key}. Run it in the foreground from ${repo}: \`${run}\`. ` +
+  return `Gateway call, base key ${key}. Run it in the foreground from ${repo}: \`${run}\`. ` +
+    (attachIfExists.length ? `Before every submission, retries included, drop the --attach of each optional file that does not exist on disk: ${JSON.stringify(attachIfExists)}; keep every other --attach. ` : '') +
     `Never in the background (no &, nohup or run_in_background), never through Monitor: the worker of the job ends with your shell. ` +
-    `While it exits 3 (still running), repeat \`zodchi wait --key ${key} --wait-sec 540 --out ${q(out)}\` in the foreground, up to ${totalMin} minutes in all since the first command; ` +
-    `never return before the job is final (exit 0 or 2); if the ${totalMin} minutes run out, report failure (ok false; verdict "missing" for a review) and say the job still runs under ${key}. ` +
-    `A dead job gets a new key: when the job is final with status "unknown", or "failed" with no turnStartedAt in \`zodchi job --key ${key}\` (it died before its turn started), ` +
-    `run the same full command again with the key ${key}-r2 (then ${key}-r3; at most 2 retries in all), wait for it the same way, and write each new key into the progress file at once. ` +
+    `The active key is the key of the latest submission: ${key} at first, then ${key}-r2, then ${key}-r3 (at most 2 retries in all). Every wait, \`zodchi job\` and request.json check below names the active key, never an earlier one, also after a resume (the progress file holds the latest key). ` +
+    `While it exits 3 (still running), repeat \`zodchi wait --key <active key> --wait-sec 540 --out ${q(out)}\` in the foreground, up to ${totalMin} minutes in all since the first command; ` +
+    `never return before the job is final (exit 0 or 2); if the ${totalMin} minutes run out, report failure (ok false; verdict "missing" for a review) and say the job still runs under its active key. ` +
+    `A dead job gets a new key: when the job is final with status "unknown", or "failed" with no turnStartedAt in \`zodchi job --key <active key>\` (it died before its turn started), ` +
+    `run the same full command again with --key set to the next key, wait for it the same way, and write each new key into the progress file at once. ` +
     `Any other final status is not retried: report it. ` +
     (attach.length || attachIfExists.length
-      ? `After the job is final, read ${repo}/.agent-tmp/gateway/${key}/request.json: its "prompt" must contain \`<attachment path="...">\` (the path as given to --attach, slash direction aside) for every required attachment: ${JSON.stringify(attach)}` +
+      ? `After the job is final, read ${repo}/.agent-tmp/gateway/<active key>/request.json: its "prompt" must contain \`<attachment path="...">\` (the path as given to --attach, slash direction aside) for every required attachment: ${JSON.stringify(attach)}` +
         `${attachIfExists.length ? `, and for each of these that exists on disk: ${JSON.stringify(attachIfExists)}` : ''}. ` +
-        `If one is missing, put "attachment missing: <path>" into your summary and run the full command above again under the next key (${key}-r2, ${key}-r3, counted with the retries), every attachment included; the result you return is that of the last job, and when an attachment is still missing after the last retry it reports failure the same way.`
+        `If one is missing, put "attachment missing: <path>" into your summary and run the full command again with the next key (counted with the retries), every attachment included, then check that new job's request.json the same way; the result you return is that of the last job, and when an attachment is still missing after the last retry it reports failure the same way.`
       : '')
 }
 
@@ -96,8 +98,8 @@ const progressFile = (o) => `${a.tmp}/progress/${String((o && (o.progress || o.l
 const step = (prompt, opts) => agent(prompt +
   `\n\nShell rule: run every command with bash (Git Bash on Windows, never PowerShell or cmd); the quoting in these commands is for bash. Resume rule: this run may have been cut off and restarted. If ${progressFile(opts)} exists and its last line is not DONE, read it first and go on from its last line; ` +
   `if its last line is DONE, it is from an earlier finished run: rename it to .old and start fresh. ` +
-  `Do not redo finished work or overwrite its outputs blindly. For a gateway call it records as submitted, wait on that key in the foreground (zodchi wait --key <key> --wait-sec 540 --out <file>, repeated while it exits 3) instead of submitting again; ` +
-  `if that job is final with status "unknown", or "failed" with no turnStartedAt in \`zodchi job --key <key>\`, submit again with the next key suffix (<key>-r2, <key>-r3; at most 2 retries) and record the new key in the progress file. ` +
+  `Do not redo finished work or overwrite its outputs blindly. For a gateway call it records as submitted, wait on the latest key recorded for that call in the foreground (zodchi wait --key <key> --wait-sec 540 --out <file>, repeated while it exits 3) instead of submitting again; ` +
+  `if that job is final with status "unknown", or "failed" with no turnStartedAt in \`zodchi job --key <key>\`, submit again under the next suffix of the base key (<base>-r2, then <base>-r3; at most 2 retries in all, those already recorded counted) and record the new key in the progress file. ` +
   `After each finished step append one line to it (create the folder if needed): what is done, the paths it produced, what comes next. When your whole task is finished, append a last line DONE.`, opts)
 
 const STEP = {
