@@ -38,8 +38,8 @@ args: {
 1. **Open** (runner). Takes the lock `<tmp>/.lock` (one run per incident), reads the adapter and its SHA-256, the role
    table and `incident.json`. The core checks the adapter's version and shape; a bad adapter stops the run before
    anything is executed.
-2. **Facts** (runner). The core builds the plan: the report, each operation with its arguments checked, the agent skill
-   and the allow-lists. A generated collector runs it with node, without a shell, each operation with its time limit
+2. **Facts** (runner). The core builds the plan: the report (its secrets redacted before it reaches any file or
+   prompt), each operation with its arguments checked, the agent skill and the allow-lists. A generated collector runs it with node, without a shell, each operation with its time limit
    and output cap, from the adapter's folder, under your own permissions. A failed, refused or timed-out operation is
    recorded and the others go on; one that depends on it is skipped with the reason. Nothing is retried or worked
    around, and a refused read never turns into a request for access. The result is `rev-<n>/evidence.json`: one item
@@ -53,10 +53,17 @@ args: {
    draft:
    - an evidence id that is not in the bundle refuses the answer;
    - a finding about what agents may do must cite both the agent skill and an allow-list;
-   - a reply or proposal that asks for access, says someone has none, or promises a time refuses the answer;
-   - a retry is recommended only when the adapter documents one;
+   - a text the reporter, the lead or a later package acts on (the reply, the line for the lead, the route's reason and
+     question, a gap proposal, every field and list entry of the fix brief, the agent skill change) that asks for
+     access, says someone has none or proposes working around a refusal refuses the answer, and so does a reply that
+     promises a time;
+   - a fix brief with an empty or blank entry in files, done or checks refuses the answer;
+   - a retry is recommended only when the adapter documents one, and a reply that speaks of retrying without that
+     recommendation refuses the answer; the draft names a retry (next step, note for the log) only for a recommended
+     one;
    - `stale` without evidence that a specific release fixes the error and that the environment runs it becomes
-     `unknown` (hypothesis `stale`);
+     `unknown` (hypothesis `stale`); the reply written on that premise is withheld (the draft says that none may be
+     sent) and its retry recommendation is dropped;
    - a refused read the answer left out is added as a gap; a gap that names an operation the adapter does not have
      loses it (nothing the model says adds an operation);
    - a route the findings do not carry becomes `needs-evidence`.
@@ -85,7 +92,9 @@ args: {
 
 `state` is `drafted`, `needs-evidence` or `failed` (`collecting` and `classified` only while a run works). A run that
 was cut off leaves its revision incomplete and its lock in place: make sure no run works on the incident, then run
-again with `breakLock: true`; the new run starts the next revision.
+again with `breakLock: true`; the new run starts the next revision. A run that fails marks its revision `failed` in
+`incident.json` and checks that write before it removes the lock; when the write cannot be verified, the lock stays and
+the result says so (`persistError`, `lockLeft`): set the state by hand, then remove the lock.
 
 ## After the draft: phases 4-6 by hand
 
@@ -102,7 +111,8 @@ done one: wait for its receipt before you tell anyone it is out.
 
 **6. Close.** Send the reporter the reply: what happened, what was done, what to press. Never "I have no access": say
 what will be done and when they act. Add the note from the draft to the incident log (`incidentLog`): cause, change,
-release, and who verifies by retrying. Remind yourself to check that the retry worked.
+release, and who verifies. When the draft recommends the product's retry, the reporter verifies by it: remind yourself
+to check that the retry worked; otherwise name who verifies and how when closing.
 
 For `awaiting-owner` ask the owner's role the draft's question and decide nothing meanwhile; for `awaiting-operator`
 hand the draft to the operator's role; for `needs-evidence` collect what the gaps name (a missing operation is a

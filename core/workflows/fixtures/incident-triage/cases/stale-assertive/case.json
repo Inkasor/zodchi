@@ -1,0 +1,33 @@
+{
+  "about": "Review F4: stale without deployment evidence becomes unknown, and the reply written on that premise (it asserts the fix and recommends a retry) is withheld: neither the draft nor the classification carries it, and no retry stands.",
+  "adapterFrom": "stale-no-deploy",
+  "report": "My export 4711 failed again.",
+  "params": {
+    "id": "4711"
+  },
+  "expect": {
+    "state": "needs-evidence",
+    "route": "needs-evidence",
+    "kinds": [
+      "unknown"
+    ],
+    "notesInclude": [
+      "stale became unknown",
+      "reply withheld",
+      "its retry recommendation was dropped"
+    ],
+    "draftIncludes": [
+      "None may be sent",
+      "Who verifies: not settled"
+    ],
+    "draftExcludes": [
+      "Press Retry on the job page now",
+      "is installed",
+      "The reply recommends a retry"
+    ],
+    "classificationExcludes": [
+      "Press Retry on the job page now",
+      "\"recommendRetry\":true"
+    ]
+  }
+}

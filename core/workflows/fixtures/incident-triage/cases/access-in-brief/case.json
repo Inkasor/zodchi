@@ -1,0 +1,18 @@
+{
+  "about": "Acceptance extra (review F3): an access request or a workaround in next.reason, a fix brief list entry or the agent skill change refuses the answer, like one in the reply.",
+  "adapterFrom": "blocked-release",
+  "report": "Release 2.5.0 has been blocked all morning by something called P-7f3a2.",
+  "params": {},
+  "expect": {
+    "state": "failed",
+    "refusedIncludes": [
+      "next.reason asks for access",
+      "fixBrief.checks[2] asks for access",
+      "fixBrief.done[1] proposes working around a refusal",
+      "fixBrief.agentSkillChange asks for access"
+    ],
+    "draftIncludes": [
+      "## No draft"
+    ]
+  }
+}
