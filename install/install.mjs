@@ -20,7 +20,9 @@
 //   3. models.json and the gateway roles -> ~/.zodchi (or $ZODCHI_HOME).
 // A file the installer did not put there, or that you changed since, is left alone (use --force to replace it).
 // ~/.zodchi/models.json is yours once installed: a newer table is written beside it as models.json.new.
-// Rerun it after `git pull` to update everything; --uninstall removes what it installed, the plugin copies too.
+// Rerun it after `git pull` to update everything. --uninstall removes what it installed, the plugin copies too: when the
+// marketplace reads from a copy it is removed and the plugins go with it (zodchi-core and the domain plugins); a --dev
+// marketplace (the clone) stays, and only zodchi-core is uninstalled.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -118,32 +120,35 @@ const samePath = (a, b) => {
 const COPY_NAME = /^(?:[0-9a-f]{7,40}|src-[0-9a-f]{12})(?:-dirty)?$/;
 const KEEP_COPIES = 2;
 
+// Git is asked in this clone. A failed call is never an answer: `git` (soft) lets the caller look at the exit status,
+// gitMust stops the install with git's own diagnostic.
 function git(args) {
-  const r = spawnSync("git", args, { cwd: SRC, encoding: "utf8", windowsHide: true });
-  return { ok: r.status === 0 && !r.error, out: (r.stdout || "").trim() };
+  const r = spawnSync("git", args, { cwd: SRC, encoding: "utf8", windowsHide: true, maxBuffer: 1 << 28 });
+  return { ok: r.status === 0 && !r.error, status: r.status, out: (r.stdout || "").trim(), raw: r.stdout || "", err: ((r.error && r.error.message) || r.stderr || "").trim() };
+}
+function gitMust(args) {
+  const r = git(args);
+  if (!r.ok) throw new Error(`git ${args.join(" ")} failed${r.status == null ? "" : ` (exit ${r.status})`}: ${r.err || "no message"}\nNothing was installed; fix the repository, or use --dev to read the clone itself.`);
+  return r;
 }
 
 // The folders of the repository the plugins need: the manifest folder, core/, domains/ and every plugin source the
 // manifest names (first path segment). A source that leaves the repository is refused.
-function copyRoots() {
+function copyRoots(manifestText) {
   const roots = new Set([".claude-plugin", "core", "domains"]);
-  const manifest = JSON.parse(fs.readFileSync(path.join(SRC, ".claude-plugin", "marketplace.json"), "utf8"));
+  const manifest = JSON.parse(manifestText ?? fs.readFileSync(path.join(SRC, ".claude-plugin", "marketplace.json"), "utf8"));
   for (const p of manifest.plugins || []) {
     if (typeof p.source !== "string") continue;
     const parts = path.posix.normalize(p.source.replace(/\\/g, "/")).split("/").filter(x => x && x !== ".");
     if (!parts.length || parts[0] === ".." || path.isAbsolute(p.source)) throw new Error(`plugin ${p.name}: source ${p.source} is outside this repository`);
     roots.add(parts[0]);
   }
-  return [...roots].filter(r => fs.existsSync(path.join(SRC, r))).sort();
+  return [...roots].filter(r => manifestText != null || fs.existsSync(path.join(SRC, r))).sort();
 }
 
-// Files to copy, relative to the repository: the tracked ones when git knows this folder (so a stray file in the
-// clone never reaches the copy), else everything under the roots except .git, node_modules and target.
-function filesToCopy(roots, useGit) {
-  if (useGit) {
-    const r = spawnSync("git", ["ls-files", "-z", "--cached", "--", ...roots], { cwd: SRC, encoding: "utf8", windowsHide: true, maxBuffer: 1 << 28 });
-    if (r.status === 0) return r.stdout.split("\0").filter(Boolean).filter(f => fs.existsSync(path.join(SRC, f))).sort();
-  }
+// A folder with its own .git is a checkout: every git answer is then required, and a failure stops the install.
+// Without one (a downloaded archive) the files are walked: everything under the roots except .git, node_modules, target.
+function walkFiles(roots) {
   const out = [];
   const walk = (rel) => {
     for (const d of fs.readdirSync(path.join(SRC, rel), { withFileTypes: true })) {
@@ -157,21 +162,57 @@ function filesToCopy(roots, useGit) {
   return out.sort();
 }
 
+// The files of a commit under the roots: [{ file, mode, sha }]. Symlinks and submodules cannot be copied faithfully.
+function treeOf(commit, roots) {
+  const entries = gitMust(["ls-tree", "-r", "-z", commit, "--", ...roots]).raw.split("\0").filter(Boolean).map(line => {
+    const tab = line.indexOf("\t");
+    const [mode, type, sha] = line.slice(0, tab).split(" ");
+    return { file: line.slice(tab + 1), mode, type, sha };
+  });
+  const odd = entries.filter(e => e.type !== "blob" || e.mode === "120000");
+  if (odd.length) throw new Error(`the plugin files include a symlink or submodule, which the copy cannot hold: ${odd.map(e => e.file).join(", ")}`);
+  return entries.sort((a, b) => (a.file < b.file ? -1 : 1));
+}
+
+// The bytes of those blobs, from the object database in one call: `<sha> blob <size>\n<bytes>\n` for each.
+function readBlobs(shas) {
+  const unique = [...new Set(shas)];
+  const r = spawnSync("git", ["cat-file", "--batch"], { cwd: SRC, input: unique.join("\n") + "\n", windowsHide: true, maxBuffer: 1 << 30 });
+  if (r.error || r.status !== 0) throw new Error(`git cat-file failed: ${(r.error && r.error.message) || String(r.stderr || "").trim()}`);
+  const buf = r.stdout, blobs = new Map();
+  let at = 0;
+  for (const sha of unique) {
+    const nl = buf.indexOf(10, at);
+    const head = nl < 0 ? [] : buf.subarray(at, nl).toString("latin1").split(" ");
+    if (head[0] !== sha || head[1] !== "blob") throw new Error(`git cat-file: no blob ${sha}`);
+    const size = Number(head[2]);
+    blobs.set(sha, buf.subarray(nl + 1, nl + 1 + size));
+    at = nl + 1 + size + 1;
+  }
+  return blobs;
+}
+
 // What the plugin copy would be, and whether it may be made. Nothing is written. null for --dev and --no-plugins.
+// A clean checkout is copied from the objects of the recorded commit, never from the working tree, so an edit made
+// while the installer runs (the gateway build takes a while) cannot get into a copy named for a clean commit. Only a
+// forced copy of a tree with tracked changes reads the working tree (the tracked files, as they are now).
 function copyPlan(o, home) {
   if (o.dev || o.noPlugins) return null;
-  const inRepo = git(["rev-parse", "--is-inside-work-tree"]).out === "true" && samePath(git(["rev-parse", "--show-toplevel"]).out || SRC, SRC);
-  const roots = copyRoots();
-  const files = filesToCopy(roots, inRepo);
-  const plan = { roots, files, dirty: false, forced: [] };
-  if (inRepo) {
-    const commit = git(["rev-parse", "--short=12", "HEAD"]).out;
-    if (!commit) throw new Error("This repository has no commit yet; commit first, or use --dev to work from the clone.");
-    const branch = git(["symbolic-ref", "--short", "-q", "HEAD"]).out;
+  const plan = { dirty: false, forced: [] };
+  if (fs.existsSync(path.join(SRC, ".git"))) {
+    if (!samePath(gitMust(["rev-parse", "--show-toplevel"]).out, SRC)) throw new Error(`${SRC} has a .git but is not the top of its repository; nothing was installed. Use --dev to read the clone itself.`);
+    const head = git(["rev-parse", "--verify", "-q", "HEAD^{commit}"]);
+    if (!head.ok) throw new Error(`This repository has no readable commit yet; commit first, or use --dev to work from the clone.${head.err ? `\n${head.err}` : ""}`);
+    const commit = head.out;
+    const short = gitMust(["rev-parse", "--short=12", commit]).out;
+    // Exit 1 of symbolic-ref -q is a detached HEAD; any other failure is an error.
+    const sym = git(["symbolic-ref", "--short", "-q", "HEAD"]);
+    if (!sym.ok && sym.status !== 1) gitMust(["symbolic-ref", "--short", "-q", "HEAD"]);
+    const branch = sym.out;
     // origin/HEAD names the default branch of the remote; without it main, then master.
     let main = git(["symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"]).out.replace(/^origin\//, "");
     if (!main) main = ["main", "master"].find(b => git(["rev-parse", "--verify", "-q", "refs/heads/" + b]).ok) || "main";
-    plan.dirty = git(["status", "--porcelain", "--untracked-files=no"]).out !== "";
+    plan.dirty = gitMust(["status", "--porcelain", "--untracked-files=no"]).out !== "";
     const why = [];
     if (!branch) why.push("HEAD is detached, so the copy would be of a state that no branch holds");
     else if (branch !== main) why.push(`the branch is "${branch}", not the default "${main}"`);
@@ -184,10 +225,19 @@ function copyPlan(o, home) {
       plan.refusal = refusal;
     }
     plan.forced = why;
-    plan.name = commit + (plan.dirty ? "-dirty" : "");
+    plan.name = short + (plan.dirty ? "-dirty" : "");
+    if (plan.dirty) {
+      const roots = copyRoots();
+      plan.files = gitMust(["ls-files", "-z", "--cached", "--", ...roots]).raw.split("\0").filter(Boolean).filter(f => fs.existsSync(path.join(SRC, f))).sort();
+    } else {
+      // The roots come from the manifest of that commit too; a root that the commit does not hold has no files.
+      plan.tree = treeOf(commit, copyRoots(gitMust(["show", `${commit}:.claude-plugin/marketplace.json`]).raw));
+      plan.files = plan.tree.map(e => e.file);
+    }
   } else {
+    plan.files = walkFiles(copyRoots());
     const h = crypto.createHash("sha256");
-    for (const f of files) h.update(f + "\0").update(fs.readFileSync(path.join(SRC, f)));
+    for (const f of plan.files) h.update(f + "\0").update(fs.readFileSync(path.join(SRC, f)));
     plan.name = "src-" + h.digest("hex").slice(0, 12);
   }
   plan.dir = path.join(home, "plugins", plan.name);
@@ -195,7 +245,9 @@ function copyPlan(o, home) {
 }
 
 // Makes the copy: into a folder of its own that is renamed into place, so an interrupted run leaves no half copy.
-// A copy of a clean commit that is already there is reused; a -dirty one is always made again.
+// A copy of a clean commit that is already there is reused. A -dirty one (or a broken one) is made again, but the
+// folder that is there stays, renamed aside, until finishCopy says the marketplace reads the new one: a failed run
+// puts it back (undoCopy), because the registered marketplace may be reading it.
 function makeCopy(plan) {
   const { dir } = plan;
   const now = new Date();
@@ -203,18 +255,49 @@ function makeCopy(plan) {
     fs.utimesSync(dir, now, now);
     return { dir, reused: true };
   }
-  const tmp = path.join(path.dirname(dir), `.tmp-${plan.name}-${process.pid}`);
+  const base = path.dirname(dir);
+  const tmp = path.join(base, `.tmp-${plan.name}-${process.pid}`);
+  const aside = path.join(base, `.old-${plan.name}-${process.pid}`);
   fs.rmSync(tmp, { recursive: true, force: true });
-  for (const f of plan.files) {
-    const from = path.join(SRC, f), to = path.join(tmp, f);
-    fs.mkdirSync(path.dirname(to), { recursive: true });
-    fs.copyFileSync(from, to);
-    fs.chmodSync(to, fs.statSync(from).mode & 0o777);
+  try {
+    const blobs = plan.tree ? readBlobs(plan.tree.map(e => e.sha)) : null;
+    for (const [i, f] of plan.files.entries()) {
+      const to = path.join(tmp, f);
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      if (blobs) {
+        fs.writeFileSync(to, blobs.get(plan.tree[i].sha));
+        fs.chmodSync(to, plan.tree[i].mode === "100755" ? 0o755 : 0o644);
+      } else {
+        const from = path.join(SRC, f);
+        fs.copyFileSync(from, to);
+        fs.chmodSync(to, fs.statSync(from).mode & 0o777);
+      }
+    }
+    fs.rmSync(aside, { recursive: true, force: true });
+  } catch (e) { fs.rmSync(tmp, { recursive: true, force: true }); throw e; }
+  let hadOld = false;
+  if (fs.existsSync(dir)) {
+    try { fs.renameSync(dir, aside); hadOld = true; }
+    catch (e) { fs.rmSync(tmp, { recursive: true, force: true }); throw new Error(`could not replace ${dir} (${e.code || e.message}); it is probably in use. Nothing was changed.`); }
   }
-  fs.rmSync(dir, { recursive: true, force: true });
-  fs.renameSync(tmp, dir);
+  try { fs.renameSync(tmp, dir); }
+  catch (e) {
+    if (hadOld) fs.renameSync(aside, dir);
+    fs.rmSync(tmp, { recursive: true, force: true });
+    throw e;
+  }
   fs.utimesSync(dir, now, now);
-  return { dir, reused: false };
+  return { dir, reused: false, aside: hadOld ? aside : null };
+}
+// The marketplace reads the new copy: the folder that was set aside is not needed any more.
+function finishCopy(made) {
+  if (made && made.aside) try { fs.rmSync(made.aside, { recursive: true, force: true }); } catch { /* its name is never a copy's, so a leftover bothers nobody */ }
+}
+// The run failed before the marketplace moved: the folder that was there before is put back.
+function undoCopy(made) {
+  if (!made || made.reused) return;
+  fs.rmSync(made.dir, { recursive: true, force: true });
+  if (made.aside) fs.renameSync(made.aside, made.dir);
 }
 
 function listCopies(home) {
@@ -310,15 +393,16 @@ function plugins(o, domains, say, home, copy) {
     for (const s of steps) say(`plugin: ${s.what}`);
     return;
   }
-  // The copy is made before the first step; when the marketplace step fails, a copy that is new is removed again.
+  // The copy is made before the first step; when the marketplace step fails, the folder that was there is put back.
   const made = copy ? makeCopy(copy) : null;
   for (const [i, s] of steps.entries()) {
     const r = s.run();
     if (r.missing) throw new Error("Claude Code (`claude`) is not on PATH; install it, or rerun with --no-plugins.");
     if (!r.ok) {
-      if (i === 0 && made && !made.reused) fs.rmSync(made.dir, { recursive: true, force: true });
+      if (i === 0) undoCopy(made);
       throw new Error(`plugin step failed: ${s.what}\n${r.out}`);
     }
+    if (i === 0) finishCopy(made);
     console.log(`plugin: ${s.what} - ok`);
   }
   if (copy) pruneCopies(home, [copy.dir, previous], say);
@@ -334,27 +418,30 @@ async function main() {
   const say = (s) => console.log((o.dryRun ? "[dry-run] " : "") + s);
 
   if (o.uninstall) {
-    // The plugin goes first: when Claude Code refuses, nothing has been removed yet.
-    if (!o.noPlugins && !o.dryRun) {
-      const r = claude(["plugin", "uninstall", `zodchi-core@${MARKETPLACE}`, "--scope", "user"]);
-      if (r.ok) console.log("plugin zodchi-core: uninstalled");
-      else if (/not found in installed plugins/i.test(r.out)) console.log("plugin zodchi-core: was not installed");
-      else throw new Error(`plugin zodchi-core could not be uninstalled; nothing else was removed.\n${r.out}`);
-    }
-    // A marketplace that reads from one of the plugin copies would dangle once they are gone, so it goes first.
-    // Claude Code removes the plugins installed from it with it: the domain plugins too.
+    // The marketplace is looked up before anything is removed: when Claude Code cannot answer, nothing has changed.
+    // A marketplace that reads from one of the plugin copies would dangle once they are gone, so removing it is the
+    // first change; Claude Code removes the plugins installed from it with it, zodchi-core and the domain plugins.
+    // Any other install (--dev, the clone itself) keeps its marketplace: only zodchi-core is uninstalled.
     let marketplaceGone = false;
     const copies = listCopies(home);
-    if (!o.noPlugins && claude(["--version"]).ok) {
-      const found = marketplaceEntry();
-      if (found.error) throw new Error(`could not read the marketplaces; nothing else was removed.\n${found.error}`);
+    if (!o.noPlugins) {
+      const present = claude(["--version"]).ok;
+      if (!present && !o.dryRun) throw new Error("Claude Code (`claude`) is not on PATH; install it, or rerun with --no-plugins. Nothing was removed.");
+      const found = present ? marketplaceEntry() : { entry: null };
+      if (found.error) throw new Error(`could not read the marketplaces; nothing was removed.\n${found.error}`);
       if (found.entry && found.entry.source === "directory" && isCopyPath(found.entry.path, home)) {
-        say(`remove marketplace ${MARKETPLACE} (it read from ${found.entry.path}); its domain plugins go with it`);
+        say(`remove marketplace ${MARKETPLACE} (it read from ${found.entry.path}); zodchi-core and the domain plugins installed from it go with it`);
         if (!o.dryRun) {
           const r = claude(["plugin", "marketplace", "remove", MARKETPLACE]);
-          if (!r.ok) throw new Error(`marketplace ${MARKETPLACE} could not be removed; nothing else was removed.\n${r.out}`);
+          if (!r.ok) throw new Error(`marketplace ${MARKETPLACE} could not be removed; nothing was removed.\n${r.out}`);
         }
         marketplaceGone = true;
+      } else if (o.dryRun) say(`plugin: uninstall zodchi-core@${MARKETPLACE} (user scope); the marketplace stays`);
+      else {
+        const r = claude(["plugin", "uninstall", `zodchi-core@${MARKETPLACE}`, "--scope", "user"]);
+        if (r.ok) console.log("plugin zodchi-core: uninstalled");
+        else if (/not found in installed plugins/i.test(r.out)) console.log("plugin zodchi-core: was not installed");
+        else throw new Error(`plugin zodchi-core could not be uninstalled; nothing else was removed.\n${r.out}`);
       }
     }
     if (o.noPlugins && copies.length) console.log(`Plugin copies kept in ${path.join(home, "plugins")} (--no-plugins leaves Claude Code's plugins alone).`);
@@ -369,7 +456,7 @@ async function main() {
       if (!o.dryRun) fs.rmSync(dest);
     }
     if (!o.dryRun) fs.rmSync(path.join(home, "installed.json"), { force: true });
-    if (!marketplaceGone) console.log(`Domain plugins stay where you enabled them: claude plugin uninstall zodchi-<domain>@${MARKETPLACE} --scope local (in each project).`);
+    if (!marketplaceGone) console.log(`The marketplace ${MARKETPLACE} stays registered${o.noPlugins ? " (--no-plugins)" : ""}, and so do the domain plugins you enabled; to remove them: claude plugin uninstall zodchi-<domain>@${MARKETPLACE} --scope local (in each project), then claude plugin marketplace remove ${MARKETPLACE}.`);
     return;
   }
 
