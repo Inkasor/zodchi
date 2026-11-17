@@ -7,10 +7,12 @@
 //! - [`login`]: the device-code sign-in of each user.
 //! - [`lock`]: lock files between processes.
 //! - [`signal`]: Ctrl+C and SIGTERM.
+//! - [`public`]: the filter that keeps server paths out of every answer.
 
 pub mod api;
 pub mod auth;
 pub mod lock;
 pub mod login;
+pub mod public;
 pub mod registry;
 pub mod signal;

@@ -58,13 +58,33 @@ impl Env {
         (id, added["token"].as_str().unwrap().to_string())
     }
 
-    /// An answer shows neither the data folder nor a path inside it (registry, users, jobs), in any separator.
+    /// An answer shows neither the data folder nor a path inside it (registry, users, jobs, Codex homes), nor the
+    /// test's folder (roles, the zodchi home), in any separator or case.
     fn assert_no_paths(&self, body: &[u8]) {
-        // The decoded error and the raw body, so an escaped separator hides nothing.
-        let decoded = serde_json::from_slice::<Value>(body).ok().and_then(|v| v["error"].as_str().map(String::from)).unwrap_or_default();
-        let text = format!("{decoded}\n{}", String::from_utf8_lossy(body));
-        let data = std::path::absolute(&self.data).unwrap().display().to_string();
-        for needle in [data.clone(), data.replace('\\', "/"), "server.json".into(), "users\\".into(), "users/".into()] {
+        // Every decoded string and the raw body, so an escaped separator hides nothing.
+        fn strings(value: &Value, out: &mut String) {
+            match value {
+                Value::String(s) => {
+                    out.push_str(s);
+                    out.push('\n');
+                }
+                Value::Array(items) => items.iter().for_each(|v| strings(v, out)),
+                Value::Object(map) => map.values().for_each(|v| strings(v, out)),
+                _ => {}
+            }
+        }
+        let mut text = String::from_utf8_lossy(body).to_string();
+        if let Ok(value) = serde_json::from_slice::<Value>(body) {
+            strings(&value, &mut text);
+        }
+        let text = text.to_ascii_lowercase();
+        let mut needles = vec!["server.json".to_string(), "users\\".into(), "users/".into(), "codex-home".into()];
+        for path in [&self.data, &self.root, &self.roles] {
+            let path = std::path::absolute(path).unwrap().display().to_string().to_ascii_lowercase();
+            needles.push(path.replace('\\', "/"));
+            needles.push(path.replace('/', "\\"));
+        }
+        for needle in needles {
             assert!(!text.contains(&needle), "the answer names {needle}: {text}");
         }
     }
@@ -516,4 +536,58 @@ fn a_body_over_32_mb_is_refused() {
     let odd = App::new(&env.data, Box::new(Odd), &Options::new(env.data.clone())).unwrap();
     assert_eq!(odd.handle("GET", "/health", &[], &mut std::io::empty()).status, 200);
     assert_eq!(odd.handle("GET", "/v1/roles", &[], &mut std::io::empty()).status, 500);
+}
+
+/// No answer of any status names a server path: a job's stored error (200 and 422), an account and sign-in error
+/// (200), a role that cannot be loaded (400). The model's own answer is left as the model gave it.
+#[test]
+fn no_answer_names_a_server_path() {
+    let env = Env::new();
+    let (id, token) = env.user("Anna", true);
+    let (bad_id, bad) = env.user("Boris", true);
+    let data = std::path::absolute(&env.data).unwrap();
+    let home = std::path::absolute(env.codex_home(&id)).unwrap();
+
+    // A job whose stored error names the data folder (both separators); its result holds a path of the model's.
+    let dir = data.join("users").join(&id).join("jobs").join("stored-1");
+    std::fs::create_dir_all(&dir).unwrap();
+    let error = format!("Cannot write {} nor {}: denied", dir.join("job.json").display(), home.display().to_string().replace('\\', "/"));
+    let said = format!("the model saw {}", home.display());
+    std::fs::write(dir.join("job.json"), json!({ "key": "stored-1", "role": "ask", "kind": "text", "mode": "expert", "status": "failed",
+        "error": error, "result": { "text": said }, "createdAt": zodchi_core::util::iso(), "finishedAt": zodchi_core::util::iso() }).to_string()).unwrap();
+
+    // Roles that cannot be loaded: their errors name the role file.
+    std::fs::write(env.roles.join("broken.json"), "{ not json").unwrap();
+    std::fs::write(env.roles.join("odd.json"), json!({ "mode": "expert", "model": "m", "effort": "low", "colour": "red" }).to_string()).unwrap();
+    // Codex fails account/read with an error that names the Codex home.
+    std::fs::write(env.codex_home(&bad_id).join("fake-account-error"), "").unwrap();
+    let server = env.serve(&[]);
+
+    let job = server.call("GET", "/v1/jobs/stored-1", Some(&token), None);
+    assert_eq!(job.status, 200, "{}", String::from_utf8_lossy(&job.body));
+    let mut shown = job.json();
+    assert!(shown["job"]["error"].as_str().unwrap().starts_with("Cannot write <server path> nor <server path>"), "{shown}");
+    assert_eq!(shown["job"]["result"]["text"], json!(said), "the model's answer was changed");
+    shown["job"]["result"] = Value::Null;
+    env.assert_no_paths(shown.to_string().as_bytes());
+    let failed = server.call("GET", "/v1/jobs/stored-1/result", Some(&token), None);
+    assert_eq!(failed.status, 422);
+    assert!(failed.json()["error"].as_str().unwrap().starts_with("Cannot write <server path> nor <server path>"), "{}", failed.json());
+    env.assert_no_paths(&failed.body);
+
+    for (role, words) in [("broken", "is not JSON"), ("odd", "Unknown field")] {
+        let refused = server.submit(&token, json!({ "key": format!("{role}-1"), "role": role, "prompt": "p" }));
+        assert_eq!(refused.status, 400, "{}", String::from_utf8_lossy(&refused.body));
+        assert!(refused.json()["error"].as_str().unwrap().contains(words), "{}", refused.json());
+        env.assert_no_paths(&refused.body);
+    }
+
+    let account = server.call("GET", "/v1/account", Some(&bad), None);
+    assert_eq!(account.status, 200);
+    assert!(account.json()["error"].as_str().unwrap().contains("cannot read <server path>"), "{}", account.json());
+    env.assert_no_paths(&account.body);
+    let login = server.call("GET", "/v1/login", Some(&bad), None);
+    assert_eq!(login.status, 200);
+    assert!(login.json()["error"].as_str().unwrap().contains("cannot read <server path>"), "{}", login.json());
+    env.assert_no_paths(&login.body);
 }
