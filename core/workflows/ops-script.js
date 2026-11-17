@@ -11,7 +11,7 @@ export const meta = {
 
 // args:
 //   script    path of the script (absolute, local)
-//   tmp       folder for the copy and the logs: absolute, "/" separators only (E:/x on Windows), no ".", "..",
+//   tmp       folder for the copy and the logs: absolute, "/" separators only (a drive letter and "/" on Windows), no ".", "..",
 //             "//", trailing "/", backslash or quote - it is used verbatim in the commands
 //   check     the command that runs the copy in check mode, with {copy} for the copy's path,
 //             default "{copy} --check" ("python3 {copy} --check" for .py). It must touch nothing: the script's
@@ -49,7 +49,9 @@ if (new Set([name, ...names]).size !== names.length + 1) throw new Error('ops-sc
 // segments, no trailing "/", no quote. Then the reported folder is compared as an exact string, with no normalization
 // that could name a different place than the one mktemp used.
 const absPath = (p) => /^([A-Za-z]:\/|\/)/.test(String(p))
-for (const p of [a.script, ...files]) if (!absPath(String(p).split(String.fromCharCode(92)).join('/'))) throw new Error(`ops-script: paths must be absolute, got ${p}`)
+// The script and its files may use Windows backslashes only after a drive letter; a leading backslash is not absolute.
+const inputAbs = (p) => /^([A-Za-z]:[\\/]|\/)/.test(String(p))
+for (const p of [a.script, ...files]) if (!inputAbs(p)) throw new Error(`ops-script: paths must be absolute, got ${p}`)
 const tmpPlain = (t) => absPath(t) && !/['\\]/.test(t) && !/\/\/|\/$/.test(t) && !t.split('/').some(seg => seg === '.' || seg === '..')
 if (!tmpPlain(String(a.tmp))) throw new Error(`ops-script: args.tmp must be a plain absolute path with "/" only (no ".", "..", "//", trailing "/", backslash or quote), got ${a.tmp}`)
 // The local staging folder is made fresh by mktemp -d from the template {tmp}/copy.XXXXXXXX; the runner reports the path
