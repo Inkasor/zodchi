@@ -13,6 +13,7 @@
   ],
   "gaps": [],
   "next": { "route": "reply", "role": "", "question": "", "reason": "The error predates the release that fixed it." },
+  "facts": "Your export (job 4711) stopped because of an error that the update of 16 November fixed. The job wrote no file.",
   "reply": "Your export (job 4711) stopped because of an error that the update of 16 November fixed. The job wrote no file, so it is safe to start again: press Retry on the job page.",
   "leadLine": "4711: stale, ERR_EXPORT_COLUMNS fixed in 2.4.1 (deployed); reporter retries.",
   "recommendRetry": true,

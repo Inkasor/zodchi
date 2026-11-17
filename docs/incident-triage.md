@@ -48,28 +48,48 @@ args: {
 3. **Classify** (one call of a strong model, no tools). The request is built from the adapter and fixed text only; the
    report and every product output reach the model as the attached bundle, marked as data. The answer: findings (each
    with a kind and the evidence ids it rests on), gaps (missing evidence and the operation that would supply it, or the
-   product report to build when none exists) and one route.
+   product report to build when none exists), one route, plain facts for the reporter, and the model's own wording (a
+   suggested reply, a line for the lead, the route's reason).
 4. **Draft** (the workflow, then a runner publishes). The workflow checks the answer before anything is written as a
    draft:
    - an evidence id that is not in the bundle refuses the answer;
    - a finding about what agents may do must cite both the agent skill and an allow-list;
-   - a text the reporter, the lead or a later package acts on (the reply, the line for the lead, the route's reason and
-     question, each gap's what and proposal, every field and list entry of the fix brief, the agent skill change) that
-     asks for access, says someone has none or proposes working around a refusal refuses the answer, and so does a
-     reply that promises a time; a prohibition ("the command must not grant access", "the test must not bypass the
-     allow-list refusal") is not a proposal and passes;
+   - a text the lead forwards or acts on (the facts, the question for the owner, each gap's what and proposal, every
+     field and list entry of the fix brief, the agent skill change) that asks for access, says someone has none or
+     proposes working around a refusal refuses the answer; a prohibition ("the command must not grant access", "the
+     test must not bypass the allow-list refusal") is not a proposal and passes;
+   - facts that are empty, promise a time or speak of retrying refuse the answer;
    - a fix brief with an empty or blank entry in files, done or checks refuses the answer;
-   - a retry is recommended only when the adapter documents one; without that recommendation a reply that speaks of
-     retrying, or a line for the lead or a route's reason or question that tells someone to retry ("press Retry", "try
-     again"), refuses the answer (running this workflow again, an operator's restart or a command named in backticks is
-     no retry); the draft names a retry (next step, note for the log) only for a recommended one;
+   - a retry recommendation without a retry in the adapter refuses the answer;
    - `stale` without evidence that a specific release fixes the error and that the environment runs it becomes
-     `unknown` (hypothesis `stale`); every text written on that premise is replaced: the reply is withheld (the draft
-     says that none may be sent), the finding's summary (also the log's cause), the line for the lead and the route's
-     reason are the workflow's own words, and the retry recommendation is dropped;
+     `unknown` (hypothesis `stale`), and the whole answer goes with it, since any of its text may rest on the fix being
+     out: the facts, the model's wording, the route's question, the gaps, the fix brief and every finding's summary are
+     discarded and the retry recommendation is dropped. The route becomes `needs-evidence`, and the gaps are the
+     workflow's own: the missing evidence (the fix, or its deployment in the affected environment) and the adapter
+     operation that supplies it, or a product report to build when none does. The raw answer stays in
+     `classification.raw.json` for audit only;
    - a refused read the answer left out is added as a gap; a gap that names an operation the adapter does not have
      loses it (nothing the model says adds an operation);
    - a route the findings do not carry becomes `needs-evidence`.
+
+### The reply and the model's wording
+
+Version 1 hands the reply to the lead, never to the reporter. The workflow assembles it: the model's checked facts, then
+the product's retry in the adapter's own words (`retry.how`) only when the answer recommends a retry and the adapter
+documents one, then a fixed text for the route:
+
+| Route | Fixed text |
+| --- | --- |
+| `reply` | If anything is still unclear, answer this message. |
+| `fix-brief` | We found a fault in the product and are fixing it. We will write to you when the fix is out. |
+| `awaiting-owner` | This needs a decision of the people responsible for the product. We will write to you once it is made. |
+| `awaiting-operator` | This needs a change on the product's servers. We will write to you once it is done. |
+| `needs-evidence` | We are looking into the error and will write to you with what we find. |
+
+No other text of the model is in it, so retry wording reaches the reply only through a recommended retry. The lead
+puts the reply into the reporter's language. The model's suggested reply, its line for the lead and the route's reason
+are shown in the draft under "Model's wording (not checked, do not forward as is)": they are not checked, and nothing
+is copied from them to the reporter as it stands.
 
 ### Kinds and routes
 
@@ -89,7 +109,7 @@ args: {
 <tmp>/incident.json          { id, revision, state, adapterHash, revisions: [{ n, state }] }
 <tmp>/rev-<n>/evidence.json  the bundle (immutable)
 <tmp>/rev-<n>/classification.json  the checked answer, or the refused one with the reasons
-<tmp>/rev-<n>/draft.md       reply, line for the lead, findings, gaps, next step, fix brief, note for the log
+<tmp>/rev-<n>/draft.md       reply, findings, gaps, next step, fix brief, note for the log, the model's wording
 <tmp>/rev-<n>/adapterHash    the SHA-256 of the adapter this revision used
 ```
 
@@ -112,14 +132,15 @@ command from the adapter (`releaseCommand`) to whoever runs it; a step that need
 `/zodchi-core:ops-script` with `fixes: 0`, so a reviewed script is not edited on the way. A prepared release is not a
 done one: wait for its receipt before you tell anyone it is out.
 
-**6. Close.** Send the reporter the reply: what happened, what was done, what to press. Never "I have no access": say
-what will be done and when they act. Add the note from the draft to the incident log (`incidentLog`): cause, change,
+**6. Close.** Send the reporter the draft's reply, in their language, with what was done since. Never "I have no
+access": say what will be done and when they act. Add the note from the draft to the incident log (`incidentLog`): cause, change,
 release, and who verifies. When the draft recommends the product's retry, the reporter verifies by it: remind yourself
 to check that the retry worked; otherwise name who verifies and how when closing.
 
 For `awaiting-owner` ask the owner's role the draft's question and decide nothing meanwhile; for `awaiting-operator`
-hand the draft to the operator's role; for `needs-evidence` collect what the gaps name (a missing operation is a
-product report to build, never wider access) and run again.
+hand the draft's findings and gaps to the operator's role; for `needs-evidence` collect what the gaps name (a missing
+operation is a product report to build, never wider access) and run again. In each case the reporter gets the draft's
+reply meanwhile.
 
 ## Rules
 

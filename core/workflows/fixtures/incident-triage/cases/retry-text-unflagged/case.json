@@ -1,12 +1,25 @@
 {
-  "about": "Review F5: the adapter documents no retry; a reply that tells the reporter to retry with recommendRetry false is refused.",
+  "about": "Review F5, round 3: the adapter documents no retry and the answer recommends none, but the model's suggested reply tells the reporter to press Retry. The reply to the reporter is assembled by the workflow and holds no retry; the model's wording appears only under its own heading.",
   "adapterFrom": "blocked-release",
   "report": "Release 2.5.0 has been blocked all morning by something called P-7f3a2.",
   "params": {},
   "expect": {
-    "state": "failed",
-    "refusedIncludes": [
-      "the reply speaks of a retry"
+    "state": "drafted",
+    "route": "reply",
+    "kinds": [
+      "user-action"
+    ],
+    "replyIncludes": [
+      "Release 2.5.0 waits for process P-7f3a2, which is still running.",
+      "If anything is still unclear, answer this message."
+    ],
+    "replyExcludes": [
+      "retr",
+      "try again",
+      "restart"
+    ],
+    "wordingOnly": [
+      "Press Retry on the release page once it finishes."
     ]
   }
 }

@@ -376,7 +376,7 @@ const CLASSIFICATION = {
   $schema: 'http://json-schema.org/draft-07/schema#',
   title: 'Classification of one incident from its evidence bundle',
   type: 'object', additionalProperties: false,
-  required: ['findings', 'gaps', 'next', 'reply', 'leadLine', 'recommendRetry', 'fixBrief'],
+  required: ['findings', 'gaps', 'next', 'facts', 'reply', 'leadLine', 'recommendRetry', 'fixBrief'],
   properties: {
     findings: {
       type: 'array', description: 'Contributing findings, the main one first; empty when the evidence supports none',
@@ -415,8 +415,9 @@ const CLASSIFICATION = {
         reason: { type: 'string' },
       },
     },
-    reply: { type: 'string', description: 'For the reporter, in their language: confirmed facts and confirmed next steps only' },
-    leadLine: { type: 'string', description: 'One line for the lead' },
+    facts: { type: 'string', description: 'For the reporter, in their language: what the evidence shows, plain confirmed facts only. The workflow builds the reply from fixed text for the route and these facts, so they hold no instruction, no next step, no retry and no time' },
+    reply: { type: 'string', description: 'Your wording of a reply to the reporter: shown to the lead as unchecked text, never sent as is' },
+    leadLine: { type: 'string', description: 'One line for the lead: shown as unchecked text' },
     recommendRetry: { type: 'boolean' },
     fixBrief: {
       type: 'object', additionalProperties: false,
@@ -461,22 +462,23 @@ and cite both: what the agent skill tells the model to do (source agentSkill) an
 Gaps: every item with outcome refused, failed, timeout or skipped that matters is a gap. A refused read is never a
 reason to ask for wider access: name the adapter operation that would supply the fact, or, when none exists, propose
 a safer product report that answers the question (that is missing-tool). Never propose granting access, rights or
-credentials, and never suggest working around a refusal. This holds for every text the lead or a later package acts on:
-the reply, leadLine, next.reason and next.question, every gap's what and proposal and every field and list entry of
-fixBrief. A prohibition is fine ("the command must not grant access"); a request or proposal is not.
+credentials, and never suggest working around a refusal. This holds for every text you write: facts, reply, leadLine,
+next.reason and next.question, every gap's what and proposal and every field and list entry of fixBrief. A prohibition
+is fine ("the command must not grant access"); a request or proposal is not.
 
 Route (next.route): reply (stale or user-action, nothing to build), fix-brief (product-bug or missing-tool),
 awaiting-owner (owner-decision: role and question), awaiting-operator (infra: role), needs-evidence (the evidence does
 not settle it).
 
-reply: for the reporter, in the reporter's language, plain words. State only confirmed facts and confirmed next steps.
-Never say that anyone lacks access; say what will be done and what the reporter does. Promise no time or date.
-Recommend a retry (recommendRetry true) only when the request names retry conditions and the evidence meets them;
-with recommendRetry false the reply does not mention retrying, restarting or starting again at all, and leadLine,
-next.reason and next.question tell nobody to retry (a new run of this workflow or an operator's restart is not a retry).
-leadLine: one line for the lead. fixBrief: for fix-brief, the goal, the files, what done means and the checks, in the
-shape of a code-package brief; agentsAffected true when the change alters what agents of the product can do or are
-told, with agentSkillChange saying what the agent skill must say afterwards. Otherwise goal "" and empty lists.
+The reply the reporter gets is built by the workflow: fixed text for the route, your facts before it, and the
+product's own retry after it when you recommend one. facts: for the reporter, in the reporter's language, plain words:
+what the evidence shows, confirmed facts only. No instruction, no next step, no retry, no time or date, and never that
+anyone lacks access. Recommend a retry (recommendRetry true) only when the request names retry conditions and the
+evidence meets them; the workflow then adds the product's retry to the reply itself.
+reply and leadLine: your wording of a reply and one line for the lead; the lead sees them, with next.reason, as
+unchecked text that is never sent as is. fixBrief: for fix-brief, the goal, the files, what done means and the checks,
+in the shape of a code-package brief; agentsAffected true when the change alters what agents of the product can do or
+are told, with agentSkillChange saying what the agent skill must say afterwards. Otherwise goal "" and empty lists.
 
 Answer with JSON by the schema only.`
 
@@ -504,13 +506,9 @@ const WORKAROUND = /\b(work(?:s|ed|ing)?\s+around|bypass\w*|circumvent\w*|sidest
 const PROHIBITION = /\b(?:must not|mustn't|must never|may not|should not|shouldn't|shall not|does not|doesn't|do not|don't|did not|didn't|will not|won't|cannot|can't|never|without)\s+(?:(?:be|ever|silently|directly|automatically|quietly)\s+)?(?!(?:ha(?:ve|s|d|ving)|access|permissions?|rights|credentials?|the|any)\b)\w+(?:\s+(?:for|around))?/gi
 const PROHIBITION_RU = /(?<![\p{L}])не\s+(?:(?:нужн|надо|долж|след|мож|стои)\p{L}*\s+)?\p{L}+/giu
 const affirmative = (s) => String(s).replace(PROHIBITION, ' ').replace(PROHIBITION_RU, ' ')
-// Retry words in a text the reporter or the lead acts on: allowed only with recommendRetry (then the adapter's retry
-// exists).
+// The facts are the only text of the classifier inside the reply to the reporter, and the retry wording of that reply
+// is the workflow's own (the adapter's retry, only with recommendRetry): facts that speak of retrying refuse the answer.
 const RETRY_TEXT = /\b(re-?try\w*|re-?run\w*|restart\w*|try (?:it |this )?again|start (?:it |this |the \w+ )?again|run (?:it |this |the \w+ )?again)\b|повтори\w*|перезапуст\w*|(?:запуст|попроб|отправ)\w*\s+(?:снова|ещё раз|еще раз)/i
-// In the lead's and the route's lines the retry of the reporter or the product ("press Retry", "try again") is
-// refused, while running this workflow again ("run again with the plain id") and a command named in backticks
-// (`catalog job restart`) are the lead's own matters and pass.
-const RETRY_LEAD = /\b(re-?try\w*|try (?:it |this )?again)\b|повтор\w*\s+попытк\w*|попроб\w*\s+(?:снова|ещё раз|еще раз)/i
 const PROMISED_TIME =/\b(tomorrow|tonight|within\s+(an?|\d+)\s*\w*|in\s+(an?|\d+)\s*(min|mins|minutes?|hours?|days?|weeks?)|by\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|tonight|noon|the end of)|eta)\b|завтра|через\s+(\d+|час|день|неделю|минуту)|в течение|к концу (дня|недели)/i
 
 // Checks the classifier's answer against the bundle and the adapter. Contract violations refuse the answer; the
@@ -544,12 +542,14 @@ function judge(ans, summary, ad) {
     const src = f.evidence.map(e => byId.get(e).source)
     if (!src.includes('agentSkill') || !src.some(s => s.startsWith('allowList:'))) refused.push(`finding ${i + 1} is about a capability but does not cite both the agent skill and an allow-list`)
   })
-  // Texts the reporter, the lead or a later package would act on - every field the draft renders as an instruction,
-  // each entry of a list on its own: no request for access, no "no access", no workaround of a refusal.
+  // Texts the lead forwards or acts on: the facts (inside the reply to the reporter), the question for the owner, the
+  // gaps (the lead collects what they name) and every field and list entry of the fix brief (a later package's brief),
+  // each on its own: no request for access, no "no access", no workaround of a refusal. The suggested reply, the line
+  // for the lead and the route's reason are not checked: the draft shows them apart, as wording not to forward.
   const entries = (k) => (Array.isArray(fb[k]) ? fb[k] : [fb[k]]).map((t, i) => [`fixBrief.${k}[${i}]`, t])
-  const texts = [['reply', ans.reply], ['leadLine', ans.leadLine], ['next.question', next.question], ['next.reason', next.reason], ['next.role', next.role],
+  const facts = typeof ans.facts === 'string' ? ans.facts.trim() : ''
+  const texts = [['facts', facts], ['next.question', next.question], ['next.role', next.role],
     ['fixBrief.goal', fb.goal], ...entries('files'), ...entries('done'), ...entries('checks'), ['fixBrief.agentSkillChange', fb.agentSkillChange],
-    // The draft tells the lead to collect what a gap names, so its what is an instruction too.
     ...gaps.flatMap((g, i) => [[`gap ${i + 1} what`, g.what], [`gap ${i + 1} proposal`, g.proposal]])]
   for (const [where, t] of texts) {
     const s = String(t == null ? '' : t)
@@ -557,47 +557,57 @@ function judge(ans, summary, ad) {
     if (ACCESS_ASK.test(act)) refused.push(`${where} asks for access or says someone has none: ${JSON.stringify(s.slice(0, 160))}`)
     else if (WORKAROUND.test(act)) refused.push(`${where} proposes working around a refusal: ${JSON.stringify(s.slice(0, 160))}`)
   }
-  if (PROMISED_TIME.test(String(ans.reply || ''))) refused.push(`the reply promises a time: ${JSON.stringify(String(ans.reply).match(PROMISED_TIME)[0])}`)
-  // A retry reaches the reporter or the lead only through recommendRetry, and that only with the adapter's retry. The
-  // texts that carry instructions are checked: the reply with every retry word, the lead's and the route's lines with
-  // RETRY_LEAD (an operator's restart or a new run of this workflow is no retry of the reporter).
-  if (ans.recommendRetry && !ad.retry) refused.push('the reply recommends a retry, but the adapter documents no retry and no retry conditions')
-  if (!ans.recommendRetry) {
-    const retryTexts = [['the reply', ans.reply, RETRY_TEXT], ['leadLine', ans.leadLine, RETRY_LEAD], ['next.question', next.question, RETRY_LEAD], ['next.reason', next.reason, RETRY_LEAD]]
-    for (const [where, t, re] of retryTexts) {
-      const s = String(t == null ? '' : t)
-      const m = (re === RETRY_TEXT ? s : s.replace(/`[^`\n]*`/g, ' ')).match(re)
-      if (m) refused.push(`${where} speaks of a retry (${JSON.stringify(m[0])}) but recommendRetry is false: a retry is recommended only through recommendRetry, with the adapter's retry and its conditions`)
-    }
-  }
-  if (typeof ans.reply !== 'string' || !ans.reply.trim()) refused.push('the reply is empty')
+  if (!facts) refused.push('facts is empty: the reply to the reporter is built on it')
+  const time = facts.match(PROMISED_TIME)
+  if (time) refused.push(`facts promise a time: ${JSON.stringify(time[0])}`)
+  const retryWord = facts.match(RETRY_TEXT)
+  if (retryWord) refused.push(`facts speak of a retry (${JSON.stringify(retryWord[0])}): the workflow adds the product's retry to the reply itself, and only when it is recommended`)
+  if (ans.recommendRetry && !ad.retry) refused.push('the answer recommends a retry, but the adapter documents no retry and no retry conditions')
   if (refused.length) return { refused, notes }
 
   // stale needs a fix and a deployment, both from items that ended ok, the deployment from a release operation.
-  let replyWithheld = ''
+  const unproven = []
   for (const f of findings) {
     if (f.kind !== 'stale') continue
     const okFrom = (list, kinds) => list.length > 0 && list.every(e => { const it = byId.get(e); return it.outcome === 'ok' && it.provides.some(p => kinds.includes(p)) })
     const fixed = okFrom(f.fixedBy, ['release', 'changelog'])
     const deployed = okFrom(f.deployedIn, ['release'])
-    if (!fixed || !deployed) {
-      f.kind = 'unknown'; f.hypothesis = 'stale'
-      const why = `${!fixed ? 'no evidence that a specific release fixes this error' : ''}${!fixed && !deployed ? ' and ' : ''}${!deployed ? 'no evidence that the affected environment runs it' : ''}`
-      notes.push(`stale became unknown (hypothesis stale): ${why}`)
-      // The finding's own summary states the premise (fixed, deployed): it is replaced, not published.
-      f.summary = `May be stale, not confirmed: ${why}. The classifier's summary was withheld, as it rests on that premise.`
-      replyWithheld = 'the classifier wrote it for a stale finding that became unknown (the fix or its deployment is not confirmed), so it may assert a fix or a retry that the evidence does not carry'
-    }
+    if (!fixed || !deployed) unproven.push({ f, fixed, deployed })
   }
-  // Every text written on the premise the workflow just took away goes: the reply, the line for the lead and the
-  // route's reason are replaced by the workflow's own words, and no retry stands. Nothing the classifier wrote on it is
-  // published, in the draft or in classification.json.
-  let leadLine = ans.leadLine || ''
-  if (replyWithheld) {
-    notes.push(`reply withheld: ${replyWithheld}${ans.recommendRetry ? '; its retry recommendation was dropped' : ''}`)
-    notes.push('the line for the lead and the route\'s reason were written on the same premise; replaced by the workflow\'s own')
-    leadLine = 'A stale finding is not confirmed (the fix or its deployment lacks evidence); the classifier\'s line was withheld: follow Next.'
-    next.reason = 'The classifier\'s reason was withheld: it rests on a stale finding that the evidence does not confirm.'
+  // A stale finding the evidence does not confirm takes the whole answer with it: any text of it may rest on the fix
+  // being out. Everything the classifier wrote is discarded (facts, suggested reply, line for the lead, the route's
+  // reason and question, gaps, fix brief, finding summaries, the retry recommendation); the route is needs-evidence,
+  // and the gaps are the workflow's own: the missing evidence and the adapter operation that supplies it, or none.
+  const discarded = unproven.length > 0
+  if (discarded) {
+    const opsFor = (kinds) => Object.entries(ad.operations).filter(([, op]) => (op.provides || ['other']).some(p => kinds.includes(p))).map(([n]) => n)
+    const ended = (n) => { const it = summary.items.find(i => i.source === `op:${n}`); return it ? `${n} (ended ${it.outcome} in this run)` : n }
+    const missing = new Map()
+    const need = (what, kinds, evidence) => { const m = missing.get(what) || { what, kinds, evidence: [] }; m.evidence.push(...evidence); missing.set(what, m) }
+    for (const { f, fixed, deployed } of unproven) {
+      const why = [!fixed && 'no evidence that a specific release fixes this error', !deployed && 'no evidence that the fix is deployed in the affected environment'].filter(Boolean).join(' and ')
+      notes.push(`stale became unknown (hypothesis stale): ${why}`)
+      f.kind = 'unknown'; f.hypothesis = 'stale'; f.summary = `May be stale, not confirmed: ${why}.`
+      if (!fixed) need('a release that fixes this error signature', ['release', 'changelog'], f.fixedBy)
+      if (!deployed) need('the deployment of the fix in the affected environment (the release it runs)', ['release'], f.deployedIn)
+    }
+    for (const f of findings) {
+      if (unproven.some(u => u.f === f)) continue
+      f.summary = 'Withheld: written in the same answer as a stale finding that the evidence does not confirm.'
+      if (f.kind !== 'unknown' || !KINDS.includes(f.hypothesis)) f.hypothesis = ''
+    }
+    gaps.length = 0
+    for (const m of missing.values()) {
+      const ops = opsFor(m.kinds)
+      gaps.push({
+        what: `Missing evidence: ${m.what}. ${ops.length ? `The adapter's ${ops.map(ended).join(', ')} ${ops.length > 1 ? 'provide' : 'provides'} it.` : 'No operation of the adapter provides it.'}`,
+        evidence: [...new Set(m.evidence)], operation: ops[0] || '', proposal: ops.length ? '' : `a read-only product report of ${m.what}`,
+      })
+    }
+    notes.push(`every text the classifier wrote in this answer was discarded, as any of it may rest on the unconfirmed fix: facts, suggested reply, line for the lead, the route's reason and question, gaps, fix brief and finding summaries${ans.recommendRetry ? ', and its retry recommendation' : ''}; ` +
+      (next.route === 'needs-evidence' ? 'the route stays needs-evidence' : `the route ${next.route} became needs-evidence`))
+    Object.assign(next, { route: 'needs-evidence', role: '', question: '', reason: '' })
+    Object.assign(fb, { goal: '', files: [], done: [], checks: [], agentsAffected: false, agentSkillChange: '' })
   }
   // Every refused read is a gap; a gap names an operation of the adapter or none.
   for (const it of summary.items.filter(i => i.outcome === 'refused')) {
@@ -644,7 +654,25 @@ function judge(ans, summary, ad) {
     if (!String(next.role || '').trim()) refused.push('the route is awaiting-operator but no operator role is named (the adapter has no operator either)')
   }
   if (refused.length) return { refused, notes }
-  return { refused, notes, findings, gaps, next, fixBrief: fb, reply: replyWithheld ? '' : ans.reply, replyWithheld, leadLine, recommendRetry: !replyWithheld && Boolean(ans.recommendRetry) }
+  const text = (x) => discarded || typeof x !== 'string' ? '' : x.trim()
+  const j = { refused, notes, findings, gaps, next, fixBrief: fb, facts: text(facts), reply: text(ans.reply), leadLine: text(ans.leadLine), recommendRetry: !discarded && Boolean(ans.recommendRetry), discarded }
+  j.reporterReply = reporterReply(j, ad)
+  return j
+}
+
+// The reply to the reporter is assembled here, never written by the model: the classifier's checked facts, a fixed
+// text for the route, and retry wording only with a recommended retry, in the adapter's own words. Version 1 hands it
+// to the lead, who sends it.
+const REPLY_TEXT = {
+  reply: 'If anything is still unclear, answer this message.',
+  'fix-brief': 'We found a fault in the product and are fixing it. We will write to you when the fix is out.',
+  'awaiting-owner': 'This needs a decision of the people responsible for the product. We will write to you once it is made.',
+  'awaiting-operator': 'This needs a change on the product\'s servers. We will write to you once it is done.',
+  'needs-evidence': 'We are looking into the error and will write to you with what we find.',
+}
+function reporterReply(j, ad) {
+  const retry = j.recommendRetry ? `When you are ready, you can try again: ${String(ad.retry.how).trim().replace(/[.!]+$/, '')}.` : ''
+  return [j.facts, retry, REPLY_TEXT[j.next.route]].filter(Boolean).join(' ')
 }
 
 // ------------------------------------------------------------------ draft
@@ -660,14 +688,13 @@ function draftText(j, ad, rev, ev, cls) {
     L.push('## Next', '', 'Run the workflow again (a new revision), with the evidence the answer was missing if that was the cause.', '')
     return L.join('\n')
   }
-  L.push(`Route: ${j.next.route}${j.next.role ? ` (${j.next.role})` : ''}. ${j.next.reason || ''}`.trim(), '')
-  L.push('## Reply to the reporter', '', j.replyWithheld
-    ? `None may be sent: ${j.replyWithheld}. If the reporter needs an answer meanwhile, write one that says only that the error is being looked at: no fix, no next step for them, no time.`
-    : j.reply.trim(), '')
-  // Retry instructions come only from a validated recommendation, with the adapter's own retry.
-  if (j.recommendRetry) L.push(`The reply recommends a retry. The product's retry: ${ad.retry.how}. Conditions: ${ad.retry.conditions}`, '')
-  const meanwhile = j.replyWithheld ? 'No reply may be sent meanwhile (see above).' : 'Meanwhile the reporter gets the reply above.'
-  L.push('## For the lead', '', j.leadLine.trim() || '(no line)', '')
+  L.push(`Route: ${j.next.route}${j.next.role ? ` (${j.next.role})` : ''}.`, '')
+  L.push('## Reply to the reporter', '',
+    `Assembled by the workflow from fixed text for the route${j.facts ? ' and the classifier\'s facts (checked for access requests, workarounds and promised times)' : ''}. ` +
+    'Put it into the reporter\'s language and send it yourself; this workflow sends nothing.', '', j.reporterReply, '')
+  // Retry wording comes only from a validated recommendation, with the adapter's own retry.
+  if (j.recommendRetry) L.push(`It recommends the product's retry: ${ad.retry.how}. Conditions: ${ad.retry.conditions}`, '')
+  const meanwhile = 'Meanwhile the reporter gets the reply above.'
   L.push('## Findings', '')
   L.push(j.findings.length ? list(j.findings.map(f => `${f.kind}${f.kind === 'unknown' && f.hypothesis ? ` (hypothesis: ${f.hypothesis})` : ''}, ${f.confidence}, about ${f.about}: ${f.summary} Evidence: ${f.evidence.join(', ') || 'none'}.` +
     (f.fixedBy.length ? ` Fixed by: ${f.fixedBy.join(', ')}.` : '') + (f.deployedIn.length ? ` Deployed in: ${f.deployedIn.join(', ')}.` : ''))) : '- none', '')
@@ -675,13 +702,12 @@ function draftText(j, ad, rev, ev, cls) {
   L.push(j.gaps.length ? list(j.gaps.map(g => `${g.what} (${g.evidence.join(', ') || 'no item'}). ${g.operation ? `Operation that supplies it: ${g.operation}.` : 'No sanctioned operation supplies it.'}${g.proposal ? ` Proposal: ${g.proposal}` : ''}`)) : '- none', '')
   L.push('## Next', '')
   const r = j.next.route
-  if (r === 'reply') L.push(j.replyWithheld
-    ? 'The reply was withheld (see above): settle the open finding first; collect what the gaps name and run again (a new revision).'
-    : `Send the reply above to the reporter, then log the note below.${j.recommendRetry ? ` The reporter verifies by the product's retry: ${ad.retry.how}.` : ''}`)
+  if (r === 'reply') L.push(`Send the reply above to the reporter, then log the note below.${j.recommendRetry ? ` The reporter verifies by the product's retry: ${ad.retry.how}.` : ''}`)
   if (r === 'fix-brief') L.push(`Save the fix brief below as a brief file and run \`/zodchi-core:code-package\` with it. Merge and release only with an explicit OK of the owner; then close (docs/incident-triage.md, phases 4-6). ${meanwhile}`)
   if (r === 'awaiting-owner') L.push(`Ask ${j.next.role}: ${j.next.question} Nothing is decided before the answer. ${meanwhile}`)
-  if (r === 'awaiting-operator') L.push(`Hand it to ${j.next.role}: ${j.next.reason} ${meanwhile}`)
-  if (r === 'needs-evidence') L.push('The evidence does not settle it. Collect what the gaps name (a new run of this workflow is a new revision); where no operation exists, the gap is a product report to build, never a request for wider access.')
+  if (r === 'awaiting-operator') L.push(`Hand the findings and gaps above to ${j.next.role}. ${meanwhile}`)
+  if (r === 'needs-evidence') L.push((j.discarded ? 'A stale finding is not confirmed, so everything the classifier wrote was discarded and the gaps are the workflow\'s own. ' : '') +
+    `The evidence does not settle it. Collect what the gaps name (a new run of this workflow is a new revision); where no operation exists, the gap is a product report to build, never a request for wider access. ${meanwhile}`)
   L.push('')
   if (r === 'fix-brief') {
     const fb = j.fixBrief
@@ -704,6 +730,11 @@ function draftText(j, ad, rev, ev, cls) {
     `Release: ${r === 'fix-brief' ? `only with an explicit OK${ad.releaseCommand ? `; the release command, handed over and never run by this workflow: ${ad.releaseCommand}` : ''}` : 'none'}`,
     j.recommendRetry ? `Who verifies: the reporter, by the product's retry (${ad.retry.how}); remind them to check it.` : 'Who verifies: not settled by this draft; name it when closing.',
   ]), '')
+  // The classifier's free text, apart from everything the lead forwards: nothing below was checked.
+  L.push("## Model's wording (not checked, do not forward as is)", '')
+  L.push(j.discarded
+    ? 'Discarded: the answer rests in part on a stale finding that the evidence does not confirm (see the validation notes); classification.raw.json in this revision keeps it for audit.'
+    : list([`Suggested reply: ${j.reply || '(none)'}`, `Line for the lead: ${j.leadLine || '(none)'}`, `Reason for the route: ${String(j.next.reason || '').trim() || '(none)'}`]), '')
   if (j.notes.length) L.push('## Validation notes', '', list(j.notes), '')
   return L.join('\n')
 }
@@ -912,7 +943,7 @@ async function body() {
     incident: a.incident, revision, adapterHash, evidenceSha256: evSha,
     classifier: { provider: pick.provider, model: pick.model, effort: pick.effort || '', ...(pick.provider === 'codex' ? { key } : {}) },
     rawSha256: raw ? sha256(raw) : '', accepted: !j.refused.length, refused: j.refused, notes: j.notes || [],
-    ...(j.refused.length ? { answer } : { findings: j.findings, gaps: j.gaps, next: j.next, reply: j.reply, replyWithheld: j.replyWithheld, leadLine: j.leadLine, recommendRetry: j.recommendRetry, fixBrief: j.fixBrief }),
+    ...(j.refused.length ? { answer } : { findings: j.findings, gaps: j.gaps, next: j.next, facts: j.facts, reporterReply: j.reporterReply, recommendRetry: j.recommendRetry, fixBrief: j.fixBrief, discarded: j.discarded, modelWording: { reply: j.reply, leadLine: j.leadLine } }),
   }
   const pubFirst = [
     ...(pick.provider === 'codex' ? [] : [{ path: rawFile, text: lf(raw) }]),
@@ -936,10 +967,10 @@ async function body() {
   out.next = j.refused.length
     ? `The classifier's answer was refused (refused). Read ${revDir}/classification.json and run the workflow again for a new revision.`
     : ({
-        reply: j.replyWithheld ? `Read ${revDir}/draft.md: its reply was withheld; collect what the gaps name and run again.` : `Read ${revDir}/draft.md and send the reply to the reporter; log the note when closing.`,
+        reply: `Read ${revDir}/draft.md and send the reply to the reporter; log the note when closing.`,
         'fix-brief': `Read ${revDir}/draft.md: save its fix brief and run /zodchi-core:code-package with it${j.fixBrief.agentsAffected ? ', together with the agent skill change (a second package when the skill lives elsewhere)' : ''}; release only with an explicit OK.`,
-        'awaiting-owner': `Ask ${j.next.role} the question in ${revDir}/draft.md; send the holding reply meanwhile.`,
-        'awaiting-operator': `Hand it to ${j.next.role} as ${revDir}/draft.md says; send the holding reply meanwhile.`,
-        'needs-evidence': `Collect what the gaps in ${revDir}/draft.md name, then run the workflow again (a new revision).`,
+        'awaiting-owner': `Ask ${j.next.role} the question in ${revDir}/draft.md; send its reply to the reporter meanwhile.`,
+        'awaiting-operator': `Hand it to ${j.next.role} as ${revDir}/draft.md says; send its reply to the reporter meanwhile.`,
+        'needs-evidence': `Collect what the gaps in ${revDir}/draft.md name, then run the workflow again (a new revision); send its reply to the reporter meanwhile.`,
       })[j.next.route]
 }
