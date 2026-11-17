@@ -17,7 +17,8 @@ pub struct Identity {
 pub enum Refusal {
     /// 401: no credentials, or wrong ones.
     Unauthorized(String),
-    /// 500: the authenticator cannot decide (its registry cannot be read); nobody gets in.
+    /// 500: the authenticator cannot decide (its registry cannot be read); nobody gets in. The message goes to the
+    /// client, so it names no server path; the details belong in the server's log.
     Unavailable(String),
 }
 
@@ -49,7 +50,11 @@ pub fn bearer(headers: &[(String, String)]) -> Option<&str> {
 
 impl Authenticator for TokenAuthenticator {
     fn authenticate(&self, headers: &[(String, String)]) -> Result<Identity, Refusal> {
-        let users = registry::load(&self.data).map_err(|e| Refusal::Unavailable(format!("The registry of users cannot be read: {e}")))?;
+        let users = registry::load(&self.data).map_err(|e| {
+            // The reason names the registry's path: it stays in the server's log, the caller gets none of it.
+            eprintln!("zodchi-server: the registry of users cannot be read: {e}");
+            Refusal::Unavailable("The registry of users cannot be read; nobody gets in. The server's log has the reason.".into())
+        })?;
         let Some(token) = bearer(headers) else {
             return Err(Refusal::Unauthorized("Authorization: Bearer <token> is required.".into()));
         };

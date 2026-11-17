@@ -5,6 +5,10 @@
 //! `account/login/completed` arrives for its `loginId` or the code expires (15 minutes); then it is cancelled and
 //! stopped. Completion events of another `loginId` are ignored. Nothing of an attempt survives a restart, and
 //! "connected" is reported only from `account/read` on the user's Codex home (cached for at most 60 s).
+//!
+//! Every attempt stays registered until its app-server is stopped: whoever takes a pending attempt out of its slot
+//! (a replacing start, DELETE, shutdown) cancels and stops it first, and the watcher stops it before it settles the
+//! state. Shutdown also joins every watcher, so no sign-in app-server outlives it.
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -52,6 +56,9 @@ pub struct Logins {
     attempts: AtomicU64,
     /// Set by [`Logins::shutdown`] before it collects the open attempts; no attempt starts after that.
     closed: AtomicBool,
+    /// The watcher of every attempt, joined by [`Logins::shutdown`]: each one returns only once its app-server is
+    /// stopped.
+    watchers: Mutex<Vec<thread::JoinHandle<()>>>,
 }
 
 fn pending_json(p: &Pending) -> Value {
@@ -78,7 +85,8 @@ impl Logins {
 
     /// With another life of the code (tests).
     pub fn with_life(data: &Path, life: Duration) -> Logins {
-        Logins { data: data.to_path_buf(), life, states: Mutex::new(HashMap::new()), accounts: Arc::new(Mutex::new(HashMap::new())), attempts: AtomicU64::new(0), closed: AtomicBool::new(false) }
+        Logins { data: data.to_path_buf(), life, states: Mutex::new(HashMap::new()), accounts: Arc::new(Mutex::new(HashMap::new())), attempts: AtomicU64::new(0), closed: AtomicBool::new(false),
+            watchers: Mutex::new(Vec::new()) }
     }
 
     fn slot(&self, user: &str) -> Slot {
@@ -102,11 +110,15 @@ impl Logins {
         if self.closed.load(Ordering::SeqCst) {
             return fail("The server is stopping; no sign-in is started.");
         }
-        if let State::Pending(p) = &*state {
-            if Instant::now() < p.deadline {
-                return Ok(pending_json(p));
+        match &*state {
+            State::Pending(p) if Instant::now() < p.deadline => return Ok(pending_json(p)),
+            // Expired, and its watcher has not settled it yet: it is cancelled and its app-server stopped before it
+            // is replaced (if the watcher is stopping it too, stop() returns once the process is gone).
+            State::Pending(p) => {
+                cancel_and_stop(&p.server, &p.login_id);
+                *state = State::None;
             }
-            // Expired and not yet cleaned up by its watcher: that one stops its own app-server.
+            _ => {}
         }
         let server = Arc::new(self.server_for(user)?);
         // Subscribed before the start is sent: a completion that comes before the answer is not lost.
@@ -129,10 +141,18 @@ impl Logins {
         let out = pending_json(&pending);
         let deadline = pending.deadline;
         *state = State::Pending(pending);
-        drop(state);
         let accounts = Arc::clone(&self.accounts);
         let user = user.to_string();
-        thread::spawn(move || watch(slot, attempt, login_id, server, events, deadline, accounts, user));
+        let watcher = {
+            let slot = Arc::clone(&slot);
+            thread::spawn(move || watch(slot, attempt, login_id, server, events, deadline, accounts, user))
+        };
+        // Registered while the slot is still locked: a shutdown that finds this attempt also finds its watcher.
+        let mut watchers = self.watchers.lock().unwrap();
+        watchers.retain(|w| !w.is_finished());
+        watchers.push(watcher);
+        drop(watchers);
+        drop(state);
         Ok(out)
     }
 
@@ -193,7 +213,9 @@ impl Logins {
     }
 
     /// Shutdown: admission of new attempts is closed, then every pending attempt is cancelled and its app-server
-    /// stopped. A start already past the check holds its slot's lock, so it is found here once it is pending.
+    /// stopped. A start already past the check holds its slot's lock, so it is found here once it is pending. Last,
+    /// every watcher is joined: one that was stopping its app-server (a completion, an expiry, a replaced attempt)
+    /// has finished when this returns.
     pub fn shutdown(&self) {
         let slots: Vec<Slot> = {
             let states = self.states.lock().unwrap();
@@ -206,11 +228,15 @@ impl Logins {
                 cancel_and_stop(&p.server, &p.login_id);
             }
         }
+        let watchers = std::mem::take(&mut *self.watchers.lock().unwrap());
+        for watcher in watchers {
+            let _ = watcher.join();
+        }
     }
 }
 
-/// Follows one attempt to its end. It changes the state only while the state is still this attempt, and it always
-/// stops its own app-server.
+/// Follows one attempt to its end. It always stops its own app-server, and only then changes the state, and only
+/// while the state is still this attempt: until its process is gone the attempt stays visible to shutdown.
 #[allow(clippy::too_many_arguments)]
 fn watch(slot: Slot, attempt: u64, login_id: String, server: Arc<AppServer>, events: Receiver<Value>, deadline: Instant,
     accounts: Arc<Mutex<HashMap<String, (Instant, Value)>>>, user: String) {
@@ -229,6 +255,7 @@ fn watch(slot: Slot, attempt: u64, login_id: String, server: Arc<AppServer>, eve
                         if params.get("loginId").and_then(Value::as_str) != Some(login_id.as_str()) {
                             continue;
                         }
+                        server.stop();
                         accounts.lock().unwrap().remove(&user);
                         if params.get("success") == Some(&json!(true)) {
                             settle(State::Connected);
@@ -236,10 +263,10 @@ fn watch(slot: Slot, attempt: u64, login_id: String, server: Arc<AppServer>, eve
                             let error = params.get("error").and_then(Value::as_str).unwrap_or("The sign-in did not complete.");
                             settle(State::Failed(error.to_string()));
                         }
-                        server.stop();
                         return;
                     }
                     "__gone__" => {
+                        server.stop();
                         settle(State::Failed("The sign-in process exited before the sign-in completed.".into()));
                         return;
                     }

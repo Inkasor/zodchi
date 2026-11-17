@@ -92,6 +92,29 @@ fn shown(job: &Value) -> Value {
     job
 }
 
+/// Strings of `value` with every form of the data folder's path replaced by `<data>`; `hit` tells whether any was.
+fn scrub(value: &mut Value, forms: &[String], hit: &mut bool) {
+    match value {
+        Value::String(text) => {
+            for form in forms.iter().filter(|f| !f.is_empty()) {
+                if text.contains(form.as_str()) {
+                    *text = text.replace(form.as_str(), "<data>");
+                    *hit = true;
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(|v| scrub(v, forms, hit)),
+        Value::Object(map) => map.values_mut().for_each(|v| scrub(v, forms, hit)),
+        _ => {}
+    }
+}
+
+/// A 500 whose `detail` may name server paths: the detail goes to the server's log, the client gets `public`.
+fn internal(public: String, detail: &str) -> Reply {
+    eprintln!("zodchi-server: {public} {detail}");
+    Reply::error(500, public)
+}
+
 fn status_of(job: &Value) -> &str {
     job.get("status").and_then(Value::as_str).unwrap_or("")
 }
@@ -233,6 +256,28 @@ impl App {
 
     /// One request. `body` is read only by the routes that take one.
     pub fn handle(&self, method: &str, url: &str, headers: &[(String, String)], body: &mut dyn Read) -> Reply {
+        self.without_paths(self.route(method, url, headers, body))
+    }
+
+    /// The last guard of the output contract: an error answer never shows where the data folder is. One that names
+    /// it is logged in full, and the client gets it with the folder's path replaced by `<data>`.
+    fn without_paths(&self, reply: Reply) -> Reply {
+        if reply.status < 400 || reply.content_type != "application/json" {
+            return reply;
+        }
+        let root = self.data.display().to_string();
+        let forms = [root.clone(), root.replace('\\', "/"), root.replace('/', "\\")];
+        let mut value = reply.json_of();
+        let mut hit = false;
+        scrub(&mut value, &forms, &mut hit);
+        if !hit {
+            return reply;
+        }
+        eprintln!("zodchi-server: an answer named the data folder: {}", String::from_utf8_lossy(&reply.body).trim_end());
+        Reply::json(reply.status, &value)
+    }
+
+    fn route(&self, method: &str, url: &str, headers: &[(String, String)], body: &mut dyn Read) -> Reply {
         let (path, query) = url.split_once('?').unwrap_or((url, ""));
         let parts: Vec<&str> = path.trim_end_matches('/').split('/').skip(1).collect();
         if parts == ["health"] {
@@ -392,7 +437,8 @@ impl App {
             }
             let (mine, all) = match self.unfinished(&who.id) {
                 Ok(counts) => counts,
-                Err(e) => return Reply::error(500, format!("{} The key {} is still free.", e.0, req.key)),
+                // The reason names folders of the data root: it is logged, the caller learns only that the key is free.
+                Err(e) => return internal(format!("The unfinished jobs cannot be counted; the job is refused. The key {} is still free.", req.key), &e.0),
             };
             if mine >= self.max_user_jobs {
                 return Reply::error(429, format!("You have {mine} unfinished jobs; at most {} at once. The key {} is still free.", self.max_user_jobs, req.key));
