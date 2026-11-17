@@ -53,7 +53,7 @@ const files = Array.isArray(a.files) ? a.files : (a.files ? [a.files] : [])
 const names = files.map(base)
 const LIST = '.ops-sha256' // the hash list the workflow writes into the remote folder
 for (const n of [name, ...names]) {
-  if (!n || n === '.' || n === '..' || /[\r\n]/.test(n)) throw new Error(`ops-script: bad file name ${JSON.stringify(n)}`)
+  if (!n || n === '.' || n === '..' || n === '-' || /[\r\n]/.test(n)) throw new Error(`ops-script: bad file name ${JSON.stringify(n)}`)
   if (n === LIST) throw new Error(`ops-script: a file may not be named ${LIST}`)
 }
 // A remote command is assembled from these names, so with args.remote they must be plain.
