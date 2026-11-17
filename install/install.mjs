@@ -76,12 +76,32 @@ function readManifest(home) {
 
 // One `claude plugin ...` call. Arguments go as an array; on Windows the npm `claude` is a .cmd, so it runs through
 // the shell with every argument quoted.
+// No shell is involved, so a path is passed exactly as it is (a cmd.exe line would expand %VARS%). The native
+// `claude` (claude.exe on Windows) is run directly; an npm-only install is run as `node <its cli.js>`.
+function claudeCommand() {
+  const probe = spawnSync("claude", ["--version"], { encoding: "utf8", windowsHide: true });
+  if (!(probe.error && probe.error.code === "ENOENT")) return ["claude", []];
+  if (process.platform === "win32") {
+    for (const dir of (process.env.PATH || "").split(path.delimiter)) {
+      if (!dir || !fs.existsSync(path.join(dir, "claude.cmd"))) continue;
+      const cli = path.join(dir, "node_modules", "@anthropic-ai", "claude-code", "cli.js");
+      if (fs.existsSync(cli)) return [process.execPath, [cli]];
+    }
+  }
+  return null;
+}
+let CLAUDE;
 function claude(args, { cwd } = {}) {
-  const win = process.platform === "win32";
-  const quoted = win ? args.map(a => /^[\w@:./-]+$/.test(a) ? a : `"${a.replace(/"/g, '\\"')}"`) : args;
-  const r = spawnSync("claude", quoted, { cwd, encoding: "utf8", shell: win, windowsHide: true });
+  if (CLAUDE === undefined) CLAUDE = claudeCommand();
+  if (!CLAUDE) return { ok: false, missing: true, out: "Claude Code (`claude`) is not on PATH." };
+  const r = spawnSync(CLAUDE[0], [...CLAUDE[1], ...args], { cwd, encoding: "utf8", windowsHide: true });
   return { ok: r.status === 0, out: `${r.stdout || ""}${r.stderr || ""}`.trim() };
 }
+
+const samePath = (a, b) => {
+  const n = (p) => path.resolve(p).replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? n(a).toLowerCase() === n(b).toLowerCase() : n(a) === n(b);
+};
 
 // Registers this checkout as the marketplace, or refreshes it when it is already there.
 function plugins(o, domains, say) {
@@ -89,11 +109,17 @@ function plugins(o, domains, say) {
   const steps = [];
   const project = o.project ? path.resolve(o.project) : null;
   if (project && !fs.existsSync(project)) throw new Error(`No repository at ${project}`);
+  // A marketplace of this name that comes from anywhere but this checkout is somebody else's: never touched.
   steps.push({ what: `marketplace ${MARKETPLACE} from ${SRC}`, run: () => {
-    const added = claude(["plugin", "marketplace", "add", SRC]);
-    if (added.ok) return added;
-    const updated = claude(["plugin", "marketplace", "update", MARKETPLACE]);
-    return updated.ok ? updated : { ...added, out: `${added.out}\n${updated.out}` };
+    const listed = claude(["plugin", "marketplace", "list", "--json"]);
+    if (!listed.ok) return listed;
+    let known = [];
+    try { known = JSON.parse(listed.out.slice(listed.out.indexOf("["))); } catch { return { ok: false, out: `marketplace list did not return JSON:\n${listed.out}` }; }
+    const mine = known.find(m => m.name === MARKETPLACE);
+    if (!mine) return claude(["plugin", "marketplace", "add", SRC]);
+    if (mine.source === "directory" && mine.path && samePath(mine.path, SRC)) return claude(["plugin", "marketplace", "update", MARKETPLACE]);
+    return { ok: false, out: `A marketplace named "${MARKETPLACE}" is already registered from ${mine.path || mine.repo || mine.url || mine.source}. ` +
+      `To use this checkout instead: claude plugin marketplace remove ${MARKETPLACE}, then rerun the installer.` };
   } });
   const install = (plugin, scope, cwd) => () => {
     const r = claude(["plugin", "install", `${plugin}@${MARKETPLACE}`, "--scope", scope], { cwd });
@@ -110,6 +136,7 @@ function plugins(o, domains, say) {
   for (const s of steps) {
     if (o.dryRun) { say(`plugin: ${s.what}`); continue; }
     const r = s.run();
+    if (r.missing) throw new Error("Claude Code (`claude`) is not on PATH; install it, or rerun with --no-plugins.");
     if (!r.ok) throw new Error(`plugin step failed: ${s.what}\n${r.out}`);
     console.log(`plugin: ${s.what} - ok`);
   }
@@ -125,6 +152,13 @@ async function main() {
   const say = (s) => console.log((o.dryRun ? "[dry-run] " : "") + s);
 
   if (o.uninstall) {
+    // The plugin goes first: when Claude Code refuses, nothing has been removed yet.
+    if (!o.noPlugins && !o.dryRun) {
+      const r = claude(["plugin", "uninstall", `zodchi-core@${MARKETPLACE}`, "--scope", "user"]);
+      if (r.ok) console.log("plugin zodchi-core: uninstalled");
+      else if (/not found in installed plugins/i.test(r.out)) console.log("plugin zodchi-core: was not installed");
+      else throw new Error(`plugin zodchi-core could not be uninstalled; nothing else was removed.\n${r.out}`);
+    }
     for (const [dest, hash] of Object.entries(manifest.files || {})) {
       if (!fs.existsSync(dest)) continue;
       if (sha(fs.readFileSync(dest)) !== hash && !o.force) { say(`keep (changed by you): ${dest}`); continue; }
@@ -132,10 +166,6 @@ async function main() {
       if (!o.dryRun) fs.rmSync(dest);
     }
     if (!o.dryRun) fs.rmSync(path.join(home, "installed.json"), { force: true });
-    if (!o.noPlugins && !o.dryRun) {
-      const r = claude(["plugin", "uninstall", `zodchi-core@${MARKETPLACE}`, "--scope", "user"]);
-      console.log(`plugin zodchi-core: ${r.ok ? "uninstalled" : r.out.split("\n")[0]}`);
-    }
     console.log(`Domain plugins stay where you enabled them: claude plugin uninstall zodchi-<domain>@${MARKETPLACE} --scope local (in each project).`);
     return;
   }

@@ -76,9 +76,16 @@ for (const p of market.plugins || []) {
   if (fs.existsSync(agentsDir)) for (const f of fs.readdirSync(agentsDir).filter(n => n.endsWith(".md"))) pluginAgents.add(`${p.name}:${f.slice(0, -3)}`);
 }
 for (const f of tracked.filter(f => /[\\/]workflows[\\/][^\\/]+\.js$/.test(f))) {
-  for (const m of fs.readFileSync(f, "utf8").matchAll(/agentType:\s*'([^']+)'/g)) {
-    if (!pluginAgents.has(m[1])) bad(f, `agentType '${m[1]}' is not "<plugin>:<agent>" of an agent in this marketplace`);
+  // Every mention of agentType, quoted or not, must be a key with a string literal value: anything computed cannot
+  // be checked here and is refused.
+  const text = fs.readFileSync(f, "utf8");
+  for (const m of text.matchAll(/(["'`]?)agentType\1\s*:\s*(?:(["'])([^"'\n]*)\2(?=\s*[,}\n])|(.{0,40}))/g)) {
+    if (m[3] === undefined) { bad(f, `agentType must be a plain string literal, found: ${(m[4] || "").trim()}`); continue; }
+    if (!pluginAgents.has(m[3])) bad(f, `agentType '${m[3]}' is not "<plugin>:<agent>" of an agent in this marketplace`);
   }
+  const mentions = (text.match(/agentType/g) || []).length;
+  const keyed = [...text.matchAll(/(["'`]?)agentType\1\s*:/g)].length;
+  if (mentions !== keyed) bad(f, "agentType appears other than as an object key with a literal value; keep it checkable");
 }
 
 // 4. publish guard
