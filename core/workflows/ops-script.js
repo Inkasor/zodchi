@@ -11,7 +11,8 @@ export const meta = {
 
 // args:
 //   script    path of the script (absolute, local)
-//   tmp       folder for the copy and the logs (absolute)
+//   tmp       folder for the copy and the logs: absolute, "/" separators only (E:/x on Windows), no ".", "..",
+//             "//", trailing "/", backslash or quote - it is used verbatim in the commands
 //   check     the command that runs the copy in check mode, with {copy} for the copy's path,
 //             default "{copy} --check" ("python3 {copy} --check" for .py). It must touch nothing: the script's
 //             check mode reads, validates and prints what it would do
@@ -43,32 +44,17 @@ const names = files.map(base)
 // A remote command is assembled from these names without quoting, so they must be plain.
 if (a.remote) for (const n of [name, ...names]) if (!/^[\w.-]+$/.test(n)) throw new Error(`ops-script: with args.remote a file name must match [\\w.-]+, got ${n}`)
 if (new Set([name, ...names]).size !== names.length + 1) throw new Error('ops-script: the script and its files must have different names')
-// Paths are compared absolute, with /, "." and ".." resolved and, on Windows, without case.
-const absPath = (p) => /^([A-Za-z]:[\\/]|\/)/.test(String(p))
-for (const p of [a.script, a.tmp, ...files]) if (!absPath(p)) throw new Error(`ops-script: paths must be absolute, got ${p}`)
-if (String(a.tmp).includes("'")) throw new Error('ops-script: args.tmp must not contain a single quote (the local command quotes paths under it)')
-const norm = (p) => {
-  const s = String(p).replace(/\\/g, '/')
-  const lead = /^[A-Za-z]:\//.test(s) ? s.slice(0, 3) : s.startsWith('/') ? '/' : ''
-  const parts = []
-  for (const seg of s.slice(lead.length).split('/')) {
-    if (!seg || seg === '.') continue
-    if (seg === '..') parts.pop(); else parts.push(seg)
-  }
-  return lead + parts.join('/')
-}
-const fold = (p) => { const out = norm(p); return /^[A-Za-z]:/.test(out) ? out.toLowerCase() : out }
-// The local staging folder is made fresh by mktemp -d under {tmp}; the runner reports its path. It must have exactly
-// that shape, and the folder the human runs from is rebuilt from args.tmp and the 8-character suffix, so the runner's
-// spelling of the path never reaches the command. Returns that folder, or null.
-const stagingDir = (d) => {
-  if (typeof d !== 'string' || !absPath(d)) return null
-  const prefix = fold(`${a.tmp}/copy`) + '.'
-  const got = fold(d)
-  const suffix = got.slice(prefix.length)
-  if (!got.startsWith(prefix) || !/^[A-Za-z0-9]{8}$/.test(suffix)) return null
-  return `${norm(a.tmp)}/copy.${norm(d).slice(-8)}`
-}
+// Every path is absolute (a drive with "/" or a leading "/"). args.tmp is used verbatim twice - in the mktemp template
+// and in the command for the human - so it must already be in plain form: "/" separators only, no ".", ".." or empty
+// segments, no trailing "/", no quote. Then the reported folder is compared as an exact string, with no normalization
+// that could name a different place than the one mktemp used.
+const absPath = (p) => /^([A-Za-z]:\/|\/)/.test(String(p))
+for (const p of [a.script, ...files]) if (!absPath(String(p).split(String.fromCharCode(92)).join('/'))) throw new Error(`ops-script: paths must be absolute, got ${p}`)
+const tmpPlain = (t) => absPath(t) && !/['\\]/.test(t) && !/\/\/|\/$/.test(t) && !t.split('/').some(seg => seg === '.' || seg === '..')
+if (!tmpPlain(String(a.tmp))) throw new Error(`ops-script: args.tmp must be a plain absolute path with "/" only (no ".", "..", "//", trailing "/", backslash or quote), got ${a.tmp}`)
+// The local staging folder is made fresh by mktemp -d from the template {tmp}/copy.XXXXXXXX; the runner reports the path
+// it printed. It must be that template with 8 letters or digits in place of the X's, exactly; it is then the folder.
+const stagingDir = (d) => (typeof d === 'string' && d.startsWith(`${a.tmp}/copy.`) && /^[A-Za-z0-9]{8}$/.test(d.slice(`${a.tmp}/copy.`.length))) ? d : null
 
 const STEP = {
   type: 'object', required: ['ok', 'summary'],
