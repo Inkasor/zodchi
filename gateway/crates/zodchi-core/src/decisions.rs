@@ -153,27 +153,77 @@ fn post(call: &Call, key: &str, body: &str, s: &Scrubber) -> Result<(u16, String
     let body_file = call.dir.join("decisions-request.json");
     std::fs::write(&body_file, body).map_err(|e| TurnFailed::new("failed", format!("{e}; the API was not asked.")))?;
     let seconds = (call.timeout_ms / 1000).max(1).to_string();
-    let child = Command::new("curl")
-        .args(["-sS", "--proto", "=https", "--max-redirs", "0", "--max-time", &seconds, "-X", "POST", DECISIONS_URL,
+    let mut command = Command::new("curl");
+    // --disable first: no curlrc of the user (retries, tracing, proxies of its own) takes part.
+    command
+        .args(["--disable", "-sS", "--proto", "=https", "--max-redirs", "0", "--max-time", &seconds, "-X", "POST", DECISIONS_URL,
             "-H", "@-", "-H", "content-type: application/json", "--data-binary"])
         .arg(format!("@{}", body_file.display()))
         .args(["-w", "\n%{http_code}"])
         .env_remove("OPENAI_API_KEY")
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-        .spawn();
-    let mut child = match child {
-        Ok(c) => c,
-        Err(e) => {
-            let _ = std::fs::remove_file(&body_file);
-            return Err(TurnFailed::new("failed", format!("curl could not be started: {e}; the API was not asked and nothing was spent.")));
-        }
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let unspent = |e: String| {
+        let _ = std::fs::remove_file(&body_file);
+        TurnFailed::new("failed", format!("{e}; the API was not asked and nothing was spent."))
     };
-    if let Some(mut stdin) = child.stdin.take() {
+    // curl is recorded like Codex: whoever settles a dead worker stops it by pid and start before deciding.
+    call.note_spawn(&call.state).map_err(|e| unspent(e.message))?;
+    let mut child = command.spawn().map_err(|e| {
+        let _ = Call::note_pid(&call.state, None);
+        unspent(format!("curl could not be started: {e}"))
+    })?;
+    let pid = child.id();
+    let stdin = child.stdin.take();
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    *call.helper.lock().unwrap() = Some(child);
+    if let Err(e) = Call::note_pid(&call.state, Some(pid)) {
+        call.stop();
+        return Err(unspent(format!("curl could not be recorded: {}", e.message)));
+    }
+    if call.abort.load(std::sync::atomic::Ordering::SeqCst) {
+        call.stop();
+        return Err(unspent("The call was cut off before the API was asked".into()));
+    }
+    if let Some(mut stdin) = stdin {
         let _ = stdin.write_all(format!("authorization: Bearer {key}\n").as_bytes());
     }
-    let output = child.wait_with_output();
+    let out_reader = std::thread::spawn(move || { let mut b = Vec::new(); let _ = std::io::Read::read_to_end(&mut stdout, &mut b); b });
+    let err_reader = std::thread::spawn(move || { let mut b = Vec::new(); let _ = std::io::Read::read_to_end(&mut stderr, &mut b); b });
+    // Waits for curl while stop() can still reach it: the child stays in the shared slot until it has exited.
+    let status = loop {
+        {
+            let mut slot = call.helper.lock().unwrap();
+            match slot.as_mut() {
+                None => break None, // stop() took it, killed and reaped it
+                Some(child) => match child.try_wait() {
+                    Ok(Some(status)) => {
+                        *slot = None;
+                        break Some(status);
+                    }
+                    Ok(None) => {}
+                    Err(_) => break None,
+                },
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
     let _ = std::fs::remove_file(&body_file);
-    let output = output.map_err(|e| TurnFailed::new("unknown", format!("The request to the Decisions API broke off: {}. Whether it was charged is unknown.", s.quiet(&e.to_string()))))?;
+    let output = std::process::Output {
+        status: status.ok_or_else(|| TurnFailed::new("timeout", "The call was stopped while the Decisions API was asked; whether the request was charged is unknown."))?,
+        stdout: out_reader.join().unwrap_or_default(),
+        stderr: err_reader.join().unwrap_or_default(),
+    };
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let (text, code) = match stdout.rfind('\n') {
         Some(at) => (stdout[..at].to_string(), stdout[at + 1..].trim().parse::<u16>().unwrap_or(0)),

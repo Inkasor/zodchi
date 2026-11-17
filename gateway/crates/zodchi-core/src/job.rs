@@ -85,15 +85,18 @@ fn write_job(dir: &Path, job: &Value) -> Result<Value> {
     Ok(job.clone())
 }
 
-/// A job ends once: the first final.json stands, and whoever comes later gets that one.
-fn finish(dir: &Path, job: &Value, status: &str, fields: &Value) -> Value {
+/// A job ends once: the first final.json stands, and whoever comes later gets that one. job.json follows it, and
+/// only from what final.json holds.
+fn finish(dir: &Path, job: &Value, status: &str, fields: &Value) -> Result<Value> {
     let mut ended = merge(job, &json!({ "status": status, "finishedAt": iso() }));
     ended = merge(&ended, fields);
     let file = dir.join("final.json");
-    let _ = publish(&file, &pretty(&ended));
-    let last = read_stored(&file).unwrap_or(ended);
+    publish(&file, &pretty(&ended))?;
+    let Some(last) = read_stored(&file) else {
+        return fail(format!("{} could not be read back after it was written.", file.display()));
+    };
     let _ = write_job(dir, &last);
-    last
+    Ok(last)
 }
 
 struct WorkerLock {
@@ -126,54 +129,54 @@ fn worker_of(dir: &Path) -> Option<WorkerLock> {
 
 /// A job whose worker is gone gets its honest final status. Nothing is decided about a job while its worker or its
 /// Codex may still be alive.
-fn settle(dir: &Path, job: Option<Value>) -> Option<Value> {
-    let job = job?;
+fn settle(dir: &Path, job: Option<Value>) -> Result<Option<Value>> {
+    let Some(job) = job else { return Ok(None) };
     if is_terminal(status_of(&job)) {
-        return Some(job);
+        return Ok(Some(job));
     }
     let Some(worker) = worker_of(dir) else {
         let created = job.get("createdAt").and_then(Value::as_str).and_then(parse_iso_ms).unwrap_or_else(now_ms);
         if now_ms() - created <= WORKER_START_MS {
-            return Some(job);
+            return Ok(Some(job));
         }
         // No worker has come for the job. Taking the lock of the worker makes sure that none will.
         if !publish(&dir.join("worker.lock"), "{\"none\":true}").unwrap_or(false) {
-            return Some(job);
+            return Ok(Some(job));
         }
-        return Some(finish(dir, &job, "failed", &json!({ "error": format!("No worker started for the job; {UNSPENT}") })));
+        return finish(dir, &job, "failed", &json!({ "error": format!("No worker started for the job; {UNSPENT}") })).map(Some);
     };
     if worker.none {
-        return Some(finish(dir, &job, "failed", &json!({ "error": format!("No worker started for the job; {UNSPENT}") })));
+        return finish(dir, &job, "failed", &json!({ "error": format!("No worker started for the job; {UNSPENT}") })).map(Some);
     }
     if worker.pid.is_some_and(|p| p > 0 && alive(p as u32)) && now_ms() - worker.beat_at < STALE_MS {
-        return Some(job);
+        return Ok(Some(job));
     }
     // A silent worker may be frozen and not dead: it is stopped for certain before its place is given away.
     if !gone(stop_process(worker.pid.unwrap_or(0), worker.start.as_deref())) {
-        return Some(job);
+        return Ok(Some(job));
     }
     let last = read_job(dir).unwrap_or(job);
     if is_terminal(status_of(&last)) {
-        return Some(last);
+        return Ok(Some(last));
     }
     if let Some(pid) = last.get("codexPid").and_then(Value::as_i64) {
         if !gone(stop_process(pid, last.get("codexStart").and_then(Value::as_str))) {
-            return Some(last);
+            return Ok(Some(last));
         }
     } else if last.get("codexSpawnAt").is_some_and(|v| !v.is_null()) {
         // The worker set out to create Codex and did not write what came of it: a Codex nobody can name may live.
-        return Some(last);
+        return Ok(Some(last));
     }
     if last.get("turnRequestedAt").is_none_or(Value::is_null) {
-        return Some(finish(dir, &last, "failed", &json!({ "error": format!("The worker stopped before the model call; {UNSPENT}") })));
+        return finish(dir, &last, "failed", &json!({ "error": format!("The worker stopped before the model call; {UNSPENT}") })).map(Some);
     }
     // The turn may have run and used the subscription: it is never rerun silently.
-    Some(finish(dir, &last, "unknown", &json!({ "error": "The worker stopped after it set out to ask for the model turn; whether the turn ran is unknown." })))
+    finish(dir, &last, "unknown", &json!({ "error": "The worker stopped after it set out to ask for the model turn; whether the turn ran is unknown." })).map(Some)
 }
 
 pub fn job(cfg: &Config, key: &str) -> Result<Value> {
     let dir = job_dir(cfg, key)?;
-    match settle(&dir, read_job(&dir)) {
+    match settle(&dir, read_job(&dir))? {
         Some(found) => Ok(found),
         None => fail(format!("No job {key} in {}.", cfg.jobs_dir.as_ref().unwrap().display())),
     }
@@ -272,7 +275,8 @@ Submit the earlier request again under a new key with --keep-thread, or make a n
             if !is_terminal(status_of(&earlier)) {
                 return fail(format!("Job {resume} is still {}; wait for it before continuing its thread.", status_of(&earlier)));
             }
-            resumed = json!({ "key": resume, "threadId": thread });
+            // The thread lives in the Codex home of the account that ran the earlier job; the continuation goes there.
+            resumed = json!({ "key": resume, "threadId": thread, "account": earlier.get("account").cloned().unwrap_or(Value::Null) });
         }
     }
     let mut request = Map::new();
@@ -305,10 +309,30 @@ Submit the earlier request again under a new key with --keep-thread, or make a n
             found = read_job(&dir);
         }
         let Some(found) = found else { return fail(format!("The folder of job {} exists without a job; use a new key.", req.key)) };
-        if found.get("requestSha256").and_then(Value::as_str) != Some(request_sha.as_str()) {
+        let stored = found.get("requestSha256").and_then(Value::as_str).unwrap_or("");
+        // A job stored before the gateway asked whether to keep the thread has no `keepThread`; one stored before
+        // the kinds of call existed has no `kind`. The same request repeated under its key is still that job.
+        let older = found.get("keepThread").is_none();
+        if older && work && req.keep_thread == Some(false) {
+            return fail(format!("Key {} already belongs to a different request: a work job stored before --no-keep-thread existed keeps its thread. A new request needs a new key.", req.key));
+        }
+        let mut unasked = request.as_object().cloned().unwrap_or_default();
+        unasked.remove("keepThread");
+        let before = || {
+            let mut rest = unasked.clone();
+            rest.remove("paid");
+            let mut role_before = role.as_object().cloned().unwrap_or_default();
+            role_before.remove("kind");
+            rest.insert("role".into(), Value::Object(role_before));
+            sha256_hex(Value::Object(rest).to_string())
+        };
+        let same = stored == request_sha
+            || (older && stored == sha256_hex(Value::Object(unasked.clone()).to_string()))
+            || (found.get("kind").is_none() && kind == "text" && stored == before());
+        if !same {
             return fail(format!("Key {} already belongs to a different request. A new request needs a new key.", req.key));
         }
-        return Ok((settle(&dir, Some(found)).unwrap_or(Value::Null), false));
+        return Ok((settle(&dir, Some(found))?.unwrap_or(Value::Null), false));
     }
     fs::write(dir.join("request.json"), pretty(&request))?;
     for (index, bytes) in req.images.iter().enumerate() {
@@ -366,7 +390,8 @@ fn running_elsewhere(cfg: &Config, own: &Path, settle_them: bool, beat: &dyn Fn(
     all_job_dirs(cfg).into_iter().filter(|d| d != own).filter_map(|d| {
         if settle_them {
             beat();
-            settle(&d, read_job(&d))
+            // A job that could not be settled keeps its place, as it reads now.
+            settle(&d, read_job(&d)).unwrap_or_else(|_| read_job(&d))
         } else {
             read_job(&d)
         }
@@ -556,7 +581,7 @@ fn perform(cfg: &Config, dir: &Path, beat: &dyn Fn()) -> Result<Option<Value>> {
     // The job keeps its place in the queue until nothing of the call is left: the final status is written after that.
     let extra = call.stop();
     let current = state.get();
-    Ok(Some(finish(dir, &current, &status, &merge(&fields, &extra))))
+    finish(dir, &current, &status, &merge(&fields, &extra)).map(Some)
 }
 
 /// One model call of a job, shared between the worker thread and the call thread.
@@ -570,6 +595,8 @@ pub struct Call {
     pub timeout_ms: u64,
     server: Arc<Mutex<Option<Arc<AppServer>>>>,
     pub abort: Arc<AtomicBool>,
+    /// A helper process of the call other than Codex (curl for the Decisions API); stop() kills and reaps it.
+    pub helper: Arc<Mutex<Option<std::process::Child>>>,
 }
 
 impl Call {
@@ -584,6 +611,7 @@ impl Call {
             timeout_ms,
             server: Arc::new(Mutex::new(None)),
             abort: Arc::new(AtomicBool::new(false)),
+            helper: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -608,21 +636,23 @@ impl Call {
     fn started(&self, server: &AppServer) -> std::result::Result<(), TurnFailed> {
         let state = self.state.clone();
         let state2 = self.state.clone();
-        server.start(
-            &mut || state.save(json!({ "codexSpawnAt": iso() })).map_err(|e| TurnFailed::new("failed", e.0)),
-            &mut |pid| {
-                match pid {
-                    None => { let _ = state2.save(json!({ "codexSpawnAt": null })); }
-                    Some(pid) => {
-                        let _ = state2.save(json!({ "codexPid": pid, "codexStart": null }));
-                        // Read while the child's handle is held, so the pid is still this process.
-                        if let Some(start) = process_start(pid) {
-                            let _ = state2.save(json!({ "codexStart": start }));
-                        }
-                    }
-                }
-            },
-        )
+        server.start(&mut || self.note_spawn(&state), &mut |pid| Self::note_pid(&state2, pid))
+    }
+
+    /// Written before a process of the call is created: a job with this mark and no pid may have a process nobody
+    /// can name, and keeps its place. The pid and start of an earlier process of the call are cleared in the same write.
+    pub fn note_spawn(&self, state: &JobState) -> std::result::Result<(), TurnFailed> {
+        state.save(json!({ "codexSpawnAt": iso(), "codexPid": null, "codexStart": null })).map_err(|e| TurnFailed::new("failed", e.0))
+    }
+
+    /// The pid and start of the process just created. A process the job could not take note of is not used.
+    pub fn note_pid(state: &JobState, pid: Option<u32>) -> std::result::Result<(), TurnFailed> {
+        let Some(pid) = pid else {
+            return state.save(json!({ "codexSpawnAt": null })).map_err(|e| TurnFailed::new("failed", e.0));
+        };
+        // Read while the child is not reaped, so the pid is still this process.
+        let start = process_start(pid);
+        state.save(json!({ "codexPid": pid, "codexStart": start })).map_err(|e| TurnFailed::new("failed", e.0))
     }
 
     /// The subscriptions in the user's order: the first signed-in account whose limit is not used up takes the
@@ -632,7 +662,16 @@ impl Call {
         let mut skipped: Vec<Value> = Vec::new();
         let mut credit_candidate: Option<Account> = None;
         let mut last_reset = Value::Null;
-        for account in &self.cfg.accounts {
+        // A continued thread lives in one Codex home: only that account may take the call.
+        let only = self.request.get("resume").and_then(|r| r.get("account")).and_then(Value::as_str).map(String::from);
+        let candidates: Vec<Account> = match &only {
+            Some(name) => match self.cfg.account(name) {
+                Some(a) => vec![a.clone()],
+                None => return Err(TurnFailed::new("auth_required", format!("The thread to continue belongs to the account {name}, which ~/.zodchi/accounts.json no longer lists; the model was not called."))),
+            },
+            None => self.cfg.accounts.clone(),
+        };
+        for account in &candidates {
             let server = self.server_for(account);
             self.started(&server)?;
             let info = server.account()?;
@@ -735,6 +774,14 @@ impl Call {
     /// Stops whatever of the call still runs and returns what it adds to the job.
     pub fn stop(&self) -> Value {
         self.abort.store(true, Ordering::SeqCst);
+        // A helper that is not reaped yet still owns its pid: kill it with its tree and reap it.
+        if let Some(mut child) = self.helper.lock().unwrap().take() {
+            if let Ok(None) = child.try_wait() {
+                crate::process::kill_tree(child.id());
+                let _ = child.kill();
+            }
+            let _ = child.wait();
+        }
         let server = self.server.lock().unwrap().clone();
         let Some(server) = server else { return json!({}) };
         server.stop();
