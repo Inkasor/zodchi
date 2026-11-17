@@ -10,13 +10,13 @@
       "user-action"
     ],
     "replyIncludes": [
-      "Release 2.5.0 waits for process P-7f3a2, which is still running.",
       "If anything is still unclear, answer this message."
     ],
     "replyExcludes": [
       "retr",
       "try again",
-      "restart"
+      "restart",
+      "P-7f3a2"
     ],
     "wordingOnly": [
       "Press Retry on the release page once it finishes."

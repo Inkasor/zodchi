@@ -262,6 +262,10 @@ const INTERPRETER = /^(sh|bash|zsh|dash|ksh|mksh|ash|csh|tcsh|fish|busybox|cmd|p
 // command goes into a trusted wrapper script (run by node, python or a shell) that passes the value on as data.
 const NO_SCRIPT_EXCEPTION = /^(sed|gsed|awk|gawk|mawk|nawk|busybox|cmd|powershell|cscript|wscript)(\.exe)?$/i
 const LAUNCHER = /^(env|sudo|doas|su|runuser|nice|ionice|nohup|timeout|stdbuf|time|command|exec|xargs|ssh|wsl|start|npx|pnpx|uvx|watch|script|setsid|chroot|flock|taskset|strace)(\.exe)?$/i
+// Remote and container launchers. Operations run locally: such a program anywhere in argv refuses the adapter, whatever
+// comes after it (a later interpreter never clears an earlier launcher). A remote fact is a local script the product
+// owns that does the remote call itself with fixed arguments.
+const REMOTE_LAUNCHER = /^(ssh|scp|rsh|docker|podman|kubectl|nsenter|chroot|sudo|su|env|xargs|nice|timeout|stdbuf|watch)(\.exe)?$/i
 // A script file: no flag, no URL or data scheme, and a path separator or a file extension.
 const SCRIPT_FILE = (s) => typeof s === 'string' && !/^[-+]/.test(s) && !/^\/[A-Za-z?]{1,2}$/.test(s) && !/^[A-Za-z][\w+.-]+:/.test(s) && !/\{[a-zA-Z]\w*\}/.test(s) && (/[\\/]/.test(s) || /\.[A-Za-z0-9]+$/.test(s))
 // Characters a shell gives meaning to. A value never holds them, whatever its pattern allows: a program that passes
@@ -295,15 +299,19 @@ function checkAdapter(text) {
       if (!/^[a-z][a-zA-Z0-9]{0,39}$/.test(arg)) problems.push(`${at}: argument name ${arg} must match [a-z][a-zA-Z0-9]*`)
       try { new RegExp(pattern) } catch (e) { problems.push(`${at}: the pattern of ${arg} is not a regular expression: ${e.message}`) }
     }
+    const base = (x) => x.replace(/^.*[\\/]/, '')
+    const remote = op.argv.map(base).find(x => REMOTE_LAUNCHER.test(x))
+    if (remote) problems.push(`${at}: argv holds ${remote}, a remote or container launcher; operations run locally, so call a local script the product owns that does the remote call itself with fixed arguments`)
     op.argv.forEach((item, i) => {
       const ph = item.match(/^\{([a-z][a-zA-Z0-9]*)\}$/)
       if (ph) {
         if (i === 0) problems.push(`${at}: the program (argv[0]) cannot be an argument`)
         if (!(ph[1] in declared)) problems.push(`${at}: argv uses {${ph[1]}} but args does not declare it`)
-        // The last interpreter or launcher before the placeholder decides (env sh -c {id}: sh).
-        const base = (x) => x.replace(/^.*[\\/]/, '')
+        // A launcher anywhere before the placeholder decides, a later interpreter never clears it; without one, the last
+        // interpreter before the placeholder decides.
         let k = -1
-        for (let j = 0; j < i; j++) if (INTERPRETER.test(base(op.argv[j])) || LAUNCHER.test(base(op.argv[j]))) k = j
+        for (let j = 0; j < i; j++) if (LAUNCHER.test(base(op.argv[j]))) { k = j; break }
+        if (k < 0) for (let j = 0; j < i; j++) if (INTERPRETER.test(base(op.argv[j]))) k = j
         if (i > 0 && k >= 0) {
           const prog = base(op.argv[k])
           if (LAUNCHER.test(prog)) problems.push(`${at}: {${ph[1]}} reaches ${prog}, which passes its arguments on to another program or a shell and could run it as code; call the reading program directly or through a script file`)
@@ -415,7 +423,7 @@ const CLASSIFICATION = {
         reason: { type: 'string' },
       },
     },
-    facts: { type: 'string', description: 'For the reporter, in their language: what the evidence shows, plain confirmed facts only. The workflow builds the reply from fixed text for the route and these facts, so they hold no instruction, no next step, no retry and no time' },
+    facts: { type: 'string', description: 'What the evidence shows, in plain confirmed facts, in the reporter\'s language: shown to the lead as unchecked text, never put into the reply to the reporter' },
     reply: { type: 'string', description: 'Your wording of a reply to the reporter: shown to the lead as unchecked text, never sent as is' },
     leadLine: { type: 'string', description: 'One line for the lead: shown as unchecked text' },
     recommendRetry: { type: 'boolean' },
@@ -470,13 +478,12 @@ Route (next.route): reply (stale or user-action, nothing to build), fix-brief (p
 awaiting-owner (owner-decision: role and question), awaiting-operator (infra: role), needs-evidence (the evidence does
 not settle it).
 
-The reply the reporter gets is built by the workflow: fixed text for the route, your facts before it, and the
-product's own retry after it when you recommend one. facts: for the reporter, in the reporter's language, plain words:
-what the evidence shows, confirmed facts only. No instruction, no next step, no retry, no time or date, and never that
-anyone lacks access. Recommend a retry (recommendRetry true) only when the request names retry conditions and the
-evidence meets them; the workflow then adds the product's retry to the reply itself.
-reply and leadLine: your wording of a reply and one line for the lead; the lead sees them, with next.reason, as
-unchecked text that is never sent as is. fixBrief: for fix-brief, the goal, the files, what done means and the checks,
+The reply the reporter gets is built by the workflow from fixed text for the route and, when you recommend a retry, the
+product's own retry; none of your text is in it. Recommend a retry (recommendRetry true) only when the request names
+retry conditions and the evidence meets them.
+facts: plain words, in the reporter's language: what the evidence shows, confirmed facts only, and never that anyone
+lacks access. reply and leadLine: your wording of a reply and one line for the lead; the lead sees facts, reply and
+leadLine, with next.reason, as unchecked text that is never sent as is. fixBrief: for fix-brief, the goal, the files, what done means and the checks,
 in the shape of a code-package brief; agentsAffected true when the change alters what agents of the product can do or
 are told, with agentSkillChange saying what the agent skill must say afterwards. Otherwise goal "" and empty lists.
 
@@ -506,10 +513,6 @@ const WORKAROUND = /\b(work(?:s|ed|ing)?\s+around|bypass\w*|circumvent\w*|sidest
 const PROHIBITION = /\b(?:must not|mustn't|must never|may not|should not|shouldn't|shall not|does not|doesn't|do not|don't|did not|didn't|will not|won't|cannot|can't|never|without)\s+(?:(?:be|ever|silently|directly|automatically|quietly)\s+)?(?!(?:ha(?:ve|s|d|ving)|access|permissions?|rights|credentials?|the|any)\b)\w+(?:\s+(?:for|around))?/gi
 const PROHIBITION_RU = /(?<![\p{L}])не\s+(?:(?:нужн|надо|долж|след|мож|стои)\p{L}*\s+)?\p{L}+/giu
 const affirmative = (s) => String(s).replace(PROHIBITION, ' ').replace(PROHIBITION_RU, ' ')
-// The facts are the only text of the classifier inside the reply to the reporter, and the retry wording of that reply
-// is the workflow's own (the adapter's retry, only with recommendRetry): facts that speak of retrying refuse the answer.
-const RETRY_TEXT = /\b(re-?try\w*|re-?run\w*|restart\w*|try (?:it |this )?again|start (?:it |this |the \w+ )?again|run (?:it |this |the \w+ )?again)\b|повтори\w*|перезапуст\w*|(?:запуст|попроб|отправ)\w*\s+(?:снова|ещё раз|еще раз)/i
-const PROMISED_TIME =/\b(tomorrow|tonight|within\s+(an?|\d+)\s*\w*|in\s+(an?|\d+)\s*(min|mins|minutes?|hours?|days?|weeks?)|by\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|tonight|noon|the end of)|eta)\b|завтра|через\s+(\d+|час|день|неделю|минуту)|в течение|к концу (дня|недели)/i
 
 // Checks the classifier's answer against the bundle and the adapter. Contract violations refuse the answer; the
 // rules of the brief that turn a claim into a weaker one (stale without evidence, a route the findings do not carry,
@@ -542,13 +545,13 @@ function judge(ans, summary, ad) {
     const src = f.evidence.map(e => byId.get(e).source)
     if (!src.includes('agentSkill') || !src.some(s => s.startsWith('allowList:'))) refused.push(`finding ${i + 1} is about a capability but does not cite both the agent skill and an allow-list`)
   })
-  // Texts the lead forwards or acts on: the facts (inside the reply to the reporter), the question for the owner, the
-  // gaps (the lead collects what they name) and every field and list entry of the fix brief (a later package's brief),
-  // each on its own: no request for access, no "no access", no workaround of a refusal. The suggested reply, the line
-  // for the lead and the route's reason are not checked: the draft shows them apart, as wording not to forward.
+  // Texts the lead acts on: the question for the owner, the gaps (the lead collects what they name) and every field and
+  // list entry of the fix brief (a later package's brief), each on its own: no request for access, no "no access", no
+  // workaround of a refusal. The facts, the suggested reply, the line for the lead and the route's reason are not
+  // checked: the draft shows them apart, as wording not to forward. The reply to the reporter holds none of them.
   const entries = (k) => (Array.isArray(fb[k]) ? fb[k] : [fb[k]]).map((t, i) => [`fixBrief.${k}[${i}]`, t])
   const facts = typeof ans.facts === 'string' ? ans.facts.trim() : ''
-  const texts = [['facts', facts], ['next.question', next.question], ['next.role', next.role],
+  const texts = [['next.question', next.question], ['next.role', next.role],
     ['fixBrief.goal', fb.goal], ...entries('files'), ...entries('done'), ...entries('checks'), ['fixBrief.agentSkillChange', fb.agentSkillChange],
     ...gaps.flatMap((g, i) => [[`gap ${i + 1} what`, g.what], [`gap ${i + 1} proposal`, g.proposal]])]
   for (const [where, t] of texts) {
@@ -557,11 +560,6 @@ function judge(ans, summary, ad) {
     if (ACCESS_ASK.test(act)) refused.push(`${where} asks for access or says someone has none: ${JSON.stringify(s.slice(0, 160))}`)
     else if (WORKAROUND.test(act)) refused.push(`${where} proposes working around a refusal: ${JSON.stringify(s.slice(0, 160))}`)
   }
-  if (!facts) refused.push('facts is empty: the reply to the reporter is built on it')
-  const time = facts.match(PROMISED_TIME)
-  if (time) refused.push(`facts promise a time: ${JSON.stringify(time[0])}`)
-  const retryWord = facts.match(RETRY_TEXT)
-  if (retryWord) refused.push(`facts speak of a retry (${JSON.stringify(retryWord[0])}): the workflow adds the product's retry to the reply itself, and only when it is recommended`)
   if (ans.recommendRetry && !ad.retry) refused.push('the answer recommends a retry, but the adapter documents no retry and no retry conditions')
   if (refused.length) return { refused, notes }
 
@@ -660,8 +658,8 @@ function judge(ans, summary, ad) {
   return j
 }
 
-// The reply to the reporter is assembled here, never written by the model: the classifier's checked facts, a fixed
-// text for the route, and retry wording only with a recommended retry, in the adapter's own words. Version 1 hands it
+// The reply to the reporter is assembled here and holds no text of the model: a fixed text for the route and, only with
+// a recommended retry that the adapter documents, a fixed sentence with the adapter's own retry.how. Version 1 hands it
 // to the lead, who sends it.
 const REPLY_TEXT = {
   reply: 'If anything is still unclear, answer this message.',
@@ -671,8 +669,8 @@ const REPLY_TEXT = {
   'needs-evidence': 'We are looking into the error and will write to you with what we find.',
 }
 function reporterReply(j, ad) {
-  const retry = j.recommendRetry ? `When you are ready, you can try again: ${String(ad.retry.how).trim().replace(/[.!]+$/, '')}.` : ''
-  return [j.facts, retry, REPLY_TEXT[j.next.route]].filter(Boolean).join(' ')
+  const retry = j.recommendRetry && ad.retry ? `When you are ready, you can try again: ${String(ad.retry.how).trim().replace(/[.!]+$/, '')}.` : ''
+  return [retry, REPLY_TEXT[j.next.route]].filter(Boolean).join(' ')
 }
 
 // ------------------------------------------------------------------ draft
@@ -690,7 +688,7 @@ function draftText(j, ad, rev, ev, cls) {
   }
   L.push(`Route: ${j.next.route}${j.next.role ? ` (${j.next.role})` : ''}.`, '')
   L.push('## Reply to the reporter', '',
-    `Assembled by the workflow from fixed text for the route${j.facts ? ' and the classifier\'s facts (checked for access requests, workarounds and promised times)' : ''}. ` +
+    'Assembled by the workflow from fixed text for the route and, when one is recommended, the adapter\'s own wording of its documented remedy; it holds no text of the model. ' +
     'Put it into the reporter\'s language and send it yourself; this workflow sends nothing.', '', j.reporterReply, '')
   // Retry wording comes only from a validated recommendation, with the adapter's own retry.
   if (j.recommendRetry) L.push(`It recommends the product's retry: ${ad.retry.how}. Conditions: ${ad.retry.conditions}`, '')
@@ -734,7 +732,7 @@ function draftText(j, ad, rev, ev, cls) {
   L.push("## Model's wording (not checked, do not forward as is)", '')
   L.push(j.discarded
     ? 'Discarded: the answer rests in part on a stale finding that the evidence does not confirm (see the validation notes); classification.raw.json in this revision keeps it for audit.'
-    : list([`Suggested reply: ${j.reply || '(none)'}`, `Line for the lead: ${j.leadLine || '(none)'}`, `Reason for the route: ${String(j.next.reason || '').trim() || '(none)'}`]), '')
+    : list([`Facts for the reporter: ${j.facts || '(none)'}`, `Suggested reply: ${j.reply || '(none)'}`, `Line for the lead: ${j.leadLine || '(none)'}`, `Reason for the route: ${String(j.next.reason || '').trim() || '(none)'}`]), '')
   if (j.notes.length) L.push('## Validation notes', '', list(j.notes), '')
   return L.join('\n')
 }
@@ -943,7 +941,7 @@ async function body() {
     incident: a.incident, revision, adapterHash, evidenceSha256: evSha,
     classifier: { provider: pick.provider, model: pick.model, effort: pick.effort || '', ...(pick.provider === 'codex' ? { key } : {}) },
     rawSha256: raw ? sha256(raw) : '', accepted: !j.refused.length, refused: j.refused, notes: j.notes || [],
-    ...(j.refused.length ? { answer } : { findings: j.findings, gaps: j.gaps, next: j.next, facts: j.facts, reporterReply: j.reporterReply, recommendRetry: j.recommendRetry, fixBrief: j.fixBrief, discarded: j.discarded, modelWording: { reply: j.reply, leadLine: j.leadLine } }),
+    ...(j.refused.length ? { answer } : { findings: j.findings, gaps: j.gaps, next: j.next, reporterReply: j.reporterReply, recommendRetry: j.recommendRetry, fixBrief: j.fixBrief, discarded: j.discarded, modelWording: { facts: j.facts, reply: j.reply, leadLine: j.leadLine } }),
   }
   const pubFirst = [
     ...(pick.provider === 'codex' ? [] : [{ path: rawFile, text: lf(raw) }]),
