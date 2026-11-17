@@ -1,0 +1,7 @@
+{
+  "description": "One-pass code from a strong model with no tools: it answers with the exact edits of a package, and the applier puts them into the files.",
+  "mode": "expert",
+  "model": "gpt-6.1-sol",
+  "effort": "high",
+  "frame": "code-patch.md"
+}

@@ -1,13 +1,12 @@
 {
   "name": "zodchi",
-  "version": "0.6.13",
+  "version": "1.0.0-dev",
   "private": true,
+  "description": "Tuned Claude Code agents and workflows by domain, and a gateway to Codex models by role",
   "license": "MIT",
-  "engines": {
-    "node": ">=24"
-  },
+  "type": "module",
+  "engines": { "node": ">=20" },
   "scripts": {
-    "test": "node scripts/validate-source.mjs && node --test \"tools/tests/**/*.test.mjs\" && npm --prefix WorkflowPlatform test && npm --prefix WorkflowPlatform run packages:check && npm --prefix AgentGateway test",
-    "release:build": "node scripts/build-release.mjs"
+    "check": "node scripts/check.mjs"
   }
 }

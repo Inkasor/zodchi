@@ -1,7 +1,0 @@
-{
-  "dataRoot": "data",
-  "agentGatewayRoot": "../AgentGateway",
-  "projectRoot": null,
-  "workflow": null,
-  "packageDefinitions": "packages/example/definitions.mjs"
-}

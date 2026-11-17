@@ -1,0 +1,120 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary",
+    "criteria",
+    "questions",
+    "changedFiles",
+    "checks"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "done",
+        "question",
+        "blocked"
+      ],
+      "description": "done: every criterion is done. question: an answer is needed and the work has stopped. blocked: the work cannot go on."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Brief: what was done, what was checked, what was not checked; for blocked, what is in the way."
+    },
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "status",
+          "evidence"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "not_done",
+              "question"
+            ]
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Brief: file:line, a command with its result, or the path of a preview."
+          }
+        }
+      }
+    },
+    "questions": {
+      "type": "array",
+      "description": "Empty unless status is question.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "text",
+          "options"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string",
+            "description": "The question and why the work cannot go on without the answer."
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The options, the recommended one first; empty when there are none."
+          }
+        }
+      }
+    },
+    "changedFiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Paths from the repository root that the package created, changed or deleted."
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "command",
+          "exitCode",
+          "result"
+        ],
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "exitCode": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "result": {
+            "type": "string",
+            "description": "One line of outcome."
+          }
+        }
+      }
+    }
+  }
+}

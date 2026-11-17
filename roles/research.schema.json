@@ -1,0 +1,47 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "answer",
+    "findings",
+    "notFound"
+  ],
+  "properties": {
+    "answer": {
+      "type": "string",
+      "description": "The answer to the question in a few sentences, with its limits."
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "claim",
+          "source",
+          "quote"
+        ],
+        "properties": {
+          "claim": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "description": "The URL that was opened, the command that was run, or \"memory\"."
+          },
+          "quote": {
+            "type": "string",
+            "description": "The words of the source that carry the claim; empty for memory."
+          }
+        }
+      }
+    },
+    "notFound": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "What the question asked and no source settled, and where it was looked for."
+    }
+  }
+}

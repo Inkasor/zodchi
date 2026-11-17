@@ -1,0 +1,7 @@
+{
+  "description": "Probabilities from the Decisions API for the questions of the call (--questions) over the request and its images. Paid for by the OpenAI API key, not by the subscription: needs --paid and a budget the owner named.",
+  "kind": "decisions",
+  "mode": "expert",
+  "model": "gpt-6-luna",
+  "timeoutMin": 5
+}
