@@ -1,5 +1,5 @@
 {
-  "about": "Review F4: stale without deployment evidence becomes unknown, and the reply written on that premise (it asserts the fix and recommends a retry) is withheld: neither the draft nor the classification carries it, and no retry stands.",
+  "about": "Review F4 (rounds 1 and 2): stale without deployment evidence becomes unknown, and every text written on that premise is withheld: the reply (it asserts the fix and recommends a retry), the finding's summary (it claims production runs the fix, and it would be the log's cause), the line for the lead (reporter retries) and the route's reason (fixed and deployed). Neither the draft nor the classification carries any of them, and no retry stands.",
   "adapterFrom": "stale-no-deploy",
   "report": "My export 4711 failed again.",
   "params": {
@@ -14,20 +14,29 @@
     "notesInclude": [
       "stale became unknown",
       "reply withheld",
-      "its retry recommendation was dropped"
+      "its retry recommendation was dropped",
+      "replaced by the workflow"
     ],
     "draftIncludes": [
       "None may be sent",
-      "Who verifies: not settled"
+      "Who verifies: not settled",
+      "May be stale, not confirmed",
+      "Cause: unknown: May be stale"
     ],
     "draftExcludes": [
       "Press Retry on the job page now",
       "is installed",
-      "The reply recommends a retry"
+      "The reply recommends a retry",
+      "Fixed and deployed",
+      "which production runs",
+      "reporter retries"
     ],
     "classificationExcludes": [
       "Press Retry on the job page now",
-      "\"recommendRetry\":true"
+      "\"recommendRetry\":true",
+      "Fixed and deployed",
+      "which production runs",
+      "reporter retries"
     ]
   }
 }

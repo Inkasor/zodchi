@@ -254,7 +254,13 @@ const PROVIDES = ['job', 'status', 'error', 'release', 'changelog', 'health', 'l
 // to another program or a remote shell. A placeholder after one of them is allowed only when the interpreter's very
 // next item is a script file, so the value can only be an argument of that script; flags in between, a launcher, or a
 // code argument instead of a file refuse the adapter. Conservative on purpose: a list of code flags is never complete.
-const INTERPRETER = /^(sh|bash|zsh|dash|ksh|mksh|ash|csh|tcsh|fish|busybox|cmd|powershell|pwsh|node|nodejs|deno|bun|python[0-9.]*|py|pypy[0-9.]*|perl|ruby|php|lua|tclsh|osascript|cscript|wscript|awk|gawk|mawk|nawk|sed)(\.exe)?$/i
+const INTERPRETER = /^(sh|bash|zsh|dash|ksh|mksh|ash|csh|tcsh|fish|busybox|cmd|powershell|pwsh|node|nodejs|deno|bun|python[0-9.]*|py|pypy[0-9.]*|perl|ruby|php|lua|tclsh|osascript|cscript|wscript|awk|gawk|mawk|nawk|sed|gsed)(\.exe)?$/i
+// Interpreters for which a script file in the next item does not make a later value plain data: sed and awk take their
+// program as the first operand and GNU sed reads options from any position ("-ee <command>" runs a shell command),
+// busybox runs the applet its next item names, Windows PowerShell treats a bare first item as -Command text, cmd and
+// the Windows script hosts parse their switches anywhere. A placeholder after one of them is always refused: such a
+// command goes into a trusted wrapper script (run by node, python or a shell) that passes the value on as data.
+const NO_SCRIPT_EXCEPTION = /^(sed|gsed|awk|gawk|mawk|nawk|busybox|cmd|powershell|cscript|wscript)(\.exe)?$/i
 const LAUNCHER = /^(env|sudo|doas|su|runuser|nice|ionice|nohup|timeout|stdbuf|time|command|exec|xargs|ssh|wsl|start|npx|pnpx|uvx|watch|script|setsid|chroot|flock|taskset|strace)(\.exe)?$/i
 // A script file: no flag, no URL or data scheme, and a path separator or a file extension.
 const SCRIPT_FILE = (s) => typeof s === 'string' && !/^[-+]/.test(s) && !/^\/[A-Za-z?]{1,2}$/.test(s) && !/^[A-Za-z][\w+.-]+:/.test(s) && !/\{[a-zA-Z]\w*\}/.test(s) && (/[\\/]/.test(s) || /\.[A-Za-z0-9]+$/.test(s))
@@ -301,6 +307,7 @@ function checkAdapter(text) {
         if (i > 0 && k >= 0) {
           const prog = base(op.argv[k])
           if (LAUNCHER.test(prog)) problems.push(`${at}: {${ph[1]}} reaches ${prog}, which passes its arguments on to another program or a shell and could run it as code; call the reading program directly or through a script file`)
+          else if (NO_SCRIPT_EXCEPTION.test(prog)) problems.push(`${at}: {${ph[1]}} reaches ${prog}, which takes its program or options from any of its arguments, so a value could become code or an option even after a file; call it from a trusted wrapper script that passes the value on as data`)
           else if (!(k + 1 < i && SCRIPT_FILE(op.argv[k + 1]))) problems.push(`${at}: {${ph[1]}} reaches the interpreter ${prog} without a script file right after it (next item ${JSON.stringify(op.argv[k + 1] || '')}), which would run it as code; put the command into a script file the interpreter runs, with no flags before the file`)
         }
       } else if (/\{[a-zA-Z]\w*\}/.test(item)) problems.push(`${at}: "${item}" holds a placeholder inside other text; an argument is always a whole argv item`)
@@ -349,6 +356,8 @@ function makePlan(ad, revision, adapterHash) {
       const s = String(v)
       if (!new RegExp(`^(?:${declared[ph[1]]})$`).test(s)) { skip = skip || `argument ${ph[1]} does not match its pattern ${declared[ph[1]]}; nothing was run with it`; return item }
       if (SHELL_META.test(s)) { skip = skip || `argument ${ph[1]} holds a character a shell gives meaning to; nothing was run with it`; return item }
+      // A value redact() would change is secret-shaped: it never reaches the plan, the collector or a prompt.
+      if (redact(s) !== s) { skip = skip || `argument ${ph[1]} looks like a secret (token-, key- or password-shaped); it was dropped and nothing was run with it`; return item }
       return s
     })
     items.push({ id: id(), kind: 'op', name, source: `op:${name}`, provides: op.provides || ['other'], argv, after: op.after || [], timeoutSec: op.timeoutSec || 30, maxBytes: op.maxBytes || 8000, ...(skip ? { skip } : {}) })
@@ -453,7 +462,8 @@ Gaps: every item with outcome refused, failed, timeout or skipped that matters i
 reason to ask for wider access: name the adapter operation that would supply the fact, or, when none exists, propose
 a safer product report that answers the question (that is missing-tool). Never propose granting access, rights or
 credentials, and never suggest working around a refusal. This holds for every text the lead or a later package acts on:
-the reply, leadLine, next.reason and next.question, every gap proposal and every field and list entry of fixBrief.
+the reply, leadLine, next.reason and next.question, every gap's what and proposal and every field and list entry of
+fixBrief. A prohibition is fine ("the command must not grant access"); a request or proposal is not.
 
 Route (next.route): reply (stale or user-action, nothing to build), fix-brief (product-bug or missing-tool),
 awaiting-owner (owner-decision: role and question), awaiting-operator (infra: role), needs-evidence (the evidence does
@@ -462,7 +472,8 @@ not settle it).
 reply: for the reporter, in the reporter's language, plain words. State only confirmed facts and confirmed next steps.
 Never say that anyone lacks access; say what will be done and what the reporter does. Promise no time or date.
 Recommend a retry (recommendRetry true) only when the request names retry conditions and the evidence meets them;
-with recommendRetry false the reply does not mention retrying, restarting or starting again at all.
+with recommendRetry false the reply does not mention retrying, restarting or starting again at all, and leadLine,
+next.reason and next.question tell nobody to retry (a new run of this workflow or an operator's restart is not a retry).
 leadLine: one line for the lead. fixBrief: for fix-brief, the goal, the files, what done means and the checks, in the
 shape of a code-package brief; agentsAffected true when the change alters what agents of the product can do or are
 told, with agentSkillChange saying what the agent skill must say afterwards. Otherwise goal "" and empty lists.
@@ -485,8 +496,21 @@ function classifyPrompt(ad, plan) {
 // ------------------------------------------------------------------ judging the answer
 const ACCESS_ASK = /\b(grant|give|provide|request|ask for|need|open|extend|widen)\b[^.\n]{0,40}\b(access|permissions?|rights|credentials?|sudo)\b|\b(no|without|lacks?|lacking|don't have|do not have|haven't got)\s+(the\s+|any\s+)?(access|permissions?|rights)\b|(нет|без)\s+доступа|(дай|дайте|выдай|выдайте|нужен|нужно|открой|откройте|предоставь|предоставьте|расширь|расширьте)[^.\n]{0,30}(доступ|права)/i
 const WORKAROUND = /\b(work(?:s|ed|ing)?\s+around|bypass\w*|circumvent\w*|sidestep\w*|get(?:s|ting)?\s+around)\b[^.\n]{0,40}\b(refus\w*|denied|denials?|restrictions?|allow-?lists?|permissions?|polic(?:y|ies)|classifiers?|sandbox|access|blocks?)\b|обой\w*[^.\n]{0,30}(запрет|ограничен|отказ|доступ|блокир)/i
-// Retry words in a reply: allowed only with recommendRetry (then the adapter's retry exists).
+// A prohibition is not a proposal: "must not grant access", "never bypass the allow-list" and "без обхода" are taken out
+// before ACCESS_ASK and WORKAROUND look at a text. Only the negation and the one verb after it (with an adverb and a
+// particle) go, so "do not wait: grant access" and "must not grant X, but request access" are still refused, and
+// "don't have access" and "without access" (someone has none) still are: "have" and the access words are never taken
+// out.
+const PROHIBITION = /\b(?:must not|mustn't|must never|may not|should not|shouldn't|shall not|does not|doesn't|do not|don't|did not|didn't|will not|won't|cannot|can't|never|without)\s+(?:(?:be|ever|silently|directly|automatically|quietly)\s+)?(?!(?:ha(?:ve|s|d|ving)|access|permissions?|rights|credentials?|the|any)\b)\w+(?:\s+(?:for|around))?/gi
+const PROHIBITION_RU = /(?<![\p{L}])не\s+(?:(?:нужн|надо|долж|след|мож|стои)\p{L}*\s+)?\p{L}+/giu
+const affirmative = (s) => String(s).replace(PROHIBITION, ' ').replace(PROHIBITION_RU, ' ')
+// Retry words in a text the reporter or the lead acts on: allowed only with recommendRetry (then the adapter's retry
+// exists).
 const RETRY_TEXT = /\b(re-?try\w*|re-?run\w*|restart\w*|try (?:it |this )?again|start (?:it |this |the \w+ )?again|run (?:it |this |the \w+ )?again)\b|повтори\w*|перезапуст\w*|(?:запуст|попроб|отправ)\w*\s+(?:снова|ещё раз|еще раз)/i
+// In the lead's and the route's lines the retry of the reporter or the product ("press Retry", "try again") is
+// refused, while running this workflow again ("run again with the plain id") and a command named in backticks
+// (`catalog job restart`) are the lead's own matters and pass.
+const RETRY_LEAD = /\b(re-?try\w*|try (?:it |this )?again)\b|повтор\w*\s+попытк\w*|попроб\w*\s+(?:снова|ещё раз|еще раз)/i
 const PROMISED_TIME =/\b(tomorrow|tonight|within\s+(an?|\d+)\s*\w*|in\s+(an?|\d+)\s*(min|mins|minutes?|hours?|days?|weeks?)|by\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|tonight|noon|the end of)|eta)\b|завтра|через\s+(\d+|час|день|неделю|минуту)|в течение|к концу (дня|недели)/i
 
 // Checks the classifier's answer against the bundle and the adapter. Contract violations refuse the answer; the
@@ -525,16 +549,27 @@ function judge(ans, summary, ad) {
   const entries = (k) => (Array.isArray(fb[k]) ? fb[k] : [fb[k]]).map((t, i) => [`fixBrief.${k}[${i}]`, t])
   const texts = [['reply', ans.reply], ['leadLine', ans.leadLine], ['next.question', next.question], ['next.reason', next.reason], ['next.role', next.role],
     ['fixBrief.goal', fb.goal], ...entries('files'), ...entries('done'), ...entries('checks'), ['fixBrief.agentSkillChange', fb.agentSkillChange],
-    ...gaps.map((g, i) => [`gap ${i + 1} proposal`, g.proposal])]
+    // The draft tells the lead to collect what a gap names, so its what is an instruction too.
+    ...gaps.flatMap((g, i) => [[`gap ${i + 1} what`, g.what], [`gap ${i + 1} proposal`, g.proposal]])]
   for (const [where, t] of texts) {
     const s = String(t == null ? '' : t)
-    if (ACCESS_ASK.test(s)) refused.push(`${where} asks for access or says someone has none: ${JSON.stringify(s.slice(0, 160))}`)
-    else if (WORKAROUND.test(s)) refused.push(`${where} proposes working around a refusal: ${JSON.stringify(s.slice(0, 160))}`)
+    const act = affirmative(s)
+    if (ACCESS_ASK.test(act)) refused.push(`${where} asks for access or says someone has none: ${JSON.stringify(s.slice(0, 160))}`)
+    else if (WORKAROUND.test(act)) refused.push(`${where} proposes working around a refusal: ${JSON.stringify(s.slice(0, 160))}`)
   }
   if (PROMISED_TIME.test(String(ans.reply || ''))) refused.push(`the reply promises a time: ${JSON.stringify(String(ans.reply).match(PROMISED_TIME)[0])}`)
-  // A retry reaches the reporter only through recommendRetry, and that only with the adapter's retry.
+  // A retry reaches the reporter or the lead only through recommendRetry, and that only with the adapter's retry. The
+  // texts that carry instructions are checked: the reply with every retry word, the lead's and the route's lines with
+  // RETRY_LEAD (an operator's restart or a new run of this workflow is no retry of the reporter).
   if (ans.recommendRetry && !ad.retry) refused.push('the reply recommends a retry, but the adapter documents no retry and no retry conditions')
-  if (!ans.recommendRetry && RETRY_TEXT.test(String(ans.reply || ''))) refused.push(`the reply speaks of a retry (${JSON.stringify(String(ans.reply).match(RETRY_TEXT)[0])}) but recommendRetry is false: a retry is recommended only through recommendRetry, with the adapter's retry and its conditions`)
+  if (!ans.recommendRetry) {
+    const retryTexts = [['the reply', ans.reply, RETRY_TEXT], ['leadLine', ans.leadLine, RETRY_LEAD], ['next.question', next.question, RETRY_LEAD], ['next.reason', next.reason, RETRY_LEAD]]
+    for (const [where, t, re] of retryTexts) {
+      const s = String(t == null ? '' : t)
+      const m = (re === RETRY_TEXT ? s : s.replace(/`[^`\n]*`/g, ' ')).match(re)
+      if (m) refused.push(`${where} speaks of a retry (${JSON.stringify(m[0])}) but recommendRetry is false: a retry is recommended only through recommendRetry, with the adapter's retry and its conditions`)
+    }
+  }
   if (typeof ans.reply !== 'string' || !ans.reply.trim()) refused.push('the reply is empty')
   if (refused.length) return { refused, notes }
 
@@ -547,12 +582,23 @@ function judge(ans, summary, ad) {
     const deployed = okFrom(f.deployedIn, ['release'])
     if (!fixed || !deployed) {
       f.kind = 'unknown'; f.hypothesis = 'stale'
-      notes.push(`stale became unknown (hypothesis stale): ${!fixed ? 'no evidence that a specific release fixes this error' : ''}${!fixed && !deployed ? ' and ' : ''}${!deployed ? 'no evidence that the affected environment runs it' : ''}`)
+      const why = `${!fixed ? 'no evidence that a specific release fixes this error' : ''}${!fixed && !deployed ? ' and ' : ''}${!deployed ? 'no evidence that the affected environment runs it' : ''}`
+      notes.push(`stale became unknown (hypothesis stale): ${why}`)
+      // The finding's own summary states the premise (fixed, deployed): it is replaced, not published.
+      f.summary = `May be stale, not confirmed: ${why}. The classifier's summary was withheld, as it rests on that premise.`
       replyWithheld = 'the classifier wrote it for a stale finding that became unknown (the fix or its deployment is not confirmed), so it may assert a fix or a retry that the evidence does not carry'
     }
   }
-  // The reply was written on the premise the workflow just took away: it is not published, and no retry stands.
-  if (replyWithheld) notes.push(`reply withheld: ${replyWithheld}${ans.recommendRetry ? '; its retry recommendation was dropped' : ''}`)
+  // Every text written on the premise the workflow just took away goes: the reply, the line for the lead and the
+  // route's reason are replaced by the workflow's own words, and no retry stands. Nothing the classifier wrote on it is
+  // published, in the draft or in classification.json.
+  let leadLine = ans.leadLine || ''
+  if (replyWithheld) {
+    notes.push(`reply withheld: ${replyWithheld}${ans.recommendRetry ? '; its retry recommendation was dropped' : ''}`)
+    notes.push('the line for the lead and the route\'s reason were written on the same premise; replaced by the workflow\'s own')
+    leadLine = 'A stale finding is not confirmed (the fix or its deployment lacks evidence); the classifier\'s line was withheld: follow Next.'
+    next.reason = 'The classifier\'s reason was withheld: it rests on a stale finding that the evidence does not confirm.'
+  }
   // Every refused read is a gap; a gap names an operation of the adapter or none.
   for (const it of summary.items.filter(i => i.outcome === 'refused')) {
     if (gaps.some(g => g.evidence.includes(it.id))) continue
@@ -598,7 +644,7 @@ function judge(ans, summary, ad) {
     if (!String(next.role || '').trim()) refused.push('the route is awaiting-operator but no operator role is named (the adapter has no operator either)')
   }
   if (refused.length) return { refused, notes }
-  return { refused, notes, findings, gaps, next, fixBrief: fb, reply: replyWithheld ? '' : ans.reply, replyWithheld, leadLine: ans.leadLine || '', recommendRetry: !replyWithheld && Boolean(ans.recommendRetry) }
+  return { refused, notes, findings, gaps, next, fixBrief: fb, reply: replyWithheld ? '' : ans.reply, replyWithheld, leadLine, recommendRetry: !replyWithheld && Boolean(ans.recommendRetry) }
 }
 
 // ------------------------------------------------------------------ draft

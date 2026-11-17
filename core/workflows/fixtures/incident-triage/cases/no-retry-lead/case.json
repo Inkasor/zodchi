@@ -1,0 +1,19 @@
+{
+  "about": "Review round 2, F5: the adapter documents no retry and the answer recommends none, but the line for the lead and the route's reason tell someone to press Retry: each refuses the answer, like a retry in the reply.",
+  "adapterFrom": "blocked-release",
+  "report": "Release 2.5.0 has been blocked all morning by something called P-7f3a2.",
+  "params": {},
+  "expect": {
+    "state": "failed",
+    "refusedIncludes": [
+      "leadLine speaks of a retry",
+      "next.reason speaks of a retry"
+    ],
+    "refusedExcludes": [
+      "the reply speaks of a retry"
+    ],
+    "draftIncludes": [
+      "## No draft"
+    ]
+  }
+}

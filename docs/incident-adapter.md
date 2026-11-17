@@ -56,15 +56,21 @@ the skill tells the model to do and what the product actually allows, so the cla
 
 **Arguments.** A placeholder `{name}` is always a whole argv item: `"{id}"` is allowed, `"job-{id}"` is refused. The
 value comes from `args.params` of the run (the lead takes it from the report), must match the whole pattern and may hold
-no line break; it is then passed as that one argv item, never into shell text. An operation whose argument is missing
-or does not match is `skipped`, with the reason, and nothing is run with the value. The program itself (`argv[0]`) is
+no line break; it is then passed as that one argv item, never into shell text. An operation whose argument is missing,
+does not match, or is secret-shaped (a value the redaction would change: a token, a key, a password) is `skipped`, with
+the reason, and nothing is run with the value; a secret-shaped value is dropped and reaches no generated file and no
+prompt. The program itself (`argv[0]`) is
 never a placeholder. After an interpreter (a shell, `node`, `python`, `perl`, `pwsh`, `cmd`, `awk`, `sed` and the like)
 a placeholder is allowed only when the interpreter's very next item is a script file (a path or a name with an
 extension, no flag before it): `["node", "read-job.mjs", "{id}"]` passes, while `["sh", "-c", "{id}"]`,
 `["sh", "-lc", "{id}"]`, `["pwsh", "-com", "{id}"]` and `["deno", "eval", "{id}"]` are refused, since they would run
 the value as code. A placeholder after a launcher (`env`, `sudo`, `timeout`, `xargs`, `ssh` and the like), which
 passes its arguments on to another program or a remote shell, is refused too. The rule is conservative on purpose: a
-list of code flags is never complete. Put such a command into a script file that the interpreter runs.
+list of code flags is never complete. Put such a command into a script file that the interpreter runs. After `sed`,
+`awk`, `busybox`, `cmd`, Windows `powershell`, `cscript` and `wscript` a placeholder is refused even when a file comes
+first: they take their program or options from any of their arguments (GNU sed reads the value `-ee touch /tmp/x` in
+`["sed", "input.txt", "{id}"]` as an option and runs the command). Call them from a trusted wrapper script (run by
+`node`, `python` or a shell) that passes the value on as data.
 
 **Read-only.** The core cannot prove that a command only reads; the adapter's author vouches for it. Name commands
 that read (show, status, list, a report), never ones that retry, restart or repair. Operations run from the adapter's

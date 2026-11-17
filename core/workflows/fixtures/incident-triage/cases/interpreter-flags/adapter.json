@@ -1,5 +1,5 @@
 {
-  "$comment": "Placeholders that would reach code: a combined shell flag, a launcher, an interpreter without a script file. Every one is refused before anything runs; the plain node script operation passes.",
+  "$comment": "Placeholders that would reach code: a combined shell flag, a launcher, an interpreter without a script file, and sed, awk or Windows PowerShell even after a file (they take code or options from any position: GNU sed reads \"-ee <command>\" as an option). Every one is refused before anything runs; the plain node script operation passes.",
   "adapterVersion": 1,
   "product": "Example Catalog",
   "owner": "product owner of Example Catalog",
@@ -68,6 +68,39 @@
         "build-host",
         "catalog",
         "job",
+        "{id}"
+      ],
+      "args": {
+        "id": "[0-9]+"
+      }
+    },
+    "sed-file": {
+      "description": "a job line through sed with an input file first",
+      "argv": [
+        "sed",
+        "input.txt",
+        "{id}"
+      ],
+      "args": {
+        "id": ".+"
+      }
+    },
+    "awk-file": {
+      "description": "a job line through awk with a program-looking file first",
+      "argv": [
+        "awk",
+        "prog.awk",
+        "{id}"
+      ],
+      "args": {
+        "id": ".+"
+      }
+    },
+    "powershell-file": {
+      "description": "a job through Windows PowerShell with a script first",
+      "argv": [
+        "powershell",
+        "read-job.ps1",
         "{id}"
       ],
       "args": {

@@ -1,0 +1,43 @@
+{
+  "findings": [
+    {
+      "kind": "unknown",
+      "hypothesis": "",
+      "about": "other",
+      "confidence": "low",
+      "summary": "The job was not read: its id was refused.",
+      "evidence": [
+        "E2"
+      ],
+      "fixedBy": [],
+      "deployedIn": []
+    }
+  ],
+  "gaps": [
+    {
+      "what": "The state and error of the job.",
+      "evidence": [
+        "E2"
+      ],
+      "operation": "job",
+      "proposal": ""
+    }
+  ],
+  "next": {
+    "route": "needs-evidence",
+    "role": "",
+    "question": "",
+    "reason": "The job was not read."
+  },
+  "reply": "We are looking at job 4711 and will write to you with what we find.",
+  "leadLine": "Job not read: run again with the plain job id.",
+  "recommendRetry": false,
+  "fixBrief": {
+    "goal": "",
+    "files": [],
+    "done": [],
+    "checks": [],
+    "agentsAffected": false,
+    "agentSkillChange": ""
+  }
+}
