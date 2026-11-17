@@ -15,10 +15,11 @@ pub struct Identity {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Refusal {
-    /// 401: no credentials, or wrong ones.
+    /// 401: no credentials, or wrong ones. The server answers with its own fixed text (`unauthorized`); this text
+    /// is not passed on.
     Unauthorized(String),
-    /// 500: the authenticator cannot decide (its registry cannot be read); nobody gets in. The message goes to the
-    /// client, so it names no server path; the details belong in the server's log.
+    /// 500: the authenticator cannot decide (its registry cannot be read); nobody gets in. The client gets a fixed
+    /// `unavailable` error; this text, the details, goes to the server's log.
     Unavailable(String),
 }
 

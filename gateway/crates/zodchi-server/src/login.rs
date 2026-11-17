@@ -21,7 +21,9 @@ use std::time::{Duration, Instant};
 use zodchi_core::appserver::AppServer;
 use zodchi_core::config::Config;
 use zodchi_core::job::mask_email;
-use zodchi_core::util::{fail, GatewayError, Result};
+use crate::public::{error_value, PublicError};
+
+type Result<T> = std::result::Result<T, PublicError>;
 
 /// The life of a device code.
 pub const CODE_LIFE: Duration = Duration::from_secs(15 * 60);
@@ -43,7 +45,9 @@ enum State {
     Pending(Pending),
     /// The last attempt completed; what is reported still comes from `account/read`.
     Connected,
-    Failed(String),
+    /// The last attempt ended without a sign-in: a public code and its fixed message. What Codex said stays in the
+    /// server's log.
+    Failed(&'static str, &'static str),
 }
 
 type Slot = Arc<Mutex<State>>;
@@ -73,6 +77,16 @@ fn field(answer: &Value, name: &str) -> Option<String> {
     direct.or_else(nested).map(String::from)
 }
 
+/// A failure of Codex itself: the client learns that, and what it was only the log knows.
+fn codex_unavailable(message: &str, detail: &str) -> PublicError {
+    PublicError::logged(500, "codex_unavailable", format!("{message} The server's operator has the details."), detail)
+}
+
+/// The public form of a failed attempt (`error` of `GET /v1/login`).
+fn failed_json(code: &str, message: &str) -> Value {
+    json!({ "status": "failed", "error": error_value(code, message, None) })
+}
+
 fn cancel_and_stop(server: &AppServer, login_id: &str) {
     let _ = server.send("account/login/cancel", json!({ "loginId": login_id }), Duration::from_secs(10));
     server.stop();
@@ -94,9 +108,10 @@ impl Logins {
     }
 
     fn server_for(&self, user: &str) -> Result<AppServer> {
-        let cfg = Config::tenant(&self.data, user)?;
+        let storage = |detail: &str| PublicError::logged(500, "storage_error", "The server cannot reach the sign-in of this user. The server's operator has the details.", detail);
+        let cfg = Config::tenant(&self.data, user).map_err(|e| storage(&e.0))?;
         let account = &cfg.accounts[0];
-        std::fs::create_dir_all(&account.codex_home)?;
+        std::fs::create_dir_all(&account.codex_home).map_err(|e| storage(&e.to_string()))?;
         let user_dir = account.codex_home.parent().map(Path::to_path_buf).unwrap_or_else(std::env::temp_dir);
         Ok(AppServer::new(&cfg.codex_bin, &account.codex_home, &user_dir, None, Some(user_dir.join("login-stderr.log"))))
     }
@@ -108,7 +123,7 @@ impl Logins {
         // Checked under the slot's lock: either shutdown has closed admission (and this start is refused), or it has
         // not yet collected this slot and will wait for this lock, find the attempt and cancel it.
         if self.closed.load(Ordering::SeqCst) {
-            return fail("The server is stopping; no sign-in is started.");
+            return Err(PublicError::new(500, "unavailable", "The server is stopping; no sign-in is started."));
         }
         match &*state {
             State::Pending(p) if Instant::now() < p.deadline => return Ok(pending_json(p)),
@@ -127,14 +142,14 @@ impl Logins {
             Ok(a) => a,
             Err(e) => {
                 server.stop();
-                return fail(format!("The sign-in could not be started: {}", e.message));
+                return Err(codex_unavailable("The sign-in could not be started.", &e.message));
             }
         };
         let (Some(login_id), Some(verification_url), Some(user_code)) =
             (field(&answer, "loginId"), field(&answer, "verificationUrl"), field(&answer, "userCode"))
         else {
             server.stop();
-            return fail("Codex answered account/login/start without loginId, verificationUrl and userCode.");
+            return Err(codex_unavailable("The sign-in could not be started.", "Codex answered account/login/start without loginId, verificationUrl and userCode."));
         };
         let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
         let pending = Pending { attempt, login_id: login_id.clone(), server: Arc::clone(&server), deadline: Instant::now() + self.life, verification_url, user_code };
@@ -163,20 +178,26 @@ impl Logins {
             let state = slot.lock().unwrap();
             match &*state {
                 State::Pending(p) if Instant::now() < p.deadline => return Ok(pending_json(p)),
-                State::Failed(error) => Some(error.clone()),
+                State::Failed(code, message) => Some((*code, *message)),
                 _ => None,
             }
         };
         let account = match self.account(user) {
             Ok(a) => a,
-            Err(e) => return Ok(json!({ "status": if failed.is_some() { "failed" } else { "none" }, "error": failed.unwrap_or(e.0) })),
+            // The sign-in cannot be read: the failed attempt (if any) is still the news; otherwise why it cannot be read.
+            Err(e) => {
+                return Ok(match failed {
+                    Some((code, message)) => failed_json(code, message),
+                    None => json!({ "status": "none", "error": e.value() }),
+                })
+            }
         };
         if account.get("type").and_then(Value::as_str) == Some("chatgpt") {
             return Ok(json!({ "status": "connected", "email": mask_email(account.get("email").and_then(Value::as_str)),
                 "plan": account.get("planType").cloned().unwrap_or(Value::Null) }));
         }
         Ok(match failed {
-            Some(error) => json!({ "status": "failed", "error": error }),
+            Some((code, message)) => failed_json(code, message),
             None => json!({ "status": "none" }),
         })
     }
@@ -191,7 +212,7 @@ impl Logins {
         let server = self.server_for(user)?;
         let read = server.account();
         server.stop();
-        let value = read.map_err(|e| GatewayError(format!("The sign-in could not be read: {}", e.message)))?;
+        let value = read.map_err(|e| codex_unavailable("The sign-in could not be read.", &e.message))?;
         self.accounts.lock().unwrap().insert(user.to_string(), (Instant::now(), value.clone()));
         Ok(value)
     }
@@ -208,7 +229,7 @@ impl Logins {
         let out = server.send("account/logout", json!({}), RPC);
         server.stop();
         self.accounts.lock().unwrap().remove(user);
-        out.map_err(|e| GatewayError(format!("The sign-out failed: {}", e.message)))?;
+        out.map_err(|e| codex_unavailable("The sign-out failed.", &e.message))?;
         Ok(json!({ "status": "none" }))
     }
 
@@ -260,14 +281,16 @@ fn watch(slot: Slot, attempt: u64, login_id: String, server: Arc<AppServer>, eve
                         if params.get("success") == Some(&json!(true)) {
                             settle(State::Connected);
                         } else {
-                            let error = params.get("error").and_then(Value::as_str).unwrap_or("The sign-in did not complete.");
-                            settle(State::Failed(error.to_string()));
+                            // What Codex said goes to the log; the client gets a fixed message.
+                            let detail = params.get("error").and_then(Value::as_str).unwrap_or("no reason given");
+                            crate::public::log(&format!("The sign-in of {user} did not complete."), detail);
+                            settle(State::Failed("sign_in_failed", "The sign-in did not complete; start again."));
                         }
                         return;
                     }
                     "__gone__" => {
                         server.stop();
-                        settle(State::Failed("The sign-in process exited before the sign-in completed.".into()));
+                        settle(State::Failed("codex_unavailable", "The sign-in process exited before the sign-in completed; start again."));
                         return;
                     }
                     _ => {}
@@ -275,12 +298,12 @@ fn watch(slot: Slot, attempt: u64, login_id: String, server: Arc<AppServer>, eve
             }
             Err(RecvTimeoutError::Timeout) => {
                 cancel_and_stop(&server, &login_id);
-                settle(State::Failed("The code expired before the sign-in completed; start again.".into()));
+                settle(State::Failed("timeout", "The code expired before the sign-in completed; start again."));
                 return;
             }
             Err(RecvTimeoutError::Disconnected) => {
                 server.stop();
-                settle(State::Failed("The sign-in process exited before the sign-in completed.".into()));
+                settle(State::Failed("codex_unavailable", "The sign-in process exited before the sign-in completed; start again."));
                 return;
             }
         }

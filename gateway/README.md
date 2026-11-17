@@ -60,7 +60,7 @@ curl -s localhost:8787/v1/jobs/review-1/result -H "Authorization: Bearer $TOKEN"
 ```
 
 The server speaks plain HTTP on `127.0.0.1:8787` (`--listen <addr>`); TLS and a public name belong to a reverse
-proxy in front of it. Options of `serve`: `--threads <n>` (default 16), `--max-user-jobs <n>` (4),
+proxy in front of it. Options of `serve`: `--threads <n>` (default 16, at least 2: the server refuses to start with fewer), `--max-user-jobs <n>` (4),
 `--max-jobs <n>` (16). Roles are the installed ones (`~/.zodchi/roles`, or `$ZODCHI_ROLES`); Codex is found as
 for `zodchi` (`ZODCHI_CODEX_BIN`, then `PATH`).
 
@@ -100,24 +100,51 @@ no async runtime.
 
 ### API
 
-JSON in and out. Every route except `/health` needs authentication; another user's job is 404, never 403. No
-answer of any status shows a path of the server: every JSON answer passes one filter that replaces each path under
-the data folder (users, jobs, Codex homes), the user's home, the role folders and any other absolute path with
-`<server path>` — job errors, account and sign-in errors and role errors included. The full answer goes to the
-server's standard error. Only the model's own answer (the job's `result`, the result routes) is left as the model gave
-it.
+JSON in and out. Every route except `/health` needs authentication; another user's job is 404, never 403. Every error is a **public error**:
+`{"error": {"code", "message", "field"?}}`, a stable code and a message that is fixed text (or composed from the
+client's own request, as the 400 validation messages are), plus the `field` of the request it is about where that
+helps. No part of it is a server value: no path, no text of an I/O error, of Codex, of a role file, and no stored job
+error. The diagnostic goes to the server's standard error, and a job's own error also stays in its job folder. A job
+is shown through a fixed list of its fields (never its folder, its Codex process or thread, the servers of its role),
+with `error` mapped from its final status to `{code, message}` (`null` otherwise). The model's own answer (the job's
+`result`, the result routes) is returned as the model gave it. There is no text filter: the contract is that an error
+is built only from a code, a fixed message and a field name.
+
+| code | status | meaning |
+|---|---|---|
+| `bad_request` | 400 | the request is wrong; the message names what (the body, a field, `waitSec`, an image, the model or effort sent) |
+| `unauthorized` | 401 | no token, or a wrong one |
+| `not_found` | 404 | no such route, job or image |
+| `method_not_allowed` | 405 | the route does not take the method |
+| `key_conflict` | 409 | the key belongs to another request (`field: key`) |
+| `not_final` | 409 | the job has no final status yet |
+| `busy` | 429 | over the limit of unfinished jobs; the key stays free |
+| `role_not_found` | 400 | the role is not installed on the server (`field: role`) |
+| `role_not_allowed` | 400 | a work or decisions role (`field: role`) |
+| `role_invalid` | 400 | the role is installed but cannot be loaded (`field: role`) |
+| `storage_error` | 500 | the server cannot read or write its own files; the key stays free |
+| `unavailable` | 500 | the server cannot answer now: its registry or authenticator, or it is stopping |
+| `codex_unavailable` | 200 or 500 | Codex cannot read or change the caller's sign-in (`error` of `/v1/account` and `/v1/login` with status 200, and of the sign-in calls with 500) |
+| `sign_in_failed` | 200 | a device-code sign-in ended without a sign-in (`error` of `GET /v1/login`) |
+| `auth_required` | job | the job found no ChatGPT sign-in |
+| `limited` | job | the subscription's limit is used up |
+| `timeout` | job, sign-in | the call ran out of time, or the device code expired |
+| `job_failed` | job | the call failed |
+| `unknown` | job | whether the model turn ran is not known |
+
+The `unauthorized` text is the server's own; what an `Authenticator` of a fork says is not passed on.
 
 | Route | Answer |
 |---|---|
 | `GET /health` | `{ok: true, version}` |
 | `POST /v1/login` | starts a device-code sign-in of the caller's subscription: `{status: "pending", verificationUrl, userCode, loginId, expiresInSec}`. One open sign-in per user; a second start returns the open one |
-| `GET /v1/login` | `{status: none, pending, connected or failed, verificationUrl?, userCode?, email?, plan?, error?}` |
+| `GET /v1/login` | `{status: none, pending, connected or failed, verificationUrl?, userCode?, email?, plan?, error?: {code, message}}` |
 | `DELETE /v1/login` | cancels an open sign-in and signs the caller's Codex home out |
 | `GET /v1/account` | the caller's sign-in and limits, what `zodchi account` prints for that one account |
 | `GET /v1/roles` | the roles a call may name: the installed expert roles of the kinds text and image |
 | `POST /v1/jobs` | `{key, role, prompt, images?: [base64], model?, effort?, timeoutMin?, credits?}` -> `{job, created}`: 201 created, 200 the existing job of the same request, 409 the key belongs to another request, 429 over the limits |
 | `GET /v1/jobs/{key}?waitSec=n` | `{job}` as it is after waiting up to `n` seconds (at most 60) for a final status |
-| `GET /v1/jobs/{key}/result` | 409 `{status}` while not final; 422 `{status, error}` for a final status other than `succeeded`; for `succeeded`: the text (`text/plain`), the JSON of the role's schema (`application/json`), or for an image job a manifest `{images: [{index, contentType, bytes, url}]}` |
+| `GET /v1/jobs/{key}/result` | 409 `{status}` while not final; 422 `{status, error: {code, message}}` for a final status other than `succeeded`; for `succeeded`: the text (`text/plain`), the JSON of the role's schema (`application/json`), or for an image job a manifest `{images: [{index, contentType, bytes, url}]}` |
 | `GET /v1/jobs/{key}/result/{index}` | the bytes of one image with its content type |
 
 **Sign-in.** The app-server of an open sign-in lives in the caller's Codex home until `account/login/completed`
@@ -134,8 +161,9 @@ the job when it is created, so a later change of the installed role does not tur
 idempotent for as long as its job folder lives: a finished job is removed after seven days, and a repeat after that
 is a new call that spends again.
 
-**Capacity.** A fixed pool of HTTP threads; at most half of them (at least one) wait in long polls, and a long
-poll over that answers at once with the job as it is, so `/health` and short calls always find a free thread.
+**Capacity.** A fixed pool of at least two HTTP threads (`--threads 1` is refused at start); at most half of them
+wait in long polls, and a long poll over that answers at once with the job as it is, so `/health` and short calls
+always find a free thread.
 Before a job is created the server checks, in one critical section, the key, the unfinished jobs of the caller
 (at most `--max-user-jobs`) and of the server (at most `--max-jobs`), counted from the job folders on disk of every
 user, removed users included. Over a limit the answer is 429 and the key stays free; a repeat of an existing key is

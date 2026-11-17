@@ -83,7 +83,7 @@ fn shutdown_cancels_a_sign_in_whose_start_is_still_running() {
     let logins = Logins::new(&data);
     logins.shutdown();
     let refused = logins.start(&user.id).expect_err("a start after shutdown is refused");
-    assert!(refused.0.contains("stopping"), "{}", refused.0);
+    assert!(refused.message.contains("stopping"), "{}", refused.message);
 
     let _ = std::fs::remove_dir_all(&root);
 }

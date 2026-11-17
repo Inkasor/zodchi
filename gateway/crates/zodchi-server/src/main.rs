@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use zodchi_core::config::{user_home, Config};
 use zodchi_core::job;
 use zodchi_core::util::{fail, GatewayError, Result};
-use zodchi_server::api::{serve, Options};
+use zodchi_server::api::{serve, Options, MIN_THREADS};
 use zodchi_server::auth::TokenAuthenticator;
 use zodchi_server::registry;
 
@@ -15,7 +15,7 @@ const USAGE: &str = "Usage: zodchi-server <command> [options]
 
   serve                 serve the API until Ctrl+C or SIGTERM
       --listen <addr>        default 127.0.0.1:8787 (TLS belongs to the reverse proxy in front)
-      --threads <n>          HTTP threads, default 16; at most half of them wait in long polls
+      --threads <n>          HTTP threads, default 16, at least 2; at most half of them wait in long polls
       --max-user-jobs <n>    unfinished jobs per user, default 4
       --max-jobs <n>         unfinished jobs on the server, default 16
   user add <name>       add a user and print their token (shown once)
@@ -62,6 +62,15 @@ fn number(args: &Args, name: &str, default: usize) -> Result<usize> {
     }
 }
 
+/// `--threads`: a long poll holds one HTTP thread, so one thread alone would be taken by the first poll.
+fn threads(args: &Args, default: usize) -> Result<usize> {
+    let n = number(args, "threads", default)?;
+    if n < MIN_THREADS {
+        return fail(format!("--threads is at least {MIN_THREADS}: a long poll holds one HTTP thread, and one more must stay free for every other request."));
+    }
+    Ok(n)
+}
+
 fn print(value: &Value) {
     println!("{}", serde_json::to_string_pretty(value).unwrap_or_default());
 }
@@ -84,7 +93,7 @@ fn main_inner(raw: Vec<String>) -> Result<u8> {
             if let Some(listen) = args.options.get("listen") {
                 opts.listen = listen.clone();
             }
-            opts.threads = number(&args, "threads", opts.threads)?;
+            opts.threads = threads(&args, opts.threads)?;
             opts.max_user_jobs = number(&args, "max-user-jobs", opts.max_user_jobs)?;
             opts.max_jobs = number(&args, "max-jobs", opts.max_jobs)?;
             serve(&opts, Box::new(TokenAuthenticator { data: std::path::absolute(&data)? }))?;

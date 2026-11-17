@@ -1,226 +1,178 @@
-//! The output contract of the server: no answer names a path of the server. Every JSON body and every error string
-//! leaving the server passes [`PathFilter`]: each path under a known root (the data folder with the users' folders,
-//! jobs and Codex homes, the user's home, the role folders, the temp folder) and any other absolute path is replaced
-//! by [`TOKEN`]. Only the model's own answer is left as it is (see `Reply::kept` in the API).
+//! The output contract of the server: no raw diagnostic text reaches a client.
+//!
+//! Every error a client sees is a **public error**: a stable `code` and a fixed `message` written here or at the
+//! place that raises it, and, where it helps, a `field` the client sent. No part of it is a server value (a path, the
+//! text of an I/O error, a Codex or role-file message, the stored `error` of a job). The raw diagnostic goes to the
+//! server's standard error (see [`log`]); a job's own error also stays in its job folder.
+//!
+//! The contract is structural, not a filter over text: an error body is built only from a code, a fixed message and
+//! a field name, and a job is shown through [`job_view`], which names the fields a client sees. The model's own
+//! answer (a job's `result`, the result routes) is returned as the model gave it.
 
-use serde_json::Value;
-use std::path::{Path, PathBuf};
+use serde_json::{json, Map, Value};
 
-/// What a client sees in place of a server path.
-pub const TOKEN: &str = "<server path>";
+/// The codes of public errors.
+///
+/// | code | status | meaning |
+/// |---|---|---|
+/// | `bad_request` | 400 | the request is wrong (the message is composed from the request itself) |
+/// | `unauthorized` | 401 | no token, or a wrong one |
+/// | `not_found` | 404 | no such route, job or image |
+/// | `method_not_allowed` | 405 | the route does not take the method |
+/// | `key_conflict` | 409 | the key belongs to another request |
+/// | `not_final` | 409 | the job has no final status yet |
+/// | `busy` | 429 | over the limit of unfinished jobs |
+/// | `role_not_found` | 400 | the role is not installed on the server |
+/// | `role_not_allowed` | 400 | the role is installed but a call to this server may not name it |
+/// | `role_invalid` | 400 | the role is installed but cannot be loaded |
+/// | `storage_error` | 500 | the server cannot read or write its own files |
+/// | `unavailable` | 500 | the server cannot answer now (registry, authenticator, shutdown) |
+/// | `codex_unavailable` | 200/500 | Codex cannot read or change the caller's sign-in |
+/// | `sign_in_failed` | 200 | a device-code sign-in ended without a sign-in |
+/// | `auth_required` | job | the job found no ChatGPT sign-in |
+/// | `limited` | job | the subscription's limit is used up |
+/// | `timeout` | job, sign-in | the call (or the device code) ran out of time |
+/// | `job_failed` | job | the call failed |
+/// | `unknown` | job | whether the call ran is not known |
+pub const CODES: [&str; 19] = [
+    "bad_request", "unauthorized", "not_found", "method_not_allowed", "key_conflict", "not_final", "busy", "role_not_found", "role_not_allowed",
+    "role_invalid", "storage_error", "unavailable", "codex_unavailable", "sign_in_failed", "auth_required", "limited", "timeout", "job_failed",
+    "unknown",
+];
 
-/// Replaces server paths in strings.
-#[derive(Debug, Clone, Default)]
-pub struct PathFilter {
-    /// Every known root in each of its spellings, ASCII lower case, longest first.
-    roots: Vec<String>,
+/// A public error with the status it is answered with.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PublicError {
+    pub status: u16,
+    pub code: &'static str,
+    pub message: String,
+    pub field: Option<String>,
 }
 
-/// A byte that may stand before the start of a path.
-fn boundary(b: u8) -> bool {
-    b.is_ascii_whitespace() || b"\"'`([{<=,;:".contains(&b)
+impl PublicError {
+    pub fn new(status: u16, code: &'static str, message: impl Into<String>) -> PublicError {
+        debug_assert!(CODES.contains(&code), "{code} is not a public code");
+        PublicError { status, code, message: message.into(), field: None }
+    }
+
+    /// The same error naming the field of the request it is about.
+    pub fn field(mut self, field: &str) -> PublicError {
+        self.field = Some(field.to_string());
+        self
+    }
+
+    /// A public error whose raw `detail` goes to the server's log and nowhere else.
+    pub fn logged(status: u16, code: &'static str, message: impl Into<String>, detail: &str) -> PublicError {
+        let error = PublicError::new(status, code, message);
+        log(&error.message, detail);
+        error
+    }
+
+    /// `{code, message, field?}`.
+    pub fn value(&self) -> Value {
+        error_value(self.code, &self.message, self.field.as_deref())
+    }
 }
 
-/// A byte that ends a path.
-fn ends_path(b: u8) -> bool {
-    b.is_ascii_whitespace() || b"\"'`<>|,;".contains(&b)
+impl std::fmt::Display for PublicError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
 }
 
-/// A byte that may follow the leading `/` of a Unix path.
-fn path_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b"._-~$@".contains(&b) || b >= 0x80
+/// `{code, message, field?}`.
+pub fn error_value(code: &str, message: &str, field: Option<&str>) -> Value {
+    let mut map = Map::new();
+    map.insert("code".into(), json!(code));
+    map.insert("message".into(), json!(message));
+    if let Some(field) = field {
+        map.insert("field".into(), json!(field));
+    }
+    Value::Object(map)
 }
 
-/// Whether an absolute path starts at `i`; its separator if so. The routes of the API (`/v1/...`, `/health`) are not
-/// server paths.
-fn path_start(s: &[u8], i: usize) -> Option<u8> {
-    if i > 0 && !boundary(s[i - 1]) {
-        return None;
-    }
-    let at = |k: usize| s.get(i + k).copied();
-    // A drive letter, a colon and a separator.
-    if s[i].is_ascii_alphabetic() && at(1) == Some(b':') && matches!(at(2), Some(b'\\') | Some(b'/')) {
-        return at(2);
-    }
-    // A UNC, verbatim or device path: two backslashes and a name, `?` or `.`.
-    if s[i] == b'\\' && at(1) == Some(b'\\') && at(2).is_some_and(|c| c.is_ascii_alphanumeric() || c == b'?' || c == b'.') {
-        return Some(b'\\');
-    }
-    if s[i] == b'/' && at(1).is_some_and(path_char) {
-        let rest = &s[i..];
-        let route = |r: &[u8]| rest.starts_with(r) && rest.get(r.len()).is_none_or(|c| !path_char(*c));
-        if route(b"/v1") || route(b"/health") {
-            return None;
-        }
-        return Some(b'/');
-    }
-    None
+/// A raw diagnostic, for the operator: the standard error of the server.
+pub fn log(public: &str, detail: &str) {
+    eprintln!("zodchi-server: {public} [{}]", detail.trim());
 }
 
-/// The end of a path that runs from `from`: up to whitespace or a quote, and on over a space when the next word goes
-/// on with the same separator (a user folder with a space in its name). A trailing `.`, `:` or `)` belongs to the sentence.
-fn path_end(s: &[u8], from: usize, separator: u8) -> usize {
-    let mut end = from;
-    loop {
-        while end < s.len() && !ends_path(s[end]) {
-            end += 1;
-        }
-        if end < s.len() && s[end] == b' ' {
-            let next = end + 1;
-            let word_end = (next..s.len()).find(|&k| ends_path(s[k])).unwrap_or(s.len());
-            if word_end > next && s[next..word_end].contains(&separator) && path_start(s, next).is_none() {
-                end = word_end;
-                continue;
-            }
-        }
-        break;
-    }
-    while end > from && b".:)]".contains(&s[end - 1]) {
-        end -= 1;
-    }
-    end
+/// The public error of a job that ended in `status` without a result: its code is the status (the core classified the
+/// failure when it settled the job) and its message is fixed. None for a status that is not a failure.
+pub fn job_error(status: &str) -> Option<Value> {
+    let (code, message) = match status {
+        "failed" => ("job_failed", "The job failed. The server's operator has the details."),
+        "limited" => ("limited", "The ChatGPT subscription's limit is used up; try again after it resets."),
+        "auth_required" => ("auth_required", "The ChatGPT subscription is not signed in; sign in with POST /v1/login."),
+        "timeout" => ("timeout", "The call did not end in its time and was stopped."),
+        "unknown" => ("unknown", "Whether the model turn ran is not known."),
+        _ => return None,
+    };
+    Some(error_value(code, message, None))
 }
 
-impl PathFilter {
-    /// A filter of these roots (and of every other absolute path). Roots that are not absolute or too short to be
-    /// told from text (`/`, a bare drive) are left to the general rule.
-    pub fn new(roots: &[PathBuf]) -> PathFilter {
-        let mut forms: Vec<String> = Vec::new();
-        for root in roots {
-            let text = root.display().to_string();
-            let text = text.trim_end_matches(['\\', '/']);
-            if !Path::new(text).is_absolute() && !text.starts_with('/') || text.len() < 4 {
-                continue;
-            }
-            for form in [text.to_string(), text.replace('\\', "/"), text.replace('/', "\\")] {
-                let form = form.to_ascii_lowercase();
-                if !forms.contains(&form) {
-                    forms.push(form);
-                }
-            }
-        }
-        forms.sort_by_key(|f| std::cmp::Reverse(f.len()));
-        PathFilter { roots: forms }
-    }
+/// The fields of a stored job a client sees. Anything else (the job's folder, the Codex process and thread, the
+/// servers of a role, the request's hash) is the server's own.
+const JOB_FIELDS: [&str; 20] = [
+    "key", "role", "kind", "mode", "model", "effort", "status", "timeoutMs", "account", "accountsSkipped", "tokens", "credits", "result",
+    "workerPid", "createdAt", "startedAt", "turnRequestedAt", "turnStartedAt", "finishedAt", "resetsAt",
+];
 
-    /// `text` with every server path replaced by [`TOKEN`]; None when it names none.
-    pub fn clean(&self, text: &str) -> Option<String> {
-        let s = text.as_bytes();
-        let lower = text.to_ascii_lowercase();
-        let mut spans: Vec<(usize, usize)> = Vec::new();
-        for root in &self.roots {
-            let mut from = 0;
-            while let Some(found) = lower[from..].find(root.as_str()) {
-                let start = from + found;
-                let root_end = start + root.len();
-                let separator = if root.contains('\\') { b'\\' } else { b'/' };
-                spans.push((start, path_end(s, root_end, separator).max(root_end)));
-                from = root_end;
-            }
+/// What a client sees of a stored job: the fields of [`JOB_FIELDS`], and `error` as `{code, message}` mapped from the
+/// status (null while the job has none). The stored error text is dropped. `resetsAt` stays only as a number.
+pub fn job_view(job: &Value) -> Value {
+    let mut out = Map::new();
+    let stored = job.as_object();
+    for name in JOB_FIELDS {
+        let Some(value) = stored.and_then(|m| m.get(name)) else { continue };
+        if name == "resetsAt" && !(value.is_number() || value.is_null()) {
+            continue;
         }
-        let mut i = 0;
-        while i < s.len() {
-            if let Some(separator) = path_start(s, i) {
-                let end = path_end(s, i, separator);
-                if end > i {
-                    spans.push((i, end));
-                    i = end;
-                    continue;
-                }
-            }
-            i += 1;
-        }
-        if spans.is_empty() {
-            return None;
-        }
-        spans.sort();
-        let mut out = String::with_capacity(text.len());
-        let mut at = 0;
-        for (start, end) in spans {
-            if end <= at {
-                continue;
-            }
-            if start >= at {
-                out.push_str(&text[at..start]);
-                out.push_str(TOKEN);
-            }
-            at = end;
-        }
-        out.push_str(&text[at..]);
-        Some(out)
+        out.insert(name.to_string(), value.clone());
     }
-
-    /// Every string of `value` (keys stay) cleaned; whether any named a path.
-    pub fn clean_value(&self, value: &mut Value) -> bool {
-        match value {
-            Value::String(text) => match self.clean(text) {
-                Some(clean) => {
-                    *text = clean;
-                    true
-                }
-                None => false,
-            },
-            Value::Array(items) => items.iter_mut().fold(false, |hit, v| self.clean_value(v) | hit),
-            Value::Object(map) => map.values_mut().fold(false, |hit, v| self.clean_value(v) | hit),
-            _ => false,
-        }
-    }
+    let status = job.get("status").and_then(Value::as_str).unwrap_or("");
+    let stored_error = job.get("error").is_some_and(|e| !e.is_null());
+    let error = job_error(status).or_else(|| stored_error.then(|| job_error("failed").unwrap_or(Value::Null)));
+    out.insert("error".into(), error.unwrap_or(Value::Null));
+    Value::Object(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The paths of these tests carry `#` for the colon of a drive (the repository's publish guard refuses a machine
-    /// path in a tracked file); this puts the colon back.
-    fn drive(text: &str) -> String {
-        text.replace('#', ":")
-    }
-
-    fn filter() -> PathFilter {
-        PathFilter::new(&[PathBuf::from(drive(r"C#\Users\Anna Maria\.zodchi\server")), PathBuf::from("/srv/zodchi data"), PathBuf::from("/")])
-    }
-
-    fn clean(text: &str) -> String {
-        let text = drive(text);
-        filter().clean(&text).unwrap_or(text)
+    #[test]
+    fn a_failed_job_shows_a_code_and_a_fixed_message() {
+        let job = json!({ "key": "k", "status": "failed", "error": "Cannot read /v1/private/auth.json", "dir": "/srv/x", "servers": { "a": 1 },
+            "result": null, "codexPid": 5 });
+        let shown = job_view(&job);
+        assert_eq!(shown["error"]["code"], json!("job_failed"));
+        assert!(!shown.to_string().contains("private"), "{shown}");
+        assert!(shown.get("dir").is_none() && shown.get("servers").is_none() && shown.get("codexPid").is_none());
+        assert_eq!(shown["key"], json!("k"));
     }
 
     #[test]
-    fn known_roots_go_with_everything_under_them() {
-        assert_eq!(clean(r"Cannot read C#\Users\Anna Maria\.zodchi\server\users\a-1\jobs\k\job.json: denied"), "Cannot read <server path>: denied");
-        assert_eq!(clean("Cannot read c#/users/anna maria/.zodchi/server/users/a-1/codex-home."), "Cannot read <server path>.");
-        assert_eq!(clean("in /srv/zodchi data/users/b/codex-home (os error 2)"), "in <server path> (os error 2)");
-    }
-
-    #[test]
-    fn any_other_absolute_path_goes_too() {
-        assert_eq!(clean(r"No role x: looked in D#\roles, E#/Zodchi/roles."), "No role x: looked in <server path>, <server path>.");
-        assert_eq!(clean(r"spawn \\?\C#\Program Files\codex\codex.exe failed"), "spawn <server path> failed");
-        assert_eq!(clean(r"at \\host\share\x"), "at <server path>");
-        assert_eq!(clean("Role file /var/lib/anna/.zodchi/roles/x.json is not JSON"), "Role file <server path> is not JSON");
-        assert_eq!(clean("\"/tmp/x\" (/var/y)"), "\"<server path>\" (<server path>)");
-        assert_eq!(clean("error:/etc/passwd"), "error:<server path>");
-    }
-
-    #[test]
-    fn routes_urls_and_words_stay() {
-        for text in [
-            "No role x is installed on this server; GET /v1/roles lists them.",
-            "GET is not a method of /v1/jobs/k/result.",
-            "GET /health",
-            "https://example.invalid/device",
-            "text/plain and/or a-z 0-9 . _ - [a-z0-9-]{1,40} 1/2",
-            "The body is larger than 32 MB.",
-        ] {
-            assert_eq!(filter().clean(&drive(text)), None, "{text}");
+    fn every_final_status_has_its_code() {
+        for (status, code) in [("failed", "job_failed"), ("limited", "limited"), ("auth_required", "auth_required"), ("timeout", "timeout"), ("unknown", "unknown")] {
+            assert_eq!(job_error(status).unwrap()["code"], json!(code));
+            assert!(CODES.contains(&code));
         }
+        assert!(job_error("succeeded").is_none() && job_error("running").is_none());
+        assert_eq!(job_view(&json!({ "status": "succeeded", "error": null }))["error"], Value::Null);
+        // A stored error on a job that has no failure status is still not shown.
+        assert_eq!(job_view(&json!({ "status": "running", "error": "x /etc/passwd" }))["error"]["code"], json!("job_failed"));
     }
 
     #[test]
-    fn values_are_cleaned_everywhere() {
-        let mut value = serde_json::json!({ "error": drive(r"C#\x\y"), "rows": [{ "error": "/opt/a/b" }], "n": 1 });
-        assert!(filter().clean_value(&mut value));
-        assert_eq!(value, serde_json::json!({ "error": TOKEN, "rows": [{ "error": TOKEN }], "n": 1 }));
+    fn resets_at_is_a_number_or_nothing() {
+        assert_eq!(job_view(&json!({ "status": "limited", "resetsAt": 1760000000 }))["resetsAt"], json!(1760000000));
+        assert!(job_view(&json!({ "status": "limited", "resetsAt": "see /etc/passwd" })).get("resetsAt").is_none());
+    }
+
+    #[test]
+    fn an_error_value_carries_only_what_it_is_given() {
+        let error = PublicError::new(400, "role_not_found", "No role x.").field("role");
+        assert_eq!(error.value(), json!({ "code": "role_not_found", "message": "No role x.", "field": "role" }));
+        assert_eq!(error_value("storage_error", "m", None), json!({ "code": "storage_error", "message": "m" }));
     }
 }

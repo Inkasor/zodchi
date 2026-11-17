@@ -94,12 +94,13 @@ impl Env {
     }
 
     fn serve(&self, extra: &[&str]) -> Server {
+        let log = self.root.join(format!("server-stderr-{:08x}.log", rand::random::<u32>()));
         let mut child = self.command().args(["serve", "--listen", "127.0.0.1:0", "--data"]).arg(&self.data).args(extra)
-            .stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+            .stdout(Stdio::piped()).stderr(Stdio::from(std::fs::File::create(&log).unwrap())).spawn().unwrap();
         let mut line = String::new();
         BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
         let address = line.split("http://").nth(1).and_then(|r| r.split_whitespace().next()).unwrap_or_else(|| panic!("no address in {line:?}")).to_string();
-        Server { child, address }
+        Server { child, address, log }
     }
 }
 
@@ -113,6 +114,8 @@ impl Drop for Env {
 struct Server {
     child: Child,
     address: String,
+    /// The server's standard error: where the raw diagnostics go.
+    log: PathBuf,
 }
 
 impl Drop for Server {
@@ -132,9 +135,21 @@ impl Answer {
     fn json(&self) -> Value {
         serde_json::from_slice(&self.body).unwrap_or_else(|_| panic!("not JSON: {}", String::from_utf8_lossy(&self.body)))
     }
+
+    /// The public error of the answer: `error.code` and `error.message` (the error is `{code, message, field?}`).
+    fn error(&self) -> (String, String) {
+        let value = self.json();
+        let error = &value["error"];
+        (error["code"].as_str().unwrap_or_else(|| panic!("no error code in {value}")).to_string(), error["message"].as_str().unwrap_or("").to_string())
+    }
 }
 
 impl Server {
+    /// What the server has written to its standard error so far.
+    fn stderr(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_default()
+    }
+
     #[cfg(unix)]
     fn child_alive(&self) -> bool {
         Command::new("kill").args(["-0", &self.child.id().to_string()]).status().map(|s| s.success()).unwrap_or(false)
@@ -196,6 +211,7 @@ fn refuses_without_a_token_and_with_a_wrong_one() {
     assert_eq!(health.status, 200);
     assert_eq!(health.json()["ok"], json!(true));
     assert_eq!(server.call("GET", "/v1/roles", None, None).status, 401);
+    assert_eq!(server.call("GET", "/v1/roles", None, None).error().0, "unauthorized");
     assert_eq!(server.call("GET", "/v1/roles", Some("zs_wrong"), None).status, 401);
     assert_eq!(server.call("GET", "/v1/jobs/any", Some(&format!("{token}x")), None).status, 401);
     let roles = server.call("GET", "/v1/roles", Some(&token), None);
@@ -255,7 +271,8 @@ fn refuses_work_paid_inline_roles_and_too_many_images() {
     let refused = |body: Value, words: &str| {
         let answer = server.submit(&token, body);
         assert_eq!(answer.status, 400, "{}", String::from_utf8_lossy(&answer.body));
-        let error = answer.json()["error"].as_str().unwrap().to_string();
+        let (code, error) = answer.error();
+        assert!(["bad_request", "role_not_found", "role_not_allowed"].contains(&code.as_str()), "{code}");
         assert!(error.contains(words), "{error}");
     };
     refused(json!({ "key": "w1", "role": "builder", "prompt": "p" }), "no repository");
@@ -265,6 +282,7 @@ fn refuses_work_paid_inline_roles_and_too_many_images() {
     refused(json!({ "key": "i1", "role": { "mode": "expert", "model": "m", "effort": "low" }, "prompt": "p" }), "inline role");
     refused(json!({ "key": "i2", "role": "ask.json", "prompt": "p" }), "role file");
     refused(json!({ "key": "i3", "role": "missing", "prompt": "p" }), "No role missing");
+    refused(json!({ "key": "m2", "role": "ask", "prompt": "p", "images": ["AAAA"] }), "PNG, JPEG or WebP");
     refused(json!({ "key": "m1", "role": "ask", "prompt": "p", "images": vec!["iVBORw0KGgo="; 9] }), "At most 8");
     // Nothing was stored for any of them.
     let jobs = std::fs::read_dir(env.data.join("users")).unwrap().next().unwrap().unwrap().path().join("jobs");
@@ -298,6 +316,7 @@ fn stores_token_hashes_and_revokes_without_a_restart() {
     for token in [Some(fresh), None] {
         let broken = server.call("GET", "/v1/roles", token, None);
         assert_eq!(broken.status, 500);
+        assert_eq!(broken.error().0, "unavailable");
         env.assert_no_paths(&broken.body);
     }
 }
@@ -323,6 +342,7 @@ fn admission_refuses_over_the_limit_and_leaves_the_key_free() {
     assert_eq!(server.submit(&token, json!({ "key": "slow-1", "role": "ask", "prompt": "SLOW one" })).status, 201);
     let over = server.submit(&token, json!({ "key": "next-1", "role": "ask", "prompt": "two" }));
     assert_eq!(over.status, 429, "{}", String::from_utf8_lossy(&over.body));
+    assert_eq!(over.error().0, "busy");
     assert_eq!(server.call("GET", "/v1/jobs/next-1", Some(&token), None).status, 404, "the refused key was taken");
     // A repeat of the existing key is never refused by admission.
     assert_eq!(server.submit(&token, json!({ "key": "slow-1", "role": "ask", "prompt": "SLOW one" })).status, 200);
@@ -354,9 +374,12 @@ fn admission_counts_fail_closed() {
     std::fs::write(ghost.join("jobs"), "not a folder").unwrap();
     let unknown = server.submit(&token, json!({ "key": "next-1", "role": "ask", "prompt": "one" }));
     assert_eq!(unknown.status, 500, "{}", String::from_utf8_lossy(&unknown.body));
-    assert!(unknown.json()["error"].as_str().unwrap().contains("cannot be counted"));
+    let (code, message) = unknown.error();
+    assert_eq!(code, "storage_error");
+    assert!(message.contains("cannot be counted"), "{message}");
     env.assert_no_paths(&unknown.body);
     assert!(!String::from_utf8_lossy(&unknown.body).contains("ghost-1"), "the answer names another user's folder");
+    assert!(server.stderr().contains("ghost-1"), "the server's log lost the diagnostic: {}", server.stderr());
     assert_eq!(server.call("GET", "/v1/jobs/next-1", Some(&token), None).status, 404, "the refused key was taken");
     std::fs::remove_file(ghost.join("jobs")).unwrap();
     assert_eq!(server.submit(&token, json!({ "key": "next-1", "role": "ask", "prompt": "one" })).status, 201);
@@ -439,7 +462,9 @@ fn every_kind_of_result() {
     let failed = server.call("GET", "/v1/jobs/fail-1/result", Some(&token), None);
     assert_eq!(failed.status, 422);
     assert_eq!(failed.json()["status"], json!("failed"));
-    assert_eq!(failed.json()["error"], json!("boom"));
+    assert_eq!(failed.error().0, "job_failed");
+    assert!(!String::from_utf8_lossy(&failed.body).contains("boom"), "the stored error text reached the client: {}", String::from_utf8_lossy(&failed.body));
+    assert!(std::fs::read_to_string(env.data.join("users").join(&id).join("jobs").join("fail-1").join("job.json")).unwrap().contains("boom"), "the job folder lost the error");
 }
 
 #[test]
@@ -525,7 +550,8 @@ fn a_body_over_32_mb_is_refused() {
     let mut body = std::io::repeat(b' ').take(LIMIT_BODY as u64 + 1);
     let reply = app.handle("POST", "/v1/jobs", &[], &mut body);
     assert_eq!(reply.status, 400);
-    assert!(reply.json_of()["error"].as_str().unwrap().contains("32 MB"));
+    assert_eq!(reply.json_of()["error"]["code"], json!("bad_request"));
+    assert!(reply.json_of()["error"]["message"].as_str().unwrap().contains("32 MB"));
     // The health route needs nobody; an identity outside [a-z0-9-] is never let in.
     struct Odd;
     impl Authenticator for Odd {
@@ -538,23 +564,41 @@ fn a_body_over_32_mb_is_refused() {
     assert_eq!(odd.handle("GET", "/v1/roles", &[], &mut std::io::empty()).status, 500);
 }
 
-/// No answer of any status names a server path: a job's stored error (200 and 422), an account and sign-in error
-/// (200), a role that cannot be loaded (400). The model's own answer is left as the model gave it.
+/// Writes a finished job with a stored error and returns the job folder.
+fn stored_job(env: &Env, user: &str, key: &str, status: &str, error: &str, extra: Value) -> PathBuf {
+    let dir = std::path::absolute(&env.data).unwrap().join("users").join(user).join("jobs").join(key);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut job = json!({ "key": key, "role": "ask", "kind": "text", "mode": "expert", "status": status, "error": error, "result": null,
+        "createdAt": zodchi_core::util::iso(), "finishedAt": zodchi_core::util::iso() });
+    for (name, value) in extra.as_object().unwrap() {
+        job[name] = value.clone();
+    }
+    std::fs::write(dir.join("job.json"), job.to_string()).unwrap();
+    dir
+}
+
+/// No raw diagnostic reaches a client, whatever its shape (a route-shaped path included) and its status: a job's stored
+/// error (200 and 422), an account and sign-in error (200), a role that cannot be loaded (400), a storage error (500).
+/// Each answer carries a public `{code, message}`; the diagnostic stays in the job folder or the server's log. The
+/// model's own answer is returned as the model gave it.
 #[test]
-fn no_answer_names_a_server_path() {
+fn no_raw_diagnostic_reaches_a_client() {
     let env = Env::new();
     let (id, token) = env.user("Anna", true);
     let (bad_id, bad) = env.user("Boris", true);
     let data = std::path::absolute(&env.data).unwrap();
     let home = std::path::absolute(env.codex_home(&id)).unwrap();
 
-    // A job whose stored error names the data folder (both separators); its result holds a path of the model's.
-    let dir = data.join("users").join(&id).join("jobs").join("stored-1");
-    std::fs::create_dir_all(&dir).unwrap();
-    let error = format!("Cannot write {} nor {}: denied", dir.join("job.json").display(), home.display().to_string().replace('\\', "/"));
-    let said = format!("the model saw {}", home.display());
-    std::fs::write(dir.join("job.json"), json!({ "key": "stored-1", "role": "ask", "kind": "text", "mode": "expert", "status": "failed",
-        "error": error, "result": { "text": said }, "createdAt": zodchi_core::util::iso(), "finishedAt": zodchi_core::util::iso() }).to_string()).unwrap();
+    // The two paths of the review: they look like routes of the API and are not exempt from anything.
+    let routes = "cannot read /v1/private/auth.json and /health/private/auth.json";
+    let raw = format!("Cannot write {} nor {}: denied; {routes}", data.join("users").display(), home.display().to_string().replace('\\', "/"));
+    let said = format!("the model saw {} and {routes}", home.display());
+    let one = stored_job(&env, &id, "stored-1", "failed", &raw, json!({ "result": { "text": said },
+        "servers": { "x": { "error": "cannot read /v1/private/servers.json" } }, "dir": data.display().to_string(), "root": "/health/private" }));
+    stored_job(&env, &id, "stored-2", "limited", "cannot read /health/private/auth.json", json!({ "resetsAt": "cannot read /v1/private/reset.json" }));
+    stored_job(&env, &id, "stored-3", "auth_required", "cannot read /v1/private/auth.json", json!({}));
+    stored_job(&env, &id, "stored-4", "timeout", "cannot read /v1/private/auth.json", json!({}));
+    stored_job(&env, &id, "stored-5", "unknown", "cannot read /v1/private/auth.json", json!({}));
 
     // Roles that cannot be loaded: their errors name the role file.
     std::fs::write(env.roles.join("broken.json"), "{ not json").unwrap();
@@ -563,31 +607,106 @@ fn no_answer_names_a_server_path() {
     std::fs::write(env.codex_home(&bad_id).join("fake-account-error"), "").unwrap();
     let server = env.serve(&[]);
 
+    let no_diagnostic = |answer: &Answer| {
+        let text = String::from_utf8_lossy(&answer.body).to_string();
+        for needle in ["private", "auth.json", "denied", "Cannot write", "cannot read /", "permission"] {
+            assert!(!text.contains(needle), "the answer holds {needle:?}: {text}");
+        }
+        env.assert_no_paths(&answer.body);
+    };
+
+    // A stored job, polled (200) and asked for its result (422).
     let job = server.call("GET", "/v1/jobs/stored-1", Some(&token), None);
     assert_eq!(job.status, 200, "{}", String::from_utf8_lossy(&job.body));
     let mut shown = job.json();
-    assert!(shown["job"]["error"].as_str().unwrap().starts_with("Cannot write <server path> nor <server path>"), "{shown}");
+    assert_eq!(shown["job"]["status"], json!("failed"));
+    assert_eq!(shown["job"]["error"]["code"], json!("job_failed"), "{shown}");
     assert_eq!(shown["job"]["result"]["text"], json!(said), "the model's answer was changed");
+    for hidden in ["dir", "root", "servers"] {
+        assert!(shown["job"].get(hidden).is_none(), "{hidden} reached the client: {shown}");
+    }
     shown["job"]["result"] = Value::Null;
-    env.assert_no_paths(shown.to_string().as_bytes());
-    let failed = server.call("GET", "/v1/jobs/stored-1/result", Some(&token), None);
-    assert_eq!(failed.status, 422);
-    assert!(failed.json()["error"].as_str().unwrap().starts_with("Cannot write <server path> nor <server path>"), "{}", failed.json());
-    env.assert_no_paths(&failed.body);
+    no_diagnostic(&Answer { status: 200, content_type: String::new(), body: shown.to_string().into_bytes() });
+    for (key, status, code) in [("stored-1", "failed", "job_failed"), ("stored-2", "limited", "limited"), ("stored-3", "auth_required", "auth_required"),
+        ("stored-4", "timeout", "timeout"), ("stored-5", "unknown", "unknown")] {
+        let polled = server.call("GET", &format!("/v1/jobs/{key}"), Some(&token), None);
+        assert_eq!(polled.status, 200);
+        assert_eq!(polled.json()["job"]["error"]["code"], json!(code), "{key}");
+        let failed = server.call("GET", &format!("/v1/jobs/{key}/result"), Some(&token), None);
+        assert_eq!(failed.status, 422, "{key}");
+        assert_eq!(failed.json()["status"], json!(status));
+        assert_eq!(failed.error().0, code, "{key}");
+        assert!(failed.json()["error"]["message"].as_str().unwrap().len() > 10);
+        no_diagnostic(&failed);
+        if key != "stored-1" {
+            no_diagnostic(&polled);
+        }
+    }
+    // The job folder keeps the raw text.
+    assert!(std::fs::read_to_string(one.join("job.json")).unwrap().contains("/v1/private/auth.json"), "the job folder lost the error");
 
-    for (role, words) in [("broken", "is not JSON"), ("odd", "Unknown field")] {
+    // A role that cannot be loaded: 400 role_invalid, the reason only in the log; a missing role: role_not_found.
+    for role in ["broken", "odd"] {
         let refused = server.submit(&token, json!({ "key": format!("{role}-1"), "role": role, "prompt": "p" }));
         assert_eq!(refused.status, 400, "{}", String::from_utf8_lossy(&refused.body));
-        assert!(refused.json()["error"].as_str().unwrap().contains(words), "{}", refused.json());
-        env.assert_no_paths(&refused.body);
+        assert_eq!(refused.error().0, "role_invalid");
+        assert_eq!(refused.json()["error"]["field"], json!("role"));
+        assert!(refused.error().1.contains(role));
+        no_diagnostic(&refused);
+        assert_eq!(server.call("GET", &format!("/v1/jobs/{role}-1"), Some(&token), None).status, 404, "a refused key was taken");
     }
+    let log = server.stderr();
+    assert!(log.contains("is not JSON") && log.contains("Unknown field"), "the log lost the role errors: {log}");
+    assert_eq!(server.submit(&token, json!({ "key": "m-1", "role": "ask", "prompt": "p", "effort": "not-an-effort" })).error().0, "bad_request");
+    assert_eq!(server.submit(&token, json!({ "key": "m-2", "role": "gone", "prompt": "p" })).error().0, "role_not_found");
 
+    // An account and a sign-in whose Codex fails with a path: 200 with a public error.
     let account = server.call("GET", "/v1/account", Some(&bad), None);
     assert_eq!(account.status, 200);
-    assert!(account.json()["error"].as_str().unwrap().contains("cannot read <server path>"), "{}", account.json());
-    env.assert_no_paths(&account.body);
+    assert_eq!(account.json()["connected"], json!(false));
+    assert_eq!(account.error().0, "codex_unavailable");
+    assert_eq!(account.json()["accounts"][0]["error"]["code"], json!("codex_unavailable"));
+    no_diagnostic(&account);
     let login = server.call("GET", "/v1/login", Some(&bad), None);
     assert_eq!(login.status, 200);
-    assert!(login.json()["error"].as_str().unwrap().contains("cannot read <server path>"), "{}", login.json());
-    env.assert_no_paths(&login.body);
+    assert_eq!(login.json()["status"], json!("none"));
+    assert_eq!(login.error().0, "codex_unavailable");
+    no_diagnostic(&login);
+    assert!(server.stderr().contains("permission denied"), "the log lost the account error: {}", server.stderr());
+    assert!(server.stderr().contains("auth.json"), "the log lost the path of the account error");
+
+    // The routes the server does not have, and methods it does not take, answer with a public error too.
+    let none = server.call("GET", "/v1/private/auth.json", Some(&token), None);
+    assert_eq!((none.status, none.error().0.as_str()), (404, "not_found"));
+    let method = server.call("PUT", "/v1/jobs/stored-1", Some(&token), None);
+    assert_eq!((method.status, method.error().0.as_str()), (405, "method_not_allowed"));
+}
+
+/// A long poll holds an HTTP thread, so the server refuses to start with one: `--threads 1` is an error with a clear
+/// message and nothing listens; with two threads a long poll leaves one free, and `/health` answers while it waits.
+#[test]
+fn one_http_thread_is_refused_and_two_leave_one_free() {
+    let env = Env::new();
+    let (_, token) = env.user("Anna", true);
+    let refused = env.command().args(["serve", "--threads", "1", "--listen", "127.0.0.1:0", "--data"]).arg(&env.data).output().unwrap();
+    assert!(!refused.status.success(), "--threads 1 was accepted");
+    let message = String::from_utf8_lossy(&refused.stderr).to_string();
+    assert!(message.contains("--threads is at least 2"), "{message}");
+    assert!(refused.stdout.is_empty(), "the server announced itself: {}", String::from_utf8_lossy(&refused.stdout));
+    let zero = env.command().args(["serve", "--threads", "0", "--listen", "127.0.0.1:0", "--data"]).arg(&env.data).output().unwrap();
+    assert!(!zero.status.success());
+
+    let server = env.serve(&["--threads", "2"]);
+    assert_eq!(server.submit(&token, json!({ "key": "slow-1", "role": "ask", "prompt": "SLOW one" })).status, 201);
+    std::thread::scope(|scope| {
+        let poll = scope.spawn(|| server.call("GET", "/v1/jobs/slow-1?waitSec=30", Some(&token), None).status);
+        // Whatever the poll does, the other thread answers at once.
+        std::thread::sleep(Duration::from_millis(500));
+        let started = Instant::now();
+        for _ in 0..5 {
+            assert_eq!(server.call("GET", "/health", None, None).status, 200);
+        }
+        assert!(started.elapsed() < Duration::from_secs(3), "health waited behind the poll: {:?}", started.elapsed());
+        assert_eq!(poll.join().unwrap(), 200);
+    });
 }
