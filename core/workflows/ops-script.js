@@ -15,7 +15,8 @@ export const meta = {
 //   check     the command that runs the copy in check mode, with {copy} for the copy's path,
 //             default "{copy} --check" ("python3 {copy} --check" for .py). It must touch nothing: the script's
 //             check mode reads, validates and prints what it would do
-//   remote    optional "user@host": the copy goes there (scp to /tmp) and the check runs there as that user, never sudo
+//   remote    optional "user@host": the copy goes there (scp into a folder made by mktemp -d under /tmp) and the check
+//             runs there as that user, never sudo
 //   files     optional list of companion files the script needs next to itself (absolute, local), e.g. a payload it
 //             installs and checks by SHA-256. The dry run copies them next to the script copy under their own names;
 //             the static checks also cover the ones that are scripts (.py, .sh, .bash); the final command names them
@@ -62,14 +63,16 @@ const staticCheck = (tag) => step(
   { agentType: 'zodchi-core:runner', schema: STEP, phase: 'Static', label: `static ${tag}` })
 
 const dryRun = (tag) => {
-  const dir = a.remote ? `/tmp/ops-${tag}` : `${a.tmp}/copy`
+  // Remote: the folder is made by `mktemp -d` (exclusive, unpredictable, mode 700) and its returned path, DIR, is
+  // used for the copy, the run and the cleanup; a fixed name could be shared with another run or pre-created by someone.
+  const dir = a.remote ? 'DIR' : `${a.tmp}/copy`
   const copy = `${dir}/${name}`
-  const cmd = check.split('{copy}').join(q(copy))
+  const cmd = check.split('{copy}').join(a.remote ? copy : q(copy))
   const all = [a.script, ...files]
   return step(
     `Dry run of a sudo script without root. ` +
     (a.remote
-      ? `Make the folder ${q(dir)} on ${a.remote} (\`ssh ${q(a.remote)} ${q(`mkdir -p -m 700 ${dir}`)}\`), copy ${all.map(q).join(' ')} into it with scp under their own names so the companion files lie next to the script, make the script executable, then run \`ssh ${q(a.remote)} ${q(cmd)}\` as that user (the command is quoted once more for the remote shell). Never use sudo. Remove the folder afterwards. `
+      ? `Make a new folder on ${a.remote} with \`ssh ${q(a.remote)} 'mktemp -d /tmp/ops-XXXXXXXX'\` (it must be created, never reused; stop and report if that fails) and keep the path it prints as DIR; use that exact path everywhere below, never a name you chose. Copy ${all.map(q).join(' ')} into DIR with scp under their own names so the companion files lie next to the script, make the script executable (\`ssh ${q(a.remote)} "chmod u+x DIR/${name}"\`), then run the command \`${cmd}\` with DIR replaced by that path, as \`ssh ${q(a.remote)} '<that command, quoted once more for the remote shell>'\`, as that user. Never use sudo. Remove DIR afterwards (\`ssh ${q(a.remote)} "rm -rf DIR"\`, only that path). `
       : `Copy ${all.map(q).join(' ')} into the folder ${q(dir)} under their own names so the companion files lie next to the script copy, make the script copy executable, then run \`${cmd}\` as the current user. Never use sudo. `) +
     `Log to ${a.tmp}/logs/dry-${tag}.log. ok is true when it exits 0 and its output shows no error. ` +
     `A failure that only says root is required means the script has no real check mode: report it as a failure with that reason. ` +
@@ -93,8 +96,8 @@ function forHuman() {
   let cmd, steps = ''
   if (a.remote) {
     cmd = `ssh -t ${q(a.remote)} ${q(a.sudo.split('{script}').join(`$HOME/ops-run/${name}`))}`
-    steps = `1. Copy the script${files.length ? ' and its files' : ''} to the host:\n` +
-      `   ssh ${q(a.remote)} 'mkdir -p -m 700 ops-run' && scp ${all.map(q).join(' ')} ${q(a.remote)}:ops-run/\n2. Run it:\n`
+    steps = `1. Copy the script${files.length ? ' and its files' : ''} to the host and make the script executable:\n` +
+      `   ssh ${q(a.remote)} 'mkdir -p -m 700 ops-run' && scp ${all.map(q).join(' ')} ${q(a.remote)}:ops-run/ && ssh ${q(a.remote)} 'chmod u+x ops-run/${name}'\n2. Run it:\n`
   } else {
     cmd = a.sudo.split('{script}').join(q(a.script))
     if (files.length) steps = `Files it needs, which stay next to it: ${files.map(q).join(' ')}\n`

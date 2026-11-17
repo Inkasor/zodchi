@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -80,12 +81,27 @@ def source_path(change):
     return change["source"] if os.path.isabs(change["source"]) else os.path.join(HERE, change["source"])
 
 
+def wanted_ids(change):
+    """The configured owner and group as numbers (None where the config leaves them alone)."""
+    uid = gid = None
+    if change.get("owner"):
+        import pwd
+        uid = pwd.getpwnam(change["owner"]).pw_uid
+    if change.get("group"):
+        import grp
+        gid = grp.getgrnam(change["group"]).gr_gid
+    return uid, gid
+
+
 def plan_one(change):
-    """Read-only: what would happen to one file. Returns (action, problems)."""
+    """Read-only: what would happen to one file. Returns (action, problems, sha256 of the source).
+
+    The digest is taken here, once; install and verify hold the files to it, so a source that changes after
+    planning cannot get installed or pass verification."""
     problems = []
     src, dest = source_path(change), change["dest"]
     if not os.path.isfile(src):
-        return "invalid", [f"source is missing: {src}"]
+        return "invalid", [f"source is missing: {src}"], None
     want = sha256_of(src)
     if change.get("sha256") and change["sha256"].lower() != want:
         problems.append(f"source {src} has sha256 {want}, expected {change['sha256']}")
@@ -103,13 +119,19 @@ def plan_one(change):
             except KeyError:
                 problems.append(f"{kind} {name} does not exist here")
     if problems:
-        return "invalid", problems
-    if not os.path.exists(dest):
-        return "create", []
-    if os.path.isdir(dest):
-        return "invalid", [f"dest is a directory: {dest}"]
-    same = sha256_of(dest) == want and (os.stat(dest).st_mode & 0o7777) == change["mode"]
-    return ("keep" if same else "replace"), []
+        return "invalid", problems, want
+    try:
+        st = os.lstat(dest)  # lstat: a symlink must be seen as a symlink
+    except FileNotFoundError:
+        return "create", [], want
+    if stat.S_ISLNK(st.st_mode):
+        return "invalid", [f"dest is a symlink, which this template does not replace: {dest}"], want
+    if not stat.S_ISREG(st.st_mode):
+        return "invalid", [f"dest is not a regular file: {dest}"], want
+    uid, gid = wanted_ids(change)
+    same = (sha256_of(dest) == want and stat.S_IMODE(st.st_mode) == change["mode"]
+            and (uid is None or st.st_uid == uid) and (gid is None or st.st_gid == gid))
+    return ("keep" if same else "replace"), [], want
 
 
 def check():
@@ -119,7 +141,7 @@ def check():
         say("note: PLACEHOLDER is True, this is the unedited template config")
     bad = 0
     for change in CHANGES:
-        action, problems = plan_one(change)
+        action, problems, _ = plan_one(change)
         say(f"  {action:8} {change['dest']}  <- {change['source']}")
         for p in problems:
             say(f"           problem: {p}")
@@ -145,20 +167,33 @@ def run_commands(cmds, label):
             raise RuntimeError(f"{label} command failed with exit {r.returncode}: {' '.join(cmd)}")
 
 
-def install(change, src):
-    """Atomic replace: write next to dest, set mode and owner, then rename over it."""
-    dest = change["dest"]
+def stage(src, dest, uid, gid, mode):
+    """Copy src into a new, exclusively created file next to dest and give it its owner and mode.
+    Returns (path, sha256 of the bytes written). The caller renames it over dest or deletes it."""
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dest), prefix=".new-")
     try:
+        h = hashlib.sha256()
         with os.fdopen(fd, "wb") as out, open(src, "rb") as f:
-            shutil.copyfileobj(f, out)
-        os.chmod(tmp, change["mode"])
-        if change.get("owner") or change.get("group"):
-            import grp
-            import pwd
-            uid = pwd.getpwnam(change["owner"]).pw_uid if change.get("owner") else -1
-            gid = grp.getgrnam(change["group"]).gr_gid if change.get("group") else -1
-            os.chown(tmp, uid, gid)
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+                out.write(chunk)
+        if uid is not None or gid is not None:  # owner first: chown can clear setuid and setgid bits
+            os.chown(tmp, -1 if uid is None else uid, -1 if gid is None else gid)
+        os.chmod(tmp, mode)
+        return tmp, h.hexdigest()
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def install(change, src, digest):
+    """Atomic replace: stage next to dest, check the staged bytes against the planned digest, rename over it."""
+    dest = change["dest"]
+    tmp, got = stage(src, dest, *wanted_ids(change), change["mode"])
+    try:
+        if got != digest:
+            raise RuntimeError(f"{src} changed after planning: staged sha256 {got}, planned {digest}")
         os.replace(tmp, dest)
     except BaseException:
         if os.path.exists(tmp):
@@ -166,36 +201,49 @@ def install(change, src):
         raise
 
 
-def verify(change):
+def verify(change, digest):
     dest = change["dest"]
-    if not os.path.isfile(dest):
-        raise RuntimeError(f"{dest} is missing after the change")
-    if sha256_of(dest) != sha256_of(source_path(change)):
-        raise RuntimeError(f"{dest} differs from its source after the change")
-    if (os.stat(dest).st_mode & 0o7777) != change["mode"]:
-        raise RuntimeError(f"{dest} has mode {os.stat(dest).st_mode & 0o7777:o}, expected {change['mode']:o}")
-    if change.get("owner"):
-        import pwd
-        if pwd.getpwuid(os.stat(dest).st_uid).pw_name != change["owner"]:
-            raise RuntimeError(f"{dest} has the wrong owner")
-    if change.get("group"):
-        import grp
-        if grp.getgrgid(os.stat(dest).st_gid).gr_name != change["group"]:
-            raise RuntimeError(f"{dest} has the wrong group")
+    if not os.path.isfile(dest) or os.path.islink(dest):
+        raise RuntimeError(f"{dest} is missing or not a regular file after the change")
+    if sha256_of(dest) != digest:
+        raise RuntimeError(f"{dest} differs from the planned source digest after the change")
+    st = os.stat(dest)
+    if stat.S_IMODE(st.st_mode) != change["mode"]:
+        raise RuntimeError(f"{dest} has mode {stat.S_IMODE(st.st_mode):o}, expected {change['mode']:o}")
+    uid, gid = wanted_ids(change)
+    if uid is not None and st.st_uid != uid:
+        raise RuntimeError(f"{dest} has the wrong owner")
+    if gid is not None and st.st_gid != gid:
+        raise RuntimeError(f"{dest} has the wrong group")
+
+
+def restore(saved, dest, old):
+    """Put the backup back as it was: bytes, owner, group, mode and times; old is the lstat taken before the change."""
+    tmp, _ = stage(saved, dest, old.st_uid, old.st_gid, stat.S_IMODE(old.st_mode))
+    try:
+        os.utime(tmp, ns=(old.st_atime_ns, old.st_mtime_ns))
+        os.replace(tmp, dest)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    now = os.lstat(dest)
+    if (sha256_of(dest) != sha256_of(saved) or (now.st_uid, now.st_gid) != (old.st_uid, old.st_gid)
+            or stat.S_IMODE(now.st_mode) != stat.S_IMODE(old.st_mode)):
+        raise RuntimeError(f"{dest} does not match its backup after the restore")
 
 
 def rollback(done, backup_dir):
     """Restore from the backup, newest change first. Returns True when everything was restored."""
     ok = True
-    for dest, saved in reversed(done):
+    for dest, saved, old in reversed(done):
         try:
             if saved is None:
                 if os.path.exists(dest):
                     os.unlink(dest)
                 say(f"  rollback: removed {dest} (it did not exist before)")
             else:
-                shutil.copy2(saved, dest + ".restore")
-                os.replace(dest + ".restore", dest)
+                restore(saved, dest, old)
                 say(f"  rollback: restored {dest} from {saved}")
         except Exception as e:  # keep going: restore as much as possible
             ok = False
@@ -216,8 +264,8 @@ def apply():
     if PLACEHOLDER:
         say("refused: PLACEHOLDER is True. Edit the CONFIG block, set PLACEHOLDER = False, and check it first with --check")
         return 2
-    plans = [(c, plan_one(c)) for c in CHANGES]
-    problems = [p for _, (_, ps) in plans for p in ps]
+    plans = [(c, *plan_one(c)) for c in CHANGES]
+    problems = [p for _, _, ps, _ in plans for p in ps]
     if problems:
         for p in problems:
             say(f"problem: {p}")
@@ -230,25 +278,35 @@ def apply():
         backup_dir = os.path.join(BACKUP_ROOT, f"{stamp}-{n}")
     os.makedirs(backup_dir, mode=0o700)
     say(f"backup folder: {backup_dir}")
-    done = []  # (dest, backup path or None when the file did not exist)
+    manifest = os.path.join(backup_dir, "MANIFEST.txt")  # which backup belongs to which file, and what this run created
+
+    def note(text):
+        with open(manifest, "a") as m:
+            m.write(text + "\n")
+
+    note(f"{NAME}, run {stamp}")
+    done = []  # (dest, backup path or None when the file did not exist, lstat of the old file or None)
     try:
-        for i, (change, (action, _)) in enumerate(plans):
+        for i, (change, action, _, digest) in enumerate(plans):
             dest = change["dest"]
             if action == "keep":
                 say(f"  keep     {dest} (already as wanted)")
+                note(f"{dest} was already as wanted; not touched")
                 continue
-            saved = None
-            if os.path.exists(dest):
+            saved = old = None
+            if action == "replace":
+                old = os.lstat(dest)
                 saved = os.path.join(backup_dir, f"{i:02d}-{os.path.basename(dest)}")
                 shutil.copy2(dest, saved)
-                with open(os.path.join(backup_dir, "MANIFEST.txt"), "a") as m:  # which backup belongs to which file
-                    m.write(f"{os.path.basename(saved)} is the old {dest}\n")
-            done.append((dest, saved))
-            install(change, source_path(change))
+                note(f"{os.path.basename(saved)} is the old {dest} (uid {old.st_uid}, gid {old.st_gid}, mode {stat.S_IMODE(old.st_mode):o})")
+            else:
+                note(f"{dest} is new: created by this run, no previous file")
+            done.append((dest, saved, old))
+            install(change, source_path(change), digest)
             say(f"  {action:8} {dest}")
         run_commands(AFTER_APPLY_COMMANDS, "after apply")
-        for change in CHANGES:
-            verify(change)
+        for change, _, _, digest in plans:
+            verify(change, digest)
         run_commands(VERIFY_COMMANDS, "verify")
     except Exception as e:
         say(f"FAILED: {e}")
