@@ -42,6 +42,13 @@ const names = files.map(base)
 // A remote command is assembled from these names without quoting, so they must be plain.
 if (a.remote) for (const n of [name, ...names]) if (!/^[\w.-]+$/.test(n)) throw new Error(`ops-script: with args.remote a file name must match [\\w.-]+, got ${n}`)
 if (new Set([name, ...names]).size !== names.length + 1) throw new Error('ops-script: the script and its files must have different names')
+// The local dry run empties {tmp}/copy before it copies the inputs there, so no input may live inside that folder
+// (it would be deleted before it is copied). Paths are compared absolute, with / and, on Windows, without case.
+const absPath = (p) => /^([A-Za-z]:)?[\\/]/.test(String(p))
+for (const p of [a.script, a.tmp, ...files]) if (!absPath(p)) throw new Error(`ops-script: paths must be absolute, got ${p}`)
+const fold = (p) => { const s = String(p).replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, ''); return /^[A-Za-z]:/.test(s) ? s.toLowerCase() : s }
+const staging = fold(`${a.tmp}/copy`)
+if (!a.remote) for (const p of [a.script, ...files]) if (fold(p) === staging || fold(p).startsWith(staging + '/')) throw new Error(`ops-script: ${p} lies inside ${a.tmp}/copy, which the dry run empties; keep inputs outside it`)
 
 const STEP = {
   type: 'object', required: ['ok', 'summary'],

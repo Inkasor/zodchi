@@ -24,8 +24,9 @@ A script that needs root is written so that a human can trust it before typing
 a password. `--check` is the default mode: it needs no root, reads and
 validates, prints what it would do and changes nothing. `--apply` needs root
 and does the change. Before `--apply` replaces any file it makes a backup of
-that file. After the change it verifies the result, and when the verification
-fails it restores every backup and exits with an error. The human runs it in a
+that file, and it records every file it creates. After the change it verifies
+the result. When applying or verifying fails, it rolls back: it restores every
+backup, removes the files this run created, and exits with an error. The human runs it in a
 real terminal, not through Claude Code's `!`: a sudo password needs a TTY, and
 `!` has none ("sudo: a terminal is required"). The `ops-script` workflow runs
 the `--check` mode on a copy before it hands over the command.
