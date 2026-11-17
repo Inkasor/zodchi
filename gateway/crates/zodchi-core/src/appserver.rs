@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -159,13 +159,36 @@ fn supported_features(codex_bin: &Path, codex_home: &Path) -> Option<Vec<String>
         return found.clone();
     }
     let mut command = launcher(codex_bin);
-    command.args(["features", "list"]).env_clear().envs(environment(codex_home)).stdin(Stdio::null()).stderr(Stdio::null());
+    command.args(["features", "list"]).env_clear().envs(environment(codex_home)).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     no_window(&mut command);
-    let names = command.output().ok().filter(|o| o.status.success()).map(|o| {
-        String::from_utf8_lossy(&o.stdout)
-            .lines()
-            .filter_map(|l| l.split_whitespace().next().map(String::from))
-            .collect::<Vec<_>>()
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    // The probe gets 30 seconds, as in the reference; a probe that hangs is killed and reaped.
+    let names = command.spawn().ok().and_then(|mut child| {
+        let mut stdout = child.stdout.take()?;
+        let reader = thread::spawn(move || {
+            let mut text = String::new();
+            let _ = std::io::Read::read_to_string(&mut stdout, &mut text);
+            text
+        });
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
+                _ => {
+                    kill_tree(child.id());
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+            }
+        };
+        let text = reader.join().unwrap_or_default();
+        status.filter(|s| s.success()).map(|_| text.lines().filter_map(|l| l.split_whitespace().next().map(String::from)).collect::<Vec<_>>())
     });
     cache.lock().unwrap().insert(codex_bin.to_path_buf(), names.clone());
     names
@@ -349,7 +372,15 @@ pub struct AppServer {
     shared: Arc<Shared>,
     next_id: AtomicU64,
     started: Mutex<Option<TurnResult<()>>>,
-    stopped: Mutex<bool>,
+    /// Shutdown: begun (no start after it) and finished (every stop() caller waits for it).
+    life: Mutex<Life>,
+    life_done: Condvar,
+}
+
+#[derive(Default)]
+struct Life {
+    stopping: bool,
+    stopped: bool,
 }
 
 impl AppServer {
@@ -371,7 +402,8 @@ impl AppServer {
             }),
             next_id: AtomicU64::new(0),
             started: Mutex::new(None),
-            stopped: Mutex::new(false),
+            life: Mutex::new(Life::default()),
+            life_done: Condvar::new(),
         }
     }
 
@@ -410,18 +442,24 @@ impl AppServer {
 
     /// Starts Codex once. `before_spawn` runs right before the process is created (an error: no process);
     /// `on_spawn` gets the pid, or None when none came to be.
-    pub fn start(&self, before_spawn: &mut dyn FnMut() -> TurnResult<()>, on_spawn: &mut dyn FnMut(Option<u32>)) -> TurnResult<()> {
-        if let Some(done) = self.started.lock().unwrap().clone() {
+    pub fn start(&self, before_spawn: &mut dyn FnMut() -> TurnResult<()>, on_spawn: &mut dyn FnMut(Option<u32>) -> TurnResult<()>) -> TurnResult<()> {
+        let mut started = self.started.lock().unwrap();
+        if let Some(done) = started.clone() {
             return done;
         }
         let result = self.start_once(before_spawn, on_spawn);
-        *self.started.lock().unwrap() = Some(result.clone());
+        *started = Some(result.clone());
         result
     }
 
-    fn start_once(&self, before_spawn: &mut dyn FnMut() -> TurnResult<()>, on_spawn: &mut dyn FnMut(Option<u32>)) -> TurnResult<()> {
-        if *self.stopped.lock().unwrap() {
-            return Err(TurnFailed::new("unknown", "The Codex process was stopped."));
+    /// Starts Codex once. `before_spawn` runs right before the process is created (an error: no process);
+    /// `on_spawn` gets the pid, or None when none came to be; an error from it stops the process before any request.
+    /// Spawning and registering the child happen under the child lock, which stop() takes before it kills, and after
+    /// shutdown has begun no process is started.
+    fn start_once(&self, before_spawn: &mut dyn FnMut() -> TurnResult<()>, on_spawn: &mut dyn FnMut(Option<u32>) -> TurnResult<()>) -> TurnResult<()> {
+        let cancelled = || TurnFailed::new("unknown", "The Codex process was stopped.");
+        if self.life.lock().unwrap().stopping {
+            return Err(cancelled());
         }
         let args = self.arguments()?;
         let mut command = launcher(&self.codex_bin);
@@ -438,18 +476,31 @@ impl AppServer {
             use std::os::unix::process::CommandExt;
             command.process_group(0);
         }
-        before_spawn().map_err(|e| TurnFailed::new("failed", format!("The Codex process could not be recorded: {}; the model was not called.", e.message)))?;
-        let mut child = match command.spawn() {
-            Ok(c) => c,
-            Err(error) => {
-                on_spawn(None);
-                return Err(TurnFailed::new("failed", format!("Codex could not be started: {error}; the model was not called.")));
+        let stdout = {
+            let mut slot = self.child.lock().unwrap();
+            if self.life.lock().unwrap().stopping {
+                return Err(cancelled());
             }
+            before_spawn().map_err(|e| TurnFailed::new("failed", format!("The Codex process could not be recorded: {}; the model was not called.", e.message)))?;
+            let mut child = match command.spawn() {
+                Ok(c) => c,
+                Err(error) => {
+                    let _ = on_spawn(None);
+                    return Err(TurnFailed::new("failed", format!("Codex could not be started: {error}; the model was not called.")));
+                }
+            };
+            let pid = child.id();
+            *self.shared.stdin.lock().unwrap() = child.stdin.take();
+            let stdout = child.stdout.take().expect("piped stdout");
+            *slot = Some(child);
+            // A process the job could not take note of is not used: it is stopped before any request.
+            if let Err(error) = on_spawn(Some(pid)) {
+                drop(slot);
+                self.stop();
+                return Err(TurnFailed::new("failed", format!("The Codex process could not be recorded: {}; the model was not called.", error.message)));
+            }
+            stdout
         };
-        on_spawn(Some(child.id()));
-        *self.shared.stdin.lock().unwrap() = child.stdin.take();
-        let stdout = child.stdout.take().expect("piped stdout");
-        *self.child.lock().unwrap() = Some(child);
         let shared = Arc::clone(&self.shared);
         thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
@@ -500,7 +551,7 @@ impl AppServer {
 
     /// A request after the process is started (starting it without hooks when needed).
     pub fn send(&self, method: &str, params: Value, timeout: Duration) -> TurnResult<Value> {
-        self.start(&mut || Ok(()), &mut |_| {})?;
+        self.start(&mut || Ok(()), &mut |_| Ok(()))?;
         self.request(method, params, timeout)
     }
 
@@ -718,34 +769,47 @@ impl AppServer {
         result
     }
 
-    /// Ends the process: stdin is closed first, then the process tree is killed every 5 s until it has exited.
+    /// Ends the process: stdin is closed first when that does not wait on a writer, then the process tree is killed if
+    /// it has not exited within 5 s. Killing needs only the pid, never the pipe, so a write blocked on a full pipe
+    /// cannot hold shutdown up. Every caller returns only once the process is gone.
     pub fn stop(&self) {
         {
-            let mut stopped = self.stopped.lock().unwrap();
-            if *stopped {
+            let mut life = self.life.lock().unwrap();
+            if life.stopping {
+                while !life.stopped {
+                    life = self.life_done.wait(life).unwrap();
+                }
                 return;
             }
-            *stopped = true;
+            life.stopping = true;
         }
-        *self.shared.stdin.lock().unwrap() = None;
+        // A start in progress finishes registering its child before this lock is ours.
         let mut guard = self.child.lock().unwrap();
         if let Some(child) = guard.as_mut() {
+            if let Ok(mut stdin) = self.shared.stdin.try_lock() {
+                *stdin = None;
+            }
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
-                if let Ok(Some(_)) = child.try_wait() {
-                    break;
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(100)),
+                    _ => {
+                        // The child is not reaped yet, so its pid is still this process.
+                        kill_tree(child.id());
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break;
+                    }
                 }
-                if Instant::now() >= deadline {
-                    // The handle of the child is held until it is reaped, so the pid is still this process.
-                    kill_tree(child.id());
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break;
-                }
-                thread::sleep(Duration::from_millis(100));
             }
         }
+        drop(guard);
+        *self.shared.stdin.lock().unwrap() = None;
         self.shared.drop_all();
+        let mut life = self.life.lock().unwrap();
+        life.stopped = true;
+        self.life_done.notify_all();
     }
 }
 
