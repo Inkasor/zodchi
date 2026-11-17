@@ -11,10 +11,9 @@ It is not a framework that tries to fit every project. Each domain holds
 agents and workflows tuned for that kind of work. Only what is truly the
 same everywhere lives in `core/`.
 
-> **Status: 1.0 in development.** The agents and workflows work today. The
-> Rust gateway is being built. Until it ships, the `zodchi` command forwards
-> calls to an existing Node gateway that you point it at. The 0.x line of
-> this repository was a different tool and has been retired.
+> **Status: 1.0 in development.** The agents, the workflows and the `zodchi`
+> gateway (Rust) work today; the multi-user gateway server comes next. The 0.x
+> line of this repository was a different tool and has been retired.
 
 ## What you get
 
@@ -26,7 +25,7 @@ same everywhere lives in `core/`.
 | `models.json` | The role table: which model plays each role, in order of preference |
 | `roles/` | Gateway roles: `code-review`, `checkout-review`, `architecture-review`, `code-patch`, `package-work`, `research`, `text`, `image`, `art-critic`, `decisions` |
 | `install/` | The installer and the `zodchi` command |
-| `gateway/` | The Rust gateway (in progress) |
+| `gateway/` | The `zodchi` gateway in Rust: calls Codex models by role, over your own subscriptions |
 | `docs/` | How it works, subscriptions, forking for a company |
 
 ## The ideas behind it
@@ -52,9 +51,10 @@ same everywhere lives in `core/`.
 
 ## Install
 
-You need [Claude Code](https://code.claude.com), Node.js 20 or later and,
-for the gateway roles, the [Codex CLI](https://learn.chatgpt.com/docs) signed
-in to your own ChatGPT plan.
+You need [Claude Code](https://code.claude.com) and Node.js 20 or later. For
+the gateway you also need [Rust](https://rustup.rs) to build it, and the
+[Codex CLI](https://learn.chatgpt.com/docs) signed in to your own ChatGPT
+plan.
 
 ```sh
 git clone https://github.com/Inkasor/zodchi.git
@@ -72,7 +72,9 @@ can also pass them directly: `--domains web-apps,gamedev-unity` or
   they go to that repository's `.claude/` instead. A project's own agent or
   workflow with the same name wins over yours.
 - The role table, the gateway roles and the `zodchi` command go to
-  `~/.zodchi`.
+  `~/.zodchi`. With Rust installed, the installer builds the gateway itself
+  (`--no-build` skips that). List your subscriptions in
+  `~/.zodchi/accounts.json`, see [gateway/README.md](gateway/README.md).
 - The installer never overwrites a file it did not put there, or one you
   changed. `~/.zodchi/models.json` is yours after the first install: a newer
   table is written next to it as `models.json.new`.
