@@ -108,8 +108,14 @@ This installs `zodchi-core` for you in every project, builds the gateway
   changed. `~/.zodchi/models.json` is yours after the first install: a newer
   table is written next to it as `models.json.new`.
 - `--dry-run` shows what would change. `--uninstall` removes what the
-  installer put there (the plugin copies and the marketplace registration
-  included) and leaves your changes in place.
+  installer put there and leaves your changes in place. Installed from a copy
+  (the default), it removes the marketplace registration and the plugin
+  copies, and Claude Code takes every plugin installed from that marketplace
+  with it: zodchi-core and also the domain plugins you enabled in other
+  projects. After `--dev` the marketplace is the clone itself: uninstall
+  removes only zodchi-core, and the marketplace and the domain plugins stay
+  (the installer prints how to remove them). With `--no-plugins` Claude
+  Code's plugins, the marketplace and the copies are left alone.
 
 Then run a workflow from Claude Code, for example `/zodchi-core:code-package`,
 or ask Claude to run it with your arguments. Each workflow's header lists its
