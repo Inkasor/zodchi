@@ -51,9 +51,8 @@ same everywhere lives in `core/`.
   and runs it without root on a copy before you are asked for a password.
   Files the script needs next to it go in `files`; you get the command for your
   own terminal (`ssh -t` when remote), because Claude Code's `!` has no TTY for
-  a sudo password. `core/templates/root-script.py` is a skeleton for such a
-  script: `--check` without root, `--apply` with backups, verification and
-  rollback.
+  a sudo password. [docs/patterns.md](docs/patterns.md) describes the shape
+  of such a script ("A script a human runs with sudo").
 
 ## Install
 
