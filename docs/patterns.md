@@ -29,4 +29,4 @@ the result. When applying or verifying fails, it rolls back: it restores every
 backup, removes the files this run created, and exits with an error. The human runs it in a
 real terminal, not through Claude Code's `!`: a sudo password needs a TTY, and
 `!` has none ("sudo: a terminal is required"). The `ops-script` workflow runs
-the `--check` mode on a copy before it hands over the command.
+the `--check` mode on one snapshot of the script and its files (a fresh folder with the SHA-256 of every file) before it hands over the command; the command checks those hashes and runs that same snapshot, locally or on the host.
