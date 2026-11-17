@@ -179,10 +179,12 @@ const REVIEW = {
 // A step that makes a gateway call also says whether the gateway worked at all. infra is "" for a job that reached a
 // final status, whatever that status is; anything else is an infrastructure failure, and the workflow throws on it.
 // infra is required: a gateway step without it, or without any result, is an infrastructure failure too.
-const withInfra = (s) => ({ ...s, required: [...s.required, 'infra'], properties: { ...s.properties, infra: { type: 'string' } } })
-const INFRA = `infra: "" when the gateway created the job and it reached a final status (any status). Otherwise say what happened, quoting the gateway: ` +
+// gateway is a closed choice, so a note written into the free text can never turn a finished job into a failure.
+const withInfra = (s) => ({ ...s, required: [...s.required, 'gateway', 'infra'], properties: { ...s.properties, gateway: { type: 'string', enum: ['final', 'failed'] }, infra: { type: 'string' } } })
+const infraBad = (r) => !r || r.gateway !== 'final'
+const INFRA = `gateway: "final" when the gateway created the job and it reached a final status (any status), and then infra is "". Otherwise gateway is "failed" and infra says what happened, quoting the gateway: ` +
   `it created no job, it refused (for example the repository does not ignore .agent-tmp/, an unknown role, sign-in), every submission died before its turn started, ` +
-  `or the wait ran out with the job still running (name its active key). When infra is not "", append the line "INFRA: <what happened>" to the progress file as its last line instead of DONE.`
+  `or the wait ran out with the job still running (name its active key). When gateway is "failed", append the line "INFRA: <what happened>" to the progress file as its last line instead of DONE.`
 // The severity is the second word of a finding line "<id> <severity> <location>: <problem>".
 const severity = (f) => (String(f).trim().split(/\s+/)[1] || '').toLowerCase()
 
@@ -375,7 +377,7 @@ async function body() {
         }) + ` ` +
         `ok is true when the job succeeded and the answer file exists. paths: the answer file. ${INFRA}`,
         { agentType: 'zodchi-core:runner', schema: withInfra(STEP), phase: phaseName, label: `${tag} ask` })
-      if (!ask || ask.infra) infraFail(`${tag} ask`, ask ? ask.infra : 'the gateway step returned no result')
+      if (infraBad(ask)) infraFail(`${tag} ask`, ask ? (ask.infra || 'gateway: failed') : 'the gateway step returned no result')
       if (!ask.ok) return null
       return step(
         `Apply one expert answer. Answer file: ${a.tmp}/expert-${n}.answer.md. Target files: the ones the answer names, relative to ${a.repo}. ` +
@@ -396,7 +398,7 @@ async function body() {
         `unverified = every criterion that is not done, as one line each, plus every check with a non-zero exit code; questions = each entry of its questions as one readable line (the question, its options, the recommendation). ` +
         `If the job did not succeed, done is false and summary says the job status. ${INFRA}`,
         { agentType: 'zodchi-core:runner', schema: withInfra(WRITE), phase: phaseName, label: `${tag}` })
-      if (!work || work.infra) infraFail(tag, work ? work.infra : 'the gateway step returned no result')
+      if (infraBad(work)) infraFail(tag, work ? (work.infra || 'gateway: failed') : 'the gateway step returned no result')
       return work
     }
     return continued(task + BEFORE + HANDOVER, { agentType: 'zodchi-core:coder', model: writer.model, schema: WRITE, phase: phaseName, label: tag })
@@ -567,7 +569,7 @@ async function body() {
         { model: reviewer.model, schema: REVIEW, phase: 'Review', label: `review ${n}` })
     out.rounds.push({ n, checks, review })
     if (!review) infraFail(`review ${n}`, 'the review step returned no result')
-    if (review.infra || review.verdict === 'missing') infraFail(`review ${n}`, review.infra || `the review has no verdict (${review.summary || 'no summary'}; ${review.reviewFile || `${a.tmp}/review-${n}.json`})`)
+    if (infraBad(review) || review.verdict === 'missing') infraFail(`review ${n}`, (review.gateway !== 'final' && review.infra) || `the review has no verdict (${review.summary || 'no summary'}; ${review.reviewFile || `${a.tmp}/review-${n}.json`})`)
     out.verdict = review.verdict
     // A focused review leaves the carried findings as they were; a full review was given them and repeats those that
     // still hold, so after it they are its own findings.
