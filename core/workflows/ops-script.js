@@ -20,7 +20,8 @@ export const meta = {
 //   files     optional list of companion files the script needs next to itself (absolute, local), e.g. a payload it
 //             installs and checks by SHA-256. The dry run copies them next to the script copy under their own names;
 //             the static checks also cover the ones that are scripts (.py, .sh, .bash); the local final command runs
-//             the checked copy ({tmp}/copy) with them next to it, so what was checked is what runs
+//             the checked copy (a fresh folder {tmp}/copy.XXXXXXXX made by mktemp -d) with them next to it, so what
+//             was checked is what runs
 //   sudo      the command the human will run, with {script} for the installed path, e.g. "sudo {script} --apply"
 //   nopass    true only when that step needs no password (`sudo -n` works): then the final output also offers the
 //             `!` form of Claude Code. Without it the command is for the human's own terminal (a sudo password needs
@@ -42,11 +43,9 @@ const names = files.map(base)
 // A remote command is assembled from these names without quoting, so they must be plain.
 if (a.remote) for (const n of [name, ...names]) if (!/^[\w.-]+$/.test(n)) throw new Error(`ops-script: with args.remote a file name must match [\\w.-]+, got ${n}`)
 if (new Set([name, ...names]).size !== names.length + 1) throw new Error('ops-script: the script and its files must have different names')
-// The local dry run empties {tmp}/copy before it copies the inputs there, so no input may live inside that folder
-// (it would be deleted before it is copied). Paths are compared absolute, with / and, on Windows, without case.
+// Paths are compared absolute, with /, "." and ".." resolved and, on Windows, without case.
 const absPath = (p) => /^([A-Za-z]:)?[\\/]/.test(String(p))
 for (const p of [a.script, a.tmp, ...files]) if (!absPath(p)) throw new Error(`ops-script: paths must be absolute, got ${p}`)
-// Separators, repeated slashes, "." and ".." are resolved, so /work/./copy/x and /work/a/../copy/x both count as inside.
 const fold = (p) => {
   const s = String(p).replace(/\\/g, '/')
   const lead = /^[A-Za-z]:\//.test(s) ? s.slice(0, 3) : '/'
@@ -58,8 +57,13 @@ const fold = (p) => {
   const out = lead + parts.join('/')
   return /^[A-Za-z]:/.test(out) ? out.toLowerCase() : out
 }
-const staging = fold(`${a.tmp}/copy`)
-if (!a.remote) for (const p of [a.script, ...files]) if (fold(p) === staging || fold(p).startsWith(staging + '/')) throw new Error(`ops-script: ${p} lies inside ${a.tmp}/copy, which the dry run empties; keep inputs outside it`)
+// The local staging folder is made fresh by mktemp -d under {tmp}; the runner reports its path, checked against this shape.
+const stagingOk = (d) => {
+  if (typeof d !== 'string') return false
+  const prefix = fold(`${a.tmp}/copy`) + '.'
+  const got = fold(d)
+  return got.startsWith(prefix) && /^[A-Za-z0-9]{8}$/.test(got.slice(prefix.length))
+}
 
 const STEP = {
   type: 'object', required: ['ok', 'summary'],
@@ -67,6 +71,7 @@ const STEP = {
     ok: { type: 'boolean' }, summary: { type: 'string' },
     failures: { type: 'array', items: { type: 'string' } },
     logs: { type: 'array', items: { type: 'string' } },
+    dir: { type: 'string' },
   },
 }
 
@@ -84,15 +89,15 @@ const staticCheck = (tag) => step(
 const dryRun = (tag) => {
   // Remote: the folder is made by `mktemp -d` (exclusive, unpredictable, mode 700) and its returned path, DIR, is
   // used for the copy, the run and the cleanup; a fixed name could be shared with another run or pre-created by someone.
-  const dir = a.remote ? 'DIR' : `${a.tmp}/copy`
+  const dir = 'DIR'
   const copy = `${dir}/${name}`
-  const cmd = check.split('{copy}').join(a.remote ? copy : q(copy))
+  const cmd = check.split('{copy}').join(copy)
   const all = [a.script, ...files]
   return step(
     `Dry run of a sudo script without root. ` +
     (a.remote
       ? `Make a new folder on ${a.remote} with \`ssh ${q(a.remote)} 'mktemp -d /tmp/ops-XXXXXXXX'\` (it must be created, never reused; stop and report if that fails) and keep the path it prints as DIR; use that exact path everywhere below, never a name you chose. Copy ${all.map(q).join(' ')} into DIR with scp under their own names so the companion files lie next to the script, make the script executable (\`ssh ${q(a.remote)} "chmod u+x DIR/${name}"\`), then run the command \`${cmd}\` with DIR replaced by that path, as \`ssh ${q(a.remote)} '<that command, quoted once more for the remote shell>'\`, as that user. Never use sudo. Remove DIR afterwards (\`ssh ${q(a.remote)} "rm -rf DIR"\`, only that path). `
-      : `Copy ${all.map(q).join(' ')} into the folder ${q(dir)} (empty it first, so it holds exactly these files) under their own names so the companion files lie next to the script copy, make the script copy executable, then run \`${cmd}\` as the current user. Never use sudo. `) +
+      : `Make a new folder with \`mktemp -d ${q(`${a.tmp}/copy.`)}XXXXXXXX\` (it must be created, never reused or emptied; stop and report if that fails) and keep the path it prints as DIR; use that exact path everywhere below and return it as dir. Copy ${all.map(q).join(' ')} into DIR under their own names so the companion files lie next to the script copy, make the script copy executable, then run \`${cmd}\` with DIR replaced by that path (quoted), as the current user. Never use sudo. Leave DIR in place: the human runs the command from it. `) +
     `Log to ${a.tmp}/logs/dry-${tag}.log. ok is true when it exits 0 and its output shows no error. ` +
     `A failure that only says root is required means the script has no real check mode: report it as a failure with that reason. ` +
     `failures: the decisive error lines. summary: what the script said it would do.`,
@@ -110,7 +115,7 @@ function step(prompt, opts) {
 
 // The final text for the human. A sudo password needs a TTY: Claude Code's `!` has none, so the command is for the
 // human's own terminal, with `ssh -t` when remote. Only a step that needs no password may be offered with `!`.
-function forHuman() {
+function forHuman(dir) {
   const all = [a.script, ...files]
   let cmd, steps = ''
   if (a.remote) {
@@ -125,8 +130,8 @@ function forHuman() {
     // Local: the command runs the checked copy, not the original. The dry run left the script and its companions in
     // <tmp>/copy exactly as it ran them, so what was checked is what runs (the original path would run a script
     // whose companions were never the checked ones).
-    cmd = a.sudo.split('{script}').join(q(`${a.tmp}/copy/${name}`))
-    steps = `It runs the copy that was checked in ${q(`${a.tmp}/copy`)}${files.length ? `, where the script and ${names.map(q).join(' ')} lie together` : ''}; do not edit that folder before you run it.\n`
+    cmd = a.sudo.split('{script}').join(q(`${dir}/${name}`))
+    steps = `It runs the copy that was checked in ${q(dir)}${files.length ? `, where the script and ${names.map(q).join(' ')} lie together` : ''}; do not edit that folder before you run it.\n`
   }
   const bang = a.nopass && !a.remote
   return `Checks passed. ` + (bang
@@ -140,8 +145,9 @@ for (let n = 0; n <= (a.fixes ?? 2); n++) {
   const dry = st && st.ok ? await dryRun(n) : null
   out.attempts.push({ n, static: st, dry })
   if (st && st.ok && dry && dry.ok) {
+    if (!a.remote && !stagingOk(dry.dir)) { out.stoppedAt = `the runner did not report the fresh staging folder it made (got ${JSON.stringify(dry.dir)})`; return out }
     out.ready = true
-    out.forHuman = forHuman()
+    out.forHuman = forHuman(dry.dir)
     out.wouldDo = dry.summary
     return out
   }
