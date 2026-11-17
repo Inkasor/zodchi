@@ -19,7 +19,8 @@ export const meta = {
 //             runs there as that user, never sudo
 //   files     optional list of companion files the script needs next to itself (absolute, local), e.g. a payload it
 //             installs and checks by SHA-256. The dry run copies them next to the script copy under their own names;
-//             the static checks also cover the ones that are scripts (.py, .sh, .bash); the final command names them
+//             the static checks also cover the ones that are scripts (.py, .sh, .bash); the local final command runs
+//             the checked copy ({tmp}/copy) with them next to it, so what was checked is what runs
 //   sudo      the command the human will run, with {script} for the installed path, e.g. "sudo {script} --apply"
 //   nopass    true only when that step needs no password (`sudo -n` works): then the final output also offers the
 //             `!` form of Claude Code. Without it the command is for the human's own terminal (a sudo password needs
@@ -73,7 +74,7 @@ const dryRun = (tag) => {
     `Dry run of a sudo script without root. ` +
     (a.remote
       ? `Make a new folder on ${a.remote} with \`ssh ${q(a.remote)} 'mktemp -d /tmp/ops-XXXXXXXX'\` (it must be created, never reused; stop and report if that fails) and keep the path it prints as DIR; use that exact path everywhere below, never a name you chose. Copy ${all.map(q).join(' ')} into DIR with scp under their own names so the companion files lie next to the script, make the script executable (\`ssh ${q(a.remote)} "chmod u+x DIR/${name}"\`), then run the command \`${cmd}\` with DIR replaced by that path, as \`ssh ${q(a.remote)} '<that command, quoted once more for the remote shell>'\`, as that user. Never use sudo. Remove DIR afterwards (\`ssh ${q(a.remote)} "rm -rf DIR"\`, only that path). `
-      : `Copy ${all.map(q).join(' ')} into the folder ${q(dir)} under their own names so the companion files lie next to the script copy, make the script copy executable, then run \`${cmd}\` as the current user. Never use sudo. `) +
+      : `Copy ${all.map(q).join(' ')} into the folder ${q(dir)} (empty it first, so it holds exactly these files) under their own names so the companion files lie next to the script copy, make the script copy executable, then run \`${cmd}\` as the current user. Never use sudo. `) +
     `Log to ${a.tmp}/logs/dry-${tag}.log. ok is true when it exits 0 and its output shows no error. ` +
     `A failure that only says root is required means the script has no real check mode: report it as a failure with that reason. ` +
     `failures: the decisive error lines. summary: what the script said it would do.`,
@@ -103,8 +104,11 @@ function forHuman() {
     steps = `1. In ONE terminal window (it keeps $d), make a new folder on the host, copy the script${files.length ? ' and its files' : ''} into it and make the script executable:\n` +
       `   d=$(ssh ${q(a.remote)} 'mktemp -d "$HOME/ops-run.XXXXXXXX"') && [ -n "$d" ] && scp ${all.map(q).join(' ')} ${q(a.remote)}:"$d"/ && ssh ${q(a.remote)} 'chmod u+x "'"$d"'/${name}"'\n2. Run it, in the same window:\n`
   } else {
-    cmd = a.sudo.split('{script}').join(q(a.script))
-    if (files.length) steps = `Files it needs, which stay next to it: ${files.map(q).join(' ')}\n`
+    // Local: the command runs the checked copy, not the original. The dry run left the script and its companions in
+    // <tmp>/copy exactly as it ran them, so what was checked is what runs (the original path would run a script
+    // whose companions were never the checked ones).
+    cmd = a.sudo.split('{script}').join(q(`${a.tmp}/copy/${name}`))
+    steps = `It runs the copy that was checked in ${q(`${a.tmp}/copy`)}${files.length ? `, where the script and ${names.map(q).join(' ')} lie together` : ''}; do not edit that folder before you run it.\n`
   }
   const bang = a.nopass && !a.remote
   return `Checks passed. ` + (bang
