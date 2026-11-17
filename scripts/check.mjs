@@ -79,7 +79,7 @@ for (const f of tracked.filter(f => /[\\/]workflows[\\/][^\\/]+\.js$/.test(f))) 
   // Every mention of agentType, quoted or not, must be a key with a string literal value: anything computed cannot
   // be checked here and is refused.
   const text = fs.readFileSync(f, "utf8");
-  for (const m of text.matchAll(/(["'`]?)agentType\1\s*:\s*(?:(["'])([^"'\n]*)\2(?=\s*[,}\n])|(.{0,40}))/g)) {
+  for (const m of text.matchAll(/(["'`]?)agentType\1\s*:\s*(?:(["'])([^"'\n]*)\2(?=\s*[,}])|(.{0,40}))/g)) {
     if (m[3] === undefined) { bad(f, `agentType must be a plain string literal, found: ${(m[4] || "").trim()}`); continue; }
     if (!pluginAgents.has(m[3])) bad(f, `agentType '${m[3]}' is not "<plugin>:<agent>" of an agent in this marketplace`);
   }
