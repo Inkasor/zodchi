@@ -20,6 +20,7 @@ export const meta = {
 const a = args || {}
 for (const k of ['label', 'repo', 'base', 'tmp', 'author']) if (!a[k]) throw new Error(`branch-review needs args.${k}`)
 const authors = new Set([].concat(a.author))
+const q = (s) => JSON.stringify(String(s)) // double-quoted paths work in bash and PowerShell
 
 const progressFile = (o) => `${a.tmp}/progress/${String((o && (o.label || o.phase)) || 'step').replace(/[^\w.-]+/g, '-')}.md`
 const step = (prompt, opts) => agent(prompt +
@@ -33,19 +34,21 @@ const gate = await step(
   `Gather facts for a branch review; change nothing. Work from ${a.repo}. Return each file's content as a string, exactly as read, or "" when it does not exist.\n` +
   `- homeModels: ~/.zodchi/models.json. repoModels: ${a.repo}/.zodchi/models.json.\n` +
   `- account: the output of \`zodchi account\`, or "" when it fails.\n` +
-  `- files: \`git diff --name-only ${a.base}...HEAD\`, one path per entry. head: \`git rev-parse HEAD\`. dirty: true when \`git status --porcelain\` prints anything.`,
+  `- head: \`git rev-parse HEAD\`. baseSha: \`git merge-base ${q(a.base)} HEAD\`. files: \`git diff --name-only <baseSha> <head>\` with those two hashes, one path per entry. dirty: true when \`git status --porcelain\` prints anything.`,
   {
     agentType: 'runner', label: `gate ${a.label}`,
     schema: {
-      type: 'object', required: ['homeModels', 'repoModels', 'account', 'files', 'head', 'dirty'],
+      type: 'object', required: ['homeModels', 'repoModels', 'account', 'files', 'head', 'baseSha', 'dirty'],
       properties: {
         homeModels: { type: 'string' }, repoModels: { type: 'string' }, account: { type: 'string' },
-        files: { type: 'array', items: { type: 'string' } }, head: { type: 'string' }, dirty: { type: 'boolean' },
+        files: { type: 'array', items: { type: 'string' } }, head: { type: 'string' }, baseSha: { type: 'string' }, dirty: { type: 'boolean' },
       },
     },
   })
 if (!gate) return { stoppedAt: 'gate' }
-if (!gate.files.length) return { refused: `No change between ${a.base} and HEAD.` }
+if (!/^[0-9a-f]{40}$/.test(gate.head) || !/^[0-9a-f]{40}$/.test(gate.baseSha)) return { stoppedAt: 'gate', error: `no commit hashes (head ${gate.head}, base ${gate.baseSha})` }
+const range = `${gate.baseSha} ${gate.head}`
+if (!gate.files.length) return { refused: `No change between ${a.base} and ${gate.head}.` }
 
 const parse = (t) => { if (!t || !t.trim()) return null; try { return JSON.parse(t) } catch { return null } }
 const table = { ...((parse(gate.homeModels) || {}).roles || {}), ...((parse(gate.repoModels) || {}).roles || {}), ...(a.models || {}) }
@@ -58,20 +61,20 @@ const reviewer = pick('reviewer')
 const architect = a.architecture ? pick('architect') : null
 if (!reviewer) return { refused: `No gateway reviewer available that is not an author (${[...authors].join(', ')}); codex ${codexOk ? 'available' : 'unavailable'}.` }
 if (a.architecture && !architect) return { refused: 'No gateway architect available that is not an author.' }
-if (gate.dirty) log('The checkout has uncommitted changes: the review reads committed HEAD only; say so in the prompt.')
+if (gate.dirty) log('The checkout has uncommitted changes: the review reads the recorded head commit only.')
 
 const REVIEW = {
   type: 'object', required: ['verdict', 'findings'],
-  properties: { verdict: { type: 'string' }, reviewFile: { type: 'string' }, findings: { type: 'array', items: { type: 'string' } }, blocking: { type: 'number' } },
+  properties: { verdict: { type: 'string', enum: ['approved', 'changes_requested', 'blocked', 'missing'] }, summary: { type: 'string' }, reviewFile: { type: 'string' }, findings: { type: 'array', items: { type: 'string' } }, blocking: { type: 'number' } },
 }
 const ask = (role, who, tag) => step(
   `Get an independent ${role} through the gateway. Work from ${a.repo}. Write ${a.tmp}/${tag}.md: ` +
-  `the change is ${a.base}...${gate.head} over these files: ${JSON.stringify(gate.files)}; the reviewer reads it in the checkout itself (git diff ${a.base}...HEAD -- <files>) and the consumers around it. ` +
+  `the change is exactly the commits ${gate.baseSha}..${gate.head} over these files: ${JSON.stringify(gate.files)}. The reviewer reads it in the checkout itself with \`git diff ${range} -- <files>\` and reads files as of that commit with \`git show ${gate.head}:<file>\`, not from the working tree, which may have moved on; plus the consumers around it. ` +
   `${a.brief ? `What it must meet: the attached brief ${a.brief}. ` : ''}${gate.dirty ? 'Uncommitted changes in the checkout are not part of the change. ' : ''}` +
-  `Then run \`zodchi run --role ${role === 'architecture review' ? 'architecture-review' : 'checkout-review'} --model ${who.model} --effort ${who.effort} --key ${a.label}-${tag} --prompt ${a.tmp}/${tag}.md ` +
-  `${a.brief ? `--attach ${a.brief} ` : ''}${role === 'architecture review' ? `--attach ${a.tmp}/${tag}.diff ` : ''}--wait-sec 3300 --out ${a.tmp}/${tag}.json\`` +
-  (role === 'architecture review' ? `, after saving \`git diff ${a.base}...HEAD\` as ${a.tmp}/${tag}.diff (an architect has no checkout)` : '') + `. ` +
-  `Return the verdict, each finding as "<id> <severity> <location>: <problem>", the count of blocking findings, and the review file path. findings holds the reviewer's findings only. Change no code.`,
+  `Then run \`zodchi run --role ${role === 'architecture review' ? 'architecture-review' : 'checkout-review'} --model ${who.model} --effort ${who.effort} --key ${a.label}-${tag} --prompt ${q(`${a.tmp}/${tag}.md`)} ` +
+  `${a.brief ? `--attach ${q(a.brief)} ` : ''}${role === 'architecture review' ? `--attach ${q(`${a.tmp}/${tag}.diff`)} ` : ''}--wait-sec 3300 --out ${q(`${a.tmp}/${tag}.json`)}\`` +
+  (role === 'architecture review' ? `, after saving \`git diff ${range}\` as ${a.tmp}/${tag}.diff (an architect has no checkout)` : '') + `. ` +
+  `verdict: the "verdict" field of the review exactly ("missing" when it has none). summary: its summary. findings: the reviewer's findings only, each as "<id> <severity> <location>: <problem>". blocking: their count. reviewFile: the review file path. Change no code.`,
   { agentType: 'runner', schema: REVIEW, phase: 'Review', label: tag })
 
 phase('Review')
@@ -79,10 +82,10 @@ const [review, arch] = await parallel([
   () => ask('code review', reviewer, 'review'),
   ...(architect ? [() => ask('architecture review', architect, 'architecture')] : []),
 ])
-const real = (r) => r ? r.findings.filter(f => /^\s*F\d+/.test(f)) : []
 return {
-  label: a.label, head: gate.head, files: gate.files, models: { reviewer, architect },
+  label: a.label, base: gate.baseSha, head: gate.head, files: gate.files, models: { reviewer, architect },
   review, architecture: arch || null,
-  approved: Boolean(review && !real(review).length && (!architect || (arch && !real(arch).length))),
+  // Approval is the reviewers' explicit verdict, never an empty findings list.
+  approved: Boolean(review && review.verdict === 'approved' && (!architect || (arch && arch.verdict === 'approved'))),
   next: 'Close the findings with the author (code-package with the same brief), then run branch-review again. Release only with an approved review.',
 }

@@ -22,6 +22,7 @@ export const meta = {
 //   repo      repository of the script, for the writer to read its AGENTS.md
 const a = args || {}
 for (const k of ['script', 'tmp', 'sudo']) if (!a[k]) throw new Error(`ops-script needs args.${k}`)
+const q = (s) => JSON.stringify(String(s)) // double-quoted paths work in bash and PowerShell
 const py = /\.py$/i.test(a.script)
 const check = a.check || (py ? 'python3 {copy} --check' : '{copy} --check')
 const name = a.script.replace(/\\/g, '/').split('/').pop()
@@ -38,19 +39,19 @@ const STEP = {
 const staticCheck = (tag) => step(
   `Static checks of ${a.script}; change nothing. Logs to ${a.tmp}/logs/static-${tag}.log. ` +
   (py
-    ? `Run \`python3 -m py_compile ${a.script}\` (or \`python -m py_compile\` where python3 is missing). `
-    : `Run \`bash -n ${a.script}\`, then \`shellcheck ${a.script}\` when shellcheck is installed (say so when it is not; that is not a failure). `) +
+    ? `Run \`python3 -m py_compile ${q(a.script)}\` (or \`python -m py_compile\` where python3 is missing). `
+    : `Run \`bash -n ${q(a.script)}\`, then \`shellcheck ${q(a.script)}\` when shellcheck is installed (say so when it is not; that is not a failure). `) +
   `ok is true when no command reports an error (shellcheck warnings count as failures, notes and style do not). failures: each problem as "<line>: <message>".`,
   { agentType: 'runner', schema: STEP, phase: 'Static', label: `static ${tag}` })
 
 const dryRun = (tag) => {
   const copy = a.remote ? `/tmp/${tag}-${name}` : `${a.tmp}/copy/${name}`
-  const cmd = check.replace('{copy}', copy)
+  const cmd = check.replace('{copy}', q(copy))
   return step(
     `Dry run of a sudo script without root. ` +
     (a.remote
-      ? `Copy ${a.script} to ${a.remote}:${copy} with scp, make it executable, then run \`ssh ${a.remote} '${cmd}'\` as that user. Never use sudo. Remove the copy afterwards. `
-      : `Copy ${a.script} to ${copy}, make it executable, then run \`${cmd}\` as the current user. Never use sudo. `) +
+      ? `Copy ${q(a.script)} to ${a.remote}:${q(copy)} with scp, make it executable, then run \`ssh ${a.remote} '${cmd}'\` as that user. Never use sudo. Remove the copy afterwards. `
+      : `Copy ${q(a.script)} to ${q(copy)}, make it executable, then run \`${cmd}\` as the current user. Never use sudo. `) +
     `Log to ${a.tmp}/logs/dry-${tag}.log. ok is true when it exits 0 and its output shows no error. ` +
     `A failure that only says root is required means the script has no real check mode: report it as a failure with that reason. ` +
     `failures: the decisive error lines. summary: what the script said it would do.`,
@@ -73,7 +74,7 @@ for (let n = 0; n <= (a.fixes ?? 2); n++) {
   out.attempts.push({ n, static: st, dry })
   if (st && st.ok && dry && dry.ok) {
     out.ready = true
-    out.forHuman = `Checks passed. Run: ${a.sudo.replace('{script}', a.script)}`
+    out.forHuman = `Checks passed. Run: ${a.sudo.replace('{script}', q(a.script))}`
     out.wouldDo = dry.summary
     return out
   }

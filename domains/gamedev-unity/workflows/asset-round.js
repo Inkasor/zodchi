@@ -22,7 +22,7 @@ export const meta = {
 //   answer   optional: { file, targets: [paths], backup, protect: [strings] } - a one-pass expert answer (hard package) for the applier
 //   change   optional: { brief: path of the change brief, hard: bool, ranCheck: bool } - the coder writes and runs
 //            the change; ranCheck: the brief makes the coder run the fast check itself, so the Check phase is skipped
-//            when the coder reports it ran and passed it
+//            when the coder returns evidence: the exact check command, exit code 0 and its log
 //   check    optional: { command, cwd } - the FAST check (seconds)
 //   export   optional: { command, cwd, out, expect } - the show export (Blender); expect: what must exist
 //            afterwards, in words (default: an .fbx in <out>/candidate or <out>/release; a blockout names its own)
@@ -51,6 +51,10 @@ const STEP = {
     failures: { type: 'array', items: { type: 'string' } },
     paths: { type: 'array', items: { type: 'string' } },
   },
+}
+const CHANGE = {
+  ...STEP,
+  properties: { ...STEP.properties, checkRun: { type: 'object', properties: { command: { type: 'string' }, exitCode: { type: 'number' }, log: { type: 'string' } } } },
 }
 const out = { label: a.label, stoppedAt: null }
 const accepted = a.accepted || 'accepted'
@@ -113,12 +117,16 @@ if (a.change) {
   phase('Change')
   out.change = await step(
     `Implement the change described in ${a.change.brief}; it is the whole task. Round ${a.label}, stage ${a.stage} of the asset (before acceptance only triangles, texture memory and frame time gate). ` +
-    `ok is true when what the brief calls done holds. paths: files changed. failures: what is unverified.`,
-    { agentType: 'coder', model: a.change.hard ? 'opus' : 'sonnet', schema: STEP, label: `change ${a.label}` })
+    `ok is true when what the brief calls done holds. paths: files changed. failures: what is unverified.` +
+    (a.change.ranCheck && a.check ? ` After the change run the fast check yourself from ${a.check.cwd}: \`${a.check.command}\`, output to ${a.tmp}/logs/check-by-coder.log; checkRun: that command as you ran it, its exit code and the log path.` : ''),
+    { agentType: 'coder', model: a.change.hard ? 'opus' : 'sonnet', schema: CHANGE, label: `change ${a.label}` })
   if (!out.change || !out.change.ok) return stop('change')
 }
 
-if (a.check && !(a.change && a.change.ranCheck)) {
+// The coder's own check counts only with evidence: the same command, exit code 0, a log.
+const coderChecked = Boolean(a.check && out.change && out.change.checkRun && out.change.checkRun.exitCode === 0 &&
+  out.change.checkRun.log && String(out.change.checkRun.command).includes(a.check.command))
+if (a.check && !coderChecked) {
   phase('Check')
   out.check = await step(
     `Run the fast check of round ${a.label}, once, from ${a.check.cwd}: \`${a.check.command}\`; output to ${a.tmp}/logs/check.log. ` +

@@ -54,11 +54,7 @@ another person's requests.
   `auth.json`. An admin can pin the workspace with
   `forced_chatgpt_workspace_id`.
 
-**Open question.** No source says whether one person may use both their work
-seat and their personal plan, one after the other, for the same work. The
-terms forbid splitting usage or rotating accounts "to get around limits".
-Using a personal plan for work, or a work seat for personal projects, may
-also go against your employer's rules. Zodchi therefore keeps accounts by
-label (`work`, `personal`). Falling back from one to the other is off unless
-the project allows it explicitly. Check with your employer before you turn it
-on.
+Zodchi does not decide which of your plans a job may use. You list your
+subscriptions, each in its own `CODEX_HOME`, in the order you want them used,
+and you decide what goes on which. Terms and employer rules change, so check
+them yourself.
