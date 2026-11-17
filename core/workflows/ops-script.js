@@ -108,8 +108,11 @@ function takeSnapshot(r) {
 const sumLine = (s) => /\\/.test(s.name) ? `\\${s.sha256}  ${s.name.replace(/\\/g, '\\\\')}` : `${s.sha256}  ${s.name}`
 // A shell command that prints the list, one quoted line per file.
 const printList = (snap) => `printf '%s\\n' ${snap.sums.map(s => q(sumLine(s))).join(' ')}`
-// Local: the folder is checked against the list read from the pipe.
-const verifyLocal = (snap) => `${printList(snap)} | (cd ${q(snap.dir)} && sha256sum -c -)`
+// Local: cd into the snapshot, then the folder is checked against the list read from the pipe. The cd is not in a subshell,
+// so whatever follows with && runs in the snapshot too (a script that reads ./payload reads the checked copy).
+const verifyLocal = (snap) => `cd ${q(snap.dir)} && ${printList(snap)} | sha256sum -c -`
+// The same list piped into the check on the host: the accepted hashes, never a list file the check could have rewritten.
+const verifyRemote = (snap, dir) => `cd ${dir} && ${printList(snap)} | sha256sum -c -`
 const D = '<DIR>' // the remote folder, until the runner has made it
 
 const shellRule = `\n\nShell rule: run every command with bash (Git Bash on Windows, never PowerShell or cmd); the quoting in these commands is for bash.`
@@ -117,7 +120,7 @@ const snapshotStep = (n) => agent(
   `Make ONE snapshot of a script and its companion files; change nothing else. ` +
   `Make sure ${q(a.tmp)} exists (\`mkdir -p\`), then run \`mktemp -d ${q(`${a.tmp}/snap.`)}XXXXXXXX\` (the folder must be created, never reused or emptied; stop and report if that fails) and keep the path it prints as SNAP. ` +
   `Create the folders SNAP-SUFFIX-based \`${a.tmp}/run-SUFFIX/logs\` and \`${a.tmp}/run-SUFFIX/progress\` with mkdir -p, where SUFFIX is the 8 characters after "snap." in SNAP. ` +
-  `Copy into SNAP, under exactly these names, one \`cp -- <source> SNAP/<name>\` each (quote every argument as shown; if a source with backslashes is not found by bash, use the same path with "/"): ` +
+  `Copy into SNAP, under exactly these names, one \`cp -- <source> SNAP/<name>\` each (quote every argument as shown; a source is used exactly as written: a missing source is a failure, stop and report it${[a.script, ...files].some(isDrive) ? `; only for a Windows drive path (${[a.script, ...files].filter(isDrive).map(q).join(' ')}) that bash does not find, use the same path with "/" instead of backslashes` : ''}): ` +
   `${[a.script, ...files].map((p, i) => `${q(p)} -> ${q([name, ...names][i])}`).join('; ')}. ` +
   `Make the script copy executable. Then compute the SHA-256 of every file in SNAP FROM THE COPIES: \`cd SNAP && sha256sum -- ${[name, ...names].map(q).join(' ')}\`. ` +
   `Write nothing else into SNAP (no list, no logs). Return dir = SNAP (exactly the path mktemp printed) and files = one entry {name, sha256} per file, the name as given above and the hash in lower-case hex. ` +
@@ -153,7 +156,7 @@ function dryRun(snap, tag) {
       `2. Upload the snapshot once: \`cd ${q(snap.dir)} && scp -- ${all.map(q).join(' ')} ${q(a.remote)}:${D}/\` (from inside the snapshot folder, so a drive letter is not read as a host). ` +
       `3. Write the hash list on the host and check it, and make the script executable: \`${ssh(`cd ${D} && ${sums} > ${LIST} && sha256sum -c ${LIST} && chmod u+x -- ${q(name)}`)}\`; every file must be OK. ` +
       `4. Run the check as that user, never sudo: \`${ssh(run)}\`. ` +
-      `5. Check the hashes again: \`${ssh(`cd ${D} && sha256sum -c ${LIST}`)}\`; if any file changed, ok is false (the check mode must not change the files). ` +
+      `5. Check the hashes again against the accepted list, piped in (not the list file in the folder): \`${ssh(verifyRemote(snap, D))}\`; if any file changed, ok is false (the check mode must not change the files). ` +
       `Do NOT delete the folder: the human runs the final command from it. Return it as dir. ` +
       `Log to ${snap.run}/logs/dry-${tag}.log. ok is true when the check exits 0, its output shows no error and the hashes still match. ` +
       `A failure that only says root is required means the script has no real check mode: report it as a failure with that reason. ` +
@@ -164,7 +167,7 @@ function dryRun(snap, tag) {
   return step(
     `Dry run of a sudo script without root, locally, in the snapshot ${snap.dir}; the script and its files already lie there, run them where they are and never use the original files. ` +
     `1. Verify the snapshot: \`${verifyLocal(snap)}\`; every file must be OK. ` +
-    `2. Run \`${cmd}\` as the current user with the environment variable PYTHONDONTWRITEBYTECODE=1 set. Never use sudo. ` +
+    `2. Run \`cd ${q(snap.dir)} && ${cmd}\` (from inside the snapshot folder) as the current user with the environment variable PYTHONDONTWRITEBYTECODE=1 set. Never use sudo. ` +
     `3. Verify the snapshot again with the command of step 1; if any file changed, ok is false (the check mode must not change the files). ` +
     `Leave the snapshot folder in place: the human runs the command from it. Log to ${snap.run}/logs/dry-${tag}.log. ok is true when the check exits 0, its output shows no error and the hashes still match. ` +
     `A failure that only says root is required means the script has no real check mode: report it as a failure with that reason. ` +
@@ -193,8 +196,9 @@ function forHuman(snap, rdir) {
     cmd = `ssh -t ${q(a.remote)} ${q(r)}`
     steps = `It runs from ${rdir} on ${a.remote}, the folder the check ran in; it first checks the SHA-256 of every file against the snapshot and stops when one differs. Do not edit that folder.\n`
   } else {
-    cmd = `${verifyLocal(snap)} && ` + a.sudo.split('{script}').join(q(`${snap.dir}/${name}`))
-    steps = `It runs the snapshot that was checked in ${q(snap.dir)}${files.length ? `, where the script and ${names.map(q).join(' ')} lie together` : ''}, after checking the SHA-256 of every file there; do not edit that folder before you run it.\n`
+    // In a subshell: the cd to the snapshot holds for the check and for sudo, and the human's own directory is left alone.
+    cmd = `(${verifyLocal(snap)} && ` + a.sudo.split('{script}').join(q(`${snap.dir}/${name}`)) + ')'
+    steps = `It runs the snapshot that was checked in ${q(snap.dir)}${files.length ? `, where the script and ${names.map(q).join(' ')} lie together` : ''}, from inside that folder, after checking the SHA-256 of every file there; do not edit that folder before you run it.\n`
   }
   const bang = a.nopass && !a.remote
   return `Checks passed. ` + (bang
