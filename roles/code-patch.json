@@ -2,6 +2,6 @@
   "description": "One-pass code from a strong model with no tools: it answers with the exact edits of a package, and the applier puts them into the files.",
   "mode": "expert",
   "model": "gpt-6.2-sol",
-  "effort": "high",
+  "effort": "medium",
   "frame": "code-patch.md"
 }

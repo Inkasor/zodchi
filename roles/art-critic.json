@@ -2,7 +2,7 @@
   "description": "Art review of one thing against its brief: an asset iteration, a frame of a scene, an interface screen or a concept.",
   "mode": "expert",
   "model": "gpt-6.2-astra",
-  "effort": "medium",
+  "effort": "high",
   "frame": "art-critic.md",
   "schema": "art-review.schema.json"
 }

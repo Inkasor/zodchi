@@ -2,7 +2,7 @@
   "description": "Independent review of one finished change from its diff and attached files. The reviewer has no checkout.",
   "mode": "expert",
   "model": "gpt-6.2-sol",
-  "effort": "high",
+  "effort": "medium",
   "frame": "code-review.md",
   "schema": "code-review.schema.json"
 }
