@@ -87,11 +87,13 @@ This installs `zodchi-core` for you in every project, builds the gateway
   as the marketplace, so switching a branch or editing files in the clone
   changes nothing for the Claude Code sessions on your machine. It refuses to
   copy from a branch other than the default one, or from a tree with
-  uncommitted changes to tracked files (`--force` copies anyway, into
-  `<commit>-dirty`). After a `git pull`, rerun the installer: it makes a new
+  uncommitted changes to tracked files (`--force` copies anyway; only
+  tracked changes make the folder `<commit>-dirty`, a clean forced branch is
+  named by its commit alone). After a `git pull`, rerun the installer: it makes a new
   copy, points the marketplace at it, updates the plugins and rebuilds the
   gateway. The previous copy stays for a session that still uses it, and
-  copies older than the last two are removed. An install made by an earlier
+  copies older than the last two are removed (the copy the marketplace read
+  before this run is kept as well, even if it is older, so you may see three). An install made by an earlier
   version, which read the clone itself, is moved to a copy on the next run.
 - `--dev` is for working on zodchi itself: the clone is the marketplace, as
   before. Every Claude Code session on the machine that starts or reloads
