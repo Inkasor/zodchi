@@ -46,7 +46,18 @@ if (new Set([name, ...names]).size !== names.length + 1) throw new Error('ops-sc
 // (it would be deleted before it is copied). Paths are compared absolute, with / and, on Windows, without case.
 const absPath = (p) => /^([A-Za-z]:)?[\\/]/.test(String(p))
 for (const p of [a.script, a.tmp, ...files]) if (!absPath(p)) throw new Error(`ops-script: paths must be absolute, got ${p}`)
-const fold = (p) => { const s = String(p).replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, ''); return /^[A-Za-z]:/.test(s) ? s.toLowerCase() : s }
+// Separators, repeated slashes, "." and ".." are resolved, so /work/./copy/x and /work/a/../copy/x both count as inside.
+const fold = (p) => {
+  const s = String(p).replace(/\\/g, '/')
+  const lead = /^[A-Za-z]:\//.test(s) ? s.slice(0, 3) : '/'
+  const parts = []
+  for (const seg of s.slice(lead.length).split('/')) {
+    if (!seg || seg === '.') continue
+    if (seg === '..') parts.pop(); else parts.push(seg)
+  }
+  const out = lead + parts.join('/')
+  return /^[A-Za-z]:/.test(out) ? out.toLowerCase() : out
+}
 const staging = fold(`${a.tmp}/copy`)
 if (!a.remote) for (const p of [a.script, ...files]) if (fold(p) === staging || fold(p).startsWith(staging + '/')) throw new Error(`ops-script: ${p} lies inside ${a.tmp}/copy, which the dry run empties; keep inputs outside it`)
 
