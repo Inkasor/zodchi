@@ -27,9 +27,14 @@ pub struct Config {
     pub accounts: Vec<Account>,
 }
 
+/// An environment variable that is set and not empty: an empty value counts as unset.
+fn var_set(name: &str) -> Option<std::ffi::OsString> {
+    env::var_os(name).filter(|v| !v.is_empty())
+}
+
 pub fn user_home() -> PathBuf {
-    env::var_os("USERPROFILE")
-        .or_else(|| env::var_os("HOME"))
+    var_set("USERPROFILE")
+        .or_else(|| var_set("HOME"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
 }
@@ -59,7 +64,7 @@ fn on_path(names: &[&str]) -> Option<PathBuf> {
 /// The Codex program. `ZODCHI_CODEX_BIN` wins; then a native `codex` on PATH; then the `codex.js` of the npm
 /// package beside the Node on PATH (npm's `codex.cmd` is a shell script and is never run).
 pub fn find_codex() -> PathBuf {
-    if let Some(bin) = env::var_os("ZODCHI_CODEX_BIN") {
+    if let Some(bin) = var_set("ZODCHI_CODEX_BIN") {
         return PathBuf::from(bin);
     }
     if let Some(native) = on_path(if cfg!(windows) { &["codex.exe"] } else { &["codex"] }) {
@@ -85,7 +90,7 @@ pub fn find_codex() -> PathBuf {
 pub fn load_accounts(home: &Path) -> Result<Vec<Account>> {
     let file = home.join("accounts.json");
     if !file.exists() {
-        let codex_home = env::var_os("CODEX_HOME").map(PathBuf::from).unwrap_or_else(|| user_home().join(".codex"));
+        let codex_home = var_set("CODEX_HOME").map(PathBuf::from).unwrap_or_else(|| user_home().join(".codex"));
         return Ok(vec![Account { name: "default".into(), codex_home }]);
     }
     let text = std::fs::read_to_string(&file)?;
@@ -115,12 +120,12 @@ impl Config {
             Some(r) => Some(std::path::absolute(r)?),
             None => git_top(&env::current_dir()?),
         };
-        let home = env::var_os("ZODCHI_HOME").map(PathBuf::from).unwrap_or_else(|| user_home().join(".zodchi"));
+        let home = var_set("ZODCHI_HOME").map(PathBuf::from).unwrap_or_else(|| user_home().join(".zodchi"));
         let accounts = load_accounts(&home)?;
         Ok(Config {
             jobs_dir: top.as_ref().map(|t| t.join(".agent-tmp").join("gateway")),
             root: top,
-            roles_dir: env::var_os("ZODCHI_ROLES").map(PathBuf::from).unwrap_or_else(|| home.join("roles")),
+            roles_dir: var_set("ZODCHI_ROLES").map(PathBuf::from).unwrap_or_else(|| home.join("roles")),
             home,
             codex_bin: find_codex(),
             accounts,

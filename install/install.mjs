@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 // zodchi installer. install.ps1 and install.sh call this; it needs Node 20+.
 //
-//   node install/install.mjs [--domains web-apps,gamedev-unity|all] [--project <repo>] [--gateway-cli <cli.mjs>]
-//                            [--force] [--dry-run] [--uninstall]
+//   node install/install.mjs [--domains web-apps,gamedev-unity|all] [--project <repo>] [--no-build]
+//                            [--gateway-cli <cli.mjs>] [--force] [--dry-run] [--uninstall]
+//
+// The gateway: with cargo on PATH the Rust gateway is built from gateway/ and installed as ~/.zodchi/bin/zodchi.
+// --no-build skips that; --gateway-cli instead installs a small command that forwards to a Node gateway.
 //
 // What goes where:
 //   core + chosen domains: agents -> <claude>/agents, workflows -> <claude>/workflows
@@ -28,6 +31,7 @@ function parseArgs(argv) {
     if (a === "--force") o.force = true;
     else if (a === "--dry-run") o.dryRun = true;
     else if (a === "--uninstall") o.uninstall = true;
+    else if (a === "--no-build") o.noBuild = true;
     else if (["--domains", "--project", "--gateway-cli"].includes(a) && argv[i + 1]) o[a.slice(2)] = argv[++i];
     else if (a === "--help" || a === "-h") { o.help = true; }
     else throw new Error(`Unknown argument: ${a}`);
@@ -61,7 +65,7 @@ async function chooseDomains(given) {
   });
 }
 
-function plan(domains, claudeDir, home) {
+function plan(domains, claudeDir, home, binary) {
   const items = []; // { src | content, dest, kind }
   const seen = new Map();
   const add = (src, dest, kind, origin) => {
@@ -77,6 +81,11 @@ function plan(domains, claudeDir, home) {
   }
   for (const f of fs.readdirSync(path.join(SRC, "roles"))) add(path.join(SRC, "roles", f), path.join(home, "roles", f), "managed", "roles");
   add(path.join(SRC, "models.json"), path.join(home, "models.json"), "user-owned", "models.json");
+  if (binary) {
+    // The Rust gateway. The forwarding command of an earlier install is no longer planned, so it is removed.
+    items.push({ src: binary, dest: path.join(home, "bin", path.basename(binary)), kind: "managed", mode: 0o755 });
+    return items;
+  }
   add(path.join(SRC, "install", "zodchi.mjs"), path.join(home, "bin", "zodchi.mjs"), "managed", "install");
   const mjs = path.join(home, "bin", "zodchi.mjs");
   items.push({ content: `@echo off\r\nnode "${mjs}" %*\r\n`, dest: path.join(home, "bin", "zodchi.cmd"), kind: "managed" });
@@ -90,7 +99,7 @@ function readManifest(home) {
 
 async function main() {
   const o = parseArgs(process.argv.slice(2));
-  if (o.help) { console.log(fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 13).map(l => l.replace(/^\/\/ ?/, "")).join("\n")); return; }
+  if (o.help) { console.log(fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 16).map(l => l.replace(/^\/\/ ?/, "")).join("\n")); return; }
   const home = path.resolve(process.env.ZODCHI_HOME || path.join(os.homedir(), ".zodchi"));
   const claudeDir = o.project ? path.join(path.resolve(o.project), ".claude") : path.resolve(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"));
   const manifest = readManifest(home);
@@ -114,7 +123,20 @@ async function main() {
     gatewayCli = path.resolve(o["gateway-cli"]);
     if (!fs.existsSync(gatewayCli)) throw new Error(`No gateway CLI at ${gatewayCli}; nothing was installed.`);
   }
-  const items = plan(domains, claudeDir, home);
+  // The Rust gateway is built before anything is written: a failed build installs nothing.
+  let binary = null;
+  const cargo = spawnSync("cargo --version", { encoding: "utf8", shell: true, windowsHide: true });
+  if (!o.noBuild && !gatewayCli && cargo.status === 0) {
+    const target = path.join(SRC, "gateway", "target", "release", process.platform === "win32" ? "zodchi.exe" : "zodchi");
+    if (o.dryRun) say("would build the gateway (cargo build --release)");
+    else {
+      console.log("Building the gateway (cargo build --release)...");
+      const built = spawnSync("cargo", ["build", "--release", "--manifest-path", path.join(SRC, "gateway", "Cargo.toml")], { stdio: "inherit", windowsHide: true });
+      if (built.status !== 0 || !fs.existsSync(target)) throw new Error("The gateway did not build; nothing was installed. Rerun with --no-build to install the rest.");
+    }
+    if (fs.existsSync(target)) binary = target;
+  }
+  const items = plan(domains, claudeDir, home, binary);
   const owned = manifest.files || {};
   const isOwned = (dest, buf) => Object.prototype.hasOwnProperty.call(owned, dest) && owned[dest] === sha(buf);
   const next = { version: VERSION, domains, claudeDir, files: { ...owned } };
@@ -175,7 +197,9 @@ async function main() {
   console.log(`\nzodchi ${VERSION}: ${written} file(s) written, ${skipped} skipped. Domains: core${domains.length ? ", " + domains.join(", ") : ""}.`);
   console.log(`Agents and workflows: ${claudeDir}`);
   console.log(`Codex CLI: ${codex.status === 0 ? codex.stdout.trim() : "not found - install it and run `codex login` for gateway roles"}`);
-  if (!cfg.gatewayCli) console.log("Gateway: not configured yet - rerun with --gateway-cli <path to cli.mjs> (until the Rust gateway ships).");
+  if (binary) console.log(`Gateway: the Rust gateway, ${path.join(home, "bin", path.basename(binary))}. Subscriptions: ~/.zodchi/accounts.json (see gateway/README.md).`);
+  else if (cfg.gatewayCli) console.log(`Gateway: forwarding to ${cfg.gatewayCli}.`);
+  else console.log("Gateway: not installed - install Rust (https://rustup.rs) and rerun, or pass --gateway-cli <path to a Node gateway cli.mjs>.");
   const bin = path.join(home, "bin");
   if (!(process.env.PATH || "").split(path.delimiter).some(p => path.resolve(p) === bin)) console.log(`Add ${bin} to PATH so agents can run \`zodchi\`.`);
 }
