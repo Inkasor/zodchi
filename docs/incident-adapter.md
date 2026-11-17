@@ -72,6 +72,14 @@ first: they take their program or options from any of their arguments (GNU sed r
 `["sed", "input.txt", "{id}"]` as an option and runs the command). Call them from a trusted wrapper script (run by
 `node`, `python` or a shell) that passes the value on as data.
 
+**Local only.** Operations run locally, from the adapter's folder. A remote or container launcher anywhere in `argv`
+(`ssh`, `scp`, `rsh`, `docker`, `podman`, `kubectl`, `nsenter`, `chroot`, `sudo`, `su`, `env`, `xargs`, `nice`,
+`timeout`, `stdbuf`, `watch`; with or without a placeholder, with or without a path in front or `.exe` after) refuses
+the adapter, whatever comes after it: a later interpreter never clears an earlier launcher, so
+`["ssh", "host", "node", "read-job.mjs", "{id}"]` is refused although `node` is followed by a script. A fact that lives on
+another machine or in a container is read by a local script the product owns, which does the remote call itself with
+fixed arguments and takes the value only as data.
+
 **Read-only.** The core cannot prove that a command only reads; the adapter's author vouches for it. Name commands
 that read (show, status, list, a report), never ones that retry, restart or repair. Operations run from the adapter's
 folder, with the caller's environment and rights.

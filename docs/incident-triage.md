@@ -54,11 +54,12 @@ args: {
    draft:
    - an evidence id that is not in the bundle refuses the answer;
    - a finding about what agents may do must cite both the agent skill and an allow-list;
-   - a text the lead forwards or acts on (the facts, the question for the owner, each gap's what and proposal, every
+   - a text the lead acts on (the question for the owner, each gap's what and proposal, every
      field and list entry of the fix brief, the agent skill change) that asks for access, says someone has none or
      proposes working around a refusal refuses the answer; a prohibition ("the command must not grant access", "the
      test must not bypass the allow-list refusal") is not a proposal and passes;
-   - facts that are empty, promise a time or speak of retrying refuse the answer;
+   - the facts, the suggested reply, the line for the lead and the route's reason are not checked: they are shown apart,
+     as wording not to forward;
    - a fix brief with an empty or blank entry in files, done or checks refuses the answer;
    - a retry recommendation without a retry in the adapter refuses the answer;
    - `stale` without evidence that a specific release fixes the error and that the environment runs it becomes
@@ -74,9 +75,9 @@ args: {
 
 ### The reply and the model's wording
 
-Version 1 hands the reply to the lead, never to the reporter. The workflow assembles it: the model's checked facts, then
-the product's retry in the adapter's own words (`retry.how`) only when the answer recommends a retry and the adapter
-documents one, then a fixed text for the route:
+Version 1 hands the reply to the lead, never to the reporter. The workflow assembles it with no text of the model in it: the
+product's retry in the adapter's own words (`retry.how`, in a fixed sentence) only when the answer recommends a retry
+and the adapter documents one, then a fixed text for the route:
 
 | Route | Fixed text |
 | --- | --- |
@@ -86,8 +87,8 @@ documents one, then a fixed text for the route:
 | `awaiting-operator` | This needs a change on the product's servers. We will write to you once it is done. |
 | `needs-evidence` | We are looking into the error and will write to you with what we find. |
 
-No other text of the model is in it, so retry wording reaches the reply only through a recommended retry. The lead
-puts the reply into the reporter's language. The model's suggested reply, its line for the lead and the route's reason
+No text of the model is in it, so retry wording reaches the reply only through a recommended retry. The lead
+puts the reply into the reporter's language. The model's facts, its suggested reply, its line for the lead and the route's reason
 are shown in the draft under "Model's wording (not checked, do not forward as is)": they are not checked, and nothing
 is copied from them to the reporter as it stands.
 
