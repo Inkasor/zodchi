@@ -94,14 +94,21 @@ This installs `zodchi-core` for you in every project, builds the gateway
   at), from a detached HEAD, or when that default is not set (`git remote
   set-head origin --auto` sets it); `--force` copies the commit anyway. A
   folder that is not a git clone is refused unless `--dev`. A copy is
-  written under a temporary name, marked complete last and then renamed, so a
-  copy folder without its `.complete` mark is made again. After a
+  written under a temporary name, every file is checked against its blob in
+  the commit, it is marked complete last and then renamed; a copy folder
+  without its `.complete` mark or with a file missing is moved aside and
+  made again. After a
   `git pull`, rerun the installer: it makes a new copy, points the
   marketplace at it, updates `zodchi-core` and the domains you name in that
-  run, and rebuilds the gateway. The copy the marketplace reads and the two
-  newest complete copies are kept, older ones are removed. If the marketplace
-  cannot be moved, it stays registered as it was and the new copy stays
-  beside it. An install made by an earlier version, which read the clone
+  run, and rebuilds the gateway. A domain you enabled in another project is
+  not updated by that run: rerun the installer with
+  `--project <that repo> --domains <domain>` for each such project. The copy
+  the marketplace reads, the one it read before and the two newest complete
+  copies are kept, older ones are removed. After moving the marketplace the
+  installer reads the registration back and prints where it points; if the
+  move fails it prints what is registered now, and the new copy stays beside
+  it. Only one install runs at a time (`~/.zodchi/plugins/.install.lock`; a
+  lock left by a process that is gone is taken over). An install made by an earlier version, which read the clone
   itself, is moved to a copy on the next run.
 - `--dev` is for working on zodchi itself: the clone is the marketplace, as
   before. Every Claude Code session on the machine that starts or reloads
