@@ -8,6 +8,7 @@
     "kinds": ["stale"],
     "outcomes": { "E1": "ok", "E2": "ok", "E3": "ok", "E4": "ok", "E5": "ok", "E6": "ok", "E7": "ok" },
     "draftIncludes": ["Retry", "press Retry on the job page"],
-    "evidenceExcludes": ["hunter2-secret", "abcdefghijklmnop0123456789"]
+    "evidenceExcludes": ["hunter2-secret", "abcdefghijklmnop0123456789"],
+    "secretsExclude": ["hunter2-secret", "abcdefghijklmnop0123456789"]
   }
 }

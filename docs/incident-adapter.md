@@ -58,8 +58,13 @@ the skill tells the model to do and what the product actually allows, so the cla
 value comes from `args.params` of the run (the lead takes it from the report), must match the whole pattern and may hold
 no line break; it is then passed as that one argv item, never into shell text. An operation whose argument is missing
 or does not match is `skipped`, with the reason, and nothing is run with the value. The program itself (`argv[0]`) is
-never a placeholder, and a placeholder right after a flag that runs code (`-c`, `-e`, `--eval`, `-Command`, `/c` and
-the like) is refused: `["sh", "-c", "{id}"]` would run the report's text.
+never a placeholder. After an interpreter (a shell, `node`, `python`, `perl`, `pwsh`, `cmd`, `awk`, `sed` and the like)
+a placeholder is allowed only when the interpreter's very next item is a script file (a path or a name with an
+extension, no flag before it): `["node", "read-job.mjs", "{id}"]` passes, while `["sh", "-c", "{id}"]`,
+`["sh", "-lc", "{id}"]`, `["pwsh", "-com", "{id}"]` and `["deno", "eval", "{id}"]` are refused, since they would run
+the value as code. A placeholder after a launcher (`env`, `sudo`, `timeout`, `xargs`, `ssh` and the like), which
+passes its arguments on to another program or a remote shell, is refused too. The rule is conservative on purpose: a
+list of code flags is never complete. Put such a command into a script file that the interpreter runs.
 
 **Read-only.** The core cannot prove that a command only reads; the adapter's author vouches for it. Name commands
 that read (show, status, list, a report), never ones that retry, restart or repair. Operations run from the adapter's

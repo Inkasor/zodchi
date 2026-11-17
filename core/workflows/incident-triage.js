@@ -17,7 +17,8 @@ export const meta = {
 //             immutable evidence.json, classification.json, draft.md and adapterHash, and the progress files
 //   adapter   path of the product's adapter JSON (absolute): trusted configuration, see docs/incident-adapter.md.
 //             Its operations run from the adapter's folder, under the caller's own permissions
-//   report    the reporter's text, verbatim. Untrusted data: it goes into the evidence bundle only, never into a prompt
+//   report    the reporter's text, verbatim. Untrusted data: redacted first (secrets), then it goes into the evidence
+//             bundle only (through the generated collector), never into the classifier's prompt
 //   params    values for the adapter's operation arguments, e.g. { "id": "4711" }, taken by the lead from the report;
 //             each one is checked against the argument's pattern and passed as one whole argv item
 //   repo      repository the gateway runs from (absolute; it must ignore .agent-tmp/). Needed when the classifier
@@ -27,7 +28,9 @@ export const meta = {
 //   breakLock true: remove a lock that an interrupted run left in the incident folder. Only after the lead made sure
 //             no other run works on this incident
 //
-// result: { incident, revision, state, route, kinds, refused, notes, files, classifier, stoppedAt, next }
+// result: { incident, revision, state, route, kinds, refused, notes, files, classifier, stoppedAt, next, persistError, lockLeft }
+//   persistError  a revision that failed could not be recorded as failed in incident.json; the lock is then kept
+//   lockLeft      the lock is still in place and why
 //   state     the state written to incident.json: drafted | needs-evidence | failed (classified only between the two
 //             publications of one run)
 //   refused   the contract violations that made the workflow refuse the classifier's answer (state failed)
@@ -246,9 +249,15 @@ const STEP = { type: 'object', required: ['ok', 'summary'], properties: { ok: { 
 const KINDS = ['stale', 'user-action', 'product-bug', 'missing-tool', 'infra', 'owner-decision']
 const ROUTES = ['reply', 'fix-brief', 'awaiting-owner', 'awaiting-operator', 'needs-evidence']
 const PROVIDES = ['job', 'status', 'error', 'release', 'changelog', 'health', 'logs', 'config', 'other']
-// Interpreter flags whose next argument is code: a placeholder there would run report text as code.
-const EVAL_FLAGS = ['-c', '-e', '--eval', '-p', '--print', '-command', '/c', '/k', '-encodedcommand', '-r']
-const INTERPRETER = /^(sh|bash|zsh|dash|ksh|fish|cmd|powershell|pwsh|node|deno|bun|python[0-9.]*|py|perl|ruby|php|lua|osascript)(\.exe)?$/i
+// Programs that run what they are given. An interpreter runs the script file named right after it, or, with a flag
+// (-c, -lc, -ec, -e, -pe, --eval, -Command, /c and their combinations), text as code; a launcher passes its arguments on
+// to another program or a remote shell. A placeholder after one of them is allowed only when the interpreter's very
+// next item is a script file, so the value can only be an argument of that script; flags in between, a launcher, or a
+// code argument instead of a file refuse the adapter. Conservative on purpose: a list of code flags is never complete.
+const INTERPRETER = /^(sh|bash|zsh|dash|ksh|mksh|ash|csh|tcsh|fish|busybox|cmd|powershell|pwsh|node|nodejs|deno|bun|python[0-9.]*|py|pypy[0-9.]*|perl|ruby|php|lua|tclsh|osascript|cscript|wscript|awk|gawk|mawk|nawk|sed)(\.exe)?$/i
+const LAUNCHER = /^(env|sudo|doas|su|runuser|nice|ionice|nohup|timeout|stdbuf|time|command|exec|xargs|ssh|wsl|start|npx|pnpx|uvx|watch|script|setsid|chroot|flock|taskset|strace)(\.exe)?$/i
+// A script file: no flag, no URL or data scheme, and a path separator or a file extension.
+const SCRIPT_FILE = (s) => typeof s === 'string' && !/^[-+]/.test(s) && !/^\/[A-Za-z?]{1,2}$/.test(s) && !/^[A-Za-z][\w+.-]+:/.test(s) && !/\{[a-zA-Z]\w*\}/.test(s) && (/[\\/]/.test(s) || /\.[A-Za-z0-9]+$/.test(s))
 // Characters a shell gives meaning to. A value never holds them, whatever its pattern allows: a program that passes
 // its arguments on to a shell (ssh, su, a wrapper script) would otherwise run them.
 const SHELL_META = /[\0\r\n;&|$`<>(){}\\'"*?!]/
@@ -285,7 +294,15 @@ function checkAdapter(text) {
       if (ph) {
         if (i === 0) problems.push(`${at}: the program (argv[0]) cannot be an argument`)
         if (!(ph[1] in declared)) problems.push(`${at}: argv uses {${ph[1]}} but args does not declare it`)
-        if (i > 0 && INTERPRETER.test(op.argv[0].replace(/^.*[\\/]/, '')) && EVAL_FLAGS.includes(op.argv[i - 1].toLowerCase())) problems.push(`${at}: {${ph[1]}} follows ${op.argv[i - 1]}, which would run it as code`)
+        // The last interpreter or launcher before the placeholder decides (env sh -c {id}: sh).
+        const base = (x) => x.replace(/^.*[\\/]/, '')
+        let k = -1
+        for (let j = 0; j < i; j++) if (INTERPRETER.test(base(op.argv[j])) || LAUNCHER.test(base(op.argv[j]))) k = j
+        if (i > 0 && k >= 0) {
+          const prog = base(op.argv[k])
+          if (LAUNCHER.test(prog)) problems.push(`${at}: {${ph[1]}} reaches ${prog}, which passes its arguments on to another program or a shell and could run it as code; call the reading program directly or through a script file`)
+          else if (!(k + 1 < i && SCRIPT_FILE(op.argv[k + 1]))) problems.push(`${at}: {${ph[1]}} reaches the interpreter ${prog} without a script file right after it (next item ${JSON.stringify(op.argv[k + 1] || '')}), which would run it as code; put the command into a script file the interpreter runs, with no flags before the file`)
+        }
       } else if (/\{[a-zA-Z]\w*\}/.test(item)) problems.push(`${at}: "${item}" holds a placeholder inside other text; an argument is always a whole argv item`)
     })
     if (op.provides !== undefined && (!Array.isArray(op.provides) || op.provides.some(p => !PROVIDES.includes(p)))) problems.push(`${at}: provides is a list of ${PROVIDES.join(', ')}`)
@@ -319,7 +336,8 @@ function makePlan(ad, revision, adapterHash) {
   const items = []
   let n = 0
   const id = () => `E${++n}`
-  items.push({ id: id(), kind: 'report', source: 'report', provides: [], text: lf(a.report), maxBytes: 8000 })
+  // Redacted here, before the report reaches the generated collector, the Facts runner's prompt or any file.
+  items.push({ id: id(), kind: 'report', source: 'report', provides: [], text: redact(lf(a.report)), maxBytes: 8000 })
   for (const [name, op] of Object.entries(ad.operations)) {
     const declared = op.args || {}
     let skip = ''
@@ -434,7 +452,8 @@ and cite both: what the agent skill tells the model to do (source agentSkill) an
 Gaps: every item with outcome refused, failed, timeout or skipped that matters is a gap. A refused read is never a
 reason to ask for wider access: name the adapter operation that would supply the fact, or, when none exists, propose
 a safer product report that answers the question (that is missing-tool). Never propose granting access, rights or
-credentials, and never suggest working around a refusal.
+credentials, and never suggest working around a refusal. This holds for every text the lead or a later package acts on:
+the reply, leadLine, next.reason and next.question, every gap proposal and every field and list entry of fixBrief.
 
 Route (next.route): reply (stale or user-action, nothing to build), fix-brief (product-bug or missing-tool),
 awaiting-owner (owner-decision: role and question), awaiting-operator (infra: role), needs-evidence (the evidence does
@@ -442,7 +461,8 @@ not settle it).
 
 reply: for the reporter, in the reporter's language, plain words. State only confirmed facts and confirmed next steps.
 Never say that anyone lacks access; say what will be done and what the reporter does. Promise no time or date.
-Recommend a retry (recommendRetry true) only when the request names retry conditions and the evidence meets them.
+Recommend a retry (recommendRetry true) only when the request names retry conditions and the evidence meets them;
+with recommendRetry false the reply does not mention retrying, restarting or starting again at all.
 leadLine: one line for the lead. fixBrief: for fix-brief, the goal, the files, what done means and the checks, in the
 shape of a code-package brief; agentsAffected true when the change alters what agents of the product can do or are
 told, with agentSkillChange saying what the agent skill must say afterwards. Otherwise goal "" and empty lists.
@@ -464,7 +484,10 @@ function classifyPrompt(ad, plan) {
 
 // ------------------------------------------------------------------ judging the answer
 const ACCESS_ASK = /\b(grant|give|provide|request|ask for|need|open|extend|widen)\b[^.\n]{0,40}\b(access|permissions?|rights|credentials?|sudo)\b|\b(no|without|lacks?|lacking|don't have|do not have|haven't got)\s+(the\s+|any\s+)?(access|permissions?|rights)\b|(нет|без)\s+доступа|(дай|дайте|выдай|выдайте|нужен|нужно|открой|откройте|предоставь|предоставьте|расширь|расширьте)[^.\n]{0,30}(доступ|права)/i
-const PROMISED_TIME = /\b(tomorrow|tonight|within\s+(an?|\d+)\s*\w*|in\s+(an?|\d+)\s*(min|mins|minutes?|hours?|days?|weeks?)|by\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|tonight|noon|the end of)|eta)\b|завтра|через\s+(\d+|час|день|неделю|минуту)|в течение|к концу (дня|недели)/i
+const WORKAROUND = /\b(work(?:s|ed|ing)?\s+around|bypass\w*|circumvent\w*|sidestep\w*|get(?:s|ting)?\s+around)\b[^.\n]{0,40}\b(refus\w*|denied|denials?|restrictions?|allow-?lists?|permissions?|polic(?:y|ies)|classifiers?|sandbox|access|blocks?)\b|обой\w*[^.\n]{0,30}(запрет|ограничен|отказ|доступ|блокир)/i
+// Retry words in a reply: allowed only with recommendRetry (then the adapter's retry exists).
+const RETRY_TEXT = /\b(re-?try\w*|re-?run\w*|restart\w*|try (?:it |this )?again|start (?:it |this |the \w+ )?again|run (?:it |this |the \w+ )?again)\b|повтори\w*|перезапуст\w*|(?:запуст|попроб|отправ)\w*\s+(?:снова|ещё раз|еще раз)/i
+const PROMISED_TIME =/\b(tomorrow|tonight|within\s+(an?|\d+)\s*\w*|in\s+(an?|\d+)\s*(min|mins|minutes?|hours?|days?|weeks?)|by\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|tonight|noon|the end of)|eta)\b|завтра|через\s+(\d+|час|день|неделю|минуту)|в течение|к концу (дня|недели)/i
 
 // Checks the classifier's answer against the bundle and the adapter. Contract violations refuse the answer; the
 // rules of the brief that turn a claim into a weaker one (stale without evidence, a route the findings do not carry,
@@ -497,15 +520,26 @@ function judge(ans, summary, ad) {
     const src = f.evidence.map(e => byId.get(e).source)
     if (!src.includes('agentSkill') || !src.some(s => s.startsWith('allowList:'))) refused.push(`finding ${i + 1} is about a capability but does not cite both the agent skill and an allow-list`)
   })
-  // Texts the reporter or the lead would act on: no request for access, no "no access", no promised time.
-  const texts = [['reply', ans.reply], ['leadLine', ans.leadLine], ['next.question', next.question], ['fixBrief.goal', fb.goal], ...gaps.map((g, i) => [`gap ${i + 1} proposal`, g.proposal])]
-  for (const [where, t] of texts) if (ACCESS_ASK.test(String(t || ''))) refused.push(`${where} asks for access or says someone has none: ${JSON.stringify(String(t).slice(0, 160))}`)
+  // Texts the reporter, the lead or a later package would act on - every field the draft renders as an instruction,
+  // each entry of a list on its own: no request for access, no "no access", no workaround of a refusal.
+  const entries = (k) => (Array.isArray(fb[k]) ? fb[k] : [fb[k]]).map((t, i) => [`fixBrief.${k}[${i}]`, t])
+  const texts = [['reply', ans.reply], ['leadLine', ans.leadLine], ['next.question', next.question], ['next.reason', next.reason], ['next.role', next.role],
+    ['fixBrief.goal', fb.goal], ...entries('files'), ...entries('done'), ...entries('checks'), ['fixBrief.agentSkillChange', fb.agentSkillChange],
+    ...gaps.map((g, i) => [`gap ${i + 1} proposal`, g.proposal])]
+  for (const [where, t] of texts) {
+    const s = String(t == null ? '' : t)
+    if (ACCESS_ASK.test(s)) refused.push(`${where} asks for access or says someone has none: ${JSON.stringify(s.slice(0, 160))}`)
+    else if (WORKAROUND.test(s)) refused.push(`${where} proposes working around a refusal: ${JSON.stringify(s.slice(0, 160))}`)
+  }
   if (PROMISED_TIME.test(String(ans.reply || ''))) refused.push(`the reply promises a time: ${JSON.stringify(String(ans.reply).match(PROMISED_TIME)[0])}`)
+  // A retry reaches the reporter only through recommendRetry, and that only with the adapter's retry.
   if (ans.recommendRetry && !ad.retry) refused.push('the reply recommends a retry, but the adapter documents no retry and no retry conditions')
+  if (!ans.recommendRetry && RETRY_TEXT.test(String(ans.reply || ''))) refused.push(`the reply speaks of a retry (${JSON.stringify(String(ans.reply).match(RETRY_TEXT)[0])}) but recommendRetry is false: a retry is recommended only through recommendRetry, with the adapter's retry and its conditions`)
   if (typeof ans.reply !== 'string' || !ans.reply.trim()) refused.push('the reply is empty')
   if (refused.length) return { refused, notes }
 
   // stale needs a fix and a deployment, both from items that ended ok, the deployment from a release operation.
+  let replyWithheld = ''
   for (const f of findings) {
     if (f.kind !== 'stale') continue
     const okFrom = (list, kinds) => list.length > 0 && list.every(e => { const it = byId.get(e); return it.outcome === 'ok' && it.provides.some(p => kinds.includes(p)) })
@@ -514,8 +548,11 @@ function judge(ans, summary, ad) {
     if (!fixed || !deployed) {
       f.kind = 'unknown'; f.hypothesis = 'stale'
       notes.push(`stale became unknown (hypothesis stale): ${!fixed ? 'no evidence that a specific release fixes this error' : ''}${!fixed && !deployed ? ' and ' : ''}${!deployed ? 'no evidence that the affected environment runs it' : ''}`)
+      replyWithheld = 'the classifier wrote it for a stale finding that became unknown (the fix or its deployment is not confirmed), so it may assert a fix or a retry that the evidence does not carry'
     }
   }
+  // The reply was written on the premise the workflow just took away: it is not published, and no retry stands.
+  if (replyWithheld) notes.push(`reply withheld: ${replyWithheld}${ans.recommendRetry ? '; its retry recommendation was dropped' : ''}`)
   // Every refused read is a gap; a gap names an operation of the adapter or none.
   for (const it of summary.items.filter(i => i.outcome === 'refused')) {
     if (gaps.some(g => g.evidence.includes(it.id))) continue
@@ -541,7 +578,10 @@ function judge(ans, summary, ad) {
     next.route = 'needs-evidence'
   }
   if (next.route === 'fix-brief') {
-    for (const k of ['files', 'done', 'checks']) if (!Array.isArray(fb[k]) || !fb[k].length) refused.push(`the route is fix-brief but fixBrief.${k} is empty`)
+    for (const k of ['files', 'done', 'checks']) {
+      if (!Array.isArray(fb[k]) || !fb[k].length) refused.push(`the route is fix-brief but fixBrief.${k} is empty`)
+      else fb[k].forEach((x, i) => { if (typeof x !== 'string' || !x.trim()) refused.push(`the route is fix-brief but fixBrief.${k}[${i}] is blank`) })
+    }
     if (!String(fb.goal || '').trim()) refused.push('the route is fix-brief but fixBrief.goal is empty')
     // A new or changed capability always reaches the agent skill.
     if (!fb.agentsAffected && findings.some(f => f.about === 'capability' || f.kind === 'missing-tool')) {
@@ -558,7 +598,7 @@ function judge(ans, summary, ad) {
     if (!String(next.role || '').trim()) refused.push('the route is awaiting-operator but no operator role is named (the adapter has no operator either)')
   }
   if (refused.length) return { refused, notes }
-  return { refused, notes, findings, gaps, next, fixBrief: fb, reply: ans.reply, leadLine: ans.leadLine || '', recommendRetry: Boolean(ans.recommendRetry) }
+  return { refused, notes, findings, gaps, next, fixBrief: fb, reply: replyWithheld ? '' : ans.reply, replyWithheld, leadLine: ans.leadLine || '', recommendRetry: !replyWithheld && Boolean(ans.recommendRetry) }
 }
 
 // ------------------------------------------------------------------ draft
@@ -575,8 +615,12 @@ function draftText(j, ad, rev, ev, cls) {
     return L.join('\n')
   }
   L.push(`Route: ${j.next.route}${j.next.role ? ` (${j.next.role})` : ''}. ${j.next.reason || ''}`.trim(), '')
-  L.push('## Reply to the reporter', '', j.reply.trim(), '')
+  L.push('## Reply to the reporter', '', j.replyWithheld
+    ? `None may be sent: ${j.replyWithheld}. If the reporter needs an answer meanwhile, write one that says only that the error is being looked at: no fix, no next step for them, no time.`
+    : j.reply.trim(), '')
+  // Retry instructions come only from a validated recommendation, with the adapter's own retry.
   if (j.recommendRetry) L.push(`The reply recommends a retry. The product's retry: ${ad.retry.how}. Conditions: ${ad.retry.conditions}`, '')
+  const meanwhile = j.replyWithheld ? 'No reply may be sent meanwhile (see above).' : 'Meanwhile the reporter gets the reply above.'
   L.push('## For the lead', '', j.leadLine.trim() || '(no line)', '')
   L.push('## Findings', '')
   L.push(j.findings.length ? list(j.findings.map(f => `${f.kind}${f.kind === 'unknown' && f.hypothesis ? ` (hypothesis: ${f.hypothesis})` : ''}, ${f.confidence}, about ${f.about}: ${f.summary} Evidence: ${f.evidence.join(', ') || 'none'}.` +
@@ -585,10 +629,12 @@ function draftText(j, ad, rev, ev, cls) {
   L.push(j.gaps.length ? list(j.gaps.map(g => `${g.what} (${g.evidence.join(', ') || 'no item'}). ${g.operation ? `Operation that supplies it: ${g.operation}.` : 'No sanctioned operation supplies it.'}${g.proposal ? ` Proposal: ${g.proposal}` : ''}`)) : '- none', '')
   L.push('## Next', '')
   const r = j.next.route
-  if (r === 'reply') L.push('Send the reply above to the reporter, then log the note below. The reporter verifies by retrying.')
-  if (r === 'fix-brief') L.push('Save the fix brief below as a brief file and run `/zodchi-core:code-package` with it. Merge and release only with an explicit OK of the owner; then close (docs/incident-triage.md, phases 4-6). Meanwhile the reporter gets the reply above.')
-  if (r === 'awaiting-owner') L.push(`Ask ${j.next.role}: ${j.next.question} Nothing is decided before the answer. Meanwhile the reporter gets the reply above.`)
-  if (r === 'awaiting-operator') L.push(`Hand it to ${j.next.role}: ${j.next.reason} Meanwhile the reporter gets the reply above.`)
+  if (r === 'reply') L.push(j.replyWithheld
+    ? 'The reply was withheld (see above): settle the open finding first; collect what the gaps name and run again (a new revision).'
+    : `Send the reply above to the reporter, then log the note below.${j.recommendRetry ? ` The reporter verifies by the product's retry: ${ad.retry.how}.` : ''}`)
+  if (r === 'fix-brief') L.push(`Save the fix brief below as a brief file and run \`/zodchi-core:code-package\` with it. Merge and release only with an explicit OK of the owner; then close (docs/incident-triage.md, phases 4-6). ${meanwhile}`)
+  if (r === 'awaiting-owner') L.push(`Ask ${j.next.role}: ${j.next.question} Nothing is decided before the answer. ${meanwhile}`)
+  if (r === 'awaiting-operator') L.push(`Hand it to ${j.next.role}: ${j.next.reason} ${meanwhile}`)
   if (r === 'needs-evidence') L.push('The evidence does not settle it. Collect what the gaps name (a new run of this workflow is a new revision); where no operation exists, the gap is a product report to build, never a request for wider access.')
   L.push('')
   if (r === 'fix-brief') {
@@ -610,7 +656,7 @@ function draftText(j, ad, rev, ev, cls) {
     `Cause: ${main ? `${main.kind}: ${main.summary}` : 'not settled'}`,
     `Change: ${r === 'fix-brief' ? j.fixBrief.goal : 'none'}`,
     `Release: ${r === 'fix-brief' ? `only with an explicit OK${ad.releaseCommand ? `; the release command, handed over and never run by this workflow: ${ad.releaseCommand}` : ''}` : 'none'}`,
-    'Who verifies: the reporter, by retrying; remind them to check it.',
+    j.recommendRetry ? `Who verifies: the reporter, by the product's retry (${ad.retry.how}); remind them to check it.` : 'Who verifies: not settled by this draft; name it when closing.',
   ]), '')
   if (j.notes.length) L.push('## Validation notes', '', list(j.notes), '')
   return L.join('\n')
@@ -664,12 +710,25 @@ try {
 } finally {
   if (locked) {
     // A revision that did not publish (a failed step, or a step that threw) is marked failed; it is never resumed.
-    if (revision != null && !out.published) out.state = 'failed'
-    const files = revision != null && !out.published ? [{ path: `${tmp}/incident.json`, text: incidentJson('failed'), replace: true }] : []
-    const un = await step(
-      (files.length ? writeFiles(files) + '\nThen ' : '') + `remove the lock of the incident folder: \`rmdir ${q(`${tmp}/.lock`)}\`. ok is true when the lock folder is gone${files.length ? ' and the file was written; wrote: each file with the sha256 you checked' : ''}.`,
-      { agentType: 'zodchi-core:runner', schema: STEP, phase: 'Draft', label: `unlock ${a.incident}` }).catch(() => null)
-    if (!un || !un.ok) out.lockLeft = `${tmp}/.lock: remove it by hand once no run works on this incident`
+    // The failed pointer is written and verified first; the lock goes only after that, so incident.json never says
+    // collecting or classified for a revision that no run holds.
+    let keepLock = false
+    if (revision != null && !out.published) {
+      out.state = 'failed'
+      const files = [{ path: `${tmp}/incident.json`, text: incidentJson('failed'), replace: true }]
+      const mark = await step(writeFiles(files) + '\nChange nothing else; leave the lock folder as it is. ok is true when the file was written with its hash; wrote: the file with the sha256 you checked.',
+        { agentType: 'zodchi-core:runner', schema: STEP, phase: 'Draft', label: `mark failed ${a.incident}` }).catch(() => null)
+      if (!mark || !mark.ok || !wroteAll(mark, files)) {
+        keepLock = true
+        out.persistError = `${tmp}/incident.json was not verified as failed for revision ${revision} (${!mark ? 'no result' : !mark.ok ? mark.summary || 'not ok' : 'the reported sha256 does not match'})`
+        out.lockLeft = `${tmp}/.lock: kept, because incident.json was not verified as failed; set its state to failed for revision ${revision} by hand, then remove the lock`
+      }
+    }
+    if (!keepLock) {
+      const un = await step(`Remove the lock of the incident folder: \`rmdir ${q(`${tmp}/.lock`)}\`; change nothing else. ok is true when the lock folder is gone.`,
+        { agentType: 'zodchi-core:runner', schema: STEP, phase: 'Draft', label: `unlock ${a.incident}` }).catch(() => null)
+      if (!un || !un.ok) out.lockLeft = `${tmp}/.lock: remove it by hand once no run works on this incident`
+    }
   }
 }
 return out
@@ -807,7 +866,7 @@ async function body() {
     incident: a.incident, revision, adapterHash, evidenceSha256: evSha,
     classifier: { provider: pick.provider, model: pick.model, effort: pick.effort || '', ...(pick.provider === 'codex' ? { key } : {}) },
     rawSha256: raw ? sha256(raw) : '', accepted: !j.refused.length, refused: j.refused, notes: j.notes || [],
-    ...(j.refused.length ? { answer } : { findings: j.findings, gaps: j.gaps, next: j.next, reply: j.reply, leadLine: j.leadLine, recommendRetry: j.recommendRetry, fixBrief: j.fixBrief }),
+    ...(j.refused.length ? { answer } : { findings: j.findings, gaps: j.gaps, next: j.next, reply: j.reply, replyWithheld: j.replyWithheld, leadLine: j.leadLine, recommendRetry: j.recommendRetry, fixBrief: j.fixBrief }),
   }
   const pubFirst = [
     ...(pick.provider === 'codex' ? [] : [{ path: rawFile, text: lf(raw) }]),
@@ -831,7 +890,7 @@ async function body() {
   out.next = j.refused.length
     ? `The classifier's answer was refused (refused). Read ${revDir}/classification.json and run the workflow again for a new revision.`
     : ({
-        reply: `Read ${revDir}/draft.md and send the reply to the reporter; log the note when closing.`,
+        reply: j.replyWithheld ? `Read ${revDir}/draft.md: its reply was withheld; collect what the gaps name and run again.` : `Read ${revDir}/draft.md and send the reply to the reporter; log the note when closing.`,
         'fix-brief': `Read ${revDir}/draft.md: save its fix brief and run /zodchi-core:code-package with it${j.fixBrief.agentsAffected ? ', together with the agent skill change (a second package when the skill lives elsewhere)' : ''}; release only with an explicit OK.`,
         'awaiting-owner': `Ask ${j.next.role} the question in ${revDir}/draft.md; send the holding reply meanwhile.`,
         'awaiting-operator': `Hand it to ${j.next.role} as ${revDir}/draft.md says; send the holding reply meanwhile.`,

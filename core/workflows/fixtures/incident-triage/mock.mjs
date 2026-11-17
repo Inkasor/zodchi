@@ -94,6 +94,13 @@ function fakeAgent(ctx) {
       ctx.classifier = `claude/${opts.model}`
       return JSON.parse(text)
     }
+    if (label.startsWith('mark failed ')) {
+      // Fault injection: a runner that says ok but left the file out, or reports a hash that is not the file's.
+      if (ctx.faultCleanup === 'omit') return { ok: true, summary: 'written', wrote: [] }
+      const wrote = writeBlocks(prompt)
+      if (ctx.faultCleanup === 'badhash') return { ok: true, summary: 'written', wrote: wrote.map(w => ({ ...w, sha256: '0'.repeat(64) })) }
+      return { ok: true, summary: 'written', wrote }
+    }
     if (label.startsWith('publish ') || label.startsWith('unlock ')) {
       const wrote = writeBlocks(prompt)
       if (label.startsWith('unlock ')) { try { fs.rmdirSync(`${tmp}/.lock`) } catch { return { ok: false, summary: 'no lock', wrote } } }
@@ -108,7 +115,7 @@ async function runCase(name, overrides = {}) {
   const c = JSON.parse(fs.readFileSync(path.join(caseDir, 'case.json'), 'utf8'))
   const adapter = slash(path.join(HERE, 'cases', c.adapterFrom || name, 'adapter.json'))
   const tmp = overrides.tmp || slash(fs.mkdtempSync(path.join(os.tmpdir(), `incident-triage-${name}-`)))
-  const ctx = { tmp, adapter, caseDir, prompts: [], failClassify: Boolean(overrides.failClassify) }
+  const ctx = { tmp, adapter, caseDir, prompts: [], failClassify: Boolean(overrides.failClassify), faultCleanup: overrides.faultCleanup || '' }
   const args = { incident: `case-${name}`, tmp, adapter, report: overrides.report ?? c.report, params: c.params, repo: tmp, ...(c.models ? { models: c.models } : {}) }
   const logs = []
   const result = await runWorkflow(args, fakeAgent(ctx), () => {}, (m) => logs.push(m), null, null, { total: null })
@@ -116,6 +123,7 @@ async function runCase(name, overrides = {}) {
 }
 
 const readIf = (f) => fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : ''
+const filesUnder = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap(d => d.isDirectory() ? filesUnder(path.join(dir, d.name)) : [path.join(dir, d.name)])
 
 // The expectations of one case; returns the list of problems.
 function verify(name, run) {
@@ -140,9 +148,18 @@ function verify(name, run) {
   for (const [id, want] of Object.entries(e.outcomes || {})) if (item(id).outcome !== want) bad.push(`${id} (${item(id).source}) ended ${item(id).outcome}, expected ${want}`)
   for (const [id, want] of Object.entries(e.reasonIncludes || {})) if (!String(item(id).reason || '').includes(want)) bad.push(`${id}: reason ${JSON.stringify(item(id).reason)} lacks ${JSON.stringify(want)}`)
   for (const s of e.refusedIncludes || []) if (!(r.refused || []).some(x => x.includes(s))) bad.push(`refused lacks ${JSON.stringify(s)}: ${JSON.stringify(r.refused)}`)
-  for (const s of e.notesInclude || []) if (!(r.notes || []).some(x => x.includes(s))) bad.push(`notes lack ${JSON.stringify(s)}: ${JSON.stringify(r.notes)}`)
+  for (const s of e.refusedExcludes || []) if ((r.refused || []).some(x => x.includes(s))) bad.push(`refused holds ${JSON.stringify(s)}: ${JSON.stringify(r.refused)}`)
+  for (const s of e.notesInclude || [])if (!(r.notes || []).some(x => x.includes(s))) bad.push(`notes lack ${JSON.stringify(s)}: ${JSON.stringify(r.notes)}`)
   for (const s of e.draftIncludes || []) if (!draft.includes(s)) bad.push(`the draft lacks ${JSON.stringify(s)}`)
   for (const s of e.evidenceExcludes || []) if (evidenceText.includes(s)) bad.push(`the evidence bundle holds ${JSON.stringify(s)} (not redacted)`)
+  // A secret reaches no generated file (collector, prompt, classification, draft, progress) and no step's prompt.
+  for (const s of e.secretsExclude || []) {
+    for (const f of filesUnder(tmp)) if (fs.readFileSync(f, 'utf8').includes(s)) bad.push(`${slash(path.relative(tmp, f))} holds ${JSON.stringify(s)}`)
+    for (const p of ctx.prompts) if (p.prompt.includes(s)) bad.push(`the prompt of the step "${p.label}" holds ${JSON.stringify(s)}`)
+    if (JSON.stringify(r).includes(s)) bad.push(`the workflow's result holds ${JSON.stringify(s)}`)
+  }
+  for (const s of e.classificationExcludes || []) if (cls && JSON.stringify(cls).includes(s)) bad.push(`classification.json holds ${JSON.stringify(s)}`)
+  for (const s of e.draftExcludes || [])if (draft.toLowerCase().includes(s.toLowerCase())) bad.push(`the draft holds ${JSON.stringify(s)}`)
   for (const id of e.gapFor || []) if (!cls || !(cls.gaps || []).some(g => g.evidence.includes(id))) bad.push(`no gap covers the item ${id}`)
   if (e.draftExcludesAccess && /\b(grant|give|request|ask for)\b[^.\n]{0,40}\baccess\b|\bno access\b/i.test(draft)) bad.push('the draft asks for access')
   if (e.citesBothSources) {
@@ -212,6 +229,23 @@ async function infra() {
   return bad
 }
 
+// A failed revision whose failed pointer is not verified (the runner left the file out, or reported another hash):
+// the lock stays, the result says so, and no unlock step runs.
+async function cleanupFaults() {
+  const bad = []
+  for (const fault of ['omit', 'badhash']) {
+    const run = await runCase('stale', { failClassify: true, faultCleanup: fault })
+    const r = run.result
+    if (!fs.existsSync(`${run.tmp}/.lock`)) bad.push(`${fault}: the lock was removed although incident.json was not verified as failed`)
+    if (run.ctx.prompts.some(p => p.label.startsWith('unlock '))) bad.push(`${fault}: an unlock step ran`)
+    if (!/not verified as failed/.test(r.persistError || '')) bad.push(`${fault}: persistError ${JSON.stringify(r.persistError)}`)
+    if (!/kept/.test(r.lockLeft || '')) bad.push(`${fault}: lockLeft ${JSON.stringify(r.lockLeft)}`)
+    if (r.state !== 'failed') bad.push(`${fault}: state ${r.state}`)
+    fs.rmSync(run.tmp, { recursive: true, force: true })
+  }
+  return bad
+}
+
 const wanted = process.argv.slice(2)
 const names = fs.readdirSync(path.join(HERE, 'cases')).filter(n => fs.existsSync(path.join(HERE, 'cases', n, 'case.json'))).filter(n => !wanted.length || wanted.includes(n))
 let failed = 0
@@ -233,6 +267,8 @@ if (!wanted.length) {
   if (bad.length) { failed++; console.log(`FAIL revisions:\n  - ${bad.join('\n  - ')}`) } else console.log('PASS revisions: a second run makes rev-2 and keeps rev-1; a held lock refuses a run')
   try { bad = await infra() } catch (e) { bad = [`threw: ${e.stack || e.message}`] }
   if (bad.length) { failed++; console.log(`FAIL infra:\n  - ${bad.join('\n  - ')}`) } else console.log('PASS infra: a gateway failure marks the revision failed, drafts nothing and releases the lock')
+  try { bad = await cleanupFaults() } catch (e) { bad = [`threw: ${e.stack || e.message}`] }
+  if (bad.length) { failed++; console.log(`FAIL cleanup-faults:\n  - ${bad.join('\n  - ')}`) } else console.log('PASS cleanup-faults: a failed pointer that is not verified (omitted or wrong hash) keeps the lock and says so')
 }
 console.log(failed ? `\n${failed} failed` : '\nall passed')
 process.exit(failed ? 1 : 0)

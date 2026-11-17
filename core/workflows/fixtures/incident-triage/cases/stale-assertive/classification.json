@@ -1,0 +1,39 @@
+{
+  "findings": [
+    {
+      "kind": "stale",
+      "hypothesis": "",
+      "about": "code",
+      "confidence": "high",
+      "summary": "ERR_EXPORT_COLUMNS is fixed in 2.4.1, which production runs.",
+      "evidence": [
+        "E2",
+        "E5"
+      ],
+      "fixedBy": [
+        "E5"
+      ],
+      "deployedIn": [
+        "E3"
+      ]
+    }
+  ],
+  "gaps": [],
+  "next": {
+    "route": "reply",
+    "role": "",
+    "question": "",
+    "reason": "Fixed and deployed."
+  },
+  "reply": "The update that fixed this error is installed. Press Retry on the job page now.",
+  "leadLine": "4711: stale, fixed in 2.4.1; reporter retries.",
+  "recommendRetry": true,
+  "fixBrief": {
+    "goal": "",
+    "files": [],
+    "done": [],
+    "checks": [],
+    "agentsAffected": false,
+    "agentSkillChange": ""
+  }
+}

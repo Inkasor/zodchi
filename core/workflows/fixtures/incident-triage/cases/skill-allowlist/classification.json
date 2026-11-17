@@ -23,7 +23,7 @@
   ],
   "gaps": [],
   "next": { "route": "fix-brief", "role": "", "question": "", "reason": "The skill and the allow-list disagree." },
-  "reply": "Your import 5120 is still waiting. The assistant was told to restart it in a way the product does not allow for it; we are correcting the assistant's instructions. Until then the import stays as it is, and we will tell you when it can be restarted.",
+  "reply": "Your import 5120 is still waiting. The assistant was told to use a step that the product does not allow for it; we are correcting the assistant's instructions. Until then the import stays as it is, and we will write to you when there is news.",
   "leadLine": "5120: skill says `catalog job restart`, allow-list refuses it; fix the skill (or allow restart, owner's call).",
   "recommendRetry": false,
   "fixBrief": {
