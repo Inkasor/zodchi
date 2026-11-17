@@ -339,29 +339,62 @@ Submit the earlier request again under a new key with --keep-thread, or make a n
         }
         return Ok((settle(&dir, Some(found))?.unwrap_or(Value::Null), false));
     }
-    fs::write(dir.join("request.json"), pretty(&request))?;
-    for (index, bytes) in req.images.iter().enumerate() {
-        let ext = inputs[index]["ext"].as_str().unwrap();
-        fs::write(dir.join(format!("in-{index}.{ext}")), bytes)?;
-    }
-    let timeout_ms = role.get("timeoutMin").and_then(Value::as_f64).unwrap_or(30.0) * 60_000.0;
-    let job = json!({
-        "key": req.key, "role": role["name"], "kind": kind, "mode": mode, "model": role["model"], "effort": role["effort"],
-        "status": "queued", "requestSha256": request_sha, "timeoutMs": crate::role::js_number(timeout_ms),
-        "writes": work && role.get("sandbox").and_then(Value::as_str) == Some("workspace-write"),
-        "dir": dir.display().to_string(), "root": cfg.root.as_ref().map(|r| r.display().to_string()), "workerPid": null,
-        "codexSpawnAt": null, "codexPid": null, "codexStart": null, "account": null, "accountsSkipped": [],
-        "error": null, "resetsAt": null, "tokens": null, "result": null, "actions": null,
-        "credits": { "allowed": req.credits, "limitUsedUp": null, "balanceBefore": null, "balanceAfter": null }, "paid": req.paid,
-        "keepThread": keep, "threadId": null, "resumedFrom": resumed.get("key").cloned().unwrap_or(Value::Null), "servers": null,
-        "createdAt": iso(), "startedAt": null, "turnRequestedAt": null, "turnStartedAt": null, "finishedAt": null,
-    });
-    write_job(&dir, &job)?;
+    // The folder is this call's from here until job.json stands: if anything fails before that, the folder goes, so
+    // the key stays free and a retry is a fresh submit (a folder without a job would hold the key for good).
+    let made = (|| -> Result<Value> {
+        fail_point("request")?;
+        fs::write(dir.join("request.json"), pretty(&request))?;
+        for (index, bytes) in req.images.iter().enumerate() {
+            let ext = inputs[index]["ext"].as_str().unwrap();
+            fail_point("image")?;
+            fs::write(dir.join(format!("in-{index}.{ext}")), bytes)?;
+        }
+        let timeout_ms = role.get("timeoutMin").and_then(Value::as_f64).unwrap_or(30.0) * 60_000.0;
+        let job = json!({
+            "key": req.key, "role": role["name"], "kind": kind, "mode": mode, "model": role["model"], "effort": role["effort"],
+            "status": "queued", "requestSha256": request_sha, "timeoutMs": crate::role::js_number(timeout_ms),
+            "writes": work && role.get("sandbox").and_then(Value::as_str) == Some("workspace-write"),
+            "dir": dir.display().to_string(), "root": cfg.root.as_ref().map(|r| r.display().to_string()), "workerPid": null,
+            "codexSpawnAt": null, "codexPid": null, "codexStart": null, "account": null, "accountsSkipped": [],
+            "error": null, "resetsAt": null, "tokens": null, "result": null, "actions": null,
+            "credits": { "allowed": req.credits, "limitUsedUp": null, "balanceBefore": null, "balanceAfter": null }, "paid": req.paid,
+            "keepThread": keep, "threadId": null, "resumedFrom": resumed.get("key").cloned().unwrap_or(Value::Null), "servers": null,
+            "createdAt": iso(), "startedAt": null, "turnRequestedAt": null, "turnStartedAt": null, "finishedAt": null,
+        });
+        fail_point("job")?;
+        write_job(&dir, &job)
+    })();
+    let job = match made {
+        Ok(job) => job,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&dir);
+            return Err(error);
+        }
+    };
     sweep(cfg);
     if spawn_worker {
         spawn_detached_worker(cfg, &req.key, &kind)?;
     }
     Ok((read_job(&dir).unwrap_or(job), true))
+}
+
+/// A step of `submit` that a test makes fail; nothing outside tests.
+#[cfg(not(test))]
+fn fail_point(_step: &str) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_AT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn fail_point(step: &str) -> Result<()> {
+    if FAIL_AT.with(|f| f.get()) == Some(step) {
+        return fail(format!("test: the {step} write fails"));
+    }
+    Ok(())
 }
 
 /// The worker outlives the command that submitted the job, so a caller's timeout never interrupts a model call.
@@ -935,4 +968,36 @@ pub fn check(cfg: &Config, role: &Value) -> Result<Value> {
     };
     server.stop();
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A failure after the job folder is made leaves no folder behind: the same key then submits afresh.
+    #[test]
+    fn a_failed_submit_leaves_no_half_made_job() {
+        let data = std::env::temp_dir().join(format!("zodchi-core-submit-{}-{:08x}", std::process::id(), rand::random::<u32>()));
+        let cfg = Config::tenant(&data, "tester").unwrap();
+        // A PNG signature and an IHDR header: all the gateway checks of an image.
+        let png = hex::decode("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489").unwrap();
+        let role = json!({ "name": "ask", "mode": "expert", "model": "fake-model", "effort": "low" });
+        for step in ["request", "image", "job"] {
+            let key = format!("half-{step}");
+            let req = Request { key: key.clone(), role: role.clone(), prompt: "hello".into(), images: vec![png.clone()], credits: false,
+                paid: false, resume: None, keep_thread: None, fingerprint: None };
+            FAIL_AT.with(|f| f.set(Some(step)));
+            let failed = submit(&cfg, &req, false);
+            FAIL_AT.with(|f| f.set(None));
+            let error = failed.err().unwrap_or_else(|| panic!("{step}: the submit did not fail")).0;
+            assert!(error.contains(step), "{error}");
+            let dir = job_dir(&cfg, &key).unwrap();
+            assert!(!dir.exists(), "{step}: the half-made folder of the job stays");
+            let (job, created) = submit(&cfg, &req, false).unwrap_or_else(|e| panic!("{step}: the retry failed: {}", e.0));
+            assert!(created, "{step}: the retry found an old job");
+            assert_eq!(job["status"], json!("queued"));
+            assert!(dir.join("job.json").is_file() && dir.join("request.json").is_file() && dir.join("in-0.png").is_file());
+        }
+        let _ = fs::remove_dir_all(&data);
+    }
 }

@@ -7,6 +7,7 @@
 //                         answer comes after 1.5 s and no completion follows), else the completion after the answer
 //   fake-slow-cancel      present = account/login/cancel is answered after 1 s
 //   fake-slow-exit        present = when its stdin closes, it writes fake-closing and exits only 1.5 s later
+//   fake-account-error    present = account/read fails with an error that names a file in CODEX_HOME
 // It writes fake-login-started when account/login/start arrives and fake-login-cancelled (the loginId) on a cancel,
 // and appends its pid to fake-exited when it exits after its stdin closed.
 // A prompt with SLOW takes four seconds; one with FAIL ends the turn as failed.
@@ -44,6 +45,9 @@ lines.on("line", (line) => {
   switch (msg.method) {
     case "initialize": return reply({});
     case "account/read":
+      if (fs.existsSync(path.join(home, "fake-account-error"))) {
+        return send({ id: msg.id, error: { code: -32000, message: "cannot read " + path.join(home, "auth.json") + ": permission denied" } });
+      }
       return reply({ account: fs.existsSync(authFile) ? { type: "chatgpt", email: "tester" + "@" + "example.org", planType: "plus" } : null });
     case "account/rateLimits/read":
       return reply({ ordinaryUsageAllowed: true, rateLimits: { primary: { usedPercent: 1 }, credits: { hasCredits: false, balance: "0" } } });

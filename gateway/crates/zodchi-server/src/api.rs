@@ -5,6 +5,7 @@
 use crate::auth::{Authenticator, Identity, Refusal};
 use crate::lock::PidLock;
 use crate::login::Logins;
+use crate::public::PathFilter;
 use crate::{registry, signal};
 use base64::Engine;
 use serde_json::{json, Value};
@@ -46,11 +47,19 @@ pub struct Reply {
     pub status: u16,
     pub content_type: &'static str,
     pub body: Vec<u8>,
+    /// The JSON pointer of the model's own answer inside a JSON body (`""`: the whole body), which the path filter
+    /// leaves as the model gave it. Everything else of a JSON body is the server's and is filtered.
+    pub kept: Option<&'static str>,
 }
 
 impl Reply {
     pub fn json(status: u16, value: &Value) -> Reply {
-        Reply { status, content_type: "application/json", body: (pretty(value) + "\n").into_bytes() }
+        Reply { status, content_type: "application/json", body: (pretty(value) + "\n").into_bytes(), kept: None }
+    }
+    /// A JSON answer that holds the model's own answer at `pointer`.
+    pub fn keeping(mut self, pointer: &'static str) -> Reply {
+        self.kept = Some(pointer);
+        self
     }
     pub fn error(status: u16, message: impl Into<String>) -> Reply {
         Reply::json(status, &json!({ "error": message.into() }))
@@ -72,6 +81,8 @@ pub struct App {
     stopping: AtomicBool,
     max_user_jobs: usize,
     max_jobs: usize,
+    /// Every JSON answer passes it: no answer names a server path.
+    filter: PathFilter,
 }
 
 /// A place among the long polls, given back when dropped.
@@ -82,6 +93,9 @@ impl Drop for Poll<'_> {
     }
 }
 
+/// Where the model's own answer stands in an answer that shows a job.
+const JOB_RESULT: &str = "/job/result";
+
 /// What a client sees of a job: everything but the server's own paths.
 fn shown(job: &Value) -> Value {
     let mut job = job.clone();
@@ -90,23 +104,6 @@ fn shown(job: &Value) -> Value {
         map.shift_remove("root");
     }
     job
-}
-
-/// Strings of `value` with every form of the data folder's path replaced by `<data>`; `hit` tells whether any was.
-fn scrub(value: &mut Value, forms: &[String], hit: &mut bool) {
-    match value {
-        Value::String(text) => {
-            for form in forms.iter().filter(|f| !f.is_empty()) {
-                if text.contains(form.as_str()) {
-                    *text = text.replace(form.as_str(), "<data>");
-                    *hit = true;
-                }
-            }
-        }
-        Value::Array(items) => items.iter_mut().for_each(|v| scrub(v, forms, hit)),
-        Value::Object(map) => map.values_mut().for_each(|v| scrub(v, forms, hit)),
-        _ => {}
-    }
 }
 
 /// A 500 whose `detail` may name server paths: the detail goes to the server's log, the client gets `public`.
@@ -237,7 +234,16 @@ fn query_value<'a>(query: &'a str, name: &str) -> Option<&'a str> {
 impl App {
     pub fn new(data: &Path, auth: Box<dyn Authenticator>, opts: &Options) -> Result<App> {
         let data = std::path::absolute(data)?;
+        // The known roots of server paths: the data folder (users, jobs, Codex homes), the user's home, the zodchi
+        // home and the role folders, the Codex program's folder, the temp folder and this program's folder. Any other
+        // absolute path is caught by the filter's general rule.
+        let probe = Config::tenant(&data, "server")?;
+        let mut roots = vec![data.clone(), zodchi_core::config::user_home(), probe.home.clone(), probe.roles_dir.clone(), std::env::temp_dir()];
+        roots.extend(probe.codex_bin.parent().map(Path::to_path_buf));
+        roots.extend(std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)));
+        let roots: Vec<PathBuf> = roots.into_iter().filter_map(|r| std::path::absolute(r).ok()).collect();
         Ok(App {
+            filter: PathFilter::new(&roots),
             logins: Logins::new(&data),
             data,
             auth,
@@ -259,22 +265,26 @@ impl App {
         self.without_paths(self.route(method, url, headers, body))
     }
 
-    /// The last guard of the output contract: an error answer never shows where the data folder is. One that names
-    /// it is logged in full, and the client gets it with the folder's path replaced by `<data>`.
+    /// The one guard of the output contract, for answers of every status: no JSON body shows a server path (the
+    /// data folder, users' folders, Codex homes, role files, the user's home, any absolute path). Job errors, account
+    /// and sign-in errors and role errors all pass here. An answer that named one is logged in full, and the client
+    /// gets it with each path replaced by `<server path>`. Only the model's own answer (`Reply::kept`) stays as it is.
     fn without_paths(&self, reply: Reply) -> Reply {
-        if reply.status < 400 || reply.content_type != "application/json" {
+        if reply.content_type != "application/json" || reply.kept == Some("") {
             return reply;
         }
-        let root = self.data.display().to_string();
-        let forms = [root.clone(), root.replace('\\', "/"), root.replace('/', "\\")];
         let mut value = reply.json_of();
-        let mut hit = false;
-        scrub(&mut value, &forms, &mut hit);
-        if !hit {
+        let model = reply.kept.and_then(|pointer| value.pointer_mut(pointer)).map(std::mem::take);
+        if !self.filter.clean_value(&mut value) {
             return reply;
         }
-        eprintln!("zodchi-server: an answer named the data folder: {}", String::from_utf8_lossy(&reply.body).trim_end());
-        Reply::json(reply.status, &value)
+        eprintln!("zodchi-server: an answer named a server path: {}", String::from_utf8_lossy(&reply.body).trim_end());
+        if let (Some(pointer), Some(model)) = (reply.kept, model) {
+            if let Some(slot) = value.pointer_mut(pointer) {
+                *slot = model;
+            }
+        }
+        Reply { kept: reply.kept, ..Reply::json(reply.status, &value) }
     }
 
     fn route(&self, method: &str, url: &str, headers: &[(String, String)], body: &mut dyn Read) -> Reply {
@@ -417,7 +427,7 @@ impl App {
                     return Reply::error(409, format!("Key {} already belongs to a different request. A new request needs a new key.", req.key));
                 }
                 return match job::job(&cfg, &req.key) {
-                    Ok(current) => Reply::json(200, &json!({ "job": shown(&current), "created": false })),
+                    Ok(current) => Reply::json(200, &json!({ "job": shown(&current), "created": false })).keeping(JOB_RESULT),
                     Err(e) => Reply::error(500, e.0),
                 };
             }
@@ -464,7 +474,7 @@ impl App {
                 eprintln!("zodchi-server: no worker for job {} of {}: {e}", req.key, who.id);
             }
         }
-        Reply::json(if is_new { 201 } else { 200 }, &json!({ "job": shown(&current), "created": is_new }))
+        Reply::json(if is_new { 201 } else { 200 }, &json!({ "job": shown(&current), "created": is_new })).keeping(JOB_RESULT)
     }
 
     fn spawn_worker(&self, user: &str, key: &str) -> Result<()> {
@@ -520,7 +530,7 @@ impl App {
                 }
             }
         }
-        Reply::json(200, &json!({ "job": shown(&current) }))
+        Reply::json(200, &json!({ "job": shown(&current) })).keeping(JOB_RESULT)
     }
 
     /// A place among the long polls, or None when half of the threads already wait.
@@ -562,7 +572,7 @@ impl App {
             let Some(file) = file.filter(|f| is_output_file(f)) else { return Reply::error(404, format!("Job {key} has no image {index}.")) };
             let dir = cfg.jobs_dir.as_ref().expect("a tenant has a job root").join(key);
             return match fs::read(dir.join(file)) {
-                Ok(bytes) => Reply { status: 200, content_type: content_type(file), body: bytes },
+                Ok(bytes) => Reply { status: 200, content_type: content_type(file), body: bytes, kept: Some("") },
                 Err(e) => Reply::error(500, format!("The image of job {key} cannot be read: {e}")),
             };
         }
@@ -571,10 +581,10 @@ impl App {
         }
         let data = result.get("data").cloned().unwrap_or(Value::Null);
         if !data.is_null() {
-            return Reply::json(200, &data);
+            return Reply::json(200, &data).keeping("");
         }
         let text = result.get("text").and_then(Value::as_str).unwrap_or("").to_string();
-        Reply { status: 200, content_type: "text/plain; charset=utf-8", body: text.into_bytes() }
+        Reply { status: 200, content_type: "text/plain; charset=utf-8", body: text.into_bytes(), kept: Some("") }
     }
 }
 

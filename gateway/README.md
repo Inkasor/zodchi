@@ -100,9 +100,12 @@ no async runtime.
 
 ### API
 
-JSON in and out. Every route except `/health` needs authentication; another user's job is 404, never 403. An
-answer never shows a path of the server: when the registry or the job folders cannot be read, the client gets the
-error without paths, and the details go to the server's standard error.
+JSON in and out. Every route except `/health` needs authentication; another user's job is 404, never 403. No
+answer of any status shows a path of the server: every JSON answer passes one filter that replaces each path under
+the data folder (users, jobs, Codex homes), the user's home, the role folders and any other absolute path with
+`<server path>` — job errors, account and sign-in errors and role errors included. The full answer goes to the
+server's standard error. Only the model's own answer (the job's `result`, the result routes) is left as the model gave
+it.
 
 | Route | Answer |
 |---|---|
