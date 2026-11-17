@@ -82,8 +82,22 @@ This installs `zodchi-core` for you in every project, builds the gateway
   only in the projects you name, for you alone (it goes into the project's
   `.claude/settings.local.json`, which is not committed). `--domains` without
   `--project` turns a domain on everywhere.
-- Plugins are read from your clone, so `git pull` updates them in every
-  project at once; rerun the installer after a pull to rebuild the gateway.
+- Plugins are read from a copy, not from your clone. The installer copies the
+  plugin files into `~/.zodchi/plugins/<commit>/` and registers that folder
+  as the marketplace, so switching a branch or editing files in the clone
+  changes nothing for the Claude Code sessions on your machine. It refuses to
+  copy from a branch other than the default one, or from a tree with
+  uncommitted changes to tracked files (`--force` copies anyway, into
+  `<commit>-dirty`). After a `git pull`, rerun the installer: it makes a new
+  copy, points the marketplace at it, updates the plugins and rebuilds the
+  gateway. The previous copy stays for a session that still uses it, and
+  copies older than the last two are removed. An install made by an earlier
+  version, which read the clone itself, is moved to a copy on the next run.
+- `--dev` is for working on zodchi itself: the clone is the marketplace, as
+  before. Every Claude Code session on the machine that starts or reloads
+  then reads the clone's working tree as it is, including a branch that is
+  half done, so use it only while you develop zodchi, and rerun without
+  `--dev` afterwards to go back to a copy.
 - Workflows run as `/zodchi-core:code-package`, `/zodchi-gamedev-unity:asset-round`
   and so on, and agents are named `zodchi-core:runner` and the like, so they
   never clash with a project's own.
@@ -94,7 +108,8 @@ This installs `zodchi-core` for you in every project, builds the gateway
   changed. `~/.zodchi/models.json` is yours after the first install: a newer
   table is written next to it as `models.json.new`.
 - `--dry-run` shows what would change. `--uninstall` removes what the
-  installer put there and leaves your changes in place.
+  installer put there (the plugin copies and the marketplace registration
+  included) and leaves your changes in place.
 
 Then run a workflow from Claude Code, for example `/zodchi-core:code-package`,
 or ask Claude to run it with your arguments. Each workflow's header lists its
