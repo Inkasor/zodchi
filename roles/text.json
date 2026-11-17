@@ -1,0 +1,7 @@
+{
+  "description": "One text for the project or for its owner, written from the canon inside the request.",
+  "mode": "expert",
+  "model": "gpt-6.1-terra",
+  "effort": "medium",
+  "frame": "text.md"
+}

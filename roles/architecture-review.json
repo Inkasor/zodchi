@@ -1,0 +1,8 @@
+{
+  "description": "Independent review of a design: a plan, or a change that moves module boundaries, contracts, data flow, storage or authority.",
+  "mode": "expert",
+  "model": "gpt-6-astra",
+  "effort": "high",
+  "frame": "architecture-review.md",
+  "schema": "code-review.schema.json"
+}

@@ -1,55 +1,109 @@
-<document id="zodchi_readme" status="accepted" authority="zodchi" version="0.6.13" language="en" format="markdown+xml_semantic">
-
 # Zodchi
 
-[English](README.md) · [Русский](docs/ru/README.md)
+[Русский](README.ru.md)
 
-Zodchi helps Codex and Claude Code carry real project work through to a checked result. Cursor support is available as a preview.
+Zodchi is a set of working practices for Claude Code. It gives you tuned
+agents and workflows, grouped by the kind of work they are for, and a
+gateway that lets those workflows call Codex models by **role** instead of by
+model name.
 
-You describe the outcome in an ordinary chat. Zodchi can prepare a plan, divide the work between suitable models, keep important project context, run the project's checks, and record accepted decisions. You still decide what may be changed, published, deployed, or treated as complete.
+It is not a framework that tries to fit every project. Each domain holds
+agents and workflows tuned for that kind of work. Only what is truly the
+same everywhere lives in `core/`.
 
-<section id="how_it_works" status="accepted">
+> **Status: 1.0 in development.** The agents and workflows work today. The
+> Rust gateway is being built. Until it ships, the `zodchi` command forwards
+> calls to an existing Node gateway that you point it at. The 0.x line of
+> this repository was a different tool and has been retired.
 
-## How it works
+## What you get
 
-1. A setup chat installs Zodchi and examines the project, available models, tools, and existing documents.
-2. Zodchi proposes how the project should work. Nothing is registered until you confirm it.
-3. In a project chat, enter `/zodchi` once. Continue talking normally in that chat.
-4. Before substantial work starts, Zodchi shows how it intends to work: the required quality, whether to persist until the goal is reached, how strongly to verify the result, and whether one or several planners are available.
-5. Zodchi performs the work, checks the result, and either finishes with evidence or explains the real blocker.
+| Folder | What is inside |
+| --- | --- |
+| `core/` | Agents every domain uses: `coder`, `runner`, `applier`, `researcher`. Workflows: `code-package`, `ops-script` |
+| `domains/web-apps/` | Web application work: `branch-review` before a release |
+| `domains/gamedev-unity/` | Game asset pipeline in Blender and Unity: `asset-round`, `method-question`, `rubric-probe`, `unity-check`, and the `modeller`, `unity-runner`, `art-critic` agents |
+| `models.json` | The role table: which model plays each role, in order of preference |
+| `roles/` | Gateway roles: `code-review`, `checkout-review`, `architecture-review`, `code-patch`, `package-work`, `research`, `text`, `image`, `art-critic`, `decisions` |
+| `install/` | The installer and the `zodchi` command |
+| `gateway/` | The Rust gateway (in progress) |
+| `docs/` | How it works, subscriptions, forking for a company |
 
-Other chats remain ordinary. Closing the chat ends its Zodchi mode. In the Cursor preview, `/zodchi` is kept as the chat's Custom Mode.
+## The ideas behind it
 
-</section>
+- **Workflows ask for roles, not models.** Which model writes, reviews or
+  runs depends on your subscription limits, and those change. `models.json`
+  lists candidates for each role in order. The first step of a workflow
+  picks the first candidate that still has limit left, and says when it had
+  to switch.
+- **The reviewer is never the author.** Code written by a Claude model is
+  reviewed by a Codex model through the gateway, and the other way round.
+- **Workflows stop.** `code-package` gives a change three review rounds.
+  Without approval by then, it stops and hands the question back to you,
+  instead of looping.
+- **Cheap models do the legwork.** Running checks, applying a ready patch and
+  searching are Haiku's job. Expensive models are kept for the decisions
+  everything else depends on.
+- **One package at a time per file.** `code-package` refuses to start when
+  another open package already claims one of its files, so you do not get
+  rebase conflicts later.
+- **Nothing runs with sudo before a dry run.** `ops-script` checks a script
+  and runs it without root on a copy before you are asked for a password.
 
-<section id="what_it_is_for" status="accepted">
+## Install
 
-## What it is for
+You need [Claude Code](https://code.claude.com), Node.js 20 or later and,
+for the gateway roles, the [Codex CLI](https://learn.chatgpt.com/docs) signed
+in to your own ChatGPT plan.
 
-Zodchi can support software development, 1C, web and Unity projects, research and data work, infrastructure and releases, marketing, and content production.
+```sh
+git clone https://github.com/Inkasor/zodchi.git
+cd zodchi
+./install/install.sh                    # macOS, Linux
+.\install\install.ps1                   # Windows PowerShell
+```
 
-Included workflows are starting points, not mandatory templates. During setup, Zodchi studies how the project already works and proposes only useful controls. You choose which documents and rules matter, and you can change that choice later without deleting the files themselves.
+The installer asks which domains you want; `core` is always installed. You
+can also pass them directly: `--domains web-apps,gamedev-unity` or
+`--domains all`.
 
-Different models can do different jobs. Routine work can use faster models, while stronger models can be reserved for planning, difficult decisions, or independent checks.
+- Agents and workflows go to `~/.claude/agents` and `~/.claude/workflows`,
+  where Claude Code finds them in every project. With `--project <repo>`
+  they go to that repository's `.claude/` instead. A project's own agent or
+  workflow with the same name wins over yours.
+- The role table, the gateway roles and the `zodchi` command go to
+  `~/.zodchi`.
+- The installer never overwrites a file it did not put there, or one you
+  changed. `~/.zodchi/models.json` is yours after the first install: a newer
+  table is written next to it as `models.json.new`.
+- `--dry-run` shows what would change. `--uninstall` removes what the
+  installer put there and leaves your changes in place.
 
-</section>
+Then run a workflow from Claude Code, for example `/code-package`, or ask
+Claude to run it with your arguments. Each workflow's header lists its
+arguments.
 
-<section id="install" status="accepted">
+## Your models
 
-## Try it
+Edit `~/.zodchi/models.json` to match your subscriptions. A repository can
+override roles in `.zodchi/models.json`, and one run can override them in its
+arguments (`models`). A `claude` candidate runs as a Claude Code subagent. A
+`codex` candidate runs through the gateway on your Codex sign-in.
 
-Open a new Codex, Claude Code, or Cursor chat and send:
+## Subscriptions: what is allowed
 
-> Open https://github.com/Inkasor/zodchi, read `ONBOARDING_PROMPT.md`, install the latest Zodchi release, and configure it for my project. Do the technical setup yourself and ask me only for decisions you cannot safely infer.
+Each person uses **their own** subscription. OpenAI's terms do not allow one
+ChatGPT plan to serve several people, whether by sharing a login or through a
+server. They also forbid rotating accounts to get around usage limits. Zodchi
+does not support either. The details and sources are in
+[docs/subscriptions.md](docs/subscriptions.md).
 
-Keep this setup chat: later you can use it to add projects, change models, and adjust how work is performed.
+## Forking for a company
 
-Codex asks you to trust locally installed hooks. Open `/hooks`, approve both Zodchi entries, and start a new project chat; merely enabling their toggles is not approval.
+Company-specific workflows, such as releases or onboarding, the company's
+sign-in for the gateway server, and product policies, belong in a fork. See
+[docs/fork.md](docs/fork.md).
 
-Zodchi requires Node.js 24 or newer. Windows and macOS are supported. Linux passes automated checks but is still experimental.
+## License
 
-</section>
-
-Zodchi is released under the MIT License.
-
-</document>
+MIT, see [LICENSE](LICENSE).

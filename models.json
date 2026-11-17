@@ -1,0 +1,76 @@
+{
+  "$comment": "Role table. Workflows ask for a role, never for a model. Each role lists candidates in order of preference; the Gate step of a workflow takes the first one whose subscription has limit left. provider 'claude' runs as a Claude Code subagent with that model; provider 'codex' goes through the zodchi gateway. Override per repository in .zodchi/models.json (same shape, roles you list replace these) or per run in the workflow args (models).",
+  "version": 1,
+  "roles": {
+    "writer": {
+      "use": "Ordinary code from a finished brief",
+      "candidates": [
+        { "provider": "claude", "model": "sonnet", "effort": "high" },
+        { "provider": "codex", "model": "gpt-6.1-terra", "effort": "high" }
+      ]
+    },
+    "hardWriter": {
+      "use": "A package the lead marked hard: no reference to follow, silent failure modes, or two blocked reviews",
+      "candidates": [
+        { "provider": "claude", "model": "opus", "effort": "high" },
+        { "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" }
+      ]
+    },
+    "expertWriter": {
+      "use": "One-pass code from a strong model, no tools; the applier puts it into the files",
+      "candidates": [
+        { "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" },
+        { "provider": "codex", "model": "gpt-6-astra", "effort": "high" }
+      ]
+    },
+    "reviewer": {
+      "use": "Independent code review. Never the author of the change",
+      "candidates": [
+        { "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" },
+        { "provider": "claude", "model": "opus", "effort": "high" }
+      ]
+    },
+    "architect": {
+      "use": "Review of a plan or of a change that moves boundaries, contracts, storage or authority",
+      "candidates": [
+        { "provider": "codex", "model": "gpt-6-astra", "effort": "high" },
+        { "provider": "claude", "model": "fable", "effort": "high" }
+      ]
+    },
+    "applier": {
+      "use": "Applies an expert answer verbatim and proves every edit landed",
+      "candidates": [{ "provider": "claude", "model": "haiku", "effort": "medium" }]
+    },
+    "runner": {
+      "use": "Runs commands and checks, returns evidence, changes no code",
+      "candidates": [{ "provider": "claude", "model": "haiku", "effort": "medium" }]
+    },
+    "researcher": {
+      "use": "One question answered from public sources, each claim with its page",
+      "candidates": [
+        { "provider": "codex", "model": "gpt-6-luna", "effort": "medium" },
+        { "provider": "codex", "model": "gpt-6.1-terra", "effort": "medium" }
+      ]
+    },
+    "text": {
+      "use": "Texts: documentation, copy, dialogue",
+      "candidates": [{ "provider": "codex", "model": "gpt-6.1-terra", "effort": "medium" }]
+    },
+    "image": {
+      "use": "Raster images through the image model of ChatGPT",
+      "candidates": [{ "provider": "codex", "model": "gpt-6-luna", "effort": "low" }]
+    },
+    "artCritic": {
+      "use": "Judges a picture against its brief and names one diagnosis",
+      "candidates": [{ "provider": "codex", "model": "gpt-6-astra", "effort": "medium" }]
+    },
+    "secondCritic": {
+      "use": "Second opinion on art when the first verdict is mixed or before a showing",
+      "candidates": [{ "provider": "claude", "model": "fable", "effort": "high" }]
+    },
+    "modeller": {
+      "use": "Bulk procedural asset work: builds, number tuning, renders",
+      "candidates": [{ "provider": "claude", "model": "haiku", "effort": "medium" }]
+    }
+  }
+}

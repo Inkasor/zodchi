@@ -1,0 +1,7 @@
+{
+  "description": "One raster image made by the image model of ChatGPT: a concept, a texture, an interface element, an illustration. Input images are references. The Codex model only passes the request on, so the request itself is the image prompt.",
+  "kind": "image",
+  "mode": "expert",
+  "model": "gpt-6-luna",
+  "effort": "low"
+}

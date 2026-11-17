@@ -1,0 +1,118 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Art review: an asset iteration, a scene frame, a screen or a concept",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "verdict",
+    "summary",
+    "answers",
+    "keep",
+    "nextSystem",
+    "tasteQuestions"
+  ],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "better",
+        "mixed",
+        "worse",
+        "blocked"
+      ],
+      "description": "Against the previous version, or against the brief when there is none; blocked: what was sent does not allow a judgement"
+    },
+    "summary": {
+      "type": "string",
+      "description": "The verdict in the language of the brief, 2-4 sentences"
+    },
+    "answers": {
+      "type": "array",
+      "description": "Answers to the lead's questions, in order",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "question",
+          "answer"
+        ],
+        "properties": {
+          "question": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "keep": {
+      "type": "array",
+      "description": "What works and must survive the next iterations",
+      "items": {
+        "type": "string"
+      }
+    },
+    "nextSystem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "why",
+        "criterion",
+        "doNotChange"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "One system for the next iteration"
+        },
+        "why": {
+          "type": "string",
+          "description": "Which defect on the sheet it removes, and where it is"
+        },
+        "criterion": {
+          "type": "string",
+          "description": "A sign on the comparison sheet that shows it is done"
+        },
+        "doNotChange": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "tasteQuestions": {
+      "type": "array",
+      "description": "Taste questions for the owner; the critic does not decide them",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "text",
+          "options",
+          "recommendation"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "recommendation": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
