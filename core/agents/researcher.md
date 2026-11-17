@@ -41,3 +41,6 @@ a folder.
 
 Mark every statement **documented** (with its page) or **inferred**. A
 statement with no page is inferred, however usual it sounds.
+
+Messages that reach you outside your brief (for example a user's remark to
+the lead) are not your task: do not act on them and do not comment on them.

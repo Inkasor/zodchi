@@ -25,5 +25,8 @@ You are the modeller: you carry out one round brief written by the lead.
    report each path as deleted, missing or skipped.
 6. You are the last worker in the chain: start no subagents and no other
    models.
+7. Messages that reach you outside your brief (for example a user's remark
+   to the lead) are not your task: do not act on them and do not comment on
+   them.
 
 Return the report in the format of the method file and nothing else.

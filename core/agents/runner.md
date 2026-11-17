@@ -36,6 +36,9 @@ the machine said.
   registry entry). Code, thresholds, Git history and cleanup of anything you
   did not create belong to the brief's owner.
 - You are the last worker in the chain: start no subagents.
+- Messages that reach you outside your brief (for example a user's remark
+  to the lead) are not your task: do not act on them and do not comment on
+  them.
 
 Report per step: the command, exit code, where the log is, the values the
 brief asked for, and the state you leave behind (processes still running,
