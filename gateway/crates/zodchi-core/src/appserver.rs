@@ -153,11 +153,12 @@ fn launcher(codex_bin: &Path) -> Command {
 
 /// Codex rejects unknown feature flags at startup and the set changes between versions. The probe gets 30 seconds in
 /// all, output included, and stops early when `cancelled` says so; a probe that overruns is killed with its tree.
-fn supported_features(codex_bin: &Path, codex_home: &Path, cancelled: &dyn Fn() -> bool) -> Option<Vec<String>> {
+fn supported_features(codex_bin: &Path, codex_home: &Path, cancelled: &dyn Fn() -> bool,
+    before_spawn: &mut dyn FnMut() -> TurnResult<()>, on_spawn: &mut dyn FnMut(Option<u32>) -> TurnResult<()>) -> TurnResult<Option<Vec<String>>> {
     static CACHE: OnceLock<Mutex<HashMap<PathBuf, Option<Vec<String>>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(found) = cache.lock().unwrap().get(codex_bin) {
-        return found.clone();
+        return Ok(found.clone());
     }
     let mut command = launcher(codex_bin);
     command.args(["features", "list"]).env_clear().envs(environment(codex_home)).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
@@ -167,8 +168,28 @@ fn supported_features(codex_bin: &Path, codex_home: &Path, cancelled: &dyn Fn() 
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let mut child = command.spawn().ok()?;
-    let mut stdout = child.stdout.take()?;
+    let record = |e: TurnFailed| TurnFailed::new("failed", format!("The Codex feature probe could not be recorded: {}; the model was not called.", e.message));
+    before_spawn().map_err(record)?;
+    let mut child = match command.spawn() {
+        Ok(c) => c,
+        Err(_) => {
+            on_spawn(None).map_err(record)?;
+            return Ok(None);
+        }
+    };
+    let kill = |child: &mut std::process::Child| {
+        kill_tree(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+    };
+    if let Err(e) = on_spawn(Some(child.id())) {
+        kill(&mut child);
+        return Err(record(e));
+    }
+    let Some(mut stdout) = child.stdout.take() else {
+        kill(&mut child);
+        return Ok(None);
+    };
     let (tx, rx) = channel();
     thread::spawn(move || {
         let mut text = String::new();
@@ -194,16 +215,17 @@ fn supported_features(codex_bin: &Path, codex_home: &Path, cancelled: &dyn Fn() 
     }
     if status.is_none() || text.is_none() {
         // Overran or cancelled: the tree goes, which also closes a pipe a descendant held; the reader is abandoned.
-        kill_tree(child.id());
-        let _ = child.kill();
-        let _ = child.wait();
-        return None;
+        kill(&mut child);
+        if cancelled() {
+            return Err(TurnFailed::new("unknown", "The Codex process was stopped."));
+        }
+        return Ok(None);
     }
     let names = status.filter(|s| s.success()).map(|_| {
         text.unwrap_or_default().lines().filter_map(|l| l.split_whitespace().next().map(String::from)).collect::<Vec<_>>()
     });
     cache.lock().unwrap().insert(codex_bin.to_path_buf(), names.clone());
-    names
+    Ok(names)
 }
 
 #[cfg(windows)]
@@ -428,8 +450,10 @@ impl AppServer {
     }
 
     /// A feature to disable that this Codex does not know is skipped; a feature the role enables must exist.
-    fn arguments(&self) -> TurnResult<Vec<String>> {
-        let known = supported_features(&self.codex_bin, &self.codex_home, &|| self.life.lock().unwrap().stopping);
+    /// Called with the child lock held, so the feature probe, like Codex itself, starts only before shutdown and
+    /// shutdown waits for it to be killed and reaped. The probe is recorded through the same hooks as Codex.
+    fn arguments(&self, before_spawn: &mut dyn FnMut() -> TurnResult<()>, on_spawn: &mut dyn FnMut(Option<u32>) -> TurnResult<()>) -> TurnResult<Vec<String>> {
+        let known = supported_features(&self.codex_bin, &self.codex_home, &|| self.life.lock().unwrap().stopping, before_spawn, on_spawn)?;
         let (settings, disable, enable) = launch_flags(self.role.as_ref());
         let mut args = vec!["app-server".to_string()];
         for s in settings {
@@ -473,7 +497,11 @@ impl AppServer {
         if self.life.lock().unwrap().stopping {
             return Err(cancelled());
         }
-        let args = self.arguments()?;
+        let mut slot = self.child.lock().unwrap();
+        if self.life.lock().unwrap().stopping {
+            return Err(cancelled());
+        }
+        let args = self.arguments(before_spawn, on_spawn)?;
         let mut command = launcher(&self.codex_bin);
         command.args(&args).current_dir(&self.cwd).env_clear().envs(environment(&self.codex_home));
         command.stdin(Stdio::piped()).stdout(Stdio::piped());
@@ -489,7 +517,6 @@ impl AppServer {
             command.process_group(0);
         }
         let stdout = {
-            let mut slot = self.child.lock().unwrap();
             if self.life.lock().unwrap().stopping {
                 return Err(cancelled());
             }
@@ -513,6 +540,8 @@ impl AppServer {
             }
             stdout
         };
+        // Registered: the lock goes before any request, since stop() on a failed initialize takes it.
+        drop(slot);
         let shared = Arc::clone(&self.shared);
         thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
