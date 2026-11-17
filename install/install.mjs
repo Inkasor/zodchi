@@ -173,7 +173,9 @@ function copyPlan(o, home) {
   else if (!headRef.startsWith("refs/heads/")) why.push(`HEAD points at ${headRef}, which is not a local branch`);
   else if (mainRef && headRef !== mainRef) why.push(`the branch is "${headRef.slice("refs/heads/".length)}", not the default "${main}"`);
   const from = why.length ? "HEAD" : mainRef;
-  const commit = git(["rev-parse", "--verify", `${from}^{commit}`]).out;
+  // The exact ref: show-ref --verify reads refs/heads/<name> itself, with no fallback to another ref of a similar name.
+  const commit = from === "HEAD" ? git(["rev-parse", "--verify", "HEAD^{commit}"]).out : git(["show-ref", "--verify", "--hash", from]).out;
+  if (git(["cat-file", "-t", commit]).out !== "commit") throw new Error(`${from} does not point at a commit; nothing was installed.`);
   const plan = { commit, forced: [], dir: path.join(home, "plugins", commit) };
   if (why.length && !o.force) {
     const refusal = `will not copy plugins from this clone: ${why.join("; ")}. Every Claude Code session on this machine would run what is in the copy, unreviewed. ` +
@@ -210,8 +212,14 @@ function copyPlan(o, home) {
   return plan;
 }
 
-// A copy counts as reusable only with .complete and every file of the commit in it.
-const intact = (plan) => fs.existsSync(path.join(plan.dir, COMPLETE)) && plan.files.every(f => fs.existsSync(path.join(plan.dir, f)));
+// The commit's files in a folder must hash to their blobs exactly; a missing file, a folder or a changed byte fails.
+function matchesCommit(dir, plan) {
+  if (!plan.files.every(f => { try { return fs.lstatSync(path.join(dir, f)).isFile(); } catch { return false; } })) return false;
+  const got = git(["-c", "core.longpaths=true", "hash-object", "--no-filters", "--stdin-paths"], { input: plan.files.map(f => path.join(dir, f).replace(/\\/g, "/")).join("\n") + "\n" }).out.split("\n");
+  return plan.entries.every((e, i) => got[i] === e.object);
+}
+// A copy counts as reusable only with .complete and every file of the commit in it, byte for byte.
+const intact = (plan) => fs.existsSync(path.join(plan.dir, COMPLETE)) && matchesCommit(plan.dir, plan);
 
 // A copy folder leaves the reusable name first (renamed to <hash>.trash-<pid>), and only then is deleted: a deletion
 // that stops half way never leaves a <hash> folder that looks complete. false when it could not be moved aside.

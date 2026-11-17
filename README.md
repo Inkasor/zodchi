@@ -109,7 +109,9 @@ This installs `zodchi-core` for you in every project, builds the gateway
   move fails it prints what is registered now, and the new copy stays beside
   it. Only one install runs at a time (`~/.zodchi/plugins/.install.lock`; a
   lock left by a process that is gone is taken over). An install made by an earlier version, which read the clone
-  itself, is moved to a copy on the next run.
+  itself, is moved to a copy on the next run. The installer is meant for one person on their own machine: the
+  lock guards the plugin copies and the marketplace, not every file the installer writes, and two installers
+  started at the same moment can still race on a stale lock.
 - `--dev` is for working on zodchi itself: the clone is the marketplace, as
   before. Every Claude Code session on the machine that starts or reloads
   then reads the clone's working tree as it is, including a branch that is
