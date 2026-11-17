@@ -317,12 +317,13 @@ Submit the earlier request again under a new key with --keep-thread, or make a n
             return fail(format!("Key {} already belongs to a different request: a work job stored before --no-keep-thread existed keeps its thread. A new request needs a new key.", req.key));
         }
         let mut unasked = request.as_object().cloned().unwrap_or_default();
-        unasked.remove("keepThread");
+        // shift_remove keeps the order of the other fields, as the reference's omission does.
+        unasked.shift_remove("keepThread");
         let before = || {
             let mut rest = unasked.clone();
-            rest.remove("paid");
+            rest.shift_remove("paid");
             let mut role_before = role.as_object().cloned().unwrap_or_default();
-            role_before.remove("kind");
+            role_before.shift_remove("kind");
             rest.insert("role".into(), Value::Object(role_before));
             sha256_hex(Value::Object(rest).to_string())
         };
@@ -620,17 +621,24 @@ impl Call {
     }
 
     /// A Codex process for one account, with the job's records of its pid and start.
-    fn server_for(&self, account: &Account) -> Arc<AppServer> {
+    /// Installs the Codex process of the next account under the server lock. Call::stop sets `abort` before it takes
+    /// that lock, so after cancellation no new process is installed; one installed just before is stopped by it,
+    /// and its own start then refuses.
+    fn server_for(&self, account: &Account) -> std::result::Result<Arc<AppServer>, TurnFailed> {
         let cwd = if self.work_mode() { self.cfg.root.clone().unwrap() } else { self.dir.clone() };
         let server = Arc::new(AppServer::new(&self.cfg.codex_bin, &account.codex_home, &cwd, Some(self.role.clone()), Some(self.dir.join("codex-stderr.log"))));
         if self.work_mode() {
             let file = self.dir.join("actions.json");
             server.set_on_audit(Arc::new(move |seen| { let _ = fs::write(&file, pretty(&seen)); }));
         }
-        if let Some(old) = self.server.lock().unwrap().replace(Arc::clone(&server)) {
+        let mut slot = self.server.lock().unwrap();
+        if self.abort.load(Ordering::SeqCst) {
+            return Err(TurnFailed::new("timeout", "The call was cut off before the model turn."));
+        }
+        if let Some(old) = slot.replace(Arc::clone(&server)) {
             old.stop();
         }
-        server
+        Ok(server)
     }
 
     fn started(&self, server: &AppServer) -> std::result::Result<(), TurnFailed> {
@@ -663,7 +671,23 @@ impl Call {
         let mut credit_candidate: Option<Account> = None;
         let mut last_reset = Value::Null;
         // A continued thread lives in one Codex home: only that account may take the call.
-        let only = self.request.get("resume").and_then(|r| r.get("account")).and_then(Value::as_str).map(String::from);
+        let only = match self.request.get("resume").filter(|r| !r.is_null()) {
+            None => None,
+            Some(resume) => Some(match resume.get("account").and_then(Value::as_str) {
+                Some(name) => name.to_string(),
+                // A resume record from before accounts were recorded: ask the earlier job, and with no answer there,
+                // only a single configured account can be the owner. Otherwise the call stops before any process.
+                None => {
+                    let key = resume.get("key").and_then(Value::as_str).unwrap_or("");
+                    let earlier = job(&self.cfg, key).ok().and_then(|j| j.get("account").and_then(Value::as_str).map(String::from));
+                    match earlier {
+                        Some(name) => name,
+                        None if self.cfg.accounts.len() == 1 => self.cfg.accounts[0].name.clone(),
+                        None => return Err(TurnFailed::new("failed", format!("It is not known which account holds the thread of job {key}; with several accounts listed the gateway does not guess. The model was not called."))),
+                    }
+                }
+            }),
+        };
         let candidates: Vec<Account> = match &only {
             Some(name) => match self.cfg.account(name) {
                 Some(a) => vec![a.clone()],
@@ -672,7 +696,7 @@ impl Call {
             None => self.cfg.accounts.clone(),
         };
         for account in &candidates {
-            let server = self.server_for(account);
+            let server = self.server_for(account)?;
             self.started(&server)?;
             let info = server.account()?;
             if info.get("type").and_then(Value::as_str) != Some("chatgpt") {
@@ -704,7 +728,7 @@ impl Call {
         let _ = self.state.save(json!({ "accountsSkipped": skipped }));
         if self.request.get("credits") == Some(&json!(true)) {
             if let Some(account) = credit_candidate {
-                let server = self.server_for(&account);
+                let server = self.server_for(&account)?;
                 self.started(&server)?;
                 let wallet = server.rate_limits().ok().and_then(|l| l.get("rateLimits").and_then(|r| r.get("credits")).cloned()).unwrap_or(Value::Null);
                 let _ = self.state.save(json!({ "account": account.name,

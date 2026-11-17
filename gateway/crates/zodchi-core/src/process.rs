@@ -103,9 +103,16 @@ mod imp {
             Probe::Unknown => return "unknown",
             Probe::Alive => {}
         }
+        // The reference gateway stored .NET UTC ticks (since year 1); FILETIME counts from 1601. Both forms name the
+        // same moment once the offset is added, so a record of either kind is matched exactly.
+        const DOTNET_OFFSET: u64 = 504_911_232_000_000_000;
         match start_of(&h) {
-            Some(now) if now == start => {}
-            Some(_) => return "other",
+            Some(now) => {
+                let legacy = now.parse::<u64>().ok().map(|t| (t + DOTNET_OFFSET).to_string());
+                if now != start && legacy.as_deref() != Some(start) {
+                    return "other";
+                }
+            }
             None => return "unknown",
         }
         super::kill_tree(pid);
