@@ -91,6 +91,8 @@ A data folder, `--data <dir>`, default `~/.zodchi/server` (`$ZODCHI_HOME/server`
   starts each worker as `zodchi-server work --data <dir> --user <id> --key <key>`, with that user's jobs and that
   user's Codex home as its only account.
 - `server.lock`: one serving process per data folder; a second `serve` on the same folder refuses to start.
+  `server.lock` and `server.json.lock` are operating-system locks on the open file, held for as long as the owner
+  runs; the system releases them when the owner exits or crashes, so there is no stale lock to clear by hand.
 
 The plan named SQLite; it is replaced by files because the gateway builds without a C compiler (no bundled SQLite,
 no `ring`, no OpenSSL), and the core is already synchronous and file based. HTTP is `tiny_http`, pure Rust, with
@@ -115,8 +117,10 @@ JSON in and out. Every route except `/health` needs authentication; another user
 
 **Sign-in.** The app-server of an open sign-in lives in the caller's Codex home until `account/login/completed`
 arrives for its `loginId`, or until the code expires after 15 minutes; then the attempt is cancelled and the
-app-server stopped. Stopping the server cancels every open sign-in, and none survives a restart. `connected` is
-reported only from `account/read` of the caller's Codex home (reused for at most 60 seconds), never from memory.
+app-server stopped. Stopping the server first refuses new sign-ins and cancels every open one, then lets the HTTP
+threads finish the request at hand (a long poll ends early) before it releases `server.lock`; no sign-in survives a
+restart. `connected` is reported only from `account/read` of the caller's Codex home (reused for at most 60
+seconds), never from memory.
 
 **Keys.** `role` is the name of an installed role. The idempotency check of a key is the hash of the client's
 request as sent (role name, prompt, images, model, effort, timeoutMin, credits); the role is resolved and stored in
@@ -129,7 +133,9 @@ poll over that answers at once with the job as it is, so `/health` and short cal
 Before a job is created the server checks, in one critical section, the key, the unfinished jobs of the caller
 (at most `--max-user-jobs`) and of the server (at most `--max-jobs`), counted from the job folders on disk of every
 user, removed users included. Over a limit the answer is 429 and the key stays free; a repeat of an existing key is
-never refused by admission.
+never refused by admission. The count fails closed: a job folder whose record cannot be read counts as unfinished,
+and a folder that cannot be listed refuses the job with 500 (the key stays free). Each worker the server starts is
+waited on, so finished workers do not pile up as zombie processes.
 
 ### What the server refuses (400, with the reason)
 

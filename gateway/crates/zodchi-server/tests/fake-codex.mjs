@@ -3,7 +3,9 @@
 // a sign-in, an account read and one turn. It answers with the CODEX_HOME it was started with, so a test can prove
 // which Codex home ran a job. Files in CODEX_HOME steer it:
 //   fake-auth.json        present = signed in to a ChatGPT subscription
-//   fake-login-mode       "early" (completion before the answer to account/login/start), "never", else after it
+//   fake-login-mode       "early" (completion before the answer to account/login/start), "never", "slow" (the
+//                         answer comes after 1.5 s and no completion follows), else the completion after the answer
+// It writes fake-login-started when account/login/start arrives and fake-login-cancelled (the loginId) on a cancel.
 // A prompt with SLOW takes four seconds; one with FAIL ends the turn as failed.
 import fs from "node:fs";
 import path from "node:path";
@@ -46,12 +48,16 @@ lines.on("line", (line) => {
       const loginId = "login-" + process.pid;
       const answer = { type: "chatgptDeviceCode", loginId, verificationUrl: "https://example.invalid/device", userCode: "ABCD-1234" };
       const m = mode();
+      fs.writeFileSync(path.join(home, "fake-login-started"), loginId);
+      if (m === "slow") { setTimeout(() => reply(answer), 1500); return; }
       if (m === "early") { complete(loginId); return reply(answer); }
       reply(answer);
       if (m !== "never") setTimeout(() => complete(loginId), 300);
       return;
     }
-    case "account/login/cancel": return reply({});
+    case "account/login/cancel":
+      fs.writeFileSync(path.join(home, "fake-login-cancelled"), String(p.loginId || ""));
+      return reply({});
     case "account/logout":
       try { fs.unlinkSync(authFile); } catch { /* not signed in */ }
       return reply({});

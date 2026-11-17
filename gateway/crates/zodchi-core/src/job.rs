@@ -367,13 +367,14 @@ Submit the earlier request again under a new key with --keep-thread, or make a n
 /// The worker outlives the command that submitted the job, so a caller's timeout never interrupts a model call.
 fn spawn_detached_worker(cfg: &Config, key: &str, kind: &str) -> Result<()> {
     let args: Vec<std::ffi::OsString> = vec!["work".into(), "--root".into(), cfg.root.as_ref().unwrap().into(), "--key".into(), key.into()];
-    // The API key reaches only the worker of a decisions job.
-    spawn_detached(&args, kind == "decisions")
+    // The API key reaches only the worker of a decisions job. The short-lived CLI does not wait for its worker.
+    spawn_detached(&args, kind == "decisions").map(drop)
 }
 
 /// Starts this program again with `args`, detached from the caller (its own process group, no console, no stdio).
-/// The OpenAI API key of the caller's environment reaches it only with `keep_api_key`.
-pub fn spawn_detached(args: &[std::ffi::OsString], keep_api_key: bool) -> Result<()> {
+/// The OpenAI API key of the caller's environment reaches it only with `keep_api_key`. A long-lived caller waits on
+/// the returned child (on a thread of its own) so that a finished worker does not stay behind as a zombie.
+pub fn spawn_detached(args: &[std::ffi::OsString], keep_api_key: bool) -> Result<std::process::Child> {
     let exe = std::env::current_exe()?;
     let mut command = Command::new(exe);
     command.args(args);
@@ -393,8 +394,7 @@ pub fn spawn_detached(args: &[std::ffi::OsString], keep_api_key: bool) -> Result
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    command.spawn()?;
-    Ok(())
+    Ok(command.spawn()?)
 }
 
 /// The other jobs that hold a place. With `settle_them`, jobs without a worker are settled first.

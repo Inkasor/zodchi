@@ -11,9 +11,9 @@ use serde_json::{json, Value};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use zodchi_core::config::Config;
 use zodchi_core::job::{self, compose_prompt, is_terminal, read_job, Request, LIMIT_IMAGES};
 use zodchi_core::role::{load_role, roles, Overrides};
@@ -68,6 +68,8 @@ pub struct App {
     admission: Mutex<()>,
     polls: AtomicUsize,
     max_polls: usize,
+    /// Set when serving stops: long polls give up their wait, so the threads can be joined.
+    stopping: AtomicBool,
     max_user_jobs: usize,
     max_jobs: usize,
 }
@@ -219,6 +221,7 @@ impl App {
             admission: Mutex::new(()),
             polls: AtomicUsize::new(0),
             max_polls: (opts.threads / 2).max(1),
+            stopping: AtomicBool::new(false),
             max_user_jobs: opts.max_user_jobs,
             max_jobs: opts.max_jobs,
         })
@@ -297,23 +300,38 @@ impl App {
     }
 
     /// The unfinished jobs of the caller and of the whole server, from the job folders on disk (every user's,
-    /// removed users' included). A job without a live worker is settled first, so it stops counting.
-    fn unfinished(&self, me: &str) -> (usize, usize) {
+    /// removed users' included). A job without a live worker is settled first, so it stops counting. The count
+    /// fails closed: a folder that cannot be listed is an error (the job is refused), and a job folder whose record
+    /// cannot be read counts as unfinished, since its worker may still be running.
+    fn unfinished(&self, me: &str) -> Result<(usize, usize)> {
         let (mut mine, mut all) = (0, 0);
-        let Ok(users) = fs::read_dir(self.data.join("users")) else { return (0, 0) };
-        for user in users.filter_map(|e| e.ok()) {
+        let listing = |dir: &Path| -> Result<Option<fs::ReadDir>> {
+            match fs::read_dir(dir) {
+                Ok(entries) => Ok(Some(entries)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => fail(format!("The unfinished jobs cannot be counted: {} cannot be read: {e}", dir.display())),
+            }
+        };
+        let users_dir = self.data.join("users");
+        let Some(users) = listing(&users_dir)? else { return Ok((0, 0)) };
+        for user in users {
+            let user = user.map_err(|e| GatewayError(format!("The unfinished jobs cannot be counted: {}: {e}", users_dir.display())))?;
             let id = user.file_name().to_string_lossy().into_owned();
+            // Only user folders hold jobs; anything else in users/ is not the server's.
             let Ok(cfg) = Config::tenant(&self.data, &id) else { continue };
-            let Ok(jobs) = fs::read_dir(user.path().join("jobs")) else { continue };
-            for entry in jobs.filter_map(|e| e.ok()) {
+            let jobs_dir = user.path().join("jobs");
+            let Some(jobs) = listing(&jobs_dir)? else { continue };
+            for entry in jobs {
+                let entry = entry.map_err(|e| GatewayError(format!("The unfinished jobs cannot be counted: {}: {e}", jobs_dir.display())))?;
                 let key = entry.file_name().to_string_lossy().into_owned();
-                if !is_key(&key) || !entry.path().is_dir() {
+                let is_dir = entry.file_type().map_err(|e| GatewayError(format!("The unfinished jobs cannot be counted: {}: {e}", entry.path().display())))?.is_dir();
+                if !is_key(&key) || !is_dir {
                     continue;
                 }
                 let open = match read_job(&entry.path()) {
                     Some(found) if is_terminal(status_of(&found)) => false,
                     Some(_) => job::job(&cfg, &key).map(|j| !is_terminal(status_of(&j))).unwrap_or(true),
-                    None => false,
+                    None => true,
                 };
                 if open {
                     all += 1;
@@ -323,7 +341,7 @@ impl App {
                 }
             }
         }
-        (mine, all)
+        Ok((mine, all))
     }
 
     fn submit(&self, who: &Identity, body: &mut dyn Read) -> Reply {
@@ -372,7 +390,10 @@ impl App {
             if role.get("mode").and_then(Value::as_str) == Some("work") {
                 return Reply::error(400, format!("Role {} works in a repository; the server has no repository of the caller to work in.", req.role));
             }
-            let (mine, all) = self.unfinished(&who.id);
+            let (mine, all) = match self.unfinished(&who.id) {
+                Ok(counts) => counts,
+                Err(e) => return Reply::error(500, format!("{} The key {} is still free.", e.0, req.key)),
+            };
             if mine >= self.max_user_jobs {
                 return Reply::error(429, format!("You have {mine} unfinished jobs; at most {} at once. The key {} is still free.", self.max_user_jobs, req.key));
             }
@@ -403,7 +424,12 @@ impl App {
     fn spawn_worker(&self, user: &str, key: &str) -> Result<()> {
         let args: Vec<std::ffi::OsString> =
             vec!["work".into(), "--data".into(), self.data.clone().into(), "--user".into(), user.into(), "--key".into(), key.into()];
-        job::spawn_detached(&args, false)
+        let mut child = job::spawn_detached(&args, false)?;
+        // The server outlives its workers: each one is waited on, so a finished worker is reaped, not a zombie.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        Ok(())
     }
 
     fn find(&self, who: &Identity, key: &str) -> std::result::Result<(Config, Value), Reply> {
@@ -434,9 +460,17 @@ impl App {
         if seconds > 0 && !is_terminal(status_of(&current)) {
             // At most half of the threads wait; over that the job is answered as it is.
             if let Some(_poll) = self.enter_poll() {
-                match job::wait(&cfg, key, Duration::from_secs(seconds)) {
-                    Ok(found) => current = found,
-                    Err(e) => return Reply::error(500, e.0),
+                // In slices of a second, so that a stopping server is not held up by a long poll.
+                let deadline = Instant::now() + Duration::from_secs(seconds);
+                while !is_terminal(status_of(&current)) && !self.stopping.load(Ordering::SeqCst) {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        break;
+                    }
+                    match job::wait(&cfg, key, left.min(Duration::from_secs(1))) {
+                        Ok(found) => current = found,
+                        Err(e) => return Reply::error(500, e.0),
+                    }
                 }
             }
         }
@@ -523,6 +557,16 @@ fn respond(app: &App, mut request: tiny_http::Request) {
 
 /// Serves until Ctrl+C or SIGTERM: a fixed pool of threads, one serving process per data folder.
 pub fn serve(opts: &Options, auth: Box<dyn Authenticator>) -> Result<()> {
+    signal::install();
+    let out = serve_until(opts, auth, &|_| {}, &signal::requested);
+    signal::finished();
+    out
+}
+
+/// Serves until `stop` returns true. `ready` gets the address once the server listens. On stop, in this order:
+/// sign-in admission is closed and every open sign-in cancelled and stopped; the HTTP threads finish the request
+/// at hand and are joined; only then is `server.lock` released, when this returns.
+pub fn serve_until(opts: &Options, auth: Box<dyn Authenticator>, ready: &dyn Fn(&str), stop: &dyn Fn() -> bool) -> Result<()> {
     let data = std::path::absolute(&opts.data)?;
     fs::create_dir_all(&data)?;
     let Some(_lock) = PidLock::try_acquire(&data.join("server.lock"))? else {
@@ -531,30 +575,39 @@ pub fn serve(opts: &Options, auth: Box<dyn Authenticator>) -> Result<()> {
     registry::ensure(&data)?;
     let http = tiny_http::Server::http(opts.listen.as_str()).map_err(|e| GatewayError(format!("Cannot listen on {}: {e}", opts.listen)))?;
     let address = http.server_addr().to_ip().map(|a| a.to_string()).unwrap_or_else(|| opts.listen.clone());
-    signal::install();
     let app = Arc::new(App::new(&data, auth, opts)?);
     let http = Arc::new(http);
     let threads = opts.threads.max(1);
-    for _ in 0..threads {
+    let handlers: Vec<_> = (0..threads).map(|_| {
         let (app, http) = (Arc::clone(&app), Arc::clone(&http));
         std::thread::spawn(move || {
-            while let Ok(request) = http.recv() {
-                respond(&app, request);
+            // A short wait for the next request, so a stopping server is seen between requests.
+            while !app.stopping.load(Ordering::SeqCst) {
+                match http.recv_timeout(Duration::from_millis(200)) {
+                    Ok(Some(request)) => respond(&app, request),
+                    Ok(None) => {}
+                    Err(_) => break,
+                }
             }
-        });
-    }
+        })
+    }).collect();
     println!("zodchi-server {VERSION} listening on http://{address} (data {})", data.display());
     use std::io::Write;
     let _ = std::io::stdout().flush();
-    while !signal::requested() {
+    ready(&address);
+    while !stop() {
         std::thread::sleep(Duration::from_millis(200));
     }
     eprintln!("zodchi-server: stopping; open sign-ins are cancelled.");
+    // Sign-ins first: no new attempt is admitted from here on, and every open one is cancelled.
     app.logins.shutdown();
-    for _ in 0..threads {
-        http.unblock();
+    app.stopping.store(true, Ordering::SeqCst);
+    for handler in handlers {
+        let _ = handler.join();
     }
-    signal::finished();
+    // Requests still queued and not taken are dropped with the listener; then the lock goes.
+    drop(http);
+    drop(_lock);
     Ok(())
 }
 
