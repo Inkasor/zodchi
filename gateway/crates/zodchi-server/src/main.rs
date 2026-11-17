@@ -64,7 +64,11 @@ fn number(args: &Args, name: &str, default: usize) -> Result<usize> {
 
 /// `--threads`: a long poll holds one HTTP thread, so one thread alone would be taken by the first poll.
 fn threads(args: &Args, default: usize) -> Result<usize> {
-    let n = number(args, "threads", default)?;
+    // The minimum is checked on any whole number, so `--threads 0` gets the same message as `--threads 1`.
+    let n = match args.options.get("threads") {
+        None => default,
+        Some(v) => v.parse::<usize>().map_err(|_| GatewayError("--threads is a whole number, at least 2".to_string()))?,
+    };
     if n < MIN_THREADS {
         return fail(format!("--threads is at least {MIN_THREADS}: a long poll holds one HTTP thread, and one more must stay free for every other request."));
     }

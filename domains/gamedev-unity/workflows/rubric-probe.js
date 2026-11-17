@@ -74,6 +74,15 @@ if (unknown.length) return { stoppedAt: 'ask', error: `rows for frames not in th
 const missing = a.frames.filter(f => !rows.rows.some(r => norm(r.frame) === norm(f.file)))
 if (missing.length) return { stoppedAt: 'ask', error: `no rows for frames: ${missing.map(f => f.file).join(', ')}` }
 
+// The matrix must be whole: every question named by any row or by a frame's defects has an answer on every frame. A frame
+// that was asked a question the others were not, or a question missing on one frame, is an incomplete probe: it is
+// reported as such and never reaches a verdict (a partial matrix could pass every sound frame it has and read "keep").
+const questions = [...new Set([...rows.rows.map(r => r.question), ...a.frames.flatMap(f => f.defects || [])])]
+const unanswered = questions.flatMap(question => a.frames
+  .filter(f => !rows.rows.some(r => r.question === question && norm(r.frame) === norm(f.file)))
+  .map(f => `${question} @ ${f.file}`))
+if (unanswered.length) return { stoppedAt: 'ask', incomplete: true, error: `the matrix is incomplete, no verdict: no answer for (question @ frame) ${unanswered.join('; ')}` }
+
 // A question earns its place when it passes on every sound frame and fails on every frame listed as having its defect.
 const byQuestion = {}
 for (const r of rows.rows) (byQuestion[r.question] = byQuestion[r.question] || []).push(r)
