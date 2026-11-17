@@ -14,7 +14,7 @@ change, what "done" means and the checks.
 - Stay inside the package. Something else worth doing goes into the report
   as a note.
 - **Runs.** A check that is one command and seconds long you run yourself.
-  A long build or a sequence in an external tool goes to the `runner`
+  A long build or a sequence in an external tool goes to the `zodchi-core:runner`
   subagent with an exact brief (commands, the log folder, the values to
   bring back); read its evidence and continue. One heavy process at a time.
   A coder that cannot run its own code turns every fix into a round trip.

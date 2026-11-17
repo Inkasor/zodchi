@@ -69,7 +69,7 @@ const gate = await step(
   `accepted: true when any of those rounds has an "owner" verdict that starts with "${accepted}". ` +
   `startedAt: the output of \`date -u +%Y-%m-%dT%H:%M:%SZ\` now.`,
   {
-    agentType: 'unity-runner', label: `gate ${a.label}`,
+    agentType: 'zodchi-gamedev-unity:unity-runner', label: `gate ${a.label}`,
     schema: {
       type: 'object', required: ['hasMethod', 'lastRound', 'lastVerdict', 'roundsSinceMethod', 'accepted', 'startedAt'],
       properties: {
@@ -98,7 +98,7 @@ async function record(reachedEngine) {
     `Append one round to the "rounds" array of the ledger ${a.ledger} (JSON; keep every other field and the file's formatting style, 1-space indent). ` +
     `The row, as given, plus two fields you add: "finishedAt" = \`date -u +%Y-%m-%dT%H:%M:%SZ\` now, and "minutes" = whole minutes between startedAt and finishedAt. Row: ${JSON.stringify(row)}. ` +
     `Leave "owner" null: only the lead writes the owner's verdict. Then read the file back and confirm it parses. ok is true when it does and the last round has n = ${n}.`,
-    { agentType: 'unity-runner', schema: STEP, label: `record ${a.label}` })
+    { agentType: 'zodchi-gamedev-unity:unity-runner', schema: STEP, label: `record ${a.label}` })
   out.reachedEngine = reachedEngine
 }
 
@@ -109,7 +109,7 @@ if (a.answer) {
     `These must survive every edit; stop at the row that would remove one: ${JSON.stringify(a.answer.protect || [])}. ` +
     `Checks after applying: python -m pyflakes on each Python target and \`file\` on each target against its backup. ` +
     `ok is true only when every edit row has a line number and the checks are clean. failures: rows not applied.`,
-    { agentType: 'applier', schema: STEP, label: `apply ${a.label}` })
+    { agentType: 'zodchi-core:applier', schema: STEP, label: `apply ${a.label}` })
   if (!out.apply || !out.apply.ok) return stop('apply')
 }
 
@@ -119,7 +119,7 @@ if (a.change) {
     `Implement the change described in ${a.change.brief}; it is the whole task. Round ${a.label}, stage ${a.stage} of the asset (before acceptance only triangles, texture memory and frame time gate). ` +
     `ok is true when what the brief calls done holds. paths: files changed. failures: what is unverified.` +
     (a.change.ranCheck && a.check ? ` After the change run the fast check yourself from ${a.check.cwd}: \`${a.check.command}\`, output to ${a.tmp}/logs/check-by-coder.log; checkRun: that command as you ran it, its exit code and the log path.` : ''),
-    { agentType: 'coder', model: a.change.hard ? 'opus' : 'sonnet', schema: CHANGE, label: `change ${a.label}` })
+    { agentType: 'zodchi-core:coder', model: a.change.hard ? 'opus' : 'sonnet', schema: CHANGE, label: `change ${a.label}` })
   if (!out.change || !out.change.ok) return stop('change')
 }
 
@@ -131,7 +131,7 @@ if (a.check && !coderChecked) {
   out.check = await step(
     `Run the fast check of round ${a.label}, once, from ${a.check.cwd}: \`${a.check.command}\`; output to ${a.tmp}/logs/check.log. ` +
     `ok is true when it exits 0. summary: its result line. failures: failure lines grouped by kind with the worst value against the limit (at most 15).`,
-    { agentType: 'unity-runner', schema: STEP, label: `check ${a.label}` })
+    { agentType: 'zodchi-gamedev-unity:unity-runner', schema: STEP, label: `check ${a.label}` })
   if (!out.check || !out.check.ok) return stop('check')
 }
 
@@ -140,7 +140,7 @@ if (a.export) {
   out.export = await step(
     `Run the show export of round ${a.label}, once, from ${a.export.cwd}: \`${a.export.command}\`. It starts Blender; give the command up to 40 minutes. When the kit's launcher waits for a shared Blender turn itself, do not wait or kill anything yourself; otherwise follow your one-Blender rule. ` +
     `Your log: ${a.tmp}/logs/export.log. ok is true when it exits 0 and ${a.export.expect || `${a.export.out}/candidate or ${a.export.out}/release holds an .fbx`}. paths: files written. failures: last error lines.`,
-    { agentType: 'unity-runner', schema: STEP, label: `export ${a.label}` })
+    { agentType: 'zodchi-gamedev-unity:unity-runner', schema: STEP, label: `export ${a.label}` })
   if (!out.export || !out.export.ok) return stop('export')
 }
 
@@ -154,7 +154,7 @@ if (a.unity) {
     `First AssetDatabase.Refresh, wait for ready, confirm the Console has no compile errors. Then these menus in order, waiting for ready after each: ${JSON.stringify(a.unity.menus)}. ` +
     `Then for each camera: ${cams}. Stay out of Play mode; save no other scene. ` +
     `ok is true when the Console has no errors after the menus and every capture exists. paths: the capture files only. failures: Console errors.`,
-    { agentType: 'unity-runner', schema: STEP, label: `engine ${a.label}` })
+    { agentType: 'zodchi-gamedev-unity:unity-runner', schema: STEP, label: `engine ${a.label}` })
   if (!out.engine || !out.engine.ok) return stop('engine')
 }
 
@@ -164,7 +164,7 @@ if (a.rubric && out.engine && (out.engine.paths || []).length) {
     `Ask the Decisions rubric "${a.rubric.role}" about each frame: ${JSON.stringify(out.engine.paths)}. From ${a.rubric.repo}, for frame N write a one-line prompt file in ${a.tmp} naming its camera and "${a.label}", then run ` +
     `\`zodchi run --role ${a.rubric.role} --key ${a.label}-rubric-N --prompt <prompt file> --image <frame> --paid --out ${a.tmp}/rubric-N.json\`. ` +
     `ok is true only when every frame's verdict.outcome is "pass". summary: outcome per frame and total input tokens. failures: "<frame>: <question> <outcome> <agreement>" for every question that is not pass.`,
-    { agentType: 'unity-runner', schema: STEP, label: `rubric ${a.label}` })
+    { agentType: 'zodchi-gamedev-unity:unity-runner', schema: STEP, label: `rubric ${a.label}` })
 }
 
 await record(Boolean(out.engine))

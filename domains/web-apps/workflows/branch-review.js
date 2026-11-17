@@ -38,7 +38,7 @@ const gate = await step(
   `- account: the output of \`zodchi account\`, or "" when it fails.\n` +
   `- head: \`git rev-parse HEAD\`. baseSha: \`git merge-base ${q(a.base)} HEAD\`. files: \`git diff --name-only <baseSha> <head>\` with those two hashes, one path per entry. dirty: true when \`git status --porcelain\` prints anything.`,
   {
-    agentType: 'runner', label: `gate ${a.label}`,
+    agentType: 'zodchi-core:runner', label: `gate ${a.label}`,
     schema: {
       type: 'object', required: ['homeModels', 'repoModels', 'account', 'files', 'head', 'baseSha', 'dirty'],
       properties: {
@@ -77,7 +77,7 @@ const ask = (role, who, tag) => step(
   `${a.brief ? `--attach ${q(a.brief)} ` : ''}${role === 'architecture review' ? `--attach ${q(`${a.tmp}/${tag}.diff`)} ` : ''}--wait-sec 3300 --out ${q(`${a.tmp}/${tag}.json`)}\`` +
   (role === 'architecture review' ? `, after saving \`git diff ${range}\` as ${a.tmp}/${tag}.diff (an architect has no checkout)` : '') + `. ` +
   `verdict: the "verdict" field of the review exactly ("missing" when it has none). summary: its summary. findings: the reviewer's findings only, each as "<id> <severity> <location>: <problem>". blocking: their count. reviewFile: the review file path. Change no code.`,
-  { agentType: 'runner', schema: REVIEW, phase: 'Review', label: tag })
+  { agentType: 'zodchi-core:runner', schema: REVIEW, phase: 'Review', label: tag })
 
 phase('Review')
 const [review, arch] = await parallel([

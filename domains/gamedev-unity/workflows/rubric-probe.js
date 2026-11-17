@@ -26,7 +26,7 @@ const rows = await step(
   `\`zodchi run --role ${a.role} --key ${a.label}-probe-N --prompt <prompt file> --image <file> --paid --out ${a.tmp}/probe-N.json\`. ` +
   `From each output take verdict.questions (name, outcome, agreement). Return one row per question and frame, and the input tokens of all calls together. Judge nothing yourself.`,
   {
-    agentType: 'unity-runner', label: `probe ${a.role}`,
+    agentType: 'zodchi-gamedev-unity:unity-runner', label: `probe ${a.role}`,
     schema: {
       type: 'object', required: ['rows', 'inputTokens'],
       properties: {

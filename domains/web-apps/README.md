@@ -3,14 +3,19 @@
 Web applications: services, dashboards and internal tools that ship often and
 are changed by several agents at once.
 
+
+Install: `/plugin install zodchi-web-apps --marketplace Inkasor/zodchi` in Claude Code, or from a clone
+`./install/install.sh --project <repo> --domains web-apps` to turn it on in one project. It needs `zodchi-core`.
+Workflows run as `/zodchi-web-apps:<name>`.
+
 ## Workflows
 
 | Workflow | When |
 | --- | --- |
 | `branch-review` | A branch is finished: an independent reviewer reads it in the checkout through the gateway, and an architect reviews it too when it moves boundaries, contracts, storage or authority |
 
-`code-package` and `ops-script` come from `core/` and are the everyday tools
-here.
+`code-package` and `ops-script` come from `zodchi-core` and are the everyday
+tools here.
 
 ## Lessons this domain is built on
 

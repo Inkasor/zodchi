@@ -23,6 +23,7 @@ Zodchi — набор рабочих приёмов для Claude Code. В нё�
 | `domains/gamedev-unity/` | Ассеты игры в Blender и Unity: `asset-round`, `method-question`, `rubric-probe`, `unity-check`, агенты `modeller`, `unity-runner`, `art-critic` |
 | `models.json` | Таблица ролей: какая модель играет какую роль, по порядку предпочтения |
 | `roles/` | Роли шлюза: `code-review`, `checkout-review`, `architecture-review`, `code-patch`, `package-work`, `research`, `text`, `image`, `art-critic`, `decisions` |
+| `.claude-plugin/` | Маркетплейс: каждая из папок `core/` и `domains/*` — плагин Claude Code |
 | `install/` | Установщик и команда `zodchi` |
 | `gateway/` | Шлюз `zodchi` на Rust: зовёт модели Codex по ролям на ваших собственных подписках |
 | `docs/` | Как всё устроено, подписки, форк для компании |
@@ -62,16 +63,29 @@ cd zodchi
 .\install\install.ps1                   # Windows PowerShell
 ```
 
-Установщик спросит, какие разделы поставить; `core` ставится всегда. Можно
-передать сразу: `--domains web-apps,gamedev-unity` или `--domains all`.
+Установщик включит `zodchi-core` для вас во всех проектах, соберёт шлюз
+(если стоит Rust) и положит таблицу ролей и роли шлюза в `~/.zodchi`.
+Разделы включаются по проектам:
 
-- Агенты и процессы ложатся в `~/.claude/agents` и `~/.claude/workflows`, и
-  Claude Code видит их во всех проектах. С `--project <репозиторий>` они
-  ложатся в `.claude/` этого репозитория. Агент или процесс проекта с тем же
-  именем главнее вашего.
-- Таблица ролей, роли шлюза и команда `zodchi` ложатся в `~/.zodchi`. Если
-  Rust установлен, установщик сам соберёт шлюз (`--no-build` это пропускает).
-  Свои подписки перечислите в `~/.zodchi/accounts.json`, см.
+```sh
+./install/install.sh --project ~/code/my-game --domains gamedev-unity
+```
+
+- Агенты и процессы приходят как плагины Claude Code из этого репозитория
+  (маркетплейс `zodchi`): `zodchi-core`, `zodchi-web-apps`,
+  `zodchi-gamedev-unity`. Ядро включено во всех проектах; раздел — только в
+  тех, что вы назвали, и только для вас (он ложится в
+  `.claude/settings.local.json` проекта, который не коммитится). `--domains`
+  без `--project` включает раздел везде.
+- Плагины читаются прямо из вашего клона, так что `git pull` обновляет их
+  сразу во всех проектах; после pull перезапустите установщик, чтобы
+  пересобрать шлюз.
+- Процессы запускаются как `/zodchi-core:code-package`,
+  `/zodchi-gamedev-unity:asset-round` и так далее, а агенты называются
+  `zodchi-core:runner` и подобно, поэтому не пересекаются со своими агентами
+  проекта.
+- Если Rust установлен, установщик сам соберёт шлюз (`--no-build` это
+  пропускает). Свои подписки перечислите в `~/.zodchi/accounts.json`, см.
   [gateway/README.md](gateway/README.md).
 - Установщик не перезаписывает файл, который положил не он или который вы
   изменили. `~/.zodchi/models.json` после первой установки ваш: новая
@@ -79,8 +93,8 @@ cd zodchi
 - `--dry-run` показывает, что изменится. `--uninstall` убирает поставленное
   и оставляет ваши правки.
 
-Потом запускайте процесс из Claude Code, например `/code-package`, или
-попросите Claude запустить его с вашими аргументами. Аргументы каждого
+Потом запускайте процесс из Claude Code, например `/zodchi-core:code-package`,
+или попросите Claude запустить его с вашими аргументами. Аргументы каждого
 процесса описаны в его заголовке.
 
 ## Ваши модели

@@ -3,6 +3,11 @@
 Procedural game assets built in Blender and checked in the Unity Editor,
 with art judged by critics and accepted by a human.
 
+
+Install: `/plugin install zodchi-gamedev-unity --marketplace Inkasor/zodchi` in Claude Code, or from a clone
+`./install/install.sh --project <repo> --domains gamedev-unity` to turn it on in one project. It needs `zodchi-core`.
+Workflows run as `/zodchi-gamedev-unity:<name>`.
+
 ## Agents
 
 | Agent | Model | Job |
@@ -11,7 +16,7 @@ with art judged by critics and accepted by a human.
 | `unity-runner` | Haiku | Blender builds, checks and Unity Editor operations; returns evidence |
 | `art-critic` | Fable | Second opinion on a picture when the first critic (gateway role `art-critic`) was mixed, or before a showing |
 
-`coder`, `applier` and `researcher` come from `core/`.
+`coder`, `applier` and `researcher` come from `zodchi-core` (`zodchi-core:coder` and so on).
 
 ## Workflows
 

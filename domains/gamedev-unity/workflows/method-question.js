@@ -46,7 +46,7 @@ const found = (await parallel(sides.map(s => () => step(
   `Ask. Side: ${s.side}. Folder: ${a.tmp}. Question file: ${a.tmp}/question-${s.id}.md. Answer file: ${a.tmp}/answer-${s.id}.json. Gateway key: ${a.label}-${s.id}.\n` +
   `Context: ${a.context}\nQuestion: ${s.q}\n` +
   `ok is true when the job ended with an answer.`,
-  { agentType: 'researcher', schema: FOUND, phase: s.phase, label: s.id })
+  { agentType: 'zodchi-core:researcher', schema: FOUND, phase: s.phase, label: s.id })
   .then(r => r && { ...r, side: s.side })))).filter(Boolean).filter(r => r.ok)
 
 if (!found.length) return { label: a.label, stoppedAt: 'research' }
@@ -56,7 +56,7 @@ const sheet = await step(
   `Fold. Answer files: ${JSON.stringify(found.map(f => ({ side: f.side, file: f.answerFile })))}. Output: ${a.tmp}/options.md.\n` +
   `Context: ${a.context}`,
   {
-    agentType: 'researcher', label: 'fold',
+    agentType: 'zodchi-core:researcher', label: 'fold',
     schema: {
       type: 'object', required: ['file', 'realFacts', 'constructions', 'follows', 'unsettled'],
       properties: {

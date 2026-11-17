@@ -130,7 +130,7 @@ const gate = await step(
   `- git: true when ${a.repo} is inside a Git work tree. head: \`git rev-parse HEAD\`. ` +
   `dirty: the paths \`git status --porcelain\` lists (path only, relative to the repository).`,
   {
-    agentType: 'runner', label: `gate ${a.label}`,
+    agentType: 'zodchi-core:runner', label: `gate ${a.label}`,
     schema: {
       type: 'object', required: ['homeModels', 'repoModels', 'account', 'git'],
       properties: {
@@ -186,7 +186,7 @@ const claim = await step(
   (git && a.branch ? `5. If there was no conflict, switch to the Git branch ${a.branch}: \`git switch ${q(a.branch)}\`, or \`git switch -c ${q(a.branch)}\` when it does not exist.\n` : '') +
   `ok is true when the claim file was written${git && a.branch ? ` and \`git branch --show-current\` prints ${a.branch}` : ''}. conflicts: the conflicts found, [] when none.`,
   {
-    agentType: 'runner', label: `claim ${a.label}`,
+    agentType: 'zodchi-core:runner', label: `claim ${a.label}`,
     schema: { type: 'object', required: ['ok', 'conflicts'], properties: { ok: { type: 'boolean' }, conflicts: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' } } },
   })
 if (claim && claim.conflicts && claim.conflicts.length && claim.conflicts[0] !== 'lock busy' && !claim.ok) {
@@ -202,7 +202,7 @@ if (claim && claim.conflicts && claim.conflicts.length && claim.conflicts[0] !==
   const closed = await step(
     `If ${claimFile} exists, set its "status" to "${claimStatus}" and add "closedAt" with \`date -u +%Y-%m-%dT%H:%M:%SZ\`; keep every other field. ` +
     `ok is true when the file does not exist, or when it parses and its status is "${claimStatus}".`,
-    { agentType: 'runner', schema: STEP, label: `close claim ${a.label}` }).catch(() => null)
+    { agentType: 'zodchi-core:runner', schema: STEP, label: `close claim ${a.label}` }).catch(() => null)
   if (!closed || !closed.ok) out.claimLeftOpen = `${claimFile}: set "status" to "closed" by hand`
   }
 }
@@ -242,13 +242,13 @@ async function body() {
         `The expert has no tools: everything it needs is attached. Then run \`zodchi run --role code-patch --model ${writer.model} --effort ${writer.effort} --key ${a.label}-expert-${n} ` +
         `--prompt ${q(`${a.tmp}/expert-${n}.md`)} ${attach} --wait-sec 3300 --out ${q(`${a.tmp}/expert-${n}.answer.md`)}\`; leave out of --attach any file that does not exist. ` +
         `ok is true when the job succeeded and the answer file exists. paths: the answer file.`,
-        { agentType: 'runner', schema: STEP, phase: phaseName, label: `${tag} ask` })
+        { agentType: 'zodchi-core:runner', schema: STEP, phase: phaseName, label: `${tag} ask` })
       if (!ask || !ask.ok) return null
       return step(
         `Apply one expert answer. Answer file: ${a.tmp}/expert-${n}.answer.md. Target files: the ones the answer names, relative to ${a.repo}. ` +
         `Ledger of edits: ${a.tmp}/apply-${n}.md. Backup folder: ${a.tmp}/backup-${n}. Syntax checks after applying: the one that fits each target's language. ` +
         `done is true only when every edit row has a line number and the checks are clean. changed: the target files, absolute paths. unverified: rows not applied.`,
-        { agentType: 'applier', schema: WRITE, phase: phaseName, label: `${tag} apply` })
+        { agentType: 'zodchi-core:applier', schema: WRITE, phase: phaseName, label: `${tag} apply` })
     }
     if (writer.provider === 'codex') {
       const attach = [a.brief, ...evidence].map(f => `--attach ${q(f)}`).join(' ')
@@ -259,9 +259,9 @@ async function body() {
         `done = (status is "done"); summary = its summary; changed = each entry of changedFiles prefixed with "${repoKey}/"; ` +
         `unverified = every criterion that is not done, as one line each, plus every check with a non-zero exit code; questions = each entry of its questions as one readable line (the question, its options, the recommendation). ` +
         `If the job did not succeed, done is false and summary says the job status.`,
-        { agentType: 'runner', schema: WRITE, phase: phaseName, label: `${tag}` })
+        { agentType: 'zodchi-core:runner', schema: WRITE, phase: phaseName, label: `${tag}` })
     }
-    return continued(task + BEFORE + HANDOVER, { agentType: 'coder', model: writer.model, schema: WRITE, phase: phaseName, label: tag })
+    return continued(task + BEFORE + HANDOVER, { agentType: 'zodchi-core:coder', model: writer.model, schema: WRITE, phase: phaseName, label: tag })
   }
 
   phase('Write')
@@ -286,7 +286,7 @@ async function body() {
             `cause: "none" when ok; otherwise the first failure's cause - "code" when the changed code is wrong (traceback, compile error, failed assertion, a gate of the change), ` +
             `"check" when the command or its pass rule is wrong although the code works, ` +
             `"environment" when the machine stopped it (a lock held by another process, memory, a missing tool).`,
-            { agentType: 'runner', schema: CHECKS, phase: 'Checks', label: `checks ${tag}` })
+            { agentType: 'zodchi-core:runner', schema: CHECKS, phase: 'Checks', label: `checks ${tag}` })
     : Promise.resolve({ ok: true, results: [], cause: 'none' })
 
   async function checked(n) {
@@ -314,7 +314,7 @@ async function body() {
       `2. If \`git diff --cached --quiet -- <those paths>\` says nothing changed, return ok true with summary "nothing to commit".\n` +
       `3. Otherwise run \`git commit -m "${a.label}: round ${n}" -- <those paths>\` (the paths after -- limit the commit to them; other staged files stay staged and out of it).\n` +
       `4. Run \`git show --name-only --format= HEAD\`: every listed file must be one of the package paths. ok is true only then. summary: the commit hash. paths: the listed files.`,
-      { agentType: 'runner', schema: STEP, phase: 'Checks', label: `commit ${n}` })
+      { agentType: 'zodchi-core:runner', schema: STEP, phase: 'Checks', label: `commit ${n}` })
     return Boolean(res && res.ok)
   }
 
@@ -346,7 +346,7 @@ async function body() {
         `${files.map(f => `--attach ${q(f)}`).join(' ')} --wait-sec 3300 --out ${q(`${a.tmp}/review-${n}.json`)}\`. ` +
         `Leave out of --attach any current file that does not exist (the diff already carries deletions). ` +
         `${VERDICT} reviewFile: the review file path. Change no code.`,
-        { agentType: 'runner', schema: REVIEW, phase: 'Review', label: `review ${n}` })
+        { agentType: 'zodchi-core:runner', schema: REVIEW, phase: 'Review', label: `review ${n}` })
       : await step(
         `You are an independent code reviewer; you did not write this change. Work from ${a.repo} and change nothing. Read ${a.brief}, then the change: ${diffHow}, for these paths: ${JSON.stringify(files.map(rel))}. ` +
         `Context: ${context}. Look for correctness bugs, broken contracts, missing checks and unsafe operations; style only when it hides a bug. ` +

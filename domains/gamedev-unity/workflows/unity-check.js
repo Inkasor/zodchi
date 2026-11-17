@@ -25,7 +25,7 @@ return await step(
   `Captures and logs go to ${a.tmp}. ${a.note || 'A dirty scene or Play mode you did not start belongs to someone else: stop and report.'} ` +
   `Before the first menu command: AssetDatabase.Refresh, wait for ready, and confirm the Console has no compile errors, so the Editor runs the current code.`,
   {
-    agentType: 'unity-runner',
+    agentType: 'zodchi-gamedev-unity:unity-runner',
     label: 'unity steps',
     schema: {
       type: 'object', required: ['ok', 'steps', 'editor'],
