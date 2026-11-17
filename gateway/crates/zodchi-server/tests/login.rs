@@ -37,15 +37,12 @@ fn pid_of(started: &serde_json::Value) -> u32 {
     started["loginId"].as_str().unwrap().strip_prefix("login-").unwrap().parse().unwrap()
 }
 
-/// Asserts that the process `pid` is gone, waiting up to 10 s. Liveness, not the fake's `fake-exited` marker: the
-/// marker is written only on a graceful exit, and a stop that has to kill the app-server (a slow machine) never
-/// writes it.
+/// Asserts that the process `pid` is gone right now, with no waiting: `AppServer::stop` reaps the child before it
+/// returns, so by the time a replacement or a shutdown returns the app-server must already be gone, and a stop that
+/// is still going on in the background fails here. Liveness, not the fake's `fake-exited` marker: the marker is written
+/// only on a graceful exit, and a stop that has to kill the app-server (a slow machine) never writes it.
 fn assert_gone(pid: u32, what: &str) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while zodchi_core::process::alive(pid) {
-        assert!(Instant::now() < deadline, "{what}: the app-server {pid} is still running 10 s later");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    assert!(!zodchi_core::process::alive(pid), "{what}: the app-server {pid} is still running when the call returned");
 }
 
 fn wait_for(file: &Path) {

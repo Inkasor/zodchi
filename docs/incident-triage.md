@@ -47,7 +47,7 @@ args: {
    missing marks.
 3. **Classify** (one call of a strong model, no tools). The request is built from the adapter and fixed text only; the
    report and every product output reach the model as the attached bundle, marked as data. The answer: findings (each
-   with a kind and the evidence ids it rests on), gaps (missing evidence and the operation that would supply it, or the
+   with a kind, a confidence and the evidence ids it rests on, plus a summary in the model's own words), gaps (missing evidence and the operation that would supply it, or the
    product report to build when none exists), one route, plain facts for the reporter, and the model's own wording (a
    suggested reply, a line for the lead, the route's reason).
 4. **Draft** (the workflow, then a runner publishes). The workflow checks the answer before anything is written as a
@@ -58,8 +58,13 @@ args: {
      field and list entry of the fix brief, the agent skill change) that asks for access, says someone has none or
      proposes working around a refusal refuses the answer; a prohibition ("the command must not grant access", "the
      test must not bypass the allow-list refusal") is not a proposal and passes;
-   - the facts, the suggested reply, the line for the lead and the route's reason are not checked: they are shown apart,
-     as wording not to forward;
+   - the facts, the suggested reply, the line for the lead, the route's reason and each finding's summary are not
+     checked: they are shown apart, as wording not to forward. No actionable place reads them: a finding is shown by
+     the workflow's own text only (its kind, its confidence and its evidence ids with the source of each, such as
+     `op:processes`, `agentSkill` or `allowList:<name>`), and the same text is the cause in the incident-log note and
+     what the lead hands to the operator or owner. `classification.json` keeps the summaries apart from the findings
+     (under `modelWording.findingSummaries`). An infra finding whose summary says "Grant the lead read access to the
+     processes table." therefore appears in the draft only under the wording heading (fixture `access-in-summary`);
    - a fix brief with an empty or blank entry in files, done or checks refuses the answer;
    - a retry recommendation without a retry in the adapter refuses the answer;
    - `stale` without evidence that a specific release fixes the error and that the environment runs it becomes
@@ -88,7 +93,7 @@ and the adapter documents one, then a fixed text for the route:
 | `needs-evidence` | We are looking into the error and will write to you with what we find. |
 
 No text of the model is in it, so retry wording reaches the reply only through a recommended retry. The lead
-puts the reply into the reporter's language. The model's facts, its suggested reply, its line for the lead and the route's reason
+puts the reply into the reporter's language. The model's facts, its suggested reply, its line for the lead, the route's reason and the summary of each finding
 are shown in the draft under "Model's wording (not checked, do not forward as is)": they are not checked, and nothing
 is copied from them to the reporter as it stands.
 

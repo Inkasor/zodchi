@@ -524,8 +524,19 @@ function judge(ans, summary, ad) {
   for (const k of CLASSIFICATION.required) if (!(k in ans)) refused.push(`the answer has no ${k}`)
   if (refused.length) return { refused, notes }
   const arr = (x) => Array.isArray(x) ? x.map(String) : []
+  // A finding keeps only what the workflow shows as its own: kind, hypothesis (a kind), about, confidence (enums) and
+  // evidence ids. The summary is the model's text: it leaves the finding here and travels apart, in `summaries`, to the
+  // unchecked wording section only (nothing actionable reads it, so nothing checks it).
+  const ABOUT = ['code', 'capability', 'data', 'process', 'other'], CONFIDENCE = ['high', 'medium', 'low']
+  const summaries = []
   const findings = (Array.isArray(ans.findings) ? ans.findings : []).filter(f => f && typeof f === 'object')
-    .map(f => ({ hypothesis: '', about: 'other', confidence: 'low', summary: '', ...f, evidence: arr(f.evidence), fixedBy: arr(f.fixedBy), deployedIn: arr(f.deployedIn) }))
+    .map(f => {
+      summaries.push(typeof f.summary === 'string' ? f.summary.trim() : '')
+      return {
+        kind: f.kind, hypothesis: KINDS.includes(f.hypothesis) ? f.hypothesis : '', about: ABOUT.includes(f.about) ? f.about : 'other', confidence: CONFIDENCE.includes(f.confidence) ? f.confidence : 'low',
+        evidence: arr(f.evidence), fixedBy: arr(f.fixedBy), deployedIn: arr(f.deployedIn),
+      }
+    })
   const gaps = (Array.isArray(ans.gaps) ? ans.gaps : []).filter(g => g && typeof g === 'object')
     .map(g => ({ what: '', proposal: '', ...g, evidence: arr(g.evidence), operation: String(g.operation || '') }))
   const next = { route: '', role: '', question: '', reason: '', ...(ans.next || {}) }
@@ -547,8 +558,9 @@ function judge(ans, summary, ad) {
   })
   // Texts the lead acts on: the question for the owner, the gaps (the lead collects what they name) and every field and
   // list entry of the fix brief (a later package's brief), each on its own: no request for access, no "no access", no
-  // workaround of a refusal. The facts, the suggested reply, the line for the lead and the route's reason are not
-  // checked: the draft shows them apart, as wording not to forward. The reply to the reporter holds none of them.
+  // workaround of a refusal. The facts, the suggested reply, the line for the lead, the route's reason and the finding
+  // summaries are not checked: the draft shows them apart, as wording not to forward, and no actionable place (findings,
+  // route, incident-log cause, what is handed to the owner or operator) reads them. The reply to the reporter holds none.
   const entries = (k) => (Array.isArray(fb[k]) ? fb[k] : [fb[k]]).map((t, i) => [`fixBrief.${k}[${i}]`, t])
   const facts = typeof ans.facts === 'string' ? ans.facts.trim() : ''
   const texts = [['next.question', next.question], ['next.role', next.role],
@@ -585,15 +597,16 @@ function judge(ans, summary, ad) {
     for (const { f, fixed, deployed } of unproven) {
       const why = [!fixed && 'no evidence that a specific release fixes this error', !deployed && 'no evidence that the fix is deployed in the affected environment'].filter(Boolean).join(' and ')
       notes.push(`stale became unknown (hypothesis stale): ${why}`)
-      f.kind = 'unknown'; f.hypothesis = 'stale'; f.summary = `May be stale, not confirmed: ${why}.`
+      f.kind = 'unknown'; f.hypothesis = 'stale'; f.note = `May be stale, not confirmed: ${why}.`
       if (!fixed) need('a release that fixes this error signature', ['release', 'changelog'], f.fixedBy)
       if (!deployed) need('the deployment of the fix in the affected environment (the release it runs)', ['release'], f.deployedIn)
     }
     for (const f of findings) {
       if (unproven.some(u => u.f === f)) continue
-      f.summary = 'Withheld: written in the same answer as a stale finding that the evidence does not confirm.'
+      f.note = 'Withheld: written in the same answer as a stale finding that the evidence does not confirm.'
       if (f.kind !== 'unknown' || !KINDS.includes(f.hypothesis)) f.hypothesis = ''
     }
+    summaries.fill('')
     gaps.length = 0
     for (const m of missing.values()) {
       const ops = opsFor(m.kinds)
@@ -653,7 +666,8 @@ function judge(ans, summary, ad) {
   }
   if (refused.length) return { refused, notes }
   const text = (x) => discarded || typeof x !== 'string' ? '' : x.trim()
-  const j = { refused, notes, findings, gaps, next, fixBrief: fb, facts: text(facts), reply: text(ans.reply), leadLine: text(ans.leadLine), recommendRetry: !discarded && Boolean(ans.recommendRetry), discarded }
+  const sourceOf = Object.fromEntries(summary.items.map(i => [i.id, i.source]))
+  const j = { refused, notes, findings, summaries, sourceOf, gaps, next, fixBrief: fb, facts: text(facts), reply: text(ans.reply), leadLine: text(ans.leadLine), recommendRetry: !discarded && Boolean(ans.recommendRetry), discarded }
   j.reporterReply = reporterReply(j, ad)
   return j
 }
@@ -693,9 +707,12 @@ function draftText(j, ad, rev, ev, cls) {
   // Retry wording comes only from a validated recommendation, with the adapter's own retry.
   if (j.recommendRetry) L.push(`It recommends the product's retry: ${ad.retry.how}. Conditions: ${ad.retry.conditions}`, '')
   const meanwhile = 'Meanwhile the reporter gets the reply above.'
+  // Only workflow-made text describes a finding: its kind, confidence and evidence ids with the source of each (an
+  // operation name, the agent skill, an allow-list, the report). The model's summary of it is in the wording section.
+  const ids = (xs) => xs.map(e => `${e} (${j.sourceOf[e] || 'unknown source'})`).join(', ') || 'none'
   L.push('## Findings', '')
-  L.push(j.findings.length ? list(j.findings.map(f => `${f.kind}${f.kind === 'unknown' && f.hypothesis ? ` (hypothesis: ${f.hypothesis})` : ''}, ${f.confidence}, about ${f.about}: ${f.summary} Evidence: ${f.evidence.join(', ') || 'none'}.` +
-    (f.fixedBy.length ? ` Fixed by: ${f.fixedBy.join(', ')}.` : '') + (f.deployedIn.length ? ` Deployed in: ${f.deployedIn.join(', ')}.` : ''))) : '- none', '')
+  L.push(j.findings.length ? list(j.findings.map(f => `${f.kind}${f.kind === 'unknown' && f.hypothesis ? ` (hypothesis: ${f.hypothesis})` : ''}, ${f.confidence} confidence, about ${f.about}. Evidence: ${ids(f.evidence)}.` +
+    (f.fixedBy.length ? ` Fixed by: ${ids(f.fixedBy)}.` : '') + (f.deployedIn.length ? ` Deployed in: ${ids(f.deployedIn)}.` : '') + (f.note ? ` ${f.note}` : ''))) : '- none', '')
   L.push('## Gaps', '')
   L.push(j.gaps.length ? list(j.gaps.map(g => `${g.what} (${g.evidence.join(', ') || 'no item'}). ${g.operation ? `Operation that supplies it: ${g.operation}.` : 'No sanctioned operation supplies it.'}${g.proposal ? ` Proposal: ${g.proposal}` : ''}`)) : '- none', '')
   L.push('## Next', '')
@@ -723,7 +740,7 @@ function draftText(j, ad, rev, ev, cls) {
   L.push(`## For the incident log${ad.incidentLog ? ` (${ad.incidentLog})` : ''}`, '', 'Version 1 does not write the log; the lead adds this note when closing:', '')
   const main = j.findings[0]
   L.push(list([
-    `Cause: ${main ? `${main.kind}: ${main.summary}` : 'not settled'}`,
+    `Cause: ${main ? `${main.kind}${main.kind === 'unknown' && main.hypothesis ? ` (hypothesis: ${main.hypothesis})` : ''}, ${main.confidence} confidence; evidence ${ids(main.evidence)}` : 'not settled'}`,
     `Change: ${r === 'fix-brief' ? j.fixBrief.goal : 'none'}`,
     `Release: ${r === 'fix-brief' ? `only with an explicit OK${ad.releaseCommand ? `; the release command, handed over and never run by this workflow: ${ad.releaseCommand}` : ''}` : 'none'}`,
     j.recommendRetry ? `Who verifies: the reporter, by the product's retry (${ad.retry.how}); remind them to check it.` : 'Who verifies: not settled by this draft; name it when closing.',
@@ -732,7 +749,8 @@ function draftText(j, ad, rev, ev, cls) {
   L.push("## Model's wording (not checked, do not forward as is)", '')
   L.push(j.discarded
     ? 'Discarded: the answer rests in part on a stale finding that the evidence does not confirm (see the validation notes); classification.raw.json in this revision keeps it for audit.'
-    : list([`Facts for the reporter: ${j.facts || '(none)'}`, `Suggested reply: ${j.reply || '(none)'}`, `Line for the lead: ${j.leadLine || '(none)'}`, `Reason for the route: ${String(j.next.reason || '').trim() || '(none)'}`]), '')
+    : list([`Facts for the reporter: ${j.facts || '(none)'}`, `Suggested reply: ${j.reply || '(none)'}`, `Line for the lead: ${j.leadLine || '(none)'}`, `Reason for the route: ${String(j.next.reason || '').trim() || '(none)'}`,
+      ...j.findings.map((f, i) => `Summary of finding ${i + 1} (${f.kind}): ${j.summaries[i] || '(none)'}`)]), '')
   if (j.notes.length) L.push('## Validation notes', '', list(j.notes), '')
   return L.join('\n')
 }
@@ -941,7 +959,7 @@ async function body() {
     incident: a.incident, revision, adapterHash, evidenceSha256: evSha,
     classifier: { provider: pick.provider, model: pick.model, effort: pick.effort || '', ...(pick.provider === 'codex' ? { key } : {}) },
     rawSha256: raw ? sha256(raw) : '', accepted: !j.refused.length, refused: j.refused, notes: j.notes || [],
-    ...(j.refused.length ? { answer } : { findings: j.findings, gaps: j.gaps, next: j.next, reporterReply: j.reporterReply, recommendRetry: j.recommendRetry, fixBrief: j.fixBrief, discarded: j.discarded, modelWording: { facts: j.facts, reply: j.reply, leadLine: j.leadLine } }),
+    ...(j.refused.length ? { answer } : { findings: j.findings, gaps: j.gaps, next: j.next, reporterReply: j.reporterReply, recommendRetry: j.recommendRetry, fixBrief: j.fixBrief, discarded: j.discarded, modelWording: { facts: j.facts, reply: j.reply, leadLine: j.leadLine, findingSummaries: j.summaries } }),
   }
   const pubFirst = [
     ...(pick.provider === 'codex' ? [] : [{ path: rawFile, text: lf(raw) }]),
