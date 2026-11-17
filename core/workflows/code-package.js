@@ -569,7 +569,9 @@ async function body() {
         { model: reviewer.model, schema: REVIEW, phase: 'Review', label: `review ${n}` })
     out.rounds.push({ n, checks, review })
     if (!review) infraFail(`review ${n}`, 'the review step returned no result')
-    if (infraBad(review) || review.verdict === 'missing') infraFail(`review ${n}`, (review.gateway !== 'final' && review.infra) || `the review has no verdict (${review.summary || 'no summary'}; ${review.reviewFile || `${a.tmp}/review-${n}.json`})`)
+    // Only a review through the gateway reports the gateway outcome; a Claude reviewer has no gateway field.
+    const viaGateway = reviewer.provider === 'codex'
+    if ((viaGateway && infraBad(review)) || review.verdict === 'missing') infraFail(`review ${n}`, (viaGateway && review.gateway !== 'final' && review.infra) || `the review has no verdict (${review.summary || 'no summary'}; ${review.reviewFile || `${a.tmp}/review-${n}.json`})`)
     out.verdict = review.verdict
     // A focused review leaves the carried findings as they were; a full review was given them and repeats those that
     // still hold, so after it they are its own findings.
