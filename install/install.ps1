@@ -1,9 +1,10 @@
-# zodchi installer for Windows. Usage: .\install\install.ps1 [-Domains web-apps,gamedev-unity|all] [-Project <repo>] [-NoBuild] [-NoPlugins] [-GatewayCli <cli.mjs>] [-Force] [-DryRun] [-Uninstall]
+# zodchi installer for Windows. Usage: .\install\install.ps1 [-Domains web-apps,gamedev-unity|all] [-Project <repo>] [-NoBuild] [-NoPlugins] [-GatewayCli <cli.mjs>] [-Dev] [-Force] [-DryRun] [-Uninstall]
 param(
   [string]$Domains,
   [string]$Project,
   [string]$GatewayCli,
   [switch]$Force,
+  [switch]$Dev,
   [switch]$DryRun,
   [switch]$Uninstall,
   [switch]$NoBuild,
@@ -17,6 +18,7 @@ if ($Domains) { $argsList += @('--domains', $Domains) }
 if ($Project) { $argsList += @('--project', $Project) }
 if ($GatewayCli) { $argsList += @('--gateway-cli', $GatewayCli) }
 if ($Force) { $argsList += '--force' }
+if ($Dev) { $argsList += '--dev' }
 if ($DryRun) { $argsList += '--dry-run' }
 if ($Uninstall) { $argsList += '--uninstall' }
 if ($NoBuild) { $argsList += '--no-build' }
