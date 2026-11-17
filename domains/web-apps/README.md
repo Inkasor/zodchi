@@ -3,7 +3,6 @@
 Web applications: services, dashboards and internal tools that ship often and
 are changed by several agents at once.
 
-
 Install: `/plugin install zodchi-web-apps --marketplace Inkasor/zodchi` in Claude Code, or from a clone
 `./install/install.sh --project <repo> --domains web-apps` to turn it on in one project. It needs `zodchi-core`.
 Workflows run as `/zodchi-web-apps:<name>`.
