@@ -6,6 +6,7 @@
   "required": [
     "verdict",
     "summary",
+    "commit",
     "findings",
     "notVerified"
   ],
@@ -17,11 +18,15 @@
         "changes_requested",
         "blocked"
       ],
-      "description": "approved: no blocking finding is open; changes_requested: at least one blocking finding; blocked: the package cannot be judged from what the request holds"
+      "description": "approved: no important finding is open (nit and pre-existing findings do not block); changes_requested: at least one important finding; blocked: the package cannot be judged from what the request holds"
     },
     "summary": {
       "type": "string",
       "description": "Two to four sentences: what was compared with what, and the outcome"
+    },
+    "commit": {
+      "type": "string",
+      "description": "The commit the request names as the one under review, exactly as written there; empty when the request names none"
     },
     "findings": {
       "type": "array",
@@ -45,10 +50,11 @@
           "severity": {
             "type": "string",
             "enum": [
-              "blocking",
-              "should_fix",
-              "note"
-            ]
+              "important",
+              "nit",
+              "pre-existing"
+            ],
+            "description": "important: a real defect the change brings in, it blocks approval; nit: worth fixing, does not block; pre-existing: it was there before the change, does not block"
           },
           "location": {
             "type": "string",
