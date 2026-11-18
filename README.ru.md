@@ -18,7 +18,8 @@ Zodchi — набор рабочих приёмов для Claude Code. В нё�
 
 | Папка | Что в ней |
 | --- | --- |
-| `core/` | Агенты для всех разделов: `coder`, `runner`, `applier`, `researcher`. Процессы: `code-package`, `ops-script`, `incident-triage` (сообщение пользователя об ошибке — в черновик ответа или задания на исправление, см. [docs/incident-triage.md](docs/incident-triage.md)). Навык: `workspace-audit` (разбор захламлённой папки: исследователи только читают, решения одной пачкой, потом один исполнитель) |
+| `core/` | Агенты для всех разделов: `coder`, `runner`, `applier`, `researcher`. Процессы: `code-package`, `ops-script`, `incident-triage` (сообщение пользователя об ошибке — в черновик ответа или задания на исправление, см. [docs/incident-triage.md](docs/incident-triage.md)). Навыки: `workspace-audit` (разбор захламлённой папки: исследователи только читают, решения одной пачкой, потом один исполнитель) и `zodchi-flow` (выполнить задачу кода через `zodchi flow code-package` из сессии Claude Code) |
+| `codex/` | Навык Codex `zodchi-flow`: то же, из сессии Codex (см. [Три способа запустить пакет](#три-способа-запустить-пакет)) |
 | `domains/web-apps/` | Веб-приложения: `branch-review` перед выпуском |
 | `domains/gamedev-unity/` | Ассеты игры в Blender и Unity: `asset-round`, `method-question`, `rubric-probe`, `unity-check`, агенты `modeller`, `unity-runner`, `art-critic` |
 | `models.json` | Таблица ролей: какая модель играет какую роль, по порядку предпочтения |
@@ -131,6 +132,13 @@ cd zodchi
 - Установщик не перезаписывает файл, который положил не он или который вы
   изменили. `~/.zodchi/models.json` после первой установки ваш: новая
   таблица ляжет рядом, как `models.json.new`.
+- Навык Codex `zodchi-flow` (`codex/skills/`) ставится в папку навыков Codex,
+  `$CODEX_HOME/skills` или `~/.codex/skills`, как управляемый файл наравне с
+  остальными: файл с таким именем, который положил не установщик или который
+  вы изменили, не трогается (`--force` заменяет его), а `--uninstall` его
+  убирает. `--no-codex-skill` не трогает ни навык, ни его прежнюю копию. Навык
+  Claude Code с тем же именем входит в плагин `zodchi-core` и приходит вместе
+  с ним.
 - `--dry-run` показывает, что изменится. `--uninstall` убирает поставленное и
   оставляет ваши правки. Если поставлено с копии (по умолчанию), убираются
   регистрация маркетплейса и копии плагинов, а вместе с маркетплейсом Claude
@@ -150,6 +158,42 @@ cd zodchi
 переопределить роли в `.zodchi/models.json`, а отдельный запуск — в своих
 аргументах (`models`). Кандидат `claude` работает как субагент Claude Code,
 кандидат `codex` — через шлюз на вашем входе в Codex.
+
+## Три способа запустить пакет
+
+`zodchi flow code-package` (см. [docs/flow.md](docs/flow.md)) проводит пакет кода как код в шлюзе. Запустить его можно
+тремя способами; движок, журнал и результат везде одни и те же. Навык `zodchi-flow` говорит агенту, как: превратить
+задачу в задание и файл аргументов, запустить `zodchi flow code-package --args <файл>` на переднем плане, прочитать
+JSON результата, продолжить прерванный запуск через `--resume <run-id>` и отчитаться. Он не правит журнал, не
+отправляет шаги вручную заново и не переключает ветки во время запуска.
+
+| Способ | Кто запускает | Кто отвечает на шаги моделей | Настройка |
+| --- | --- | --- | --- |
+| 1. Из сессии Codex (сначала Codex) | навык Codex `zodchi-flow` | Codex на вашем входе или сервер вашей компании | установщик кладёт навык в `~/.codex/skills`; для сервера — `flow.json` ниже |
+| 2. Из сессии Codex с ролями Claude | тот же навык | писатель Claude через Claude Code CLI на вашей машине, ревьюер Codex | `"claude": true` в `flow.json` и кандидат Claude первым у `expertWriter` в `models.json` |
+| 3. Из сессии Claude Code (сначала Claude) | навык Claude Code `zodchi-flow` из `zodchi-core` | как в 1 или 2, что настроили | установщик ставит плагин |
+
+Сторону моделей каждый настраивает в своём `~/.zodchi/flow.json` (`$ZODCHI_HOME/flow.json`); без файла шаги моделей
+идут в локальный шлюз на вашем входе в Codex, как в способе 1.
+
+Через сервер компании (коллега без входа в Codex; см. [docs/flow-server.md](docs/flow-server.md)):
+
+```json
+{ "server": "https://zodchi.example.org", "tokenFile": "~/.zodchi/flow-token" }
+```
+
+С ролями Claude (см. [docs/flow-claude.md](docs/flow-claude.md)) — `flow.json` и `models.json`:
+
+```json
+{ "claude": true }
+```
+
+```json
+{ "version": 1, "roles": {
+  "expertWriter": { "candidates": [{ "provider": "claude", "model": "opus", "effort": "high" }, { "provider": "codex", "model": "gpt-6.2-sol", "effort": "medium" }] },
+  "reviewer": { "candidates": [{ "provider": "codex", "model": "gpt-6.2-sol", "effort": "medium" }] }
+} }
+```
 
 ## Подписки: что разрешено
 

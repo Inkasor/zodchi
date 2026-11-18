@@ -2,7 +2,7 @@
 // zodchi installer. install.ps1 and install.sh call this; it needs Node 20+ and Claude Code.
 //
 //   node install/install.mjs [--domains web-apps,gamedev-unity|all] [--project <repo>] [--no-build] [--no-plugins]
-//                            [--gateway-cli <cli.mjs>] [--dev] [--force] [--dry-run] [--uninstall]
+//                            [--gateway-cli <cli.mjs>] [--no-codex-skill] [--dev] [--force] [--dry-run] [--uninstall]
 //
 // What it does:
 //   1. Claude Code plugins (the marketplace "zodchi"): zodchi-core for you in every project (user scope). --domains
@@ -29,6 +29,10 @@
 //   2. The gateway: with cargo on PATH the Rust gateway is built from gateway/ and installed as ~/.zodchi/bin/zodchi.
 //      --no-build skips that; --gateway-cli instead installs a small command that forwards to a Node gateway.
 //   3. models.json and the gateway roles -> ~/.zodchi (or $ZODCHI_HOME).
+//   4. The Codex skill zodchi-flow (codex/skills/) -> $CODEX_HOME/skills, else ~/.codex/skills: it tells a Codex session how
+//      to run `zodchi flow code-package`. It is managed like every other file here. --no-codex-skill leaves it (and an
+//      earlier copy of it) alone, on install and on --uninstall. The Claude Code skill zodchi-flow is part of the
+//      zodchi-core plugin (core/skills/), so it comes with step 1.
 // A file the installer did not put there, or that you changed since, is left alone (use --force to replace it).
 // ~/.zodchi/models.json is yours once installed: a newer table is written beside it as models.json.new.
 // Rerun it after `git pull` to update everything. --uninstall removes what it installed, the plugin copies too: when the
@@ -59,6 +63,7 @@ function parseArgs(argv) {
     else if (a === "--dev") o.dev = true;
     else if (a === "--no-build") o.noBuild = true;
     else if (a === "--no-plugins") o.noPlugins = true;
+    else if (a === "--no-codex-skill") o.noCodexSkill = true;
     else if (["--domains", "--project", "--gateway-cli"].includes(a) && argv[i + 1]) o[a.slice(2)] = argv[++i];
     else if (a === "--help" || a === "-h") { o.help = true; }
     else throw new Error(`Unknown argument: ${a}`);
@@ -78,11 +83,23 @@ function chooseDomains(given, all) {
   return picked;
 }
 
-function plan(home, binary) {
+// Every file under codex/skills/ of this repository, as its path below that folder with forward slashes.
+function codexSkillFiles() {
+  const base = path.join(SRC, "codex", "skills");
+  if (!fs.existsSync(base)) return [];
+  return fs.readdirSync(base, { recursive: true, withFileTypes: true })
+    .filter(e => e.isFile())
+    .map(e => path.relative(base, path.join(e.parentPath || e.path, e.name)).split(path.sep).join("/"))
+    .sort();
+}
+
+function plan(home, binary, codexSkills) {
   const items = []; // { src | content, dest, kind }
   const add = (src, dest, kind, mode) => items.push({ src, dest, kind, mode });
   for (const f of fs.readdirSync(path.join(SRC, "roles"))) add(path.join(SRC, "roles", f), path.join(home, "roles", f), "managed");
   add(path.join(SRC, "models.json"), path.join(home, "models.json"), "user-owned");
+  // The Codex skill goes where Codex reads skills; a managed file like the roles: never over one the installer did not write.
+  if (codexSkills) for (const f of codexSkillFiles()) add(path.join(SRC, "codex", "skills", f), path.join(codexSkills, ...f.split("/")), "managed");
   if (binary) {
     // The Rust gateway. The forwarding command of an earlier install is no longer planned, so it is removed.
     add(binary, path.join(home, "bin", path.basename(binary)), "managed", 0o755);
@@ -474,12 +491,23 @@ function uninstallName(home, list) {
   return treeName();
 }
 
+// Removes dir and each parent below stop while it is empty; a folder with anything in it, and stop itself, stay.
+function removeEmptyFolders(dir, stop) {
+  const inside = (d) => path.resolve(d).toLowerCase().startsWith(path.resolve(stop).toLowerCase() + path.sep);
+  for (let d = path.resolve(dir); inside(d); d = path.dirname(d)) {
+    try { if (fs.readdirSync(d).length) return; fs.rmdirSync(d); } catch { return; }
+  }
+}
+
 async function main() {
   const o = parseArgs(process.argv.slice(2));
   if (o.help) { console.log(fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1).filter((l, i, all) => all.slice(0, i + 1).every(x => x.startsWith("//"))).map(l => l.replace(/^\/\/ ?/, "")).join("\n")); return; }
   const home = path.resolve(process.env.ZODCHI_HOME || path.join(os.homedir(), ".zodchi"));
   // Agents and workflows of an earlier 1.0 install were copied here; they are removed now that plugins carry them.
   const claudeDir = path.resolve(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"));
+  // Where Codex reads skills: $CODEX_HOME/skills, else ~/.codex/skills.
+  const codexSkillsDir = path.join(path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), ".codex")), "skills");
+  const underCodexSkills = (f) => path.resolve(f).toLowerCase().startsWith(codexSkillsDir.toLowerCase() + path.sep);
   const manifest = readManifest(home);
   const say = (s) => console.log((o.dryRun ? "[dry-run] " : "") + s);
 
@@ -526,13 +554,19 @@ async function main() {
       }
     } finally { release(); }
     if (!o.dryRun && !o.noPlugins) try { fs.rmdirSync(path.join(home, "plugins")); } catch { /* not empty or not there */ }
+    const kept = {};
     for (const [dest, hash] of Object.entries(manifest.files || {})) {
+      // --no-codex-skill leaves the Codex skill, and the record of it, alone.
+      if (o.noCodexSkill && underCodexSkills(dest)) { kept[dest] = hash; continue; }
       if (!fs.existsSync(dest)) continue;
       if (sha(fs.readFileSync(dest)) !== hash && !o.force) { say(`keep (changed by you): ${dest}`); continue; }
       say(`remove ${dest}`);
-      if (!o.dryRun) fs.rmSync(dest);
+      if (!o.dryRun) { fs.rmSync(dest); if (underCodexSkills(dest)) removeEmptyFolders(path.dirname(dest), codexSkillsDir); }
     }
-    if (!o.dryRun) fs.rmSync(path.join(home, "installed.json"), { force: true });
+    if (!o.dryRun) {
+      if (Object.keys(kept).length) fs.writeFileSync(path.join(home, "installed.json"), JSON.stringify({ version: manifest.version, files: kept }, null, 2) + "\n");
+      else fs.rmSync(path.join(home, "installed.json"), { force: true });
+    }
     if (!marketplaceGone) console.log(`The marketplace ${MARKETPLACE} stays registered${o.noPlugins ? " (--no-plugins)" : ""}, and so do the domain plugins you enabled; to remove them: claude plugin uninstall zodchi-<domain>@${MARKETPLACE} --scope local (in each project), then claude plugin marketplace remove ${MARKETPLACE}.`);
     return;
   }
@@ -574,13 +608,13 @@ async function main() {
   // Plugins first: when Claude Code refuses, nothing else has been changed yet.
   if (!o.noPlugins) plugins(o, domains, say, home, copy);
 
-  const items = plan(home, binary);
+  const items = plan(home, binary, o.noCodexSkill ? null : codexSkillsDir);
   const nativeDest = binary ? path.join(home, "bin", path.basename(binary)) : null;
   const FORWARDING = ["zodchi.mjs", "zodchi.cmd", "zodchi"].map(f => path.resolve(home, "bin", f));
   const owned = manifest.files || {};
   const isOwned = (dest, buf) => Object.prototype.hasOwnProperty.call(owned, dest) && owned[dest] === sha(buf);
   const next = { version: VERSION, files: { ...owned } };
-  let written = 0, skipped = 0;
+  let written = 0, skipped = 0, skillSkipped = 0;
   const put = (dest, body, mode) => {
     if (!o.dryRun) {
       fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -607,14 +641,14 @@ async function main() {
       put(prop, body);
       continue;
     }
-    if (exists && !isOwned(it.dest, current) && !o.force) { say(`skip (not installed by zodchi or changed by you): ${it.dest}`); skipped++; continue; }
+    if (exists && !isOwned(it.dest, current) && !o.force) { say(`skip (not installed by zodchi or changed by you): ${it.dest}`); skipped++; if (underCodexSkills(it.dest)) skillSkipped++; continue; }
     say(`${exists ? "update" : "add"} ${it.dest}`);
     put(it.dest, body, it.mode);
   }
 
   // Files from an earlier install that this one no longer plans: removed when unchanged.
   const planned = new Set(items.map(it => path.resolve(it.dest)));
-  const inside = (f) => [claudeDir, home].some(d => path.resolve(f).toLowerCase().startsWith(path.resolve(d).toLowerCase() + path.sep));
+  const inside = (f) => [claudeDir, home, codexSkillsDir].some(d => path.resolve(f).toLowerCase().startsWith(path.resolve(d).toLowerCase() + path.sep));
   // The forwarding command goes only once the Rust gateway is really in place; a skipped binary keeps it.
   const nativeInPlace = Boolean(nativeDest) && (o.dryRun
     ? !fs.existsSync(nativeDest) || isOwned(nativeDest, fs.readFileSync(nativeDest)) || o.force
@@ -623,8 +657,9 @@ async function main() {
   for (const [dest, hash] of Object.entries(manifest.files || {})) {
     if (planned.has(path.resolve(dest)) || dest.endsWith(".new") || !inside(dest)) continue;
     if (FORWARDING.includes(path.resolve(dest)) && !nativeInPlace) continue;
+    if (o.noCodexSkill && underCodexSkills(dest)) continue; // left alone, and still recorded
     if (fs.existsSync(dest) && sha(fs.readFileSync(dest)) !== hash) { say(`keep (changed by you, no longer installed): ${dest}`); delete next.files[dest]; continue; }
-    if (fs.existsSync(dest)) { say(`remove ${dest}`); if (!o.dryRun) fs.rmSync(dest); }
+    if (fs.existsSync(dest)) { say(`remove ${dest}`); if (!o.dryRun) { fs.rmSync(dest); if (underCodexSkills(dest)) removeEmptyFolders(path.dirname(dest), codexSkillsDir); } }
     delete next.files[dest];
   }
 
@@ -645,6 +680,7 @@ async function main() {
   console.log(`\nzodchi ${VERSION}: ${written} file(s) written, ${skipped} skipped.`);
   if (o.noPlugins) console.log("Plugins: skipped (--no-plugins).");
   else console.log(`Plugins (${copy ? `from the copy ${copy.dir}` : `--dev: from the clone ${SRC}`}): zodchi-core everywhere${domains.length ? `; ${domains.map(d => `zodchi-${d}`).join(", ")} ${o.project ? `in ${path.resolve(o.project)}` : "everywhere"}` : ""}. A domain for one project, or to update one enabled earlier in another project: rerun with --project <repo> --domains <name>.`);
+  console.log(o.noCodexSkill ? "Codex skill: skipped (--no-codex-skill)." : skillSkipped ? `Codex skill zodchi-flow: ${skillSkipped} file(s) of yours are in ${codexSkillsDir}; left as they are (--force replaces them).` : `Codex skill zodchi-flow: ${path.join(codexSkillsDir, "zodchi-flow", "SKILL.md")}`);
   console.log(`Codex CLI: ${codex.status === 0 ? codex.stdout.trim() : "not found - install it and run `codex login` for gateway roles"}`);
   if (binary && nativeInPlace) console.log(`Gateway: the Rust gateway, ${path.join(home, "bin", path.basename(binary))}. Subscriptions: ~/.zodchi/accounts.json (see gateway/README.md).`);
   else if (cfg.gatewayCli) console.log(`Gateway: forwarding to ${cfg.gatewayCli}.`);

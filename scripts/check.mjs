@@ -88,6 +88,22 @@ for (const f of tracked.filter(f => /[\\/]workflows[\\/][^\\/]+\.js$/.test(f))) 
   if (mentions !== keyed) bad(f, "agentType appears other than as an object key with a literal value; keep it checkable");
 }
 
+// 6. skills: every SKILL.md has frontmatter whose name is its folder's and a description; the two zodchi-flow skills (Codex
+//    and Claude Code) carry one shared body, so they cannot drift apart.
+const skillBodies = new Map();
+for (const f of tracked.filter(f => /[\\/]skills[\\/][^\\/]+[\\/]SKILL\.md$/.test(f))) {
+  const m = fs.readFileSync(f, "utf8").match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
+  if (!m) { bad(f, "no frontmatter"); continue; }
+  const name = (m[1].match(/^name:\s*(.+)$/m) || [])[1]?.trim();
+  if (!name || !/^description:\s*\S/m.test(m[1])) bad(f, "frontmatter needs name and description");
+  if (name && name !== path.basename(path.dirname(f))) bad(f, `name "${name}" differs from the folder name`);
+  if (name === "zodchi-flow") skillBodies.set(f, m[2].replace(/\r\n/g, "\n"));
+}
+for (const rel of ["codex/skills/zodchi-flow/SKILL.md", "core/skills/zodchi-flow/SKILL.md"]) {
+  if (!skillBodies.has(path.join(ROOT, rel))) bad(path.join(ROOT, rel), "the zodchi-flow skill is missing");
+}
+if (new Set(skillBodies.values()).size > 1) bad(path.join(ROOT, "core", "skills", "zodchi-flow", "SKILL.md"), "the body differs from the other zodchi-flow skill's: they share one body");
+
 // 4. publish guard
 const PATTERNS = [
   [/\b[A-Za-z]:[\\/](?!\/)[^\s"'`]*/g, "a Windows path"],
