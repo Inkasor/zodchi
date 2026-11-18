@@ -5,7 +5,11 @@
 //! A step is `POST /v1/jobs` with the step's journaled key, the installed role's name, the pinned model and effort,
 //! the prompt built here with every file inlined, and the output schema of this workflow version; then
 //! `GET /v1/jobs/{key}?waitSec=60` until the job is final, and `GET /v1/jobs/{key}/result` for its answer, which the
-//! engine validates. A resumed run looks its journaled key up (`GET /v1/jobs/{key}`) and never submits it again.
+//! engine validates. A resumed run looks its journaled key up (`GET /v1/jobs/{key}`). A key the server does not know
+//! is posted again under the same key, with the request the journal holds, only when no job of it can have run and
+//! gone: the journal has no "submitted" record of it, its intent is younger than the server keeps a finished job, and
+//! the token is still the account's the request was made for (`GET /v1/account`, `user`). Otherwise the engine stops
+//! with an unknown outcome.
 //!
 //! HTTP goes through the system `curl`, as the Decisions API of zodchi-core does, so the engine carries no TLS stack
 //! of its own: the token is written to curl's stdin as a header and never stands on a command line, in a file the
@@ -20,10 +24,11 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use zodchi_core::config::{user_home, Config};
 use zodchi_core::job::{is_terminal, LIMIT_PROMPT};
-use zodchi_core::util::{fail, is_key, GatewayError, Result};
+use zodchi_core::util::{fail, is_key, now_ms, parse_iso_ms, read_stored, sha256_hex, GatewayError, Result};
 
 use super::Executor;
 use crate::code_package::{REVIEWER_GATEWAY_ROLE, WRITER_GATEWAY_ROLE};
+use crate::journal::{flows_dir, is_run_id};
 use crate::models::{codex_usable, Pick};
 
 /// How long a submission over the server's limit of unfinished jobs (429 `busy`) is asked again, under the same key.
@@ -37,6 +42,10 @@ const POLL_PAUSE: Duration = Duration::from_secs(5);
 /// The long poll of one `GET /v1/jobs/{key}`; the server waits at most 60 seconds.
 const WAIT_SEC: u64 = 60;
 const LIMIT_TOKEN: usize = 4096;
+/// A journaled request that the server does not know is posted again under its key only while its intent is younger
+/// than this: the server removes a finished job seven days after it ended, and a job is made after its intent, so a
+/// job of a younger intent cannot have run and been removed.
+const REPLAY_WINDOW_MS: i128 = 6 * 86_400_000;
 
 /// What a server executor needs, read once when it is made: the base URL and the token. Not `Debug`: the token is
 /// never printed.
@@ -51,6 +60,10 @@ struct Setup {
 pub struct Server {
     setup: std::result::Result<Setup, String>,
     checked: std::cell::RefCell<Vec<String>>,
+    /// The zodchi home, whose journal holds the requests of the runs.
+    home: PathBuf,
+    /// The server's id of the token's account (`GET /v1/account`, `user`), read by the preflight.
+    user: std::cell::RefCell<Option<String>>,
 }
 
 /// One answer of the server.
@@ -80,7 +93,8 @@ fn is_code(text: &str) -> bool {
 /// whether the host is loopback.
 fn base_url(raw: &str) -> std::result::Result<(String, bool), String> {
     let url = raw.trim().trim_end_matches('/');
-    let bad = |why: &str| Err(format!("The flow server {url:?} in flow.json is not usable: {why}."));
+    // The rejected value is not repeated: a URL refused for a user or a query may hold a credential.
+    let bad = |why: &str| Err(format!("The flow server named in flow.json (\"server\") is not usable: {why}."));
     let (secure, rest) = if let Some(rest) = url.strip_prefix("https://") {
         (true, rest)
     } else if let Some(rest) = url.strip_prefix("http://") {
@@ -184,9 +198,46 @@ fn final_job(key: &str, job: &Value, data: Option<Value>, base: &str) -> Value {
     out
 }
 
+/// What the journal under `home` holds of a server job's key: its last intent, the request stored for it (checked
+/// against the intent's digest), and whether a "submitted" record of the key exists. The run is the one whose id
+/// starts the key (`flow-<run>-...`) and whose events name the key in an intent of the server executor.
+fn journaled(home: &Path, key: &str) -> std::result::Result<(Value, Value, bool), String> {
+    let dir = flows_dir(home);
+    let entries = std::fs::read_dir(&dir).map_err(|_| "the journal folder of the runs cannot be read".to_string())?;
+    let mut found = None;
+    for entry in entries.flatten() {
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if !is_run_id(&id) || !key.starts_with(&format!("flow-{id}-")) {
+            continue;
+        }
+        let text = std::fs::read_to_string(entry.path().join("events.jsonl")).unwrap_or_default();
+        let events: Vec<Value> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+        let Some(intent) = events.iter().rev().find(|e| e["kind"] == json!("intent") && e["key"] == json!(key)) else { continue };
+        if found.is_some() {
+            return Err("more than one run of the journal names the key".into());
+        }
+        let submitted = events.iter().any(|e| e["kind"] == json!("submitted") && e["key"] == json!(key));
+        found = Some((entry.path(), intent.clone(), submitted));
+    }
+    let (run, intent, submitted) = found.ok_or("no run of the journal has an intent of the key")?;
+    if intent["effect"] != json!("gateway job") || intent["executor"] != json!("server") {
+        return Err("its intent is not a model step of the flow server".into());
+    }
+    let file = intent["request"].as_str().unwrap_or("");
+    let name = file.strip_prefix("requests/").unwrap_or("");
+    if name.is_empty() || !name.ends_with(".json") || !name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_')) || name.contains("..") {
+        return Err("its intent names no stored request".into());
+    }
+    let stored = read_stored(&run.join("requests").join(name)).ok_or("its stored request is missing")?;
+    if intent["digest"].as_str() != Some(sha256_hex(stored.to_string()).as_str()) {
+        return Err("its stored request does not match the digest of its intent".into());
+    }
+    Ok((intent, stored, submitted))
+}
+
 impl Server {
     pub fn new(cfg: Config, server: String) -> Server {
-        Server { setup: setup(&cfg, &server), checked: Default::default() }
+        Server { setup: setup(&cfg, &server), checked: Default::default(), home: cfg.home.clone(), user: Default::default() }
     }
 
     fn setup(&self) -> Result<&Setup> {
@@ -306,6 +357,8 @@ impl Server {
         if codex_usable(&account).is_err() {
             return fail(format!("Your ChatGPT subscription on the flow server {} has no limit left now; resume after it resets. Nothing was submitted.", s.base));
         }
+        // The account the requests of this run are made for: a resume posts a request again only under the same one.
+        *self.user.borrow_mut() = account["user"].as_str().filter(|u| !u.is_empty()).map(str::to_string);
         self.checked.borrow_mut().extend(missing.iter().map(|r| r.to_string()));
         Ok(())
     }
@@ -334,6 +387,38 @@ impl Server {
             }
         }
     }
+
+    /// Posts the journaled request of a key the server does not know again, under the same key, when no job of it can
+    /// have run: the journal has no "submitted" record of it (a "submitted" job that is gone ran, or was taken), its
+    /// intent is younger than `REPLAY_WINDOW_MS` (a job made from it cannot have been swept), it was made for this
+    /// server, and the token is still the account's it was made for (another person's subscription is never used,
+    /// and a job of another account is not seen). True when the job was created now.
+    fn replay(&self, key: &str) -> Result<bool> {
+        let s = self.setup()?;
+        let (intent, stored, submitted) = journaled(&self.home, key).map_err(GatewayError)?;
+        if submitted {
+            return fail("the journal records it as submitted, so its job was taken and is gone now");
+        }
+        let at = intent["at"].as_str().and_then(parse_iso_ms).ok_or_else(|| GatewayError("its intent has no time".into()))?;
+        if now_ms() - at > REPLAY_WINDOW_MS {
+            return fail("its intent is older than six days, so a job of it may have run and been removed by the server");
+        }
+        let role = &stored["role"];
+        if role["server"].as_str() != Some(s.base.as_str()) {
+            return fail("its request was made for another flow server");
+        }
+        let Some(user) = role["user"].as_str().filter(|u| !u.is_empty()) else {
+            return fail("its request does not name the account it was made for (the server did not say it)");
+        };
+        let account = self.http("GET", "/v1/account", None, 60)?;
+        if account.status != 200 {
+            return Err(self.refusal("GET /v1/account", &account));
+        }
+        if account.json()["user"].as_str() != Some(user) {
+            return fail(format!("the token in {} is not the one of the account the request was made for", s.token_file.display()));
+        }
+        self.submit(key, &stored)
+    }
 }
 
 impl Executor for Server {
@@ -347,7 +432,8 @@ impl Executor for Server {
             needed = vec![WRITER_GATEWAY_ROLE, REVIEWER_GATEWAY_ROLE];
         }
         self.preflight(&needed)?;
-        Ok(json!({ "name": name, "model": pick.model, "effort": pick.effort, "outputSchema": schema, "server": s.base }))
+        let user = self.user.borrow().clone();
+        Ok(json!({ "name": name, "model": pick.model, "effort": pick.effort, "outputSchema": schema, "server": s.base, "user": user }))
     }
 
     /// `POST /v1/jobs` with the stored request. The same key and request give the same job (200), so asking again
@@ -389,13 +475,28 @@ impl Executor for Server {
         }
     }
 
-    /// Whether the server holds the job of `key` for this token. Only a 404 says no; when the server cannot be asked
-    /// the answer is yes, and the wait that follows stops the step with the reason.
+    /// Whether the server holds the job of `key` for this token. When the server cannot be asked the answer is yes,
+    /// and the wait that follows stops the step with the reason. A `404` is a key the server never got (a cut
+    /// between the intent and the `POST`) or a job that is gone: the journaled request is posted again under the same
+    /// key when `replay` can rule the second out, and the answer is then yes; otherwise no, and the engine stops with
+    /// an unknown outcome.
     fn exists(&self, key: &str) -> bool {
         if !is_key(key) {
             return false;
         }
-        !matches!(self.http("GET", &format!("/v1/jobs/{key}"), None, 60), Ok(a) if a.status == 404)
+        if !matches!(self.http("GET", &format!("/v1/jobs/{key}"), None, 60), Ok(a) if a.status == 404) {
+            return true;
+        }
+        match self.replay(key) {
+            Ok(created) => {
+                eprintln!("zodchi flow: the flow server did not know {key}; its journaled request was posted again under the same key ({})", if created { "a new job" } else { "the job it had" });
+                true
+            }
+            Err(e) => {
+                eprintln!("zodchi flow: the flow server does not know {key}, and it is not posted again: {}", e.0);
+                false
+            }
+        }
     }
 
     /// Polls until the job is final; for a success, reads the result. The job has its own time limit on the server,
@@ -455,6 +556,45 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_url_is_not_repeated() {
+        for url in [format!("https://user:SECRET1{}gw.example.org", "@"), "https://gw.example.org/?token=SECRET1".into(), "http://gw.example.org/SECRET1".into(), "SECRET1".into()] {
+            let why = base_url(&url).unwrap_err();
+            assert!(!why.contains("SECRET1") && why.contains("flow.json"), "{why}");
+        }
+    }
+
+    #[test]
+    fn journaled_requests() {
+        let home = std::env::temp_dir().join(format!("zodchi-flow-test-{}-{:08x}", std::process::id(), rand::random::<u32>()));
+        let run = flows_dir(&home).join("r1");
+        std::fs::create_dir_all(run.join("requests")).unwrap();
+        let stored = json!({ "role": { "name": "flow-patch", "server": "http://127.0.0.1:1", "user": "u1" }, "prompt": "p" });
+        std::fs::write(run.join("requests").join("flow-r1-write.json"), serde_json::to_string_pretty(&stored).unwrap()).unwrap();
+        let intent = |key: &str, extra: Value| {
+            let mut e = json!({ "kind": "intent", "step": "write", "effect": "gateway job", "key": key, "request": "requests/flow-r1-write.json", "digest": sha256_hex(stored.to_string()), "executor": "server", "at": "2026-01-01T00:00:00Z" });
+            for (k, v) in extra.as_object().unwrap() {
+                e[k] = v.clone();
+            }
+            e.to_string()
+        };
+        let events = |lines: &[String]| std::fs::write(run.join("events.jsonl"), lines.join("\n") + "\n").unwrap();
+        events(&[intent("flow-r1-write", json!({}))]);
+        let (i, s, submitted) = journaled(&home, "flow-r1-write").unwrap();
+        assert_eq!((i["key"].as_str(), &s, submitted), (Some("flow-r1-write"), &stored, false));
+        assert!(journaled(&home, "flow-r2-write").is_err(), "no run of that id");
+        assert!(journaled(&home, "flow-r1-review-1").is_err(), "no intent of that key");
+        events(&[intent("flow-r1-write", json!({})), json!({ "kind": "submitted", "step": "write", "key": "flow-r1-write", "created": true }).to_string()]);
+        assert!(journaled(&home, "flow-r1-write").unwrap().2, "a submitted record is seen");
+        events(&[intent("flow-r1-write", json!({ "digest": "0" }))]);
+        assert!(journaled(&home, "flow-r1-write").unwrap_err().contains("digest"));
+        events(&[intent("flow-r1-write", json!({ "request": "requests/../../x.json" }))]);
+        assert!(journaled(&home, "flow-r1-write").unwrap_err().contains("no stored request"));
+        events(&[intent("flow-r1-write", json!({ "executor": "local-gateway" }))]);
+        assert!(journaled(&home, "flow-r1-write").is_err(), "a local gateway job is not the server's to post");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn tokens() {
         assert_eq!(check_token("zs_abc\n").unwrap(), "zs_abc");
         assert!(check_token("").is_err());
@@ -488,7 +628,7 @@ mod tests {
 
     #[test]
     fn death_before_the_turn() {
-        let s = Server { setup: Err("none".into()), checked: Default::default() };
+        let s = Server { setup: Err("none".into()), checked: Default::default(), home: PathBuf::new(), user: Default::default() };
         assert!(s.died_before_turn(&json!({ "status": "failed", "turnStartedAt": null })));
         assert!(!s.died_before_turn(&json!({ "status": "failed", "turnStartedAt": "2026-01-01T00:00:00Z" })));
         assert!(!s.died_before_turn(&json!({ "status": "auth_required" })));
