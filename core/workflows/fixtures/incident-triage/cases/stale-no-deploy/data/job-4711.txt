@@ -1,7 +1,0 @@
-job 4711: export of the spring catalog
-status: failed
-started: 2026-11-15T17:58:02Z
-ended:   2026-11-15T18:00:41Z
-error:   ERR_EXPORT_COLUMNS: column limit exceeded (412 > 400)
-worker token used: Authorization: Bearer abcdefghijklmnop0123456789
-file written: none

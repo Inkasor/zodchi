@@ -1,4 +1,0 @@
-form F-88: new product card "Oak shelf 80"
-missing: supplier code
-assistant asked the user: "Please enter the supplier code of this product."
-supplier of the product (from the purchase order): Northwood Timber
