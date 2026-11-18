@@ -35,7 +35,7 @@ checks that judge it.
    word stays in `rounds[].review.verdict`.
 6. **A stamp on every commit.** Each round's commit message ends with
    `Verified: <how>`, for example
-   `Verified: args.verify: npm run e2e exit 0`, or `Verified: none`.
+   `Verified: args.verify exit 0`, or `Verified: none`.
    `git log --grep "Verified: none"` lists the commits nothing ran.
 7. **Flaky checks.** Neither the writer nor the runner may skip a check, add
    a sleep or run it again until it passes. A check that fails without a cause
