@@ -6,8 +6,9 @@ the end of this page.
 `zodchi flow code-package` runs the `code-package` workflow as code inside the gateway, without Claude Code: the same
 gate, claim, write, cheap checks, verify, commit, review, close and stop rules as the JavaScript workflow
 (`core/workflows/code-package.js`), decided by a state machine in Rust (`gateway/crates/zodchi-flow`). Models only
-propose a patch or judge a change; every transition is the engine's. This is version 1: Codex executors only,
-through the local gateway.
+propose a patch or judge a change; every transition is the engine's. Model steps run on Codex through the local
+gateway by default, on a zodchi-server ([flow-server.md](flow-server.md)), or on Claude when enabled
+([flow-claude.md](flow-claude.md)).
 
 ## Three ways to start it
 
@@ -82,7 +83,7 @@ The result keeps the fields of the JavaScript workflow: `label`, `mode`, `models
    Codex subscription usable (`zodchi account`), and the writer/reviewer pair.
 2. **Pair.** From `~/.zodchi/models.json`, the repository's `.zodchi/models.json` and `args.models` (a later table
    replaces a role of an earlier one): the first `expertWriter` candidate, in order, that has a `reviewer` candidate
-   of another model; Claude candidates are skipped in this version. The pair is pinned for the whole run and
+   of another model; Claude candidates count only when Claude is enabled ([flow-claude.md](flow-claude.md)). The pair is pinned for the whole run and
    recorded with every candidate skipped and why. No pair: refused.
 3. **Claim**, in `~/.zodchi/packages/<repository>/<label>.json`, the same files and lock as the JavaScript workflows
    use, so the two never take the same files at once.

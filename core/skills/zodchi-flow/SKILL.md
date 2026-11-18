@@ -133,8 +133,9 @@ The output is one JSON object. Read these fields and quote them as they are:
 - `rounds[]`, `protectedChanged`, `outsideClaim`, `infra`, `models`, `skipped`.
 - `runId` and `journal`: the run's id and its folder.
 
-If the output was cut off or you missed it, read `result.json` in the `journal` folder, or resume the finished run
-(below): a finished run prints its result and runs nothing.
+If the output was cut off or you missed it, resume the run (below): a finished run prints its saved result, closes
+its claim if a cut left it open, and runs nothing. Do not take `result.json` from the journal folder as the end of the
+run: it can be saved before the claim is closed.
 
 ## 6. After a cut: resume, never restart
 
@@ -157,9 +158,13 @@ zodchi flow code-package --resume <run-id>
 It goes through the machine again in the repository the run pinned, takes every finished step from the journal and
 never asks a model twice for a step it already submitted. Give `--args` too only if it is the very same file.
 
-When the run stopped with `unknown outcome at <step>`, `infrastructure at <step>` or `gateway ... at <step>`, its claim
-stays open and a plain resume stops there again. Tell the person what the `infra` field says. Only after the cause is
-fixed (a sign-in, a token, a server, a missing program) or the person agrees, run that step again under a new key:
+When the run stopped with `infrastructure at <step>` or `gateway ... at <step>`, its claim stays open and a plain
+resume stops there again. Tell the person what the `infra` field says. Only after the cause is fixed (a sign-in, a
+token, a server, a missing program), run that step again under a new key.
+
+When it stopped with `unknown outcome at <step>`, the model step may already have run and been paid for: fixing the
+connection or the sign-in does not prove it did not. Do not rerun it yourself. Tell the person exactly that, and
+rerun only when the person decides to pay for the step again:
 
 ```sh
 zodchi flow code-package --resume <run-id> --rerun "<step>"
