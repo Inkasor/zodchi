@@ -368,6 +368,11 @@ impl App {
         if let Some(rows) = out.get_mut("accounts").and_then(Value::as_array_mut) {
             rows.iter_mut().for_each(strip);
         }
+        // The caller's own user id: a client that journals requests tells by it whether a later token is the same
+        // account's before it posts a request again.
+        if let Some(m) = out.as_object_mut() {
+            m.insert("user".into(), json!(who.id));
+        }
         Reply::json(200, &out)
     }
 
