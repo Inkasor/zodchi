@@ -571,7 +571,7 @@ async function body() {
       `ok is true when there was no conflict and "${claimFile}" lists every hard file and every soft file that is not in others. conflicts: the conflicts found, [] when none. others: the soft files another package lists, [] when none.`,
       {
         agentType: 'zodchi-core:runner', phase: phaseName, label: `claim more ${tag}`,
-        schema: { type: 'object', required: ['ok', 'conflicts'], properties: { ok: { type: 'boolean' }, conflicts: { type: 'array', items: { type: 'string' } }, others: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' } } },
+        schema: { type: 'object', required: ['ok', 'conflicts', 'others'], properties: { ok: { type: 'boolean' }, conflicts: { type: 'array', items: { type: 'string' } }, others: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' } } },
       })
     if (more && !more.ok && more.conflicts && more.conflicts.length && more.conflicts[0] !== 'lock busy') {
       out.conflicts = more.conflicts
@@ -580,8 +580,10 @@ async function body() {
       return false
     }
     if (!more || !more.ok) { out.stoppedAt = `claim more (${more ? more.summary || (more.conflicts || []).join(', ') : 'no result'})`; return false }
+    // An answer without the others list cannot tell which soft files are another package's: nothing is recorded or committed.
+    if (!Array.isArray(more.others)) { out.stoppedAt = 'claim more (the answer has no others list)'; return false }
     // Only a soft file the runner names is another package's; the match is by the lower-case path, as claims are kept.
-    const others = new Set((more.others || []).map(o => String(o).toLowerCase()).filter(o => soft.some(r => r.toLowerCase() === o)))
+    const others = new Set(more.others.map(o => String(o).toLowerCase()).filter(o => soft.some(r => r.toLowerCase() === o)))
     for (const o of others) foreign.add(o)
     const mine = [...hard, ...soft.filter(r => !others.has(r.toLowerCase()))]
     for (const r of mine) claimed.add(r.toLowerCase())
@@ -726,6 +728,8 @@ async function body() {
   const locKey = (l) => l.toLowerCase().replace(/\\/g, '/').replace(/(:\d+(-\d+)?)+$/, '').replace(/#l\d+(-l?\d+)?$/, '').trim()
   const findingKey = (p) => `${p.id.toLowerCase()}|${locKey(p.location)}`
   const ledger = new Map()
+  // The highest number among the ids of every round so far: a new id goes above it, so it never matches a closed finding.
+  const maxLedgerId = () => [...ledger.values()].reduce((m, e) => Math.max(m, Number((String(e.id).match(/(\d+)$/) || [])[1]) || 0), 0)
   // What the writer was sent after the last review, and whether its answer changed any file.
   let lastClose = { sent: new Set(), changed: false }
   const today = (() => { try { return new Date().toISOString().slice(0, 10) } catch { return '<date>' } })()
@@ -785,7 +789,7 @@ async function body() {
       (focus ? `. This is a short review of the approved change: check only whether these findings of ${a.tmp}/review-${n - 1}.json are closed and whether their fixes break anything: ${JSON.stringify(focus)}; approved when they are closed and nothing broke` : '') +
       (!focus && carried.length ? `. These findings of an earlier review are still open and no later review checked them: ${JSON.stringify(carried)}; repeat in your findings, with the same id, severity and location, each one that still holds` : '') +
       (commit ? `. The round's commit exists: "${a.label}: round ${n}" (a round that changed nothing has none); the package's commits sit on top of ${base}; commits of other packages in a shared checkout may lie between them, judge only the package paths` : '') +
-      (n > 1 ? `. Keep the id of a finding of the previous review that still holds, and give every new finding a new id, numbered on after the highest id of the previous review` : '') +
+      (n > 1 ? `. Keep the id of a finding of an earlier review that still holds (same id, same location), and give every new finding an id never used in any earlier round: number it on after F${maxLedgerId()}. Ids used so far, with their locations: ${JSON.stringify([...ledger.values()].map(e => `${e.id} ${e.location}`))}` : '') +
       `. ${SEVERITIES} ${FOCUS}. ${BOUNDARY}`
     const files = [...changed]
     const VERDICT = `verdict: the "verdict" field of the review exactly ("approved", "changes_requested" or "blocked"; "missing" when the review file has none). ` +
@@ -850,7 +854,7 @@ async function body() {
       out.stoppedAt = `review verdict ${review.verdict}${findings.length ? '' : ' without findings'}`
       out.question = `The reviewer could not approve or name what to change (${review.verdict}): ${review.summary || ''} See ${a.tmp}/review-${n}.json.`
       return
-    } else if (n >= 2 && !focused && !parsed.filter(p => p.severity === 'important').some(p => seenBefore.has(findingKey(p))) &&
+    } else if (n >= 2 && !parsed.filter(p => p.severity === 'important').some(p => seenBefore.has(findingKey(p))) &&
       ![...ledger.values()].some(e => e.severity === 'important' && e.firstRound < n && e.status === 'open')) {
       // Every important finding of this round is new and every earlier important one is closed: the review only goes deeper.
       const fresh = parsed.filter(p => p.severity === 'important')
