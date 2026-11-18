@@ -95,11 +95,11 @@ function codexSkillFiles() {
 
 function plan(home, binary, codexSkills) {
   const items = []; // { src | content, dest, kind }
-  const add = (src, dest, kind, mode) => items.push({ src, dest, kind, mode });
+  const add = (src, dest, kind, mode, skill) => items.push({ src, dest, kind, mode, skill });
   for (const f of fs.readdirSync(path.join(SRC, "roles"))) add(path.join(SRC, "roles", f), path.join(home, "roles", f), "managed");
   add(path.join(SRC, "models.json"), path.join(home, "models.json"), "user-owned");
   // The Codex skill goes where Codex reads skills; a managed file like the roles: never over one the installer did not write.
-  if (codexSkills) for (const f of codexSkillFiles()) add(path.join(SRC, "codex", "skills", f), path.join(codexSkills, ...f.split("/")), "managed");
+  if (codexSkills) for (const f of codexSkillFiles()) add(path.join(SRC, "codex", "skills", f), path.join(codexSkills, ...f.split("/")), "managed", undefined, true);
   if (binary) {
     // The Rust gateway. The forwarding command of an earlier install is no longer planned, so it is removed.
     add(binary, path.join(home, "bin", path.basename(binary)), "managed", 0o755);
@@ -509,6 +509,10 @@ async function main() {
   const codexSkillsDir = path.join(path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), ".codex")), "skills");
   const underCodexSkills = (f) => path.resolve(f).toLowerCase().startsWith(codexSkillsDir.toLowerCase() + path.sep);
   const manifest = readManifest(home);
+  // The manifest records which of its files are Codex skill files (`codexSkills`), so --no-codex-skill knows them
+  // whatever $CODEX_HOME is now; a manifest without the record falls back to the current skills folder.
+  const recordedSkills = new Set(Array.isArray(manifest.codexSkills) ? manifest.codexSkills : []);
+  const isSkillFile = (f) => recordedSkills.has(f) || underCodexSkills(f);
   const say = (s) => console.log((o.dryRun ? "[dry-run] " : "") + s);
 
   if (o.uninstall) {
@@ -557,14 +561,15 @@ async function main() {
     const kept = {};
     for (const [dest, hash] of Object.entries(manifest.files || {})) {
       // --no-codex-skill leaves the Codex skill, and the record of it, alone.
-      if (o.noCodexSkill && underCodexSkills(dest)) { kept[dest] = hash; continue; }
+      if (o.noCodexSkill && isSkillFile(dest)) { kept[dest] = hash; continue; }
       if (!fs.existsSync(dest)) continue;
       if (sha(fs.readFileSync(dest)) !== hash && !o.force) { say(`keep (changed by you): ${dest}`); continue; }
       say(`remove ${dest}`);
       if (!o.dryRun) { fs.rmSync(dest); if (underCodexSkills(dest)) removeEmptyFolders(path.dirname(dest), codexSkillsDir); }
     }
     if (!o.dryRun) {
-      if (Object.keys(kept).length) fs.writeFileSync(path.join(home, "installed.json"), JSON.stringify({ version: manifest.version, files: kept }, null, 2) + "\n");
+      const keptSkills = [...recordedSkills].filter((f) => f in kept);
+      if (Object.keys(kept).length) fs.writeFileSync(path.join(home, "installed.json"), JSON.stringify({ version: manifest.version, files: kept, ...(keptSkills.length ? { codexSkills: keptSkills } : {}) }, null, 2) + "\n");
       else fs.rmSync(path.join(home, "installed.json"), { force: true });
     }
     if (!marketplaceGone) console.log(`The marketplace ${MARKETPLACE} stays registered${o.noPlugins ? " (--no-plugins)" : ""}, and so do the domain plugins you enabled; to remove them: claude plugin uninstall zodchi-<domain>@${MARKETPLACE} --scope local (in each project), then claude plugin marketplace remove ${MARKETPLACE}.`);
@@ -614,14 +619,16 @@ async function main() {
   const owned = manifest.files || {};
   const isOwned = (dest, buf) => Object.prototype.hasOwnProperty.call(owned, dest) && owned[dest] === sha(buf);
   const next = { version: VERSION, files: { ...owned } };
+  const nextSkills = new Set(recordedSkills);
   let written = 0, skipped = 0, skillSkipped = 0;
-  const put = (dest, body, mode) => {
+  const put = (dest, body, mode, skill) => {
     if (!o.dryRun) {
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.writeFileSync(dest, body);
       if (mode) fs.chmodSync(dest, mode);
     }
     next.files[dest] = sha(body); written++;
+    if (skill) nextSkills.add(dest);
   };
   for (const it of items) {
     // A dry run of a fresh checkout has no built gateway yet: the plan names it without reading it.
@@ -643,7 +650,7 @@ async function main() {
     }
     if (exists && !isOwned(it.dest, current) && !o.force) { say(`skip (not installed by zodchi or changed by you): ${it.dest}`); skipped++; if (underCodexSkills(it.dest)) skillSkipped++; continue; }
     say(`${exists ? "update" : "add"} ${it.dest}`);
-    put(it.dest, body, it.mode);
+    put(it.dest, body, it.mode, it.skill);
   }
 
   // Files from an earlier install that this one no longer plans: removed when unchanged.
@@ -657,7 +664,7 @@ async function main() {
   for (const [dest, hash] of Object.entries(manifest.files || {})) {
     if (planned.has(path.resolve(dest)) || dest.endsWith(".new") || !inside(dest)) continue;
     if (FORWARDING.includes(path.resolve(dest)) && !nativeInPlace) continue;
-    if (o.noCodexSkill && underCodexSkills(dest)) continue; // left alone, and still recorded
+    if (o.noCodexSkill && isSkillFile(dest)) continue; // left alone, and still recorded
     if (fs.existsSync(dest) && sha(fs.readFileSync(dest)) !== hash) { say(`keep (changed by you, no longer installed): ${dest}`); delete next.files[dest]; continue; }
     if (fs.existsSync(dest)) { say(`remove ${dest}`); if (!o.dryRun) { fs.rmSync(dest); if (underCodexSkills(dest)) removeEmptyFolders(path.dirname(dest), codexSkillsDir); } }
     delete next.files[dest];
@@ -673,7 +680,8 @@ async function main() {
   if (!o.dryRun) {
     fs.mkdirSync(home, { recursive: true });
     fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2) + "\n");
-    fs.writeFileSync(path.join(home, "installed.json"), JSON.stringify(next, null, 2) + "\n");
+    const skillList = [...nextSkills].filter((f) => f in next.files);
+    fs.writeFileSync(path.join(home, "installed.json"), JSON.stringify(skillList.length ? { ...next, codexSkills: skillList } : next, null, 2) + "\n");
   }
 
   const codex = spawnSync("codex --version", { encoding: "utf8", shell: true, windowsHide: true });
