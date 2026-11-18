@@ -1,0 +1,28 @@
+# What a review of zodchi looks for
+
+zodchi is workflows (prompts plus a little control code), agent definitions, roles and a Rust gateway. The people
+who run it are its owner and colleagues on their own machines. The writers, runners and reviewers inside a
+workflow are our own agents, not attackers.
+
+## Flag (important)
+- A normal run does the wrong thing: loses or overwrites work, commits files it should not, skips a step it claims
+  to have done, reports success that did not happen, or stops for a reason that is not real.
+- A secret, a private path or a company or product name can reach the public repository, a log or a model prompt.
+- A gateway call can spend money or a subscription in a way the owner did not ask for.
+- A change that silently stops something from being checked (a check removed or weakened, a step that no longer
+  runs).
+- The Rust gateway: wrong job state, a lost or duplicated job, a broken idempotency key, a worker that outlives or
+  dies with the wrong process, one user reaching another user's job.
+
+## Do not flag
+- Ways a deliberately malicious agent inside the workflow could bypass a guard (path tricks, quoting games, editing
+  its own evidence). Guards in prompts are for honest mistakes.
+- Races between two copies of the same tool started at the same moment by the same person.
+- Hostile file systems (bind mounts, reparse points swapped mid-read) unless the code is a scanner of other
+  people's data.
+- Prompt wording, unless it is likely to make an agent do the wrong thing.
+- Missing tests for internal details no user can observe.
+
+## Severity
+`important` blocks. `nit` and `pre-existing` never block. When unsure whether something is important, ask: would
+the owner stop a release for it?
