@@ -733,7 +733,9 @@ async function body() {
   // What the writer was sent after the last review, and whether its answer changed any file.
   let lastClose = { sent: new Set(), changed: false }
   const today = (() => { try { return new Date().toISOString().slice(0, 10) } catch { return '<date>' } })()
-  const updateLedger = (n, parsed, focusKeys) => {
+  // judged: the review approved or requested changes with findings; a blocked review, or one with no verdict, could not
+  // judge the package, so it closes nothing.
+  const updateLedger = (n, parsed, focusKeys, judged) => {
     const now = new Set(parsed.map(findingKey))
     for (const p of parsed) {
       const e = ledger.get(findingKey(p))
@@ -747,6 +749,7 @@ async function body() {
       }
     }
     // A full review looks at everything; a focused one only at the findings it was asked about.
+    if (!judged) return
     for (const [k, e] of ledger) {
       if (e.status !== 'open' || now.has(k) || e.firstRound >= n || (focusKeys && !focusKeys.has(k))) continue
       e.closedInRound = n
@@ -832,7 +835,8 @@ async function body() {
     const nits = findings.filter(f => severity(f) === 'nit')
     const parsed = findings.map(parseFinding)
     const seenBefore = new Set(ledger.keys())
-    updateLedger(n, parsed, focused && new Set(focused.map(f => findingKey(parseFinding(f)))))
+    const judged = review.verdict === 'approved' || (review.verdict === 'changes_requested' && findings.length > 0)
+    updateLedger(n, parsed, focused && new Set(focused.map(f => findingKey(parseFinding(f)))), judged)
     out.verdict = review.verdict === 'blocked' || (review.verdict === 'changes_requested' && !findings.length) ? 'blocked' : important.length ? 'changes_requested' : 'approved'
     out.rounds[out.rounds.length - 1].verdict = out.verdict
     let task

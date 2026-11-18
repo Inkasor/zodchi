@@ -116,12 +116,13 @@ export default function (h) {
     t.eq([writeIntents(), s.events(id).filter((e) => e.kind === "submitted").length], [1, 0], "the write step has its intent and no submitted record");
     fs.rmSync(s.jobsDir, { force: true });
     t.log("removed the file that held the user's job folder");
-    // Another person's token in the token file: that account does not know the key either, and the request is never
-    // posted under it.
+    // Another person's token in the token file: the journaled account is not the token's, so the key is not even looked
+    // up under it, and the request is never posted under it.
     fs.writeFileSync(s.tokenFile, `${s.o.token}\n`);
     const foreign = await s.flow(["--resume", id]);
-    t.eq([foreign.code, foreign.json && foreign.json.stoppedAt], [2, "unknown outcome at write"], "with another account's token the resume stops with an unknown outcome");
-    t.ok(/not the one of the account the request was made for/.test(foreign.err), "it says the token is not the request's account");
+    t.eq([foreign.code, foreign.json && foreign.json.stoppedAt], [2, "infrastructure at write"], "with another account's token the resume is an infrastructure stop");
+    const why = String(foreign.json && foreign.json.infra);
+    t.ok(why.includes(`made for the account ${s.u.id}`) && why.includes(`is of the account ${s.o.id}`), "it names the request's account and the token's");
     const otherJobs = path.join(s.data, "users", s.o.id, "jobs");
     t.eq([fs.existsSync(otherJobs) ? fs.readdirSync(otherJobs) : [], readJsonl(path.join(s.o.home, "fake-turns.jsonl")).length], [[], 0], "no job and no model turn under the other account");
     fs.writeFileSync(s.tokenFile, `${s.u.token}\n`);
@@ -145,20 +146,19 @@ export default function (h) {
     };
     const s = await serverWorld(t, "flow-server-missing-role", { roles });
     s.answer("write", s.patch([s.modify("src/math.mjs", STUB, FIXED)]));
+    // A person whose model steps go to the server only: no local Codex sign-in.
+    fs.rmSync(path.join(s.w.codex, "fake-auth.json"), { force: true });
     const res = await s.flow(["--args", s.args()]);
     t.eq([res.code, Boolean(res.json && res.json.approved)], [2, false], "the run is not approved, exit 2");
     const said = JSON.stringify(res.json);
     t.ok(/no role flow-patch/.test(said) && /Nothing was submitted/.test(said), "the result names the missing role and that nothing was submitted");
-    // The gate of code_package.rs does not ask the server yet (docs/flow-server.md, "What the gate still checks
-    // locally"): today the stop comes at the write step with the claim open; once the gate asks the server, it is a
-    // refusal with no claim. Either way nothing reaches the server.
-    if (res.json.refused) t.eq(s.claim(), null, "refused before any claim");
-    else t.eq([res.json.stoppedAt, s.claim().status], ["infrastructure at write", "open"], "stopped at the write step before its intent, the claim open");
+    // The gate asks the server before it claims: a refusal, no run and no claim.
+    t.eq([typeof res.json.refused, res.json.runId, s.claim()], ["string", undefined, null], "refused by the gate, before any claim");
     t.eq([s.jobs(), s.steps()], [[], []], "no job on the server and no model turn");
     t.eq([s.commits().length, fs.readFileSync(path.join(s.r, "src", "math.mjs"), "utf8")], [0, STUB], "nothing applied or committed");
   });
 
-  scenario("flow-server-signed-out", "the user's subscription on the server is not signed in: the run stops with the sign-in message before anything is submitted; after signing in, --resume runs to approval", async (t) => {
+  scenario("flow-server-signed-out", "the user's subscription on the server is not signed in: the gate refuses the run with the sign-in message before any claim; after signing in, a new run goes to approval", async (t) => {
     const s = await serverWorld(t, "flow-server-signed-out", { signedIn: false });
     s.answer("write", s.patch([s.modify("src/math.mjs", STUB, FIXED)]));
     s.answer("review 1", s.review("approved"));
@@ -168,12 +168,12 @@ export default function (h) {
     t.ok(/not signed in/.test(said) && /\/v1\/login/.test(said) && /Nothing was spent/.test(said), "the result asks the person to sign in on the server (POST /v1/login)");
     t.eq([s.jobs(), s.steps()], [[], []], "no job on the server and no model turn");
     t.eq(s.commits().length, 0, "nothing committed");
-    const id = res.json.runId || s.runId();
-    if (res.json.refused) return; // A gate that asks the server refuses with no run to resume; nothing more to see.
+    t.eq([typeof res.json.refused, res.json.runId, s.claim()], ["string", undefined, null], "refused by the gate, before any claim");
     fs.writeFileSync(path.join(s.u.home, "fake-auth.json"), "{}");
     t.log("signed the server user in (fake)");
-    const again = await s.flow(["--resume", id]);
-    t.eq([again.code, again.json && again.json.verdict], [0, "approved"], "after signing in, the resumed run ends approved");
+    const again = await s.flow(["--args", s.args()]);
+    const id = again.json && again.json.runId;
+    t.eq([again.code, again.json && again.json.verdict], [0, "approved"], "after signing in, a new run ends approved");
     t.eq(s.steps(), ["write", "review 1"], "each model turn ran once");
     s.noToken(again, id);
   });
