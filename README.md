@@ -41,6 +41,7 @@ same everywhere lives in `core/`.
 - **Workflows stop.** `code-package` gives a change three review rounds.
   Without approval by then, it stops and hands the question back to you,
   instead of looping.
+- **Run before review.** `code-package` runs the real thing end to end, keeps the checks out of the change's reach and reviews a fixed commit against the repository's `REVIEW.md`, see [docs/verification.md](docs/verification.md).
 - **Cheap models do the legwork.** Running checks, applying a ready patch and
   searching are Haiku's job. Expensive models are kept for the decisions
   everything else depends on.
