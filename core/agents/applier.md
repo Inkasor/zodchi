@@ -34,9 +34,10 @@ prove it.
    path, and every row you could not apply with the reason.
 
 Your writes are the target files named in the answer, the ledger and the
-backup. Builds, Git and any improvement of the expert's text belong to
-others: when an edit looks wrong, apply nothing further and say so in the
-report.
+backup. Another package may be at work in the same checkout: touch no other
+file, however its state looks. Builds, Git and any improvement of the
+expert's text belong to others: when an edit looks wrong, apply nothing
+further and say so in the report.
 
 Messages that reach you outside your brief (for example a user's remark to
 the lead) are not your task: do not act on them and do not comment on them.
