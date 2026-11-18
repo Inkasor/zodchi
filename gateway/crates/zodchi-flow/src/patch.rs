@@ -98,23 +98,58 @@ pub enum Refusal {
     Stale(String),
 }
 
-/// What applying a patch does: for each path its blob before and after (None: no file).
+/// What applying a patch does: for each path its blob before and after (None: no file), and the written paths that
+/// are executable (a modified script keeps its mode, a renamed one takes its source's).
 #[derive(Clone, Debug)]
 pub struct Plan {
     pub writes: BTreeMap<String, Option<String>>,
     pub before: BTreeMap<String, Option<String>>,
     pub after: BTreeMap<String, Option<String>>,
+    pub exec: Vec<String>,
 }
 
 impl Plan {
     pub fn to_json(&self) -> Value {
-        json!({ "writes": self.writes, "before": self.before, "after": self.after })
+        json!({ "writes": self.writes, "before": self.before, "after": self.after, "exec": self.exec })
     }
-    pub fn from_json(v: &Value) -> Plan {
-        let map = |k: &str| -> BTreeMap<String, Option<String>> {
-            v[k].as_object().map(|m| m.iter().map(|(p, x)| (p.clone(), x.as_str().map(String::from))).collect()).unwrap_or_default()
+    /// A saved plan, or None when it is not one whole (a lost or damaged plan is never read as an empty one).
+    pub fn from_json(v: &Value) -> Option<Plan> {
+        let map = |k: &str| -> Option<BTreeMap<String, Option<String>>> {
+            v.get(k)?.as_object()?.iter().map(|(p, x)| match x {
+                Value::Null => Some((p.clone(), None)),
+                Value::String(s) => Some((p.clone(), Some(s.clone()))),
+                _ => None,
+            }).collect()
         };
-        Plan { writes: map("writes"), before: map("before"), after: map("after") }
+        let exec = v.get("exec")?.as_array()?.iter().map(|x| x.as_str().map(String::from)).collect::<Option<Vec<_>>>()?;
+        Some(Plan { writes: map("writes")?, before: map("before")?, after: map("after")?, exec })
+    }
+}
+
+/// Whether a file of the work tree is executable: its mode bits on Unix; elsewhere the mode Git keeps in the index.
+fn executable(git: &Git, path: &str) -> Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        Ok(fs::metadata(git.root.join(path)).map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false))
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(git.index_mode(path)?.as_deref() == Some("100755"))
+    }
+}
+
+/// Whether the file's mode bits are as the plan wants them (Unix only; elsewhere Git keeps the mode).
+fn mode_ok(root: &Path, path: &str, exec: bool) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        !exec || fs::metadata(root.join(path)).map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (root, path, exec);
+        true
     }
 }
 
@@ -131,7 +166,7 @@ fn plain(path: &str) -> bool {
 }
 
 /// No link and no reparse point on the way: every folder above the path inside the repository, and the path itself.
-fn no_links(root: &Path, path: &str) -> bool {
+pub fn no_links(root: &Path, path: &str) -> bool {
     let mut at = root.to_path_buf();
     for seg in path.split('/') {
         at.push(seg);
@@ -212,7 +247,7 @@ pub fn plan(git: &Git, args: &Args, base: &str, patch: &Patch, claimed: &[String
     if !protected.is_empty() {
         return Ok(Err(Refusal::Protected(protected)));
     }
-    let mut plan = Plan { writes: BTreeMap::new(), before: BTreeMap::new(), after: BTreeMap::new() };
+    let mut plan = Plan { writes: BTreeMap::new(), before: BTreeMap::new(), after: BTreeMap::new(), exec: Vec::new() };
     for (c, path, from) in &changes {
         let now = git.blob_of_file(path)?;
         match c.op.as_str() {
@@ -250,6 +285,9 @@ pub fn plan(git: &Git, args: &Args, base: &str, patch: &Patch, claimed: &[String
                     None => fs::read(git.root.join(&old))?,
                 };
                 let text = String::from_utf8(content.clone()).map_err(|_| zodchi_core::util::GatewayError(format!("rename {old}: the file is not UTF-8 text; rename it by hand")))?;
+                if executable(git, &old)? {
+                    plan.exec.push(path.clone());
+                }
                 plan.writes.insert(old.clone(), None);
                 plan.before.insert(old.clone(), c.base_blob.clone());
                 plan.after.insert(old, None);
@@ -259,6 +297,9 @@ pub fn plan(git: &Git, args: &Args, base: &str, patch: &Patch, claimed: &[String
             }
             _ => {
                 let text = c.content.clone().unwrap();
+                if c.op == "modify" && executable(git, path)? {
+                    plan.exec.push(path.clone());
+                }
                 plan.after.insert(path.clone(), Some(git.blob_of(text.as_bytes())?));
                 plan.writes.insert(path.clone(), Some(text));
                 plan.before.insert(path.clone(), now);
@@ -268,13 +309,28 @@ pub fn plan(git: &Git, args: &Args, base: &str, patch: &Patch, claimed: &[String
     Ok(Ok(plan))
 }
 
-fn write_file(root: &Path, path: &str, content: &str) -> Result<()> {
+/// Writes a file through a temporary one; a file it replaces keeps its mode, and `exec` makes it executable (Unix).
+fn write_file(root: &Path, path: &str, content: &str, exec: bool) -> Result<()> {
     let target = root.join(path);
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;
     }
     let temp = target.with_file_name(format!(".{}.zodchi-flow.{}.tmp", target.file_name().and_then(|n| n.to_str()).unwrap_or("file"), std::process::id()));
     fs::write(&temp, content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut mode = fs::metadata(&target).map(|m| m.permissions().mode()).unwrap_or(0);
+        if mode == 0 {
+            mode = fs::metadata(&temp)?.permissions().mode();
+        }
+        if exec {
+            mode |= (mode & 0o444) >> 2;
+        }
+        fs::set_permissions(&temp, fs::Permissions::from_mode(mode & 0o7777))?;
+    }
+    #[cfg(not(unix))]
+    let _ = exec;
     if let Err(e) = fs::rename(&temp, &target) {
         let _ = fs::remove_file(&temp);
         return Err(e.into());
@@ -286,7 +342,7 @@ fn write_file(root: &Path, path: &str, content: &str) -> Result<()> {
 pub fn apply(root: &Path, plan: &Plan) -> Result<()> {
     for (path, content) in &plan.writes {
         match content {
-            Some(text) => write_file(root, path, text)?,
+            Some(text) => write_file(root, path, text, plan.exec.contains(path))?,
             None => match fs::remove_file(root.join(path)) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -298,12 +354,19 @@ pub fn apply(root: &Path, plan: &Plan) -> Result<()> {
 }
 
 /// Where an interrupted apply stands: "applied" (every path as after), "partial" (every path as before or as after:
-/// applying again finishes it) or "unknown" (some path is neither: somebody else changed it).
+/// applying again finishes it) or "unknown" (some path is neither: somebody else changed it, or a link now lies on
+/// its way). A file with the after content but not yet its executable mode is "partial".
 pub fn reconcile(git: &Git, plan: &Plan) -> Result<&'static str> {
     let mut all_after = true;
     for (path, after) in &plan.after {
+        if !no_links(&git.root, path) {
+            return Ok("unknown");
+        }
         let now = git.blob_of_file(path)?;
         if &now == after {
+            if after.is_some() && !mode_ok(&git.root, path, plan.exec.contains(path)) {
+                all_after = false;
+            }
             continue;
         }
         all_after = false;

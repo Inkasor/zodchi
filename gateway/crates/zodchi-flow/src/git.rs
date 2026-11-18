@@ -19,7 +19,8 @@ impl Git {
     fn command(&self, env: &[(&str, OsString)]) -> Command {
         let mut c = Command::new("git");
         c.arg("-C").arg(&self.root).args(["-c", "core.quotepath=false"]);
-        c.env("GIT_TERMINAL_PROMPT", "0").env_remove("GIT_INDEX_FILE").env_remove("GIT_DIR").env_remove("GIT_WORK_TREE");
+        // Every path the engine passes is a literal file path, never a pattern.
+        c.env("GIT_TERMINAL_PROMPT", "0").env("GIT_LITERAL_PATHSPECS", "1").env_remove("GIT_INDEX_FILE").env_remove("GIT_DIR").env_remove("GIT_WORK_TREE");
         for (k, v) in env {
             c.env(k, v);
         }
@@ -91,19 +92,55 @@ impl Git {
         Ok(out)
     }
 
-    pub fn exists_at(&self, commit: &str, path: &str) -> Result<bool> {
-        self.test(&["cat-file", "-e", &format!("{commit}:{path}")])
+    /// The tree entry of a path in a commit: (mode, type, object id), or None when the commit has no such path. A
+    /// commit Git cannot read is an error, never a missing path.
+    pub fn entry_at(&self, commit: &str, path: &str) -> Result<Option<(String, String, String)>> {
+        let out = self.run(&["ls-tree", "-z", commit, "--", path])?;
+        for entry in out.split('\0') {
+            let Some((meta, name)) = entry.split_once('\t') else { continue };
+            if name != path {
+                continue;
+            }
+            let mut f = meta.split(' ');
+            if let (Some(mode), Some(kind), Some(id)) = (f.next(), f.next(), f.next()) {
+                return Ok(Some((mode.to_string(), kind.to_string(), id.to_string())));
+            }
+        }
+        Ok(None)
     }
 
+    pub fn exists_at(&self, commit: &str, path: &str) -> Result<bool> {
+        Ok(self.entry_at(commit, path)?.is_some())
+    }
+
+    /// The bytes of a file (a blob) in a commit, or None when the commit has no file at that path.
     pub fn show(&self, commit: &str, path: &str) -> Result<Option<Vec<u8>>> {
-        if !self.exists_at(commit, path)? {
+        let Some((_, kind, id)) = self.entry_at(commit, path)? else { return Ok(None) };
+        if kind != "blob" {
             return Ok(None);
         }
-        let out = self.output(&["cat-file", "blob", &format!("{commit}:{path}")], &[], None)?;
+        let out = self.output(&["cat-file", "blob", &id], &[], None)?;
         if !out.status.success() {
             return fail(format!("git cat-file {commit}:{path} failed"));
         }
         Ok(Some(out.stdout))
+    }
+
+    /// The mode of a path in the user's index ("100755", ...), or None when it is not there.
+    pub fn index_mode(&self, path: &str) -> Result<Option<String>> {
+        let out = self.run(&["ls-files", "-s", "-z", "--", path])?;
+        Ok(out.split('\0').find(|e| e.split_once('\t').map(|(_, n)| n) == Some(path)).and_then(|e| e.split(' ').next()).map(String::from))
+    }
+
+    /// The paths that differ between two tree-ishes, with their status letter (A, M, D, T), renames as add and delete.
+    pub fn changes(&self, from: &str, to: &str) -> Result<Vec<(String, String)>> {
+        let out = self.run(&["diff-tree", "-r", "-z", "--name-status", "--no-renames", from, to])?;
+        let mut parts = out.split('\0').filter(|s| !s.is_empty());
+        let mut list = Vec::new();
+        while let (Some(status), Some(path)) = (parts.next(), parts.next()) {
+            list.push((status.to_string(), path.to_string()));
+        }
+        Ok(list)
     }
 
     /// The blob id of bytes as they are, without the filters of `git add` (the id a patch is written against).
@@ -121,8 +158,10 @@ impl Git {
     }
 
     /// The tree of `parent` with the claimed paths taken from the work tree as `git add -A` takes them (deleted ones
-    /// removed), written through an index of its own. The user's index and work tree stay as they are.
-    pub fn candidate_tree(&self, parent: &str, paths: &[String], scratch: &Path) -> Result<String> {
+    /// removed), written through an index of its own; the paths of `exec` keep their executable mode (a renamed
+    /// script). The user's index and work tree stay as they are. A tree that differs from the parent anywhere but at
+    /// the claimed paths themselves is refused.
+    pub fn candidate_tree(&self, parent: &str, paths: &[String], exec: &[String], scratch: &Path) -> Result<String> {
         std::fs::create_dir_all(scratch)?;
         let index = scratch.join(format!("index-{}", rand::random::<u32>()));
         let env = [("GIT_INDEX_FILE", index.clone().into_os_string())];
@@ -137,9 +176,18 @@ impl Git {
         let mut args = vec!["add", "-A", "-f", "--"];
         args.extend(present.iter().copied());
         let added = if present.is_empty() { Ok(String::new()) } else { self.run_env(&args, &env, None) };
-        let tree = added.and_then(|_| self.run_env(&["write-tree"], &env, None));
+        let mut chmod = vec!["update-index", "--chmod=+x", "--"];
+        chmod.extend(exec.iter().filter(|p| paths.contains(p) && self.root.join(p).is_file()).map(String::as_str));
+        let moded = added.and_then(|_| if chmod.len() > 3 { self.run_env(&chmod, &env, None) } else { Ok(String::new()) });
+        let tree = moded.and_then(|_| self.run_env(&["write-tree"], &env, None));
         let _ = std::fs::remove_file(&index);
-        Ok(tree?.trim().to_string())
+        let tree = tree?.trim().to_string();
+        // Claims compare without case, as the claim files keep them.
+        let stray: Vec<String> = self.changes(parent, &tree)?.into_iter().map(|(_, p)| p).filter(|p| !paths.iter().any(|c| c.to_lowercase() == p.to_lowercase())).collect();
+        if !stray.is_empty() {
+            return fail(format!("the candidate tree changes paths that are not claimed files: {}", stray.join(", ")));
+        }
+        Ok(tree)
     }
 
     /// Writes the files of `tree` into `dir` (which must not exist yet), through an index of its own.

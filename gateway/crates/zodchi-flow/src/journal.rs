@@ -36,6 +36,7 @@ impl Journal {
         Ok(Journal { dir, events: vec![] })
     }
 
+    /// Opens the run folder; its events are read by `load`, under the lock.
     pub fn open(home: &Path, id: &str) -> Result<(Journal, Value)> {
         if !is_run_id(id) {
             return fail(format!("Not a run id: {id}"));
@@ -44,16 +45,33 @@ impl Journal {
         let Some(run) = read_stored(&dir.join("run.json")) else {
             return fail(format!("No run {id} in {}.", flows_dir(home).display()));
         };
-        let text = fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default();
+        Ok((Journal { dir, events: vec![] }, run))
+    }
+
+    /// Reads the events; call it holding the lock. Only a record without its line end, the last one, can be cut in
+    /// the middle of its write: it is dropped from the file, so the next record starts on a line of its own. Any
+    /// other record that does not read is a broken journal, and nothing goes on from it.
+    pub fn load(&mut self) -> Result<()> {
+        let file = self.dir.join("events.jsonl");
+        let bytes = fs::read(&file).map_err(|e| GatewayError(format!("Cannot read the journal {}: {e}", file.display())))?;
+        let end = bytes.iter().rposition(|b| *b == b'\n').map(|i| i + 1).unwrap_or(0);
         let mut events = Vec::new();
-        for line in text.lines().filter(|l| !l.trim().is_empty()) {
-            match serde_json::from_str::<Value>(line) {
+        for (n, line) in bytes[..end].split(|b| *b == b'\n').enumerate() {
+            if line.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            match serde_json::from_slice::<Value>(line) {
                 Ok(v) => events.push(v),
-                // A line cut in the middle of its write is the last one; anything after it would be a broken journal.
-                Err(_) => break,
+                Err(e) => return fail(format!("The journal {} is broken at line {}: {e}. Nothing was run; look at it before resuming.", file.display(), n + 1)),
             }
         }
-        Ok((Journal { dir, events }, run))
+        if end < bytes.len() {
+            let f = fs::OpenOptions::new().write(true).open(&file)?;
+            f.set_len(end as u64)?;
+            f.sync_all()?;
+        }
+        self.events = events;
+        Ok(())
     }
 
     /// Takes the lock of the run: one process at a time. A lock whose process is gone (or is another program now)
@@ -126,12 +144,23 @@ impl Journal {
         self.dir.join(name)
     }
 
+    /// Writes a file of the journal whole and durably (a temporary file, synced, then renamed), before any event that
+    /// names it is recorded.
     pub fn write_text(&self, name: &str, text: &str) -> Result<PathBuf> {
         let file = self.dir.join(name);
         if let Some(parent) = file.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(&file, text)?;
+        let temp = file.with_file_name(format!(".{}.{}.tmp", file.file_name().and_then(|n| n.to_str()).unwrap_or("file"), std::process::id()));
+        {
+            let mut f = fs::File::create(&temp)?;
+            f.write_all(text.as_bytes())?;
+            f.sync_all()?;
+        }
+        if let Err(e) = fs::rename(&temp, &file) {
+            let _ = fs::remove_file(&temp);
+            return Err(e.into());
+        }
         Ok(file)
     }
 

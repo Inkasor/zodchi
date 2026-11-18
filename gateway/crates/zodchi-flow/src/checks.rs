@@ -45,7 +45,8 @@ pub fn find_bash() -> PathBuf {
 }
 
 /// Runs one command; returns its exit code (None: killed at the time limit or not started) and how long it ran.
-fn run_one(bash: &Path, cmd: &str, cwd: &Path, log: &Path, log_dir: &Path, limit: Duration) -> (Option<i32>, u128, String) {
+/// `started_cb` gets the pid of the command as soon as it runs, before the engine waits for it.
+fn run_one(bash: &Path, cmd: &str, cwd: &Path, log: &Path, log_dir: &Path, limit: Duration, started_cb: &mut dyn FnMut(u32)) -> (Option<i32>, u128, String) {
     let started = Instant::now();
     let Ok(file) = fs::File::create(log) else { return (None, 0, "the log could not be created".into()) };
     let Ok(err) = file.try_clone() else { return (None, 0, "the log could not be opened twice".into()) };
@@ -72,6 +73,7 @@ fn run_one(bash: &Path, cmd: &str, cwd: &Path, log: &Path, log_dir: &Path, limit
         Ok(child) => child,
         Err(e) => return (None, 0, format!("bash could not start ({}): {e}", bash.display())),
     };
+    started_cb(child.id());
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return (status.code(), started.elapsed().as_millis(), String::new()),
@@ -87,15 +89,15 @@ fn run_one(bash: &Path, cmd: &str, cwd: &Path, log: &Path, log_dir: &Path, limit
 }
 
 /// Runs a list of commands in order, each to its end. Every entry of the evidence holds the command, its source,
-/// its real exit code (null when it did not end by itself) and its log.
-pub fn run_list(cmds: &[String], source: &str, cwd: &Path, logs: &Path, limit: Duration) -> Vec<Value> {
+/// its real exit code (null when it did not end by itself) and its log. `started` gets the pid of each command.
+pub fn run_list(cmds: &[String], source: &str, cwd: &Path, logs: &Path, limit: Duration, started: &mut dyn FnMut(u32)) -> Vec<Value> {
     let bash = find_bash();
     let _ = fs::create_dir_all(logs);
     let mut out = Vec::new();
     for (i, cmd) in cmds.iter().enumerate() {
         let name = format!("{}-{}.log", source.replace(['.', ' '], "-"), i + 1);
         let log = logs.join(&name);
-        let (code, ms, note) = run_one(&bash, cmd, cwd, &log, logs, limit);
+        let (code, ms, note) = run_one(&bash, cmd, cwd, &log, logs, limit, started);
         out.push(json!({ "command": cmd, "source": source, "exitCode": code, "log": log.display().to_string(), "ms": ms as u64, "note": note }));
     }
     out
