@@ -32,7 +32,7 @@ Arguments (a subset of the JavaScript workflow's; anything else is refused befor
 
 | Field | Meaning |
 |---|---|
-| `label`, `brief`, `repo`, `files` | as in `code-package`: the package name, its brief, the repository (the top of a Git work tree) and the files it may change |
+| `label`, `brief`, `repo`, `files` | as in `code-package`: the package name, its brief, the repository (the top of a Git work tree) and the files it may change, each by itself (a folder is refused) |
 | `checks` | cheap checks, run in order after each write; a command string or `{ "cmd": ... }`. A command passes on exit code 0 and nothing else: a `pass` rule in words is refused |
 | `verify` | the slow run of the real program, the same way, run only when every cheap check passed |
 | `rounds` | review rounds at most, default 3 |
@@ -72,11 +72,15 @@ The result keeps the fields of the JavaScript workflow: `label`, `mode`, `models
    path, nothing under `.git/` or `.agent-tmp/`), no link on the way, every path claimed (else refused, or the claim
    extended with `extendClaim`), no existing protected check changed (`test/`, `tests/`, `e2e/`,
    `.claude/skills/verify/`, `REVIEW.md`, `args.protect`, as of the base commit; else the package stops before review
-   with `protectedChanged`), and every blob id equal to the file now (else `stale patch`). Then it writes the files.
+   with `protectedChanged`), and every blob id equal to the file now (else `stale patch`). Then it writes the files;
+   a modified file keeps its mode, a renamed one takes its source's (an executable script stays executable). Before
+   it writes, the branch of the run must be checked out and the claim still this run's open claim.
 6. **Checks.** The candidate tree (the last commit with the claimed paths from the work tree) is written as a Git
-   tree and exported to a temporary folder outside the checkout. There the cheap checks run with bash, in order,
-   each to its end, then the verify commands when they all passed; each with its real exit code and its log in the
-   journal. The environment is cut down to what programs need to start (paths, home, temporary folder, locale):
+   tree (refused if it differs from the last commit anywhere but at the claimed files) and compared with the base:
+   an existing protected check changed, deleted or with another mode, by the patch or by anybody, stops the package
+   before the checks with `protectedChanged`. The tree is exported to a temporary folder outside the checkout. There
+   the cheap checks run with bash, in order, each to its end, then the verify commands when they all passed; each
+   with its real exit code and its log in the journal. The environment is cut down to what programs need to start (paths, home, temporary folder, locale):
    tokens and keys in the caller's environment do not reach a check. A failure goes back to the writer with the
    end of its log, up to `args.fixes` times.
 7. **Commit**, by the engine only: after rechecking that the branch is where the run left it, that the claim is
@@ -85,7 +89,8 @@ The result keeps the fields of the JavaScript workflow: `label`, `mode`, `models
    paths only. Its message is `<label>: round N` and `Verified: <source> exit <codes>; ...`, sources and exit codes
    only. Nothing is pushed.
 8. **Review**, an expert gateway call (role `code-review`, the reviewer of the pair) with the diff from the base, the
-   brief, `REVIEW.md` of the base commit (never dropped), the previous review, and the full claimed files, which are
+   brief, `REVIEW.md` of the base commit (never dropped), the previous review, and the claimed files as the reviewed
+   commit holds them, which are
    dropped first, the largest first, when the request would pass the gateway's 512 KB, and named in a "Not attached
    for size" line. Severities and the verdict rule are those of `docs/verification.md`.
 9. **Close** the important findings with the same writer, then checks, commit and review again, until approval, a
@@ -101,27 +106,37 @@ is pointed at:
 - `brief.md`, `REVIEW.base.md`: the brief and the base REVIEW.md as the run read them; a resumed run uses these.
 - `events.jsonl`: before each effect an `intent` (step, round, attempt, input digest, the effect, the gateway key or
   the expected commit parent and tree), a `submitted` line once the gateway took a job, and after it a `done` with
-  the validated answer or the Git receipt; `stop`, `rerun` and `finished` lines.
-- `requests/` (the exact request of each gateway job), `plans/` (each applied patch with its blobs before and after),
+  the validated answer or the Git receipt; a `made` line with the commit id between `git commit-tree` and moving
+  the branch; a `check started` line with the pid and start time of each check command; `stop`, `rerun` and
+  `finished` lines. A record cut in the middle of its write can only be the last one: a resume drops it from the
+  file (under the lock) before it writes; a record that does not read anywhere else stops the resume.
+- `requests/` (the exact request of each gateway job), `plans/` (each applied patch with its blobs before and after,
+  written and synced before its intent),
   `reviews/`, `logs/` (one log per check command), `result.json` once the run has finished.
 - `lock/`: the process working on the run (pid and start time). One at a time; a lock whose process is gone is taken
   over.
 
 ## Recovery
 
-`zodchi flow code-package --resume <run-id>` runs the machine again from the start. Each step comes back from the
-journal when it has a `done`; otherwise:
+`zodchi flow code-package --resume <run-id>` runs the machine again from the start, in the repository the run pinned
+(whatever folder it is started from), with the saved brief and base REVIEW.md (a run that had one stops without
+it). Each step comes back from the journal when it has a `done`; otherwise:
 
 - a model call with an `intent` submits its stored request under its stored key again, which the gateway answers
   with the job it already has, and waits for it: a cut after a submission never asks the model twice. A job that
   failed before its model turn started is asked again under the next key (`-r2`, `-r3`, at most two); any other
-  end of a job is not asked again by itself.
-- an apply with an `intent` compares every file with the blobs before and after: all after, it is done; each before
-  or after, applying again finishes it; anything else is an unknown outcome.
-- a commit with an `intent` compares the branch tip with the expected parent and tree: the tip is the parent, the
-  commit is made; the tip is a commit of that tree on that parent, it is taken as the receipt; anything else is an
-  unknown outcome.
-- checks without a `done` run again (they change nothing but their export).
+  end of a job is not asked again by itself. An intent with neither a `submitted` line nor a job folder is an
+  unknown outcome: a cleaned or swept folder looks the same as a job never submitted.
+- an apply with an `intent` reads its saved plan (missing, damaged or not matching the intent's digest: an unknown
+  outcome), checks the branch and the claim, and compares every file with the blobs before and after: all after, it
+  is done; each before or after, applying again finishes it; a link on the way or anything else is an unknown
+  outcome.
+- a commit with an `intent` compares the branch tip with the expected parent: the tip is the parent, the commit is
+  made; the tip is the exact commit of the `made` line, it is taken as the receipt; anything else (a commit of the
+  same tree made by hand included) is an unknown outcome. The index entries of the claimed files follow the commit
+  only on the branch of the run and only where nobody staged other work; else the run stops and resumes from there.
+- checks without a `done` first stop the check commands the interrupted run left running (by pid and start time;
+  on Unix the whole process group), then run again (they change nothing but their export).
 
 What neither the journal, Git nor the gateway can settle (a job that ended `unknown`, a file changed by somebody
 else in the middle of an apply, a branch that moved during a commit, a submitted job whose folder is gone) stops the
@@ -151,6 +166,9 @@ command and a REVIEW.md):
 | `flow-protected` | a patch editing an existing test: `protectedChanged`, stopped before review, the test unchanged |
 | `flow-failing-verify` | the cheap check passes, verify exits 1: no commit, no review, `verifiedBy: "none"` with both exit codes |
 | `flow-resume-cuts` | a cut right after the write submission and one right after the commit, each `--resume` going on: one model turn per step, one commit, one intent each |
+| `flow-protected-worktree` | a claimed test edited in the work tree while the run is cut: `protected checks changed at checks 1`, no check run, nothing committed |
+| `flow-cleaned-job` | a cut after the write submission, then the job folder removed: `unknown outcome at write`, the model asked once, the claim open |
+| `flow-no-review-md` | a base with neither REVIEW.md nor a verify skill passes the gate and runs to approval; the review judges by the brief |
 
 ## Known limits of version 1
 
@@ -167,3 +185,5 @@ command and a REVIEW.md):
 - Blob ids in a patch are those of the bytes in the work tree (`git hash-object --no-filters`).
 - A finished gateway job is kept seven days; a run resumed after that cannot poll a job it submitted and stops
   with an unknown outcome instead of asking again.
+- On Windows a check command that an interrupted run left behind is stopped with what it started only while it
+  still runs itself; processes it started that outlived it are not found.
