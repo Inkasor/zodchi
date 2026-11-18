@@ -32,7 +32,7 @@ Verdicts: `DELETE`, `ARCHIVE`, `KEEP`, `ASK`. Rules for every researcher:
 
 ## 2. Fold (the lead)
 
-Merge the tables into a few groups (for example: junk to delete, archives, keep, repositories to commit, questions),
+Merge the tables into a few groups (for example: junk to delete, archives, keep, questions),
 each with its count, size and full item list. Every `ASK`, every risk and every gap stays visible.
 
 ## 3. Decide (the human, once)
@@ -42,13 +42,15 @@ answers are the plan. Nothing happens before it. A group without a clear answer 
 
 ## 4. Act (one worker, only after the answers)
 
-Exactly the chosen actions on exactly the listed items, nothing else. Right before each removal, check again: the
-item is unchanged since the survey, not in use, and either another copy exists outside everything being removed or
-it is committed with no local changes and its commit is on a remote. If any check fails or cannot run, skip it and
-report. Archive before delete where asked. For repositories: commit by topic; if the staged diff holds a secret
-candidate, do not commit that topic and ask. If the repository has commit hooks, ask before committing (a hook is
-code the repository runs). Never push, never force. Keep a log of every action with how to undo it
-(archive path, commit hash). Anything the answers did not cover is skipped and reported.
+Exactly the chosen actions on exactly the listed items, nothing else. A move into an archive counts as a removal.
+Right before each removal or move, check again: the item is unchanged since the survey, it is not in use, and another
+copy of it exists outside everything being removed or moved in this run. If any check fails or cannot run, skip the
+item and report it. Never print a secret value, in the log or anywhere else.
+
+**Repositories are reported, never acted on.** No commit, push, stash, reset or folder removal for anything inside
+a repository: the report lists each repository's state, and committing or removing one is a separate task for the
+human or a code package. Keep a log of every action with how to undo it (archive path). Anything the answers did
+not cover is skipped and reported.
 
 ## 5. Report
 
