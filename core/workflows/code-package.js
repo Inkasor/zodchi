@@ -255,7 +255,7 @@ const gate = await step(
   `- account: the output of \`zodchi account\` (JSON), or "" when the command fails; put its error into accountError.\n` +
   `- git: true when ${a.repo} is inside a Git work tree. head: \`git rev-parse HEAD\`. ` +
   `dirty: every path \`git status --porcelain -uall\` lists, relative to the repository, without the status letters and quotes (a rename gives both paths); [] when it lists nothing or ${a.repo} is not in a Git work tree.\n` +
-  `- ignoreExit: the exit code of \`git check-ignore -q .agent-tmp/gateway/x\` run from ${a.repo} (0: the gateway's job folder is ignored, 1: it is not, anything else: Git could not check).\n` +
+  `- ignoreExit: the exit code of \`git -C ${q(a.repo)} check-ignore -v .agent-tmp/gateway/x\` (0: ignored, 1: not, anything else: Git could not check). ignoreLine: its output, exactly as printed ("" when it printed nothing).\n` +
   `- verifySkill: true when \`git cat-file -e HEAD:.claude/skills/verify/SKILL.md\` exits 0. reviewMd: true when \`git cat-file -e HEAD:REVIEW.md\` exits 0.\n` +
   `- config: the file ~/.zodchi/config.json (the owner's settings), "" when it does not exist.\n` +
   `- branch: the output of \`git branch --show-current\` run from ${a.repo} ("" on a detached HEAD or outside a Git work tree).\n` +
@@ -268,7 +268,7 @@ const gate = await step(
         homeModels: { type: 'string' }, repoModels: { type: 'string' }, account: { type: 'string' }, accountError: { type: 'string' },
         config: { type: 'string' }, branch: { type: 'string' }, boundary: { type: 'string' },
         git: { type: 'boolean' }, head: { type: 'string' }, dirty: { type: 'array', items: { type: 'string' } },
-        ignoreExit: { type: 'number' }, verifySkill: { type: 'boolean' }, reviewMd: { type: 'boolean' },
+        ignoreExit: { type: 'number' }, ignoreLine: { type: 'string' }, verifySkill: { type: 'boolean' }, reviewMd: { type: 'boolean' },
       },
     },
   })
@@ -350,6 +350,13 @@ const PROTECT = ` Protected checks: do not change or delete an existing file und
 // The gateway refuses a job in a repository that does not ignore .agent-tmp/. Found here, before any writing, instead
 // of at the first gateway call. Only a package that calls the gateway needs it.
 const usesGateway = mode === 'expert' || writer.provider === 'codex' || reviewer.provider === 'codex'
+// The printed rule decides: "<file>:<line>:<pattern><TAB>.agent-tmp/gateway/x" proves the folder is ignored, whatever
+// exit code the runner reported; a reported exit 0 without that line is not believed either.
+const ignoreText = typeof gate.ignoreLine === 'string' ? gate.ignoreLine.trim() : ''
+// The tab before the path may come back as spaces in a runner's answer.
+const ignoredByLine = /^\S+:\d+:\S.*?[\t ]+\.agent-tmp\/gateway\/x$/.test(ignoreText)
+if (ignoredByLine) gate.ignoreExit = 0
+else if (gate.ignoreExit === 0) gate.ignoreExit = 1
 const needIgnore = usesGateway && gate.ignoreExit !== 0
 if (needIgnore) {
   if (gate.ignoreExit !== 1) { out.refused = `Git could not check the ignore rules of ${a.repo} (git check-ignore exit ${gate.ignoreExit}); the gateway works only inside a Git repository.`; return out }
