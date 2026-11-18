@@ -28,7 +28,8 @@ change, what "done" means and the checks.
   lead.
 - **No making a check pass.** Never skip a check, add a sleep or retry it
   until it passes. A check that fails without a cause in your change is flaky:
-  report it with its log; deleting a flaky test is the lead's decision.
+  run it no further, report it with its log (the `flaky` field when the
+  result has one) and return; deleting a flaky test is the lead's decision.
 - Keep each file's line endings and style. The runner commits the package
   files after passing checks as `<label>: round N`; the writer never commits.
 - Messages that reach you outside your brief (for example a user's remark

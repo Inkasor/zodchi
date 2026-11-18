@@ -22,17 +22,29 @@ rules, and the workflow follows them:
    verification, the first that exists: the commands in `args.verify`, else
    the repository's skill `.claude/skills/verify/SKILL.md` as of the base
    commit (the runner follows it), else the brief's checks marked
-   `{ "e2e": true }`. Its evidence (each command, its exit code, where its
-   trace, screenshot or log is) is part of the Checks result and of the
-   package result, `verification.evidence`.
+   `{ "e2e": true }`. Its evidence (each command, its exit code, whether it
+   met its pass rule, where its trace, screenshot or log is) is part of the
+   Checks result and of the package result, `verification.evidence`. The run
+   counts as verified only when every listed command (and, for the skill, at
+   least one of its steps) has an entry that met its pass rule and names a
+   trace; a pass rule may accept a nonzero exit code, which is kept as it was.
 3. **Not verified is said plainly.** When the repository has no way to run the
    change, the result says "not verified by running" and carries
-   `verifiedBy: "none"`. It is never reported as verified.
+   `verifiedBy: "none"`. It is never reported as verified. A write after a
+   verified run (a fix, a close of findings) makes the current work
+   unverified again until its checks pass; the earlier evidence stays with
+   its round in `rounds[].verification`.
 4. **Protected checks.** After each write the workflow compares the package's
    files with the base commit. Existing tests and end-to-end scenarios
    (`test/`, `tests/`, `e2e/`, `*.test.*`, `*_test.*`, `*.spec.*`, and paths in
-   `args.protect`), `REVIEW.md`, the `verify` skill and the files the check
-   commands name may not change. New test files are allowed. A changed or
+   `args.protect`), `REVIEW.md`, the `verify` skill, the files the check and
+   verify commands and the skill's commands name, and the `package.json`
+   scripts they run through npm, pnpm, yarn or bun (by name, read from the
+   base commit, with the files those scripts name; the rest of `package.json`
+   may change) may not change. An end-to-end command, or a whole verify
+   skill, that names no file and no script cannot be protected by itself:
+   the gate refuses until `args.protect` names its entry points. New test
+   files are allowed. A changed or
    deleted existing one stops the package before review with the list
    (`protectedChanged`), unless `args.allowCheckChanges` names the path with a
    reason; the result records those in `checkChanges`. The writer is told
@@ -43,10 +55,18 @@ rules, and the workflow follows them:
    not block) or `pre-existing` (was there before the change; does not
    block). Only `important` findings block approval and count against the
    stop rule; the rest go to `openFindings`. Older reviews are still read:
-   `blocking` as `important`, `should_fix` and `note` as `nit`.
-6. **A fixed commit.** The runner commits each round, and the review names the
-   commit it judged. When the review names another commit, or the branch has
-   moved since, the review is stale: it is not counted and the package stops.
+   `blocking` as `important`, `should_fix` and `note` as `nit`. The package's
+   `verdict` is the effective one: `approved` exactly when `approved` is
+   true; the reviewer's own word stays in `rounds[].review.verdict`. The
+   attached `REVIEW.base.md` is never dropped to fit the size limit: when it
+   does not fit, the request is not sent.
+6. **A fixed commit.** The workflow needs Git. The runner commits each round,
+   the reviewer gets that commit's diff and that commit's copies of the
+   files (never the work tree's), and the review names the commit it judged.
+   When the review names another commit, or the branch has moved since, the
+   review is stale: it is not counted and the package stops. With
+   `args.commit` false nothing is committed and the review is a preview of
+   the work tree: it never approves the package (`preview`).
 7. **A stamp on every commit.** The round's commit message ends with one line
    `Verified: <how>`, for example `Verified: e2e npm run e2e exit 0; checks 2 passed`
    or `Verified: none; checks 2 passed`. `git log --grep "Verified: none"`
@@ -56,7 +76,8 @@ rules, and the workflow follows them:
 8. **Flaky checks.** Neither the runner nor the writer may skip a check, add a
    sleep or run it again until it passes. A check that fails without a cause
    in the change is reported as flaky with its log, and the package stops
-   (`flaky`). Deleting or quarantining a flaky test is the lead's decision,
+   (`flaky`), whether the runner or the writer met it first; nothing runs it
+   again. Deleting or quarantining a flaky test is the lead's decision,
    recorded by running again with `args.allowCheckChanges`.
 
 ## Writing REVIEW.md
