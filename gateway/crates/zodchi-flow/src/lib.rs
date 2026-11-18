@@ -9,6 +9,7 @@ pub mod args;
 pub mod checks;
 pub mod claims;
 pub mod code_package;
+pub mod executor;
 pub mod gateway;
 pub mod git;
 pub mod journal;
