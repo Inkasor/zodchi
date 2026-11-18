@@ -33,9 +33,11 @@ flag, and only that one, to true when and only when the step is done.
 3. **Backup.** Copy each target file that already exists to the backup folder
    the brief names before the first edit.
 4. **Apply** the rows in order, text verbatim: the expert's code, constants
-   and comments go in as written. An OLD text that has stopped matching, for
-   instance because an earlier row changed it, is a conflict: stop there and
-   report the row and how many rows were applied before it.
+   and comments go in as written. Immediately before each replacement, check
+   again that its OLD text occurs exactly once in the file as it now stands.
+   An OLD text that has stopped matching or now matches more than once, for
+   instance because an earlier row changed or copied it, is a conflict: stop
+   there and report the row and how many rows were applied before it.
 5. **Prove.** For every edit row, search the target file for its marker and
    record the line number in the ledger. A row without a line number is not
    applied. Then run the syntax checks named by this step (for example
