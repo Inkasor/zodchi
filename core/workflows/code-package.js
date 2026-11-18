@@ -287,12 +287,16 @@ const claimFile = `${claimsDir}/${a.label}.json`
 // ---------------------------------------------------------------- Gate
 // The gate helper (core/scripts/gate.mjs) is looked up in the plugin copy the session loaded, never in a checkout: the bootstrap below
 // (the same text in every workflow that uses the helper; the e2e suite checks they are equal) takes the copy from $ZODCHI_PLUGIN_ROOT,
-// $CLAUDE_PLUGIN_ROOT or the install Claude Code's registration names for zodchi-core, and runs scripts/gate.mjs there.
-// It prints one line of JSON; its exit code is 0 when that line is the answer, 3 when the copy's api differs from GATE_API, 4 when no copy
-// has the helper. The workflow reads the line and decides.
+// $CLAUDE_PLUGIN_ROOT or the install Claude Code's registration names for zodchi-core for the project the session runs in (the folder the runner
+// starts in, the most specific project install first, else the user install), and runs scripts/gate.mjs there. It picks ONE copy and never
+// falls through to another: a copy without the helper is a stop.
+// It prints one line of JSON; its exit code is 0 when that line is the answer, 3 when the copy's api differs from GATE_API, 4 when the copy
+// the session loaded has no helper. The workflow reads the line and decides.
 const GATE_API = 1
-const GATE_BOOT = 'const fs=require(\"fs\"),os=require(\"os\"),path=require(\"path\"),cp=require(\"child_process\");const [repo,...rest]=process.argv.slice(1);const out=(o,c)=>{fs.writeSync(1,JSON.stringify(o)+\"\\n\");process.exit(c)};const rd=f=>{try{return JSON.parse(fs.readFileSync(f,\"utf8\"))}catch(e){return null}};const eq=(a,b)=>path.resolve(a).toLowerCase()===path.resolve(b).toLowerCase();const tried=[];let root=\"\",via=\"\";const has=d=>{const ok=fs.existsSync(path.join(d,\"scripts\",\"gate.mjs\"));tried.push(d+(ok?\"\":\" (no scripts/gate.mjs)\"));return ok};for(const [name,env] of [[\"ZODCHI_PLUGIN_ROOT\",process.env.ZODCHI_PLUGIN_ROOT],[\"CLAUDE_PLUGIN_ROOT\",process.env.CLAUDE_PLUGIN_ROOT]]){if(!root&&env){const m=rd(path.join(env,\".claude-plugin\",\"plugin.json\"));if(m&&m.name===\"zodchi-core\"&&has(env)){root=env;via=name}}}if(!root){const reg=rd(path.join(process.env.CLAUDE_CONFIG_DIR||path.join(os.homedir(),\".claude\"),\"plugins\",\"installed_plugins.json\"));const list=(reg&&reg.plugins&&reg.plugins[\"zodchi-core@zodchi\"])||[];for(const e of [...list.filter(e=>e.projectPath&&eq(e.projectPath,repo)),...list.filter(e=>!e.projectPath)]){if(e.installPath&&has(e.installPath)){root=e.installPath;via=\"installed_plugins.json, scope \"+e.scope;break}}}if(!root)out({ok:false,api:0,error:\"the registered zodchi-core plugin copy has no scripts/gate.mjs (not installed, or an older copy than this workflow): update the plugin; a checkout is never used instead\",tried},4);const r=cp.spawnSync(process.execPath,[path.join(root,\"scripts\",\"gate.mjs\"),...rest],{stdio:\"inherit\",env:{...process.env,ZODCHI_GATE_VIA:via}});process.exit(r.status===null?5:r.status)'
-const helperRun = (command, spec) => `${a.pluginRoot ? `ZODCHI_PLUGIN_ROOT=${q(a.pluginRoot)} ` : ''}node -e ${q(GATE_BOOT)} -- ${q(a.repo)} ${command} ${q(JSON.stringify({ api: GATE_API, ...spec }))}`
+const GATE_BOOT = 'const fs=require(\"fs\"),os=require(\"os\"),path=require(\"path\"),cp=require(\"child_process\");const project=process.argv[1]||\"\";const rest=process.argv.slice(2);const out=(o,c)=>{fs.writeSync(1,JSON.stringify(o)+\"\\n\");process.exit(c)};const rd=f=>{try{return JSON.parse(fs.readFileSync(f,\"utf8\"))}catch(e){return null}};const nm=p=>path.resolve(p).split(path.sep).join(\"/\").toLowerCase();const pre=n=>n.endsWith(\"/\")?n:n+\"/\";const tried=[];let root=\"\",via=\"\";const fail=(why)=>out({ok:false,api:0,error:why,tried},4);for(const name of [\"ZODCHI_PLUGIN_ROOT\",\"CLAUDE_PLUGIN_ROOT\"]){const env=process.env[name];if(root||!env)continue;const m=rd(path.join(env,\".claude-plugin\",\"plugin.json\"));if(m&&m.name===\"zodchi-core\"){root=env;via=name}else if(name===\"ZODCHI_PLUGIN_ROOT\"){tried.push(env+\" (no zodchi-core manifest)\");fail(\"ZODCHI_PLUGIN_ROOT names no zodchi-core plugin copy: a checkout or another folder is never used instead\")}}if(!root){const reg=rd(path.join(process.env.CLAUDE_CONFIG_DIR||path.join(os.homedir(),\".claude\"),\"plugins\",\"installed_plugins.json\"));const list=(reg&&reg.plugins&&reg.plugins[\"zodchi-core@zodchi\"])||[];const here=pre(nm(project));const own=list.filter(e=>e.projectPath&&here.startsWith(pre(nm(e.projectPath)))).sort((a,b)=>nm(b.projectPath).length-nm(a.projectPath).length);const e=own[0]||list.find(e=>!e.projectPath);if(e&&e.installPath){root=e.installPath;via=\"installed_plugins.json, scope \"+e.scope}}if(!root)fail(\"no zodchi-core plugin copy is registered for the project this session runs in (not installed): update the plugin; a checkout is never used instead\");const ok=fs.existsSync(path.join(root,\"scripts\",\"gate.mjs\"));tried.push(root+(ok?\"\":\" (no scripts/gate.mjs)\"));if(!ok)fail(\"the zodchi-core plugin copy this session loaded (\"+root+\") has no scripts/gate.mjs (an older copy than this workflow): update the plugin; no other copy is tried and a checkout is never used\");const r=cp.spawnSync(process.execPath,[path.join(root,\"scripts\",\"gate.mjs\"),...rest],{stdio:\"inherit\",env:{...process.env,ZODCHI_GATE_VIA:via}});process.exit(r.status===null?5:r.status)'
+// The folder the runner starts in is the project the session runs in: it says which registered plugin copy the session loaded (the Windows form of the path on Git Bash).
+const SESSION_PROJECT = '"$(pwd -W 2>/dev/null || pwd)"'
+const helperRun = (command, spec) => `${a.pluginRoot ? `ZODCHI_PLUGIN_ROOT=${q(a.pluginRoot)} ` : ''}node -e ${q(GATE_BOOT)} -- ${SESSION_PROJECT} ${command} ${q(JSON.stringify({ api: GATE_API, ...spec }))}`
 const HELPER_ANSWER = { type: 'object', required: ['exitCode', 'stdout'], properties: { exitCode: { type: 'number' }, stdout: { type: 'string' }, error: { type: 'string' } } }
 const HELPER_NEXT = 'Update the zodchi-core plugin (rerun the installer, then reload plugins in Claude Code) so that the copy this workflow runs from has scripts/gate.mjs, or pass args.pluginRoot, the folder of a zodchi-core copy that has it. Nothing was claimed or changed.'
 // The helper's answer: the one JSON line of its stdout and the exit code the runner saw, both of which must say it worked.
@@ -319,7 +323,7 @@ phase('Gate')
 // workflow decides from (Git state, dirty list, ignore rule, role table, account, claims) is what the script printed.
 const gateRun = helperRun('code-package', { repo: a.repo, brief: a.brief, label: a.label, claimsKey: claimsName, want: [writerRole, 'reviewer'] })
 const gateAnswer = await step(
-  `Run ONE command and return what it printed; change nothing and run nothing else. From ${a.repo}, in the foreground, once:\n${gateRun}\n` +
+  `Run ONE command and return what it printed; change nothing and run nothing else. In the foreground, once:\n${gateRun}\n` +
   `Do not change, split or rerun it with other options. exitCode: its exit code, a number. stdout: everything it printed to standard output, exactly, as one string (it is one line of JSON): ` +
   `do not parse, summarize, reorder or shorten it. error: what it printed to standard error, at most 300 characters, "" when nothing. ` +
   `If the command could not be started at all, exitCode is -1 and stdout is "".`,
@@ -328,7 +332,7 @@ const gateRead = readHelper(gateAnswer, 'the gate helper')
 if (gateRead.error) { out.stoppedAt = `gate (${gateRead.error})`; out.next = HELPER_NEXT; return out }
 const gate = gateRead.facts
 // The gate answer must carry the Git state: a missing list is no answer, never a clean work tree.
-if (!Array.isArray(gate.dirty)) { out.stoppedAt = 'gate (no dirty list: the Git state is unknown)'; return out }
+if (!Array.isArray(gate.dirty)) { out.stoppedAt = `gate (no dirty list: the Git state is unknown${gate.dirtyError ? `; ${gate.dirtyError}` : ''})`; return out }
 out.pluginCopy = { path: gate.plugin.root, commit: gate.plugin.commit || 'unknown', version: gate.plugin.version || '', via: gate.plugin.via || '' }
 const note = (text) => { out.notes = out.notes || []; out.notes.push(text) }
 for (const e of gate.modelsErrors || []) log(`${e}; ignored`)
@@ -506,6 +510,15 @@ if (claim && claim.conflicts && claim.conflicts.length && claim.conflicts[0] !==
   if (out.openFindings.length && !out.next) out.next = `The last review left ${out.openFindings.length} finding(s) open (openFindings): close them with the writer, or decide on them.`
   return out
 } finally {
+  if (claimWritten && keepClaim) {
+    // The package waits for a person (an unknown outcome, an infrastructure failure): its claim says so, and the gate of another package
+    // never closes a claim marked "awaiting", however old it is.
+    const marked = await step(
+      `If "${claimFile}" exists ($HOME is the shell's home folder: keep the path in double quotes), add the field "awaiting" with this value, a string: ${JSON.stringify(String(out.stoppedAt || 'stopped'))}; keep every other field and its "status". Change the file in place: make no backup or other copy of it in "${claimsDir}". ` +
+      `ok is true when the file does not exist, or when it parses and its "awaiting" is that string.`,
+      { agentType: 'zodchi-core:runner', schema: STEP, label: `await claim ${a.label}` }).catch(() => null)
+    if (!marked || !marked.ok) out.claimNotMarked = `${claimFile}: add "awaiting" by hand, or another package's gate may close it`
+  }
   if (claimWritten && !keepClaim) {
   const closed = await step(
     `If "${claimFile}" exists ($HOME is the shell's home folder: keep the path in double quotes), set its "status" to "${claimStatus}" and add "closedAt" with \`date -u +%Y-%m-%dT%H:%M:%SZ\`; keep every other field. Change the file in place: make no backup or other copy of it in "${claimsDir}". ` +

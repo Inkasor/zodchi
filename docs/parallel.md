@@ -37,7 +37,11 @@ agent may not be allowed to do either. Nothing is shared, nothing is locked.
   `~/.zodchi/config.json`), so that a package between two rounds, whose files are clean and
   committed too, is not closed under its own feet. The result names each closed claim and why
   (`closedClaims`, and a note); the open claims it kept are not touched. A claim whose files
-  are dirty, whose commits are elsewhere, or that was written to recently stays.
+  are dirty, whose commits are elsewhere, or that was written to recently stays. So does a claim
+  marked `"awaiting"`: a package that stops until a person decides (a gateway job that ended
+  `unknown`, an infrastructure failure to fix) writes that field into its own claim, and no age
+  or clean tree closes it; a person closes it. When `git status` itself fails, the gate answers
+  with `dirty: null` and `dirtyError`, the workflow stops, and no claim is examined.
 - **Commits.** The commit step commits only the package's own paths
   (`git commit -- <paths>`); another package's staged or changed file stays out.
   A file that Git shows changed, that the writer did not report and that another
@@ -71,8 +75,10 @@ anything is claimed.
 Three copies of the plugin can exist on a machine: a checkout, the snapshot the installer made and the copy
 Claude Code registered and cached. A workflow script cannot see its own file, so the gate looks the helper up
 in the copy the session loaded, in this order: `args.pluginRoot`, `$ZODCHI_PLUGIN_ROOT`, `$CLAUDE_PLUGIN_ROOT`,
-the install that `installed_plugins.json` names for `zodchi-core` (one made for this project first). It never
-looks in a checkout. A copy without the helper stops the run with exit code 4 and the places it looked at; a copy
+the install that `installed_plugins.json` names for `zodchi-core` for the project the session runs in (the folder the
+runner starts in, which the command passes; the most specific project install, else the user install). It picks one
+copy and never falls through to another, and it never looks in a checkout. A copy without the helper stops the run
+with exit code 4 and the place it looked at; a copy
 whose helper speaks another `api` than the workflow stops it with exit code 3. Every workflow result carries
 `pluginCopy`: `{ path, commit, version, via }`, the copy the helper came from and how it was found.
 
