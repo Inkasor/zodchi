@@ -1,4 +1,4 @@
-# zodchi installer for Windows. Usage: .\install\install.ps1 [-Domains web-apps,gamedev-unity|all] [-Project <repo>] [-NoBuild] [-NoPlugins] [-GatewayCli <cli.mjs>] [-Dev] [-Force] [-DryRun] [-Uninstall]
+# zodchi installer for Windows. Usage: .\install\install.ps1 [-Domains web-apps,gamedev-unity|all] [-Project <repo>] [-NoBuild] [-NoPlugins] [-GatewayCli <cli.mjs>] [-NoCodexSkill] [-Dev] [-Force] [-DryRun] [-Uninstall]
 param(
   [string]$Domains,
   [string]$Project,
@@ -9,6 +9,7 @@ param(
   [switch]$Uninstall,
   [switch]$NoBuild,
   [switch]$NoPlugins,
+  [switch]$NoCodexSkill,
   [switch]$NoPath
 )
 $ErrorActionPreference = 'Stop'
@@ -23,6 +24,7 @@ if ($DryRun) { $argsList += '--dry-run' }
 if ($Uninstall) { $argsList += '--uninstall' }
 if ($NoBuild) { $argsList += '--no-build' }
 if ($NoPlugins) { $argsList += '--no-plugins' }
+if ($NoCodexSkill) { $argsList += '--no-codex-skill' }
 & node @argsList
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if (-not $DryRun -and -not $Uninstall -and -not $NoPath) {

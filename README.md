@@ -19,7 +19,8 @@ same everywhere lives in `core/`.
 
 | Folder | What is inside |
 | --- | --- |
-| `core/` | Agents every domain uses: `coder`, `runner`, `applier`, `researcher`. Workflows: `code-package`, `ops-script`, `incident-triage` (a user's error report to a draft reply or fix brief, see [docs/incident-triage.md](docs/incident-triage.md)). Skill: `workspace-audit` (tidy a cluttered folder: read-only researchers, one batch of decisions, then one worker) |
+| `core/` | Agents every domain uses: `coder`, `runner`, `applier`, `researcher`. Workflows: `code-package`, `ops-script`, `incident-triage` (a user's error report to a draft reply or fix brief, see [docs/incident-triage.md](docs/incident-triage.md)). Skills: `workspace-audit` (tidy a cluttered folder: read-only researchers, one batch of decisions, then one worker) and `zodchi-flow` (run a code task through `zodchi flow code-package` from a Claude Code session) |
+| `codex/` | The Codex skill `zodchi-flow`: the same, from a Codex session (see [Three ways to run a package](#three-ways-to-run-a-package)) |
 | `domains/web-apps/` | Web application work: `branch-review` before a release |
 | `domains/gamedev-unity/` | Game asset pipeline in Blender and Unity: `asset-round`, `method-question`, `rubric-probe`, `unity-check`, and the `modeller`, `unity-runner`, `art-critic` agents |
 | `models.json` | The role table: which model plays each role, in order of preference |
@@ -130,6 +131,12 @@ This installs `zodchi-core` for you in every project, builds the gateway
 - The installer never overwrites a file it did not put there, or one you
   changed. `~/.zodchi/models.json` is yours after the first install: a newer
   table is written next to it as `models.json.new`.
+- The Codex skill `zodchi-flow` (`codex/skills/`) is installed into Codex's skills
+  folder, `$CODEX_HOME/skills` or `~/.codex/skills`, as a managed file like the
+  others: a file of that name that the installer did not write, or that you
+  changed, is left alone (`--force` replaces it), and `--uninstall` removes it.
+  `--no-codex-skill` leaves it, and an earlier copy of it, alone. The Claude Code
+  skill of the same name is part of the `zodchi-core` plugin and comes with it.
 - `--dry-run` shows what would change. `--uninstall` removes what the
   installer put there and leaves your changes in place. Installed from a copy
   (the default), it removes the marketplace registration and the plugin
@@ -150,6 +157,42 @@ Edit `~/.zodchi/models.json` to match your subscriptions. A repository can
 override roles in `.zodchi/models.json`, and one run can override them in its
 arguments (`models`). A `claude` candidate runs as a Claude Code subagent. A
 `codex` candidate runs through the gateway on your Codex sign-in.
+
+## Three ways to run a package
+
+`zodchi flow code-package` (see [docs/flow.md](docs/flow.md)) runs a code package as code in the gateway. It can be
+started three ways; the engine, the journal and the result are the same in all of them. The skill `zodchi-flow` tells
+the agent how: turn the task into a brief and an args file, run `zodchi flow code-package --args <file>` in the
+foreground, read the result JSON, resume a cut run with `--resume <run-id>`, and report. It never edits the journal,
+never resubmits by hand and never switches branches during a run.
+
+| Way | Who starts it | Who answers the model steps | Set up |
+| --- | --- | --- | --- |
+| 1. From a Codex session (Codex first) | the Codex skill `zodchi-flow` | Codex on your own sign-in, or your company's server | the installer puts the skill in `~/.codex/skills`; for a server, `flow.json` below |
+| 2. From a Codex session with Claude roles | the same skill | a Claude writer through the Claude Code CLI on your machine, a Codex reviewer | `"claude": true` in `flow.json`, and a Claude candidate first for `expertWriter` in `models.json` |
+| 3. From a Claude Code session (Claude first) | the Claude Code skill `zodchi-flow` of `zodchi-core` | as in 1 or 2, whichever you set up | the installer installs the plugin |
+
+Each person sets the model side up in their own `~/.zodchi/flow.json` (`$ZODCHI_HOME/flow.json`); with no file the
+model steps go to the local gateway on your Codex sign-in, as in way 1.
+
+Through a company server (a colleague without a Codex sign-in; see [docs/flow-server.md](docs/flow-server.md)):
+
+```json
+{ "server": "https://zodchi.example.org", "tokenFile": "~/.zodchi/flow-token" }
+```
+
+With Claude roles (see [docs/flow-claude.md](docs/flow-claude.md)), `flow.json` and `models.json`:
+
+```json
+{ "claude": true }
+```
+
+```json
+{ "version": 1, "roles": {
+  "expertWriter": { "candidates": [{ "provider": "claude", "model": "opus", "effort": "high" }, { "provider": "codex", "model": "gpt-6.2-sol", "effort": "medium" }] },
+  "reviewer": { "candidates": [{ "provider": "codex", "model": "gpt-6.2-sol", "effort": "medium" }] }
+} }
+```
 
 ## Subscriptions: what is allowed
 

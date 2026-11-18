@@ -9,6 +9,25 @@ gate, claim, write, cheap checks, verify, commit, review, close and stop rules a
 propose a patch or judge a change; every transition is the engine's. This is version 1: Codex executors only,
 through the local gateway.
 
+## Three ways to start it
+
+The same `zodchi flow code-package --args <file>` run starts three ways, and all three reach the same engine, journal
+and result. An agent does the starting from a skill; the skill tells it how to write the brief (goal, files, done,
+checks, verify and the `## Review boundary` section), how to write the args file, to run the command in the foreground
+with the longest timeout its shell tool allows, to read `verdict`, `stoppedAt`, `next`, `openFindings` and
+`verifiedBy` from the result, to resume a cut run with `--resume <run-id>` (the id is the newest journal folder of the
+repository and label with no `result.json`), and never to edit the journal, resubmit a step by hand, background the
+run or switch branches during it.
+
+| Way | Skill | Model steps |
+|---|---|---|
+| 1. From a Codex session (Codex first) | `codex/skills/zodchi-flow/SKILL.md`, installed by `install/install.mjs` into `$CODEX_HOME/skills` (else `~/.codex/skills`) | the local gateway, or for a colleague the company server named in `flow.json` (`server`, `tokenFile`; [flow-server.md](flow-server.md)) |
+| 2. From a Codex session with Claude roles | the same skill | `"claude": true` in `flow.json` and a Claude candidate first for `expertWriter` ([flow-claude.md](flow-claude.md)) |
+| 3. From a Claude Code session (Claude first) | `core/skills/zodchi-flow/SKILL.md`, in the `zodchi-core` plugin | as in 1 or 2, by the person's `flow.json` and `models.json` |
+
+The two skills share one body (`scripts/check.mjs` fails when they differ); only their descriptions differ. The existing
+Claude Code workflows (`/zodchi-core:code-package`) are unchanged and stay the default.
+
 ## Running it
 
 From anywhere, with the repository named in the args:
@@ -199,8 +218,10 @@ command and a REVIEW.md):
   on; run untrusted checks in a container or VM.
 - The export holds the tracked files of the candidate tree only: what the checks need beyond them (dependencies,
   build caches) is installed by a check (`npm ci`, a build), every round anew.
-- Codex executors only, through the local gateway; no Claude writer or reviewer, no company server client, no Codex
-  skill or Claude Code wrapper yet. The JavaScript workflows are unchanged and keep their own runs.
+- Codex executors through the local gateway in this page's runs; a company server and Claude roles are in
+  [flow-server.md](flow-server.md) and [flow-claude.md](flow-claude.md). The skills of the three ways above are
+  instructions for an agent, not part of the engine: an agent that ignores them is not stopped by them. The JavaScript
+  workflows are unchanged and keep their own runs.
 - One writer turn per step: a package too large for one answer, or whose required context passes 512 KB, stops
   with `context too large at <step>` before anything is submitted.
 - Blob ids in a patch are those of the bytes in the work tree (`git hash-object --no-filters`).
@@ -226,8 +247,24 @@ command and a REVIEW.md):
 
 ## Model steps through a server
 
-Not in this version yet.
+See [flow-server.md](flow-server.md).
 
 ## Claude as an executor
 
-Not in this version yet.
+See [flow-claude.md](flow-claude.md).
+
+## The entry points
+
+`node scripts/e2e.mjs` runs `scripts/e2e/scenarios/flow-entry.mjs`, which follows the skills as written: the brief is made
+from the skill's own template, the args file from its own JSON example, and each command line of its `sh` blocks is
+run with its placeholders filled. A real run with real Codex and Claude sessions belongs to the before-release run, not
+to CI.
+
+| Scenario | What a user would see |
+|---|---|
+| `flow-entry-skills` | the two skills share one body; exactly the run, resume and rerun commands; a brief template with the review boundary; an args example the engine takes; nothing that backgrounds a run, edits the journal, resubmits or switches branches; no real host |
+| `flow-entry-install` | the installer puts the Codex skill in `$CODEX_HOME/skills` (else `~/.codex/skills`) and the Claude Code skill in the plugin it installs; it leaves a file it did not write or you changed, `--force` replaces it, `--no-codex-skill` skips it, `--uninstall` removes both |
+| `flow-entry-local` | the Codex skill's steps on the local gateway: brief, args, run from another folder, result read, finished run resumed, a refusal read |
+| `flow-entry-cut` | the Claude Code skill's steps with the run cut after the write submission: the run id found as the skill says, resumed, one model turn per step, no second run |
+| `flow-entry-server` | the Codex skill's steps with the model steps on a zodchi-server; nothing runs on this machine's Codex, the token is in no result or commit |
+| `flow-entry-claude` | the Codex skill's steps with a Claude writer (the fake `claude`): a failed write stops the run, the skill's rerun of the step named in `stoppedAt` goes on to approval |
