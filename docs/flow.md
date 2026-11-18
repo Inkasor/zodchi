@@ -1,5 +1,8 @@
 # zodchi flow
 
+**Experimental (version 1).** Opt-in; the Claude Code workflows stay the default. Open review points are listed at
+the end of this page.
+
 `zodchi flow code-package` runs the `code-package` workflow as code inside the gateway, without Claude Code: the same
 gate, claim, write, cheap checks, verify, commit, review, close and stop rules as the JavaScript workflow
 (`core/workflows/code-package.js`), decided by a state machine in Rust (`gateway/crates/zodchi-flow`). Models only
@@ -208,3 +211,15 @@ command and a REVIEW.md):
   process group is ended when the check ends.
 - What a fixing writer sees of a failed check is cleaned of the known private folders and of lines with credential
   words, not of every possible secret: a check that prints a private value without such a word passes it on.
+
+## Open review points (version 1)
+
+- F17 (important), src/code_package.rs: The pre-publication index check accepts an entry that already matches the candidate commit, but if update-ref fails, the rollback resets every affected entry to the parent without recording its original state.
+- F18 (important), src/code_package.rs: The saved-result path discards errors from claims::close and returns the saved result as though closing succeeded.
+- F9 (important), src/git.rs: The writer view and optional reviewer copies now exclude tracked links, but candidate_tree can still stage a claimed regular file that was replaced by a symlink after the writer request.
+- F10 (important), src/patch.rs: Fresh writes use the exact saved destination mode, but the plan does not record before modes.
+- F12 (important), src/checks.rs: The stdin gate prevents an unrecorded launch, but it still opens if process_start returns no identity.
+- F19 (important), src/journal.rs: After a partial append fails, halt_infra tries to append a stop record to the same file.
+- F16 (important), src/code_package.rs: Direct command strings are gone from the prompt templates, but the engine truncates raw logs before sanitizing them and forwards whatever the marker list does not recognize.
+- F20 (important), src/checks.rs: Failure to create a log or launch bash returns a null exit code as an ordinary check failure rather than an infrastructure stop.
+- F13 (nit), src/code_package.rs: The release CLI still honors inherited ZODCHI_FLOW_CUT, now including the result boundary.
