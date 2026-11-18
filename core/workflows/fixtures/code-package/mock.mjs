@@ -59,7 +59,8 @@ const run = (cmd, cwd) => {
   catch (e) { return { exitCode: e.status ?? 1, output: `${e.stdout || ''}${e.stderr || ''}` } }
 }
 
-// Runs a list of { cmd, pass } as the runner would: each once, to its end, one log each.
+// Runs a list of { cmd, pass } as the runner would: each once, to its end, one log each. A pass rule that says "any
+// exit code" accepts a nonzero exit; every other rule wants exit code 0.
 function runList(ctx, list, kind) {
   const results = [], logs = [], evidence = []
   let cause = 'none'
@@ -68,11 +69,12 @@ function runList(ctx, list, kind) {
     const log = `${ctx.tmp}/logs/${kind}-${++ctx.logN}.log`
     fs.mkdirSync(path.dirname(log), { recursive: true })
     fs.writeFileSync(log, r.output)
+    const passed = r.exitCode === 0 || /any exit code/.test(c.pass || '')
     ctx.ran.push({ kind, cmd: c.cmd, exitCode: r.exitCode })
-    results.push(`${c.cmd}: exit ${r.exitCode}, ${r.output.trim().split('\n').pop()}, ${r.exitCode === 0 ? 'pass' : 'fail'}`)
+    results.push(`${c.cmd}: exit ${r.exitCode}, ${r.output.trim().split('\n').pop()}, ${passed ? 'pass' : 'fail'}`)
     logs.push(log)
-    evidence.push({ command: c.cmd, exitCode: r.exitCode, trace: log })
-    if (r.exitCode !== 0) { cause = (ctx.s.flaky || []).includes(c.cmd) ? 'flaky' : 'code'; break }
+    evidence.push({ command: c.cmd, exitCode: r.exitCode, passed, trace: log })
+    if (!passed) { cause = (ctx.s.flaky || []).includes(c.cmd) ? 'flaky' : 'code'; break }
   }
   return { ok: cause === 'none', results, logs, cause, evidence }
 }
@@ -85,9 +87,11 @@ function fakeAgent(ctx) {
     const tag = label.replace(/ \(cont \d+\)$/, '')
     if (tag.startsWith('gate ')) {
       return {
-        homeModels: JSON.stringify(TABLE), repoModels: '', account: JSON.stringify(ACCOUNT), git: true,
-        head: git(repo, 'rev-parse', 'HEAD').trim(), dirty: [], ignoreExit: 0,
+        homeModels: JSON.stringify(TABLE), repoModels: '', account: JSON.stringify(ACCOUNT), git: !s.notGit,
+        head: s.notGit ? '' : git(repo, 'rev-parse', 'HEAD').trim(), dirty: [], ignoreExit: 0,
         verifySkill: gitOk(repo, 'cat-file', '-e', 'HEAD:.claude/skills/verify/SKILL.md') === 0,
+        verifySkillText: gitOk(repo, 'cat-file', '-e', 'HEAD:.claude/skills/verify/SKILL.md') === 0 ? git(repo, 'show', 'HEAD:.claude/skills/verify/SKILL.md') : '',
+        packageJson: gitOk(repo, 'cat-file', '-e', 'HEAD:package.json') === 0 ? git(repo, 'show', 'HEAD:package.json') : '',
       }
     }
     if (tag.startsWith('claim ') || tag.startsWith('claim more ')) return { ok: true, conflicts: [], summary: 'claimed (mock)' }
@@ -100,17 +104,33 @@ function fakeAgent(ctx) {
         if (t === null) fs.rmSync(`${repo}/${f}`, { force: true })
         else { fs.mkdirSync(path.dirname(`${repo}/${f}`), { recursive: true }); fs.writeFileSync(`${repo}/${f}`, t) }
       }
-      return { done: true, summary: `mock writer: ${step}`, changed: Object.keys(edits).map(f => `${repo}/${f}`), unverified: [] }
+      const flaky = ((s.writerFlaky || {})[step] || []).map(command => {
+        const log = `${tmp}/logs/writer-${++ctx.logN}.log`
+        fs.mkdirSync(path.dirname(log), { recursive: true })
+        fs.writeFileSync(log, run(command, repo).output)
+        ctx.ran.push({ kind: 'writer', cmd: command })
+        return { command, log, why: 'connection reset by the test server, nothing in the change' }
+      })
+      return { done: true, summary: `mock writer: ${step}`, changed: Object.keys(edits).map(f => `${repo}/${f}`), unverified: [], ...(flaky.length ? { flaky } : {}) }
     }
     if (tag.startsWith('status ')) {
       const paths = git(repo, 'status', '--porcelain', '-uall').split('\n').filter(Boolean).map(l => l.slice(3).replace(/^"|"$/g, ''))
       return { ok: true, summary: 'listed', paths }
     }
     if (tag.startsWith('protect ')) {
-      const list = JSON.parse(between(prompt, /Paths to compare, relative to the repository: (\[.*?\])\. /, 'list of paths to compare'))
-      const base = between(prompt, /git cat-file -e ([0-9a-f]+):<path>/, 'base commit')
+      const base = between(prompt, /with the base commit ([0-9a-f]+) in /, 'base commit')
+      const m = prompt.match(/Paths to compare, relative to the repository: (\[.*?\])\. /)
+      const list = m ? JSON.parse(m[1]) : []
       const paths = list.filter(p => gitOk(repo, 'cat-file', '-e', `${base}:${p}`) === 0 && gitOk(repo, 'diff', '--quiet', base, '--', p) === 1)
-      return { ok: true, summary: 'compared', paths }
+      const sm = prompt.match(/Package scripts to compare: (\[.*?\])\. /)
+      if (!sm) return { ok: true, summary: 'compared', paths }
+      // What the prompt's node -e command prints: each named script that differs between the base and the work tree.
+      const scriptsOf = (text) => { try { return JSON.parse(text).scripts || {} } catch { return null } }
+      const was = scriptsOf(git(repo, 'show', `${base}:package.json`))
+      const now = fs.existsSync(`${repo}/package.json`) ? scriptsOf(fs.readFileSync(`${repo}/package.json`, 'utf8')) : null
+      const scripts = JSON.parse(sm[1]).filter(n => !was || !now || was[n] !== now[n])
+      ctx.scriptsCompared = JSON.parse(sm[1])
+      return { ok: true, summary: 'compared', paths, scripts }
     }
     if (tag.startsWith('checks ')) {
       const list = JSON.parse(between(prompt, /one log per command in \S+: (\[\{"cmd".*?\}\])\. /, 'list of checks'))
@@ -128,7 +148,11 @@ function fakeAgent(ctx) {
         for (const m of skill.matchAll(/^\d+\. `([^`]+)`/gm)) list.push({ cmd: m[1], pass: 'exit code 0' })
       }
       if (m2) list.push(...JSON.parse(m2[1]))
-      return runList(ctx, list, 'verify')
+      const res = runList(ctx, list, 'verify')
+      // A runner that reports less than it ran: one entry missing, or entries without a trace.
+      if (s.evidenceTamper === 'drop') res.evidence.pop()
+      if (s.evidenceTamper === 'blank') for (const e of res.evidence) e.trace = ''
+      return res
     }
     if (tag.startsWith('commit ')) {
       const paths = JSON.parse(between(prompt, /The package paths, relative to the repository: (\[.*?\])\.\n/, 'package paths'))
@@ -149,20 +173,34 @@ function fakeAgent(ctx) {
     if (tag.startsWith('review ')) {
       // What the runner does for a gateway review: the diff of the fixed commit, REVIEW.md as of the base commit,
       // then the call; the fake gateway "receives" every attachment that exists, as the gateway would.
-      const [, diffFile, from, to] = prompt.match(/Save the change as (\S+) with `git diff ([0-9a-f]+) ([0-9a-f]+) -- <files>`/) || []
-      if (!diffFile) throw new Error('the review prompt does not diff a fixed commit against the base')
-      fs.writeFileSync(diffFile, git(repo, 'diff', from, to))
+      // A fixed commit against the base; in a preview (args.commit false) the work tree against the base.
+      const [, diffFile, from, to] = prompt.match(/Save the change as (\S+) with `git diff ([0-9a-f]+) (?:([0-9a-f]+) )?-- <files>`/) || []
+      if (!diffFile) throw new Error('the review prompt does not diff the change against the base')
+      if (!to && !(s.args && s.args.commit === false)) throw new Error('the review diffs the work tree although the run commits')
+      fs.writeFileSync(diffFile, to ? git(repo, 'diff', from, to) : git(repo, 'diff', from))
       const [, showFrom, focusFile] = prompt.match(/git show ([0-9a-f]+):REVIEW\.md > '([^']+)'/) || []
       if (!showFrom) throw new Error('the review prompt does not save REVIEW.md from a commit')
       fs.rmSync(focusFile, { force: true })
       try { fs.writeFileSync(focusFile, git(repo, 'show', `${showFrom}:REVIEW.md`)) } catch {}
+      // Somebody edits a package file in the work tree after the commit: the review must not see it.
+      if (s.dirtyBeforeReview) for (const [f, t] of Object.entries(s.dirtyBeforeReview)) fs.writeFileSync(`${repo}/${f}`, t)
+      // The package files as of the commit under review, at their repository paths under the snapshot folder.
+      const snap = prompt.match(/Save the package files as of the commit ([0-9a-f]+) under '([^']+)', never from the work tree: run `rm -rf '[^']+'`, then for each of (\[.*?\]) /)
+      if (snap) {
+        const [, commitOf, dir, list] = snap
+        fs.rmSync(dir, { recursive: true, force: true })
+        for (const p of JSON.parse(list)) if (gitOk(repo, 'cat-file', '-e', `${commitOf}:${p}`) === 0) {
+          fs.mkdirSync(path.dirname(`${dir}/${p}`), { recursive: true })
+          fs.writeFileSync(`${dir}/${p}`, git(repo, 'show', `${commitOf}:${p}`))
+        }
+      }
       const call = between(prompt, /`(zodchi run [^`]+)`/, 'gateway command')
       const attached = {}
       for (const m of call.matchAll(/--attach '([^']+)'/g)) if (fs.existsSync(m[1])) attached[slash(m[1])] = fs.readFileSync(m[1], 'utf8')
       const named = (prompt.match(/the review's "commit" field names exactly ([0-9a-f]+)/) || [])[1] || ''
       const n = Number(tag.split(' ')[1])
       const answer = (s.reviews || [])[n - 1] || { verdict: 'approved', findings: [] }
-      ctx.reviews.push({ n, diffFrom: from, diffTo: to, attached, named, headAtReview: git(repo, 'rev-parse', 'HEAD').trim() })
+      ctx.reviews.push({ n, diffFrom: from, diffTo: to, attached, named, snapshot: snap ? snap[2] : '', call, headAtReview: git(repo, 'rev-parse', 'HEAD').trim() })
       if (s.moveBranchDuringReview) { fs.writeFileSync(`${repo}/other.txt`, 'someone else\n'); git(repo, 'add', 'other.txt'); git(repo, 'commit', '-q', '-m', 'someone else') }
       const outFile = between(call, /--out '([^']+)'/, 'review output file')
       const commit = answer.commit ?? named
@@ -213,6 +251,7 @@ const SCENARIOS = {
       const head = git(ctx.repo, 'rev-parse', 'HEAD').trim()
       if (r.verification.reviewedCommit !== head || ctx.reviews[0].diffTo !== head || ctx.reviews[0].named !== head) bad.push(`reviewed ${r.verification.reviewedCommit}, diff to ${ctx.reviews[0].diffTo}, named ${ctx.reviews[0].named}, HEAD ${head}`)
       if (ctx.reviews[0].diffFrom !== ctx.base) bad.push('the review diff does not start at the base commit')
+      if (r.verdict !== 'approved') bad.push(`verdict ${r.verdict}`)
       if (r.protectedChanged) bad.push(`a new test file was refused: ${r.protectedChanged}`)
       const w = ctx.prompts.find(p => p.label.startsWith('write '))
       if (!/Protected checks: do not change or delete an existing test/.test(w.prompt) || !/Never skip a check/.test(w.prompt)) bad.push('the writer was not told the check rules up front')
@@ -277,6 +316,8 @@ const SCENARIOS = {
       if (ctx.reviews.length !== 1 || labels(ctx).some(l => /^close \d/.test(l))) bad.push(`steps: ${labels(ctx).join(', ')}`)
       const sev = r.openFindings.map(f => f.split(' ')[1]).join(',')
       if (sev !== 'nit,pre-existing,nit,nit') bad.push(`openFindings ${JSON.stringify(r.openFindings)}`)
+      if (r.verdict !== 'approved' || r.rounds[0].verdict !== 'approved') bad.push(`verdict ${r.verdict}, round verdict ${r.rounds[0].verdict}: the effective verdict is not approved`)
+      if (r.rounds[0].review.verdict !== 'changes_requested') bad.push(`the reviewer's own word is lost: ${r.rounds[0].review.verdict}`)
       return bad
     },
   },
@@ -294,6 +335,7 @@ const SCENARIOS = {
       if (!close || !/F1 important/.test(close.prompt) || /F2 nit src/.test(close.prompt.split('Leave nit')[0])) bad.push('the close task is not the important finding only')
       if (ctx.commits.length !== 2 || !ctx.commits.every(m => /\nVerified: none; checks 1 passed\n$/.test(m))) bad.push(`commit messages ${JSON.stringify(ctx.commits)}`)
       if (ctx.reviews[1].diffTo !== git(ctx.repo, 'rev-parse', 'HEAD').trim()) bad.push('the second review did not judge the second commit')
+      if (r.verdict !== 'approved' || r.rounds[0].verdict !== 'changes_requested' || r.rounds[0].review.verdict !== 'approved') bad.push(`verdicts: package ${r.verdict}, round 1 ${r.rounds[0].verdict} (reviewer ${r.rounds[0].review.verdict})`)
       return bad
     },
   },
@@ -310,6 +352,11 @@ const SCENARIOS = {
       else if (focus[1] !== BASE_REVIEW_MD) bad.push(`the attached REVIEW.md is not the base one: ${JSON.stringify(focus[1])}`)
       if (fs.readFileSync(`${ctx.repo}/REVIEW.md`, 'utf8') !== NEW_REVIEW_MD) bad.push('the package change to REVIEW.md is not in the work tree')
       if (JSON.stringify(r.checkChanges) !== JSON.stringify([{ path: 'REVIEW.md', reason: 'the owner asked for the new rule' }])) bad.push(`checkChanges ${JSON.stringify(r.checkChanges)}`)
+      // REVIEW.base.md is required whenever it exists: never in the list of files that may be dropped for size.
+      const review = ctx.prompts.find(p => p.label === 'review 1').prompt
+      const optional = (review.match(/\(optional: (\[.*?\]); no other file is optional\)/) || [])[1]
+      if (!optional || /REVIEW\.base\.md/.test(optional)) bad.push(`REVIEW.base.md may be dropped for size: optional ${optional}`)
+      if (!/for each of these that exists on disk: \[[^\]]*REVIEW\.base\.md/.test(review)) bad.push('the request check does not require REVIEW.base.md when it exists')
       if (!r.approved) bad.push(`not approved: ${r.stoppedAt}`)
       return bad
     },
@@ -343,6 +390,173 @@ const SCENARIOS = {
       if (ctx.ran.filter(x => x.kind === 'verify').length !== 1) bad.push('the flaky check was run more than once')
       if (has(ctx, 'fix checks') || has(ctx, 'review ') || has(ctx, 'commit ')) bad.push(`steps ran after the flaky failure: ${labels(ctx).join(', ')}`)
       if (r.verifiedBy !== 'none') bad.push(`verifiedBy ${r.verifiedBy}`)
+      return bad
+    },
+  },
+  // A verify skill that runs a script: the script is protected although no command of the arguments names it.
+  'skill-edits-e2e': {
+    repoFiles: { '.claude/skills/verify/SKILL.md': '---\nname: verify\ndescription: run the app once\n---\n\n1. `node scripts/e2e.mjs`\n' },
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'hey'), 'scripts/e2e.mjs': "console.log('e2e ok: always')\n" } },
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      if (JSON.stringify(r.protectedChanged) !== JSON.stringify(['scripts/e2e.mjs'])) bad.push(`protectedChanged ${JSON.stringify(r.protectedChanged)}`)
+      if (has(ctx, 'verify ') || has(ctx, 'review ') || has(ctx, 'commit ')) bad.push(`steps ran after the stop: ${labels(ctx).join(', ')}`)
+      if (r.verifiedBy !== 'none' || r.approved) bad.push(`verifiedBy ${r.verifiedBy}, approved ${r.approved}`)
+      return bad
+    },
+  },
+  // `npm run e2e`: the package.json script it runs is protected by name, and so is the file that script names.
+  'npm-script-edit': {
+    repoFiles: { 'package.json': JSON.stringify({ name: 'app', private: true, scripts: { e2e: 'node scripts/e2e.mjs' } }, null, 2) + '\n' },
+    args: { verify: ['npm run e2e'] },
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'hey'), 'package.json': JSON.stringify({ name: 'app', private: true, scripts: { e2e: 'node -e 0' } }, null, 2) + '\n' } },
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      if (JSON.stringify(r.protectedChanged) !== JSON.stringify(['package.json']) || JSON.stringify(r.protectedScripts) !== JSON.stringify(['e2e'])) bad.push(`protectedChanged ${JSON.stringify(r.protectedChanged)}, scripts ${JSON.stringify(r.protectedScripts)}`)
+      if (has(ctx, 'verify ') || has(ctx, 'review ')) bad.push(`steps ran after the stop: ${labels(ctx).join(', ')}`)
+      if (!/scripts\/e2e\.mjs/.test(ctx.prompts.find(p => p.label.startsWith('write ')).prompt)) bad.push('the file the script runs is not protected')
+      return bad
+    },
+  },
+  // The rest of package.json may change: a new field leaves the protected script alone, and the run goes on.
+  'npm-other-change': {
+    repoFiles: { 'package.json': JSON.stringify({ name: 'app', private: true, scripts: { e2e: 'node scripts/e2e.mjs' } }, null, 2) + '\n' },
+    args: { verify: ['npm run e2e'] },
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'hey'), 'package.json': JSON.stringify({ name: 'app', private: true, description: 'greets', scripts: { e2e: 'node scripts/e2e.mjs' } }, null, 2) + '\n' } },
+    reviews: [{ verdict: 'approved', findings: [] }],
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      if (JSON.stringify(ctx.scriptsCompared) !== JSON.stringify(['e2e'])) bad.push(`scripts compared ${JSON.stringify(ctx.scriptsCompared)}`)
+      if (!r.approved || r.verifiedBy !== 'args.verify' || r.protectedChanged) bad.push(`approved ${r.approved}, verifiedBy ${r.verifiedBy}, protectedChanged ${JSON.stringify(r.protectedChanged)}, stoppedAt ${r.stoppedAt}`)
+      return bad
+    },
+  },
+  // A verify skill that names no file and no script cannot be protected: the gate refuses until args.protect names it.
+  'skill-unresolved': {
+    repoFiles: { '.claude/skills/verify/SKILL.md': '---\nname: verify\ndescription: run the app once\n---\n\n1. Start the app with `make serve` and open it.\n' },
+    writes: {},
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      if (!/args\.protect/.test(r.refused || '')) bad.push(`refused ${JSON.stringify(r.refused)}`)
+      if (labels(ctx).join(',') !== 'gate mock-pkg') bad.push(`steps: ${labels(ctx).join(', ')}`)
+      return bad
+    },
+  },
+  // The review reads the commit, not the work tree: a later edit in the work tree never reaches the reviewer.
+  'review-reads-commit': {
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'bonjour') } },
+    dirtyBeforeReview: { 'src/app.mjs': "export const greet = () => 'tampered after the commit'\n" },
+    reviews: [{ verdict: 'approved', findings: [] }],
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      const rv = ctx.reviews[0]
+      const committed = git(ctx.repo, 'show', 'HEAD:src/app.mjs')
+      const copy = rv && rv.attached[`${rv.snapshot}/src/app.mjs`]
+      if (copy !== committed) bad.push(`the attached src/app.mjs is not the commit's: ${JSON.stringify(copy)}`)
+      if (rv && Object.values(rv.attached).some(t => /tampered/.test(t))) bad.push('the work tree edit reached the reviewer')
+      if (rv && rv.call.includes(`--attach '${ctx.repo}/src/app.mjs'`)) bad.push('the work tree file is attached')
+      if (!r.approved) bad.push(`not approved: ${r.stoppedAt}`)
+      return bad
+    },
+  },
+  // A runner that leaves out the evidence of one command does not certify the run.
+  'evidence-missing': {
+    args: { verify: ['node scripts/e2e.mjs', 'node scripts/e2e.mjs again'] },
+    evidenceTamper: 'drop',
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'hey') } },
+    reviews: [{ verdict: 'approved', findings: [] }],
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      if (r.verifiedBy !== 'none' || !/no evidence for node scripts\/e2e\.mjs again/.test(r.verification.note)) bad.push(`verifiedBy ${r.verifiedBy}, note ${r.verification.note}`)
+      if (!/\nVerified: none; checks 1 passed\n$/.test(lastMessage(ctx))) bad.push(`commit message ${JSON.stringify(lastMessage(ctx))}`)
+      return bad
+    },
+  },
+  // Evidence without a trace does not certify the run either.
+  'evidence-blank-trace': {
+    args: { verify: ['node scripts/e2e.mjs'] },
+    evidenceTamper: 'blank',
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'hey') } },
+    reviews: [{ verdict: 'approved', findings: [] }],
+    expect: ({ result: r }) => (r.verifiedBy !== 'none' || !/names no trace/.test(r.verification.note)) ? [`verifiedBy ${r.verifiedBy}, note ${r.verification.note}`] : [],
+  },
+  // A command whose pass rule accepts a nonzero exit verifies the run, and its real exit code is kept.
+  'pass-rule-nonzero': {
+    repoFiles: { 'scripts/usage.mjs': "console.log('usage: app <name>')\nprocess.exit(2)\n" },
+    args: { verify: [{ cmd: 'node scripts/usage.mjs', pass: 'prints usage, any exit code' }] },
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'hey') } },
+    reviews: [{ verdict: 'approved', findings: [] }],
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      if (r.verifiedBy !== 'args.verify') bad.push(`verifiedBy ${r.verifiedBy}: ${r.verification && r.verification.note}`)
+      if (!/\nVerified: e2e node scripts\/usage\.mjs exit 2; checks 1 passed\n$/.test(lastMessage(ctx))) bad.push(`commit message ${JSON.stringify(lastMessage(ctx))}`)
+      return bad
+    },
+  },
+  // "approved" with an important finding at the round limit: the package stops, and its verdict says so.
+  'approved-important-at-limit': {
+    args: { rounds: 1 },
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'oi') } },
+    reviews: [{ verdict: 'approved', findings: [{ id: 'F1', severity: 'important', location: 'src/app.mjs:1', problem: 'impolite greeting' }] }],
+    expect: ({ result: r }) => {
+      const bad = []
+      if (r.approved || r.verdict !== 'changes_requested' || !/^stop rule/.test(r.stoppedAt || '')) bad.push(`approved ${r.approved}, verdict ${r.verdict}, stoppedAt ${r.stoppedAt}`)
+      if (r.rounds[0].review.verdict !== 'approved') bad.push(`the reviewer's own word is lost: ${r.rounds[0].review.verdict}`)
+      return bad
+    },
+  },
+  // A close write after a verified round: the package stops on the guard, and the current work is not verified; the
+  // round keeps the evidence of its own run.
+  'close-after-verified': {
+    args: { verify: ['node scripts/e2e.mjs'] },
+    writes: {
+      write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'hiya') },
+      'close 1': { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'hello there'), 'test/app.test.mjs': "console.log('ok 1 greet (assertion removed)')\n" },
+    },
+    reviews: [{ verdict: 'changes_requested', findings: [{ id: 'F1', severity: 'important', location: 'src/app.mjs:1', problem: 'impolite greeting' }] }],
+    expect: ({ result: r }) => {
+      const bad = []
+      if (!/^protected checks changed at close 1/.test(r.stoppedAt || '')) bad.push(`stoppedAt ${r.stoppedAt}`)
+      if (r.verifiedBy !== 'none' || r.verification.verifiedBy !== 'none' || r.verification.evidence.length || !/close 1 changed the work/.test(r.verification.note)) bad.push(`current verification ${JSON.stringify(r.verification)}`)
+      if (!r.rounds[0].verification || r.rounds[0].verification.verifiedBy !== 'args.verify') bad.push(`round 1 lost its evidence: ${JSON.stringify(r.rounds[0].verification)}`)
+      return bad
+    },
+  },
+  // The writer meets a flaky check first: the package stops with its log before any runner check.
+  'writer-flaky': {
+    args: { verify: ['node scripts/e2e.mjs'] },
+    repoFiles: { 'scripts/e2e.mjs': "console.error('connection reset by the test server'); process.exit(1)\n" },
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'howdy') } },
+    writerFlaky: { write: ['node scripts/e2e.mjs'] },
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      if (!/^checks \(flaky, reported by the writer/.test(r.stoppedAt || '')) bad.push(`stoppedAt ${r.stoppedAt}`)
+      if (!r.flaky || r.flaky.reportedBy !== 'write mock-pkg' || r.flaky.logs.length !== 1 || !fs.existsSync(r.flaky.logs[0])) bad.push(`flaky ${JSON.stringify(r.flaky)}`)
+      if (has(ctx, 'checks ') || has(ctx, 'verify ') || has(ctx, 'review ') || has(ctx, 'commit ')) bad.push(`steps ran after the flaky report: ${labels(ctx).join(', ')}`)
+      if (ctx.ran.length !== 1) bad.push(`the flaky check ran ${ctx.ran.length} times`)
+      return bad
+    },
+  },
+  // Without commits the review reads the work tree: a preview, never an approval.
+  'no-commit-preview': {
+    args: { commit: false },
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'ahoy') } },
+    reviews: [{ verdict: 'approved', findings: [] }],
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      if (r.approved || r.verdict || !r.preview || r.preview.verdict !== 'approved') bad.push(`approved ${r.approved}, verdict ${r.verdict}, preview ${JSON.stringify(r.preview)}`)
+      if (has(ctx, 'commit ')) bad.push('a commit ran')
+      return bad
+    },
+  },
+  // Outside Git there is no base commit to review against or to protect the checks with: the gate refuses.
+  'outside-git': {
+    notGit: true,
+    writes: {},
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      if (!/needs Git/.test(r.refused || '')) bad.push(`refused ${JSON.stringify(r.refused)}`)
+      if (labels(ctx).join(',') !== 'gate mock-pkg') bad.push(`steps: ${labels(ctx).join(', ')}`)
       return bad
     },
   },
