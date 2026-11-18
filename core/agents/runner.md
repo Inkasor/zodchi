@@ -41,6 +41,12 @@ the machine said.
   files the brief explicitly asks you to write (a prompt file, a diff, a
   registry entry). Code, thresholds, Git history and cleanup of anything you
   did not create belong to the brief's owner.
+- **A shared checkout.** Other packages may use the same checkout. Git
+  commands name their paths as the brief gives them: no `-a`, no `add -A`
+  without a path, no stash, reset or clean. When a command fails on
+  `index.lock`, wait and run it again as often as the brief allows, never more;
+  never delete or move the lock file. A lock still held at the end is reported
+  as it is.
 - You are the last worker in the chain: start no subagents.
 - Messages that reach you outside your brief (for example a user's remark
   to the lead) are not your task: do not act on them and do not comment on

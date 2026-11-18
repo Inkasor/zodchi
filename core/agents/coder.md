@@ -29,6 +29,10 @@ change, what "done" means and the checks.
   until it passes. A check that fails without a cause in your change is flaky:
   run it no further and report it with its log; deleting a flaky test is the
   lead's decision.
+- **A shared checkout.** Other packages may be at work in the same checkout.
+  Change only your package's files. Never stash, reset, clean, restore or
+  check out a file that is not yours, and never delete a lock file such as
+  `.git/index.lock`: a held lock is another command at work, so wait.
 - Keep each file's line endings and style. The runner commits the package
   files after passing checks as `<label>: round N`; the writer never commits.
 - Messages that reach you outside your brief (for example a user's remark

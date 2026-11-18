@@ -42,6 +42,7 @@ same everywhere lives in `core/`.
   Without approval by then, it stops and hands the question back to you,
   instead of looping.
 - **Run before review.** `code-package` runs the repository's verification, stops when a change edits an existing test, records how each commit was verified and reviews against the repository's `REVIEW.md`, see [docs/verification.md](docs/verification.md).
+- **Review stops where the brief says.** The brief's `## Review boundary` is quoted to the reviewer, and a round that only goes deeper ends the run with the new findings to sort and proposed `REVIEW.md` lines, see [docs/review-boundary.md](docs/review-boundary.md). Several packages can share one checkout or run in worktrees or clones, see [docs/parallel.md](docs/parallel.md).
 - **Workflows as code, without Claude Code.** `zodchi flow code-package` runs the same package loop in the gateway itself, on Codex alone: a writer without a shell answers with a patch, the engine applies, checks, commits and journals every step so a cut run resumes, see [docs/flow.md](docs/flow.md).
 - **Cheap models do the legwork.** Running checks, applying a ready patch and
   searching are Haiku's job. Expensive models are kept for the decisions
