@@ -20,7 +20,8 @@
 //      .complete and every file of the commit present, otherwise it is moved aside and made again. A rerun after
 //      `git pull` makes a new copy, moves the marketplace to it and updates zodchi-core and the domains named in that
 //      run (a domain enabled in another project is updated by rerunning with --project <repo> --domains <name>);
-//      the registered copy, the one registered before it and the two newest complete ones are kept, the rest are
+//      the registered copy, the one registered before it, the two newest complete ones and every copy made in the last
+//      7 days (a running Claude Code session keeps reading the copy it started with) are kept, the rest are
 //      removed. After the marketplace command the registration is read back and reported. One install at a time:
 //      ~/.zodchi/plugins/.install.lock is held from reading the registration to the end of the cleanup.
 //      --dev registers the clone itself as the marketplace instead (for working on zodchi: every session on this
@@ -299,10 +300,15 @@ function removeStrays(home) {
 
 // The registered copy and the one registered before it stay, whatever their age, and so do the two newest complete
 // copies; every other copy folder goes.
+const KEEP_DAYS = 7;
 function pruneCopies(home, protect, say) {
   const all = listCopies(home);
   const kept = new Set(all.filter(c => protect.some(p => p && samePath(c.dir, p))));
   for (const c of all.filter(c => c.complete).slice(0, KEEP_COPIES)) kept.add(c);
+  // A Claude Code session keeps reading the copy it started with until it reloads its plugins, and sessions live for
+  // days: a copy published in the last KEEP_DAYS days stays even when it is not among the newest.
+  const cutoff = Date.now() - KEEP_DAYS * 24 * 3600 * 1000;
+  for (const c of all) if (c.complete && c.time >= cutoff) kept.add(c);
   for (const c of all) if (!kept.has(c)) removeCopy(c, say);
   removeStrays(home);
 }
