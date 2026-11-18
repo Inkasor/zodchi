@@ -36,6 +36,8 @@ workflow are our own agents, not attackers.
 
 - nit (2026-11-18, the lead): the installer seeing the same Codex skill path in two letter cases on Windows.
 
+- nit (2026-11-18, the lead): a stale-claim cleanup after the step that marks a claim as awaiting a person failed too (a double fault).
+
 ## Severity
 `important` blocks. `nit` and `pre-existing` never block. When unsure whether something is important, ask: would
 the owner stop a release for it?

@@ -211,7 +211,7 @@ const CHECKS = {
     // code: the change is wrong; check: the command or its pass rule is wrong; environment: the machine
     // (a lock held, low memory, a missing tool); flaky: it failed without a cause in the change. Only "code" goes
     // back to the writer.
-    cause: { type: 'string', enum: ['none', 'code', 'check', 'environment', 'flaky'] },
+    cause: { type: 'string', enum: ['none', 'code', 'check', 'environment', 'flaky', 'other'] },
     logs: { type: 'array', items: { type: 'string' } },
     // one entry per command run: the command, its exit code and the path of its log or trace
     evidence: {
@@ -293,7 +293,7 @@ const claimFile = `${claimsDir}/${a.label}.json`
 // It prints one line of JSON; its exit code is 0 when that line is the answer, 3 when the copy's api differs from GATE_API, 4 when the copy
 // the session loaded has no helper. The workflow reads the line and decides.
 const GATE_API = 1
-const GATE_BOOT = 'const fs=require(\"fs\"),os=require(\"os\"),path=require(\"path\"),cp=require(\"child_process\");const project=process.argv[1]||\"\";const rest=process.argv.slice(2);const out=(o,c)=>{fs.writeSync(1,JSON.stringify(o)+\"\\n\");process.exit(c)};const rd=f=>{try{return JSON.parse(fs.readFileSync(f,\"utf8\"))}catch(e){return null}};const nm=p=>path.resolve(p).split(path.sep).join(\"/\").toLowerCase();const pre=n=>n.endsWith(\"/\")?n:n+\"/\";const tried=[];let root=\"\",via=\"\";const fail=(why)=>out({ok:false,api:0,error:why,tried},4);for(const name of [\"ZODCHI_PLUGIN_ROOT\",\"CLAUDE_PLUGIN_ROOT\"]){const env=process.env[name];if(root||!env)continue;const m=rd(path.join(env,\".claude-plugin\",\"plugin.json\"));if(m&&m.name===\"zodchi-core\"){root=env;via=name}else if(name===\"ZODCHI_PLUGIN_ROOT\"){tried.push(env+\" (no zodchi-core manifest)\");fail(\"ZODCHI_PLUGIN_ROOT names no zodchi-core plugin copy: a checkout or another folder is never used instead\")}}if(!root){const reg=rd(path.join(process.env.CLAUDE_CONFIG_DIR||path.join(os.homedir(),\".claude\"),\"plugins\",\"installed_plugins.json\"));const list=(reg&&reg.plugins&&reg.plugins[\"zodchi-core@zodchi\"])||[];const here=pre(nm(project));const own=list.filter(e=>e.projectPath&&here.startsWith(pre(nm(e.projectPath)))).sort((a,b)=>nm(b.projectPath).length-nm(a.projectPath).length);const e=own[0]||list.find(e=>!e.projectPath);if(e&&e.installPath){root=e.installPath;via=\"installed_plugins.json, scope \"+e.scope}}if(!root)fail(\"no zodchi-core plugin copy is registered for the project this session runs in (not installed): update the plugin; a checkout is never used instead\");const ok=fs.existsSync(path.join(root,\"scripts\",\"gate.mjs\"));tried.push(root+(ok?\"\":\" (no scripts/gate.mjs)\"));if(!ok)fail(\"the zodchi-core plugin copy this session loaded (\"+root+\") has no scripts/gate.mjs (an older copy than this workflow): update the plugin; no other copy is tried and a checkout is never used\");const r=cp.spawnSync(process.execPath,[path.join(root,\"scripts\",\"gate.mjs\"),...rest],{stdio:\"inherit\",env:{...process.env,ZODCHI_GATE_VIA:via}});process.exit(r.status===null?5:r.status)'
+const GATE_BOOT = 'const fs=require(\"fs\"),os=require(\"os\"),path=require(\"path\"),cp=require(\"child_process\");const project=process.argv[1]||\"\";const rest=process.argv.slice(2);const out=(o,c)=>{fs.writeSync(1,JSON.stringify(o)+\"\\n\");process.exit(c)};const rd=f=>{try{return JSON.parse(fs.readFileSync(f,\"utf8\"))}catch(e){return null}};const nm=p=>{const s=path.resolve(p).split(path.sep).join(\"/\");return process.platform===\"linux\"?s:s.toLowerCase()};const pre=n=>n.endsWith(\"/\")?n:n+\"/\";const tried=[];let root=\"\",via=\"\";const fail=(why)=>out({ok:false,api:0,error:why,tried},4);for(const name of [\"ZODCHI_PLUGIN_ROOT\",\"CLAUDE_PLUGIN_ROOT\"]){const env=process.env[name];if(root||!env)continue;const m=rd(path.join(env,\".claude-plugin\",\"plugin.json\"));if(m&&m.name===\"zodchi-core\"){root=env;via=name}else if(name===\"ZODCHI_PLUGIN_ROOT\"){tried.push(env+\" (no zodchi-core manifest)\");fail(\"ZODCHI_PLUGIN_ROOT names no zodchi-core plugin copy: a checkout or another folder is never used instead\")}}if(!root){const reg=rd(path.join(process.env.CLAUDE_CONFIG_DIR||path.join(os.homedir(),\".claude\"),\"plugins\",\"installed_plugins.json\"));const list=(reg&&reg.plugins&&reg.plugins[\"zodchi-core@zodchi\"])||[];const here=pre(nm(project));const own=list.filter(e=>e.projectPath&&here.startsWith(pre(nm(e.projectPath)))).sort((a,b)=>nm(b.projectPath).length-nm(a.projectPath).length);const e=own[0]||list.find(e=>!e.projectPath);if(e&&e.installPath){root=e.installPath;via=\"installed_plugins.json, scope \"+e.scope}}if(!root)fail(\"no zodchi-core plugin copy is registered for the project this session runs in (not installed): update the plugin; a checkout is never used instead\");const ok=fs.existsSync(path.join(root,\"scripts\",\"gate.mjs\"));tried.push(root+(ok?\"\":\" (no scripts/gate.mjs)\"));if(!ok)fail(\"the zodchi-core plugin copy this session loaded (\"+root+\") has no scripts/gate.mjs (an older copy than this workflow): update the plugin; no other copy is tried and a checkout is never used\");const r=cp.spawnSync(process.execPath,[path.join(root,\"scripts\",\"gate.mjs\"),...rest],{stdio:\"inherit\",env:{...process.env,ZODCHI_GATE_VIA:via}});process.exit(r.status===null?5:r.status)'
 // The folder the runner starts in is the project the session runs in: it says which registered plugin copy the session loaded (the Windows form of the path on Git Bash).
 const SESSION_PROJECT = '"$(pwd -W 2>/dev/null || pwd)"'
 const helperRun = (command, spec) => `${a.pluginRoot ? `ZODCHI_PLUGIN_ROOT=${q(a.pluginRoot)} ` : ''}node -e ${q(GATE_BOOT)} -- ${SESSION_PROJECT} ${command} ${q(JSON.stringify({ api: GATE_API, ...spec }))}`
@@ -735,7 +735,8 @@ async function body() {
   const CAUSE = `cause: "none" when ok; otherwise the first failure's cause - "code" when the changed code is wrong (traceback, compile error, failed assertion, a gate of the change), ` +
     `"check" when the command or its pass rule is wrong although the code works, ` +
     `"environment" when the machine stopped it (a lock held by another process, memory, a missing tool), ` +
-    `"flaky" when it failed without a cause in the change (say why in results, with the log line).`
+    `"flaky" when it failed without a cause in the change (say why in results, with the log line), ` +
+    `"other" when every failing line names only files that another open package claims: read every claim file ${claimsDir}/<label>.json whose "status" is "open" and whose "label" is not "${a.label}" and compare its "files" with the files the failing lines name (another package's unfinished work in the shared checkout; list those files and their package in results).`
   const REPORT = `results: one line per command with its exit code, the decisive output line and pass/fail. logs: the log paths. ` +
     `evidence: one entry per command you ran: command, exitCode (its real exit code), log (the path of its log, trace or screenshot). ${NO_SKIP} ${CAUSE}`
   const runList = (what, tag, label) => step(
@@ -753,17 +754,28 @@ async function body() {
     return slow && { ...slow, results: [...(cheap.results || []), ...(slow.results || [])], logs: [...(cheap.logs || []), ...(slow.logs || [])], evidence: [...withSource(cheap, 'checks').evidence, ...withSource(slow, verifySource).evidence] }
   }
 
+  // Another package's unfinished work in a shared checkout can fail this package's checks. That is not ours to fix:
+  // wait for it and run the checks again, a bounded number of times, then stop and say whom we wait for.
+  async function settleOthers(checks, n) {
+    for (let w = 1; checks && !checks.ok && checks.cause === 'other' && w <= (a.otherWaits ?? 3); w++) {
+      await step(`Wait 4 minutes in the foreground (one \`sleep 240\` with a shell timeout of 300000 ms); change nothing. ok is true when the wait ended.`,
+        { agentType: 'zodchi-core:runner', schema: { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } }, phase: 'Checks', label: `wait for others ${n}.${w}` })
+      checks = await runChecks(`${n}.w${w}`)
+    }
+    return checks
+  }
+
   async function checked(n) {
-    let checks = await runChecks(n)
+    let checks = await settleOthers(await runChecks(n), n)
     for (let f = 1; checks && !checks.ok && checks.cause === 'code' && f <= (a.fixes ?? 1); f++) {
       const fix = await write(
         `The checks of the package ${a.brief} failed after the change. Results: ${JSON.stringify(checks.results)}. Logs: ${JSON.stringify(checks.logs || [])}. ` +
-        `Read the logs and fix the code with the smallest change. done is true when the failing command passes. changed: files changed in this fix.`,
+        `Read the logs and fix the code with the smallest change. Files that another open package claims (the claim files ${claimsDir}/<label>.json with "status" "open" and another "label") are not yours: never change them; if the failure is in one of them, change nothing and say so. done is true when the failing command passes. changed: files changed in this fix.`,
         `fix checks ${n}.${f}`, 'Close', checks.logs || [])
       noteQuestions(fix)
       if (fix && !(await follow(fix, `fix checks ${n}.${f}`, 'Close'))) return 'halted'
       if (!fix || !fix.done) { if (questions.length) out.question = questions.join(' | '); break }
-      checks = await runChecks(`${n}.${f}`)
+      checks = await settleOthers(await runChecks(`${n}.${f}`), `${n}.${f}`)
     }
     return checks
   }
@@ -859,6 +871,7 @@ async function body() {
       out.rounds.push({ n, checks })
       out.verifiedBy = 'none'
       out.verification = { verifiedBy: 'none', evidence: (checks && checks.evidence) || [], note: `not verified by running: the checks of round ${n} failed`, stamp: 'Verified: none' }
+      if (checks && checks.cause === 'other') out.next = `The checks still fail in another open package's unfinished files after waiting: ${JSON.stringify(checks.results || [])}. This package's work is committed up to the last round; run it again (resume) when that package has finished.`
       if (checks && checks.cause === 'flaky') out.next = `A check failed without a cause in the change (flaky): ${JSON.stringify(checks.results || [])}, logs ${JSON.stringify(checks.logs || [])}. Nothing was retried or skipped. Fix the check, or decide to delete or quarantine it (args.allowCheckChanges).`
       out.stoppedAt = `checks (${checks ? checks.cause : 'no result'})`
       return
