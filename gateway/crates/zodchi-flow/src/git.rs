@@ -113,10 +113,11 @@ impl Git {
         Ok(self.entry_at(commit, path)?.is_some())
     }
 
-    /// The bytes of a file (a blob) in a commit, or None when the commit has no file at that path.
+    /// The bytes of a regular file (mode 100644 or 100755) in a commit, or None when the commit has no regular file at
+    /// that path. A tracked link (mode 120000) is a blob holding its target, never shown as a file.
     pub fn show(&self, commit: &str, path: &str) -> Result<Option<Vec<u8>>> {
-        let Some((_, kind, id)) = self.entry_at(commit, path)? else { return Ok(None) };
-        if kind != "blob" {
+        let Some((mode, kind, id)) = self.entry_at(commit, path)? else { return Ok(None) };
+        if kind != "blob" || !mode.starts_with("100") {
             return Ok(None);
         }
         let out = self.output(&["cat-file", "blob", &id], &[], None)?;
@@ -130,6 +131,13 @@ impl Git {
     pub fn index_mode(&self, path: &str) -> Result<Option<String>> {
         let out = self.run(&["ls-files", "-s", "-z", "--", path])?;
         Ok(out.split('\0').find(|e| e.split_once('\t').map(|(_, n)| n) == Some(path)).and_then(|e| e.split(' ').next()).map(String::from))
+    }
+
+    /// Whether Git keeps the path as a link (mode 120000) in the commit or in the user's index: with core.symlinks
+    /// false the work tree holds the link's target as a plain text file, which is no file of the package.
+    pub fn tracked_link(&self, commit: &str, path: &str) -> Result<bool> {
+        let in_commit = self.entry_at(commit, path)?.is_some_and(|(mode, _, _)| mode == "120000");
+        Ok(in_commit || self.index_mode(path)?.as_deref() == Some("120000"))
     }
 
     /// The paths that differ between two tree-ishes, with their status letter (A, M, D, T), renames as add and delete.

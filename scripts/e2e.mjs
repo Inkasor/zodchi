@@ -1296,6 +1296,59 @@ scenario("flow-no-review-md", "a repository with neither REVIEW.md nor a verify 
   t.ok(/has no REVIEW\.md/.test(reviewTurn.prompt) && !reviewTurn.prompt.includes("REVIEW.base.md"), "the review says the base has no REVIEW.md");
 });
 
+scenario("flow-cut-result", "a cut after the result is saved and before the claim is closed: resume returns the saved approval and closes the claim, not a conflict with its own claim", async (t) => {
+  const f = flowWorld(t, "flow-cut-result");
+  f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
+  f.answer("review 1", f.review("approved"));
+  const first = await f.flow(["--args", f.args()], { ZODCHI_FLOW_CUT: "result" });
+  t.eq(first.code, 75, "cut after the result was saved");
+  const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
+  t.eq(f.claim().status, "open", "the claim is still open at the cut");
+  const res = await f.flow(["--resume", id]);
+  t.eq([res.code, res.json.verdict, res.json.refused, res.json.conflicts], [0, "approved", undefined, undefined], "the saved approval comes back");
+  t.eq(f.claim().status, "done", "the claim is closed as the result says");
+  t.eq([f.commits().length, f.steps()], [1, ["write", "review 1"]], "nothing ran again");
+});
+
+scenario("flow-staged-after-commit", "a cut right after the commit, then the parent's version staged by hand: resume records the commit and leaves that staging alone", async (t) => {
+  const f = flowWorld(t, "flow-staged-after-commit");
+  f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
+  f.answer("review 1", f.review("approved"));
+  const first = await f.flow(["--args", f.args()], { ZODCHI_FLOW_CUT: "commit 1" });
+  t.eq(first.code, 75, "cut after the commit of round 1");
+  t.eq(gitOut(f.r, ["diff", "--cached", "--name-only", "HEAD"]), "", "the index already follows the commit at the cut");
+  gitOut(f.r, ["reset", "-q", f.base, "--", "src/math.mjs"]);
+  t.eq(gitOut(f.r, ["diff", "--cached", "--name-only", "HEAD"]), "src/math.mjs", "the parent's version is staged by hand");
+  const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
+  const res = await f.flow(["--resume", id]);
+  t.eq([res.code, res.json.verdict], [0, "approved"], "the resumed run ends approved");
+  t.eq(res.json.rounds[0].commit.indexLeft, ["src/math.mjs"], "the receipt names the staging it left alone");
+  t.eq(gitOut(f.r, ["diff", "--cached", "--name-only", "HEAD"]), "src/math.mjs", "the hand-made staging is still there");
+  t.eq(gitOut(f.r, ["show", ":src/math.mjs"]) + "\n", STUB, "the staged entry is the parent's version");
+  t.eq([f.commits().length, f.steps()], [1, ["write", "review 1"]], "one commit, each model turn once");
+});
+
+scenario("flow-private-checks", "the command lines of the checks never reach a model, and a failed check's log reaches the fixing writer without private folders or lines that may hold a credential", async (t) => {
+  const f = flowWorld(t, "flow-private-checks");
+  const BAD = 'console.log("at", process.cwd());\nconsole.log("api_key=PRIVKEY-1");\nexport const clamp = (x, lo, hi) => x;\n';
+  f.answer("write", f.patch([f.modify("src/math.mjs", STUB, BAD)], "first try"));
+  f.answer("fix 1.1", f.patch([f.modify("src/math.mjs", BAD, FIXED)], "clamp fixed"));
+  f.answer("review 1", f.review("approved"));
+  const res = await f.flow(["--args", f.args({ checks: ["node test/math.test.mjs PRIVMARK-CMD"], verify: ["node smoke.mjs PRIVMARK-VERIFY"], fixes: 1 })]);
+  t.eq([res.code, res.json.verdict], [0, "approved"], "the fix makes the checks pass and the run ends approved");
+  const turns = readJsonl(path.join(f.w.codex, "fake-turns.jsonl"));
+  t.eq(turns.map((x) => x.step), ["write", "fix 1.1", "review 1"], "write, one fix, one review");
+  t.ok(turns.every((x) => !x.prompt.includes("PRIVMARK")), "no command line reaches a model");
+  t.ok(turns[0].prompt.includes("checks #1, args.verify #1"), "the writer learns the checks by source and number");
+  // The failure as the fixing writer sees it (the claimed file itself is attached as it is, with its own text).
+  const fix = (turns[1].prompt.match(/checks #1 exit 1\n```\n([\s\S]*?)\n```/) || [])[1] || "";
+  t.ok(fix.includes("clamp is wrong"), "the fixing writer gets the failed check and its output");
+  t.ok(!fix.includes("PRIVKEY") && fix.includes("[a line that may hold a credential is left out]"), "a line that may hold a credential is left out");
+  t.ok(!fix.toLowerCase().includes(os.tmpdir().toLowerCase()) && fix.includes("<tmp>"), "the export folder is named <tmp>, not by its path");
+  t.ok(!turns[1].prompt.toLowerCase().includes(os.tmpdir().toLowerCase()), "no private folder anywhere in the fix request");
+  t.ok(turns[2].prompt.includes("checks #1 exit 0") && turns[2].prompt.includes("args.verify #1 exit 0"), "the review names the checks by source and number");
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // Main
 

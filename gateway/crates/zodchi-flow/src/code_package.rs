@@ -226,9 +226,23 @@ pub fn resume(id: &str, given: Option<&Value>, rerun: Option<&str>) -> Result<Ex
     }
     let lock = journal.lock()?;
     journal.load()?;
+    // The repository is the one the run pinned (an absolute path), whatever folder the resume is started from.
+    let mut pinned = raw.clone();
+    let Some(repo) = run["repo"].as_str().filter(|r| std::path::Path::new(r).is_absolute()) else {
+        return Err(GatewayError(format!("Run {id} has no absolute repository in its run.json.")));
+    };
+    pinned["repo"] = json!(repo);
+    let args = args::parse(&pinned).map_err(GatewayError)?;
     if let Some(done) = journal.read_value("result.json") {
         if rerun.is_some() {
             return Err(GatewayError(format!("Run {id} has finished; there is nothing to run again.")));
+        }
+        // A cut between the saved result and the closing of the claim: the claim of this run is closed as the result
+        // says (a claim of another run is left alone).
+        if let Some(closing) = journal.events().iter().rev().find(|e| e["kind"] == json!("closing")).cloned() {
+            if closing["close"] == json!(true) {
+                let _ = claims::close(&claims::claims_dir(&args.repo_norm), &args.label, id, closing["status"].as_str().unwrap_or("stopped"));
+            }
         }
         drop(lock);
         return Ok(exit_of(done));
@@ -240,13 +254,6 @@ pub fn resume(id: &str, given: Option<&Value>, rerun: Option<&str>) -> Result<Ex
         }
         journal.append(json!({ "kind": "rerun", "step": step }))?;
     }
-    // The repository is the one the run pinned (an absolute path), whatever folder the resume is started from.
-    let mut pinned = raw.clone();
-    let Some(repo) = run["repo"].as_str().filter(|r| std::path::Path::new(r).is_absolute()) else {
-        return Err(GatewayError(format!("Run {id} has no absolute repository in its run.json.")));
-    };
-    pinned["repo"] = json!(repo);
-    let args = args::parse(&pinned).map_err(GatewayError)?;
     let repo = PathBuf::from(&args.repo);
     let cfg = Config::new(Some(&repo))?;
     let brief = std::fs::read_to_string(journal.file("brief.md")).map_err(|e| GatewayError(format!("The brief of run {id} ({}) cannot be read: {e}", journal.file("brief.md").display())))?;
@@ -319,23 +326,31 @@ impl Run {
         self.finish(!keep)
     }
 
-    /// Closes the claim (unless the run stops to be resumed) and writes the result.
+    /// Writes the result and then closes the claim (unless the run stops to be resumed). The result and the intent to
+    /// close are in the journal before the claim changes, so a resume after a cut there returns the result and closes
+    /// the claim, instead of reading its own closed claim as a conflict.
     fn finish(mut self, close: bool) -> Result<Exit> {
-        if close {
-            let ok = claims::close(&self.claims_dir, &self.args.label, &self.id, self.claim_status).unwrap_or(false);
-            if !ok {
-                self.out.insert("claimLeftOpen".into(), json!(format!("{}: set \"status\" to \"closed\" by hand", claims::file(&self.claims_dir, &self.args.label).display())));
-            }
-        }
         let open = self.out["openFindings"].as_array().map(|a| a.len()).unwrap_or(0);
         if open > 0 && !self.out.contains_key("next") {
             self.out.insert("next".into(), json!(format!("The last review left {open} finding(s) open (openFindings): close them with the writer, or decide on them.")));
         }
-        let result = Value::Object(self.out);
-        if !self.keep_claim {
-            self.journal.write_value("result.json", &result)?;
-            self.journal.append(json!({ "kind": "finished", "verdict": result["verdict"], "stoppedAt": result["stoppedAt"] }))?;
+        if self.keep_claim {
+            return Ok(exit_of(Value::Object(self.out)));
         }
+        // The intent first: a cut before the saved result runs the machine again from the journal with the claim
+        // still open; a cut after it finds both.
+        let mut result = Value::Object(self.out);
+        self.journal.append(json!({ "kind": "closing", "close": close, "status": self.claim_status }))?;
+        self.journal.write_value("result.json", &result)?;
+        cut("result");
+        if close {
+            let ok = claims::close(&self.claims_dir, &self.args.label, &self.id, self.claim_status).unwrap_or(false);
+            if !ok {
+                result["claimLeftOpen"] = json!(format!("{}: set \"status\" to \"closed\" by hand", claims::file(&self.claims_dir, &self.args.label).display()));
+                self.journal.write_value("result.json", &result)?;
+            }
+        }
+        self.journal.append(json!({ "kind": "finished", "verdict": result["verdict"], "stoppedAt": result["stoppedAt"] }))?;
         Ok(exit_of(result))
     }
 
@@ -518,9 +533,13 @@ impl Run {
         let mut lines = Vec::new();
         let mut attached = Vec::new();
         for p in &self.claimed {
-            // A link would show the writer a file from outside the repository.
+            // A link would show the writer a file from outside the repository, or its target (a tracked link that
+            // the work tree holds as a text file when core.symlinks is false).
             if !patch::no_links(&self.git.root, p) {
                 return fail(format!("{p}: a link or reparse point lies on its way, so it is not read"));
+            }
+            if self.git.tracked_link(&self.head, p)? {
+                return fail(format!("{p}: Git keeps it as a link, so it is not read"));
             }
             match std::fs::read(self.git.root.join(p)) {
                 Ok(bytes) => {
@@ -533,31 +552,56 @@ impl Run {
         Ok((lines.join("\n"), attached))
     }
 
+    /// The rules of a writer turn. The checks are named by source and number: their command lines stay with the engine,
+    /// since one may hold a private path or a credential.
     fn rules(&self) -> String {
         let list = |v: &[String]| v.iter().map(|x| format!("{x:?}")).collect::<Vec<_>>().join(", ");
-        let mut cmds: Vec<String> = self.args.checks.iter().map(|c| format!("`{c}`")).collect();
-        cmds.extend(self.args.verify.iter().map(|c| format!("`{c}` (verify)")));
+        let mut cmds: Vec<String> = (1..=self.args.checks.len()).map(|i| format!("checks #{i}")).collect();
+        cmds.extend((1..=self.args.verify.len()).map(|i| format!("args.verify #{i} (verify)")));
         render(RULES, &[
             ("protect", if self.args.protect.is_empty() { String::new() } else { format!(", or under {}", list(&self.args.protect)) }),
             ("allowed", if self.args.allow_check_changes.is_empty() { String::new() } else { format!(", except {}, which the lead allowed", list(&self.args.allow_check_changes)) }),
-            ("checks", if cmds.is_empty() { "none are given, so nothing is verified by running".into() } else { cmds.join(", ") }),
+            ("checks", if cmds.is_empty() { "none are given, so nothing is verified by running".into() } else { format!("{} (the brief may say what they are; the engine does not pass their command lines)", cmds.join(", ")) }),
         ])
+    }
+
+    /// The private folders a check's output may name, each with the word a model sees instead.
+    fn private_places(&self) -> Vec<(String, &'static str)> {
+        let mut v = vec![
+            (std::env::temp_dir().display().to_string(), "<tmp>"),
+            (self.journal.dir.display().to_string(), "<journal>"),
+            (self.cfg.home.display().to_string(), "<zodchi-home>"),
+            (self.args.repo_norm.clone(), "<repo>"),
+        ];
+        for k in ["HOME", "USERPROFILE"] {
+            if let Some(h) = std::env::var_os(k).filter(|h| !h.is_empty()) {
+                v.push((h.to_string_lossy().into_owned(), "~"));
+            }
+        }
+        v
     }
 
     /// One writer turn: the prompt from its template, the brief, the claimed files and `extra` attachments; the
     /// answer is a patch by this version's schema.
     fn writer_turn(&mut self, step: &str, round: u32, template: &str, vars: Vec<(&str, String)>, extra: Vec<(String, Vec<u8>)>) -> Step<Patch> {
         self.step = step.to_string();
-        let built = (|| -> Result<String> {
-            let (files, attached) = self.files_view()?;
-            let mut all = vec![("step", step.to_string()), ("run", self.id.clone()), ("files", files), ("rules", self.rules())];
-            all.extend(vars);
-            let text = render(template, &all);
-            let mut attachments = vec![("brief".to_string(), self.brief.clone().into_bytes())];
-            attachments.extend(extra);
-            attachments.extend(attached);
-            compose_prompt(&text, &attachments)
-        })();
+        // A recorded answer or request is replayed or polled before anything is read from the live work tree.
+        let attempt = self.attempt(step);
+        let recorded = self.done(step).is_some() || !self.journal.all("intent", step, attempt).is_empty();
+        let built = if recorded {
+            Ok(String::new())
+        } else {
+            (|| -> Result<String> {
+                let (files, attached) = self.files_view()?;
+                let mut all = vec![("step", step.to_string()), ("run", self.id.clone()), ("files", files), ("rules", self.rules())];
+                all.extend(vars);
+                let text = render(template, &all);
+                let mut attachments = vec![("brief".to_string(), self.brief.clone().into_bytes())];
+                attachments.extend(extra);
+                attachments.extend(attached);
+                compose_prompt(&text, &attachments)
+            })()
+        };
         let prompt = match built {
             Ok(p) => p,
             Err(e) => {
@@ -581,9 +625,9 @@ impl Run {
     }
 
     /// A gateway call under the journal. Before the submission: the intent with the step, round, attempt, input
-    /// digest and key, and the exact request in the journal. A resumed run submits that stored request under that key
-    /// again, which the gateway answers with the job it already has; a job that died before its model turn is asked
-    /// again under the next key (at most two times); an unknown outcome stops the run.
+    /// digest and key, and the exact request in the journal. Only an intent this process recorded is submitted; a
+    /// resumed run only looks up and waits for the job of a recorded key, and a key without its job is an unknown
+    /// outcome. A job that died before its model turn is asked again under the next key (at most two times).
     #[allow(clippy::too_many_arguments)]
     fn ask(&mut self, step: &str, round: u32, role_name: &str, pick: &Pick, schema: &Value, prompt: String, validate: impl Fn(&Value) -> std::result::Result<(), String>) -> Step<Value> {
         self.step = step.to_string();
@@ -624,26 +668,23 @@ impl Run {
         };
         let mut retries = intents.len().saturating_sub(1) as u32;
         loop {
-            let submitted = self.journal.events().iter().any(|e| e["kind"] == json!("submitted") && e["key"] == json!(key));
-            if submitted && !gateway::exists(&self.cfg, &key) {
-                self.halt_infra(step, format!("unknown outcome at {step}"), format!("the job {key} was submitted and its folder is gone"));
-                return Err(Halt);
-            }
-            // An intent of an earlier process without its "submitted" line: a cut between the submission and its record
-            // leaves the job's folder, which the same key finds again. Without the folder nothing proves that the job
-            // never ran (a cleaned or swept folder looks the same), so it is not asked again by itself.
-            if !submitted && !fresh && !gateway::exists(&self.cfg, &key) {
-                self.halt_infra(step, format!("unknown outcome at {step}"), format!("the job {key} has an intent but neither a \"submitted\" record nor a job folder: it may have run and been cleaned up"));
-                return Err(Halt);
-            }
-            let req = gateway::request(&key, &stored["role"], stored["prompt"].as_str().unwrap_or(""));
-            let sub = job::submit(&self.cfg, &req, true);
-            let (_, created) = self.infra(step, sub)?;
-            cut(&format!("submit {step}"));
-            if !submitted {
+            if fresh {
+                let req = gateway::request(&key, &stored["role"], stored["prompt"].as_str().unwrap_or(""));
+                let sub = job::submit(&self.cfg, &req, true);
+                let (_, created) = self.infra(step, sub)?;
+                cut(&format!("submit {step}"));
                 let r = self.journal.append(json!({ "kind": "submitted", "step": step, "attempt": attempt, "key": key, "created": created }));
                 self.infra(step, r)?;
+            } else if !gateway::exists(&self.cfg, &key) {
+                // A key of an earlier process is never submitted again (a submission can create a job): its job is
+                // looked up and waited for. Without its folder nothing proves that the job never ran (a cleaned or
+                // swept folder looks the same), so it is not asked again by itself.
+                let submitted = self.journal.events().iter().any(|e| e["kind"] == json!("submitted") && e["key"] == json!(key));
+                let what = if submitted { format!("the job {key} was submitted and its folder is gone") } else { format!("the job {key} has an intent but neither a \"submitted\" record nor a job folder: it may have run and been cleaned up") };
+                self.halt_infra(step, format!("unknown outcome at {step}"), what);
+                return Err(Halt);
             }
+            // Waiting only reads the job: a folder removed meanwhile is an error here and an unknown outcome on resume.
             let waited = gateway::wait_final(&self.cfg, &key);
             let fin = self.infra(step, waited)?;
             let status = fin["status"].as_str().unwrap_or("").to_string();
@@ -857,11 +898,15 @@ impl Run {
             if res["ok"] == json!(true) {
                 break;
             }
-            let failures: Vec<String> = res["evidence"].as_array().cloned().unwrap_or_default().iter().filter(|e| e["exitCode"] != json!(0)).map(|e| {
-                format!("`{}` ({}) exit {}{}\n```\n{}\n```", e["command"].as_str().unwrap_or(""), e["source"].as_str().unwrap_or(""),
+            // The writer sees each failed command by its source and number, and the end of its log without the
+            // private folders and without lines that may hold a credential; the raw logs stay in the journal.
+            let evidence = res["evidence"].as_array().cloned().unwrap_or_default();
+            let places = self.private_places();
+            let failures: Vec<String> = evidence.iter().enumerate().filter(|(_, e)| e["exitCode"] != json!(0)).map(|(i, e)| {
+                format!("{} exit {}{}\n```\n{}\n```", checks::name(&evidence, i),
                     if e["exitCode"].is_null() { "none".into() } else { e["exitCode"].to_string() },
-                    e["note"].as_str().filter(|s| !s.is_empty()).map(|s| format!(" ({s})")).unwrap_or_default(),
-                    checks::tail(e["log"].as_str().unwrap_or(""), 8 * 1024))
+                    e["note"].as_str().filter(|s| !s.is_empty()).map(|s| format!(" ({})", checks::sanitize(s, &places))).unwrap_or_default(),
+                    checks::sanitize(&checks::tail(e["log"].as_str().unwrap_or(""), 8 * 1024), &places))
             }).collect();
             let step = format!("fix {n}.{f}");
             let fix = self.writer_turn(&step, n, FIX, vec![("failures", failures.join("\n\n"))], vec![])?;
@@ -880,15 +925,16 @@ impl Run {
     ///
     /// The candidate tree, whatever brought it into the work tree, must leave the protected checks of the base as they
     /// were (content, mode, existence), except those args.allowCheckChanges names; else the package stops before
-    /// review. Each command's pid is journaled as it starts, so a resumed run stops what an interrupted one left
-    /// running before it starts the checks again.
+    /// review. Each command runs only after its pid and start time are in the journal, and its end is journaled too,
+    /// so a resumed run (or a rerun) stops what any earlier attempt left running before it starts the checks again.
+    /// A start or an end the journal cannot record stops the run.
     fn run_checks(&mut self, step: &str, round: u32) -> Step<Value> {
         self.step = step.to_string();
         if let Some(d) = self.done(step) {
             return self.checks_result(step, d);
         }
         let attempt = self.attempt(step);
-        self.reap_checks(step, attempt)?;
+        self.reap_checks(step)?;
         let scratch = self.journal.file("tmp");
         let tree = self.git.candidate_tree(&self.head, &self.claimed, &self.exec, &scratch);
         let tree = self.infra(step, tree)?;
@@ -914,14 +960,24 @@ impl Run {
         let logs = self.journal.file(&format!("logs/{}", gateway::slug(step)));
         let limit = Duration::from_secs_f64(self.args.check_timeout_min * 60.0);
         let journal = &mut self.journal;
-        let mut started = |pid: u32| {
-            let _ = journal.append(json!({ "kind": "check started", "step": step, "attempt": attempt, "pid": pid, "start": process_start(pid) }));
+        let mut on = |phase: checks::Phase, pid: u32| -> bool {
+            let e = match phase {
+                checks::Phase::Started => json!({ "kind": "check started", "step": step, "attempt": attempt, "pid": pid, "start": process_start(pid) }),
+                checks::Phase::Ended => json!({ "kind": "check ended", "step": step, "attempt": attempt, "pid": pid }),
+            };
+            journal.append(e).is_ok()
         };
-        let mut evidence = checks::run_list(&self.args.checks, "checks", &export, &logs, limit, &mut started);
-        if checks::passed(&evidence) && !self.args.verify.is_empty() {
-            evidence.extend(checks::run_list(&self.args.verify, "args.verify", &export, &logs, limit, &mut started));
+        let (mut evidence, mut recorded) = checks::run_list(&self.args.checks, "checks", &export, &logs, limit, &mut on);
+        if recorded && checks::passed(&evidence) && !self.args.verify.is_empty() {
+            let (more, ok) = checks::run_list(&self.args.verify, "args.verify", &export, &logs, limit, &mut on);
+            evidence.extend(more);
+            recorded = ok;
         }
         checks::remove(&export);
+        if !recorded {
+            self.halt_infra(step, format!("infrastructure at {step}"), "the journal could not record the start or the end of a check command, so no further command ran: fix the journal folder, then resume".into());
+            return Err(Halt);
+        }
         let result = json!({ "ok": checks::passed(&evidence), "tree": tree, "evidence": evidence });
         let r = self.record_done(step, round, result.clone());
         self.infra(step, r)?;
@@ -940,27 +996,32 @@ impl Run {
         Err(Halt)
     }
 
-    /// Stops the check commands an interrupted run of this step left running (by pid and start time), before the
-    /// checks start again. One that cannot be stopped stops the run.
-    fn reap_checks(&mut self, step: &str, attempt: u32) -> Step<()> {
-        let started: Vec<Value> = self.journal.all("check started", step, attempt).into_iter().cloned().collect();
-        for e in started {
+    /// Stops every check command of this run that started and has no recorded end, whatever step or attempt started
+    /// it (by pid and start time), before checks start again; each one settled gets its end recorded. One that cannot
+    /// be stopped, or an end the journal cannot record, stops the run.
+    fn reap_checks(&mut self, step: &str) -> Step<()> {
+        let events = self.journal.events();
+        let open: Vec<Value> = events.iter()
+            .filter(|s| s["kind"] == json!("check started"))
+            .filter(|s| !events.iter().any(|x| x["kind"] == json!("check ended") && x["step"] == s["step"] && x["attempt"] == s["attempt"] && x["pid"] == s["pid"]
+                && x["seq"].as_u64().unwrap_or(0) > s["seq"].as_u64().unwrap_or(0)))
+            .cloned().collect();
+        for e in open {
             let pid = e["pid"].as_i64().unwrap_or(0);
-            match stop_process(pid, e["start"].as_str()) {
-                // On Unix a check is the leader of its own process group: what it started may outlive it, and the
-                // group's id cannot belong to anybody else while one of them still runs.
-                "absent" => {
-                    #[cfg(unix)]
-                    if pid > 0 {
-                        let _ = std::process::Command::new("kill").args(["-KILL", "--", &format!("-{pid}")]).stderr(std::process::Stdio::null()).status();
-                    }
-                }
-                "stopped" | "other" => {}
-                answer => {
-                    self.halt_infra(step, format!("infrastructure at {step}"), format!("a check command (pid {pid}) of the interrupted run is still running and could not be stopped ({answer}): stop it, then resume"));
-                    return Err(Halt);
-                }
+            let answer = stop_process(pid, e["start"].as_str());
+            // On Unix a check is the leader of its own process group: what it started may outlive it, and the group's
+            // id is not given to anybody else while one of them still runs.
+            let group = match answer {
+                "absent" | "stopped" => checks::end_group(pid as u32),
+                "other" => Ok(()),
+                _ => Err(format!("it is still running and could not be stopped ({answer})")),
+            };
+            if let Err(why) = group {
+                self.halt_infra(step, format!("infrastructure at {step}"), format!("a check command (pid {pid}) of {} left by an earlier run: {why}. Stop it, then resume", e["step"].as_str().unwrap_or("?")));
+                return Err(Halt);
             }
+            let r = self.journal.append(json!({ "kind": "check ended", "step": e["step"], "attempt": e["attempt"], "pid": pid, "reaped": answer }));
+            self.infra(step, r)?;
         }
         Ok(())
     }
@@ -1035,53 +1096,84 @@ impl Run {
         let commit = self.infra(&step, made)?.trim().to_string();
         let r = self.journal.append(json!({ "kind": "made", "step": step, "round": n, "attempt": self.attempt(&step), "commit": commit }));
         self.infra(&step, r)?;
-        let moved = self.git.run(&["update-ref", "-m", &format!("zodchi flow {}: round {n}", self.args.label), &self.branch, &commit, &parent]);
-        self.infra(&step, moved)?;
-        cut(&step);
-        self.commit_receipt(&step, n, &parent, &commit, &tree)
-    }
-
-    /// After the branch moved to the round's commit: the index entries of the claimed paths follow it (other staged
-    /// work stays staged), and the receipt goes into the journal.
-    /// The index is touched only on the branch of the run, and only where it still holds no staged work of anybody
-    /// else; otherwise the run stops with the commit made and resumes from here.
-    fn commit_receipt(&mut self, step: &str, n: u32, parent: &str, commit: &str, tree: &str) -> Step<Value> {
-        let on = self.git.branch();
-        let on = self.infra(step, on)?;
-        if on.as_deref() != Some(self.branch.as_str()) {
-            let what = format!("{} holds the round's commit {commit}, but {} is checked out, whose index is left alone: check out {} again", self.branch, on.unwrap_or_else(|| "a detached HEAD".into()), self.branch);
-            self.halt_infra(step, format!("{step} (the branch of the run is not checked out)"), what);
-            return Err(Halt);
-        }
-        let mut reset = Vec::new();
-        for p in &self.claimed {
-            let known = self.git.exists_at(commit, p).unwrap_or(false) || self.git.exists_at(parent, p).unwrap_or(false);
-            if known {
-                reset.push(p.clone());
-            }
-        }
+        // The index entries of the claimed paths follow the commit before the branch does, so that after the branch
+        // moved the engine never has to touch the index again: an entry that differs from the commit then is
+        // somebody's staging. Staged entries that are neither the parent's nor the commit's are somebody's work
+        // already: nothing is published.
+        let reset = self.index_paths(&parent, &commit);
+        let reset = self.infra(&step, reset)?;
         if !reset.is_empty() {
-            // Staged entries that are neither the parent's nor the commit's are somebody's work: never reset them.
             let staged = |rev: &str| -> Result<Vec<String>> {
                 let mut a = vec!["diff", "--cached", "--name-only", "-z", "--no-renames", rev, "--"];
                 a.extend(reset.iter().map(String::as_str));
                 Ok(self.git.run(&a)?.split('\0').filter(|s| !s.is_empty()).map(String::from).collect())
             };
-            let both = staged(parent).and_then(|a| staged(commit).map(|b| a.into_iter().filter(|p| b.contains(p)).collect::<Vec<_>>()));
-            let both = self.infra(step, both)?;
+            let both = staged(&parent).and_then(|a| staged(&commit).map(|b| a.into_iter().filter(|p| b.contains(p)).collect::<Vec<_>>()));
+            let both = self.infra(&step, both)?;
             if !both.is_empty() {
-                let what = format!("staged changes in {} are neither the parent's nor the round's commit {commit}: unstage or keep them elsewhere", both.join(", "));
-                self.halt_infra(step, format!("{step} (staged work in claimed files)"), what);
+                let what = format!("staged changes in {} are neither the parent's nor the round's commit: unstage or keep them elsewhere; nothing was committed", both.join(", "));
+                self.halt_infra(&step, format!("{step} (staged work in claimed files)"), what);
                 return Err(Halt);
             }
-            let mut a = vec!["reset", "-q", commit, "--"];
+            let mut a = vec!["reset", "-q", commit.as_str(), "--"];
             a.extend(reset.iter().map(String::as_str));
             let r = self.git.run(&a);
-            self.infra(step, r)?;
+            self.infra(&step, r)?;
+        }
+        let moved = self.git.run(&["update-ref", "-m", &format!("zodchi flow {}: round {n}", self.args.label), &self.branch, &commit, &parent]);
+        if moved.is_err() && !reset.is_empty() {
+            // The branch did not move: its index entries go back to the parent's.
+            let mut a = vec!["reset", "-q", parent.as_str(), "--"];
+            a.extend(reset.iter().map(String::as_str));
+            let _ = self.git.run(&a);
+        }
+        self.infra(&step, moved)?;
+        cut(&step);
+        self.commit_receipt(&step, n, &parent, &commit, &tree)
+    }
+
+    /// The claimed paths the parent or the commit holds: those whose index entries follow the round's commit.
+    fn index_paths(&self, parent: &str, commit: &str) -> Result<Vec<String>> {
+        let mut out = Vec::new();
+        for p in &self.claimed {
+            if self.git.exists_at(commit, p)? || self.git.exists_at(parent, p)? {
+                out.push(p.clone());
+            }
+        }
+        Ok(out)
+    }
+
+    /// After the branch moved to the round's commit: the receipt goes into the journal. The index is never touched
+    /// here (its entries followed the commit before the branch moved); claimed entries that differ from the commit
+    /// now are somebody's staging since, left as they are and named in the receipt. The claim, with every path it was
+    /// extended by, must still be this run's.
+    fn commit_receipt(&mut self, step: &str, n: u32, parent: &str, commit: &str, tree: &str) -> Step<Value> {
+        let keys: Vec<String> = self.claimed.iter().map(|c| c.to_lowercase()).collect();
+        if !claims::holds(&self.claims_dir, &self.args.label, &self.id, &keys) {
+            self.out.insert("stoppedAt".into(), json!(format!("{step} (the claim is not open)")));
+            self.out.insert("next".into(), json!(format!("The round's commit {commit} is on {}, but the claim {} is no longer the open claim of this run with all its files (closed, narrowed or taken over meanwhile). The index was left as it is; nothing was reviewed.", self.branch, claims::file(&self.claims_dir, &self.args.label).display())));
+            return Err(Halt);
+        }
+        let on = self.git.branch();
+        let on = self.infra(step, on)?;
+        let mut left = Vec::new();
+        if on.as_deref() == Some(self.branch.as_str()) {
+            let paths = self.index_paths(parent, commit);
+            let paths = self.infra(step, paths)?;
+            if !paths.is_empty() {
+                let mut a = vec!["diff", "--cached", "--name-only", "-z", "--no-renames", commit, "--"];
+                a.extend(paths.iter().map(String::as_str));
+                let staged = self.git.run(&a);
+                left = self.infra(step, staged)?.split('\0').filter(|s| !s.is_empty()).map(String::from).collect();
+            }
         }
         let files = self.git.run(&["diff", "--name-only", "--no-renames", parent, commit]);
         let files: Vec<String> = self.infra(step, files)?.lines().map(String::from).collect();
-        let receipt = json!({ "commit": commit, "parent": parent, "tree": tree, "files": files });
+        let mut receipt = json!({ "commit": commit, "parent": parent, "tree": tree, "files": files });
+        if !left.is_empty() {
+            receipt["indexLeft"] = json!(left);
+            self.out.insert("indexLeft".into(), json!(format!("Staged entries of {} differ from the round's commit {commit} and were left as they are: they are somebody's staging (git diff --cached shows them).", left.join(", "))));
+        }
         let r = self.record_done(step, n, receipt.clone());
         self.infra(step, r)?;
         self.head = commit.to_string();
@@ -1124,8 +1216,9 @@ impl Run {
         let mut paths = vec!["diff", "--no-renames", &self.base, &self.head, "--"];
         paths.extend(self.claimed.iter().map(String::as_str));
         let diff = self.git.run(&paths)?;
-        let evidence: Vec<String> = verification["evidence"].as_array().cloned().unwrap_or_default().iter()
-            .map(|e| format!("`{}` exit {}", e["command"].as_str().unwrap_or(""), e["exitCode"])).collect();
+        // Commands by source and number: their command lines stay with the engine.
+        let all = verification["evidence"].as_array().cloned().unwrap_or_default();
+        let evidence: Vec<String> = all.iter().enumerate().map(|(i, e)| format!("{} exit {}", checks::name(&all, i), e["exitCode"])).collect();
         let how = format!("{}{}{}", verification["stamp"].as_str().unwrap_or(""),
             verification["note"].as_str().filter(|s| !s.is_empty()).map(|s| format!(": {s}")).unwrap_or_default(),
             if evidence.is_empty() { String::new() } else { format!("; commands: {}", evidence.join(", ")) });
