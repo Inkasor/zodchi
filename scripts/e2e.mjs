@@ -220,24 +220,33 @@ async function serve(t, w, data, extra = []) {
   const child = spawn(SERVER, args, { env: w.env, stdio: ["ignore", "pipe", errFd], windowsHide: true });
   fs.closeSync(errFd);
   t.log(`$ zodchi-server ${args.join(" ")}   (stderr: ${log})`);
+  // Cleanup and the exit and error handlers come first: a server that never becomes ready is still killed and reaped.
+  const exited = new Promise((resolve) => {
+    child.on("exit", (code, signal) => resolve({ code, signal }));
+    child.on("error", (e) => resolve({ code: null, signal: null, error: String(e) }));
+  });
+  const kill = () => { try { child.kill("SIGKILL"); } catch { /* gone */ } };
+  t.cleanups.push(kill);
   let first = "";
   const address = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Failure("the server announced no address in 30 s")), 30000);
-    child.stdout.on("data", (d) => {
+    if (child.stdout) child.stdout.on("data", (d) => {
       first += d;
       const m = first.match(/http:\/\/(\S+)/);
       if (m) { clearTimeout(timer); resolve(m[1]); }
     });
-    child.on("exit", (code) => { clearTimeout(timer); reject(new Failure(`the server exited with ${code} before it listened: ${fs.readFileSync(log, "utf8")}`)); });
+    exited.then((e) => { clearTimeout(timer); reject(new Failure(`the server ${e.error ? `did not start (${e.error})` : `exited with ${e.code}`} before it listened: ${fs.readFileSync(log, "utf8")}`)); });
+  }).catch(async (e) => {
+    kill();
+    const reaped = await Promise.race([exited.then(() => true), new Promise((r) => setTimeout(() => r(false), 10000))]);
+    t.log(reaped ? "  the server that did not become ready was killed and reaped" : `  the server ${child.pid} did not exit within 10 s of SIGKILL`);
+    throw e;
   });
   t.log(`  listening on ${address}`);
   const server = {
-    child, address, log,
+    child, address, log, exited, kill,
     stderr: () => fs.readFileSync(log, "utf8"),
-    exited: new Promise((resolve) => child.on("exit", (code, signal) => resolve({ code, signal }))),
-    kill: () => { try { child.kill("SIGKILL"); } catch { /* gone */ } },
   };
-  t.cleanups.push(server.kill);
   return server;
 }
 
@@ -486,13 +495,16 @@ public static class ZJob {
 }
 "@
 $self = [ZJob]::GetCurrentProcess()
-$inJob = $false
-[void][ZJob]::IsProcessInJob($self, [IntPtr]::Zero, [ref]$inJob)
-if ($inJob) {
-  $info = New-Object byte[] 144
-  if (-not [ZJob]::QueryInformationJobObject([IntPtr]::Zero, 9, $info, 144, [IntPtr]::Zero)) { 'SKIP: the job object around this process cannot be read'; exit 0 }
-  # Only the survival case needs breakaway from the outer job object; the fallback case does not.
-  if ($Breakaway -eq 1 -and ([BitConverter]::ToUInt32($info, 16) -band 0x1800) -eq 0) { 'SKIP: the job object around this process forbids breakaway, so no worker can leave one here'; exit 0 }
+# Only the survival case needs breakaway from an outer job object, so only it reads one and may skip. The fallback
+# case reads nothing: it assigns this shell to its own job object below and fails if it cannot.
+if ($Breakaway -eq 1) {
+  $inJob = $false
+  [void][ZJob]::IsProcessInJob($self, [IntPtr]::Zero, [ref]$inJob)
+  if ($inJob) {
+    $info = New-Object byte[] 144
+    if (-not [ZJob]::QueryInformationJobObject([IntPtr]::Zero, 9, $info, 144, [IntPtr]::Zero)) { 'SKIP: the job object around this process cannot be read'; exit 0 }
+    if (([BitConverter]::ToUInt32($info, 16) -band 0x1800) -eq 0) { 'SKIP: the job object around this process forbids breakaway, so no worker can leave one here'; exit 0 }
+  }
 }
 $job = [ZJob]::CreateJobObjectW([IntPtr]::Zero, [IntPtr]::Zero)
 $info = New-Object byte[] 144
@@ -551,9 +563,9 @@ scenario("cli-job-object-without-breakaway", "Windows: a job object that forbids
   t.cleanups.push(() => fs.writeFileSync(gate, ""));
   let ps = null;
   const shell = run(t, "powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ps1, ZODCHI, r, p, "jn1", "0", gate], { cwd: w.dir, env: psEnv(w), label: "powershell" }).then((x) => (ps = x));
+  // No skip here: the fallback needs no setting of an outer job object, so a shell that cannot run it fails the scenario.
   await t.until("the turn entered the fake, or the shell ended", () => entered(w.codex, "jn") || ps);
-  if (ps && /^SKIP: /m.test(ps.out)) return { skip: ps.out.match(/^SKIP: (.*)$/m)[1].trim() };
-  t.ok(!ps, "the turn entered while the shell and its job object are still open");
+  t.ok(!ps, `the turn entered while the shell and its job object are still open${ps ? ` (the shell ended with ${ps.code}: ${clip(ps.out + ps.err, 400)})` : ""}`);
   const running = await zodchi(t, w, ["job", "--key", "jn1"], { cwd: r });
   const worker = running.json && running.json.job.workerPid;
   t.ok(running.json && running.json.job.status === "running" && worker > 0 && alive(worker), `the worker ${worker} runs the turn`);
@@ -702,6 +714,26 @@ scenario("server-results", "every kind of result through HTTP, the refusals of t
   t.ok(bytes.status === 200 && bytes.type === "image/png" && bytes.body.subarray(0, 4).equals(PNG.subarray(0, 4)), "the image bytes with their type");
   t.eq((await call(t, server, "GET", "/v1/jobs/png-1/result/1", { token: a.token })).status, 404, "no second image");
   t.eq((await call(t, server, "GET", "/v1/jobs/png-1/result/..%2Frequest.json", { token: a.token })).status, 404, "nothing else of the job folder is served");
+  // The filename guard itself: the stored manifest of the finished job names files of its folder that are not output
+  // images (they exist, so only the guard stands between them and the client), asked for by valid indexes.
+  const pngDir = path.join(data, "users", a.id, "jobs", "png-1");
+  const notImages = ["request.json", "job.json", "codex-stderr.log", "out-0.png/../request.json"];
+  for (const name of ["final.json", "job.json"]) {
+    const file = path.join(pngDir, name);
+    if (!fs.existsSync(file)) continue;
+    const stored = JSON.parse(fs.readFileSync(file, "utf8"));
+    stored.result.images.push(...notImages.map((f, i) => ({ index: i + 1, file: f, bytes: 1 })));
+    fs.writeFileSync(file, JSON.stringify(stored));
+  }
+  t.ok(fs.existsSync(path.join(pngDir, "request.json")), "the job folder holds request.json, which a broken guard would serve");
+  const requestText = fs.readFileSync(path.join(pngDir, "request.json"), "utf8");
+  t.eq((await call(t, server, "GET", "/v1/jobs/png-1/result", { token: a.token })).json.images.length, 1 + notImages.length, "the manifest now lists the planted entries");
+  for (let i = 1; i <= notImages.length; i++) {
+    const answer = await call(t, server, "GET", `/v1/jobs/png-1/result/${i}`, { token: a.token });
+    t.ok(answer.status === 404 && answer.json && answer.json.error.code === "not_found" && !answer.text.includes(requestText.trim().slice(0, 40)) && !answer.text.includes("a dot"),
+      `a manifest entry naming ${notImages[i - 1]} is refused (404 not_found) without the file's contents`);
+  }
+  t.ok((await call(t, server, "GET", "/v1/jobs/png-1/result/0", { token: a.token })).status === 200, "the real output image is still served");
   t.eq((await finished(t, server, a.token, "fail-1")).status, "failed", "fail-1 failed");
   const failed = await call(t, server, "GET", "/v1/jobs/fail-1/result", { token: a.token });
   t.eq([failed.status, failed.json.status, failed.json.error.code], [422, "failed", "job_failed"], "a failed job's result: 422 job_failed");
@@ -732,28 +764,41 @@ scenario("server-results", "every kind of result through HTTP, the refusals of t
   // read; a chunked body without a length is read and refused once its real bytes pass 32 MB. The chunked body is a
   // valid job padded with spaces, so a broken limit would create the job big-1. Each request has a deadline.
   const LIMIT_BODY = 32 * 1024 * 1024;
+  // The promise settles once: on the whole answer, on a cut-off or failed answer, on a request error before the answer,
+  // or at the deadline, which rejects by itself and destroys the request.
   const oversized = (what, headers, body) => new Promise((resolve, reject) => {
     const [host, port] = [server.address.slice(0, server.address.lastIndexOf(":")), Number(server.address.slice(server.address.lastIndexOf(":") + 1))];
     let answered = false;
-    const timer = setTimeout(() => req.destroy(new Error(`no answer to ${what} in 60 s`)), 60000);
+    let settled = false;
+    const settle = (fn, value) => { if (settled) return; settled = true; clearTimeout(timer); fn(value); };
+    const timer = setTimeout(() => { settle(reject, new Failure(`no whole answer to ${what} in 60 s`)); req.destroy(); }, 60000);
     const req = http.request({ host, port, method: "POST", path: "/v1/jobs", agent: false, headers: { Authorization: `Bearer ${a.token}`, "Content-Type": "application/json", Connection: "close", ...headers } }, (res) => {
       let text = "";
       answered = true;
       res.on("data", (d) => (text += d));
-      res.on("end", () => { clearTimeout(timer); resolve({ status: res.statusCode, text }); });
+      res.on("end", () => {
+        let json = null;
+        try { json = JSON.parse(text); } catch { /* not JSON */ }
+        settle(resolve, { status: res.statusCode, text, json });
+      });
+      res.on("aborted", () => settle(reject, new Failure(`the answer to ${what} was cut off`)));
+      res.on("error", (e) => settle(reject, new Failure(`the answer to ${what} failed: ${e.message}`)));
+      res.on("close", () => { if (!res.complete) settle(reject, new Failure(`the answer to ${what} was cut off`)); });
     });
-    // The server may close the connection right after its answer; a write error after the answer is not a failure.
-    req.on("error", (e) => { if (!answered) { clearTimeout(timer); reject(e); } });
+    // The server may close the connection right after its answer; a write error after the answer is not a failure,
+    // and a cut-off answer is caught on the response above.
+    req.on("error", (e) => { if (!answered) settle(reject, new Failure(`${what}: ${e.message}`)); });
     if (body) { for (let i = 0; i < body.length; i += 1024 * 1024) req.write(body.subarray(i, i + 1024 * 1024)); req.end(); } else req.flushHeaders();
   });
+  const refusedForSize = (answer) => answer.status === 400 && answer.json && answer.json.error && answer.json.error.code === "bad_request" && /32 MB/.test(answer.json.error.message);
   const announced = await oversized("an announced length", { "Content-Length": LIMIT_BODY + 1 }, null);
   t.log(`> POST /v1/jobs with Content-Length 32 MB + 1 and no body\n  ${announced.status} ${announced.text}`);
-  t.ok(announced.status === 400 && /32 MB/.test(announced.text), "a length announced over 32 MB is refused before the body is read");
+  t.ok(refusedForSize(announced), "a length announced over 32 MB is refused before the body is read: 400 bad_request, the limit named");
   const job = Buffer.from(JSON.stringify({ key: "big-1", role: "ask", prompt: "p" }));
   const padded = Buffer.concat([job, Buffer.alloc(LIMIT_BODY + 1 - job.length, " ")]);
   const chunked = await oversized("a chunked body", { "Transfer-Encoding": "chunked" }, padded);
   t.log(`> POST /v1/jobs with a chunked body of 32 MB + 1 bytes (a valid job padded with spaces)\n  ${chunked.status} ${chunked.text}`);
-  t.ok(chunked.status === 400 && /32 MB/.test(chunked.text), "a chunked body whose bytes pass 32 MB is refused");
+  t.ok(refusedForSize(chunked), "a chunked body whose bytes pass 32 MB is refused: 400 bad_request, the limit named");
   t.eq((await call(t, server, "GET", "/v1/jobs/big-1", { token: a.token })).status, 404, "no job was created from it");
 
   // The prompt limit is exact: the composed prompt (trailing whitespace trimmed, one newline added) is at most 512 KB.
@@ -955,10 +1000,34 @@ scenario("server-threads", "a long poll holds an HTTP thread: one thread is refu
   const server = await serve(t, w, data, ["--threads", "2"]);
   t.eq((await call(t, server, "POST", "/v1/jobs", { token: a.token, body: { key: "poll-1", role: "ask", prompt: `poll ${hold(t, a.home, "p1")}` } })).status, 201, "a held job");
   await t.until("the job entered the fake", () => entered(a.home, "p1"));
-  const poll = call(t, server, "GET", "/v1/jobs/poll-1?waitSec=30", { token: a.token });
+  let poll = null;
+  let pollSettled = true;
+  const startPoll = () => {
+    pollSettled = false;
+    poll = call(t, server, "GET", "/v1/jobs/poll-1?waitSec=30", { token: a.token }).finally(() => (pollSettled = true));
+  };
+  startPoll();
+  // The acknowledgement that the server admitted the poll: with two threads one poll place exists. A probe poll that
+  // gets the place waits its whole second; a probe answered in under a second found the place taken, and the only
+  // other poll is the pending one above, so it is admitted and still waiting (the job is held, so it cannot end).
+  // When the probe got the place first, the long poll is answered at once; it is then asked again.
+  await t.until("the server admitted the long poll (a probe poll is answered at once: the one poll place is taken)", async () => {
+    if (pollSettled) {
+      t.log("  the long poll was answered without waiting (the probe held the poll place); asking again");
+      startPoll();
+      return false;
+    }
+    const sent = Date.now();
+    const probe = await call(t, server, "GET", "/v1/jobs/poll-1?waitSec=1", { token: a.token, quiet: true });
+    const ms = Date.now() - sent;
+    t.log(`  probe poll: ${probe.status} ${probe.json && probe.json.job && probe.json.job.status} after ${ms} ms`);
+    return probe.status === 200 && probe.json.job.status === "running" && ms < 1000 && !pollSettled;
+  });
+  t.ok(!pollSettled, "the long poll is still waiting");
   const started = Date.now();
   for (let i = 0; i < 5; i++) t.eq((await call(t, server, "GET", "/health")).status, 200, "/health answers during the poll");
   t.ok(Date.now() - started < 3000, `/health did not wait behind the poll (${Date.now() - started} ms)`);
+  t.ok(!pollSettled, "the long poll was still waiting through every /health");
   release(t, a.home, "p1");
   const polled = await poll;
   t.eq([polled.status, polled.json.job.status], [200, "succeeded"], "the poll ends with the final status");

@@ -109,21 +109,34 @@ only `ANTHROPIC_API_KEY` in an allow-listed environment, no retry.
 
 Where it runs: a dedicated, disposable container or VM with no checkout but the one it runs from, no credential store
 mounted and outbound network only to the model service. `--disposable` states that, always (`CI=true` does not count).
-The session runs with permissions bypassed, so its shell can reach whatever the container holds; the script cannot
-limit the network, which is the container's job. It refuses when it sees a machine that is not disposable: a
-credential store in the real home (`.ssh`, `.git-credentials`, `.netrc`, `.aws`, `.config/gh`, `.codex`, `.zodchi`,
-a Claude sign-in) or a Git credential kept in the checkout (`http.*.extraheader`, `credential.*`).
+The session runs with permissions bypassed, as the user who started the run, so its shell can reach whatever the
+container holds; the script cannot limit the network or the file system, which is the container's job. It refuses
+when it sees a machine that is not disposable: a credential store in the real home (`.ssh`, `.git-credentials`,
+`.netrc`, `.aws`, `.config/gh`, `.codex`, `.zodchi`, a Claude sign-in) or a Git credential kept in the checkout
+(`http.*.extraheader`, `credential.*`; the probe's output is never logged, and a probe that fails refuses too). What
+the session is given is staged in the scratch folder read-only (on POSIX the folders too): the plugin, the roles, the
+gateway binary, the fake Codex the gateway runs and the model table; each is hashed before the launch (an input that
+cannot be hashed stops the run) and again after it.
+
+Time is bounded: at the deadline the session's process tree (its process group on POSIX) is killed and the result of
+the kill is logged; the run waits at most a minute more for its exit. After the session, every process whose command
+line names the scratch folder (a detached gateway worker, the fake) is killed; one that survives stops the run. Every
+other command of the harness has its own time limit.
 
 It decides by:
 - the session itself: it started and exited 0 before the deadline, its JSON reports success, and it carries a cost
-  receipt (`total_cost_usd`, positive, within the cap); a missing or malformed receipt fails the run. The plugin, roles,
-  gateway binary and brief the session got are unchanged after it.
+  receipt (`total_cost_usd`, positive, within the cap); a missing or malformed receipt fails the run. The staged inputs
+  are unchanged after it. A session that fails any of this ends the run there: its result, commits and tree are not
+  judged and no command of the fixture runs.
 - the workflow result: shape and terminal status, apart from the session's exit; the evidence of the cheap check and
-  the verify command, in that order.
-- the final committed tree (`git archive` of the branch tip): the harness reruns the cheap check and the smoke command
-  itself, and runs its own acceptance check, written outside the fixture only after the session has ended. The
-  baseline test and smoke command are unchanged at the tip, HEAD is the tip, and no tracked file has an uncommitted
-  change.
+  then the verify command, each from its source with exit code 0 and naming its log, a non-empty file in the
+  package's scratch folder.
+- the final committed tree (`git archive` of the branch tip): the harness reruns the cheap check, the new test and the
+  smoke command itself, and runs its own acceptance check, written outside the fixture only after the session has
+  ended. The baseline test and smoke command are unchanged at the tip, HEAD is the tip, no file is changed or new and
+  uncommitted (ignored ones aside), and from the baseline to the tip the commits change exactly `src/math.mjs`
+  (modified) and `test/clamp.test.mjs` (added: the brief requires this new test, which the protected-check rule must
+  let through).
 - the `Verified:` stamp of the branch tip, and the review turn that the fake Codex received with the baseline
   `REVIEW.md`.
 
@@ -144,15 +157,15 @@ with the Codex pid, `fake-login-started` with the loginId) are written whole, th
 | `cli-three-jobs` | three jobs at once in one repository: two enter Codex, the third waits queued until a place is free; each ends with its own result, each ran once |
 | `cli-commands` | `help`, an unknown command, `roles` of this repository (all load, at least ten), `account` (masked e-mail), `check` (no turn), `auth_required` without a sign-in |
 | `cli-worker-outlives-job-object` | Windows: the submitting shell sits in a job object that kills its processes on close; the worker breaks away and finishes the job |
-| `cli-job-object-without-breakaway` | Windows: a job object that forbids breakaway does not make the submit fail; the worker starts inside it and runs the turn; when the job object closes, the worker and its Codex die with it and a look-up settles the job as `unknown` |
+| `cli-job-object-without-breakaway` | Windows: a job object that forbids breakaway does not make the submit fail; the worker starts inside it and runs the turn; when the job object closes, the worker and its Codex die with it and a look-up settles the job as `unknown`. It never skips: it reads no outer job object, and a shell that cannot make its own fails it |
 | `server-auth` | no token, a wrong token, another scheme: 401; the bearer in any case; roles offered; one server per data folder; `server.json` holds the SHA-256 of each token in `tokenHashes` and no token; a new token or a removed user takes effect at once; a broken registry (or a bad id in it) lets nobody in, without paths; after a crash a new server takes the folder |
 | `server-admin` | eight `user add` at once lose nobody; ids from names |
 | `server-isolation` | A's job, its idempotent repeat (fields in any order), 409 for another request; B asks for A's key on every route: 404 with nothing of A's job; each job on its own user's Codex home; no token: 401, nothing stored |
-| `server-results` | text, JSON, image manifest and bytes, 404 beyond them, 422 for a failed job without its stored text; every refusal of the server (work, decisions, paid, resume, inline role, role file, missing role, images, unknown field) stores nothing; a body over 32 MB, by its announced length (refused before it is read) and as a chunked body of a valid job padded past 32 MB (refused, no job made), each with a deadline; the exact prompt limit; a changed or removed role on a retry; `auth_required` |
+| `server-results` | text, JSON, image manifest and bytes, 404 beyond them, 422 for a failed job without its stored text; a stored manifest that names other files of the job folder (`request.json`, `job.json`, a path with `..`) at valid indexes: 404 `not_found` without their contents; every refusal of the server (work, decisions, paid, resume, inline role, role file, missing role, images, unknown field) stores nothing; a body over 32 MB, by its announced length (refused before it is read) and as a chunked body of a valid job padded past 32 MB (refused, no job made), each a 400 `bad_request` naming the limit, with a deadline and a failure on a cut-off answer; the exact prompt limit; a changed or removed role on a retry; `auth_required` |
 | `server-admission` | per-user and server limits: 429 with fixed text, key left free, counts only in the log; a repeat never refused; `not_final`; unreadable records count as unfinished; an unlistable folder refuses with 500 without paths |
 | `server-diagnostics` | stored errors of every final status become public codes; nothing of a stored error of a running job; `resetsAt` only as a number; roles that cannot load; Codex failing with a path; unknown routes and methods |
 | `server-sign-in` | device code with the completion after and before the answer; one open sign-in per user; cancel; sign-out of that user only; the caller's own account |
-| `server-threads` | `--threads 1` and `0` refused; with two, `/health` answers while a long poll waits |
+| `server-threads` | `--threads 1` and `0` refused; with two, `/health` answers while a long poll waits: the poll is shown admitted first (a probe poll is answered at once because the one poll place is taken) and still waiting after every `/health` |
 | `server-stop` | POSIX: SIGTERM while the fake holds a sign-in start; once the server says it is stopping, the start is released: the request is answered, the sign-in cancelled with its loginId, its app-server gone, the lock free; finished workers are reaped |
 
 ### Inventory of the tests this replaced, and where each behaviour went
@@ -201,7 +214,7 @@ Gateway, `#[cfg(test)]` modules:
 - `job.rs` `a_failed_submit_leaves_no_half_made_job`: a write that fails in the middle of a submit leaves no folder, the key stays free. Dropped: it needs a disk write that fails between two writes, which only the removed fail-point hook could make. The refusals before the folder is made leave the key free in `cli-image-job`, `server-results` and `server-admission`.
 - `api.rs` `the_fingerprint_is_the_client_request`: field order and a default `credits` do not change the request, `effort` does. -> `server-isolation`.
 - `api.rs` `refused_requests`. -> `server-results`.
-- `api.rs` `output_files_stay_in_the_job_folder`. -> `server-results` (no image beyond the job's, no other file of its folder).
+- `api.rs` `output_files_stay_in_the_job_folder`. -> `server-results`: the stored manifest of a finished image job is given entries naming `request.json`, `job.json`, `codex-stderr.log` and `out-0.png/../request.json`, asked for by valid indexes; each is 404 `not_found` without the file's contents.
 - `auth.rs` `bearer_is_read_in_any_case`. -> `server-auth`. Dropped: that the comparison takes constant time (not observable from outside).
 - `lock.rs` `simultaneous_contenders_on_a_stale_lock_file`: exactly one of eight contenders takes a stale lock. -> `server-auth` (a second server is refused; after a crash the folder is free). Dropped: eight servers started at the same moment (a race of copies of one tool started together; see REVIEW.md).
 - `public.rs` `a_failed_job_shows_a_code_and_a_fixed_message`. -> `server-diagnostics`.
@@ -214,7 +227,7 @@ Gateway, `#[cfg(test)]` modules:
 CI: "the gateway lists the roles of this repository" (`zodchi help`, `zodchi roles`, at least ten, none with an error). -> `cli-commands`.
 
 Workflows, `core/workflows/fixtures/code-package/mock.mjs` (the workflow with fake agents):
-- `verify-passes`: the cheap check before verify, both in the evidence, the stamp `Verified: checks exit 0; args.verify exit 0`, a new test file allowed, the writer and runner told the check rules. -> the release run (verdict, `verifiedBy`, the stamp of the tip, evidence order). Dropped: the wording of the rules in the prompts.
+- `verify-passes`: the cheap check before verify, both in the evidence, the stamp `Verified: checks exit 0; args.verify exit 0`, a new test file allowed, the writer and runner told the check rules. -> the release run (verdict, `verifiedBy`, the stamp of the tip, evidence order with logs, and the new test `test/clamp.test.mjs` the brief requires, committed and not refused). Dropped: the wording of the rules in the prompts.
 - `nothing-to-run`: `verifiedBy` none, said in the result, the commit and the review. Dropped until the release run gets a second package.
 - `stamp-no-commands`: no command string in the commit message. -> the release run (the tip's message holds no command).
 - `no-evidence`: a runner that reports success without evidence verifies nothing. Open, for the owner: not checked by any gate now (see below).
@@ -228,14 +241,26 @@ Workflows, `core/workflows/fixtures/incident-triage/` (`mock.mjs`, `product.mjs`
 answer `unknown-evidence-id`, `blank-brief`, `access-in-brief`, `access-in-gap`, `access-in-summary`,
 `security-prohibitions`, `injection`; stale handling `stale`, `stale-no-deploy`, `stale-assertive`,
 `stale-owner-mixed`; reply wording `plain-wait`, `no-retry-lead`, `repeat-in-facts`, `retry-in-facts`,
-`retry-text-unflagged`; routes `blocked-release`, `agent-capability`, `skill-allowlist`). Open, for the owner: no
-end-to-end run of `incident-triage` exists yet, so none of these guards is checked by any gate now.
+`retry-text-unflagged`; routes `blocked-release`, `agent-capability`, `skill-allowlist`), and three runs of the mock
+itself:
+- `revisions`: a second run in the same folder makes `rev-2` and leaves `rev-1` byte for byte; a held lock refuses a
+  run and makes no revision.
+- `infra`: a gateway failure at Classify marks the revision failed, drafts nothing and releases the lock.
+- `cleanup-faults`: a failed revision whose failed pointer is not verified (the runner left the file out, or reported
+  another hash) keeps the lock, says so in the result, and runs no unlock step.
 
-Open, for the owner: these refusals and redactions are what a user sees (a weakened check accepted, a success claimed
-without a receipt, sensitive evidence in a triage draft), not internal details, and with this change no gate checks
-them. They were never in CI (the mock runs were started by hand), but they could be run. Two ways out: the owner drops
-these guarantees by name, or a bounded release run replaces them in version 2: `code-package` on a brief that asks
-to edit the protected test (the package must stop with `protectedChanged`), and `incident-triage` on a product
-adapter with the classifier on a Codex role, answered by the fake Codex from `fake-answer.json` like the review (the
-refusal and redaction cases). A runner that reports success without evidence needs a fake agent, which no real run
-has, so for that case only the owner's decision is left.
+Open, for the owner: no end-to-end run of `incident-triage` exists yet, so none of these guards is checked by any gate
+now.
+
+Open, for the owner, and not a decision: the entries marked "Open" above (`no-evidence`, `edits-test`, the 24
+incident-triage cases, `revisions`, `infra`, `cleanup-faults`) are what a user sees (a weakened check accepted, a
+success claimed without a receipt, sensitive evidence in a triage draft, a revision overwritten, a lock left or
+released wrongly after a failed write), not internal details, and with this change no gate checks them. Until the
+owner decides, this change must not be merged with their mock runs deleted. They were never in CI (the mock runs
+were started by hand), but they could be run. Two ways out: the owner drops these guarantees by name, or a bounded
+release run replaces them in version 2: `code-package` on a brief that asks to edit the protected test (the package
+must stop with `protectedChanged`), and `incident-triage` on a product adapter with the classifier on a Codex role,
+answered by the fake Codex from `fake-answer.json` like the review (the refusal and redaction cases, `revisions`,
+`infra`). A runner that reports success without evidence (`no-evidence`), or a
+written file it left out or reported with another hash (`cleanup-faults`), needs a fake agent, which no real run
+has, so for those cases only the owner's decision is left.
