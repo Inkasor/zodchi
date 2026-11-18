@@ -36,7 +36,8 @@ export default function (h) {
     };
     const steps = () => readJsonl(path.join(u.home, "fake-turns.jsonl")).map((x) => x.step);
     const turn = (step) => readJsonl(path.join(u.home, "fake-turns.jsonl")).find((x) => x.step === step);
-    const jobs = () => (fs.existsSync(jobsDir) ? fs.readdirSync(jobsDir).sort() : []);
+    // Job folders only: the server keeps short-lived locks (".claim.lock") beside them, which are not jobs.
+    const jobs = () => (fs.existsSync(jobsDir) ? fs.readdirSync(jobsDir).filter((n) => !n.startsWith(".")).sort() : []);
     /** The request the server stored for a job: the role as resolved, with its output schema. */
     const request = (key) => JSON.parse(fs.readFileSync(path.join(jobsDir, key, "request.json"), "utf8"));
     const runId = () => fs.readdirSync(path.join(f.w.zhome, "flows"))[0];

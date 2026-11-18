@@ -1365,6 +1365,15 @@ function build() {
   console.log(`build ${(ms / 1000).toFixed(1)} s (log ${log})`);
 }
 
+// More scenarios live in scripts/e2e/scenarios/*.mjs, one file per area, so parallel packages each add their own file
+// instead of editing this one. Each file's default export receives the helpers and registers with scenario().
+{
+  const dir = path.join(ROOT, "scripts", "e2e", "scenarios");
+  const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith(".mjs")).sort() : [];
+  const helpers = { scenario, world, repo, prompt, zodchi, serve, admin, user, finished, flowWorld, gitOut, blobOf, samePath, ROOT, FAKE, FAKE_FLOW, STUB };
+  for (const f of files) (await import(pathToFileURL(path.join(dir, f)).href)).default(helpers);
+}
+
 const names = scenarios.map((s) => s.name);
 const unknownNames = wanted.filter((n) => !names.includes(n));
 if (unknownNames.length) {
@@ -1383,14 +1392,6 @@ const suiteStarted = Date.now();
 let failed = 0;
 let passed = 0;
 let skipped = 0;
-// More scenarios live in scripts/e2e/scenarios/*.mjs, one file per area, so parallel packages each add their own file
-// instead of editing this one. Each file's default export receives the helpers and registers with scenario().
-{
-  const dir = path.join(ROOT, "scripts", "e2e", "scenarios");
-  const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith(".mjs")).sort() : [];
-  const helpers = { scenario, world, repo, prompt, zodchi, serve, admin, user, finished, flowWorld, gitOut, blobOf, samePath, ROOT, FAKE, FAKE_FLOW, STUB };
-  for (const f of files) (await import(pathToFileURL(path.join(dir, f)).href)).default(helpers);
-}
 
 for (const s of scenarios.filter((x) => !wanted.length || wanted.includes(x.name))) {
   const t = new Trace(s.name);
