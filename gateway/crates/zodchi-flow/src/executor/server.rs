@@ -64,6 +64,8 @@ pub struct Server {
     home: PathBuf,
     /// The server's id of the token's account (`GET /v1/account`, `user`), read by the preflight.
     user: std::cell::RefCell<Option<String>>,
+    /// Why a resumed key is not looked up (`exists`): the wait that follows stops the step with it.
+    stop: std::cell::RefCell<Option<String>>,
 }
 
 /// One answer of the server.
@@ -237,7 +239,7 @@ fn journaled(home: &Path, key: &str) -> std::result::Result<(Value, Value, bool)
 
 impl Server {
     pub fn new(cfg: Config, server: String) -> Server {
-        Server { setup: setup(&cfg, &server), checked: Default::default(), home: cfg.home.clone(), user: Default::default() }
+        Server { setup: setup(&cfg, &server), checked: Default::default(), home: cfg.home.clone(), user: Default::default(), stop: Default::default() }
     }
 
     fn setup(&self) -> Result<&Setup> {
@@ -388,6 +390,29 @@ impl Server {
         }
     }
 
+    /// The journaled request of `key` was made for the configured server and the token's account: a resumed key is
+    /// looked up only then, so a job of the same key on another server or under another account is never taken as
+    /// this run's. A mismatch, or a side that cannot be read, names both.
+    fn same_origin(&self, key: &str) -> std::result::Result<(), String> {
+        let s = self.setup().map_err(|e| e.0)?;
+        let (_, stored, _) = journaled(&self.home, key).map_err(|why| format!("The request of {key} cannot be matched with the flow server {} and your account: {why}. Nothing was looked up.", s.base))?;
+        let role = &stored["role"];
+        let server = role["server"].as_str().unwrap_or("(none)");
+        if server != s.base {
+            return Err(format!("The request of {key} was made for the flow server {server}, and flow.json now names {}: its job is not looked up there. Put the server back, or run the step again with --rerun.", s.base));
+        }
+        let account = self.http("GET", "/v1/account", None, 60).map_err(|e| e.0)?;
+        if account.status != 200 {
+            return Err(self.refusal("GET /v1/account", &account).0);
+        }
+        let journaled_user = role["user"].as_str().filter(|u| !u.is_empty());
+        let user = account.json()["user"].as_str().filter(|u| !u.is_empty()).map(str::to_string);
+        if journaled_user.is_none() || journaled_user != user.as_deref() {
+            return Err(format!("The request of {key} was made for the account {} on the flow server {}, and the token in {} is of the account {}: its job is not looked up under it. Put the request's token back, or run the step again with --rerun.", journaled_user.unwrap_or("(not named)"), s.base, s.token_file.display(), user.as_deref().unwrap_or("(not named)")));
+        }
+        Ok(())
+    }
+
     /// Posts the journaled request of a key the server does not know again, under the same key, when no job of it can
     /// have run: the journal has no "submitted" record of it (a "submitted" job that is gone ran, or was taken), its
     /// intent is younger than `REPLAY_WINDOW_MS` (a job made from it cannot have been swept), it was made for this
@@ -475,14 +500,19 @@ impl Executor for Server {
         }
     }
 
-    /// Whether the server holds the job of `key` for this token. When the server cannot be asked the answer is yes,
-    /// and the wait that follows stops the step with the reason. A `404` is a key the server never got (a cut
+    /// Whether the server holds the job of `key` for this token. First the journaled server and account must be the
+    /// configured ones (`same_origin`); when they are not, or the server cannot be asked, the answer is yes, and the
+    /// wait that follows stops the step with the reason, an infrastructure stop. A `404` is a key the server never got (a cut
     /// between the intent and the `POST`) or a job that is gone: the journaled request is posted again under the same
     /// key when `replay` can rule the second out, and the answer is then yes; otherwise no, and the engine stops with
     /// an unknown outcome.
     fn exists(&self, key: &str) -> bool {
         if !is_key(key) {
             return false;
+        }
+        if let Err(why) = self.same_origin(key) {
+            *self.stop.borrow_mut() = Some(why);
+            return true;
         }
         if !matches!(self.http("GET", &format!("/v1/jobs/{key}"), None, 60), Ok(a) if a.status == 404) {
             return true;
@@ -503,6 +533,9 @@ impl Executor for Server {
     /// so this ends.
     fn wait_final(&self, key: &str) -> Result<Value> {
         let base = self.setup()?.base.clone();
+        if let Some(why) = self.stop.borrow_mut().take() {
+            return fail(why);
+        }
         loop {
             let asked = Instant::now();
             let job = self.poll(key)?;
@@ -628,7 +661,7 @@ mod tests {
 
     #[test]
     fn death_before_the_turn() {
-        let s = Server { setup: Err("none".into()), checked: Default::default(), home: PathBuf::new(), user: Default::default() };
+        let s = Server { setup: Err("none".into()), checked: Default::default(), home: PathBuf::new(), user: Default::default(), stop: Default::default() };
         assert!(s.died_before_turn(&json!({ "status": "failed", "turnStartedAt": null })));
         assert!(!s.died_before_turn(&json!({ "status": "failed", "turnStartedAt": "2026-01-01T00:00:00Z" })));
         assert!(!s.died_before_turn(&json!({ "status": "auth_required" })));

@@ -324,13 +324,26 @@ pub fn signed_in(p: &Program, cwd: &Path) -> std::result::Result<String, String>
     let mut c = command(p);
     c.args(["auth", "status", "--json"]);
     let ran = run(c, b"", cwd, Duration::from_secs(60)).map_err(|e| format!("claude auth status did not start: {e}"))?;
+    auth_verdict(&ran)
+}
+
+/// What a finished `claude auth status --json` says. A probe that timed out authorizes nothing; a negative answer is
+/// the signed-out diagnostic whatever the exit code; a positive one counts only with exit code 0.
+fn auth_verdict(ran: &Ran) -> std::result::Result<String, String> {
+    let code = ran.code.map_or("none".into(), |c| c.to_string());
+    if ran.timed_out {
+        return Err("claude auth status did not answer within a minute".into());
+    }
     let Ok(v) = serde_json::from_slice::<Value>(&ran.stdout) else {
-        return Err(format!("claude auth status gave no JSON (exit {})", ran.code.map_or("none".into(), |c| c.to_string())));
+        return Err(format!("claude auth status gave no JSON (exit {code})"));
     };
     let method = v["authMethod"].as_str().unwrap_or("none");
     let provider = v["apiProvider"].as_str().unwrap_or("firstParty");
     if v["loggedIn"] != json!(true) || method != "claude.ai" || provider != "firstParty" {
         return Err(format!("Claude Code is not signed in with a Claude subscription (claude auth status: authMethod {}, apiProvider {})", clip(method, 40), clip(provider, 40)));
+    }
+    if ran.code != Some(0) {
+        return Err(format!("claude auth status exited {code}: {}", stderr_tail(&ran.stderr)));
     }
     account_of(&v)
 }
@@ -606,6 +619,18 @@ mod tests {
 
     fn result(text: &str) -> Vec<u8> {
         json!({ "type": "result", "subtype": "success", "is_error": false, "result": text }).to_string().into_bytes()
+    }
+
+    #[test]
+    fn the_auth_probe_needs_a_clean_exit() {
+        let ran = |code: Option<i32>, timed_out: bool, status: Value| Ran { code, stdout: status.to_string().into_bytes(), stderr: b"failed".to_vec(), timed_out };
+        let yes = json!({ "loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty", "email": "a", "orgId": "o" });
+        let no = json!({ "loggedIn": false, "authMethod": "none" });
+        assert!(auth_verdict(&ran(Some(0), false, yes.clone())).unwrap().starts_with("claude-"));
+        assert!(auth_verdict(&ran(Some(1), false, yes.clone())).unwrap_err().starts_with("claude auth status exited 1"), "a positive answer with a failed exit");
+        assert!(auth_verdict(&ran(None, false, yes.clone())).unwrap_err().starts_with("claude auth status exited none"), "a positive answer of a crashed probe");
+        assert!(auth_verdict(&ran(Some(0), true, yes)).unwrap_err().contains("within a minute"), "a positive answer of a probe that hung");
+        assert!(auth_verdict(&ran(Some(1), false, no)).unwrap_err().starts_with("Claude Code is not signed in"), "the signed-out diagnostic stays");
     }
 
     #[test]
