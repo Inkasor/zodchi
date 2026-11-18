@@ -5,8 +5,9 @@
 //
 // Files in CODEX_HOME steer it:
 //   fake-auth.json        present = signed in to a ChatGPT subscription
-//   fake-login-mode       "early" (completion before the answer to account/login/start), "never", "slow" (the
-//                         answer comes after 1.5 s and no completion follows), else the completion after the answer
+//   fake-login-mode       "early" (completion before the answer to account/login/start), "never", "held" (the
+//                         answer waits until the file fake-login-release exists and no completion follows), else the
+//                         completion after the answer
 //   fake-slow-cancel      present = account/login/cancel is answered after 1 s
 //   fake-slow-exit        present = when its stdin closes, it writes fake-closing and exits only 1.5 s later
 //   fake-account-error    present = account/read fails with an error that names a file in CODEX_HOME
@@ -18,7 +19,9 @@
 //   fake-exited           its pid, appended when it exits after its stdin closed
 //   fake-entered-<name>   its pid, when a turn whose prompt holds HOLD:<name> has entered; that turn then waits until
 //                         the file fake-release-<name> exists (the ready/release signal of a scenario)
-// A prompt with FAIL ends the turn as failed.
+// A prompt with FAIL ends the turn as failed. The markers a scenario waits for (fake-entered-<name>,
+// fake-login-started, fake-login-cancelled) are published whole: written to a temporary file and renamed, so a file
+// that exists holds its complete value.
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -38,6 +41,13 @@ const mode = () => { try { return fs.readFileSync(file("fake-login-mode"), "utf8
 // A tiny valid-looking PNG: the signature and an IHDR header are all the gateway checks.
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489", "hex");
 let imageThread = false;
+
+/// Writes `name` in CODEX_HOME whole: a reader that sees the file sees all of `value`.
+function publish(name, value) {
+  const tmp = file(`.${name}.${process.pid}.tmp`);
+  fs.writeFileSync(tmp, value);
+  fs.renameSync(tmp, file(name));
+}
 
 function complete(loginId) {
   fs.writeFileSync(authFile, "{}");
@@ -70,15 +80,15 @@ lines.on("line", (line) => {
       const loginId = "login-" + process.pid;
       const answer = { type: "chatgptDeviceCode", loginId, verificationUrl: "https://example.invalid/device", userCode: "ABCD-1234" };
       const m = mode();
-      fs.writeFileSync(file("fake-login-started"), loginId);
-      if (m === "slow") { setTimeout(() => reply(answer), 1500); return; }
+      publish("fake-login-started", loginId);
+      if (m === "held") { whenExists("fake-login-release", () => reply(answer)); return; }
       if (m === "early") { complete(loginId); return reply(answer); }
       reply(answer);
       if (m !== "never") setTimeout(() => complete(loginId), 300);
       return;
     }
     case "account/login/cancel":
-      fs.writeFileSync(file("fake-login-cancelled"), String(p.loginId || ""));
+      publish("fake-login-cancelled", String(p.loginId || ""));
       if (fs.existsSync(file("fake-slow-cancel"))) { setTimeout(() => reply({}), 1000); return; }
       return reply({});
     case "account/logout":
@@ -113,7 +123,7 @@ lines.on("line", (line) => {
       };
       const hold = prompt.match(/HOLD:([A-Za-z0-9_-]+)/);
       if (hold) {
-        fs.writeFileSync(file(`fake-entered-${hold[1]}`), String(process.pid));
+        publish(`fake-entered-${hold[1]}`, String(process.pid));
         whenExists(`fake-release-${hold[1]}`, finish);
         return;
       }
