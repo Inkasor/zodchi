@@ -29,6 +29,7 @@ const TABLE = { roles: {
 } }
 const ACCOUNT = { connected: true, ordinaryUsageAllowed: true, primary: { usedPercent: 10 }, secondary: { usedPercent: 10 } }
 const BASE_REVIEW_MD = '# Review focus\n\nFlag: greetings that are not polite (base rule).\n'
+const FEATURE_REVIEW_MD = '# Review focus\n\nFlag: greetings in the wrong language (the feature branch rule).\n'
 const NEW_REVIEW_MD = '# Review focus\n\nFlag nothing at all (written by the package).\n'
 
 // The repository every scenario starts from: a tiny app, a unit test, an end-to-end script and REVIEW.md.
@@ -75,7 +76,19 @@ function fakeAgent(ctx) {
         reviewMd: gitOk(repo, 'cat-file', '-e', 'HEAD:REVIEW.md') === 0,
       }
     }
-    if (label.startsWith('claim ') || label.startsWith('claim more ')) return { ok: true, conflicts: [], summary: 'claimed (mock)' }
+    if (label.startsWith('claim ') || label.startsWith('claim more ')) {
+      // The claim step switches to args.branch, as its prompt says (step 5).
+      const sw = prompt.match(/`git switch ('(?:[^']|'\\'')*')`, or `git switch -c ('(?:[^']|'\\'')*')`/)
+      if (sw && label.startsWith('claim ')) { const b = unquote(sw[1]); if (gitOk(repo, 'switch', b) !== 0) git(repo, 'switch', '-c', b) }
+      return { ok: true, conflicts: [], summary: 'claimed (mock)' }
+    }
+    if (label.startsWith('base ')) {
+      return {
+        ok: true, head: git(repo, 'rev-parse', 'HEAD').trim(), branch: git(repo, 'branch', '--show-current').trim(),
+        verifySkill: gitOk(repo, 'cat-file', '-e', 'HEAD:.claude/skills/verify/SKILL.md') === 0,
+        reviewMd: gitOk(repo, 'cat-file', '-e', 'HEAD:REVIEW.md') === 0,
+      }
+    }
     if (label.startsWith('close claim ')) return { ok: true, summary: 'closed (mock)' }
     if (opts.agentType === 'zodchi-core:coder') {
       const step = label.replace(` ${ctx.label}`, '')
@@ -92,7 +105,8 @@ function fakeAgent(ctx) {
     }
     if (label.startsWith('checks ') || label.startsWith('verify ')) {
       const kind = label.split(' ')[0]
-      const m = prompt.match(/^Run (?:these checks|these verify commands, the real program end to end): (\[\{"cmd".*?\}\]) from /)
+      const m = prompt.match(/^Run (?:these checks|these verify commands, the real program end to end): (\[\{"cmd".*?\}\]) from /) ||
+        (/^Run the repository's verify skill/.test(prompt) ? [null, '[{"cmd":"node scripts/e2e.mjs"}]'] : null)
       if (!m) throw new Error(`the ${kind} step lists no commands: ${prompt.slice(0, 120)}`)
       const results = [], logs = [], evidence = []
       let cause = 'none'
@@ -107,7 +121,7 @@ function fakeAgent(ctx) {
         evidence.push({ command: c.cmd, exitCode: r.exitCode, log })
         if (r.exitCode) { cause = 'code'; break }
       }
-      return { ok: cause === 'none', results, logs, cause, evidence }
+      return { ok: cause === 'none', results, logs, cause, evidence: s.noEvidence ? [] : evidence }
     }
     if (label.startsWith('commit ')) {
       const paths = JSON.parse(between(prompt, /The package paths, relative to the repository: (\[.*?\])\.\n/, 'package paths'))
@@ -144,6 +158,7 @@ async function runScenario(name, s) {
   const brief = `${tmp}/brief.md`
   fs.writeFileSync(brief, `# Brief: ${name}\n\nChange the greeting.\n`)
   const ctx = { s, repo, tmp, label: 'mock-pkg', prompts: [], ran: [], reviews: [], logN: 0, base: git(repo, 'rev-parse', 'HEAD').trim() }
+  if (s.setup) ctx.setup = s.setup(repo)
   const args = { label: ctx.label, brief, repo, tmp, files: ['src/app.mjs'], checks: ['node test/app.test.mjs'], ...(s.args || {}) }
   const result = await runWorkflow(args, fakeAgent(ctx), () => {}, () => {}, null, null, { total: null })
   return { ctx, result }
@@ -163,9 +178,10 @@ const SCENARIOS = {
       if (!r.approved || r.verdict !== 'approved') bad.push(`not approved: ${r.stoppedAt}`)
       if (r.verifiedBy !== 'args.verify') bad.push(`verifiedBy ${r.verifiedBy}`)
       const ev = r.verification.evidence
-      if (!(ev.length === 1 && ev[0].command === 'node scripts/e2e.mjs' && ev[0].exitCode === 0 && /e2e ok/.test(fs.readFileSync(ev[0].log, 'utf8')))) bad.push(`evidence ${JSON.stringify(ev)}`)
+      // the cheap check's evidence is kept next to the slow run's
+      if (!(ev.length === 2 && ev[0].command === 'node test/app.test.mjs' && ev[1].command === 'node scripts/e2e.mjs' && ev[1].exitCode === 0 && /e2e ok/.test(fs.readFileSync(ev[1].log, 'utf8')))) bad.push(`evidence ${JSON.stringify(ev)}`)
       if (ctx.ran.join(',') !== 'checks,verify') bad.push(`run order ${ctx.ran.join(',')}, expected the cheap check before verify`)
-      if (!/\n\nVerified: args\.verify: node scripts\/e2e\.mjs exit 0$/.test(lastMessage(ctx))) bad.push(`commit message ${JSON.stringify(lastMessage(ctx))}`)
+      if (!/\n\nVerified: checks exit 0; args\.verify exit 0$/.test(lastMessage(ctx))) bad.push(`commit message ${JSON.stringify(lastMessage(ctx))}`)
       if (r.protectedChanged) bad.push(`a new test file was refused: ${r.protectedChanged}`)
       const w = ctx.prompts.find(p => p.label.startsWith('write ')).prompt
       if (!/Protected checks: do not change or delete an existing file/.test(w) || !/Never skip a check, add a sleep/.test(w)) bad.push('the writer was not told the check rules')
@@ -184,6 +200,63 @@ const SCENARIOS = {
       if (has(ctx, 'checks ') || has(ctx, 'verify ')) bad.push('a check ran although there is nothing to run')
       if (!/\n\nVerified: none$/.test(lastMessage(ctx))) bad.push(`commit message ${JSON.stringify(lastMessage(ctx))}`)
       if (!/Verified: none: not verified by running/.test(ctx.reviews[0].prompt)) bad.push('the reviewer was not told the change is not verified by running')
+      return bad
+    },
+  },
+  // F7: the public commit message names the source and the exit codes, never a command string; the reviewer keeps them.
+  'stamp-no-commands': {
+    args: { checks: ['node test/app.test.mjs /private/path/to-secret'], verify: ['node scripts/e2e.mjs --token=hunter2'] },
+    writes: { write: { 'src/app.mjs': APP.replace('hello', 'howdy') } },
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      const full = git(ctx.repo, 'log', '-1', '--format=%B')
+      if (/private|hunter2|node |scripts\//.test(full)) bad.push(`the commit message carries a command: ${JSON.stringify(full)}`)
+      if (!/\n\nVerified: checks exit 0; args\.verify exit 0$/.test(lastMessage(ctx))) bad.push(`commit message ${JSON.stringify(lastMessage(ctx))}`)
+      if (!/--token=hunter2 exit 0/.test(ctx.reviews[0].prompt)) bad.push('the reviewer lost the commands')
+      if (r.verification.evidence.length !== 2) bad.push(`evidence ${JSON.stringify(r.verification.evidence)}`)
+      return bad
+    },
+  },
+  // F5: a runner that says ok with no evidence does not verify anything: verifiedBy and the stamp say none.
+  'no-evidence': {
+    args: { verify: ['node scripts/e2e.mjs'] },
+    noEvidence: true,
+    writes: { write: { 'src/app.mjs': APP.replace('hello', 'hey') } },
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      if (r.verifiedBy !== 'none' || r.verification.verifiedBy !== 'none') bad.push(`verifiedBy ${r.verifiedBy} / ${r.verification.verifiedBy}`)
+      if (!/not verified by running/.test(r.verification.note)) bad.push(`note ${JSON.stringify(r.verification.note)}`)
+      if (!/\n\nVerified: none$/.test(lastMessage(ctx))) bad.push(`commit message ${JSON.stringify(lastMessage(ctx))}`)
+      return bad
+    },
+  },
+  // F2: the base, REVIEW.md and the verify skill are read on args.branch after the claim step switched to it; the branch
+  // already exists with another tip, its own REVIEW.md and a verify skill.
+  'branch-base': {
+    args: { branch: 'feature', checks: [] },
+    setup: (repo) => {
+      git(repo, 'switch', '-q', '-c', 'feature')
+      fs.writeFileSync(`${repo}/REVIEW.md`, FEATURE_REVIEW_MD)
+      fs.mkdirSync(`${repo}/.claude/skills/verify`, { recursive: true })
+      fs.writeFileSync(`${repo}/.claude/skills/verify/SKILL.md`, '# verify\n\nRun node scripts/e2e.mjs.\n')
+      git(repo, 'add', '-A')
+      git(repo, 'commit', '-q', '-m', 'feature tip')
+      const tip = git(repo, 'rev-parse', 'HEAD').trim()
+      git(repo, 'switch', '-q', 'main')
+      return { tip }
+    },
+    writes: { write: { 'src/app.mjs': APP.replace('hello', 'salut') } },
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      const rv = ctx.reviews[0]
+      if (!rv) return [`no review: ${r.stoppedAt}`]
+      if (rv.showFrom !== ctx.setup.tip) bad.push(`REVIEW.md was read from ${rv.showFrom}, not the branch tip ${ctx.setup.tip}`)
+      const focus = Object.entries(rv.attached).find(([p]) => p.endsWith('/REVIEW.base.md'))
+      if (!focus || focus[1] !== FEATURE_REVIEW_MD) bad.push(`the attached REVIEW.md is not the branch's: ${JSON.stringify(focus && focus[1])}`)
+      if (r.verifiedBy !== 'verify skill') bad.push(`verifiedBy ${r.verifiedBy}, expected the branch's verify skill`)
+      const pr = ctx.prompts.find(p => p.label.startsWith('protect '))
+      if (pr && !pr.prompt.includes(ctx.setup.tip)) bad.push('the protected checks were compared with another base')
+      if (git(ctx.repo, 'branch', '--show-current').trim() !== 'feature') bad.push('not on the branch')
       return bad
     },
   },
