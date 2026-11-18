@@ -1,6 +1,6 @@
 export const meta = {
   name: 'code-package',
-  description: 'One code package: a gate resolves the role table and refuses overlapping packages, the writer implements, a runner runs the cheap checks and then the verify commands or skill, an independent reviewer reviews with the REVIEW.md of the base commit, the writer closes findings; stops after 3 review rounds',
+  description: 'One code package: a gate resolves the role table and refuses overlapping packages, the writer implements, a runner runs the cheap checks and then the verify commands or skill, an independent reviewer reviews with the REVIEW.md of the base commit, the writer closes findings; stops after 3 review rounds, or earlier when a round only goes deeper (review boundary)',
   whenToUse: 'Any code package from a finished brief. Args: see the header of the script.',
   phases: [
     { title: 'Gate', detail: 'runner reads the role table, the subscription limits, open packages, Git state and whether .agent-tmp/ is ignored, then claims the files', model: 'haiku' },
@@ -39,6 +39,10 @@ export const meta = {
 //   commit    default true in a Git repository: the runner commits the package's files after each passing
 //             checks run. Nothing is ever pushed
 //   models    optional: role table entries that replace the table for this run, e.g. { writer: { candidates: [...] } }
+//   The brief may carry a section "## Review boundary" (docs/review-boundary.md): what is important for the package and
+//   what is out of scope. The review quotes it; a brief without it gets a note in the result, not a refusal.
+//   The owner's file ~/.zodchi/config.json may set "parallel": "shared-branch" (docs/parallel.md): every agent of the run
+//   is then told to work in the checkout it was given, create no clones or worktrees and not switch branches.
 //   fixIgnore true: when the repository does not ignore .agent-tmp/ and the package calls the gateway, the runner
 //             appends ".agent-tmp/" to .gitignore and commits that line on its own before the package starts.
 //             Default false: the gate refuses
@@ -51,7 +55,7 @@ export const meta = {
 //
 // result: { label, mode, models, rounds[], write, verdict, approved, openFindings[], verifiedBy, verification, next,
 //           stoppedAt, refused, question, questions, conflicts, claimAdded, outsideRepo, claimLeftOpen, protectedChanged,
-//           checkChanges }
+//           checkChanges, notes, boundary, reviewLedger }
 //   verdict       "approved" when no important finding is open, "changes_requested" when one is, "blocked"; the
 //                 reviewer's own word stays in rounds[].review.verdict
 //   openFindings  always present: every finding of the last review that no later round closed, any severity, as
@@ -59,6 +63,15 @@ export const meta = {
 //   verifiedBy    always present: "args.verify", "verify skill" or "checks" when they ran and passed with evidence (every entry has an exit code); "none" otherwise
 //   verification  { verifiedBy, evidence[] ({ command, exitCode, log, source }), note, stamp } (the stamp names sources and exit codes, never commands) of the last checks
 //   next          what the lead does next when the run ends with something left open
+//   notes         always present when something is worth one line (for example: the brief has no Review boundary section)
+//   boundary      only with stoppedAt "review went deeper": the important findings of the last round, all new, as
+//                 { finding, id, location, problem, decide: "fix | out of scope", ifOutOfScope } where ifOutOfScope is a
+//                 proposed REVIEW.md line (what not to flag, why, date) for the lead to complete. REVIEW.md is never edited here
+//   reviewLedger  always present: one entry per finding of any review, { id, severity, location, problem, firstRound,
+//                 lastRound, status, closedInRound, closedBy }; status "open" (the last review still holds it), "closed" (a
+//                 later review no longer reports a finding that was sent to the writer; closedBy "code change" or "answered
+//                 without a code change"), "dropped" (a later review no longer reports it, it was not sent to the writer) or
+//                 "to sort" (new at a boundary stop: the lead decides fix or out of scope)
 const a = args || {}
 for (const k of ['label', 'brief', 'repo', 'files', 'tmp']) if (!a[k]) throw new Error(`code-package needs args.${k}`)
 if (!/^[\w.-]+$/.test(a.label)) throw new Error('args.label may hold letters, digits, ".", "_" and "-" only')
@@ -144,7 +157,11 @@ const reruns = Array.isArray(a.rerun) || typeof a.rerun === 'string'
   : { ...(a.rerun || {}) }
 const attempt = (label) => Number(reruns[label]) || 1
 const progressFile = (o) => `${a.tmp}/progress/${String((o && (o.progress || o.label || o.phase)) || 'step').replace(/[^\w.-]+/g, '-')}.md`
+// Set from the owner's config once the gate has read it; every step prompt then carries it.
+let parallelNote = ''
+const SHARED_NOTE = 'Parallel packages share this checkout (owner setting): work in the checkout you were given; do not create clones or worktrees and do not switch branches.'
 const step = (prompt, opts) => agent(prompt +
+  (parallelNote ? '\n\n' + parallelNote : '') +
   (opts && attempt(opts.label) > 1 ? `\n\nThis step runs again after an infrastructure failure, attempt ${attempt(opts.label)}: read its progress file. A key recorded by an earlier attempt is not a submission of this one: the gateway call says when an earlier job is still waited on and which new base key to submit under.` : '') +
   `\n\nShell rule: run every command with bash (Git Bash on Windows, never PowerShell or cmd); the quoting in these commands is for bash. Resume rule: this run may have been cut off and restarted. If ${progressFile(opts)} exists and its last line is not DONE, read it first and go on from its last line; ` +
   `if its last line is DONE, it is from an earlier finished run: rename it to .old and start fresh. ` +
@@ -239,13 +256,17 @@ const gate = await step(
   `- git: true when ${a.repo} is inside a Git work tree. head: \`git rev-parse HEAD\`. ` +
   `dirty: every path \`git status --porcelain -uall\` lists, relative to the repository, without the status letters and quotes (a rename gives both paths); [] when it lists nothing or ${a.repo} is not in a Git work tree.\n` +
   `- ignoreExit: the exit code of \`git check-ignore -q .agent-tmp/gateway/x\` run from ${a.repo} (0: the gateway's job folder is ignored, 1: it is not, anything else: Git could not check).\n` +
-  `- verifySkill: true when \`git cat-file -e HEAD:.claude/skills/verify/SKILL.md\` exits 0. reviewMd: true when \`git cat-file -e HEAD:REVIEW.md\` exits 0.`,
+  `- verifySkill: true when \`git cat-file -e HEAD:.claude/skills/verify/SKILL.md\` exits 0. reviewMd: true when \`git cat-file -e HEAD:REVIEW.md\` exits 0.\n` +
+  `- config: the file ~/.zodchi/config.json (the owner's settings), "" when it does not exist.\n` +
+  `- branch: the output of \`git branch --show-current\` run from ${a.repo} ("" on a detached HEAD or outside a Git work tree).\n` +
+  `- boundary: the text of the section of ${a.brief} that starts at the heading line beginning with "## Review boundary" (any case; the heading line itself is not part of the text), up to the next line that begins with "## " or the end of the file, exactly as written; "" when the file has no such heading.`,
   {
     agentType: 'zodchi-core:runner', label: `gate ${a.label}`,
     schema: {
-      type: 'object', required: ['homeModels', 'repoModels', 'account', 'git', 'dirty', 'ignoreExit', 'verifySkill', 'reviewMd'],
+      type: 'object', required: ['homeModels', 'repoModels', 'account', 'git', 'dirty', 'ignoreExit', 'verifySkill', 'reviewMd', 'config', 'branch', 'boundary'],
       properties: {
         homeModels: { type: 'string' }, repoModels: { type: 'string' }, account: { type: 'string' }, accountError: { type: 'string' },
+        config: { type: 'string' }, branch: { type: 'string' }, boundary: { type: 'string' },
         git: { type: 'boolean' }, head: { type: 'string' }, dirty: { type: 'array', items: { type: 'string' } },
         ignoreExit: { type: 'number' }, verifySkill: { type: 'boolean' }, reviewMd: { type: 'boolean' },
       },
@@ -258,6 +279,18 @@ if (!Array.isArray(gate.dirty)) { out.stoppedAt = 'gate (no dirty list: the Git 
 const parse = (text, what) => { if (!text || !text.trim()) return null; try { return JSON.parse(text) } catch { log(`${what} is not JSON; ignored`); return null } }
 const table = { ...((parse(gate.homeModels, '~/.zodchi/models.json') || {}).roles || {}), ...((parse(gate.repoModels, '.zodchi/models.json') || {}).roles || {}), ...(a.models || {}) }
 const account = parse(gate.account, 'zodchi account')
+// The owner's setting for packages that run in parallel in one checkout (docs/parallel.md). Unset by default.
+const cfg = parse(gate.config, '~/.zodchi/config.json') || {}
+const sharedBranch = cfg.parallel === 'shared-branch'
+if (cfg.parallel && !sharedBranch) log(`~/.zodchi/config.json: parallel ${JSON.stringify(cfg.parallel)} is not known; ignored`)
+if (sharedBranch) parallelNote = SHARED_NOTE
+const currentBranch = String(gate.branch || '').trim()
+// The branch the package works on, written into its claim so that another package can see it.
+const myBranch = a.branch || currentBranch || '(detached)'
+// The review boundary the lead wrote into the brief (docs/review-boundary.md). Without it the run goes on and says so.
+const boundaryText = String(gate.boundary || '').trim()
+out.reviewLedger = []
+if (!boundaryText) out.notes = ['The brief has no "## Review boundary" section: the reviewer judged without a written boundary and may go deeper than the package needs. See docs/review-boundary.md for the section.']
 const used = (w) => (w && typeof w.usedPercent === 'number') ? w.usedPercent : 0
 const codexOk = Boolean(account && account.connected && account.ordinaryUsageAllowed !== false && used(account.primary) < 100 && used(account.secondary) < 100)
 if (!codexOk) log(`Codex candidates skipped: ${account ? 'the subscription has no limit left or is not connected' : `zodchi account failed (${gate.accountError || 'no output'})`}`)
@@ -275,6 +308,8 @@ const writer = resolve(writerRole)
 const reviewer = resolve('reviewer', writer) // the reviewer is never the author
 out.models = { [writerRole]: writer, reviewer }
 if (!writer || !reviewer) { out.refused = `No available candidate for ${!writer ? writerRole : 'reviewer'} (the reviewer may not be the writer's model).`; return out }
+
+if (sharedBranch && a.branch && a.branch !== currentBranch) { out.refused = `args.branch is ${a.branch} but the checkout is on ${currentBranch || 'a detached HEAD'}, and the owner setting parallel "shared-branch" forbids switching branches: switch it yourself before starting, or drop args.branch.`; return out }
 
 const dirtyOverlap = gate.dirty.filter(f => myKeys.includes(key(f)))
 if (dirtyOverlap.length) { out.refused = `Uncommitted changes in package files: ${dirtyOverlap.join(', ')}. Commit or stash them first.`; return out }
@@ -333,20 +368,31 @@ const LOCK = `1. Lock: run \`mkdir "${claimsDir}/.lock"\` (create "${claimsDir}"
 const compare = (list) => `2. Read every *.json file in "${claimsDir}". For each one whose "status" is "open" and whose "label" is not "${a.label}", compare its "files" list with this list, ` +
   `entry by entry, as exact strings: ${JSON.stringify(list)}. Every equal pair is a conflict "<its label>: <file>".\n`
 const UNLOCK = `4. Always remove the lock folder (\`rmdir "${claimsDir}/.lock"\`), whatever happened above.\n`
+// Git commands of this package may meet an index.lock that a command of another package in the same checkout holds for a moment.
+const LOCKWAIT = `If a Git command fails with an error that names index.lock (another package's Git command holds it), wait 3 seconds and run the same command again, at most 10 times in all; ` +
+  `never delete, move or overwrite the lock file or anything else in .git. If it is still held after the last try, stop with ok false and the summary "index.lock held".`
 // The ignore repair changes .gitignore, so the claim holds it too, checked against other open packages like any file.
 const claimKeys = needIgnore && !myKeys.includes('.gitignore') ? [...myKeys, '.gitignore'] : myKeys
 try {
 const claim = await step(
   `Claim files for the package ${a.label} in ${a.repo}. Follow these steps exactly.\n` +
   LOCK + compare(claimKeys) +
-  `3. If there is no conflict, write "${claimFile}": ${JSON.stringify({ label: a.label, status: 'open', files: claimKeys, brief: a.brief, base })}, plus "openedAt" with \`date -u +%Y-%m-%dT%H:%M:%SZ\`.\n` +
+  `2b. Branch: for each of those open claims (label not "${a.label}") that has a "branch" field different from ${JSON.stringify(myBranch)} (exact string), add "<its label>: <its branch>" to branchConflicts. ` +
+  `A package may not start on another branch while another open package of this repository works on its own: switching would pull the branch from under it. A claim without a "branch" field is not a branch conflict.\n` +
+  `3. If there is no conflict and no branch conflict, write "${claimFile}": ${JSON.stringify({ label: a.label, status: 'open', files: claimKeys, branch: myBranch, brief: a.brief, base })}, plus "openedAt" with \`date -u +%Y-%m-%dT%H:%M:%SZ\`.\n` +
   UNLOCK +
-  (a.branch ? `5. If there was no conflict, switch to the Git branch ${a.branch}: \`git switch ${q(a.branch)}\`, or \`git switch -c ${q(a.branch)}\` when it does not exist.\n` : '') +
-  `ok is true when the claim file was written${a.branch ? ` and \`git branch --show-current\` prints ${a.branch}` : ''}. conflicts: the conflicts found, [] when none.`,
+  (a.branch && !sharedBranch ? `5. If the claim file was written, switch to the Git branch ${a.branch}: \`git switch ${q(a.branch)}\`, or \`git switch -c ${q(a.branch)}\` when it does not exist.\n` : '') +
+  `ok is true when the claim file was written${a.branch && !sharedBranch ? ` and \`git branch --show-current\` prints ${a.branch}` : ''}. conflicts: the file conflicts found, [] when none. branchConflicts: the branch conflicts found, [] when none.`,
   {
     agentType: 'zodchi-core:runner', label: `claim ${a.label}`,
-    schema: { type: 'object', required: ['ok', 'conflicts'], properties: { ok: { type: 'boolean' }, conflicts: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' } } },
+    schema: { type: 'object', required: ['ok', 'conflicts'], properties: { ok: { type: 'boolean' }, conflicts: { type: 'array', items: { type: 'string' } }, branchConflicts: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' } } },
   })
+if (claim && !claim.ok && Array.isArray(claim.branchConflicts) && claim.branchConflicts.length) {
+  claimWritten = false
+  out.refused = `Another open package of this repository works on a different branch (${claim.branchConflicts.join('; ')}) and this one would work on ${myBranch}; switching would pull the branch from under it. ` +
+    `Start this package on the same branch, finish the other one first, or run it in a worktree or clone (docs/parallel.md).`
+  return out
+}
 if (claim && claim.conflicts && claim.conflicts.length && claim.conflicts[0] !== 'lock busy' && !claim.ok) {
   claimWritten = false
   out.refused = `Open packages claim the same files: ${claim.conflicts.join('; ')}. Finish them, or close a stale one (status "closed" in ${claimsDir}/<label>.json).`
@@ -358,7 +404,7 @@ if (claim && claim.conflicts && claim.conflicts.length && claim.conflicts[0] !==
       `Make ${a.repo} ignore the zodchi job folders, in a commit of its own; never push.\n` +
       `1. Append the line \`.agent-tmp/\` to ${repoKey}/.gitignore (create the file when it is missing; when its last line has no line break, add one first, with the line endings the file already uses).\n` +
       `2. Run \`git add -- .gitignore\`, then \`git commit -m "Ignore .agent-tmp (zodchi job folders)" -- .gitignore\`.\n` +
-      `3. \`git check-ignore -q .agent-tmp/gateway/x\` must exit 0, and \`git show --name-only --format= HEAD\` must list .gitignore only. ok is true only then. summary: the commit hash.`,
+      `3. \`git check-ignore -q .agent-tmp/gateway/x\` must exit 0, and \`git show --name-only --format= HEAD\` must list .gitignore only. ok is true only then. summary: the commit hash. ${LOCKWAIT}`,
       { agentType: 'zodchi-core:runner', schema: STEP, label: `ignore ${a.label}` })
     if (!ignored || !ignored.ok) { out.stoppedAt = `ignore .agent-tmp (${ignored ? ignored.summary : 'no result'})`; return out }
     log(`Committed ".agent-tmp/" in .gitignore: ${ignored.summary}`)
@@ -433,7 +479,7 @@ async function body() {
   let calls = 0
   async function write(job, tag, phaseName, evidence = []) {
     const n = ++calls
-    const task = `${job} ${COMMITS}${PROTECT}`
+    const task = `${job} ${COMMITS}${sharedBranch ? ` ${SHARED_NOTE}` : ''}${PROTECT}`
     if (mode === 'expert') {
       const ask = await step(
         `Ask an expert for the code through the gateway. Work from ${a.repo}. Write ${a.tmp}/expert-${n}.md: ${task} ` +
@@ -475,10 +521,14 @@ async function body() {
   // The claim follows the real change: after every Write and Close, the files the writer reports and the files Git
   // sees changed join the claim and the package. Neither source brings in the job folder .agent-tmp/ or a file already
   // dirty at the gate; a reported file of that second kind stops the run, because committing it would commit somebody
-  // else's changes. A file another open package claims stops the run too. Either way the work stays uncommitted for a human.
+  // else's changes. A reported file another open package claims stops the run too. Either way the work stays uncommitted for a human.
+  // Several packages may share one checkout: a file that only Git's status lists (the writer did not report it) and that
+  // another open package claims is that package's work, not ours: it stays out of the claim and out of every commit.
   const atGate = new Set(gate.dirty.map(f => { try { return key(f) } catch { return '' } }))
   const jobFolder = (r) => /^\.agent-tmp(\/|$)/i.test(r)
   const claimed = new Set(claimKeys)
+  const foreign = new Set()
+  const uniqueNew = (list) => [...new Map(list.filter(r => !claimed.has(r.toLowerCase())).map(r => [r.toLowerCase(), r])).values()]
   async function followClaim(res, tag, phaseName) {
     const found = []
     for (const f of res.changed || []) {
@@ -498,23 +548,30 @@ async function body() {
       { agentType: 'zodchi-core:runner', schema: STATUS, phase: phaseName, label: `status ${tag}` })
     // A missing list is not a clean work tree: unreported files would escape the claim and the review.
     if (!st || !st.ok || !Array.isArray(st.paths)) { out.stoppedAt = `git status after ${tag}${st && st.ok ? ' (no paths list)' : ''}`; return false }
+    const reported = found.slice()
+    const seen = []
     for (const p of st.paths) {
       let r
       try { r = rel(p) } catch { continue }
-      if (!atGate.has(r.toLowerCase()) && !jobFolder(r)) found.push(r)
+      if (!atGate.has(r.toLowerCase()) && !jobFolder(r) && !foreign.has(r.toLowerCase())) seen.push(r)
     }
-    const extra = [...new Map(found.filter(r => !claimed.has(r.toLowerCase())).map(r => [r.toLowerCase(), r])).values()]
-    if (!extra.length) { noteChanged(found); return true }
-    const keys = extra.map(r => r.toLowerCase())
+    const hard = uniqueNew(reported)
+    const hardKeys = hard.map(r => r.toLowerCase())
+    const soft = uniqueNew(seen).filter(r => !hardKeys.includes(r.toLowerCase()))
+    if (!hard.length && !soft.length) { noteChanged([...reported, ...seen]); return true }
+    const hardList = JSON.stringify(hardKeys), softList = JSON.stringify(soft.map(r => r.toLowerCase()))
     const more = await step(
       `Extend the claim of the package ${a.label} by files its work changed. Follow these steps exactly.\n` +
-      LOCK + compare(keys) +
-      `3. If there is no conflict, add each of ${JSON.stringify(keys)} that is missing to the "files" list of "${claimFile}"; keep every other field and entry.\n` +
+      LOCK +
+      `2. Read every *.json file in "${claimsDir}". For each one whose "status" is "open" and whose "label" is not "${a.label}", compare its "files" list with these two lists, entry by entry, as exact strings. ` +
+      `hard: ${hardList} (files the writer reported as changed). soft: ${softList} (files Git shows changed that the writer did not report). ` +
+      `Every hard file that another package lists is a conflict "<its label>: <file>". Every soft file that another package lists is that package's own work in the shared checkout: it is not ours and never a conflict; list it in others.\n` +
+      `3. If there is no conflict, add each hard file and each soft file that is not in others to the "files" list of "${claimFile}" when it is missing; keep every other field and entry.\n` +
       UNLOCK +
-      `ok is true when there was no conflict and "${claimFile}" lists every one of them. conflicts: the conflicts found, [] when none.`,
+      `ok is true when there was no conflict and "${claimFile}" lists every hard file and every soft file that is not in others. conflicts: the conflicts found, [] when none. others: the soft files another package lists, [] when none.`,
       {
         agentType: 'zodchi-core:runner', phase: phaseName, label: `claim more ${tag}`,
-        schema: { type: 'object', required: ['ok', 'conflicts'], properties: { ok: { type: 'boolean' }, conflicts: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' } } },
+        schema: { type: 'object', required: ['ok', 'conflicts'], properties: { ok: { type: 'boolean' }, conflicts: { type: 'array', items: { type: 'string' } }, others: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' } } },
       })
     if (more && !more.ok && more.conflicts && more.conflicts.length && more.conflicts[0] !== 'lock busy') {
       out.conflicts = more.conflicts
@@ -523,10 +580,17 @@ async function body() {
       return false
     }
     if (!more || !more.ok) { out.stoppedAt = `claim more (${more ? more.summary || (more.conflicts || []).join(', ') : 'no result'})`; return false }
-    for (const r of extra) claimed.add(r.toLowerCase())
-    noteChanged(found)
-    out.claimAdded = [...(out.claimAdded || []), ...extra]
-    log(`Claim of ${a.label} extended by ${extra.join(', ')}`)
+    // Only a soft file the runner names is another package's; the match is by the lower-case path, as claims are kept.
+    const others = new Set((more.others || []).map(o => String(o).toLowerCase()).filter(o => soft.some(r => r.toLowerCase() === o)))
+    for (const o of others) foreign.add(o)
+    const mine = [...hard, ...soft.filter(r => !others.has(r.toLowerCase()))]
+    for (const r of mine) claimed.add(r.toLowerCase())
+    noteChanged([...reported, ...seen.filter(r => !others.has(r.toLowerCase()))])
+    if (mine.length) {
+      out.claimAdded = [...(out.claimAdded || []), ...mine]
+      log(`Claim of ${a.label} extended by ${mine.join(', ')}`)
+    }
+    if (others.size) log(`Left out of ${a.label}: ${[...others].join(', ')} (claimed by another open package, changed in the shared checkout)`)
     return true
   }
 
@@ -612,6 +676,7 @@ async function body() {
 
   // A path-limited commit: other staged work in the index stays out of it, and the runner verifies that. Its message
   // ends with how the round was verified, so `git log --grep "Verified: none"` finds the commits nothing ran.
+  let commitNote = ''
   async function commitRound(n) {
     if (!commit) return true
     const paths = [...changed].map(rel)
@@ -620,8 +685,10 @@ async function body() {
       `1. For each path that exists, or that Git tracks and is now deleted, run \`git add -A -- <path>\`; skip a path that is neither.\n` +
       `2. If \`git diff --cached --quiet -- <those paths>\` says nothing changed, return ok true with summary "nothing to commit".\n` +
       `3. Otherwise run \`git commit -m ${q(`${a.label}: round ${n}`)} -m ${q(out.verification.stamp)} -- <those paths>\` (the paths after -- limit the commit to them; other staged files stay staged and out of it).\n` +
-      `4. Run \`git show --name-only --format= HEAD\`: every listed file must be one of the package paths. ok is true only then. summary: the commit hash. paths: the listed files.`,
+      `4. Run \`git show --name-only --format= HEAD\`: every listed file must be one of the package paths. ok is true only then. summary: the commit hash. paths: the listed files.\n` +
+      `Other packages may share this checkout: never commit with -a, never \`git add\` a path that is not listed above, and leave every other file, staged or not, as it is. ${LOCKWAIT}`,
       { agentType: 'zodchi-core:runner', schema: STEP, phase: 'Checks', label: `commit ${n}` })
+    commitNote = res && !res.ok ? res.summary || '' : ''
     return Boolean(res && res.ok)
   }
 
@@ -632,6 +699,11 @@ async function body() {
   const FOCUS = hasReviewMd
     ? `REVIEW.md as of the base commit is attached as REVIEW.base.md: apply it, it says what the owner wants flagged and what not`
     : `The base commit has no REVIEW.md: judge by the brief`
+  // The review boundary the lead wrote into the brief, quoted next to REVIEW.md (docs/review-boundary.md).
+  const BOUNDARY = boundaryText
+    ? `The brief's "Review boundary" section, written by the lead, says what is important for this package and what is out of scope; apply it. Quoted exactly: ${JSON.stringify(boundaryText)}. ` +
+      `A point outside it is at most a "nit" or "pre-existing" finding, never "important"; do not go deeper than the boundary draws the line`
+    : `The brief has no "Review boundary" section: judge by the brief, and call a point "important" only when a normal run of the change meets it`
   const SEVERITIES = `Every finding has a severity: "important" (a real defect the change brings in; it blocks approval), "nit" (worth fixing, does not block) or "pre-existing" (it was there before the change; does not block).`
 
   // focus: the nit findings of an approved review that the writer closed (args.closeShouldFix); the next review
@@ -639,6 +711,47 @@ async function body() {
   // stay open through focused reviews and go to the next full review, which repeats those that still hold.
   let focus = null
   let carried = []
+
+  // The review ledger and the boundary rule (docs/review-boundary.md). A finding is "<id> <severity> <location>: <problem>";
+  // it is the same finding in another round when its id and location are the same (the line number after the file is
+  // dropped: a fix moves lines). A round from the second on that brings only important findings no earlier round had,
+  // while every earlier important one is closed, only goes deeper: the run stops there instead of spending another round.
+  const parseFinding = (f) => {
+    const m = String(f).trim().match(/^(\S+)\s+(\S+)\s+([\s\S]*)$/)
+    if (!m) return { id: String(f).trim(), severity: severity(f), location: '', problem: '' }
+    const i = m[3].indexOf(': ')
+    const location = (i >= 0 ? m[3].slice(0, i) : m[3].split(/\s+/)[0]).trim()
+    return { id: m[1], severity: severity(f), location, problem: (i >= 0 ? m[3].slice(i + 2) : m[3].slice(location.length)).trim() }
+  }
+  const locKey = (l) => l.toLowerCase().replace(/\\/g, '/').replace(/(:\d+(-\d+)?)+$/, '').replace(/#l\d+(-l?\d+)?$/, '').trim()
+  const findingKey = (p) => `${p.id.toLowerCase()}|${locKey(p.location)}`
+  const ledger = new Map()
+  // What the writer was sent after the last review, and whether its answer changed any file.
+  let lastClose = { sent: new Set(), changed: false }
+  const today = (() => { try { return new Date().toISOString().slice(0, 10) } catch { return '<date>' } })()
+  const updateLedger = (n, parsed, focusKeys) => {
+    const now = new Set(parsed.map(findingKey))
+    for (const p of parsed) {
+      const e = ledger.get(findingKey(p))
+      if (e) {
+        Object.assign(e, { severity: p.severity, problem: p.problem || e.problem, lastRound: n, status: 'open' })
+        delete e.closedInRound; delete e.closedBy
+      } else {
+        const ne = { id: p.id, severity: p.severity, location: p.location, problem: p.problem, firstRound: n, lastRound: n, status: 'open' }
+        ledger.set(findingKey(p), ne)
+        out.reviewLedger.push(ne)
+      }
+    }
+    // A full review looks at everything; a focused one only at the findings it was asked about.
+    for (const [k, e] of ledger) {
+      if (e.status !== 'open' || now.has(k) || e.firstRound >= n || (focusKeys && !focusKeys.has(k))) continue
+      e.closedInRound = n
+      if (lastClose.sent.has(k)) { e.status = 'closed'; e.closedBy = lastClose.changed ? 'code change' : 'answered without a code change' }
+      else { e.status = 'dropped'; e.closedBy = 'not reported by a later review' }
+    }
+  }
+  const proposedLine = (p) => `- Do not flag: ${p.problem || p.id} (${p.location || 'no location'}). Why: <one sentence: it is out of the review boundary of the package ${a.label}, because ...>. Added ${today}.`
+
   for (let n = 1; n <= rounds; n++) {
     const focused = focus
     const checks = await checked(n)
@@ -664,15 +777,16 @@ async function body() {
       note: source !== 'none' ? '' : verifySource === 'none' ? 'not verified by running: no args.verify, no verify skill and no checks' : 'not verified by running: the runner reported no evidence with an exit code for every command',
       stamp: source === 'none' ? 'Verified: none' : `Verified: ${parts.map(p => `${p.source} exit ${p.codes.join('/')}`).join('; ')}`,
     }
-    if (!(await commitRound(n))) { out.stoppedAt = 'commit'; return }
+    if (!(await commitRound(n))) { out.stoppedAt = commitNote ? `commit (${commitNote})` : 'commit'; return }
 
     const context = `what the change does and why (from ${a.brief} and this summary: ${JSON.stringify(out.write.summary)}), what is verified and what is not ` +
       `(${JSON.stringify(out.write.unverified || [])}), how the runner verified it (${out.verification.stamp}${out.verification.note ? `: ${out.verification.note}` : ''}${evidence.length ? `; commands: ${evidence.map(e => `${e.command} exit ${e.exitCode}`).join(', ')}` : ''})` +
       `${outside.length ? `, and the files changed outside the repository, not attached: ${JSON.stringify(outside)}` : ''}${n > 1 ? `, and which findings of the previous review (${a.tmp}/review-${n - 1}.json) were closed and how` : ''}` +
       (focus ? `. This is a short review of the approved change: check only whether these findings of ${a.tmp}/review-${n - 1}.json are closed and whether their fixes break anything: ${JSON.stringify(focus)}; approved when they are closed and nothing broke` : '') +
       (!focus && carried.length ? `. These findings of an earlier review are still open and no later review checked them: ${JSON.stringify(carried)}; repeat in your findings, with the same id, severity and location, each one that still holds` : '') +
-      (commit ? `. The round's commit exists: "${a.label}: round ${n}" (a round that changed nothing has none); the package's commits sit on top of ${base}` : '') +
-      `. ${SEVERITIES} ${FOCUS}`
+      (commit ? `. The round's commit exists: "${a.label}: round ${n}" (a round that changed nothing has none); the package's commits sit on top of ${base}; commits of other packages in a shared checkout may lie between them, judge only the package paths` : '') +
+      (n > 1 ? `. Keep the id of a finding of the previous review that still holds, and give every new finding a new id, numbered on after the highest id of the previous review` : '') +
+      `. ${SEVERITIES} ${FOCUS}. ${BOUNDARY}`
     const files = [...changed]
     const VERDICT = `verdict: the "verdict" field of the review exactly ("approved", "changes_requested" or "blocked"; "missing" when the review file has none). ` +
       `summary: its summary. findings holds the reviewer's findings only, each as "<id> <severity> <location>: <problem>": an empty array when it has none. blocking: the count of important findings.`
@@ -712,6 +826,9 @@ async function body() {
     // Only important findings block approval and count against the stop rule; the reviewer's word does not decide.
     const important = findings.filter(f => severity(f) === 'important')
     const nits = findings.filter(f => severity(f) === 'nit')
+    const parsed = findings.map(parseFinding)
+    const seenBefore = new Set(ledger.keys())
+    updateLedger(n, parsed, focused && new Set(focused.map(f => findingKey(parseFinding(f)))))
     out.verdict = review.verdict === 'blocked' || (review.verdict === 'changes_requested' && !findings.length) ? 'blocked' : important.length ? 'changes_requested' : 'approved'
     out.rounds[out.rounds.length - 1].verdict = out.verdict
     let task
@@ -733,6 +850,21 @@ async function body() {
       out.stoppedAt = `review verdict ${review.verdict}${findings.length ? '' : ' without findings'}`
       out.question = `The reviewer could not approve or name what to change (${review.verdict}): ${review.summary || ''} See ${a.tmp}/review-${n}.json.`
       return
+    } else if (n >= 2 && !focused && !parsed.filter(p => p.severity === 'important').some(p => seenBefore.has(findingKey(p))) &&
+      ![...ledger.values()].some(e => e.severity === 'important' && e.firstRound < n && e.status === 'open')) {
+      // Every important finding of this round is new and every earlier important one is closed: the review only goes deeper.
+      const fresh = parsed.filter(p => p.severity === 'important')
+      for (const p of fresh) ledger.get(findingKey(p)).status = 'to sort'
+      out.stoppedAt = 'review went deeper'
+      out.boundary = fresh.map(p => ({
+        finding: `${p.id} ${p.severity} ${p.location}: ${p.problem}`, id: p.id, location: p.location, problem: p.problem,
+        decide: 'fix | out of scope', ifOutOfScope: proposedLine(p),
+      }))
+      out.question = `Round ${n} found ${fresh.length} new important finding(s) and no earlier important one is open: the review only goes deeper, so no further round was spent. ` +
+        `Sort each into "fix" or "out of scope" (boundary); the findings are in ${a.tmp}/review-${n}.json. For an out-of-scope one, add its ifOutOfScope line, completed, to REVIEW.md by hand: this workflow never edits REVIEW.md.`
+      out.next = `Read boundary: a finding to fix goes to a new package or to the writer; an out-of-scope one gets its proposed REVIEW.md line (what not to flag, why, date), so the next review leaves it alone. ` +
+        `The commits of rounds 1 to ${n} are in place; the last round's findings were not given to the writer.`
+      return
     } else if (n === rounds) {
       out.stoppedAt = `stop rule: ${rounds} review rounds without approval`
       out.question = `The package has important findings after ${rounds} rounds: ${important.join(' | ')}. Decide: accept as is, change the brief, or mark it hard and start again.`
@@ -746,6 +878,7 @@ async function body() {
     const fix = await write(task, `close ${n}`, 'Close', [`${a.tmp}/review-${n}.json`])
     noteQuestions(fix)
     if (fix && !(await follow(fix, `close ${n}`, 'Close'))) return
+    lastClose = { sent: new Set((focus ? nits : important).map(f => findingKey(parseFinding(f)))), changed: Boolean(fix && (fix.changed || []).length) }
     if (!fix || !fix.done) { out.stoppedAt = 'close'; if (questions.length) out.question = questions.join(' | '); return }
     out.write = { ...out.write, summary: `${out.write.summary} | round ${n} fixes: ${fix.summary}`, unverified: fix.unverified || out.write.unverified }
   }
