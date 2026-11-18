@@ -15,6 +15,17 @@ const BOUNDARY = "Important: a normal run loses work between packages.\nOut of s
 export default function register({ scenario, ROOT }) {
   const SRC = fs.readFileSync(path.join(ROOT, "core", "workflows", "code-package.js"), "utf8").replace(/^export const meta/, "const meta");
 
+  /** The gate runner's answer: the exit code and the one JSON line the helper prints (core/scripts/gate.mjs). */
+  const gateAnswer = (over = {}) => ({
+    exitCode: 0,
+    stdout: JSON.stringify({
+      ok: true, api: 1, plugin: { root: "/plugin/core", commit: "c0ffee", version: "1.0.0-dev", via: "installed_plugins.json, scope user" },
+      roles: {}, modelsErrors: [], account: null, accountError: "none", git: true, head: "abc1234", branch: "main", dirty: [], ignoreExit: 0, ignoreLine: "",
+      verifySkill: false, reviewMd: false, config: {}, configError: "", boundary: "", claims: { dir: "claims-dir/r", open: [], closed: [], kept: [], skipped: [], notes: [] },
+      ...over,
+    }),
+  });
+
   /** Runs the workflow once. `o.reviews[i]` answers review round i+1; `o.answers` replaces the answer of a step label. */
   async function run(o = {}) {
     const calls = [];
@@ -27,7 +38,7 @@ export default function register({ scenario, ROOT }) {
     const answer = (label, prompt) => {
       const given = o.answers && o.answers[label];
       if (given !== undefined) return typeof given === "function" ? given(prompt, calls) : given;
-      if (label === "gate pkg") return { homeModels: "", repoModels: "", account: "", accountError: "none", config: o.config || "", branch: o.branch ?? "main", boundary: o.boundary ?? BOUNDARY, git: true, head: "abc1234", dirty: [], ignoreExit: 0, verifySkill: false, reviewMd: false };
+      if (label === "gate pkg") return gateAnswer({ config: o.config ? JSON.parse(o.config) : {}, branch: o.branch ?? "main", boundary: o.boundary ?? BOUNDARY });
       if (label === "claim pkg") return { ok: true, conflicts: [], branchConflicts: [] };
       if (label === "write pkg") return { done: true, summary: "wrote", changed: ["/r/src/a.js"], unverified: [] };
       if (label === "base pkg") return { ok: true, head: "abc1234", branch: args.branch || "main", verifySkill: false, reviewMd: false };
@@ -62,7 +73,7 @@ export default function register({ scenario, ROOT }) {
     t.eq(withIt.out.approved, true, "a brief with a boundary runs to approval");
     t.ok(withIt.out.notes === undefined, "no note when the boundary is there");
     const gate = withIt.of(/^gate /)[0].prompt;
-    t.ok(gate.includes('"## Review boundary"'), "the gate asks the runner to read the section of the brief");
+    t.ok(gate.includes('"brief":"/r/brief.md"'), "the gate helper is given the brief, and reads its Review boundary section itself");
     const review = withIt.of(/^review 1$/)[0].prompt;
     t.ok(review.includes(JSON.stringify(BOUNDARY)), "the review prompt quotes the section exactly");
     t.ok(review.includes('"nit" or "pre-existing" finding, never "important"'), "a point outside the boundary is never important");

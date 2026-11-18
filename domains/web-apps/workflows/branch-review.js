@@ -37,9 +37,11 @@ const gatewayCall = ({ role, key, args, attach = [], attachIfExists = [], out, t
     `The active key is the key of the latest submission: ${key} at first, then ${key}-r2, then ${key}-r3 (at most 2 retries in all). Every wait, \`zodchi job\` and request.json check below names the active key, never an earlier one, also after a resume (the progress file holds the latest key). ` +
     `While it exits 3 (still running), repeat \`zodchi wait --key <active key> --wait-sec 540 --out ${q(out)}\` in the foreground, up to ${totalMin} minutes in all since the first command; ` +
     `never return before the job is final (exit 0 or 2); if the ${totalMin} minutes run out, report failure (ok false; verdict "missing" for a review) and say the job still runs under its active key. ` +
-    `A dead job gets a new key: when the job is final with status "unknown", or "failed" with no turnStartedAt in \`zodchi job --key <active key>\` (it died before its turn started), ` +
-    `run the same full command again with --key set to the next key, wait for it the same way, and write each new key into the progress file at once. ` +
-    `Any other final status is not retried: report it. ` +
+    `A job gets a new key only with evidence that the request was never sent: it is final with status "failed" and \`zodchi job --key <active key>\` shows turnRequestedAt and turnStartedAt both null or missing (the gateway never asked for the model turn). ` +
+    `Then run the same full command again with --key set to the next key, wait for it the same way, and write each new key into the progress file at once, with that evidence (the two fields and the job's error). ` +
+    `A job that is final with status "unknown" never gets a new key and is never waited on again: the request may already have run and used the subscription. Stop at once: ` +
+    `write the line "UNKNOWN: key <active key>: <the job's error>" to the progress file as its last line instead of DONE, and ${UNKNOWN_RETURN}. ` +
+    `Any other final status, a "failed" job whose turnRequestedAt is set included, is not retried: report it. ` +
     (attach.length || attachIfExists.length
       ? `After the job is final, read ${repo}/.agent-tmp/gateway/<active key>/request.json: its "prompt" must contain \`<attachment path="...">\` (the path as given to --attach, slash direction aside) for every required attachment: ${JSON.stringify(attach)}` +
         `${attachIfExists.length ? `, and for each of these that exists on disk: ${JSON.stringify(attachIfExists)}` : ''}. ` +
@@ -47,40 +49,62 @@ const gatewayCall = ({ role, key, args, attach = [], attachIfExists = [], out, t
       : '')
 }
 
+// What a step that meets a gateway job ending "unknown" hands back (never a new key: the request may already have run).
+const UNKNOWN_RETURN = "return gateway \"unknown\" with unknownKey set to the active key and infra set to the job's error"
 const progressFile = (o) => `${a.tmp}/progress/${String((o && (o.label || o.phase)) || 'step').replace(/[^\w.-]+/g, '-')}.md`
 const step = (prompt, opts) => agent(prompt +
   `\n\nShell rule: run every command with bash (Git Bash on Windows, never PowerShell or cmd); the quoting in these commands is for bash. Resume rule: this run may have been cut off and restarted. If ${progressFile(opts)} exists and its last line is not DONE, read it first and go on from its last line; ` +
   `if its last line is DONE, it is from an earlier finished run: rename it to .old and start fresh. ` +
   `For a gateway call it records as submitted, wait on the latest key recorded for that call in the foreground (zodchi wait --key <key> --wait-sec 540 --out <file>, repeated while it exits 3) instead of submitting again; ` +
-  `if that job is final with status "unknown", or "failed" with no turnStartedAt in \`zodchi job --key <key>\`, submit again under the next suffix of the base key (<base>-r2, then <base>-r3; at most 2 retries in all, those already recorded counted) and record the new key in the progress file. ` +
+  `if that job is final with status "failed" and \`zodchi job --key <key>\` shows turnRequestedAt and turnStartedAt both null or missing (the request was never sent), submit again under the next suffix of the base key (<base>-r2, then <base>-r3; at most 2 retries in all, those already recorded counted) and record the new key and that evidence in the progress file; ` +
+  `if it is final with status "unknown", never submit again and never wait on it: the request may already have run. Write "UNKNOWN: key <key>: <the job's error>" as the last line of the progress file instead of DONE and ${UNKNOWN_RETURN}. ` +
   `After each finished step append one line to it (create the folder if needed). When your whole task is finished, append a last line DONE.`, opts)
 
-phase('Gate')
-const gate = await step(
-  `Gather facts for a branch review; change nothing. Work from ${a.repo}. Return each file's content as a string, exactly as read, or "" when it does not exist.\n` +
-  `- homeModels: ~/.zodchi/models.json. repoModels: ${a.repo}/.zodchi/models.json.\n` +
-  `- account: the output of \`zodchi account\`, or "" when it fails.\n` +
-  `- head: \`git rev-parse HEAD\`. baseSha: \`git merge-base ${q(a.base)} HEAD\`. files: \`git diff --name-only <baseSha> <head>\` with those two hashes, one path per entry. dirty: true when \`git status --porcelain\` prints anything.`,
-  {
-    agentType: 'zodchi-core:runner', label: `gate ${a.label}`,
-    schema: {
-      type: 'object', required: ['homeModels', 'repoModels', 'account', 'files', 'head', 'baseSha', 'dirty'],
-      properties: {
-        homeModels: { type: 'string' }, repoModels: { type: 'string' }, account: { type: 'string' },
-        files: { type: 'array', items: { type: 'string' } }, head: { type: 'string' }, baseSha: { type: 'string' }, dirty: { type: 'boolean' },
-      },
-    },
-  })
-if (!gate) return { stoppedAt: 'gate' }
-if (!/^[0-9a-f]{40}$/.test(gate.head) || !/^[0-9a-f]{40}$/.test(gate.baseSha)) return { stoppedAt: 'gate', error: `no commit hashes (head ${gate.head}, base ${gate.baseSha})` }
-const range = `${gate.baseSha} ${gate.head}`
-if (!gate.files.length) return { refused: `No change between ${a.base} and ${gate.head}.` }
+// The gate helper (core/scripts/gate.mjs) is looked up in the plugin copy the session loaded, never in a checkout: the bootstrap below
+// (the same text in every workflow that uses the helper; the e2e suite checks they are equal) takes the copy from $ZODCHI_PLUGIN_ROOT,
+// $CLAUDE_PLUGIN_ROOT or the install Claude Code's registration names for zodchi-core, and runs scripts/gate.mjs there.
+// It prints one line of JSON; its exit code is 0 when that line is the answer, 3 when the copy's api differs from GATE_API, 4 when no copy
+// has the helper. The workflow reads the line and decides.
+const GATE_API = 1
+const GATE_BOOT = 'const fs=require(\"fs\"),os=require(\"os\"),path=require(\"path\"),cp=require(\"child_process\");const [repo,...rest]=process.argv.slice(1);const out=(o,c)=>{fs.writeSync(1,JSON.stringify(o)+\"\\n\");process.exit(c)};const rd=f=>{try{return JSON.parse(fs.readFileSync(f,\"utf8\"))}catch(e){return null}};const eq=(a,b)=>path.resolve(a).toLowerCase()===path.resolve(b).toLowerCase();const tried=[];let root=\"\",via=\"\";const has=d=>{const ok=fs.existsSync(path.join(d,\"scripts\",\"gate.mjs\"));tried.push(d+(ok?\"\":\" (no scripts/gate.mjs)\"));return ok};for(const [name,env] of [[\"ZODCHI_PLUGIN_ROOT\",process.env.ZODCHI_PLUGIN_ROOT],[\"CLAUDE_PLUGIN_ROOT\",process.env.CLAUDE_PLUGIN_ROOT]]){if(!root&&env){const m=rd(path.join(env,\".claude-plugin\",\"plugin.json\"));if(m&&m.name===\"zodchi-core\"&&has(env)){root=env;via=name}}}if(!root){const reg=rd(path.join(process.env.CLAUDE_CONFIG_DIR||path.join(os.homedir(),\".claude\"),\"plugins\",\"installed_plugins.json\"));const list=(reg&&reg.plugins&&reg.plugins[\"zodchi-core@zodchi\"])||[];for(const e of [...list.filter(e=>e.projectPath&&eq(e.projectPath,repo)),...list.filter(e=>!e.projectPath)]){if(e.installPath&&has(e.installPath)){root=e.installPath;via=\"installed_plugins.json, scope \"+e.scope;break}}}if(!root)out({ok:false,api:0,error:\"the registered zodchi-core plugin copy has no scripts/gate.mjs (not installed, or an older copy than this workflow): update the plugin; a checkout is never used instead\",tried},4);const r=cp.spawnSync(process.execPath,[path.join(root,\"scripts\",\"gate.mjs\"),...rest],{stdio:\"inherit\",env:{...process.env,ZODCHI_GATE_VIA:via}});process.exit(r.status===null?5:r.status)'
+const helperRun = (command, spec) => `${a.pluginRoot ? `ZODCHI_PLUGIN_ROOT=${q(a.pluginRoot)} ` : ''}node -e ${q(GATE_BOOT)} -- ${q(a.repo)} ${command} ${q(JSON.stringify({ api: GATE_API, ...spec }))}`
+const HELPER_ANSWER = { type: 'object', required: ['exitCode', 'stdout'], properties: { exitCode: { type: 'number' }, stdout: { type: 'string' }, error: { type: 'string' } } }
+const HELPER_NEXT = 'Update the zodchi-core plugin (rerun the installer, then reload plugins in Claude Code) so that the copy this workflow runs from has scripts/gate.mjs, or pass args.pluginRoot, the folder of a zodchi-core copy that has it. Nothing was changed.'
+// The helper's answer: the one JSON line of its stdout and the exit code the runner saw, both of which must say it worked.
+function readHelper(r, what) {
+  if (!r) return { error: `${what}: the runner returned no result` }
+  const line = String(r.stdout || '').split(/\r?\n/).map(l => l.trim()).filter(l => l.startsWith('{')).pop()
+  let facts = null
+  try { facts = JSON.parse(line) } catch {}
+  if (!facts || typeof facts !== 'object') return { error: `${what} printed no JSON line (exit ${r.exitCode}${r.error ? `: ${r.error}` : ''})` }
+  if (r.exitCode !== 0 || facts.ok !== true) return { error: `${what}: ${facts.error || 'it reported a failure'} (exit ${r.exitCode})${Array.isArray(facts.tried) ? `; looked in ${JSON.stringify(facts.tried)}` : ''}` }
+  if (facts.api !== GATE_API) return { error: `${what}: api ${facts.api}, this workflow needs ${GATE_API}` }
+  if (!facts.plugin || !facts.plugin.root) return { error: `${what}: it did not name its plugin copy` }
+  return { facts }
+}
 
-const parse = (t) => { if (!t || !t.trim()) return null; try { return JSON.parse(t) } catch { return null } }
-const table = { ...((parse(gate.homeModels) || {}).roles || {}), ...((parse(gate.repoModels) || {}).roles || {}), ...(a.models || {}) }
-const acc = parse(gate.account)
+phase('Gate')
+const gateAnswer = await step(
+  `Run ONE command and return what it printed; change nothing and run nothing else. From ${a.repo}, in the foreground, once:\n${helperRun('branch-review', { repo: a.repo, base: a.base, want: ['reviewer', 'architect'] })}\n` +
+  `Do not change, split or rerun it with other options. exitCode: its exit code, a number. stdout: everything it printed to standard output, exactly, as one string (it is one line of JSON): ` +
+  `do not parse, summarize, reorder or shorten it. error: what it printed to standard error, at most 300 characters, "" when nothing. ` +
+  `If the command could not be started at all, exitCode is -1 and stdout is "".`,
+  { agentType: 'zodchi-core:runner', label: `gate ${a.label}`, schema: HELPER_ANSWER })
+const gateRead = readHelper(gateAnswer, 'the gate helper')
+if (gateRead.error) return { stoppedAt: `gate (${gateRead.error})`, next: HELPER_NEXT }
+const gate = gateRead.facts
+// Which plugin copy the helper came from: named in every result.
+const pluginCopy = { path: gate.plugin.root, commit: gate.plugin.commit || 'unknown', version: gate.plugin.version || '', via: gate.plugin.via || '' }
+if (!/^[0-9a-f]{40}$/.test(gate.head) || !/^[0-9a-f]{40}$/.test(gate.baseSha)) return { stoppedAt: 'gate', error: `no commit hashes (head ${gate.head}, base ${gate.baseSha}${gate.baseError ? `: ${gate.baseError}` : ''})`, pluginCopy }
+const range = `${gate.baseSha} ${gate.head}`
+if (!gate.files.length) return { refused: `No change between ${a.base} and ${gate.head}.`, pluginCopy }
+
+for (const e of gate.modelsErrors || []) log(`${e}; ignored`)
+const table = { ...(gate.roles || {}), ...(a.models || {}) }
+const acc = gate.account && typeof gate.account === 'object' ? gate.account : null
 const used = (w) => (w && typeof w.usedPercent === 'number') ? w.usedPercent : 0
 const codexOk = Boolean(acc && acc.connected && acc.ordinaryUsageAllowed !== false && used(acc.primary) < 100 && used(acc.secondary) < 100)
+if (!codexOk) log(`Codex candidates are not available: ${acc ? 'the subscription has no limit left or is not connected' : `the quota is unknown, zodchi account gave no answer (${gate.accountError || 'no output'})`}`)
 // A branch review reads the checkout, so only gateway (codex) candidates qualify here; a Claude reviewer is a separate session.
 const pick = (role) => ((table[role] || {}).candidates || []).find(c => c.provider === 'codex' && codexOk && !authors.has(`${c.provider}/${c.model}`))
 const reviewer = pick('reviewer')
@@ -90,21 +114,32 @@ if (a.architecture && !architect) return { refused: 'No gateway architect availa
 if (gate.dirty) log('The checkout has uncommitted changes: the review reads the recorded head commit only.')
 
 const REVIEW = {
-  type: 'object', required: ['verdict', 'findings'],
-  properties: { verdict: { type: 'string', enum: ['approved', 'changes_requested', 'blocked', 'missing'] }, summary: { type: 'string' }, reviewFile: { type: 'string' }, findings: { type: 'array', items: { type: 'string' } }, blocking: { type: 'number' } },
+  type: 'object', required: ['verdict', 'findings', 'gateway', 'infra'],
+  properties: {
+    verdict: { type: 'string', enum: ['approved', 'changes_requested', 'blocked', 'missing'] }, summary: { type: 'string' }, reviewFile: { type: 'string' },
+    findings: { type: 'array', items: { type: 'string' } }, blocking: { type: 'number' },
+    // gateway: "final" when the job reached a final status other than unknown (infra is then ""); "unknown": the job ended unknown, its
+    // key is unknownKey and nothing is submitted again; "failed": no usable job, infra says what happened
+    gateway: { type: 'string', enum: ['final', 'failed', 'unknown'] }, infra: { type: 'string' }, unknownKey: { type: 'string' },
+  },
 }
+// The change under review is the range baseSha..head, saved as a diff and attached for both reviewers: the checkout may have moved
+// on (another head, uncommitted work), and neither the range nor the files are read from it but by commit.
 const ask = (role, who, tag) => step(
   `Get an independent ${role} through the gateway. Work from ${a.repo}. Write ${a.tmp}/${tag}.md: ` +
-  `the change is exactly the commits ${gate.baseSha}..${gate.head} over these files: ${JSON.stringify(gate.files)}. The reviewer reads it in the checkout itself with \`git diff ${range} -- <files>\` and reads files as of that commit with \`git show ${gate.head}:<file>\`, not from the working tree, which may have moved on; plus the consumers around it. ` +
+  `the change is exactly the commits ${gate.baseSha}..${gate.head} over these files: ${JSON.stringify(gate.files)}; the attached diff ${a.tmp}/${tag}.diff is that change and nothing else. ` +
+  `Files are read as of the commit with \`git show ${gate.head}:<file>\` (and the consumers around them), never from the working tree, which may have moved on and is not part of the change. ` +
   `${a.brief ? `What it must meet: the attached brief ${a.brief}. ` : ''}${gate.dirty ? 'Uncommitted changes in the checkout are not part of the change. ' : ''}` +
-  (role === 'architecture review' ? `First save \`git diff ${range}\` as ${a.tmp}/${tag}.diff (an architect has no checkout). ` : '') +
+  `Say in the file that a required input that cannot be read (a file of the range, the brief) makes the verdict "blocked", naming it. ` +
+  `First save \`git diff ${range} -- <the files above>\` as ${a.tmp}/${tag}.diff. ` +
   `Then ` +
   gatewayCall({
     role: role === 'architecture review' ? 'architecture-review' : 'checkout-review', key: `${a.label}-${tag}`, totalMin: 55, out: `${a.tmp}/${tag}.json`,
     args: `--model ${who.model} --effort ${who.effort} --prompt ${q(`${a.tmp}/${tag}.md`)}`,
-    attach: [...(a.brief ? [a.brief] : []), ...(role === 'architecture review' ? [`${a.tmp}/${tag}.diff`] : [])],
+    attach: [...(a.brief ? [a.brief] : []), `${a.tmp}/${tag}.diff`],
   }) + ` ` +
-  `verdict: the "verdict" field of the review exactly ("missing" when it has none). summary: its summary. findings: the reviewer's findings only, each as "<id> <severity> <location>: <problem>". blocking: their count. reviewFile: the review file path. Change no code.`,
+  `verdict: the "verdict" field of the review exactly ("missing" when it has none). summary: its summary. findings: the reviewer's findings only, each as "<id> <severity> <location>: <problem>". blocking: the count of the important ones only. reviewFile: the review file path. Change no code. ` +
+  `gateway: "final" when the job reached a final status other than "unknown", and then infra is "". "unknown" when it ended unknown (unknownKey: the active key, infra: the job's error; nothing is submitted again). Otherwise "failed", infra saying what happened.`,
   { agentType: 'zodchi-core:runner', schema: REVIEW, phase: 'Review', label: tag })
 
 phase('Review')
@@ -112,9 +147,23 @@ const [review, arch] = await parallel([
   () => ask('code review', reviewer, 'review'),
   ...(architect ? [() => ask('architecture review', architect, 'architecture')] : []),
 ])
-return {
+const result = {
   label: a.label, base: gate.baseSha, head: gate.head, files: gate.files, models: { reviewer, architect },
-  review, architecture: arch || null,
+  review, architecture: arch || null, pluginCopy,
+}
+// A review whose gateway job ended unknown may already have run: it is not asked again, the person decides.
+const unknownOnes = [['review', review], ['architecture', arch]].filter(([, r]) => r && r.gateway === 'unknown')
+if (unknownOnes.length) {
+  return {
+    ...result, approved: false, stoppedAt: `unknown outcome at ${unknownOnes.map(([t]) => t).join(', ')}`,
+    unknown: unknownOnes.map(([tag, r]) => ({ step: tag, key: r.unknownKey || '(not named: read the progress file of the step)', reason: r.infra || 'the gateway job ended unknown' })),
+    next: 'The model call of the step above may already have run and used the subscription; it was not asked again. Look at it first (`zodchi job --key <key>` and its output file), then decide: take its result, or pay for it once more by running branch-review again under a new label (the same label would reuse the key of the job that ended unknown).',
+  }
+}
+const infraOnes = [['review', review], ['architecture', arch]].filter(([tag, r]) => (tag === 'review' || architect) && (!r || r.gateway !== 'final'))
+if (infraOnes.length) return { ...result, approved: false, stoppedAt: `infrastructure at ${infraOnes.map(([t]) => t).join(', ')}`, next: 'The gateway gave no usable review (see infra of each); fix the cause and run again.' }
+return {
+  ...result,
   // Approval is the reviewers' explicit verdict, never an empty findings list.
   approved: Boolean(review && review.verdict === 'approved' && (!architect || (arch && arch.verdict === 'approved'))),
   next: 'Close the findings with the author (code-package with the same brief), then run branch-review again. Release only with an approved review.',
