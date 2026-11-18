@@ -1254,6 +1254,48 @@ scenario("flow-resume-cuts", "a cut right after the writer's gateway submission 
   t.eq(f.claim().status, "done", "the claim is closed as done");
 });
 
+scenario("flow-protected-worktree", "a claimed test edited in the work tree while the run is cut is caught on the candidate tree: the package stops before the checks run, nothing committed", async (t) => {
+  const f = flowWorld(t, "flow-protected-worktree");
+  f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
+  f.answer("review 1", f.review("approved"));
+  const first = await f.flow(["--args", f.args({ files: ["src/math.mjs", "test/math.test.mjs"] })], { ZODCHI_FLOW_CUT: "submit write" });
+  t.eq(first.code, 75, "cut after the submission of the write turn");
+  const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
+  fs.writeFileSync(path.join(f.r, "test", "math.test.mjs"), 'console.log("clamp ok");\n');
+  const res = await f.flow(["--resume", id]);
+  t.eq([res.code, res.json.stoppedAt, res.json.protectedChanged], [2, "protected checks changed at checks 1", ["test/math.test.mjs"]], "stopped with the edited test, though the patch did not touch it");
+  t.ok(!res.json.verification, "no check ran on the edited test");
+  t.eq([f.commits().length, f.steps()], [0, ["write"]], "no commit, no review");
+});
+
+scenario("flow-cleaned-job", "a cut after the submission, then the job folder cleaned up: resume cannot prove the job never ran, so it stops with an unknown outcome instead of asking the model again", async (t) => {
+  const f = flowWorld(t, "flow-cleaned-job");
+  f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
+  const first = await f.flow(["--args", f.args()], { ZODCHI_FLOW_CUT: "submit write" });
+  t.eq(first.code, 75, "cut after the submission of the write turn");
+  const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
+  const waited = await zodchi(t, f.w, ["wait", "--key", `flow-${id}-write`, "--wait-sec", "60"], { cwd: f.r });
+  t.eq(waited.code, 0, "the submitted job ran to its end");
+  fs.rmSync(path.join(f.r, ".agent-tmp", "gateway"), { recursive: true, force: true });
+  const res = await f.flow(["--resume", id]);
+  t.eq([res.code, res.json.stoppedAt], [2, "unknown outcome at write"], "an unknown outcome, not a second submission");
+  t.ok(/--rerun "write"/.test(res.json.next), "next says how to run the step again after looking");
+  t.eq(f.steps(), ["write"], "the model was asked once");
+  t.eq(f.claim().status, "open", "the claim stays open");
+});
+
+scenario("flow-no-review-md", "a repository with neither REVIEW.md nor a verify skill passes the gate and runs to approval; the review judges by the brief", async (t) => {
+  const f = flowWorld(t, "flow-no-review-md");
+  gitOut(f.r, ["rm", "-q", "REVIEW.md"]);
+  gitOut(f.r, ["commit", "-q", "-m", "no review focus"]);
+  f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
+  f.answer("review 1", f.review("approved"));
+  const res = await f.flow(["--args", f.args()]);
+  t.eq([res.code, res.json.verdict, res.json.refused], [0, "approved", undefined], "the gate passes and the run ends approved");
+  const reviewTurn = readJsonl(path.join(f.w.codex, "fake-turns.jsonl")).find((x) => x.step === "review 1");
+  t.ok(/has no REVIEW\.md/.test(reviewTurn.prompt) && !reviewTurn.prompt.includes("REVIEW.base.md"), "the review says the base has no REVIEW.md");
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // Main
 

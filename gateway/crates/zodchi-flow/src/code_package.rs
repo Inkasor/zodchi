@@ -7,7 +7,7 @@
 //! call by polling its key), or runs. An outcome that none of them can settle stops the run with
 //! `stoppedAt: "unknown outcome at <step>"` and keeps the claim.
 
-use crate::args::{self, Args};
+use crate::args::{self, is_protected, Args};
 use crate::checks;
 use crate::claims;
 use crate::gateway;
@@ -22,10 +22,8 @@ use zodchi_core::config::Config;
 use zodchi_core::job::{self, compose_prompt, LIMIT_PROMPT};
 use zodchi_core::role::load_role;
 use zodchi_core::role::Overrides;
-use zodchi_core::util::{iso, now_ms, parse_iso_ms, sha256_hex, GatewayError, Result};
-
-/// Six days: a gateway job is kept seven days after it finished.
-const SWEPT_MS: i128 = 6 * 86_400_000;
+use zodchi_core::process::{process_start, stop_process};
+use zodchi_core::util::{fail, iso, sha256_hex, GatewayError, Result};
 
 pub const WORKFLOW: &str = "code-package";
 pub const VERSION: &str = "1";
@@ -117,6 +115,8 @@ struct Run {
     claim_status: &'static str,
     questions: Vec<String>,
     changed: Vec<String>,
+    /// Written paths that are executable (from the applied plans): the candidate tree keeps their mode.
+    exec: Vec<String>,
     step: String,
 }
 
@@ -144,7 +144,8 @@ pub fn start(raw: &Value) -> Result<Exit> {
     let Some(branch) = git.branch()? else {
         return Ok(refused(&label, "HEAD is detached: check out the branch the package commits on.".into()));
     };
-    match git.output(&["check-ignore", "-q", "--", ".agent-tmp/gateway/"], &[], None)?.status.code() {
+    // check-ignore takes path names, and refuses the literal pathspec mode the engine's other calls run in.
+    match git.output(&["check-ignore", "-q", "--", ".agent-tmp/gateway/"], &[("GIT_LITERAL_PATHSPECS", "0".into())], None)?.status.code() {
         Some(0) => {}
         Some(1) => return Ok(refused(&label, format!("{} does not ignore .agent-tmp/, so the gateway would refuse this package's calls. Add \".agent-tmp/\" to its .gitignore and commit it first.", args.repo))),
         _ => return Ok(refused(&label, "Git could not check the ignore rules of the repository.".into())),
@@ -153,6 +154,13 @@ pub fn start(raw: &Value) -> Result<Exit> {
     let overlap: Vec<String> = dirty.iter().filter(|d| args.files.iter().any(|f| f.to_lowercase() == d.to_lowercase())).cloned().collect();
     if !overlap.is_empty() {
         return Ok(refused(&label, format!("Uncommitted changes in package files: {}. Commit or stash them first.", overlap.join(", "))));
+    }
+    // A claim names files, each by itself: a folder would take in whatever lies under it.
+    for f in &args.files {
+        let folder = std::fs::symlink_metadata(repo.join(f)).is_ok_and(|m| m.is_dir()) || git.entry_at(&base, f)?.is_some_and(|(_, kind, _)| kind == "tree");
+        if folder {
+            return Ok(refused(&label, format!("args.files names files only; {f} is a folder. List the files of the package one by one.")));
+        }
     }
     if args.verify.is_empty() && git.exists_at(&base, ".claude/skills/verify/SKILL.md")? {
         return Ok(refused(&label, "The repository has a verify skill (.claude/skills/verify/SKILL.md), and the engine runs commands only: pass the skill's commands as args.verify.".into()));
@@ -217,6 +225,7 @@ pub fn resume(id: &str, given: Option<&Value>, rerun: Option<&str>) -> Result<Ex
         }
     }
     let lock = journal.lock()?;
+    journal.load()?;
     if let Some(done) = journal.read_value("result.json") {
         if rerun.is_some() {
             return Err(GatewayError(format!("Run {id} has finished; there is nothing to run again.")));
@@ -231,11 +240,22 @@ pub fn resume(id: &str, given: Option<&Value>, rerun: Option<&str>) -> Result<Ex
         }
         journal.append(json!({ "kind": "rerun", "step": step }))?;
     }
-    let args = args::parse(&raw).map_err(GatewayError)?;
+    // The repository is the one the run pinned (an absolute path), whatever folder the resume is started from.
+    let mut pinned = raw.clone();
+    let Some(repo) = run["repo"].as_str().filter(|r| std::path::Path::new(r).is_absolute()) else {
+        return Err(GatewayError(format!("Run {id} has no absolute repository in its run.json.")));
+    };
+    pinned["repo"] = json!(repo);
+    let args = args::parse(&pinned).map_err(GatewayError)?;
     let repo = PathBuf::from(&args.repo);
     let cfg = Config::new(Some(&repo))?;
-    let brief = std::fs::read_to_string(journal.file("brief.md"))?;
-    let review_md = std::fs::read_to_string(journal.file("REVIEW.base.md")).ok();
+    let brief = std::fs::read_to_string(journal.file("brief.md")).map_err(|e| GatewayError(format!("The brief of run {id} ({}) cannot be read: {e}", journal.file("brief.md").display())))?;
+    let review_md = if run["inputs"]["reviewMd"] == json!(true) {
+        let file = journal.file("REVIEW.base.md");
+        Some(std::fs::read_to_string(&file).map_err(|e| GatewayError(format!("The base REVIEW.md of run {id} ({}) cannot be read: {e}; the review would lose the owner's criteria.", file.display())))?)
+    } else {
+        None
+    };
     let git = Git::new(&repo);
     let r = Run::new(id.to_string(), args, cfg, git, journal, &run, brief, review_md);
     let exit = r.machine();
@@ -274,6 +294,7 @@ impl Run {
             claim_status: "stopped",
             questions: vec![],
             changed: vec![],
+            exec: vec![],
             step: "gate".into(),
         }
     }
@@ -320,7 +341,12 @@ impl Run {
 
     fn claim(&mut self) -> Result<Vec<String>> {
         if let Some(done) = self.done("claim") {
-            return Ok(strings(&done["conflicts"]));
+            let conflicts = strings(&done["conflicts"]);
+            let keys: Vec<String> = self.claimed.iter().map(|f| f.to_lowercase()).collect();
+            if conflicts.is_empty() && !claims::holds(&self.claims_dir, &self.args.label, &self.id, &keys) {
+                return Ok(vec![format!("{}: the claim is no longer the open claim of run {} (it was closed or taken over meanwhile)", self.args.label, self.id)]);
+            }
+            return Ok(conflicts);
         }
         let keys: Vec<String> = self.claimed.iter().map(|f| f.to_lowercase()).collect();
         let conflicts = claims::open(&self.claims_dir, &self.args.label, &self.id, &keys, &self.args.brief, &self.base)?;
@@ -360,8 +386,8 @@ impl Run {
             self.out.insert("verification".into(), verification.clone());
             let receipt = self.commit(n, &checks, verification["stamp"].as_str().unwrap_or("Verified: none"))?;
             let review = self.review(n, &summary, &unverified, &verification)?;
-            let findings: Vec<String> = review["findings"].as_array().cloned().unwrap_or_default().iter().filter_map(|f| f.as_str().map(String::from)).collect();
-            let important: Vec<String> = findings.iter().filter(|f| severity(f.split_whitespace().nth(1).unwrap_or("")) == "important").cloned().collect();
+            let findings = strings(&review["findings"]);
+            let important = strings(&review["important"]);
             let word = review["verdict"].as_str().unwrap_or("");
             let verdict = if word == "blocked" || (word == "changes_requested" && findings.is_empty()) { "blocked" } else if !important.is_empty() { "changes_requested" } else { "approved" };
             self.out.insert("openFindings".into(), json!(findings));
@@ -492,6 +518,10 @@ impl Run {
         let mut lines = Vec::new();
         let mut attached = Vec::new();
         for p in &self.claimed {
+            // A link would show the writer a file from outside the repository.
+            if !patch::no_links(&self.git.root, p) {
+                return fail(format!("{p}: a link or reparse point lies on its way, so it is not read"));
+            }
             match std::fs::read(self.git.root.join(p)) {
                 Ok(bytes) => {
                     lines.push(format!("- {p}  blob {}", self.git.blob_of(&bytes)?));
@@ -563,7 +593,8 @@ impl Run {
         }
         let base = gateway::base_key(&self.id, step, attempt);
         let intents: Vec<Value> = self.journal.all("intent", step, attempt).into_iter().cloned().collect();
-        let (mut key, stored) = match intents.last() {
+        // `fresh`: the intent of `key` was recorded by this process, so its job cannot have been submitted before.
+        let (mut key, stored, mut fresh) = match intents.last() {
             Some(last) => {
                 let file = last["request"].as_str().unwrap_or("").to_string();
                 let stored = self.journal.read_value(&file);
@@ -571,7 +602,7 @@ impl Run {
                     self.halt_infra(step, format!("unknown outcome at {step}"), format!("the stored request {file} of key {} is missing", last["key"]));
                     return Err(Halt);
                 };
-                (last["key"].as_str().unwrap_or("").to_string(), stored)
+                (last["key"].as_str().unwrap_or("").to_string(), stored, false)
             }
             None => {
                 if prompt.len() > LIMIT_PROMPT {
@@ -588,7 +619,7 @@ impl Run {
                 let digest = sha256_hex(stored.to_string());
                 let r = self.record_intent(step, round, "gateway job", &digest, json!({ "key": base, "request": file, "role": role_name, "model": pick.model, "effort": pick.effort }));
                 self.infra(step, r)?;
-                (base.clone(), stored)
+                (base.clone(), stored, true)
             }
         };
         let mut retries = intents.len().saturating_sub(1) as u32;
@@ -598,12 +629,11 @@ impl Run {
                 self.halt_infra(step, format!("unknown outcome at {step}"), format!("the job {key} was submitted and its folder is gone"));
                 return Err(Halt);
             }
-            // A cut between the submission and its record leaves no "submitted" line; after the gateway's retention a
-            // missing folder may be a job that ran and was swept, so it is not asked again.
-            let intended = self.journal.events().iter().rev().find(|e| e["kind"] == json!("intent") && e["key"] == json!(key))
-                .and_then(|e| e["at"].as_str()).and_then(parse_iso_ms).unwrap_or_else(now_ms);
-            if !submitted && !gateway::exists(&self.cfg, &key) && now_ms() - intended > SWEPT_MS {
-                self.halt_infra(step, format!("unknown outcome at {step}"), format!("the job {key} may have been submitted more than six days ago and is not in the gateway any more"));
+            // An intent of an earlier process without its "submitted" line: a cut between the submission and its record
+            // leaves the job's folder, which the same key finds again. Without the folder nothing proves that the job
+            // never ran (a cleaned or swept folder looks the same), so it is not asked again by itself.
+            if !submitted && !fresh && !gateway::exists(&self.cfg, &key) {
+                self.halt_infra(step, format!("unknown outcome at {step}"), format!("the job {key} has an intent but neither a \"submitted\" record nor a job folder: it may have run and been cleaned up"));
                 return Err(Halt);
             }
             let req = gateway::request(&key, &stored["role"], stored["prompt"].as_str().unwrap_or(""));
@@ -638,6 +668,7 @@ impl Run {
                 let digest = sha256_hex(stored.to_string());
                 let r = self.record_intent(step, round, "gateway job", &digest, json!({ "key": key, "request": file, "after": gateway::summary(&fin) }));
                 self.infra(step, r)?;
+                fresh = true;
                 continue;
             }
             self.halt_infra(step, format!("gateway {status} at {step}"), format!("job {key}: {}", fin["error"].as_str().unwrap_or(&status)));
@@ -654,12 +685,20 @@ impl Run {
         }
         let attempt = self.attempt(step);
         if let Some(intent) = self.journal.last("intent", step, attempt).cloned() {
-            let plan = patch::Plan::from_json(&self.journal.read_value(intent["plan"].as_str().unwrap_or("")).unwrap_or(Value::Null));
+            // The saved plan must be the one the intent names, whole: a lost plan is never read as an empty patch.
+            let file = intent["plan"].as_str().unwrap_or("").to_string();
+            let plan = self.journal.read_value(&file).and_then(|v| patch::Plan::from_json(&v))
+                .filter(|p| sha256_hex(p.to_json().to_string()) == intent["digest"].as_str().unwrap_or(""));
+            let Some(plan) = plan else {
+                self.halt_infra(step, format!("unknown outcome at {step}"), format!("the saved plan {file} of the interrupted apply is missing or does not match the digest of its intent"));
+                return Err(Halt);
+            };
             for k in strings(&intent["claimAdded"]) {
                 if patch::claimed_as(&self.claimed, &k).is_none() {
                     self.claimed.push(k);
                 }
             }
+            self.owns(step)?;
             let state = patch::reconcile(&self.git, &plan);
             match self.infra(step, state)? {
                 "applied" => {}
@@ -672,14 +711,20 @@ impl Run {
                     return Err(Halt);
                 }
             }
-            let result = json!({ "paths": plan.after.keys().collect::<Vec<_>>(), "claimAdded": intent["claimAdded"] });
+            let result = json!({ "paths": plan.after.keys().collect::<Vec<_>>(), "claimAdded": intent["claimAdded"], "exec": plan.exec });
             let r = self.record_done(step, round, result.clone());
             self.infra(step, r)?;
             return self.replay_apply(step, &result);
         }
+        self.owns(step)?;
         // Outside the claim: refused, or the claim is extended under its lock before anything is written.
         let outside = patch::outside(p, &self.claimed);
         let mut added = Vec::new();
+        if let Some(folder) = outside.iter().find(|o| plain_ok(o) && self.git.root.join(o.as_str()).is_dir()) {
+            let r = self.record_done(step, round, json!({ "refused": "path", "why": format!("{folder} is a folder; a patch names files") }));
+            self.infra(step, r)?;
+            return self.replay_apply(step, &self.done(step).unwrap());
+        }
         if !outside.is_empty() && p.changes.iter().all(|c| plain_ok(&c.path) && c.from.as_deref().is_none_or(plain_ok)) {
             if !self.args.extend_claim {
                 let r = self.record_done(step, round, json!({ "refused": "outside", "paths": outside }));
@@ -722,10 +767,29 @@ impl Run {
         let a = patch::apply(&self.git.root, &plan);
         self.infra(step, a)?;
         cut(step);
-        let result = json!({ "paths": plan.after.keys().collect::<Vec<_>>(), "claimAdded": added });
+        let result = json!({ "paths": plan.after.keys().collect::<Vec<_>>(), "claimAdded": added, "exec": plan.exec });
         let r = self.record_done(step, round, result.clone());
         self.infra(step, r)?;
         self.replay_apply(step, &result)
+    }
+
+    /// Before a write into the work tree: the pinned branch is checked out, and the claim is still this run's open
+    /// claim with every claimed file. A claim closed or taken over meanwhile stops the run; nothing is written.
+    fn owns(&mut self, step: &str) -> Step<()> {
+        let on = self.git.branch();
+        let on = self.infra(step, on)?;
+        if on.as_deref() != Some(self.branch.as_str()) {
+            let what = format!("the run writes on {}, but {} is checked out: check it out again", self.branch, on.unwrap_or_else(|| "a detached HEAD".into()));
+            self.halt_infra(step, format!("{step} (the branch of the run is not checked out)"), what);
+            return Err(Halt);
+        }
+        let keys: Vec<String> = self.claimed.iter().map(|c| c.to_lowercase()).collect();
+        if !claims::holds(&self.claims_dir, &self.args.label, &self.id, &keys) {
+            self.out.insert("stoppedAt".into(), json!(format!("{step} (the claim is not open)")));
+            self.out.insert("next".into(), json!(format!("The claim {} is no longer the open claim of this run with all its files (closed or taken over meanwhile). Nothing of {step} was written.", claims::file(&self.claims_dir, &self.args.label).display())));
+            return Err(Halt);
+        }
+        Ok(())
     }
 
     /// The effect of a recorded apply on the run: its paths and claim extension, or its refusal.
@@ -738,6 +802,11 @@ impl Run {
             if !list.contains(&k) {
                 list.push(k);
                 self.out.insert("claimAdded".into(), json!(list));
+            }
+        }
+        for p in strings(&done["exec"]) {
+            if !self.exec.contains(&p) {
+                self.exec.push(p);
             }
         }
         let kind = done["refused"].as_str().unwrap_or("");
@@ -808,14 +877,34 @@ impl Run {
 
     /// One run of the checks on the candidate tree: the parent commit with the claimed paths from the work tree,
     /// exported to a temporary folder. The cheap checks first; the verify commands only when they all pass.
+    ///
+    /// The candidate tree, whatever brought it into the work tree, must leave the protected checks of the base as they
+    /// were (content, mode, existence), except those args.allowCheckChanges names; else the package stops before
+    /// review. Each command's pid is journaled as it starts, so a resumed run stops what an interrupted one left
+    /// running before it starts the checks again.
     fn run_checks(&mut self, step: &str, round: u32) -> Step<Value> {
         self.step = step.to_string();
         if let Some(d) = self.done(step) {
-            return Ok(d);
+            return self.checks_result(step, d);
         }
+        let attempt = self.attempt(step);
+        self.reap_checks(step, attempt)?;
         let scratch = self.journal.file("tmp");
-        let tree = self.git.candidate_tree(&self.head, &self.claimed, &scratch);
+        let tree = self.git.candidate_tree(&self.head, &self.claimed, &self.exec, &scratch);
         let tree = self.infra(step, tree)?;
+        let changed = self.git.changes(&self.base, &tree);
+        let changed = self.infra(step, changed)?;
+        let protected: Vec<String> = changed.into_iter()
+            .filter(|(status, p)| status != "A" && is_protected(&self.args, p) && !self.args.allow_check_changes.contains(&p.to_lowercase()))
+            .map(|(_, p)| p).collect();
+        if !protected.is_empty() {
+            let result = json!({ "ok": false, "tree": tree, "evidence": [], "refused": "protected", "paths": protected });
+            let r = self.record_done(step, round, result.clone());
+            self.infra(step, r)?;
+            return self.checks_result(step, result);
+        }
+        let r = self.record_intent(step, round, "run checks", &sha256_hex(&tree), json!({ "tree": tree }));
+        self.infra(step, r)?;
         let export = checks::temp_dir(&self.id, step);
         let exported = self.git.export(&tree, &export, &scratch);
         if let Err(e) = exported {
@@ -824,15 +913,56 @@ impl Run {
         }
         let logs = self.journal.file(&format!("logs/{}", gateway::slug(step)));
         let limit = Duration::from_secs_f64(self.args.check_timeout_min * 60.0);
-        let mut evidence = checks::run_list(&self.args.checks, "checks", &export, &logs, limit);
+        let journal = &mut self.journal;
+        let mut started = |pid: u32| {
+            let _ = journal.append(json!({ "kind": "check started", "step": step, "attempt": attempt, "pid": pid, "start": process_start(pid) }));
+        };
+        let mut evidence = checks::run_list(&self.args.checks, "checks", &export, &logs, limit, &mut started);
         if checks::passed(&evidence) && !self.args.verify.is_empty() {
-            evidence.extend(checks::run_list(&self.args.verify, "args.verify", &export, &logs, limit));
+            evidence.extend(checks::run_list(&self.args.verify, "args.verify", &export, &logs, limit, &mut started));
         }
         checks::remove(&export);
         let result = json!({ "ok": checks::passed(&evidence), "tree": tree, "evidence": evidence });
         let r = self.record_done(step, round, result.clone());
         self.infra(step, r)?;
         Ok(result)
+    }
+
+    /// A recorded run of the checks; one that found changed protected checks stops the package before review.
+    fn checks_result(&mut self, step: &str, d: Value) -> Step<Value> {
+        if d["refused"] != json!("protected") {
+            return Ok(d);
+        }
+        let paths = strings(&d["paths"]);
+        self.out.insert("protectedChanged".into(), json!(paths));
+        self.out.insert("stoppedAt".into(), json!(format!("protected checks changed at {step}")));
+        self.out.insert("next".into(), json!(format!("The candidate tree changes or deletes existing checks: {}. A change must not edit the checks that judge it, so the package stopped before the checks ran and before review; nothing was committed. Restore them in the work tree, or, if the change is right, start again with args.allowCheckChanges listing those paths.", paths.join(", "))));
+        Err(Halt)
+    }
+
+    /// Stops the check commands an interrupted run of this step left running (by pid and start time), before the
+    /// checks start again. One that cannot be stopped stops the run.
+    fn reap_checks(&mut self, step: &str, attempt: u32) -> Step<()> {
+        let started: Vec<Value> = self.journal.all("check started", step, attempt).into_iter().cloned().collect();
+        for e in started {
+            let pid = e["pid"].as_i64().unwrap_or(0);
+            match stop_process(pid, e["start"].as_str()) {
+                // On Unix a check is the leader of its own process group: what it started may outlive it, and the
+                // group's id cannot belong to anybody else while one of them still runs.
+                "absent" => {
+                    #[cfg(unix)]
+                    if pid > 0 {
+                        let _ = std::process::Command::new("kill").args(["-KILL", "--", &format!("-{pid}")]).stderr(std::process::Stdio::null()).status();
+                    }
+                }
+                "stopped" | "other" => {}
+                answer => {
+                    self.halt_infra(step, format!("infrastructure at {step}"), format!("a check command (pid {pid}) of the interrupted run is still running and could not be stopped ({answer}): stop it, then resume"));
+                    return Err(Halt);
+                }
+            }
+        }
+        Ok(())
     }
 
     // --------------------------------------------------------------------------------------------- commit
@@ -855,12 +985,13 @@ impl Run {
             let tip = self.git.rev(&self.branch);
             let tip = self.infra(&step, tip)?;
             if tip != parent {
-                let tip_parent = self.git.rev(&format!("{tip}^")).unwrap_or_default();
-                let tip_tree = self.git.rev(&format!("{tip}^{{tree}}")).unwrap_or_default();
-                if tip_parent == parent && tip_tree == intent["tree"].as_str().unwrap_or("") {
+                // Only the exact commit the engine made and journaled before moving the branch is its receipt; another
+                // commit of the same tree (made by hand, without the stamp) is not.
+                let made = self.journal.last("made", &step, attempt).and_then(|e| e["commit"].as_str()).map(String::from);
+                if made.as_deref() == Some(tip.as_str()) {
                     return self.commit_receipt(&step, n, &parent, &tip, &tree);
                 }
-                self.halt_infra(&step, format!("unknown outcome at {step}"), format!("the branch {} moved to {tip}, which is not the commit of this round on {parent}", self.branch));
+                self.halt_infra(&step, format!("unknown outcome at {step}"), format!("the branch {} moved to {tip}, which is not the commit this run made for round {n} on {parent} ({})", self.branch, made.as_deref().unwrap_or("none was recorded")));
                 return Err(Halt);
             }
         }
@@ -881,7 +1012,7 @@ impl Run {
             return Err(Halt);
         }
         let scratch = self.journal.file("tmp");
-        let now = self.git.candidate_tree(&self.head, &self.claimed, &scratch);
+        let now = self.git.candidate_tree(&self.head, &self.claimed, &self.exec, &scratch);
         let now = self.infra(&step, now)?;
         if now != tree {
             self.out.insert("stoppedAt".into(), json!("commit (the work tree changed after the checks)"));
@@ -902,6 +1033,8 @@ impl Run {
         self.infra(&step, r)?;
         let made = self.git.run_env(&["commit-tree", &tree, "-p", &parent, "-F", "-"], &[], Some(message.as_bytes()));
         let commit = self.infra(&step, made)?.trim().to_string();
+        let r = self.journal.append(json!({ "kind": "made", "step": step, "round": n, "attempt": self.attempt(&step), "commit": commit }));
+        self.infra(&step, r)?;
         let moved = self.git.run(&["update-ref", "-m", &format!("zodchi flow {}: round {n}", self.args.label), &self.branch, &commit, &parent]);
         self.infra(&step, moved)?;
         cut(&step);
@@ -910,17 +1043,39 @@ impl Run {
 
     /// After the branch moved to the round's commit: the index entries of the claimed paths follow it (other staged
     /// work stays staged), and the receipt goes into the journal.
+    /// The index is touched only on the branch of the run, and only where it still holds no staged work of anybody
+    /// else; otherwise the run stops with the commit made and resumes from here.
     fn commit_receipt(&mut self, step: &str, n: u32, parent: &str, commit: &str, tree: &str) -> Step<Value> {
+        let on = self.git.branch();
+        let on = self.infra(step, on)?;
+        if on.as_deref() != Some(self.branch.as_str()) {
+            let what = format!("{} holds the round's commit {commit}, but {} is checked out, whose index is left alone: check out {} again", self.branch, on.unwrap_or_else(|| "a detached HEAD".into()), self.branch);
+            self.halt_infra(step, format!("{step} (the branch of the run is not checked out)"), what);
+            return Err(Halt);
+        }
         let mut reset = Vec::new();
         for p in &self.claimed {
             let known = self.git.exists_at(commit, p).unwrap_or(false) || self.git.exists_at(parent, p).unwrap_or(false);
             if known {
-                reset.push(p.as_str());
+                reset.push(p.clone());
             }
         }
         if !reset.is_empty() {
+            // Staged entries that are neither the parent's nor the commit's are somebody's work: never reset them.
+            let staged = |rev: &str| -> Result<Vec<String>> {
+                let mut a = vec!["diff", "--cached", "--name-only", "-z", "--no-renames", rev, "--"];
+                a.extend(reset.iter().map(String::as_str));
+                Ok(self.git.run(&a)?.split('\0').filter(|s| !s.is_empty()).map(String::from).collect())
+            };
+            let both = staged(parent).and_then(|a| staged(commit).map(|b| a.into_iter().filter(|p| b.contains(p)).collect::<Vec<_>>()));
+            let both = self.infra(step, both)?;
+            if !both.is_empty() {
+                let what = format!("staged changes in {} are neither the parent's nor the round's commit {commit}: unstage or keep them elsewhere", both.join(", "));
+                self.halt_infra(step, format!("{step} (staged work in claimed files)"), what);
+                return Err(Halt);
+            }
             let mut a = vec!["reset", "-q", commit, "--"];
-            a.extend(reset.iter().copied());
+            a.extend(reset.iter().map(String::as_str));
             let r = self.git.run(&a);
             self.infra(step, r)?;
         }
@@ -951,11 +1106,18 @@ impl Run {
         let data = self.ask(&step, n, REVIEWER_GATEWAY_ROLE, &reviewer, &schema(REVIEW_SCHEMA), prompt, check_review)?;
         let w = self.journal.write_value(&reviews, &data);
         self.infra(&step, w)?;
-        let findings: Vec<String> = data["findings"].as_array().cloned().unwrap_or_default().iter().map(|f| {
-            format!("{} {} {}: {}", f["id"].as_str().unwrap_or("F?"), severity(f["severity"].as_str().unwrap_or("")), f["location"].as_str().unwrap_or(""), f["problem"].as_str().unwrap_or(""))
-        }).collect();
-        let blocking = findings.iter().filter(|f| severity(f.split_whitespace().nth(1).unwrap_or("")) == "important").count();
-        Ok(json!({ "verdict": data["verdict"], "summary": data["summary"], "findings": findings, "blocking": blocking, "reviewFile": review_file }))
+        // The severity comes from the structured field; the strings are only how the result and the prompts show them.
+        let mut findings = Vec::new();
+        let mut important = Vec::new();
+        for f in data["findings"].as_array().cloned().unwrap_or_default() {
+            let sev = severity(f["severity"].as_str().unwrap_or(""));
+            let line = format!("{} {sev} {}: {}", f["id"].as_str().unwrap_or("F?"), f["location"].as_str().unwrap_or(""), f["problem"].as_str().unwrap_or(""));
+            if sev == "important" {
+                important.push(line.clone());
+            }
+            findings.push(line);
+        }
+        Ok(json!({ "verdict": data["verdict"], "summary": data["summary"], "findings": findings, "important": important, "blocking": important.len(), "reviewFile": review_file }))
     }
 
     fn review_prompt(&self, n: u32, step: &str, summary: &str, unverified: &[String], verification: &Value) -> Result<String> {
@@ -992,8 +1154,9 @@ impl Run {
         }
         // The full copies of the claimed files are optional: the largest go first when the request is too large.
         let mut optional: Vec<(String, Vec<u8>)> = Vec::new();
+        // Copies of the reviewed commit's blobs, never the live work tree.
         for p in &self.claimed {
-            if let Ok(bytes) = std::fs::read(self.git.root.join(p)) {
+            if let Some(bytes) = self.git.show(&self.head, p)? {
                 if !bytes.contains(&0) {
                     optional.push((p.clone(), bytes));
                 }
