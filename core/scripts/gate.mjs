@@ -23,12 +23,15 @@
 // Claims. A package's claim is the file <label>.json in ~/.zodchi/packages/<repo key>/. Only a file of exactly that name,
 // whose "label" field is its own name, is a claim: x.json.bak-1, x.bak.json and every other stray file are not read, and
 // nothing here ever writes a backup into that folder. The gate closes an open claim of ANOTHER label when all of these hold:
+//   0. the claim is not marked "awaiting": a package that stopped until a person decides (an unknown gateway outcome, an
+//      infrastructure failure) says so in its claim, and that claim stays open however old it is;
 //   1. none of its files has an uncommitted change;
 //   2. the package has commits (a commit after its recorded base that touches its files) and every one is on the default
 //      branch (refs/remotes/origin/HEAD, else main or master);
 //   3. nothing was written to the claim file or to the package's tmp folder (claim.tmp) for staleHours (default 3,
 //      ~/.zodchi/config.json "claimStaleHours"): a package between two rounds has clean files and committed work too,
 //      and must not be closed under its own feet.
+// The dirty list must be known: when `git status` fails, the answer has dirty null and a dirtyError, and no claim is closed.
 // The answer says which claims were closed and why, and which open ones were kept and why not.
 import fs from "node:fs";
 import os from "node:os";
@@ -62,10 +65,11 @@ function git(repo, args) {
   return { code: r.status ?? 1, out: r.stdout || "", err: (r.stderr || "").trim() };
 }
 
-// Every path `git status --porcelain -z -uall` lists; a rename gives both paths. [] outside a work tree.
+// Every path `git status --porcelain -z -uall` lists; a rename gives both paths. null when Git could not say (the caller must
+// report that, never read it as a clean work tree). Returns { paths, error }: paths is null exactly when error is set.
 function dirtyList(repo) {
   const r = git(repo, ["status", "--porcelain", "-z", "-uall"]);
-  if (r.code !== 0) return null;
+  if (r.code !== 0) return { paths: null, error: `git status exited ${r.code}: ${r.err.slice(0, 300)}` };
   const parts = r.out.split("\0").filter(Boolean);
   const paths = [];
   for (let i = 0; i < parts.length; i++) {
@@ -73,7 +77,7 @@ function dirtyList(repo) {
     paths.push(entry.slice(3));
     if (/[RC]/.test(entry.slice(0, 2)) && i + 1 < parts.length) paths.push(parts[++i]);
   }
-  return paths;
+  return { paths, error: "" };
 }
 
 function models(repo, want) {
@@ -200,6 +204,9 @@ function defaultBranch(repo) {
 // Why this open claim of another package may not be closed, or "" when it may be.
 function whyKept(repo, entry, dirtyKeys, defBranch, staleMs) {
   const c = entry.claim;
+  // A package that stopped on purpose until a person decides (an unknown gateway outcome, an infrastructure failure to fix) marks its
+  // claim "awaiting"; its files are clean and committed work may be on the default branch, yet it is not finished: never closed here.
+  if (c.awaiting) return `it awaits a decision (${String(c.awaiting).slice(0, 200)}): a person closes it`;
   const files = Array.isArray(c.files) ? c.files.map((f) => String(f)) : [];
   if (!files.length) return "it lists no files";
   const dirty = files.filter((f) => dirtyKeys.has(f.toLowerCase()));
@@ -244,7 +251,9 @@ function claimFacts(spec, repo, dirtyKeys) {
   const defBranch = defaultBranch(repo);
   const others = first.claims.filter((e) => e.claim.status === "open" && e.label !== spec.label).map((e) => ({ ...e, dir }));
   const stale = [];
-  for (const e of others) {
+  // Without a dirty list nothing is known about anybody's files: no claim is closed, and the answer says so.
+  if (!dirtyKeys && others.length) answer.notes.push("open claims were not examined for closing: the dirty list of the repository is unknown");
+  for (const e of dirtyKeys ? others : []) {
     const why = whyKept(repo, e, dirtyKeys, defBranch, staleMs);
     if (why) answer.kept.push(`${e.label}: ${why}`); else stale.push(e);
   }
@@ -288,16 +297,19 @@ function codePackage(spec) {
   const inside = git(repo, ["rev-parse", "--is-inside-work-tree"]).out.trim() === "true";
   const head = inside ? git(repo, ["rev-parse", "HEAD"]) : { code: 1, out: "" };
   const branch = inside ? git(repo, ["branch", "--show-current"]).out.trim() : "";
-  const dirty = (inside && dirtyList(repo)) || [];
+  // Outside a work tree there is nothing to list; inside one, a failed `git status` is no list at all (dirty null, dirtyError says
+  // why), never a clean tree: the workflow stops on it and no claim is closed from it.
+  const status = inside ? dirtyList(repo) : { paths: [], error: "" };
+  const dirty = status.paths;
   const ignore = git(repo, ["check-ignore", "-v", ".agent-tmp/gateway/x"]);
   const exists = (p) => inside && git(repo, ["cat-file", "-e", `HEAD:${p}`]).code === 0;
   const cfgFile = path.join(os.homedir(), ".zodchi", "config.json");
   const cfg = readJson(cfgFile);
-  const dirtyKeys = new Set(dirty.map((f) => norm(f).toLowerCase()));
+  const dirtyKeys = inside && dirty ? new Set(dirty.map((f) => norm(f).toLowerCase())) : null;
   return {
     ok: true, api: API, plugin: pluginCopy(),
     roles: m.roles, modelsErrors: m.errors, account: acc.account, accountError: acc.accountError,
-    git: inside, head: head.code === 0 ? head.out.trim() : "", branch, dirty,
+    git: inside, head: head.code === 0 ? head.out.trim() : "", branch, dirty, dirtyError: status.error,
     ignoreExit: ignore.code, ignoreLine: ignore.out.trim(),
     verifySkill: exists(".claude/skills/verify/SKILL.md"), reviewMd: exists("REVIEW.md"),
     config: cfg.value && typeof cfg.value === "object" ? cfg.value : {}, configError: cfg.error || "",
@@ -319,7 +331,7 @@ function branchReview(spec) {
     const d = git(repo, ["diff", "--name-only", "-z", baseSha, head.out.trim()]);
     files = d.out.split("\0").filter(Boolean);
   }
-  const dirty = dirtyList(repo);
+  const dirty = dirtyList(repo).paths;
   return {
     ok: true, api: API, plugin: pluginCopy(),
     roles: m.roles, modelsErrors: m.errors, account: acc.account, accountError: acc.accountError,
@@ -341,11 +353,14 @@ function ledger(spec) {
   const owner = (x) => (typeof x.owner === "string" ? x.owner.trim() : "");
   const hasMethod = Boolean(method && (typeof method === "string" ? method.trim() : Object.keys(method).length));
   const after = method && typeof method === "object" && typeof method.afterRound === "number" ? method.afterRound : null;
+  // The rounds played under the selected method: one list for the count and for the acceptance, so a round accepted under an
+  // earlier method (a blockout) never counts for the look method that follows it.
+  const since = rounds.filter((x) => after === null || (typeof x.n === "number" && x.n > after));
   return {
     ok: true, api: API, plugin: pluginCopy(),
     hasMethod, lastRound: last && typeof last.n === "number" ? last.n : 0, lastVerdict: last ? owner(last) : "",
-    roundsSinceMethod: rounds.filter((x) => after === null || (typeof x.n === "number" && x.n > after)).length,
-    accepted: rounds.some((x) => owner(x).startsWith(accepted)),
+    roundsSinceMethod: since.length,
+    accepted: since.some((x) => owner(x).startsWith(accepted)),
     startedAt: new Date(NOW).toISOString().replace(/\.\d+Z$/, "Z"),
   };
 }
