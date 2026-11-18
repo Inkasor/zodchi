@@ -105,7 +105,8 @@ This installs `zodchi-core` for you in every project, builds the gateway
   not updated by that run: rerun the installer with
   `--project <that repo> --domains <domain>` for each such project. The copy
   the marketplace reads, the one it read before and the two newest complete
-  copies are kept, older ones are removed. After moving the marketplace the
+  copies are kept, and so is every copy made in the last seven days (a running Claude Code session keeps
+  reading the copy it started with); older ones are removed. After moving the marketplace the
   installer reads the registration back and prints where it points; if the
   move fails it prints what is registered now, and the new copy stays beside
   it. Only one install runs at a time (`~/.zodchi/plugins/.install.lock`; a
