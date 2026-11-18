@@ -23,6 +23,13 @@ workflow are our own agents, not attackers.
 - Prompt wording, unless it is likely to make an agent do the wrong thing.
 - Missing tests for internal details no user can observe.
 
+## The flow engine (`gateway/crates/zodchi-flow`)
+- important: after ONE cut at any point (process killed, machine off), `--resume` loses work, repeats a model call
+  or a commit, commits unclaimed or unchecked content, or reports success that did not happen.
+- nit: double faults (a cut during the recovery of a cut, a disk that fills during a journal write, a file swapped
+  for a link between steps by someone else), and anything that needs a second process editing the checkout during
+  a run.
+
 ## Severity
 `important` blocks. `nit` and `pre-existing` never block. When unsure whether something is important, ask: would
 the owner stop a release for it?
