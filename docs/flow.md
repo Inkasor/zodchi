@@ -16,7 +16,7 @@ and result. An agent does the starting from a skill; the skill tells it how to w
 checks, verify and the `## Review boundary` section), how to write the args file, to run the command in the foreground
 with the longest timeout its shell tool allows, to read `verdict`, `stoppedAt`, `next`, `openFindings` and
 `verifiedBy` from the result, to resume a cut run with `--resume <run-id>` (the id is the newest journal folder of the
-repository and label with no `result.json`), and never to edit the journal, resubmit a step by hand, background the
+repository and label, a saved `result.json` included: a cut can come between it and the closing of the claim), and never to edit the journal, resubmit a step by hand, background the
 run or switch branches during it.
 
 | Way | Skill | Model steps |
@@ -257,14 +257,15 @@ See [flow-claude.md](flow-claude.md).
 
 `node scripts/e2e.mjs` runs `scripts/e2e/scenarios/flow-entry.mjs`, which follows the skills as written: the brief is made
 from the skill's own template, the args file from its own JSON example, and each command line of its `sh` blocks is
-run with its placeholders filled. A real run with real Codex and Claude sessions belongs to the before-release run, not
+run, as written, by bash with its placeholders filled, from files in a folder whose name has a space in it. A real run with real Codex and Claude sessions belongs to the before-release run, not
 to CI.
 
 | Scenario | What a user would see |
 |---|---|
 | `flow-entry-skills` | the two skills share one body; exactly the run, resume and rerun commands; a brief template with the review boundary; an args example the engine takes; nothing that backgrounds a run, edits the journal, resubmits or switches branches; no real host |
-| `flow-entry-install` | the installer puts the Codex skill in `$CODEX_HOME/skills` (else `~/.codex/skills`) and the Claude Code skill in the plugin it installs; it leaves a file it did not write or you changed, `--force` replaces it, `--no-codex-skill` skips it, `--uninstall` removes both |
+| `flow-entry-install` | the installer puts the Codex skill in `$CODEX_HOME/skills` (else `~/.codex/skills`) and the Claude Code skill in the plugin it installs; it leaves a file it did not write or you changed, `--force` replaces it, `--no-codex-skill` skips it (on `--uninstall` too, whatever `$CODEX_HOME` is by then), `--uninstall` removes both |
 | `flow-entry-local` | the Codex skill's steps on the local gateway: brief, args, run from another folder, result read, finished run resumed, a refusal read |
-| `flow-entry-cut` | the Claude Code skill's steps with the run cut after the write submission: the run id found as the skill says, resumed, one model turn per step, no second run |
+| `flow-entry-cut` | the Claude Code skill's steps with the run cut after the write submission, and with the `result` cut after the result is saved: the run id found as the skill says, resumed, one model turn per step, no second run, the claim closed without a model call |
+| `flow-entry-failing-verify` | the Codex skill's steps with a verify command that fails: `verifiedBy` is `none` while `verification.evidence` holds the command's exit code, as the skill says to tell it from a run in which nothing ran |
 | `flow-entry-server` | the Codex skill's steps with the model steps on a zodchi-server; nothing runs on this machine's Codex, the token is in no result or commit |
 | `flow-entry-claude` | the Codex skill's steps with a Claude writer (the fake `claude`): a failed write stops the run, the skill's rerun of the step named in `stoppedAt` goes on to approval |

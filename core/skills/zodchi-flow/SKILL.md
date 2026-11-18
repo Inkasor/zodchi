@@ -107,7 +107,7 @@ redirection (a Windows shell writes the wrong encoding). The paths in `brief` an
 ## 4. Run it, in the foreground
 
 ```sh
-zodchi flow code-package --args <args-file>
+zodchi flow code-package --args "<args-file>"
 ```
 
 - Run it in the foreground and wait for it to end: no `&`, no `nohup`, no background mode of your shell tool, no
@@ -115,6 +115,7 @@ zodchi flow code-package --args <args-file>
   shell tool allows (the Claude Code Bash tool: `timeout` 600000; the Codex shell tool: its longest command timeout).
 - It prints the result JSON and exits 0 when the change is approved, 2 for any other end (refused, stopped, changes
   requested), 1 for a wrong call (the message says what).
+- Put the absolute path of the args file in the quotes, as it is: a path with a space in it must stay one word.
 - Start it from any folder; the repository is the one in the args.
 
 ## 5. Read the result
@@ -127,7 +128,8 @@ The output is one JSON object. Read these fields and quote them as they are:
   the person.
 - `openFindings`: every finding still open, with its severity. Do not drop or soften one.
 - `verifiedBy` and `verification` (its `evidence[]`: `source`, `exitCode`, `log`): what ran. `verifiedBy: "none"` means
-  the change was not verified by running anything; say so.
+  the run did not establish that the change is verified, not that nothing ran: an empty `evidence` is a run in which no
+  command ran; an entry with an `exitCode` other than 0 is a command that ran and failed. Say which.
 - `rounds[]`, `protectedChanged`, `outsideClaim`, `infra`, `models`, `skipped`.
 - `runId` and `journal`: the run's id and its folder.
 
@@ -140,7 +142,10 @@ When the command was stopped before it ended (your shell tool's timeout, a close
 run is not lost: its journal keeps every step. Do not start a new run.
 
 1. Find the run id: the newest folder of `~/.zodchi/flows/` (`$ZODCHI_HOME/flows/`) whose `run.json` names your
-   `repo` and `label` and which has no `result.json`. The folder's name is the run id.
+   `repo` and `label`. The folder's name is the run id. A saved `result.json` does not make it a finished run: a cut
+   can come after the result is saved and before the claim of the run is closed, and only a resume closes it. A resume
+   of such a run prints the saved result and runs no model step. If the newest matching folder began before you ran
+   the command (its name starts with the date and time), your command ended before it made a run: run it again.
 2. If the earlier command may still be running, let it end: a resume of a run held by a live process answers
    "Another process (pid ...) works on this run". Wait and look again; never kill it.
 3. Resume:
@@ -178,6 +183,8 @@ zodchi flow code-package --resume <run-id> --rerun "<step>"
 ## 8. Report
 
 Tell the person, in this order: whether it was approved; the pair of models that ran; the commits made
-(`git log <base>..HEAD`, where `base` is in the result); what verified it (`verifiedBy` with the exit codes); every
+(the ids in `rounds[].commit.commit` of the result, and only those: `git log` over a range shows the branch, which may
+hold the commits of another package; to show one, `git -C <repo> show --stat <id>` with the `repo` of the args); what
+verified it (`verifiedBy` with the exit codes, and for `none` whether nothing ran or a command failed); every
 open finding; and, when it did not end approved, `stoppedAt`, `question` and `next` as the engine wrote them. Do not
 call a run done that ended with exit code 2. The journal folder is the evidence.

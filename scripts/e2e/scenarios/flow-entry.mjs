@@ -19,7 +19,7 @@ const readJsonl = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8")
 const SKILLS = { codex: "codex/skills/zodchi-flow/SKILL.md", claude: "core/skills/zodchi-flow/SKILL.md" };
 // The only commands a skill tells an agent to run, in the order of its steps.
 const COMMANDS = [
-  "zodchi flow code-package --args <args-file>",
+  'zodchi flow code-package --args "<args-file>"',
   "zodchi flow code-package --resume <run-id>",
   'zodchi flow code-package --resume <run-id> --rerun "<step>"',
 ];
@@ -29,7 +29,7 @@ const FIELDS = ["verdict", "approved", "openFindings", "verifiedBy", "verificati
 const STOP_FIELDS = ["refused", "stoppedAt", "next", "question", "questions", "infra"];
 
 export default function register(h) {
-  const { scenario, flowWorld, serve, user, zodchi, gitOut, samePath, STUB, ROOT } = h;
+  const { scenario, flowWorld, serve, user, run, ZODCHI, gitOut, samePath, STUB, ROOT } = h;
   const FAKE_CLAUDE = path.join(ROOT, "scripts", "e2e", "fake-claude.mjs");
 
   // ------------------------------------------------------------------------------------------------ the skills
@@ -46,14 +46,29 @@ export default function register(h) {
     return { rel, front, body: m[2], blocks, lines, brief: block("markdown"), argsExample: JSON.parse(block("json")) };
   }
 
-  /** `zodchi flow ...` as the skill writes it, split like a shell does and with its placeholders filled; the program
-   *  name is checked and dropped (the scenario runs the release binary it just built). */
-  function command(skill, shape, fill) {
+  /** The bash an agent's shell tool runs: on Windows the one of Git for Windows (as the engine finds it, from Git's
+   *  exec path), elsewhere the one on PATH. */
+  function findBash() {
+    if (!WIN) return "bash";
+    const g = spawnSync("git", ["--exec-path"], { encoding: "utf8", windowsHide: true });
+    for (let d = path.resolve((g.stdout || "").trim()); d && path.dirname(d) !== d; d = path.dirname(d)) {
+      for (const c of [path.join(d, "bin", "bash.exe"), path.join(d, "usr", "bin", "bash.exe")]) if (fs.existsSync(c)) return c;
+    }
+    throw new Error("no bash of Git for Windows found");
+  }
+  const BASH = findBash();
+
+  /** A command line of the skill, as written, run by bash: its placeholders replaced by the given text where they
+   *  stand (so the quotes round them are the skill's own), forward slashes in a path as a shell tool is told to write
+   *  them. Only the program name `zodchi` is replaced, by the release binary this run built (it is not on PATH). */
+  function byShell(t, f, skill, shape, fill, { env = {} } = {}) {
     const line = skill.lines.find((l) => l === shape);
     if (!line) throw new Error(`${skill.rel} has no command line "${shape}"`);
-    const words = [...line.matchAll(/"([^"]*)"|(\S+)/g)].map((x) => (x[1] !== undefined ? x[1] : x[2]));
-    if (words[0] !== "zodchi") throw new Error(`${skill.rel}: "${line}" does not start with zodchi`);
-    return words.slice(1).map((w) => fill[w] !== undefined ? fill[w] : w);
+    if (!line.startsWith("zodchi ")) throw new Error(`${skill.rel}: "${line}" does not start with zodchi`);
+    let text = `"$ZODCHI_BIN" ${line.slice("zodchi ".length)}`;
+    for (const [ph, value] of Object.entries(fill)) text = text.split(ph).join(value.replace(/\\/g, "/"));
+    t.log(`bash -c ${JSON.stringify(text)}`);
+    return run(t, BASH, ["-c", text], { cwd: f.w.dir, env: { ...f.w.env, ...env, ZODCHI_BIN: ZODCHI }, label: "bash" });
   }
 
   /** A brief made from the skill's template: each section of it filled with the fixture's words. */
@@ -73,13 +88,13 @@ export default function register(h) {
     return "# Brief: clamp\n\n" + names.map((n) => `## ${n}\n${words[n]}\n`).join("\n");
   }
 
-  /** The newest run folder of the zodchi home whose run.json names the repository and the label and that has no
-   *  result.json: how the skill says to find the id of a cut run. */
-  function runIdOfCut(zhome, repo, label) {
+  /** The newest run folder of the zodchi home whose run.json names the repository and the label, a saved result.json
+   *  or not: how the skill says to find the id of a cut run. */
+  function runIdOf(zhome, repo, label) {
     const flows = path.join(zhome, "flows");
     for (const id of fs.readdirSync(flows).sort().reverse()) {
       const file = path.join(flows, id, "run.json");
-      if (!fs.existsSync(file) || fs.existsSync(path.join(flows, id, "result.json"))) continue;
+      if (!fs.existsSync(file)) continue;
       const run = JSON.parse(fs.readFileSync(file, "utf8"));
       if (samePath(run.repo, repo) && run.inputs.args.label === label) return id;
     }
@@ -87,9 +102,10 @@ export default function register(h) {
   }
 
   /** The steps of a skill, as an agent does them in a flow world: the brief from the template, the args from the
-   *  example, the run command from any other folder. `env` is added to the run's environment (for a simulated cut). */
+   *  example, the run command from any other folder. `env` is added to the run's environment (for a simulated cut).
+   *  The files are in a folder with a space in its name, as an agent's may be, and the command is run by bash. */
   async function startBySkill(t, f, skill, { env = {}, args = {} } = {}) {
-    const dir = path.join(f.r, ".agent-tmp", "flow");
+    const dir = path.join(f.r, ".agent-tmp", "flow", "two words");
     fs.mkdirSync(dir, { recursive: true });
     const brief = path.join(dir, "clamp-brief.md");
     fs.writeFileSync(brief, briefFrom(t, skill));
@@ -97,15 +113,14 @@ export default function register(h) {
     const file = path.join(dir, "clamp-args.json");
     fs.writeFileSync(file, JSON.stringify(given, null, 2));
     t.eq(gitOut(f.r, ["status", "--porcelain"]), "", "the brief and the args are in the ignored .agent-tmp/: the work tree is clean");
-    const argv = command(skill, COMMANDS[0], { "<args-file>": file });
-    t.eq(argv.slice(0, 2), ["flow", "code-package"], `the skill's run command: zodchi ${argv.join(" ")}`);
-    return zodchi(t, f.w, argv, { cwd: f.w.dir, env: { ...f.w.env, ...env } });
+    t.ok(/ /.test(file), "the args file is at a path with a space in it");
+    return byShell(t, f, skill, COMMANDS[0], { "<args-file>": file }, { env });
   }
 
   /** The resume command of the skill. */
-  const resumeBySkill = (t, f, skill, id, extra = {}) => zodchi(t, f.w, command(skill, COMMANDS[1], { "<run-id>": id }), { cwd: f.w.dir, env: { ...f.w.env, ...extra } });
+  const resumeBySkill = (t, f, skill, id, extra = {}) => byShell(t, f, skill, COMMANDS[1], { "<run-id>": id }, { env: extra });
   /** The rerun command of the skill, `<step>` filled from the step the stop names. */
-  const rerunBySkill = (t, f, skill, id, step) => zodchi(t, f.w, command(skill, COMMANDS[2], { "<run-id>": id, "<step>": step }), { cwd: f.w.dir, env: f.w.env });
+  const rerunBySkill = (t, f, skill, id, step) => byShell(t, f, skill, COMMANDS[2], { "<run-id>": id, "<step>": step });
 
   /** What the skill says about an approved result: every field it names is there, the journal holds the same result,
    *  and the engine is the same one in every way of starting it. */
@@ -114,7 +129,10 @@ export default function register(h) {
     for (const k of FIELDS) t.ok(res.json && k in res.json && skill.body.includes(`\`${k}\``), `the skill names \`${k}\` and the result has it`);
     t.eq([res.json.workflow, res.json.mode], ["code-package", "expert"], "the result is the engine's code-package result");
     t.eq(JSON.parse(fs.readFileSync(path.join(res.json.journal, "result.json"), "utf8")).runId, res.json.runId, "result.json in the journal folder is this run's result (the skill's fallback read)");
-    t.eq([f.commits().length, gitOut(f.r, ["show", "--name-only", "--format=", "HEAD"])], [1, "src/math.mjs"], "one commit on top of the base, the claimed file only (git log <base>..HEAD, as the skill reports)");
+    t.eq([f.commits().length, gitOut(f.r, ["show", "--name-only", "--format=", "HEAD"])], [1, "src/math.mjs"], "one commit on top of the base, the claimed file only");
+    t.ok(skill.body.includes("`rounds[].commit.commit`") && !/git log <base>/.test(skill.body), "the skill reports the commits from `rounds[].commit.commit` of the result, not from a git log range");
+    t.eq(res.json.rounds.map((r) => r.commit && r.commit.commit), f.commits().reverse(), "the commit ids of the result are the commits of this run, in order");
+    t.eq(gitOut(f.r, ["show", "--stat", "--format=%H", res.json.rounds[0].commit.commit]).split("\n")[0], res.json.rounds[0].commit.commit, "and `git -C <repo> show` of one of them names it");
     t.eq(gitOut(f.r, ["rev-list", "-1", "--skip=1", "HEAD"]), res.json.base, "the base in the result is the commit the run started from");
     t.eq(fs.readFileSync(path.join(f.r, "src", "math.mjs"), "utf8"), FIXED, "the patch is in the work tree");
     t.eq(f.claim().status, "done", "the claim is closed as done");
@@ -176,6 +194,7 @@ export default function register(h) {
     t.ok(codex.body === claude.body, "the two skills share one body");
     for (const s of [codex, claude]) {
       t.eq(s.lines, COMMANDS, `${s.rel}: the commands the skill tells an agent to run are exactly the run, the resume and the rerun`);
+      t.ok(s.lines[0].includes('--args "<args-file>"'), `${s.rel}: the args file placeholder of the run command is in quotes, so a path with a space stays one word`);
       t.ok(s.lines.every((l) => !/[&|;<>]\s*$|nohup|\bstart\b|\bdisown\b/.test(l.replace(/<[a-z-]+>/g, ""))), `${s.rel}: no command is backgrounded or detached`);
       t.ok(/foreground/i.test(s.body) && /no `&`/.test(s.body) && /no `nohup`/.test(s.body), `${s.rel}: it says to run in the foreground, with no &, no nohup`);
       t.ok(/timeout/i.test(s.body), `${s.rel}: it says to set the longest timeout the shell tool allows`);
@@ -271,6 +290,25 @@ export default function register(h) {
     install(c, ["--no-plugins", "--uninstall"]);
     t.ok(!fs.existsSync(cFile), "a plain uninstall afterwards removes it: it is still recorded");
 
+    // The opt-out knows the skill from the manifest, not from the $CODEX_HOME of the day.
+    for (const [name, change] of [["other-root", (e) => { e.CODEX_HOME = path.join(path.dirname(e.CODEX_HOME), "codex-home-2"); }], ["root-unset", (e) => { delete e.CODEX_HOME; }]]) {
+      const m = env("moved-" + name);
+      install(m, base);
+      const mFile = path.join(m.CODEX_HOME, "skills", "zodchi-flow", "SKILL.md");
+      const recorded = JSON.parse(fs.readFileSync(path.join(m.ZODCHI_HOME, "installed.json"), "utf8"));
+      t.eq(recorded.codexSkills, [mFile], "the manifest records which of its files are Codex skill files");
+      const moved = { ...m };
+      change(moved);
+      install(moved, ["--no-plugins", "--uninstall", "--no-codex-skill"]);
+      t.ok(fs.existsSync(mFile), `--no-codex-skill on uninstall leaves a skill installed under an earlier $CODEX_HOME (${name})`);
+      const left = JSON.parse(fs.readFileSync(path.join(m.ZODCHI_HOME, "installed.json"), "utf8"));
+      t.ok(left.files[mFile] && left.codexSkills && left.codexSkills.includes(mFile), "and keeps its record, as a skill file");
+      install(moved, ["--no-plugins", "--no-build", "--no-codex-skill"]);
+      t.ok(fs.existsSync(mFile) && JSON.parse(fs.readFileSync(path.join(m.ZODCHI_HOME, "installed.json"), "utf8")).files[mFile], `an install with --no-codex-skill under the other root leaves it and its record too (${name})`);
+      install(m, ["--no-plugins", "--uninstall"]);
+      t.ok(!fs.existsSync(mFile), "a plain uninstall under the root it was installed in removes it");
+    }
+
     // The Claude Code skill rides in the zodchi-core plugin. The installer runs against a fake `claude` that keeps the
     // marketplaces and plugins it is told about, so what Claude Code would read is the folder the plugin is installed from.
     const p = env("plugin");
@@ -355,14 +393,42 @@ done("fake claude: not supported", 2);
     const cut = await startBySkill(t, f, skill, { env: { ZODCHI_FLOW_CUT: "submit write" } });
     t.eq(cut.code, 75, "the process was cut right after the write step was submitted");
     t.eq(f.claim().status, "open", "the claim stays open across the cut");
-    const id = runIdOfCut(f.w.zhome, f.r, "clamp");
+    const id = runIdOf(f.w.zhome, f.r, "clamp");
     t.ok(id && /^\d{8}-\d{6}-[0-9a-f]{6}$/.test(id), `the run id is found from the journal folder as the skill says (${id})`);
     const res = await resumeBySkill(t, f, skill, id);
     readLikeSkill(t, f, skill, res);
     t.eq(res.json.runId, id, "the resume is the same run");
     t.eq(f.steps(), ["write", "review 1"], "each model step ran once");
     t.eq(fs.readdirSync(path.join(f.w.zhome, "flows")).length, 1, "no second run was started");
-    t.eq(runIdOfCut(f.w.zhome, f.r, "clamp"), null, "a finished run is not taken for a cut one");
+    t.eq(runIdOf(f.w.zhome, f.r, "clamp"), id, "a finished run is still the newest one of its repository and label: the skill resumes it and it prints its result");
+  });
+
+  scenario("flow-entry-cut-result", "from a Claude Code session: the run cut after its result was saved and before its claim was closed: the run id is found as the skill says although result.json is there, its resume closes the claim and asks no model", async (t) => {
+    const skill = readSkill(SKILLS.claude);
+    const f = flowWorld(t, "flow-entry-cut-result");
+    f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
+    f.answer("review 1", f.review("approved"));
+    t.ok(skill.body.includes("A saved `result.json` does not make it a finished run") && !skill.body.includes("which has no `result.json`"), "the skill does not leave out a run that has a result.json");
+    const cut = await startBySkill(t, f, skill, { env: { ZODCHI_FLOW_CUT: "result" } });
+    t.eq(cut.code, 75, "the process was cut after the result was saved");
+    t.eq(f.claim().status, "open", "the claim is still open: nothing else could claim those files");
+    const id = runIdOf(f.w.zhome, f.r, "clamp");
+    t.ok(id && fs.existsSync(path.join(f.w.zhome, "flows", id, "result.json")), `the run id is found although the journal already holds result.json (${id})`);
+    t.eq(f.steps(), ["write", "review 1"], "both model steps ran before the cut");
+    const res = await resumeBySkill(t, f, skill, id);
+    readLikeSkill(t, f, skill, res);
+    t.eq([res.json.runId, f.steps()], [id, ["write", "review 1"]], "the resume is the same run and asked no model again");
+  });
+
+  scenario("flow-entry-failing-verify", "from a Codex session: a verify command that fails: verifiedBy is none while evidence holds the failed command's exit code, which is how the skill says to tell it from a run in which nothing ran", async (t) => {
+    const skill = readSkill(SKILLS.codex);
+    t.ok(/did not establish that the change is verified, not that nothing ran/.test(skill.body.replace(/\s+/g, " ")) && /`evidence`/.test(skill.body) && /exitCode/.test(skill.body), "the skill says none is not 'nothing ran' and points to the evidence");
+    const f = flowWorld(t, "flow-entry-failing-verify");
+    f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
+    const res = await startBySkill(t, f, skill, { args: { verify: ["node smoke.mjs --fail"], fixes: 0 } });
+    t.eq([res.code, res.json.verifiedBy], [2, "none"], "the run did not end approved and verifiedBy is none");
+    t.eq(res.json.verification.evidence.map((e) => [e.source, e.exitCode]), [["checks", 0], ["args.verify", 1]], "and yet commands ran: the evidence holds the exit codes, the last one failed");
+    t.eq([f.commits().length, f.steps()], [0, ["write"]], "no commit, no review");
   });
 
   scenario("flow-entry-server", "from a Codex session for a colleague: the Codex skill's steps as written with flow.json naming a server: the model steps run on the server under the user's account, everything else stays local, same engine and result", async (t) => {
