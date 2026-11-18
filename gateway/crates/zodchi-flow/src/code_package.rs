@@ -174,20 +174,35 @@ pub fn start(raw: &Value) -> Result<Exit> {
     }
     let review_md = git.show(&base, "REVIEW.md")?.map(|b| String::from_utf8_lossy(&b).into_owned());
     let cfg = Config::new(Some(&repo))?;
-    for role in [WRITER_GATEWAY_ROLE, REVIEWER_GATEWAY_ROLE] {
-        if let Err(e) = load_role(&cfg, role, &Overrides::default()) {
-            return Ok(refused(&label, format!("The gateway role {role} does not load: {e}. Install the roles of this zodchi version.")));
-        }
-    }
+    // With a flow server the Codex steps run there: the local Codex sign-in and roles are not needed for them, and
+    // the server's roles and sign-in are asked below, before the claim.
+    let server = executor::flow_server(&cfg);
     let table = match models::table(&cfg, &repo, &args.models) {
         Ok(t) => t,
         Err(why) => return Ok(refused(&label, why)),
     };
-    let account = job::account(&cfg);
-    let (writer, reviewer, skipped) = match models::resolve(&table, &models::codex_usable(&account)) {
+    let codex = match &server {
+        None => models::codex_usable(&job::account(&cfg)),
+        Some(_) => Ok(()),
+    };
+    let (writer, reviewer, skipped) = match models::resolve(&table, &codex) {
         Ok(p) => p,
         Err(why) => return Ok(refused(&label, why)),
     };
+    let on_server = |p: &Pick| server.is_some() && p.provider == "codex";
+    if !(on_server(&writer) && on_server(&reviewer)) {
+        for role in [WRITER_GATEWAY_ROLE, REVIEWER_GATEWAY_ROLE] {
+            if let Err(e) = load_role(&cfg, role, &Overrides::default()) {
+                return Ok(refused(&label, format!("The gateway role {role} does not load: {e}. Install the roles of this zodchi version.")));
+            }
+        }
+    }
+    if let Some(url) = server.as_ref().filter(|_| on_server(&writer) || on_server(&reviewer)) {
+        if let Err(e) = executor::server::Server::new(cfg.clone(), url.clone()).preflight(&[WRITER_GATEWAY_ROLE, REVIEWER_GATEWAY_ROLE]) {
+            return Ok(refused(&label, e.0));
+        }
+    }
+    let executors = if server.is_some() { "codex via server" } else { "codex only" };
     let now = time_id();
     let id = format!("{now}-{:06x}", rand::random::<u32>() & 0xff_ffff);
     let run = json!({
@@ -197,7 +212,7 @@ pub fn start(raw: &Value) -> Result<Exit> {
         "pair": { "expertWriter": writer.to_json(), "reviewer": reviewer.to_json(), "skipped": skipped },
         "policy": { "rounds": args.rounds, "fixes": args.fixes, "protected": ["test/", "tests/", "e2e/", ".claude/skills/verify/", "REVIEW.md"],
             "protect": args.protect, "allowCheckChanges": args.allow_check_changes, "extendClaim": args.extend_claim, "checkTimeoutMin": args.check_timeout_min,
-            "executors": "codex only", "checksEnvironment": "exported candidate tree, reduced environment" },
+            "executors": executors, "checksEnvironment": "exported candidate tree, reduced environment" },
     });
     let journal = Journal::create(&cfg.home, &id, &run)?;
     journal.write_text("brief.md", &brief)?;

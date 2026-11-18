@@ -69,7 +69,10 @@ the user takes part (`--disable`) and redirects are not followed.
 
 A run cut at any point is resumed with `zodchi flow code-package --resume <run-id>`, as with the local gateway. A
 step with a journaled intent is never asked under a new key by itself: its key is looked up on the server
-(`GET /v1/jobs/{key}`) and waited for.
+(`GET /v1/jobs/{key}`) and waited for. Before the lookup, the server and the account (`GET /v1/account`, `user`)
+journaled with the request must be the configured server and the token's account; otherwise the run stops with
+`infrastructure at <step>`, naming both, and looks nothing up, so a job of the same key on another server or under
+another account is never taken as this run's.
 
 A key the server does not know (`404`) is either a request that never reached it (a cut, or a refused `POST`, between
 the intent and the job) or a job that is gone. The journaled request is posted again under the same key, so the step
@@ -114,19 +117,17 @@ token is the same account's before it posts a journaled request again.
 
 ## Known limits
 
-- **The gate still checks locally.** The gate of `code_package` checks that the roles load from the local roles
-  folder and that the local Codex subscription is signed in before it claims; it does not ask the server yet. So
-  today a run through a server still needs the roles installed locally (the installer does that) and a local Codex
-  sign-in that the gate accepts, and a role missing on the server or a signed-out server subscription stops the run
-  at its first model step, after the claim (with the claim open and nothing submitted), instead of refusing it before
-  the claim. The executor offers the check the gate needs: `executor::server::Server::preflight(&[roles])`.
+- **The gate asks the server.** With a server in `flow.json`, the gate of `code_package` needs no local Codex sign-in
+  and no local Codex roles: before it claims, it asks the server for both roles (`GET /v1/roles`) and the account's
+  sign-in and limit (`GET /v1/account`), and refuses the run, with no claim, when one is missing. `run.json` records
+  `"executors": "codex via server"`. A Claude pick still needs the local roles.
 - **No `server` in the args.** The server is named in `flow.json` only; `args.server` is refused as an unknown
   option of this version.
 - The token in `flow.json`'s token file is whoever's it is: a resumed run asks the server with the token it finds
-  then; a job of another user's key is not found (`404`), and its request is not posted again under the other user
-  (the account check above), so it stops with an unknown outcome until the token is the request's account's again.
-- A server that does not name the account in `GET /v1/account` (`user`, added with this change) gets no requests
-  posted again: a key it does not know is an unknown outcome, as before.
+  then; under another user's token the key is not looked up (the account check above), so it stops with
+  `infrastructure at <step>` until the token is the request's account's again.
+- A server that does not name the account in `GET /v1/account` (`user`, added with this change) cannot be resumed
+  on: the account of a journaled request cannot be confirmed, so a resume stops with `infrastructure at <step>`.
 
 ## Verification
 
@@ -137,7 +138,7 @@ users' Codex and runs `zodchi flow` against it from the fixture repository (`scr
 |---|---|
 | `flow-server-approve` | the writer and the reviewer run on the server, in the user's Codex home, each once, with the flow's own patch and review schemas; apply, checks, one commit and the claim stay local; the token is in no journal file, output or commit |
 | `flow-server-resume` | a cut right after `POST /v1/jobs` of the write step: `--resume` looks the key up and waits; one model turn, one intent and one job per step |
-| `flow-server-resume-before-post` | the write step's intent journaled and its `POST /v1/jobs` refused with nothing stored (the state a cut between the two leaves): `--resume` with another user's token stops with an unknown outcome and posts nothing under that user; with the user's own token it posts the journaled request again under the same key; one model turn, one intent and one job per step |
-| `flow-server-missing-role` | a server without `flow-patch`: stopped naming the role, nothing submitted, no model turn, nothing applied |
-| `flow-server-signed-out` | a signed-out subscription on the server: stopped with the sign-in message, nothing submitted; after signing in, `--resume` runs to approval |
+| `flow-server-resume-before-post` | the write step's intent journaled and its `POST /v1/jobs` refused with nothing stored (the state a cut between the two leaves): `--resume` with another user's token is an infrastructure stop naming both accounts and posts nothing under that user; with the user's own token it posts the journaled request again under the same key; one model turn, one intent and one job per step |
+| `flow-server-missing-role` | a server without `flow-patch`, no local Codex sign-in: refused by the gate naming the role, no claim, nothing submitted, no model turn, nothing applied |
+| `flow-server-signed-out` | a signed-out subscription on the server: refused by the gate with the sign-in message, no claim, nothing submitted; after signing in, a new run goes to approval |
 | `flow-server-busy` | a `429 busy` on the write job: the run waits and posts the same key again; one job, one intent, approval |
