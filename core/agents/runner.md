@@ -22,7 +22,8 @@ the machine said.
   in the change is reported as flaky, with its log; it is not retried.
 - **End-to-end evidence.** For a run of the real program (a verify command,
   the repository's `verify` skill), report each command, its exit code and
-  where its trace, screenshot or log is. When nothing could run the change,
+  where its trace, screenshot or log is, written by this run under the
+  evidence folder the brief names. When nothing could run the change,
   say "not verified by running"; never report it as verified.
 - **Heavy processes.** One at a time. Before a heavy start (a full build, an
   editor, a browser suite), check that the same program is not already

@@ -48,7 +48,7 @@ function makeRepo(extra = {}) {
   git(repo, 'config', 'user.email', 'mock')
   git(repo, 'config', 'user.name', 'mock')
   git(repo, 'config', 'core.autocrlf', 'false')
-  for (const [f, t] of Object.entries({ ...BASE_FILES, ...extra })) { fs.mkdirSync(path.dirname(`${repo}/${f}`), { recursive: true }); fs.writeFileSync(`${repo}/${f}`, t) }
+  for (const [f, t] of Object.entries({ ...BASE_FILES, ...extra })) if (t !== null) { fs.mkdirSync(path.dirname(`${repo}/${f}`), { recursive: true }); fs.writeFileSync(`${repo}/${f}`, t) }
   git(repo, 'add', '-A')
   git(repo, 'commit', '-q', '-m', 'base')
   return repo
@@ -61,19 +61,19 @@ const run = (cmd, cwd) => {
 
 // Runs a list of { cmd, pass } as the runner would: each once, to its end, one log each. A pass rule that says "any
 // exit code" accepts a nonzero exit; every other rule wants exit code 0.
-function runList(ctx, list, kind) {
+function runList(ctx, list, kind, dir = `${ctx.tmp}/logs`) {
   const results = [], logs = [], evidence = []
   let cause = 'none'
   for (const c of list) {
     const r = run(c.cmd, ctx.repo)
-    const log = `${ctx.tmp}/logs/${kind}-${++ctx.logN}.log`
+    const log = `${dir}/${kind}-${++ctx.logN}.log`
     fs.mkdirSync(path.dirname(log), { recursive: true })
     fs.writeFileSync(log, r.output)
     const passed = r.exitCode === 0 || /any exit code/.test(c.pass || '')
     ctx.ran.push({ kind, cmd: c.cmd, exitCode: r.exitCode })
     results.push(`${c.cmd}: exit ${r.exitCode}, ${r.output.trim().split('\n').pop()}, ${passed ? 'pass' : 'fail'}`)
     logs.push(log)
-    evidence.push({ command: c.cmd, exitCode: r.exitCode, passed, trace: log })
+    evidence.push({ command: c.cmd, exitCode: r.exitCode, passed, trace: log, ...('flow' in c ? { flow: c.flow } : {}) })
     if (!passed) { cause = (ctx.s.flaky || []).includes(c.cmd) ? 'flaky' : 'code'; break }
   }
   return { ok: cause === 'none', results, logs, cause, evidence }
@@ -88,7 +88,10 @@ function fakeAgent(ctx) {
     if (tag.startsWith('gate ')) {
       return {
         homeModels: JSON.stringify(TABLE), repoModels: '', account: JSON.stringify(ACCOUNT), git: !s.notGit,
-        head: s.notGit ? '' : git(repo, 'rev-parse', 'HEAD').trim(), dirty: [], ignoreExit: 0,
+        head: s.notGit ? '' : git(repo, 'rev-parse', 'HEAD').trim(), ignoreExit: s.ignoreExit ?? 0,
+        dirty: s.notGit ? [] : git(repo, 'status', '--porcelain', '-uall').split('\n').filter(Boolean).map(l => l.slice(3).replace(/^"|"$/g, '')),
+        reviewMd: gitOk(repo, 'cat-file', '-e', 'HEAD:REVIEW.md') === 0,
+        ...(ctx.args.branch ? { branchHead: gitOk(repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${ctx.args.branch}`) === 0 ? git(repo, 'rev-parse', `refs/heads/${ctx.args.branch}`).trim() : '' } : {}),
         verifySkill: gitOk(repo, 'cat-file', '-e', 'HEAD:.claude/skills/verify/SKILL.md') === 0,
         verifySkillText: gitOk(repo, 'cat-file', '-e', 'HEAD:.claude/skills/verify/SKILL.md') === 0 ? git(repo, 'show', 'HEAD:.claude/skills/verify/SKILL.md') : '',
         packageJson: gitOk(repo, 'cat-file', '-e', 'HEAD:package.json') === 0 ? git(repo, 'show', 'HEAD:package.json') : '',
@@ -100,6 +103,7 @@ function fakeAgent(ctx) {
       const step = tag.replace(` ${ctx.label}`, '')
       const edits = (s.writes || {})[step]
       if (!edits) throw new Error(`the scenario has no edits for the writer step "${step}"`)
+      if (s.writerMore && tag !== label) throw new Error(`a fresh writer went on after ${tag}`)
       for (const [f, t] of Object.entries(edits)) {
         if (t === null) fs.rmSync(`${repo}/${f}`, { force: true })
         else { fs.mkdirSync(path.dirname(`${repo}/${f}`), { recursive: true }); fs.writeFileSync(`${repo}/${f}`, t) }
@@ -111,7 +115,7 @@ function fakeAgent(ctx) {
         ctx.ran.push({ kind: 'writer', cmd: command })
         return { command, log, why: 'connection reset by the test server, nothing in the change' }
       })
-      return { done: true, summary: `mock writer: ${step}`, changed: Object.keys(edits).map(f => `${repo}/${f}`), unverified: [], ...(flaky.length ? { flaky } : {}) }
+      return { done: !s.writerMore, summary: `mock writer: ${step}`, changed: Object.keys(edits).map(f => `${repo}/${f}`), unverified: [], ...(s.writerMore ? { more: true } : {}), ...(flaky.length ? { flaky } : {}) }
     }
     if (tag.startsWith('status ')) {
       const paths = git(repo, 'status', '--porcelain', '-uall').split('\n').filter(Boolean).map(l => l.slice(3).replace(/^"|"$/g, ''))
@@ -132,6 +136,11 @@ function fakeAgent(ctx) {
       ctx.scriptsCompared = JSON.parse(sm[1])
       return { ok: true, summary: 'compared', paths, scripts }
     }
+    if (tag.startsWith('evidence ')) {
+      const list = JSON.parse(between(prompt, /For each of (\[.*?\]), run `test -s/, 'trace list'))
+      ctx.traceChecks.push(list)
+      return { ok: true, summary: 'checked', paths: list.filter(p => !(fs.existsSync(p) && fs.statSync(p).size > 0)) }
+    }
     if (tag.startsWith('checks ')) {
       const list = JSON.parse(between(prompt, /one log per command in \S+: (\[\{"cmd".*?\}\])\. /, 'list of checks'))
       return runList(ctx, list, 'checks')
@@ -145,13 +154,21 @@ function fakeAgent(ctx) {
         const base = between(prompt, /`git show ([0-9a-f]+):\.claude\/skills\/verify\/SKILL\.md`/, 'skill as of the base commit')
         const skill = git(repo, 'show', `${base}:.claude/skills/verify/SKILL.md`)
         ctx.skillRead = skill
-        for (const m of skill.matchAll(/^\d+\. `([^`]+)`/gm)) list.push({ cmd: m[1], pass: 'exit code 0' })
+        // A step marked "(setup)" only prepares; the others drive the flow.
+        for (const m of skill.matchAll(/^\d+\. `([^`]+)`(.*)$/gm)) list.push({ cmd: m[1], pass: 'exit code 0', flow: !/\(setup\)/.test(m[2]) })
       }
       if (m2) list.push(...JSON.parse(m2[1]))
-      const res = runList(ctx, list, 'verify')
-      // A runner that reports less than it ran: one entry missing, or entries without a trace.
+      // The evidence folder of this run: emptied first, every log of the run under it.
+      const dir = between(prompt, /Evidence folder: '([^']+)'/, 'evidence folder')
+      fs.rmSync(dir, { recursive: true, force: true })
+      fs.mkdirSync(dir, { recursive: true })
+      ctx.e2eDirs.push(dir)
+      const res = runList(ctx, list, 'verify', dir)
+      // A runner that reports less than it ran: one entry missing, entries without a trace, or a trace it never made.
       if (s.evidenceTamper === 'drop') res.evidence.pop()
       if (s.evidenceTamper === 'blank') for (const e of res.evidence) e.trace = ''
+      if (s.evidenceTamper === 'ghost') res.evidence[0].trace = `${dir}/trace-never-written.zip`
+      if (s.evidenceTamper === 'elsewhere') { const old = `${ctx.tmp}/old-run.log`; fs.writeFileSync(old, 'e2e ok: from an earlier run\n'); res.evidence[0].trace = old }
       return res
     }
     if (tag.startsWith('commit ')) {
@@ -179,9 +196,15 @@ function fakeAgent(ctx) {
       if (!to && !(s.args && s.args.commit === false)) throw new Error('the review diffs the work tree although the run commits')
       fs.writeFileSync(diffFile, to ? git(repo, 'diff', from, to) : git(repo, 'diff', from))
       const [, showFrom, focusFile] = prompt.match(/git show ([0-9a-f]+):REVIEW\.md > '([^']+)'/) || []
-      if (!showFrom) throw new Error('the review prompt does not save REVIEW.md from a commit')
-      fs.rmSync(focusFile, { force: true })
-      try { fs.writeFileSync(focusFile, git(repo, 'show', `${showFrom}:REVIEW.md`)) } catch {}
+      if (!showFrom && !/The base commit has no REVIEW\.md: run `rm -f '([^']+)'`/.test(prompt)) throw new Error('the review prompt neither saves REVIEW.md from a commit nor says the base has none')
+      if (showFrom) {
+        // The export fails (a full disk, say): the step must not send the review without the owner's rules.
+        if (s.focusExportFails) {
+          if (!/if that command fails, do not call the gateway/.test(prompt)) throw new Error('the review prompt lets a failed REVIEW.md export through')
+          return { verdict: 'missing', findings: [], summary: 'not sent', gateway: 'failed', infra: 'REVIEW.md export failed: No space left on device' }
+        }
+        fs.writeFileSync(focusFile, git(repo, 'show', `${showFrom}:REVIEW.md`))
+      }
       // Somebody edits a package file in the work tree after the commit: the review must not see it.
       if (s.dirtyBeforeReview) for (const [f, t] of Object.entries(s.dirtyBeforeReview)) fs.writeFileSync(`${repo}/${f}`, t)
       // The package files as of the commit under review, at their repository paths under the snapshot folder.
@@ -221,11 +244,16 @@ async function runScenario(name, s) {
   const tmp = slash(fs.mkdtempSync(path.join(os.tmpdir(), 'code-package-tmp-')))
   const brief = `${tmp}/brief.md`
   fs.writeFileSync(brief, `# Brief: ${name}\n\nChange the greeting.\n`)
-  const ctx = { s, repo, tmp, label: 'mock-pkg', prompts: [], ran: [], commits: [], reviews: [], logN: 0, base: git(repo, 'rev-parse', 'HEAD').trim() }
+  const ctx = { s, repo, tmp, label: 'mock-pkg', prompts: [], ran: [], commits: [], reviews: [], traceChecks: [], e2eDirs: [], logN: 0, base: git(repo, 'rev-parse', 'HEAD').trim() }
   const args = { label: ctx.label, brief, repo, tmp, files: ['src/app.mjs'], checks: s.checks ?? ['node test/app.test.mjs'], ...(s.args || {}) }
+  ctx.args = args
+  // Repository state before the run: another branch, or uncommitted changes of somebody else.
+  if (s.setup) s.setup(repo)
   const logs = []
-  const result = await runWorkflow(args, fakeAgent(ctx), () => {}, (m) => logs.push(m), null, null, { total: null })
-  return { ctx, result, logs }
+  let result, error
+  try { result = await runWorkflow(args, fakeAgent(ctx), () => {}, (m) => logs.push(m), null, null, { total: null }) }
+  catch (e) { if (!s.throws) throw e; error = e; result = {} }
+  return { ctx, result, logs, error }
 }
 
 const labels = (ctx) => ctx.prompts.map(p => p.label)
@@ -251,6 +279,7 @@ const SCENARIOS = {
       const head = git(ctx.repo, 'rev-parse', 'HEAD').trim()
       if (r.verification.reviewedCommit !== head || ctx.reviews[0].diffTo !== head || ctx.reviews[0].named !== head) bad.push(`reviewed ${r.verification.reviewedCommit}, diff to ${ctx.reviews[0].diffTo}, named ${ctx.reviews[0].named}, HEAD ${head}`)
       if (ctx.reviews[0].diffFrom !== ctx.base) bad.push('the review diff does not start at the base commit')
+      if (!(ctx.traceChecks.length === 1 && ctx.traceChecks[0][0] === ev[0].trace && ev[0].trace.startsWith(ctx.e2eDirs[0] + '/'))) bad.push(`the trace was not checked apart from the run: ${JSON.stringify(ctx.traceChecks)}`)
       if (r.verdict !== 'approved') bad.push(`verdict ${r.verdict}`)
       if (r.protectedChanged) bad.push(`a new test file was refused: ${r.protectedChanged}`)
       const w = ctx.prompts.find(p => p.label.startsWith('write '))
@@ -356,7 +385,7 @@ const SCENARIOS = {
       const review = ctx.prompts.find(p => p.label === 'review 1').prompt
       const optional = (review.match(/\(optional: (\[.*?\]); no other file is optional\)/) || [])[1]
       if (!optional || /REVIEW\.base\.md/.test(optional)) bad.push(`REVIEW.base.md may be dropped for size: optional ${optional}`)
-      if (!/for each of these that exists on disk: \[[^\]]*REVIEW\.base\.md/.test(review)) bad.push('the request check does not require REVIEW.base.md when it exists')
+      if (!/for every required attachment: \[[^\]]*REVIEW\.base\.md/.test(review)) bad.push('the request check does not require REVIEW.base.md, which the base commit has')
       if (!r.approved) bad.push(`not approved: ${r.stoppedAt}`)
       return bad
     },
@@ -426,7 +455,7 @@ const SCENARIOS = {
     reviews: [{ verdict: 'approved', findings: [] }],
     expect: ({ ctx, result: r }) => {
       const bad = []
-      if (JSON.stringify(ctx.scriptsCompared) !== JSON.stringify(['e2e'])) bad.push(`scripts compared ${JSON.stringify(ctx.scriptsCompared)}`)
+      if (JSON.stringify(ctx.scriptsCompared) !== JSON.stringify(['pree2e', 'e2e', 'poste2e'])) bad.push(`scripts compared ${JSON.stringify(ctx.scriptsCompared)}`)
       if (!r.approved || r.verifiedBy !== 'args.verify' || r.protectedChanged) bad.push(`approved ${r.approved}, verifiedBy ${r.verifiedBy}, protectedChanged ${JSON.stringify(r.protectedChanged)}, stoppedAt ${r.stoppedAt}`)
       return bad
     },
@@ -569,6 +598,173 @@ const SCENARIOS = {
       const bad = []
       if (r.approved || r.verdict) bad.push(`counted: approved ${r.approved}, verdict ${r.verdict}`)
       if (r.stoppedAt !== 'review 1 stale' || !r.stale) bad.push(`stoppedAt ${r.stoppedAt}`)
+      return bad
+    },
+  },
+  // A pre or post script that did not exist at the base and is added now changes how `npm run e2e` runs: it stops.
+  'npm-hook-added': {
+    repoFiles: { 'package.json': JSON.stringify({ name: 'app', private: true, scripts: { e2e: 'node scripts/e2e.mjs' } }, null, 2) + '\n' },
+    args: { verify: ['npm run e2e'] },
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'hey'), 'package.json': JSON.stringify({ name: 'app', private: true, scripts: { pree2e: 'node -e 0', e2e: 'node scripts/e2e.mjs' } }, null, 2) + '\n' } },
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      if (JSON.stringify(r.protectedChanged) !== JSON.stringify(['package.json']) || JSON.stringify(r.protectedScripts) !== JSON.stringify(['pree2e'])) bad.push(`protectedChanged ${JSON.stringify(r.protectedChanged)}, scripts ${JSON.stringify(r.protectedScripts)}`)
+      if (has(ctx, 'verify ') || has(ctx, 'review ')) bad.push(`steps ran after the stop: ${labels(ctx).join(', ')}`)
+      return bad
+    },
+  },
+  // A package manager pointed at another manifest cannot be followed from the root package.json: the gate refuses.
+  'npm-prefix-unresolved': {
+    repoFiles: { 'apps/web/package.json': JSON.stringify({ name: 'web', private: true, scripts: { e2e: 'node ../../scripts/e2e.mjs' } }, null, 2) + '\n' },
+    args: { verify: ['npm --prefix apps/web run e2e'] },
+    writes: {},
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      if (!/args\.protect/.test(r.refused || '') || !/--prefix apps\/web/.test(r.refused || '')) bad.push(`refused ${JSON.stringify(r.refused)}`)
+      if (labels(ctx).join(',') !== 'gate mock-pkg') bad.push(`steps: ${labels(ctx).join(', ')}`)
+      return bad
+    },
+  },
+  // The base has REVIEW.md but saving it fails: the review is not sent without it; the run stops as an infrastructure failure.
+  'review-md-export-fails': {
+    focusExportFails: true,
+    throws: true,
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'hey') } },
+    expect: ({ ctx, error }) => {
+      const bad = []
+      if (!error || !/Infrastructure failure at step "review 1"/.test(error.message) || !/REVIEW\.md export failed/.test(error.message)) bad.push(`error ${error && error.message}`)
+      if (ctx.reviews.length) bad.push('a review was received')
+      return bad
+    },
+  },
+  // A base without REVIEW.md: nothing to attach, and the review goes on.
+  'no-review-md': {
+    repoFiles: { 'REVIEW.md': null },
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'hey') } },
+    reviews: [{ verdict: 'approved', findings: [] }],
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      if (!r.approved) bad.push(`not approved: ${r.stoppedAt}`)
+      if (ctx.reviews[0] && Object.keys(ctx.reviews[0].attached).some(p => p.endsWith('/REVIEW.base.md'))) bad.push('a REVIEW.base.md was attached')
+      return bad
+    },
+  },
+  // A command listed twice needs two evidence entries: one entry does not cover both runs.
+  'evidence-duplicate': {
+    args: { verify: ['node scripts/e2e.mjs', 'node scripts/e2e.mjs'] },
+    evidenceTamper: 'drop',
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'hey') } },
+    reviews: [{ verdict: 'approved', findings: [] }],
+    expect: ({ result: r }) => (r.verifiedBy !== 'none' || !/no evidence for node scripts\/e2e\.mjs \(each run of it needs its own\)/.test(r.verification.note)) ? [`verifiedBy ${r.verifiedBy}, note ${r.verification.note}`] : [],
+  },
+  // A trace the run names but never wrote does not certify the run.
+  'evidence-ghost-trace': {
+    args: { verify: ['node scripts/e2e.mjs'] },
+    evidenceTamper: 'ghost',
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'hey') } },
+    reviews: [{ verdict: 'approved', findings: [] }],
+    expect: ({ result: r }) => (r.verifiedBy !== 'none' || !/trace-never-written\.zip was not made/.test(r.verification.note)) ? [`verifiedBy ${r.verifiedBy}, note ${r.verification.note}`] : [],
+  },
+  // A trace from outside this run's emptied evidence folder (an earlier run's log, say) does not certify it either.
+  'evidence-old-trace': {
+    args: { verify: ['node scripts/e2e.mjs'] },
+    evidenceTamper: 'elsewhere',
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'hey') } },
+    reviews: [{ verdict: 'approved', findings: [] }],
+    expect: ({ result: r }) => (r.verifiedBy !== 'none' || !/outside the evidence folder of this run/.test(r.verification.note)) ? [`verifiedBy ${r.verifiedBy}, note ${r.verification.note}`] : [],
+  },
+  // A verify skill whose evidence shows only setup, no step that drives the flow, is not a verified run.
+  'skill-setup-only': {
+    repoFiles: { '.claude/skills/verify/SKILL.md': '---\nname: verify\ndescription: run the app once\n---\n\n1. `node scripts/e2e.mjs` (setup)\n' },
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'hey') } },
+    reviews: [{ verdict: 'approved', findings: [] }],
+    expect: ({ result: r }) => (r.verifiedBy !== 'none' || !/drives its flow/.test(r.verification.note)) ? [`verifiedBy ${r.verifiedBy}, note ${r.verification.note}`] : [],
+  },
+  // "changes_requested" with no finding cannot be closed: the effective verdict is blocked; the reviewer's word is kept.
+  'changes-requested-empty': {
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'hey') } },
+    reviews: [{ verdict: 'changes_requested', findings: [] }],
+    expect: ({ result: r }) => {
+      const bad = []
+      if (r.approved || r.verdict !== 'blocked' || r.rounds[0].verdict !== 'blocked' || !/without findings/.test(r.stoppedAt || '') || !r.question) bad.push(`approved ${r.approved}, verdict ${r.verdict}, round ${r.rounds[0].verdict}, stoppedAt ${r.stoppedAt}, question ${r.question}`)
+      if (r.rounds[0].review.verdict !== 'changes_requested') bad.push(`the reviewer's own word is lost: ${r.rounds[0].review.verdict}`)
+      return bad
+    },
+  },
+  // A preview whose first review asked for changes and whose second would approve: no verdict is left from round 1.
+  'preview-two-rounds': {
+    args: { commit: false },
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'hiya') }, 'close 1': { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'hello there') } },
+    reviews: [
+      { verdict: 'changes_requested', findings: [{ id: 'F1', severity: 'important', location: 'src/app.mjs:1', problem: 'impolite greeting' }] },
+      { verdict: 'approved', findings: [] },
+    ],
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      if (ctx.reviews.length !== 2 || r.approved || 'verdict' in r || !r.preview || r.preview.verdict !== 'approved') bad.push(`reviews ${ctx.reviews.length}, approved ${r.approved}, verdict ${r.verdict}, preview ${JSON.stringify(r.preview)}`)
+      if (r.rounds[0].verdict !== 'changes_requested') bad.push(`round 1 verdict ${r.rounds[0].verdict}`)
+      return bad
+    },
+  },
+  // The writer reports a flaky check and says it has more to do: no fresh writer goes on to run it again.
+  'writer-flaky-more': {
+    args: { verify: ['node scripts/e2e.mjs'] },
+    repoFiles: { 'scripts/e2e.mjs': "console.error('connection reset by the test server'); process.exit(1)\n" },
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'howdy') } },
+    writerFlaky: { write: ['node scripts/e2e.mjs'] },
+    writerMore: true,
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      if (labels(ctx).some(l => / \(cont \d+\)$/.test(l))) bad.push(`a continuation ran: ${labels(ctx).join(', ')}`)
+      if (!/^checks \(flaky, reported by the writer/.test(r.stoppedAt || '') || !r.flaky || r.flaky.logs.length !== 1) bad.push(`stoppedAt ${r.stoppedAt}, flaky ${JSON.stringify(r.flaky)}`)
+      if (ctx.ran.length !== 1) bad.push(`the flaky check ran ${ctx.ran.length} times`)
+      return bad
+    },
+  },
+  // A preview commits nothing, so it refuses the .gitignore repair instead of committing it.
+  'preview-fix-ignore': {
+    args: { commit: false, fixIgnore: true },
+    ignoreExit: 1,
+    writes: {},
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      if (!/preview \(args\.commit false\) commits nothing/.test(r.refused || '')) bad.push(`refused ${JSON.stringify(r.refused)}`)
+      if (labels(ctx).join(',') !== 'gate mock-pkg') bad.push(`steps: ${labels(ctx).join(', ')}`)
+      if (git(ctx.repo, 'rev-parse', 'HEAD').trim() !== ctx.base) bad.push('something was committed')
+      return bad
+    },
+  },
+  // An e2e script already dirty before the package, outside its paths: the run tests it, the commit does not have it,
+  // so the commit is not stamped verified.
+  'dirty-e2e-input': {
+    args: { verify: ['node scripts/e2e.mjs'] },
+    setup: (repo) => fs.writeFileSync(`${repo}/scripts/e2e.mjs`, "console.log('e2e ok: always (uncommitted edit of somebody else)')\n"),
+    writes: { write: { 'src/app.mjs': BASE_FILES['src/app.mjs'].replace('hello', 'hey') } },
+    reviews: [{ verdict: 'approved', findings: [] }],
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      if (r.verifiedBy !== 'none' || !/outside the package \(scripts\/e2e\.mjs\)/.test(r.verification.note)) bad.push(`verifiedBy ${r.verifiedBy}, note ${r.verification.note}`)
+      if (!/\nVerified: none; checks 1 passed\n$/.test(lastMessage(ctx))) bad.push(`commit message ${JSON.stringify(lastMessage(ctx))}`)
+      if (git(ctx.repo, 'show', '--name-only', '--format=', 'HEAD').split('\n').filter(Boolean).join(',') !== 'src/app.mjs') bad.push('the commit holds more than the package file')
+      if (!r.verification.evidence.length) bad.push('the evidence of the run was dropped')
+      return bad
+    },
+  },
+  // The package branch exists at another commit with another e2e entry point: the gate refuses instead of reading
+  // the base, the checks and REVIEW.md from the wrong commit.
+  'branch-elsewhere': {
+    args: { branch: 'other', verify: ['node scripts/e2e.mjs'] },
+    setup: (repo) => {
+      git(repo, 'switch', '-q', '-c', 'other')
+      fs.writeFileSync(`${repo}/scripts/e2e-other.mjs`, "console.log('e2e ok: other')\n")
+      git(repo, 'add', '-A'); git(repo, 'commit', '-q', '-m', 'other entry point')
+      git(repo, 'switch', '-q', 'main')
+    },
+    writes: {},
+    expect: ({ ctx, result: r }) => {
+      const bad = []
+      if (!/branch other already exists at [0-9a-f]+, not at the current HEAD/.test(r.refused || '')) bad.push(`refused ${JSON.stringify(r.refused)}`)
+      if (labels(ctx).join(',') !== 'gate mock-pkg') bad.push(`steps: ${labels(ctx).join(', ')}`)
       return bad
     },
   },

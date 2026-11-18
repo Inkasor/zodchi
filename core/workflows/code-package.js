@@ -33,20 +33,25 @@ export const meta = {
 //   protect   optional: more paths whose existing files the package may not change (exact paths, folders, or globs
 //             with * and **), besides tests and end-to-end scenarios (test/, tests/, e2e/, *.test.*, *_test.*,
 //             *.spec.*), REVIEW.md, the verify skill, the files the check and verify commands and the verify skill's
-//             commands name, and the package.json scripts they run (npm, pnpm, yarn or bun; read from the base commit,
-//             with the files those scripts name). New files are allowed; a change to an existing one stops the package
-//             before review with the list. An end-to-end command (args.verify, an e2e check, or the whole verify skill)
-//             that names no file and no package script cannot be protected by itself: the gate then refuses unless
-//             args.protect names its entry points
+//             commands name, and the package.json scripts they run (npm, pnpm, yarn or bun run against the root
+//             package.json, read from the base commit, with their pre and post scripts whether or not they exist yet,
+//             and the files those scripts name). New files are allowed; a change to an existing one, or a new pre or post
+//             script, stops the package before review with the list. An end-to-end command (args.verify, an e2e check,
+//             or the whole verify skill) that the workflow cannot follow to what it runs - it names no file and no
+//             package script, changes directory (cd, pushd), or picks another manifest or workspace (--prefix, -C,
+//             --dir, --cwd, --filter, --workspace, yarn workspace) - cannot be protected by itself: the gate then
+//             refuses unless args.protect names its entry points
 //   allowCheckChanges  optional: { "<path>": "<reason>" }: protected paths this package may change, each with the
 //             lead's reason (a deleted flaky test, say); the result records them in checkChanges
 //   rounds    review rounds at most, default 3 (the stop rule: without approval the package returns to a human)
 //   fixes     how many times a check failure caused by the code goes back to the writer, default 1
 //   continuations  fresh writers that may go on after one ran out of context, default 2
-//   branch    optional: Git branch for the package; created from the current HEAD when missing
+//   branch    optional: Git branch for the package; created from the current HEAD when missing. An existing branch must
+//             point at the current HEAD (the gate reads the base from it); otherwise the gate refuses: switch to it first
 //   commit    default true: the runner commits the package's files after each passing checks run, and the review judges
-//             that fixed commit. Nothing is ever pushed. false: a preview: the review reads the work tree, so it never
-//             approves the package; a review that would approve leaves approved unset and its verdict in preview
+//             that fixed commit. Nothing is ever pushed. false: a preview: nothing is committed (the gate refuses one
+//             that would need the .gitignore repair), the review reads the work tree, so it never approves the package;
+//             a review that would approve leaves approved and verdict unset and its verdict in preview
 //   models    optional: role table entries that replace the table for this run, e.g. { writer: { candidates: [...] } }
 //   fixIgnore true: when the repository does not ignore .agent-tmp/ and the package calls the gateway, the runner
 //             appends ".agent-tmp/" to .gitignore and commits that line on its own before the package starts.
@@ -63,15 +68,18 @@ export const meta = {
 //           checkChanges, flaky, stale, preview }
 //   verdict       the effective verdict of the last review that decided the package: "approved" exactly when approved is
 //                 true, "changes_requested" when an important finding is open (whatever word the reviewer chose),
-//                 "blocked"; absent when no review decided it. The reviewer's own word stays in rounds[].review.verdict
+//                 "blocked" (also for a changes request that lists no finding); absent when no review decided it, and in
+//                 a preview that would approve. The reviewer's own word stays in rounds[].review.verdict
 //   openFindings  always present: every finding of the last review that no later round closed, any severity, as
 //                 "<id> <severity> <location>: <problem>" with the severity important, nit or pre-existing; [] when
 //                 there was no review or it had none
 //   verifiedBy    always present: "args.verify", "verify skill" or "checks" when the last checks ran the work as it stands
-//                 end to end, every command with evidence that met its pass rule; "none" otherwise (never reported as
-//                 verified), also when a write changed the work after its last verified run
-//   verification  { verifiedBy, evidence[] ({ command, exitCode, passed, trace }), checks[], note, stamp, reviewedCommit,
-//                 review } of the work as it stands; each round keeps its own in rounds[].verification
+//                 end to end, one evidence entry per scheduled command that met its pass rule with a trace this run made
+//                 (for the skill also a step that drives its flow); "none" otherwise (never reported as verified), also
+//                 when a write changed the work after its last verified run, and when the work tree held changes outside
+//                 the package at the commit, so the run tested files the commit does not have
+//   verification  { verifiedBy, evidence[] ({ command, exitCode, passed, trace, flow }), checks[], note, stamp,
+//                 reviewedCommit, review } of the work as it stands; each round keeps its own in rounds[].verification
 //   flaky         a check that failed without a cause in the change: { reportedBy, results[], logs[], evidence[] }; the
 //                 runner or the writer reports it, and the package stops
 //   next          what the lead does next when the run ends with something left open
@@ -205,11 +213,12 @@ const CHECKS = {
     logs: { type: 'array', items: { type: 'string' } },
     // the end-to-end run: one entry per command, with its exit code, whether it met its pass rule, and where its log,
     // trace or screenshot is
+    // and, for a step of the verify skill, whether it drives the flow the skill names (flow true) or only sets up
     evidence: {
       type: 'array',
       items: {
         type: 'object', required: ['command', 'exitCode', 'passed', 'trace'],
-        properties: { command: { type: 'string' }, exitCode: { type: 'number' }, passed: { type: 'boolean' }, trace: { type: 'string' } },
+        properties: { command: { type: 'string' }, exitCode: { type: 'number' }, passed: { type: 'boolean' }, trace: { type: 'string' }, flow: { type: 'boolean' } },
       },
     },
   },
@@ -277,15 +286,18 @@ const gate = await step(
   `- ignoreExit: the exit code of \`git check-ignore -q .agent-tmp/gateway/x\` run from ${a.repo} (0: the gateway's job folder is ignored, 1: it is not, anything else: Git could not check).\n` +
   `- verifySkill: true when \`git cat-file -e HEAD:.claude/skills/verify/SKILL.md\` exits 0 (the repository's verify skill is committed); false otherwise, also outside Git. ` +
   `verifySkillText: the output of \`git show HEAD:.claude/skills/verify/SKILL.md\` exactly, "" when verifySkill is false.\n` +
-  `- packageJson: the output of \`git show HEAD:package.json\` exactly, "" when that command fails.`,
+  `- packageJson: the output of \`git show HEAD:package.json\` exactly, "" when that command fails.\n` +
+  `- reviewMd: whether the base commit has REVIEW.md: true when \`git cat-file -e HEAD:REVIEW.md\` exits 0; false only when it fails saying the path does not exist in HEAD; true when it fails any other way (the review then insists on reading it).` +
+  (a.branch ? `\n- branchHead: the output of \`git rev-parse --verify --quiet ${q(`refs/heads/${a.branch}`)}\`, "" when it prints nothing (the branch does not exist).` : ''),
   {
     agentType: 'zodchi-core:runner', label: `gate ${a.label}`,
     schema: {
-      type: 'object', required: ['homeModels', 'repoModels', 'account', 'git', 'dirty', 'ignoreExit', 'verifySkill', 'verifySkillText', 'packageJson'],
+      type: 'object', required: ['homeModels', 'repoModels', 'account', 'git', 'dirty', 'ignoreExit', 'verifySkill', 'verifySkillText', 'packageJson', 'reviewMd', ...(a.branch ? ['branchHead'] : [])],
       properties: {
         homeModels: { type: 'string' }, repoModels: { type: 'string' }, account: { type: 'string' }, accountError: { type: 'string' },
         git: { type: 'boolean' }, head: { type: 'string' }, dirty: { type: 'array', items: { type: 'string' } },
         ignoreExit: { type: 'number' }, verifySkill: { type: 'boolean' }, verifySkillText: { type: 'string' }, packageJson: { type: 'string' },
+        reviewMd: { type: 'boolean' }, branchHead: { type: 'string' },
       },
     },
   })
@@ -321,6 +333,11 @@ if (dirtyOverlap.length) { out.refused = `Uncommitted changes in package files: 
 if (!gate.git || !/^[0-9a-f]{7,64}$/i.test(String(gate.head || '').trim())) { out.refused = `${a.repo} is not a Git work tree with a commit: code-package reviews a fixed commit and compares the checks with the base commit, so it needs Git. Run \`git init\` and commit the current state first.`; return out }
 const commit = a.commit !== false
 const base = String(gate.head).trim()
+// Everything below (the base, the protected checks, the verify skill, REVIEW.md) is read from HEAD. A branch that
+// already exists elsewhere would make that the wrong starting point, so the package starts only where the branch is.
+const branchHead = String(gate.branchHead || '').trim()
+if (a.branch && branchHead && !sameCommit(branchHead, base)) { out.refused = `The branch ${a.branch} already exists at ${branchHead}, not at the current HEAD ${base}: the base, the protected checks and REVIEW.md would be read from the wrong commit. Switch to it first (\`git switch ${a.branch}\`), then run again.`; return out }
+const baseReviewMd = gate.reviewMd !== false
 
 // The checks: the brief's cheap ones first (build, lint, fast tests), then the end-to-end run. The end-to-end run is
 // the repository's own verification when it has one: args.verify, else its verify skill, else the brief's e2e checks.
@@ -348,38 +365,47 @@ for (const p of [].concat(a.protect || [])) {
   try { protectRules.push(globRe(/^([A-Za-z]:)?\//.test(s) && !s.includes('*') ? rel(s) : s)) } catch (e) { throw new Error(`args.protect: ${e.message}`) }
 }
 // Entry points of a command: each word that looks like a file path in the repository, and each package.json script it
-// runs through npm, pnpm, yarn or bun (with its pre and post scripts), read from the base commit, whose words count in
-// turn. A script is protected by its name, not the whole package.json: a dependency may still change.
+// runs through npm, pnpm, yarn or bun against the root package.json (with its pre and post scripts, also those that do
+// not exist yet, so that adding one is a change), read from the base commit, whose words count in turn. A script is
+// protected by its name, not the whole package.json: a dependency may still change. A command the workflow cannot
+// follow is opaque: it changes directory, or its package manager picks another manifest or workspace, so neither its
+// paths nor the root scripts say what it runs.
 const pkgScripts = (parse(gate.packageJson, 'package.json at the base commit') || {}).scripts || {}
 const hasScript = (s) => Object.prototype.hasOwnProperty.call(pkgScripts, s) && typeof pkgScripts[s] === 'string'
 const commandPaths = new Set()
 const protectedScripts = new Set()
+const ELSEWHERE = /^(--prefix|--dir|--cwd|--filter|--workspace|--workspaces|-C|-F|-w|workspace|workspaces)(=|$)/
 function entryPoints(cmd, depth = 0) {
-  let found = 0
-  const words = String(cmd).split(/\s+/).map(w => w.replace(/^["']|["']$/g, ''))
+  const r = { found: 0, opaque: false }
+  const words = String(cmd).split(/\s+/).map(w => w.replace(/^["'(]+|["');]+$/g, ''))
   words.forEach((t, i) => {
+    if (/^(cd|pushd)$/.test(t)) { r.opaque = true; return }
     if (/^(npm|pnpm|yarn|bun)$/.test(t)) {
+      const end = words.findIndex((w, j) => j > i && /^(&&|\|\||\||;|--)$/.test(w))
+      if (words.slice(i + 1, end < 0 ? undefined : end).some(w => ELSEWHERE.test(w))) { r.opaque = true; return }
       const name = words[['run', 'run-script'].includes(words[i + 1]) ? i + 2 : i + 1]
       if (!name || !hasScript(name)) return
-      found++
-      for (const s of [`pre${name}`, name, `post${name}`]) if (hasScript(s) && !protectedScripts.has(s)) {
+      r.found++
+      for (const s of [`pre${name}`, name, `post${name}`]) if (!protectedScripts.has(s)) {
         protectedScripts.add(s)
-        if (depth < 3) entryPoints(pkgScripts[s], depth + 1)
+        if (hasScript(s) && depth < 3 && entryPoints(pkgScripts[s], depth + 1).opaque) r.opaque = true
       }
       return
     }
     if (!t || t.startsWith('-') || !/^[\w.@/\\:-]+$/.test(t) || !(/[\\/]/.test(t) || /\.\w+$/.test(t))) return
-    try { commandPaths.add(rel(t).toLowerCase()); found++ } catch {}
+    try { commandPaths.add(rel(t).toLowerCase()); r.found++ } catch {}
   })
-  return found
+  return r
 }
+const followed = (r) => r.found > 0 && !r.opaque
 for (const c of cheapChecks) entryPoints(c.cmd)
-// An end-to-end command that names no file and no script cannot be protected by itself: args.protect must name it.
-const unresolved = [...verifyList, ...e2eChecks].filter(c => !entryPoints(c.cmd)).map(c => c.cmd)
+// An end-to-end command that cannot be followed to what it runs cannot be protected by itself: args.protect must name it.
+const unresolved = [...verifyList, ...e2eChecks].filter(c => !followed(entryPoints(c.cmd))).map(c => c.cmd)
 if (verifySource === 'verify skill') {
   // The skill's commands are its code spans and code blocks, as of the base commit.
   const spans = [...String(gate.verifySkillText || '').matchAll(/```[^\n]*\n([\s\S]*?)```|`([^`\n]+)`/g)].map(m => m[1] || m[2])
-  if (!spans.flatMap(s => s.split('\n')).reduce((n, line) => n + entryPoints(line), 0)) unresolved.push(`the verify skill ${SKILL}`)
+  const lines = spans.flatMap(s => s.split('\n')).map(line => entryPoints(line))
+  if (!lines.some(x => x.found) || lines.some(x => x.opaque)) unresolved.push(`the verify skill ${SKILL}`)
 }
 if (unresolved.length && !protectRules.length) {
   out.refused = `The end-to-end verification runs ${JSON.stringify(unresolved)}, which name no file of the repository and no package.json script, so a change could edit what they run unseen. ` +
@@ -403,7 +429,7 @@ for (const [p, reason] of Array.isArray(allowIn) ? allowIn.map(x => [x && x.path
 }
 const PROTECT = ` Protected checks: do not change or delete an existing test or end-to-end scenario (test/, tests/, e2e/, *.test.*, *_test.*, *.spec.*), REVIEW.md, ` +
   `the verify skill (.claude/skills/verify/), or a file the checks run${commandPaths.size ? ` (${[...commandPaths].join(', ')})` : ''}` +
-  `${protectedScripts.size ? `, or the package.json scripts they run (${[...protectedScripts].join(', ')}; the rest of package.json may change)` : ''}` +
+  `${protectedScripts.size ? `, or the package.json scripts they run (${[...protectedScripts].join(', ')}, adding one that is missing included; the rest of package.json may change)` : ''}` +
   `${protectRules.length ? `, or these: ${JSON.stringify([].concat(a.protect))}` : ''}; never weaken an assertion. ` +
   `Adding new test files is allowed. A change to an existing protected file stops the package before review` +
   (allowed.size ? `, except these, which the lead allowed: ${JSON.stringify([...allowed.values()])}` : '') + `. ${NO_SKIP}`
@@ -414,6 +440,8 @@ const usesGateway = mode === 'expert' || writer.provider === 'codex' || reviewer
 const needIgnore = usesGateway && gate.ignoreExit !== 0
 if (needIgnore) {
   if (gate.ignoreExit !== 1) { out.refused = `Git could not check the ignore rules of ${a.repo} (git check-ignore exit ${gate.ignoreExit}); the gateway works only inside a Git repository.`; return out }
+  // The repair is a commit, and a preview (args.commit false) commits nothing: the repair is asked for beforehand.
+  if (!commit) { out.refused = `${a.repo} does not ignore .agent-tmp/, so the gateway would refuse this package's calls, and a preview (args.commit false) commits nothing, not even that repair. Add ".agent-tmp/" to its .gitignore and commit it first, then run the preview again.`; return out }
   if (!a.fixIgnore) { out.refused = `${a.repo} does not ignore .agent-tmp/, so the gateway would refuse this package's calls. Add ".agent-tmp/" to its .gitignore and commit it, or run again with args.fixIgnore true.`; return out }
   if (gate.dirty.some(f => key(f) === '.gitignore')) { out.refused = `${a.repo} does not ignore .agent-tmp/ and its .gitignore has uncommitted changes: add ".agent-tmp/" to it by hand.`; return out }
 }
@@ -438,7 +466,7 @@ const claim = await step(
   `3. If there is no conflict, write "${claimFile}": ${JSON.stringify({ label: a.label, status: 'open', files: claimKeys, brief: a.brief, base })}, plus "openedAt" with \`date -u +%Y-%m-%dT%H:%M:%SZ\`.\n` +
   UNLOCK +
   (a.branch ? `5. If there was no conflict, switch to the Git branch ${a.branch}: \`git switch ${q(a.branch)}\`, or \`git switch -c ${q(a.branch)}\` when it does not exist.\n` : '') +
-  `ok is true when the claim file was written${a.branch ? ` and \`git branch --show-current\` prints ${a.branch}` : ''}. conflicts: the conflicts found, [] when none.`,
+  `ok is true when the claim file was written${a.branch ? `, \`git branch --show-current\` prints ${a.branch} and \`git rev-parse HEAD\` prints ${base} (the base the gate read)` : ''}. conflicts: the conflicts found, [] when none.`,
   {
     agentType: 'zodchi-core:runner', label: `claim ${a.label}`,
     schema: { type: 'object', required: ['ok', 'conflicts'], properties: { ok: { type: 'boolean' }, conflicts: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' } } },
@@ -490,6 +518,8 @@ async function body() {
   })
   // The writer may run the checks too; a flaky one it meets stops the package the same way as the runner's.
   const WRITER_FLAKY = ` If a check you run fails without a cause in the change, do not run it again or work around it: put it into flaky (command, the path of its log, why you think so) and return; the package stops there for the lead before any further check runs.`
+  // Codex answers by a fixed schema without a flaky field: it marks a flaky check in its checks, and the mapping reads it.
+  const CODEX_FLAKY = `If a check you run fails without a cause in the change, do not run it again or work around it: put it into checks with its real exit code and a result that starts with "flaky: <the path of its log>: " and says why, and stop with status blocked; the package stops there for the lead before any further check runs.`
   const HANDOVER = ` If your context is running out before the task is done, stop at a clean point (files consistent, the progress file says what is done and what remains, precisely enough for a stranger), and return done false with more true; a fresh agent will go on.`
   // One truth about commits, in every prompt that touches the writer's commit state.
   const COMMITS = commit
@@ -506,7 +536,8 @@ async function body() {
       const o = c ? { ...pinned, label: `${opts.label} (cont ${c})` } : pinned
       try { res = await step(prompt, o) } catch (e) { log(`${o.label}: ${e.message}`); res = null }
       if (res) { changedSoFar.push(...(res.changed || [])); questionsSoFar.push(...(res.questions || [])); flakySoFar.push(...(Array.isArray(res.flaky) ? res.flaky : [])) }
-      if (res && !res.more) break
+      // A flaky check stops the package: no fresh writer goes on to run it again, whatever more says.
+      if (res && (!res.more || flakySoFar.length)) break
     }
     return res && { ...res, changed: [...new Set(changedSoFar)], questions: [...new Set(questionsSoFar)], flaky: flakySoFar }
   }
@@ -542,12 +573,12 @@ async function body() {
       return step(
         `Apply one expert answer. Answer file: ${a.tmp}/expert-${n}.answer.md. Target files: the ones the answer names, relative to ${a.repo}. ` +
         `Ledger of edits: ${a.tmp}/apply-${n}.md. Backup folder: ${a.tmp}/backup-${n}. Syntax checks after applying: the one that fits each target's language. ` +
-        `done is true only when every edit row has a line number and the checks are clean. changed: the target files, absolute paths. unverified: rows not applied.`,
+        `done is true only when every edit row has a line number and the checks are clean. changed: the target files, absolute paths. unverified: rows not applied.${WRITER_FLAKY}`,
         { agentType: 'zodchi-core:applier', schema: WRITE, phase: phaseName, label: `${tag} apply` })
     }
     if (writer.provider === 'codex') {
       const work = await step(
-        `Have Codex do this through the gateway. Work from ${a.repo}. Write ${a.tmp}/work-${n}.md: ${task} ` +
+        `Have Codex do this through the gateway. Work from ${a.repo}. Write ${a.tmp}/work-${n}.md: ${task} ${CODEX_FLAKY} ` +
         `Then ` +
         gatewayCall({
           role: 'package-work', key: `${a.label}-work-${n}`, label: tag, totalMin: 60, out: `${a.tmp}/work-${n}.json`,
@@ -555,7 +586,8 @@ async function body() {
           attach: [a.brief, ...evidence],
         }) + ` The answer is JSON with status, summary, criteria, questions, changedFiles, checks. Map it exactly: ` +
         `done = (status is "done"); summary = its summary; changed = each entry of changedFiles prefixed with "${repoKey}/"; ` +
-        `unverified = every criterion that is not done, as one line each, plus every check with a non-zero exit code; questions = each entry of its questions as one readable line (the question, its options, the recommendation). ` +
+        `unverified = every criterion that is not done, as one line each, plus every check with a non-zero exit code; ` +
+        `flaky = each entry of its checks whose result starts with "flaky:", as { command: its command, log: the log path its result names, why: the rest of its result }, [] when none; questions = each entry of its questions as one readable line (the question, its options, the recommendation). ` +
         `If the job did not succeed, done is false and summary says the job status. ${INFRA}`,
         { agentType: 'zodchi-core:runner', schema: withInfra(WRITE), phase: phaseName, label: `${tag}` })
       if (infraBad(work)) infraFail(tag, work ? (work.infra || 'gateway: failed') : 'the gateway step returned no result')
@@ -711,7 +743,8 @@ async function body() {
   const e2eDir = (tag) => `${a.tmp}/e2e-${String(tag).replace(/[^\w.-]+/g, '-')}`
   const runE2e = (tag) => verifySource === 'none'
     ? Promise.resolve({ ok: true, results: [], cause: 'none', evidence: [] })
-    : step(`Run the end-to-end verification of a change from ${a.repo}: the real program, started and driven through a real flow. One log per command in ${a.tmp}/logs; keep every trace, screenshot or log the run makes under ${e2eDir(tag)}/.\n` +
+    : step(`Run the end-to-end verification of a change from ${a.repo}: the real program, started and driven through a real flow. Evidence folder: ${q(e2eDir(tag))}. ` +
+            `First empty it (\`rm -rf ${q(e2eDir(tag))} && mkdir -p ${q(e2eDir(tag))}\`), then write every log, trace and screenshot of this run under it, one log per command.\n` +
             (verifyList.length ? `- Run these commands, in order, each to its end: ${JSON.stringify(verifyList)}.\n` : '') +
             (verifySource === 'verify skill'
               ? `- Follow the repository's verify skill as of the base commit, never the working tree's copy: read it with \`git show ${base}:${SKILL}\`, and do what it says: start the app the way it says and drive the flow it names.\n`
@@ -719,16 +752,31 @@ async function body() {
             (e2eChecks.length ? `- ${verifyList.length || verifySource === 'verify skill' ? 'Then run' : 'Run'} these checks, each to its end: ${JSON.stringify(e2eChecks)}.\n` : '') +
             `A command passes when its output meets its "pass" rule (exit code 0 for a step of the skill). ${NO_SKIP} ok is true only when every one passes. ` +
             `results: one line per command with its exit code, the decisive output line and pass/fail. logs: the log paths. ` +
-            `evidence: one entry per command you ran, in order: command (a listed command exactly as listed; a step of the skill as you ran it), exitCode (its real exit code), passed (true when it met its pass rule, whatever the exit code), trace (the path of its log, trace or screenshot; never empty). ${CAUSE}`,
+            `evidence: one entry per command you ran, in order, also when a listed command is listed twice: command (a listed command exactly as listed; a step of the skill as you ran it), exitCode (its real exit code), passed (true when it met its pass rule, whatever the exit code), ` +
+            `trace (the path of the log, trace or screenshot this run wrote for it under the evidence folder; never empty)` +
+            `${verifySource === 'verify skill' ? ', flow (for a step of the skill: true when it drives the flow the skill names, false when it only sets up, builds, starts or stops)' : ''}. ${CAUSE}`,
             { agentType: 'zodchi-core:runner', schema: CHECKS, phase: 'Checks', label: `verify ${tag}` })
+  // A trace counts only when it lies under the evidence folder this run emptied first and is a non-empty file there:
+  // then this run made it. The files are checked by a step of its own, not taken from the run that reports them.
+  const underDir = (t, tag) => { try { return fold(norm(t)).startsWith(fold(norm(e2eDir(tag))) + '/') } catch { return false } }
+  async function missingTraces(tag, evidence) {
+    const traces = [...new Set(evidence.map(e => String((e && e.trace) || '').trim()).filter(t => underDir(t, tag)))]
+    if (!traces.length) return []
+    const res = await step(
+      `Check that files exist; change nothing. For each of ${JSON.stringify(traces)}, run \`test -s <path>\` (a non-empty file). paths: every path for which it fails, exactly as given; [] when none. ok is true when every command ran.`,
+      { agentType: 'zodchi-core:runner', schema: STATUS, phase: 'Checks', label: `evidence ${tag}` })
+    return res && res.ok && Array.isArray(res.paths) ? res.paths.map(String) : null
+  }
   const runChecks = async (tag) => {
     const cheap = await runCheap(tag)
     if (!cheap || !cheap.ok) return cheap && { ...cheap, stage: 'checks' }
     const e2e = await runE2e(tag)
     if (!e2e) return null
+    const evidence = e2e.evidence || []
     return {
       ...e2e, stage: e2e.ok ? 'done' : 'e2e',
-      results: [...(cheap.results || []), ...(e2e.results || [])], logs: [...(cheap.logs || []), ...(e2e.logs || [])], evidence: e2e.evidence || [],
+      results: [...(cheap.results || []), ...(e2e.results || [])], logs: [...(cheap.logs || []), ...(e2e.logs || [])], evidence,
+      tag, missing: e2e.ok && evidence.length ? await missingTraces(tag, evidence) : [],
     }
   }
 
@@ -749,19 +797,30 @@ async function body() {
     return checks
   }
 
-  // What verified the round: the end-to-end run with its evidence, or plainly nothing. Never "verified" unless every
-  // command the workflow listed (and, for a verify skill, at least one step of the skill) has an evidence entry that met
-  // its pass rule and names a trace; the exit code is kept as it was, since a pass rule may accept a nonzero one.
+  // What verified the round: the end-to-end run with its evidence, or plainly nothing. Never "verified" unless each
+  // scheduled invocation of a listed command has an evidence entry of its own (a command listed twice needs two), and,
+  // for a verify skill, one more entry that is a step of the skill driving its flow (not setup, not a listed command
+  // again); every entry met its pass rule and names a trace this run made (see missingTraces). The exit code is kept as
+  // it was, since a pass rule may accept a nonzero one.
   function noteVerification(checks) {
     const evidence = (checks.evidence || []).filter(e => e && e.command)
     const gaps = []
     if (verifySource !== 'none') {
-      const reported = evidence.map(e => String(e.command).trim())
-      for (const c of e2eCommands) if (!reported.includes(c)) gaps.push(`no evidence for ${c}`)
-      if (verifySource === 'verify skill' && evidence.length <= e2eCommands.length) gaps.push('no evidence for a step of the verify skill')
+      const pool = evidence.map(e => String(e.command).trim())
+      for (const c of e2eCommands) {
+        const i = pool.indexOf(c)
+        if (i < 0) gaps.push(`no evidence for ${c}${e2eCommands.filter(x => x === c).length > 1 ? ' (each run of it needs its own)' : ''}`)
+        else pool[i] = null
+      }
+      if (verifySource === 'verify skill' && !evidence.some((e, i) => pool[i] !== null && !e2eCommands.includes(pool[i]) && e.flow === true)) gaps.push('no evidence for a step of the verify skill that drives its flow')
+      const missing = checks.missing
+      if (!Array.isArray(missing)) gaps.push('the traces could not be checked')
       for (const e of evidence) {
+        const t = String(e.trace || '').trim()
         if (e.passed !== true) gaps.push(`${e.command} did not meet its pass rule`)
-        if (!String(e.trace || '').trim()) gaps.push(`${e.command} names no trace`)
+        if (!t) gaps.push(`${e.command} names no trace`)
+        else if (!underDir(t, checks.tag)) gaps.push(`${e.command} names a trace outside the evidence folder of this run (${t})`)
+        else if (Array.isArray(missing) && missing.some(m => fold(String(m).trim()) === fold(t))) gaps.push(`${e.command}: its trace ${t} was not made (missing or empty)`)
       }
     }
     const ran = verifySource !== 'none' && !gaps.length
@@ -783,6 +842,23 @@ async function body() {
   async function commitRound(n) {
     if (!commit) return 'none'
     const paths = [...changed].map(rel)
+    // The checks ran in the shared work tree; the commit holds only the package paths. The stamp may say verified only
+    // when the work tree differs from HEAD in nothing else (the job folder aside), so the commit's tree is the tree the
+    // run tested. An uncommitted change of somebody else (a dirty e2e script, say) makes the round "Verified: none".
+    const st = await step(
+      `List what changed in the work tree of ${a.repo}; change nothing. Run \`git status --porcelain -uall\`. ` +
+      `paths: every path it lists, relative to the repository, without the status letters and quotes (a rename gives both paths); [] when it lists nothing. ok is true when the command ran.`,
+      { agentType: 'zodchi-core:runner', schema: STATUS, phase: 'Checks', label: `status commit ${n}` })
+    if (!st || !st.ok || !Array.isArray(st.paths)) return null
+    const mine = new Set(paths.map(p => p.toLowerCase()))
+    const others = [...new Set(st.paths.map(p => { try { return rel(p) } catch { return String(p) } }).filter(r => !jobFolder(r) && !mine.has(r.toLowerCase())))]
+    if (others.length && out.verifiedBy !== 'none') {
+      out.verifiedBy = 'none'
+      out.verification = {
+        ...out.verification, verifiedBy: 'none', stamp: `Verified: none${cheapChecks.length ? `; checks ${cheapChecks.length} passed` : ''}`,
+        note: `not verified by running: the work tree held uncommitted changes outside the package (${others.join(', ')}), so the end-to-end run tested files the commit does not have; its evidence is kept here`,
+      }
+    }
     const message = `${a.label}: round ${n}\n\n${out.verification.stamp}\n`
     const res = await step(
       `Commit the package's files in ${a.repo}; never push. The package paths, relative to the repository: ${JSON.stringify(paths)}.\n` +
@@ -807,9 +883,12 @@ async function body() {
   const SNAP = (n, target, paths) => `Save the package files as of the commit ${target} under ${q(snapDir(n))}, never from the work tree: run \`rm -rf ${q(snapDir(n))}\`, then for each of ${JSON.stringify(paths)} ` +
     `that \`git cat-file -e ${target}:<path>\` finds, create its folder under ${snapDir(n)} and run \`git show ${target}:<path> > ${snapDir(n)}/<path>\` (a path the commit does not have gets no copy).`
   // REVIEW.md, the owner's written focus for reviews, always as of the base commit: the package cannot change what
-  // judges it. It is never dropped for size.
+  // judges it. It is never dropped for size. Whether the base has one was settled at the gate, apart from this export:
+  // when it has one, a failed export stops the review instead of sending it without the owner's rules.
   const focusFile = `${a.tmp}/REVIEW.base.md`
-  const FOCUS = `Save the repository's REVIEW.md as of the base commit, never the work tree's: run \`rm -f ${q(focusFile)}; git show ${base}:REVIEW.md > ${q(focusFile)} || rm -f ${q(focusFile)}\` (no file when the base commit has no REVIEW.md).`
+  const FOCUS = baseReviewMd
+    ? `Save the repository's REVIEW.md as of the base commit, never the work tree's: run \`git show ${base}:REVIEW.md > ${q(focusFile)}\`. The base commit has a REVIEW.md, so the review needs it: if that command fails, do not call the gateway; return gateway "failed" with infra "REVIEW.md export failed: <the error>".`
+    : `The base commit has no REVIEW.md: run \`rm -f ${q(focusFile)}\` and attach none.`
   const SEVERITIES = `Every finding has a severity: "important" (a real defect the change brings in; it blocks approval), "nit" (worth fixing, does not block) or "pre-existing" (it was there before the change; does not block).`
 
   // focus: the nit findings of an approved review that the writer closed (args.closeShouldFix); the next review
@@ -858,8 +937,8 @@ async function body() {
         gatewayCall({
           role: 'code-review', key: `${a.label}-review-${n}`, label: `review ${n}`, totalMin: 55, out: `${a.tmp}/review-${n}.json`,
           args: `--model ${reviewer.model} --effort ${reviewer.effort} --prompt ${q(`${a.tmp}/review-${n}.md`)}`,
-          attach: [`${a.tmp}/change-${n}.diff`, a.brief, ...(n > 1 ? [`${a.tmp}/review-${n - 1}.json`] : [])],
-          keepIfExists: [focusFile], attachIfExists: fixed ? files.map(f => `${snapDir(n)}/${rel(f)}`) : files,
+          attach: [`${a.tmp}/change-${n}.diff`, a.brief, ...(n > 1 ? [`${a.tmp}/review-${n - 1}.json`] : []), ...(baseReviewMd ? [focusFile] : [])],
+          attachIfExists: fixed ? files.map(f => `${snapDir(n)}/${rel(f)}`) : files,
         }) + ` ` +
         `A changed file that does not exist ${fixed ? 'in the commit' : 'now'} is left out of --attach (the diff already carries deletions). ` +
         `${VERDICT} ${STALE} reviewFile: the review file path. Change no code. ${INFRA} ` +
@@ -867,7 +946,9 @@ async function body() {
         { agentType: 'zodchi-core:runner', schema: withInfra(REVIEW), phase: 'Review', label: `review ${n}` })
       : await step(
         `You are an independent code reviewer; you did not write this change. Work from ${a.repo} and change nothing. Read ${a.brief}, then the change: ${diffHow(target)}, for these paths: ${JSON.stringify(files.map(rel))}. ` +
-        `Read the repository's REVIEW.md as of the base commit, never the work tree's (\`git show ${base}:REVIEW.md\`; none is fine), and apply it. ` +
+        (baseReviewMd
+          ? `Read the repository's REVIEW.md as of the base commit, never the work tree's (\`git show ${base}:REVIEW.md\`), and apply it; the base commit has one, so a review that could not read it is "blocked". `
+          : `The base commit has no REVIEW.md: judge by the brief. `) +
         `Context: ${context}. Look for correctness bugs, broken contracts, missing checks and unsafe operations; style only when it hides a bug. ` +
         `Write the review to ${a.tmp}/review-${n}.json as {"verdict": "approved" | "changes_requested" | "blocked", "summary": ..., "commit": ${fixed ? `"${target}"` : '""'}, "findings": [{"id": "F1", "severity": "important|nit|pre-existing", "location": ..., "problem": ..., "fix": ...}]}; ` +
         `approved only when no important finding is open, blocked when the change cannot be judged. ${VERDICT} ${STALE} reviewFile: the path you wrote.`,
@@ -896,8 +977,9 @@ async function body() {
     const important = findings.filter(f => severity(f) === 'important')
     if (review.verdict === 'approved' && important.length) log(`review ${n}: approved with ${important.length} important finding(s); read as changes requested`)
     // The effective verdict: severities decide, not the reviewer's word, which stays in rounds[].review.verdict. The
-    // package's verdict is "approved" only together with approved: true.
-    const effective = review.verdict === 'blocked' ? 'blocked' : important.length || (review.verdict === 'changes_requested' && !findings.length) ? 'changes_requested' : 'approved'
+    // package's verdict is "approved" only together with approved: true. A changes request that lists no finding cannot
+    // be closed: it is "blocked", with the reviewer's word kept and the question asked below.
+    const effective = review.verdict === 'blocked' || (review.verdict === 'changes_requested' && !findings.length) ? 'blocked' : important.length ? 'changes_requested' : 'approved'
     out.rounds[out.rounds.length - 1].verdict = effective
     if (out.verification) { out.verification.reviewedCommit = fixed ? target : null; out.verification.review = `${reviewer.provider}/${reviewer.model} ${effective}${effective !== review.verdict ? ` (the reviewer said ${review.verdict})` : ''}` }
     if (effective !== 'approved') out.verdict = effective
@@ -912,6 +994,8 @@ async function body() {
       if (!nits.length || !a.closeShouldFix || n === rounds) {
         // A review of the work tree, not of a fixed commit, is a preview: it never approves the package.
         if (!fixed) {
+          // This review supersedes an earlier round's verdict, and a preview decides nothing: no verdict stays.
+          delete out.verdict
           out.preview = { verdict: 'approved', note: 'args.commit is false: the review read the work tree, not a fixed commit, so the package is not approved' }
           out.stoppedAt = `review ${n} preview`
           out.next = `The preview review found no important finding. The work is not committed; to approve it, run the package again with commits (args.commit not false).`
