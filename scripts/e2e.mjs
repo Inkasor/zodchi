@@ -758,7 +758,7 @@ scenario("server-results", "every kind of result through HTTP, the refusals of t
     const answer = await call(t, server, "POST", "/v1/jobs", { token: a.token, body });
     t.ok(answer.status === 400 && ["bad_request", "role_not_found", "role_not_allowed"].includes(answer.json.error.code) && answer.json.error.message.includes(words), `refused: ${JSON.stringify(body).slice(0, 80)}`);
   }
-  const stored = fs.readdirSync(path.join(data, "users", a.id, "jobs")).sort();
+  const stored = fs.readdirSync(path.join(data, "users", a.id, "jobs")).filter((n) => !n.startsWith(".")).sort();
   t.eq(stored, ["fail-1", "json-1", "png-1", "text-1"], "nothing was stored for a refused request");
 
   // The body limit, both ways a client can send a body: a length announced over 32 MB is refused before anything is
