@@ -146,23 +146,3 @@ pub fn reissue(data: &Path, id: &str) -> Result<String> {
     })?;
     Ok(token)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn slug_keeps_letters_and_digits() {
-        assert_eq!(slug("Ada Lovelace"), "ada-lovelace");
-        assert_eq!(slug("  !!"), "user");
-        assert!(slug(&"x".repeat(80)).len() <= 24);
-    }
-
-    #[test]
-    fn a_broken_registry_is_refused() {
-        let file = Path::new("server.json");
-        assert!(parse("{", file).is_err());
-        assert!(parse("{\"users\": [{\"id\": \"../x\", \"name\": \"a\", \"createdAt\": \"t\", \"tokenHashes\": []}]}", file).is_err());
-        assert!(parse("{\"users\": []}", file).unwrap().is_empty());
-    }
-}

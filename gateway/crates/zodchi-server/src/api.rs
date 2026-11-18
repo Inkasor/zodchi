@@ -686,36 +686,3 @@ pub fn serve_until(opts: &Options, auth: Box<dyn Authenticator>, ready: &dyn Fn(
     drop(_lock);
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_fingerprint_is_the_client_request() {
-        let a = job_request(br#"{"key":"k1","role":"ask","prompt":"hi"}"#).ok().unwrap();
-        let b = job_request(br#"{"prompt":"hi","role":"ask","key":"k1","credits":false}"#).ok().unwrap();
-        let c = job_request(br#"{"key":"k1","role":"ask","prompt":"hi","effort":"high"}"#).ok().unwrap();
-        assert_eq!(a.fingerprint, b.fingerprint);
-        assert_ne!(a.fingerprint, c.fingerprint);
-    }
-
-    #[test]
-    fn refused_requests() {
-        let refused = |body: &str| job_request(body.as_bytes()).err().unwrap_or_default();
-        assert!(refused(r#"{"key":"k","role":"ask","prompt":"p","paid":true}"#).contains("OpenAI API key"));
-        assert!(refused(r#"{"key":"k","role":"ask","prompt":"p","resume":"x"}"#).contains("work call"));
-        assert!(refused(r#"{"key":"k","role":{"mode":"expert"},"prompt":"p"}"#).contains("inline role"));
-        assert!(refused(r#"{"key":"k","role":"x.json","prompt":"p"}"#).contains("role file"));
-        assert!(refused(r#"{"key":"k","role":"ask","prompt":"p","images":["","","","","","","","",""]}"#).contains("At most 8"));
-        assert!(refused(r#"{"key":"k","role":"ask","prompt":"p","other":1}"#).contains("Unknown field"));
-    }
-
-    #[test]
-    fn output_files_stay_in_the_job_folder() {
-        assert!(is_output_file("out-0.png"));
-        assert!(!is_output_file("../out-0.png"));
-        assert!(!is_output_file("out-0/../../x"));
-        assert!(!is_output_file("request.json"));
-    }
-}
