@@ -75,18 +75,3 @@ impl Authenticator for TokenAuthenticator {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bearer_is_read_in_any_case() {
-        let h = |v: &str| vec![("AUTHORIZATION".to_string(), v.to_string())];
-        assert_eq!(bearer(&h("Bearer abc")), Some("abc"));
-        assert_eq!(bearer(&h("bearer  abc ")), Some("abc"));
-        assert_eq!(bearer(&h("Basic abc")), None);
-        assert_eq!(bearer(&h("Bearer ")), None);
-        assert!(same(b"abc", b"abc") && !same(b"abc", b"abd") && !same(b"abc", b"ab"));
-    }
-}

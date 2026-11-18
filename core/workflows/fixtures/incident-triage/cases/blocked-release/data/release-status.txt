@@ -1,2 +1,0 @@
-release 2.5.0: blocked
-blocked by: process P-7f3a2 (state: running, since 2026-11-17T06:40:00Z)

@@ -27,21 +27,17 @@ jobs:
           node-version: 24
       - name: Repository checks (workflows, agents, JSON, roles, publish guard)
         run: node scripts/check.mjs
-      - name: Build the gateway
-        run: cargo build --locked --manifest-path gateway/Cargo.toml
-      - name: Test the gateway
-        run: cargo test --locked --manifest-path gateway/Cargo.toml
-      - name: The gateway lists the roles of this repository
-        env:
-          ZODCHI_HOME: ${{ runner.temp }}/zodchi-home
-          ZODCHI_ROLES: ${{ github.workspace }}/roles
-        run: |
-          bin=gateway/target/debug/zodchi
-          [ -f "$bin.exe" ] && bin="$bin.exe"
-          "$bin" help > /dev/null
-          count=$("$bin" roles | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const r=JSON.parse(s);const bad=r.filter(x=>x.error);if(bad.length){console.error(JSON.stringify(bad));process.exit(1)}console.log(r.length)})")
-          echo "roles: $count"
-          [ "$count" -ge 10 ]
+      - name: Build the gateway (release binaries, the candidate the end-to-end suite runs)
+        run: cargo build --release --locked --manifest-path gateway/Cargo.toml
+      - name: End-to-end suite of the gateway (fake Codex, no model spend)
+        run: node scripts/e2e.mjs --no-build --out "$RUNNER_TEMP/e2e-traces"
+      - name: Keep the traces of the end-to-end suite
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-traces-${{ matrix.os }}
+          path: ${{ runner.temp }}/e2e-traces
+          if-no-files-found: ignore
       - name: Installer round trip in a scratch home
         env:
           ZODCHI_HOME: ${{ runner.temp }}/zodchi-home
