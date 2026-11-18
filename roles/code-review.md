@@ -24,7 +24,8 @@ is not in the request, name the file in notVerified and say what it would
 settle.
 
 Put the commit the request names as the one under review into commit,
-exactly as written there.
+exactly as written there. The attached files of the package are that
+commit's copies; judge the commit, not a later state of the work tree.
 
 Answer with JSON by the schema only, in English. Every finding is actionable
 and cites a file and line or a symbol. verdict=approved only when no
