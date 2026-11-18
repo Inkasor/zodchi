@@ -3,7 +3,8 @@
 //! pinned for the run. Codex candidates run through the gateway; Claude candidates run through the local Claude Code
 //! CLI, only when the person enabled it (`"claude": true` in `~/.zodchi/flow.json`) and only after a preflight at the
 //! gate. The writer and the reviewer are distinct provider/model identities. Every candidate passed over is recorded
-//! with its reason.
+//! with its reason. A Claude pick carries the account Claude Code was signed in with at the gate (a digest), and every
+//! Claude call checks it again.
 
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
@@ -19,15 +20,21 @@ pub struct Pick {
     pub provider: String,
     pub model: String,
     pub effort: String,
+    /// The account a Claude pick was authorized with at the gate (`claude::account_of`); empty for Codex.
+    pub account: String,
 }
 
 impl Pick {
     pub fn to_json(&self) -> Value {
-        json!({ "provider": self.provider, "model": self.model, "effort": self.effort })
+        let mut v = json!({ "provider": self.provider, "model": self.model, "effort": self.effort });
+        if !self.account.is_empty() {
+            v["account"] = json!(self.account);
+        }
+        v
     }
     pub fn from_json(v: &Value) -> Pick {
         let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
-        Pick { provider: s("provider"), model: s("model"), effort: s("effort") }
+        Pick { provider: s("provider"), model: s("model"), effort: s("effort"), account: s("account") }
     }
     fn name(&self) -> String {
         format!("{}/{}", self.provider, self.model)
@@ -71,6 +78,7 @@ fn candidates(table: &Map<String, Value>, role: &str) -> Result<Vec<Pick>, Strin
     };
     Ok(list.iter().map(|c| {
         let mut p = Pick::from_json(c);
+        p.account = String::new(); // only the gate binds an account, never a table
         if p.effort.is_empty() {
             p.effort = "medium".into();
         }
@@ -100,13 +108,15 @@ const PREFLIGHT_PROMPT: &str = "Step: preflight (zodchi flow)\n\nThis call only 
 /// The preflight of Claude on this machine at the gate, before anything is claimed: the program runs
 /// (`claude --version`), it is signed in with a Claude subscription (`claude auth status`), and a tiny structured
 /// call with the candidate's model and effort answers in its schema. The call is skipped when one of this CLI
-/// version, model and effort passed less than a day ago (`claude-preflight.json` in the zodchi home). Each model is
-/// checked once per gate; the program and the sign-in once.
+/// version, account, model and effort passed less than a day ago (`claude-preflight.json` in the zodchi home). Each
+/// model is checked once per gate; the program and the sign-in once. A usable candidate comes with the account it
+/// is bound to.
 pub struct ClaudeGate {
     enabled: bool,
     home: PathBuf,
-    program: Option<Result<(claude::Program, String), String>>,
-    picks: HashMap<(String, String), Result<(), String>>,
+    /// The program, its version and the account binding of its sign-in.
+    program: Option<Result<(claude::Program, String, String), String>>,
+    picks: HashMap<(String, String), Result<String, String>>,
 }
 
 impl ClaudeGate {
@@ -120,8 +130,8 @@ impl ClaudeGate {
         }
     }
 
-    /// Whether a Claude candidate may run, with the reason when it may not.
-    pub fn usable(&mut self, p: &Pick) -> Result<(), String> {
+    /// Whether a Claude candidate may run: the account it is bound to, or the reason when it may not.
+    pub fn usable(&mut self, p: &Pick) -> Result<String, String> {
         if !self.enabled || self.home.as_os_str().is_empty() {
             return Err("Claude is not an executor of this run: not enabled (\"claude\": true in ~/.zodchi/flow.json)".into());
         }
@@ -146,22 +156,22 @@ impl ClaudeGate {
         Ok(dir)
     }
 
-    fn check(&mut self, p: &Pick) -> Result<(), String> {
+    fn check(&mut self, p: &Pick) -> Result<String, String> {
         if self.program.is_none() {
             let found = claude::find_program().and_then(|program| {
                 let dir = self.scratch()?;
-                let r = claude::version(&program, &dir).and_then(|v| claude::signed_in(&program, &dir).map(|_| v));
+                let r = claude::version(&program, &dir).and_then(|v| claude::signed_in(&program, &dir).map(|a| (v, a)));
                 let _ = std::fs::remove_dir_all(&dir);
-                r.map(|v| (program, v))
+                r.map(|(v, a)| (program, v, a))
             });
             self.program = Some(found);
         }
-        let (program, version) = self.program.clone().expect("set above")?;
+        let (program, version, account) = self.program.clone().expect("set above")?;
         let cache = self.home.join("claude-preflight.json");
-        let id = format!("{version}|{}|{}", p.model, p.effort);
+        let id = format!("{version}|{account}|{}|{}", p.model, p.effort);
         let passed = read_stored(&cache).and_then(|c| c.get(&id).and_then(Value::as_str).and_then(parse_iso_ms));
         if passed.is_some_and(|at| (0..PREFLIGHT_FRESH_MS).contains(&(now_ms() - at))) {
-            return Ok(());
+            return Ok(account);
         }
         let dir = self.scratch()?;
         let schema = json!({ "type": "object", "additionalProperties": false, "required": ["ok"], "properties": { "ok": { "type": "boolean", "const": true } } });
@@ -173,7 +183,7 @@ impl ClaudeGate {
                 let mut c = read_stored(&cache).filter(Value::is_object).unwrap_or_else(|| json!({}));
                 c[id.as_str()] = json!(iso());
                 let _ = write_json_atomic(&cache, &c);
-                Ok(())
+                Ok(account)
             }
             Err((_, why, _)) => Err(format!("{} with effort {} did not answer a tiny structured call: {why}", p.model, p.effort)),
         }
@@ -182,37 +192,45 @@ impl ClaudeGate {
 
 /// The first writer candidate, in table order, that has an independent reviewer candidate; the first such reviewer.
 /// A Codex candidate needs the Codex subscription usable (`codex`); a Claude candidate needs Claude enabled and its
-/// preflight passed, run only for the candidates the walk reaches. Returns the pair and every candidate skipped with
-/// its reason, or the refusal with those reasons.
+/// preflight passed, run only for the candidates the walk reaches; a Claude pick comes back bound to the account of
+/// its preflight. Returns the pair and every candidate skipped with its reason, or the refusal with those reasons.
 pub fn resolve(table: &Map<String, Value>, codex: &Result<(), String>) -> Result<(Pick, Pick, Vec<String>), String> {
     let writers = candidates(table, WRITER_ROLE)?;
     let reviewers = candidates(table, REVIEWER_ROLE)?;
     let mut gate = ClaudeGate::of(table);
     let mut skipped = Vec::new();
-    let mut usable = |p: &Pick| -> Result<(), String> {
+    let mut usable = |p: &Pick| -> Result<String, String> {
         match p.provider.as_str() {
             "claude" => gate.usable(p),
-            "codex" if !p.model.is_empty() => codex.clone(),
+            "codex" if !p.model.is_empty() => codex.clone().map(|_| String::new()),
             _ => Err("not a Codex or Claude candidate with a model".into()),
         }
     };
     for w in &writers {
-        if let Err(why) = usable(w) {
-            skipped.push(format!("{WRITER_ROLE} {}: {why}", w.name()));
-            continue;
-        }
+        let w_account = match usable(w) {
+            Ok(a) => a,
+            Err(why) => {
+                skipped.push(format!("{WRITER_ROLE} {}: {why}", w.name()));
+                continue;
+            }
+        };
         let mut reasons = Vec::new();
         for r in &reviewers {
             if r.provider == w.provider && r.model == w.model {
                 reasons.push(format!("{REVIEWER_ROLE} {}: the same model as the writer", r.name()));
                 continue;
             }
-            if let Err(why) = usable(r) {
-                reasons.push(format!("{REVIEWER_ROLE} {}: {why}", r.name()));
-                continue;
-            }
+            let r_account = match usable(r) {
+                Ok(a) => a,
+                Err(why) => {
+                    reasons.push(format!("{REVIEWER_ROLE} {}: {why}", r.name()));
+                    continue;
+                }
+            };
             skipped.extend(reasons);
-            return Ok((w.clone(), r.clone(), skipped));
+            let (mut w, mut r) = (w.clone(), r.clone());
+            (w.account, r.account) = (w_account, r_account);
+            return Ok((w, r, skipped));
         }
         skipped.push(format!("{WRITER_ROLE} {}: no independent reviewer ({})", w.name(), reasons.join("; ")));
     }
@@ -236,6 +254,7 @@ mod tests {
     fn claude_disabled_gives_a_codex_pair() {
         let (w, r, skipped) = resolve(&table(false), &Ok(())).unwrap();
         assert_eq!((w.model.as_str(), r.model.as_str(), w.effort.as_str()), ("w", "r", "medium"));
+        assert_eq!(w.to_json(), json!({ "provider": "codex", "model": "w", "effort": "medium" }), "a Codex pick carries no account");
         assert!(skipped[0].starts_with("expertWriter claude/opus: Claude is not an executor of this run: not enabled"), "{skipped:?}");
         assert!(skipped.iter().any(|s| s.contains("reviewer codex/w: the same model as the writer")));
     }
@@ -248,6 +267,16 @@ mod tests {
         assert!(why.starts_with("No writer/reviewer pair of distinct models") && why.contains("not a Codex or Claude candidate"), "{why}");
         let why = resolve(&table(false), &Err("Codex is not signed in".into())).unwrap_err();
         assert!(why.contains("codex/w: Codex is not signed in"), "{why}");
+    }
+
+    #[test]
+    fn an_account_is_bound_only_by_the_gate() {
+        let claude = Pick { provider: "claude".into(), model: "opus".into(), effort: "high".into(), account: "claude-0123456789abcdef".into() };
+        assert_eq!(Pick::from_json(&claude.to_json()).account, claude.account, "the binding survives run.json");
+        let mut t = table(false);
+        t.insert(WRITER_ROLE.into(), json!({ "candidates": [{ "provider": "codex", "model": "w", "account": "claude-forged" }] }));
+        let (w, _, _) = resolve(&t, &Ok(())).unwrap();
+        assert_eq!(w.account, "", "a table cannot bind an account");
     }
 
     #[test]

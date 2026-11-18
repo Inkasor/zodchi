@@ -9,10 +9,15 @@
 //! only use the subscription Claude Code is signed in with. The engine reads the final message itself and checks it
 //! against the schema.
 //!
+//! The run is bound at the gate to the account Claude Code is signed in with (a digest, `Pick::account`); right
+//! before each call the opt-in and that account are checked again, and a call that does not match is refused with
+//! nothing sent. A call counts only with a valid answer and a clean exit of the program.
+//!
 //! A job of a key is a folder in the run's journal (`flows/<run>/claude/<key>/`): `job.json` before anything starts,
 //! with `turnStartedAt` written and synced before the program is started, the raw output (`raw.json`) and
-//! `final.json` after. The folder is created exclusively, so a key is called at most once; a folder with
-//! `turnStartedAt` and no `final.json` is a call that may have run, an unknown outcome, never called again by itself.
+//! `final.json` after; the folder entries are synced with the files. The folder is created exclusively, so a key is
+//! called at most once; a folder without `job.json` was reserved and never started; a folder with `turnStartedAt`
+//! and no `final.json` is a call that may have run, an unknown outcome, never called again by itself.
 
 use serde_json::{json, Map, Value};
 use std::ffi::OsString;
@@ -24,10 +29,10 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use zodchi_core::config::Config;
 use zodchi_core::role::{check_role, load_role, Overrides};
-use zodchi_core::util::{fail, is_key, iso, read_stored, write_json_atomic, GatewayError, Result};
+use zodchi_core::util::{fail, is_key, iso, read_stored, sha256_hex, write_json_atomic, GatewayError, Result};
 
 use super::Executor;
-use crate::models::Pick;
+use crate::models::{claude_enabled, Pick};
 
 /// A Claude program to run instead of `claude` on PATH; a `.js` or `.mjs` file runs with the Node on PATH.
 pub const ENV_BIN: &str = "ZODCHI_CLAUDE_BIN";
@@ -37,7 +42,8 @@ const SYSTEM: &str = "You answer one step of an automated workflow. You have no 
 const SETTINGS: &str = "{\"disableAllHooks\": true}\n";
 const OUTPUT_LIMIT: usize = 16 << 20;
 const RUN_ID_LEN: usize = 22; // "20261118-120000-abcdef"
-pub const ACCOUNT: &str = "claude (the local Claude Code subscription)";
+/// The field of a stored Claude role that carries the account the run was bound to at the gate.
+const ROLE_ACCOUNT: &str = "claudeAccount";
 
 /// The Claude program: an executable, or a script run by Node.
 #[derive(Clone, Debug)]
@@ -300,9 +306,21 @@ pub fn version(p: &Program, cwd: &Path) -> std::result::Result<String, String> {
     }
 }
 
+/// The account a sign-in names, as a local binding that holds no secret and no address: a digest of the e-mail and
+/// the organization `claude auth status` reports. A sign-in that names neither cannot be bound to a run.
+pub fn account_of(status: &Value) -> std::result::Result<String, String> {
+    let email = status["email"].as_str().unwrap_or("").trim().to_ascii_lowercase();
+    let org = status["orgId"].as_str().unwrap_or("").trim().to_string();
+    if email.is_empty() && org.is_empty() {
+        return Err("claude auth status names no account (no email or orgId), so the run cannot be bound to it".into());
+    }
+    Ok(format!("claude-{}", &sha256_hex(format!("zodchi claude account\n{email}\n{org}"))[..16]))
+}
+
 /// Whether Claude Code is signed in with a Claude subscription (`claude auth status --json`), with the variables of
-/// the call: an API key, a key helper or another provider is refused. Only the kind of sign-in is read and named.
-pub fn signed_in(p: &Program, cwd: &Path) -> std::result::Result<(), String> {
+/// the call: an API key, a key helper or another provider is refused. Only the kind of sign-in is named; the account
+/// comes back as its binding (`account_of`), never as its name.
+pub fn signed_in(p: &Program, cwd: &Path) -> std::result::Result<String, String> {
     let mut c = command(p);
     c.args(["auth", "status", "--json"]);
     let ran = run(c, b"", cwd, Duration::from_secs(60)).map_err(|e| format!("claude auth status did not start: {e}"))?;
@@ -314,14 +332,50 @@ pub fn signed_in(p: &Program, cwd: &Path) -> std::result::Result<(), String> {
     if v["loggedIn"] != json!(true) || method != "claude.ai" || provider != "firstParty" {
         return Err(format!("Claude Code is not signed in with a Claude subscription (claude auth status: authMethod {}, apiProvider {})", clip(method, 40), clip(provider, 40)));
     }
-    Ok(())
+    account_of(&v)
 }
 
-/// Writes a JSON file whole and makes it durable before the next step.
+/// Makes the entries of a folder durable: a folder made in it, a file renamed into it. A file system that cannot
+/// sync a folder (an error of that kind) is taken as it is. On Windows a folder is opened for writing to be flushed;
+/// NTFS journals its entries, so a folder that refuses this is taken as it is too.
+fn sync_dir(dir: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    let opened = {
+        use std::os::windows::fs::OpenOptionsExt;
+        fs::OpenOptions::new().write(true).custom_flags(0x0200_0000).open(dir) // FILE_FLAG_BACKUP_SEMANTICS
+    };
+    #[cfg(not(windows))]
+    let opened = fs::File::open(dir);
+    let synced = opened.and_then(|f| f.sync_all());
+    match synced {
+        Err(e) if cfg!(windows) || matches!(e.kind(), io::ErrorKind::InvalidInput | io::ErrorKind::Unsupported) => Ok(()),
+        other => other,
+    }
+}
+
+/// Writes a JSON file whole and makes it and its folder entry durable before the next step.
 fn write_synced(file: &Path, value: &Value) -> Result<()> {
     write_json_atomic(file, value)?;
     fs::OpenOptions::new().write(true).open(file)?.sync_all()?;
+    if let Some(dir) = file.parent() {
+        sync_dir(dir)?;
+    }
     Ok(())
+}
+
+/// Writes a file and syncs its content; its folder entry is synced with the next `write_synced` in that folder.
+fn write_bytes_synced(file: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut f = fs::File::create(file)?;
+    f.write_all(bytes)?;
+    f.sync_all()
+}
+
+/// A test cut of the engine (`ZODCHI_FLOW_CUT`, as in `code_package`): the process ends right here.
+fn cut(point: &str) {
+    if std::env::var("ZODCHI_FLOW_CUT").ok().as_deref() == Some(point) {
+        eprintln!("zodchi flow: cut after {point} (ZODCHI_FLOW_CUT)");
+        std::process::exit(crate::CUT_EXIT);
+    }
 }
 
 /// How far a failed call came.
@@ -335,12 +389,31 @@ pub enum Sent {
     TimedOut,
 }
 
+/// The outcome of a call: `Ok` with the validated answer and the raw output, or `Err` with how far it came, why, and
+/// the raw output.
+pub type Outcome = std::result::Result<(Value, String), (Sent, String, String)>;
+
+/// What a program that ran left, judged: an answer counts only when it is valid and the program exited 0. A valid
+/// answer followed by a crash or another exit code is a failure, with the raw output kept.
+pub fn judge(ran: &Ran, schema: &Value, limit: Duration) -> Outcome {
+    let raw = String::from_utf8_lossy(&ran.stdout).into_owned();
+    if ran.timed_out {
+        return Err((Sent::TimedOut, format!("no answer within {} min: the call was stopped", limit.as_secs().div_ceil(60)), raw));
+    }
+    let exit = format!("claude exited {}", ran.code.map_or("without a code".into(), |c| c.to_string()));
+    match (read_answer(&ran.stdout, schema), ran.code) {
+        (Ok(data), Some(0)) => Ok((data, raw)),
+        (Ok(_), _) => Err((Sent::Yes, format!("{exit} after an answer in the schema, so the call is not taken as done: {}", stderr_tail(&ran.stderr)), raw)),
+        (Err(_), code) if code != Some(0) && raw.trim().is_empty() => Err((Sent::Yes, format!("{exit}: {}", stderr_tail(&ran.stderr)), raw)),
+        (Err(why), Some(0)) => Err((Sent::Yes, why, raw)),
+        (Err(why), _) => Err((Sent::Yes, format!("{why} ({exit})"), raw)),
+    }
+}
+
 /// One call in `dir`, which the caller owns: the settings and an empty working folder are made there. `started`
-/// runs right before the program is started; an error from it starts nothing. The outcome: `Ok` with the validated
-/// answer and the raw output, or `Err` with how far it came, why, and the raw output.
-#[allow(clippy::type_complexity, clippy::too_many_arguments)]
-pub fn call(p: &Program, dir: &Path, model: &str, effort: &str, text: &str, schema: &Value, limit: Duration, started: impl FnOnce() -> Result<()>)
-    -> std::result::Result<(Value, String), (Sent, String, String)> {
+/// runs right before the program is started; an error from it starts nothing.
+#[allow(clippy::too_many_arguments)]
+pub fn call(p: &Program, dir: &Path, model: &str, effort: &str, text: &str, schema: &Value, limit: Duration, started: impl FnOnce() -> Result<()>) -> Outcome {
     let settings = dir.join("settings.json");
     let cwd = dir.join("cwd");
     let prepared = fs::write(&settings, SETTINGS).and_then(|_| fs::create_dir_all(&cwd));
@@ -352,20 +425,9 @@ pub fn call(p: &Program, dir: &Path, model: &str, effort: &str, text: &str, sche
     if let Err(e) = started() {
         return Err((Sent::No, format!("cannot record the start of the call: {}", e.0), String::new()));
     }
-    let ran = match run(c, text.as_bytes(), &cwd, limit) {
-        Ok(r) => r,
-        Err(e) => return Err((Sent::No, format!("claude did not start: {e}"), String::new())),
-    };
-    let raw = String::from_utf8_lossy(&ran.stdout).into_owned();
-    if ran.timed_out {
-        return Err((Sent::TimedOut, format!("no answer within {} min: the call was stopped", limit.as_secs().div_ceil(60)), raw));
-    }
-    match read_answer(&ran.stdout, schema) {
-        Ok(data) => Ok((data, raw)),
-        Err(_) if ran.code != Some(0) && raw.trim().is_empty() => {
-            Err((Sent::Yes, format!("claude exited {}: {}", ran.code.map_or("without a code".into(), |c| c.to_string()), stderr_tail(&ran.stderr)), raw))
-        }
-        Err(why) => Err((Sent::Yes, why, raw)),
+    match run(c, text.as_bytes(), &cwd, limit) {
+        Ok(ran) => judge(&ran, schema, limit),
+        Err(e) => Err((Sent::No, format!("claude did not start: {e}"), String::new())),
     }
 }
 
@@ -391,100 +453,142 @@ impl Claude {
     }
 }
 
-fn ended(key: &str, status: &str, error: &str, turn: &Value) -> Value {
-    json!({ "key": key, "executor": "claude", "status": status, "error": error, "account": ACCOUNT, "turnStartedAt": turn, "finishedAt": iso() })
+fn ended(key: &str, status: &str, error: &str, turn: &Value, account: &Value) -> Value {
+    json!({ "key": key, "executor": "claude", "status": status, "error": error, "account": account, "turnStartedAt": turn, "finishedAt": iso() })
+}
+
+/// The final state of the job in `dir`. The call ran in the foreground of `submit`, so a job without `final.json`
+/// was left by a process that ended: with no `job.json` the key was only reserved and nothing started; before the
+/// program started it failed with nothing sent; after, the call may have run and its outcome is unknown.
+fn final_state(dir: &Path, key: &str) -> Result<Value> {
+    if let Some(fin) = read_stored(&dir.join("final.json")) {
+        return Ok(fin);
+    }
+    if !dir.is_dir() {
+        return Err(GatewayError(format!("No Claude job {key}")));
+    }
+    let file = dir.join("job.json");
+    if !file.exists() {
+        return Ok(ended(key, "failed", "the process of the call ended after reserving the key and before recording the job: claude was not started", &Value::Null, &Value::Null));
+    }
+    let Some(job) = read_stored(&file) else {
+        return Ok(ended(key, "unknown", "the job record of the call cannot be read: the call may have run", &Value::Null, &Value::Null));
+    };
+    if job.get("turnStartedAt").is_none_or(Value::is_null) {
+        return Ok(ended(key, "failed", "the process of the call ended before claude was started", &Value::Null, &job["account"]));
+    }
+    Ok(ended(key, "unknown", "the process of the call ended after claude was started and before its answer was saved: the call may have run", &job["turnStartedAt"], &job["account"]))
+}
+
+impl Claude {
+    /// Whether this call may go out now, checked right before it: Claude is still enabled on this machine and Claude
+    /// Code is signed in with the account the run was bound to at the gate. The binding, or why nothing is sent.
+    fn authorized(&self, p: &Program, cwd: &Path, role: &Value) -> std::result::Result<String, String> {
+        if !claude_enabled(&self.cfg) {
+            return Err("Claude is no longer enabled as an executor (\"claude\": true in ~/.zodchi/flow.json): nothing was sent".into());
+        }
+        let bound = role[ROLE_ACCOUNT].as_str().unwrap_or("");
+        if bound.is_empty() {
+            return Err("the request names no Claude account bound at the gate: nothing was sent".into());
+        }
+        let now = signed_in(p, cwd).map_err(|why| format!("{why}: nothing was sent"))?;
+        if now != bound {
+            return Err(format!("Claude Code is signed in with another account ({now}) than the one this run was bound to at the gate ({bound}): nothing was sent"));
+        }
+        Ok(now)
+    }
 }
 
 impl Executor for Claude {
     /// The installed role with the pinned model and effort and the schema of this version: its frame and time limit
-    /// are the call's.
+    /// are the call's. It carries the account the run was bound to at the gate, checked before each call.
     fn role(&self, name: &str, pick: &Pick, schema: &Value) -> Result<Value> {
         let mut role = load_role(&self.cfg, name, &Overrides { model: Some(pick.model.clone()), effort: Some(pick.effort.clone()), ..Default::default() })?;
         role["outputSchema"] = schema.clone();
-        check_role(&role)
+        let mut role = check_role(&role)?;
+        role[ROLE_ACCOUNT] = json!(pick.account);
+        Ok(role)
     }
 
     /// Calls Claude once for `key`, in the foreground: the job folder is created exclusively (a key that has one is
-    /// never called again: false), `job.json` is synced before the program starts and `final.json` after it ended.
+    /// never called again: false) and synced into its parent, `job.json` is synced before the program starts and
+    /// `final.json` after it ended. A call the opt-in or the account no longer allows ends `refused`, nothing sent.
     fn submit(&self, key: &str, stored: &Value) -> Result<bool> {
         if !is_key(key) {
             return fail(format!("not a job key: {key:?}"));
         }
         let dir = self.job_dir(key);
-        if let Some(parent) = dir.parent() {
-            fs::create_dir_all(parent)?;
+        let parent = dir.parent().map(Path::to_path_buf).unwrap_or_default();
+        if !parent.is_dir() {
+            fs::create_dir_all(&parent)?;
+            if let Some(up) = parent.parent() {
+                sync_dir(up)?;
+            }
         }
         match fs::create_dir(&dir) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
             Err(e) => return Err(e.into()),
         }
+        sync_dir(&parent)?;
+        cut("claude reserved");
         let role = &stored["role"];
         let model = role["model"].as_str().unwrap_or("").to_string();
         let effort = role["effort"].as_str().unwrap_or("medium").to_string();
         let minutes = role["timeoutMin"].as_f64().filter(|m| m.is_finite() && *m > 0.0).unwrap_or(30.0);
+        let bound = role[ROLE_ACCOUNT].clone();
         let mut job = json!({ "key": key, "executor": "claude", "model": model, "effort": effort, "timeoutMin": minutes,
-            "status": "starting", "createdAt": iso(), "pid": std::process::id() });
+            "account": bound, "status": "starting", "createdAt": iso(), "pid": std::process::id() });
         write_synced(&dir.join("job.json"), &job)?;
         let fin = match find_program() {
-            Err(why) => ended(key, "failed", &why, &Value::Null),
-            Ok(program) => {
-                let text = message(role["instructions"].as_str().unwrap_or(""), stored["prompt"].as_str().unwrap_or(""), &role["outputSchema"]);
-                let turn = iso();
-                let job_file = dir.join("job.json");
-                let started = || {
-                    job["status"] = json!("running");
-                    job["turnStartedAt"] = json!(turn);
-                    write_synced(&job_file, &job)
-                };
-                let outcome = call(&program, &dir, &model, &effort, &text, &role["outputSchema"], Duration::from_secs_f64(minutes * 60.0), started);
-                let raw = match &outcome {
-                    Ok((_, raw)) => Some(raw.clone()),
-                    Err((Sent::Yes | Sent::TimedOut, _, raw)) => Some(raw.clone()),
-                    Err((Sent::No, _, _)) => None,
-                };
-                if let Some(raw) = raw {
-                    fs::write(dir.join("raw.json"), raw)?;
-                }
-                match outcome {
-                    Ok((data, _)) => {
-                        let mut fin = ended(key, "succeeded", "", &json!(turn));
-                        fin["error"] = Value::Null;
-                        fin["result"] = json!({ "data": data });
-                        fin
+            Err(why) => ended(key, "failed", &why, &Value::Null, &bound),
+            Ok(program) => match self.authorized(&program, &dir, role) {
+                Err(why) => ended(key, "refused", &why, &Value::Null, &bound),
+                Ok(account) => {
+                    let account = json!(account);
+                    let text = message(role["instructions"].as_str().unwrap_or(""), stored["prompt"].as_str().unwrap_or(""), &role["outputSchema"]);
+                    let turn = iso();
+                    let job_file = dir.join("job.json");
+                    let started = || {
+                        job["status"] = json!("running");
+                        job["turnStartedAt"] = json!(turn);
+                        write_synced(&job_file, &job)
+                    };
+                    let outcome = call(&program, &dir, &model, &effort, &text, &role["outputSchema"], Duration::from_secs_f64(minutes * 60.0), started);
+                    let raw = match &outcome {
+                        Ok((_, raw)) => Some(raw.clone()),
+                        Err((Sent::Yes | Sent::TimedOut, _, raw)) => Some(raw.clone()),
+                        Err((Sent::No, _, _)) => None,
+                    };
+                    if let Some(raw) = raw {
+                        write_bytes_synced(&dir.join("raw.json"), raw.as_bytes())?;
                     }
-                    Err((Sent::TimedOut, why, _)) => ended(key, "timeout", &why, &json!(turn)),
-                    Err((Sent::Yes, why, _)) => ended(key, "failed", &why, &json!(turn)),
-                    Err((Sent::No, why, _)) => ended(key, "failed", &why, &Value::Null),
+                    match outcome {
+                        Ok((data, _)) => {
+                            let mut fin = ended(key, "succeeded", "", &json!(turn), &account);
+                            fin["error"] = Value::Null;
+                            fin["result"] = json!({ "data": data });
+                            fin
+                        }
+                        Err((Sent::TimedOut, why, _)) => ended(key, "timeout", &why, &json!(turn), &account),
+                        Err((Sent::Yes, why, _)) => ended(key, "failed", &why, &json!(turn), &account),
+                        Err((Sent::No, why, _)) => ended(key, "failed", &why, &Value::Null, &account),
+                    }
                 }
-            }
+            },
         };
         write_synced(&dir.join("final.json"), &fin)?;
         Ok(true)
     }
 
+    /// Whether the key has a job folder: a reserved one without `job.json` too, which `wait_final` reads as a call
+    /// that never started.
     fn exists(&self, key: &str) -> bool {
-        is_key(key) && {
-            let dir = self.job_dir(key);
-            dir.join("job.json").is_file() || dir.join("final.json").is_file()
-        }
+        is_key(key) && self.job_dir(key).is_dir()
     }
 
-    /// The final state of the job. The call ran in the foreground of `submit`, so a job without `final.json` was
-    /// left by a process that ended: before the program started it failed with nothing sent; after, the call may
-    /// have run and its outcome is unknown.
     fn wait_final(&self, key: &str) -> Result<Value> {
-        let dir = self.job_dir(key);
-        if let Some(fin) = read_stored(&dir.join("final.json")) {
-            return Ok(fin);
-        }
-        let Some(job) = read_stored(&dir.join("job.json")) else {
-            return Err(GatewayError(format!("No Claude job {key}")));
-        };
-        if job.get("turnStartedAt").is_none_or(Value::is_null) {
-            return Ok(ended(key, "failed", "the process of the call ended before claude was started", &Value::Null));
-        }
-        Ok(ended(key, "unknown", "the process of the call ended after claude was started and before its answer was saved: the call may have run", &job["turnStartedAt"]))
+        final_state(&self.job_dir(key), key)
     }
 
     fn died_before_turn(&self, fin: &Value) -> bool {
@@ -547,6 +651,52 @@ mod tests {
         }
         assert!(!args.iter().any(|a| a.contains("fallback")));
         assert!(stderr_tail(b"fine\nAuthorization: Bearer abc\napi key x\n").ends_with("fine"));
+    }
+
+    #[test]
+    fn an_answer_counts_only_with_a_clean_exit() {
+        let schema = json!({ "type": "object", "required": ["ok"], "properties": { "ok": { "type": "boolean" } } });
+        let ran = |code: Option<i32>, out: &[u8]| Ran { code, stdout: out.to_vec(), stderr: b"crashed after the answer\n".to_vec(), timed_out: false };
+        let limit = Duration::from_secs(60);
+        assert_eq!(judge(&ran(Some(0), &result(r#"{"ok": true}"#)), &schema, limit).unwrap().0, json!({ "ok": true }));
+        for code in [Some(1), Some(3), None] {
+            let (sent, why, raw) = judge(&ran(code, &result(r#"{"ok": true}"#)), &schema, limit).unwrap_err();
+            assert_eq!(sent, Sent::Yes);
+            assert!(why.starts_with("claude exited") && why.contains("not taken as done") && raw.contains(r#""type":"result""#), "{why}");
+        }
+        assert!(judge(&ran(Some(2), b""), &schema, limit).unwrap_err().1.ends_with("crashed after the answer"));
+        assert!(judge(&ran(Some(1), &result("prose")), &schema, limit).unwrap_err().1.contains("not one JSON object"));
+        let mut late = ran(Some(0), &result(r#"{"ok": true}"#));
+        late.timed_out = true;
+        assert_eq!(judge(&late, &schema, limit).unwrap_err().0, Sent::TimedOut);
+    }
+
+    #[test]
+    fn an_account_is_a_digest_of_the_sign_in() {
+        let one = account_of(&json!({ "email": format!("Person@{}", "example.test"), "orgId": "org-1", "subscriptionType": "max" })).unwrap();
+        assert!(one.starts_with("claude-") && one.len() == 23 && !one.contains("org-1"), "{one}");
+        assert_eq!(one, account_of(&json!({ "email": format!("person@{}", "example.test"), "orgId": "org-1" })).unwrap());
+        assert_ne!(one, account_of(&json!({ "email": format!("person@{}", "example.test"), "orgId": "org-2" })).unwrap());
+        assert!(account_of(&json!({ "loggedIn": true, "authMethod": "claude.ai" })).is_err());
+    }
+
+    #[test]
+    fn a_cut_job_is_read_by_how_far_it_came() {
+        let dir = std::env::temp_dir().join(format!("zodchi-claude-test-{}-{:08x}", std::process::id(), rand::random::<u32>()));
+        let key = "flow-test-write";
+        assert!(final_state(&dir, key).is_err(), "no folder: no job");
+        fs::create_dir_all(&dir).unwrap();
+        let reserved = final_state(&dir, key).unwrap();
+        assert_eq!((reserved["status"].as_str(), reserved["turnStartedAt"].is_null()), (Some("failed"), true), "a reserved key never started");
+        write_synced(&dir.join("job.json"), &json!({ "key": key, "status": "starting", "account": "claude-x" })).unwrap();
+        assert_eq!(final_state(&dir, key).unwrap()["status"], json!("failed"));
+        write_synced(&dir.join("job.json"), &json!({ "key": key, "status": "running", "turnStartedAt": "t" })).unwrap();
+        assert_eq!(final_state(&dir, key).unwrap()["status"], json!("unknown"), "a started call may have run");
+        fs::write(dir.join("job.json"), "{ cut").unwrap();
+        assert_eq!(final_state(&dir, key).unwrap()["status"], json!("unknown"), "an unreadable record is never read as not started");
+        write_synced(&dir.join("final.json"), &json!({ "status": "succeeded" })).unwrap();
+        assert_eq!(final_state(&dir, key).unwrap()["status"], json!("succeeded"));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
