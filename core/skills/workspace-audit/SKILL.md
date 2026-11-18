@@ -14,10 +14,11 @@ Split the folder into slices that do not overlap, for example: loose files in th
 folders; repositories. Start one read-only researcher per slice (an Explore agent or `zodchi-core:runner` on a small
 model). Each returns one table, one row per item:
 
-| path | what it is | referenced by | size | last change | verdict | risk | reason |
-|---|---|---|---|---|---|---|---|
+| path | what it is | referenced by | size | last change | fingerprint | verdict | risk | reason |
+|---|---|---|---|---|---|---|---|---|
 
-Verdicts: `DELETE`, `ARCHIVE`, `KEEP`, `ASK`. Rules for every researcher:
+The fingerprint is a content hash for a file, and for a folder a hash of its file list with each file's size and
+change time. Verdicts: `DELETE`, `ARCHIVE`, `KEEP`, `ASK`. Rules for every researcher:
 
 - **Change nothing.** No delete, move, rename, commit, `git status` refresh tricks or installs.
 - **A sole copy is never `DELETE`.** If no second copy is found (and the item is not in Git), say `ASK` and why.
@@ -43,13 +44,16 @@ answers are the plan. Nothing happens before it. A group without a clear answer 
 ## 4. Act (one worker, only after the answers)
 
 Exactly the chosen actions on exactly the listed items, nothing else. A move into an archive counts as a removal.
-Right before each removal or move, check again: the item is unchanged since the survey, it is not in use, and another
-copy of it exists outside everything being removed or moved in this run. If any check fails or cannot run, skip the
+Right before each removal or move, check again: its fingerprint is the same as in the survey, it is not in use, it
+is not and does not contain a repository, and another copy with the same content hash exists outside everything
+being removed or moved in this run. An archive goes to a destination that does not exist yet and is never inside a
+repository: no overwrite, no merge. If any check fails or cannot run, skip the
 item and report it. Never print a secret value, in the log or anywhere else.
 
 **Repositories are reported, never acted on.** No commit, push, stash, reset or folder removal for anything inside
 a repository: the report lists each repository's state, and committing or removing one is a separate task for the
-human or a code package. Keep a log of every action with how to undo it (archive path). Anything the answers did
+human or a code package. Keep a log of every action with how to undo it (the archive path, or for a deletion the verified copy it can be
+restored from). Anything the answers did
 not cover is skipped and reported.
 
 ## 5. Report
