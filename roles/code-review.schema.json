@@ -6,7 +6,6 @@
   "required": [
     "verdict",
     "summary",
-    "commit",
     "findings",
     "notVerified"
   ],
@@ -23,10 +22,6 @@
     "summary": {
       "type": "string",
       "description": "Two to four sentences: what was compared with what, and the outcome"
-    },
-    "commit": {
-      "type": "string",
-      "description": "The commit the request names as the one under review, exactly as written there; empty when the request names none"
     },
     "findings": {
       "type": "array",

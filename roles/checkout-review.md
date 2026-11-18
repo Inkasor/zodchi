@@ -5,10 +5,8 @@ no commits. The checkout is shared and holds uncommitted work of other
 sessions, so judge only the files of the package.
 
 Read the real change yourself: git diff <base> -- <files>, the untracked
-files of the list, and the consumers the change affects. When the request
-names a commit under review, read that commit (git diff <base> <commit>,
-git show <commit>:<file>), not the working tree, and put it into commit.
-Read the repository's REVIEW.md as of the base commit
+files of the list, and the consumers the change affects. Read the
+repository's REVIEW.md as of the base commit
 (git show <base>:REVIEW.md), never the copy the change may have edited, and
 apply it: flag what it asks to flag, and leave out what it says not to flag.
 
