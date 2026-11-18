@@ -21,11 +21,12 @@ Verdicts: `DELETE`, `ARCHIVE`, `KEEP`, `ASK`. Rules for every researcher:
 
 - **Change nothing.** No delete, move, rename, commit, `git status` refresh tricks or installs.
 - **A sole copy is never `DELETE`.** If no second copy is found (and the item is not in Git), say `ASK` and why.
-- **In use is never `DELETE`.** Report a process whose executable or working folder is inside the item; if that
-  cannot be checked, say so.
+- **In use is never `DELETE`.** Report a process whose executable, working folder or open files are inside the item.
+  If that cannot be checked, the item counts as in use.
 - **Repositories:** branch, uncommitted files, commits not on the upstream, stashes. Do not fetch.
 - **Secrets by value, not by name.** A field named `password` with a reminder text, `changeme`, `<...>` or an empty
-  value is not a secret. A key-, token- or private-key-shaped value is. Never copy a value into the table: path,
+  value is not a secret; any other value in a secret-named field is, and so is a key-, token- or private-key-shaped
+  value anywhere. Never copy a value anywhere - not into the table, a message, a command's output or a log: path,
   line and kind only.
 - **Say what was not covered:** a folder too big to walk, an unreadable file, a check that could not run.
 
@@ -36,12 +37,17 @@ each with its count, size and full item list. Every `ASK`, every risk and every 
 
 ## 3. Decide (the human, once)
 
-One question set, one choice per group, the safe choice first. The answers are the plan. Nothing happens before it.
+One question set, one choice per group, the safe choice first, each group with the exact item list it covers. The
+answers are the plan. Nothing happens before it. A group without a clear answer is skipped, not guessed.
 
 ## 4. Act (one worker, only after the answers)
 
-Exactly the chosen actions, nothing else. Archive before delete where asked. For repositories: commit by topic with
-a secret check of the staged diff, never push, never force. Keep a log of every action with how to undo it
+Exactly the chosen actions on exactly the listed items, nothing else. Right before each removal, check again: the
+item is unchanged since the survey, not in use, and either another copy exists outside everything being removed or
+it is committed with no local changes and its commit is on a remote. If any check fails or cannot run, skip it and
+report. Archive before delete where asked. For repositories: commit by topic; if the staged diff holds a secret
+candidate, do not commit that topic and ask. If the repository has commit hooks, ask before committing (a hook is
+code the repository runs). Never push, never force. Keep a log of every action with how to undo it
 (archive path, commit hash). Anything the answers did not cover is skipped and reported.
 
 ## 5. Report
