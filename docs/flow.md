@@ -65,7 +65,9 @@ The result keeps the fields of the JavaScript workflow: `label`, `mode`, `models
 3. **Claim**, in `~/.zodchi/packages/<repository>/<label>.json`, the same files and lock as the JavaScript workflows
    use, so the two never take the same files at once.
 4. **Write.** The writer is an expert gateway call (role `flow-patch`, no tools, no shell). Its prompt carries the
-   brief, the rules and each claimed file with the blob id of its current content; it answers with a structured
+   brief, the rules (the checks named by source and number, `checks #1`, never by their command lines) and each
+   claimed file with the blob id of its current content (a claimed path Git keeps as a link stops the run: its
+   target is not shown); it answers with a structured
    patch by `flows/code-package/v1/patch.schema.json`: create, modify (whole new content), delete or rename, each
    with the blob id it was written against.
 5. **Apply.** The engine checks the patch whole before writing a byte: plain relative paths (no `..`, no absolute
@@ -73,24 +75,30 @@ The result keeps the fields of the JavaScript workflow: `label`, `mode`, `models
    extended with `extendClaim`), no existing protected check changed (`test/`, `tests/`, `e2e/`,
    `.claude/skills/verify/`, `REVIEW.md`, `args.protect`, as of the base commit; else the package stops before review
    with `protectedChanged`), and every blob id equal to the file now (else `stale patch`). Then it writes the files;
-   a modified file keeps its mode, a renamed one takes its source's (an executable script stays executable). Before
+   a modified file keeps its exact permission bits, a renamed one takes its source's (on Unix saved in the plan and
+   compared on recovery; Git's executable bit follows either way). Before
    it writes, the branch of the run must be checked out and the claim still this run's open claim.
 6. **Checks.** The candidate tree (the last commit with the claimed paths from the work tree) is written as a Git
    tree (refused if it differs from the last commit anywhere but at the claimed files) and compared with the base:
    an existing protected check changed, deleted or with another mode, by the patch or by anybody, stops the package
    before the checks with `protectedChanged`. The tree is exported to a temporary folder outside the checkout. There
    the cheap checks run with bash, in order, each to its end, then the verify commands when they all passed; each
-   with its real exit code and its log in the journal. The environment is cut down to what programs need to start (paths, home, temporary folder, locale):
+   with its real exit code and its log in the journal. A command starts only after its pid and start time are in
+   the journal (bash waits for the engine's word on stdin), and its end is journaled too. The environment is cut down to what programs need to start (paths, home, temporary folder, locale):
    tokens and keys in the caller's environment do not reach a check. A failure goes back to the writer with the
-   end of its log, up to `args.fixes` times.
+   end of its log, up to `args.fixes` times: the command by source and number, the temporary folder, the journal,
+   the repository and the home folder replaced by `<tmp>`, `<journal>`, `<repo>` and `~`, and every line that may
+   hold a credential (password, token, key, secret, cookie, a URL with a user) left out; the raw logs stay in the
+   journal.
 7. **Commit**, by the engine only: after rechecking that the branch is where the run left it, that the claim is
    still open with every file, and that the work tree still gives the checked tree, the checked tree is committed
    on the branch (`git commit-tree`, then `git update-ref` from the expected parent), so the commit holds the claimed
    paths only. Its message is `<label>: round N` and `Verified: <source> exit <codes>; ...`, sources and exit codes
-   only. Nothing is pushed.
+   only. The index entries of the claimed files follow the commit before the branch moves (staged work in them that
+   is neither the parent's nor the commit's stops the run first). Nothing is pushed.
 8. **Review**, an expert gateway call (role `code-review`, the reviewer of the pair) with the diff from the base, the
-   brief, `REVIEW.md` of the base commit (never dropped), the previous review, and the claimed files as the reviewed
-   commit holds them, which are
+   brief, `REVIEW.md` of the base commit (never dropped), the previous review, the checks by source and number with
+   their exit codes, and the claimed regular files as the reviewed commit holds them (never a link), which are
    dropped first, the largest first, when the request would pass the gateway's 512 KB, and named in a "Not attached
    for size" line. Severities and the verdict rule are those of `docs/verification.md`.
 9. **Close** the important findings with the same writer, then checks, commit and review again, until approval, a
@@ -107,8 +115,9 @@ is pointed at:
 - `events.jsonl`: before each effect an `intent` (step, round, attempt, input digest, the effect, the gateway key or
   the expected commit parent and tree), a `submitted` line once the gateway took a job, and after it a `done` with
   the validated answer or the Git receipt; a `made` line with the commit id between `git commit-tree` and moving
-  the branch; a `check started` line with the pid and start time of each check command; `stop`, `rerun` and
-  `finished` lines. A record cut in the middle of its write can only be the last one: a resume drops it from the
+  the branch; a `check started` line with the pid and start time of each check command and a `check ended` line
+  when it ended or was stopped; `stop`, `rerun`, `closing` (the result is saved and the claim is about to be
+  closed) and `finished` lines. A record cut in the middle of its write can only be the last one: a resume drops it from the
   file (under the lock) before it writes; a record that does not read anywhere else stops the resume.
 - `requests/` (the exact request of each gateway job), `plans/` (each applied patch with its blobs before and after,
   written and synced before its intent),
@@ -122,21 +131,27 @@ is pointed at:
 (whatever folder it is started from), with the saved brief and base REVIEW.md (a run that had one stops without
 it). Each step comes back from the journal when it has a `done`; otherwise:
 
-- a model call with an `intent` submits its stored request under its stored key again, which the gateway answers
-  with the job it already has, and waits for it: a cut after a submission never asks the model twice. A job that
-  failed before its model turn started is asked again under the next key (`-r2`, `-r3`, at most two); any other
-  end of a job is not asked again by itself. An intent with neither a `submitted` line nor a job folder is an
-  unknown outcome: a cleaned or swept folder looks the same as a job never submitted.
+- a model call with an `intent` is never submitted again: the job of its stored key is looked up and waited for, so
+  a cut after a submission never asks the model twice. A key without its job folder is an unknown outcome: a
+  cleaned or swept folder looks the same as a job never submitted. A job that failed before its model turn started
+  is asked again under the next key (`-r2`, `-r3`, at most two); any other end of a job is not asked again by
+  itself. A writer turn with an `intent` or a `done` is replayed before any claimed file is read.
 - an apply with an `intent` reads its saved plan (missing, damaged or not matching the intent's digest: an unknown
   outcome), checks the branch and the claim, and compares every file with the blobs before and after: all after, it
   is done; each before or after, applying again finishes it; a link on the way or anything else is an unknown
   outcome.
 - a commit with an `intent` compares the branch tip with the expected parent: the tip is the parent, the commit is
   made; the tip is the exact commit of the `made` line, it is taken as the receipt; anything else (a commit of the
-  same tree made by hand included) is an unknown outcome. The index entries of the claimed files follow the commit
-  only on the branch of the run and only where nobody staged other work; else the run stops and resumes from there.
-- checks without a `done` first stop the check commands the interrupted run left running (by pid and start time;
-  on Unix the whole process group), then run again (they change nothing but their export).
+  same tree made by hand included) is an unknown outcome. Taking the receipt checks that the claim, with every path
+  it was extended by, is still this run's, and never touches the index: its entries followed the commit before the
+  branch moved, so an entry that differs from the commit now is somebody's staging, left as it is and named in the
+  receipt's `indexLeft`.
+- checks without a `done` (a rerun included) first stop every check command of the run that has a `check started`
+  and no `check ended` line, whatever step or attempt started it (by pid and start time; on Unix the whole process
+  group), then run again (they change nothing but their export). One that cannot be stopped, or a start or end the
+  journal cannot record, stops the run.
+- a run with a saved `result.json` returns it; when the cut came after the `closing` line, the claim of this run is
+  closed as the result says first.
 
 What neither the journal, Git nor the gateway can settle (a job that ended `unknown`, a file changed by somebody
 else in the middle of an apply, a branch that moved during a commit, a submitted job whose folder is gone) stops the
@@ -147,9 +162,9 @@ After looking, `--resume <run-id> --rerun "<step>"` runs that step again under a
 must name the step the run stopped at. A finished run resumed returns its result and runs nothing. `--args` with
 `--resume` must be the args the run started with.
 
-`ZODCHI_FLOW_CUT=<step>` (for example `submit write` or `commit 1`) ends the process with exit code 75 right after
-that effect and before its receipt is journaled, as a crash would. It exists for the recovery scenarios of the
-end-to-end suite.
+`ZODCHI_FLOW_CUT=<step>` (for example `submit write`, `commit 1`, or `result` between the saved result and the
+closing of the claim) ends the process with exit code 75 right after that effect and before its receipt is
+journaled, as a crash would. It exists for the recovery scenarios of the end-to-end suite.
 
 ## Verification of the engine
 
@@ -169,6 +184,9 @@ command and a REVIEW.md):
 | `flow-protected-worktree` | a claimed test edited in the work tree while the run is cut: `protected checks changed at checks 1`, no check run, nothing committed |
 | `flow-cleaned-job` | a cut after the write submission, then the job folder removed: `unknown outcome at write`, the model asked once, the claim open |
 | `flow-no-review-md` | a base with neither REVIEW.md nor a verify skill passes the gate and runs to approval; the review judges by the brief |
+| `flow-cut-result` | a cut after the result is saved and before the claim is closed: resume returns the approval and closes the claim `done`, nothing runs again |
+| `flow-staged-after-commit` | a cut right after the commit, then the parent's version staged by hand: resume records the commit, leaves that staging alone and names it in `indexLeft` |
+| `flow-private-checks` | no check command line reaches a model; the fixing writer gets the failed check's log with `<tmp>` for the export folder and a credential line left out |
 
 ## Known limits of version 1
 
@@ -186,4 +204,7 @@ command and a REVIEW.md):
 - A finished gateway job is kept seven days; a run resumed after that cannot poll a job it submitted and stops
   with an unknown outcome instead of asking again.
 - On Windows a check command that an interrupted run left behind is stopped with what it started only while it
-  still runs itself; processes it started that outlived it are not found.
+  still runs itself; processes it started that outlived it are not found. On Unix what a check leaves in its
+  process group is ended when the check ends.
+- What a fixing writer sees of a failed check is cleaned of the known private folders and of lines with credential
+  words, not of every possible secret: a check that prints a private value without such a word passes it on.

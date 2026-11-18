@@ -98,19 +98,22 @@ pub enum Refusal {
     Stale(String),
 }
 
-/// What applying a patch does: for each path its blob before and after (None: no file), and the written paths that
-/// are executable (a modified script keeps its mode, a renamed one takes its source's).
+/// What applying a patch does: for each path its blob before and after (None: no file), the written paths that
+/// are executable for Git (a modified script keeps its mode, a renamed one takes its source's), and on Unix the exact
+/// permission bits each written file gets (a modified file keeps its own, a renamed one its source's; a created one
+/// is not listed and gets what the umask gives).
 #[derive(Clone, Debug)]
 pub struct Plan {
     pub writes: BTreeMap<String, Option<String>>,
     pub before: BTreeMap<String, Option<String>>,
     pub after: BTreeMap<String, Option<String>>,
     pub exec: Vec<String>,
+    pub modes: BTreeMap<String, u32>,
 }
 
 impl Plan {
     pub fn to_json(&self) -> Value {
-        json!({ "writes": self.writes, "before": self.before, "after": self.after, "exec": self.exec })
+        json!({ "writes": self.writes, "before": self.before, "after": self.after, "exec": self.exec, "modes": self.modes })
     }
     /// A saved plan, or None when it is not one whole (a lost or damaged plan is never read as an empty one).
     pub fn from_json(v: &Value) -> Option<Plan> {
@@ -122,7 +125,14 @@ impl Plan {
             }).collect()
         };
         let exec = v.get("exec")?.as_array()?.iter().map(|x| x.as_str().map(String::from)).collect::<Option<Vec<_>>>()?;
-        Some(Plan { writes: map("writes")?, before: map("before")?, after: map("after")?, exec })
+        // A plan without modes (none was saved: not Unix, or nothing to keep) has none; a damaged list is no plan.
+        let modes = match v.get("modes") {
+            None => BTreeMap::new(),
+            Some(m) => m.as_object()?.iter()
+                .map(|(p, m)| m.as_u64().filter(|m| *m <= 0o7777).map(|m| (p.clone(), m as u32)))
+                .collect::<Option<BTreeMap<_, _>>>()?,
+        };
+        Some(Plan { writes: map("writes")?, before: map("before")?, after: map("after")?, exec, modes })
     }
 }
 
@@ -139,17 +149,26 @@ fn executable(git: &Git, path: &str) -> Result<bool> {
     }
 }
 
-/// Whether the file's mode bits are as the plan wants them (Unix only; elsewhere Git keeps the mode).
-fn mode_ok(root: &Path, path: &str, exec: bool) -> bool {
+/// The permission bits of a file of the work tree (Unix); None elsewhere, where Git keeps the mode.
+fn file_mode(root: &Path, path: &str) -> Result<Option<u32>> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        !exec || fs::metadata(root.join(path)).map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+        Ok(Some(fs::metadata(root.join(path))?.permissions().mode() & 0o7777))
     }
     #[cfg(not(unix))]
     {
-        let _ = (root, path, exec);
-        true
+        let _ = (root, path);
+        Ok(None)
+    }
+}
+
+/// Whether the file's permission bits are exactly those the plan saved for it (Unix only; elsewhere Git keeps the
+/// mode). A path the plan saved no mode for passes.
+fn mode_ok(root: &Path, path: &str, mode: Option<u32>) -> bool {
+    match mode {
+        None => true,
+        Some(want) => file_mode(root, path).ok().flatten().is_none_or(|now| now == want),
     }
 }
 
@@ -223,6 +242,9 @@ pub fn plan(git: &Git, args: &Args, base: &str, patch: &Patch, claimed: &[String
             if !no_links(&git.root, p) {
                 return Ok(Err(Refusal::BadPath(format!("{p}: a link or reparse point lies on its way"))));
             }
+            if git.tracked_link("HEAD", p)? {
+                return Ok(Err(Refusal::BadPath(format!("{p}: Git keeps it as a link"))));
+            }
             seen.push(p.clone());
         }
         changes.push((c, path, from));
@@ -247,7 +269,7 @@ pub fn plan(git: &Git, args: &Args, base: &str, patch: &Patch, claimed: &[String
     if !protected.is_empty() {
         return Ok(Err(Refusal::Protected(protected)));
     }
-    let mut plan = Plan { writes: BTreeMap::new(), before: BTreeMap::new(), after: BTreeMap::new(), exec: Vec::new() };
+    let mut plan = Plan { writes: BTreeMap::new(), before: BTreeMap::new(), after: BTreeMap::new(), exec: Vec::new(), modes: BTreeMap::new() };
     for (c, path, from) in &changes {
         let now = git.blob_of_file(path)?;
         match c.op.as_str() {
@@ -288,6 +310,9 @@ pub fn plan(git: &Git, args: &Args, base: &str, patch: &Patch, claimed: &[String
                 if executable(git, &old)? {
                     plan.exec.push(path.clone());
                 }
+                if let Some(m) = file_mode(&git.root, &old)? {
+                    plan.modes.insert(path.clone(), m);
+                }
                 plan.writes.insert(old.clone(), None);
                 plan.before.insert(old.clone(), c.base_blob.clone());
                 plan.after.insert(old, None);
@@ -297,8 +322,13 @@ pub fn plan(git: &Git, args: &Args, base: &str, patch: &Patch, claimed: &[String
             }
             _ => {
                 let text = c.content.clone().unwrap();
-                if c.op == "modify" && executable(git, path)? {
-                    plan.exec.push(path.clone());
+                if c.op == "modify" {
+                    if executable(git, path)? {
+                        plan.exec.push(path.clone());
+                    }
+                    if let Some(m) = file_mode(&git.root, path)? {
+                        plan.modes.insert(path.clone(), m);
+                    }
                 }
                 plan.after.insert(path.clone(), Some(git.blob_of(text.as_bytes())?));
                 plan.writes.insert(path.clone(), Some(text));
@@ -309,8 +339,9 @@ pub fn plan(git: &Git, args: &Args, base: &str, patch: &Patch, claimed: &[String
     Ok(Ok(plan))
 }
 
-/// Writes a file through a temporary one; a file it replaces keeps its mode, and `exec` makes it executable (Unix).
-fn write_file(root: &Path, path: &str, content: &str, exec: bool) -> Result<()> {
+/// Writes a file through a temporary one that gets `mode` (Unix) before it takes the file's place; without a mode it
+/// keeps what the umask gave it.
+fn write_file(root: &Path, path: &str, content: &str, mode: Option<u32>) -> Result<()> {
     let target = root.join(path);
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;
@@ -318,19 +349,15 @@ fn write_file(root: &Path, path: &str, content: &str, exec: bool) -> Result<()> 
     let temp = target.with_file_name(format!(".{}.zodchi-flow.{}.tmp", target.file_name().and_then(|n| n.to_str()).unwrap_or("file"), std::process::id()));
     fs::write(&temp, content)?;
     #[cfg(unix)]
-    {
+    if let Some(mode) = mode {
         use std::os::unix::fs::PermissionsExt;
-        let mut mode = fs::metadata(&target).map(|m| m.permissions().mode()).unwrap_or(0);
-        if mode == 0 {
-            mode = fs::metadata(&temp)?.permissions().mode();
+        if let Err(e) = fs::set_permissions(&temp, fs::Permissions::from_mode(mode & 0o7777)) {
+            let _ = fs::remove_file(&temp);
+            return Err(e.into());
         }
-        if exec {
-            mode |= (mode & 0o444) >> 2;
-        }
-        fs::set_permissions(&temp, fs::Permissions::from_mode(mode & 0o7777))?;
     }
     #[cfg(not(unix))]
-    let _ = exec;
+    let _ = mode;
     if let Err(e) = fs::rename(&temp, &target) {
         let _ = fs::remove_file(&temp);
         return Err(e.into());
@@ -342,7 +369,7 @@ fn write_file(root: &Path, path: &str, content: &str, exec: bool) -> Result<()> 
 pub fn apply(root: &Path, plan: &Plan) -> Result<()> {
     for (path, content) in &plan.writes {
         match content {
-            Some(text) => write_file(root, path, text, plan.exec.contains(path))?,
+            Some(text) => write_file(root, path, text, plan.modes.get(path).copied())?,
             None => match fs::remove_file(root.join(path)) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -355,7 +382,7 @@ pub fn apply(root: &Path, plan: &Plan) -> Result<()> {
 
 /// Where an interrupted apply stands: "applied" (every path as after), "partial" (every path as before or as after:
 /// applying again finishes it) or "unknown" (some path is neither: somebody else changed it, or a link now lies on
-/// its way). A file with the after content but not yet its executable mode is "partial".
+/// its way). A file with the after content but not yet the exact mode the plan saved for it is "partial".
 pub fn reconcile(git: &Git, plan: &Plan) -> Result<&'static str> {
     let mut all_after = true;
     for (path, after) in &plan.after {
@@ -364,7 +391,7 @@ pub fn reconcile(git: &Git, plan: &Plan) -> Result<&'static str> {
         }
         let now = git.blob_of_file(path)?;
         if &now == after {
-            if after.is_some() && !mode_ok(&git.root, path, plan.exec.contains(path)) {
+            if after.is_some() && !mode_ok(&git.root, path, plan.modes.get(path).copied()) {
                 all_after = false;
             }
             continue;
