@@ -64,9 +64,11 @@ export default function register({ scenario, flowWorld, gitOut, ROOT, STUB }) {
     f.answer("review 1", f.review("approved"));
     const res = await f.flow(["--args", f.args()]);
     t.eq([res.code, res.json && res.json.verdict], [0, "approved"], "the run ends approved, exit 0");
-    t.eq(res.json.models, { expertWriter: { provider: "claude", model: "opus", effort: "high" }, reviewer: { provider: "codex", model: "fake-writer", effort: "medium" } }, "the pair: the Claude writer and a distinct Codex reviewer, pinned");
+    const bound = res.json.models.expertWriter.account;
+    t.ok(/^claude-[0-9a-f]{16}$/.test(bound || ""), "the Claude writer is bound to the account of its sign-in at the gate, as a digest");
+    t.eq(res.json.models, { expertWriter: { provider: "claude", model: "opus", effort: "high", account: bound }, reviewer: { provider: "codex", model: "fake-writer", effort: "medium" } }, "the pair: the Claude writer and a distinct Codex reviewer, pinned");
     t.eq(c.calls().map((x) => x.step), ["preflight", "write"], "Claude ran the preflight at the gate and the write step once");
-    t.eq([c.calls("version").length, c.calls("auth").length], [1, 1], "the program and its sign-in were checked once");
+    t.eq([c.calls("version").length, c.calls("auth").length], [1, 2], "the program was checked once; its sign-in at the gate and again right before the call");
     const write = c.calls()[1];
     t.eq([write.model, write.effort, write.apiKey], ["opus", "high", false], "the call has the pinned model and effort, and no ANTHROPIC_ variable");
     t.ok(write.args[write.args.indexOf("--tools") + 1] === "" && write.args.includes("--safe-mode") && write.args.includes("--strict-mcp-config"), "the call has no tools, no MCP servers, no hooks or plugins");
@@ -81,6 +83,7 @@ export default function register({ scenario, flowWorld, gitOut, ROOT, STUB }) {
     const fin = JSON.parse(fs.readFileSync(path.join(job, "final.json"), "utf8"));
     t.ok(fin.status === "succeeded" && fin.turnStartedAt && JSON.parse(fs.readFileSync(path.join(job, "raw.json"), "utf8")).type === "result", "the raw final message and the final state are in the journal");
     t.ok(!allText(res.json.journal).includes(KEY), "the API key of the caller reaches no file of the journal");
+    t.ok(!allText(res.json.journal).includes("org-fake-one") && fin.account === bound, "the job names the bound account by its digest, never by its name");
     const cache = JSON.parse(fs.readFileSync(path.join(f.w.zhome, "claude-preflight.json"), "utf8"));
     t.ok(Object.keys(cache).some((k) => k.endsWith("|opus|high")), "the passed preflight is cached for this CLI version, model and effort");
     t.eq(f.claim().status, "done", "the claim is closed as done");
@@ -101,6 +104,18 @@ export default function register({ scenario, flowWorld, gitOut, ROOT, STUB }) {
     t.eq([res.code, res.json.verdict], [0, "approved"], "the resumed run goes on to approval");
     t.eq(c.calls().map((x) => x.step), ["preflight", "write"], "Claude was asked the write step once");
     t.eq(c.events(res).filter((e) => e.kind === "intent" && e.step === "write").length, 1, "one intent for the write step");
+
+    const r = claudeWorld(t, "flow-claude-reserved");
+    r.answer("write", r.f.patch([r.f.modify("src/math.mjs", STUB, FIXED)]));
+    r.f.answer("review 1", r.f.review("approved"));
+    const reserved = await r.f.flow(["--args", r.f.args()], { ZODCHI_FLOW_CUT: "claude reserved" });
+    t.eq(reserved.code, 75, "a cut after the key of the Claude call was reserved and before its job record");
+    const [rid] = fs.readdirSync(path.join(r.f.w.zhome, "flows"));
+    const back = await r.f.flow(["--resume", rid]);
+    t.eq([back.code, back.json && back.json.verdict], [0, "approved"], "resume reads the reserved key as a call that never started and goes on to approval");
+    t.eq(r.calls().map((x) => x.step), ["preflight", "write"], "Claude was asked the write step once");
+    const keys = r.events(back).filter((e) => e.kind === "intent" && e.step === "write").map((e) => e.key);
+    t.ok(keys.length === 2 && keys[1] === `${keys[0]}-r2`, "the reserved key is not reused: the step went on under the next key");
   });
 
   scenario("flow-claude-disabled", "Claude not enabled: the Claude candidate is skipped with its reason and the pair is Codex-only; the Claude program is never run", async (t) => {
@@ -154,8 +169,37 @@ export default function register({ scenario, flowWorld, gitOut, ROOT, STUB }) {
     const second = await f.flow(["--resume", res.json.runId, "--rerun", "write"]);
     t.ok(second.code === 2 && /does not follow the step's schema: answer has note/.test(second.json.infra), "an answer with a field outside the schema stops too");
     c.answer("write", extra);
+    const exit = path.join(c.home, "answers", "write.exit");
+    fs.writeFileSync(exit, "3");
+    const crashed = await f.flow(["--resume", res.json.runId, "--rerun", "write"]);
+    t.ok(crashed.code === 2 && crashed.json.stoppedAt === "gateway failed at write" && /claude exited 3 after an answer in the schema/.test(crashed.json.infra), "a valid answer followed by exit 3 is a recorded failure, not a success");
+    t.eq([f.commits().length, fs.readFileSync(path.join(f.r, "src", "math.mjs"), "utf8")], [0, STUB], "nothing of the answer of a failed call was applied");
+    fs.rmSync(exit);
     const third = await f.flow(["--resume", res.json.runId, "--rerun", "write"]);
-    t.eq([third.code, third.json.verdict, c.calls().filter((x) => x.step === "write").length], [0, "approved", 3], "a rerun with a valid answer goes on to approval");
+    t.eq([third.code, third.json.verdict, c.calls().filter((x) => x.step === "write").length], [0, "approved", 4], "a rerun with a valid answer and a clean exit goes on to approval");
     t.eq(gitOut(f.r, ["show", "--name-only", "--format=", "HEAD"]), "src/math.mjs", "one commit of the claimed file");
+  });
+
+  scenario("flow-claude-account", "the sign-in changes between the gate and the call, or Claude is disabled before a rerun: the call is refused with nothing sent and the run stops; enabled and signed in with the bound account again, a rerun goes on", async (t) => {
+    const c = claudeWorld(t, "flow-claude-account");
+    const { f } = c;
+    fs.writeFileSync(path.join(c.home, "fake-auth.json"), JSON.stringify({ orgs: ["org-fake-one", "org-fake-two"] }));
+    c.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
+    f.answer("review 1", f.review("approved"));
+    const res = await f.flow(["--args", f.args()]);
+    t.eq([res.code, res.json.stoppedAt], [2, "gateway refused at write"], "the run stops at the write step");
+    t.ok(/signed in with another account .* than the one this run was bound to at the gate .*nothing was sent/.test(res.json.infra), "the refusal says the account changed and nothing was sent");
+    t.eq([c.calls().map((x) => x.step), f.steps(), f.commits().length, f.claim().status], [["preflight"], [], 0, "open"], "the other account never got the step, no other model was asked, nothing committed, the claim open");
+    t.ok(!allText(res.json.journal).includes("org-fake-"), "neither account reaches the journal by its name");
+
+    fs.writeFileSync(path.join(c.home, "fake-auth.json"), JSON.stringify({ orgs: ["org-fake-one"] }));
+    fs.writeFileSync(path.join(f.w.zhome, "flow.json"), JSON.stringify({ claude: false }));
+    const off = await f.flow(["--resume", res.json.runId, "--rerun", "write"]);
+    t.ok(off.code === 2 && /Claude is no longer enabled as an executor/.test(off.json.infra), "Claude disabled before the rerun: refused");
+    t.eq(c.calls().length, 1, "still only the preflight reached Claude");
+
+    fs.writeFileSync(path.join(f.w.zhome, "flow.json"), JSON.stringify({ claude: true }));
+    const back = await f.flow(["--resume", res.json.runId, "--rerun", "write"]);
+    t.eq([back.code, back.json.verdict, c.calls().map((x) => x.step)], [0, "approved", ["preflight", "write"]], "enabled and signed in with the bound account again: the rerun goes on to approval");
   });
 }
