@@ -534,16 +534,20 @@ async function body() {
   async function follow(res, tag, phaseName) {
     return (await followClaim(res, tag, phaseName)) && (await guard(tag, phaseName))
   }
+  const GUARD = { type: 'object', required: ['ok', 'summary', 'results'], properties: { ok: { type: 'boolean' }, summary: { type: 'string' },
+    results: { type: 'array', items: { type: 'object', required: ['path', 'existedExit', 'diffExit'], properties: { path: { type: 'string' }, existedExit: { type: 'number' }, diffExit: { type: 'number' } } } } } }
   async function guard(tag, phaseName) {
     const candidates = [...changed].map(rel).filter(isProtected)
     if (!candidates.length) return true
     const res = await step(
       `Compare files with the base commit ${base} in ${a.repo}; change nothing. Paths, relative to the repository: ${JSON.stringify(candidates)}. ` +
       `For each path: it existed before when \`git cat-file -e ${base}:<path>\` exits 0; it differs now when \`git diff --quiet ${base} -- <path>\` exits 1 (changed or deleted). ` +
-      `paths: every path that existed before and differs now, exactly as given; [] when none. ok is true when every command ran.`,
-      { agentType: 'zodchi-core:runner', schema: STATUS, phase: phaseName, label: `protect ${tag}` })
-    if (!res || !res.ok || !Array.isArray(res.paths)) { out.stoppedAt = `protected checks after ${tag} (${res ? res.summary || 'no paths list' : 'no result'})`; return false }
-    const hit = res.paths.map(String)
+      `results: one entry per path, in the order given: { path (exactly as given), existedExit (the exit code of git cat-file -e), diffExit (the exit code of git diff --quiet) }. Report the exit codes only; do not judge. ok is true when every command ran.`,
+      { agentType: 'zodchi-core:runner', schema: GUARD, phase: phaseName, label: `protect ${tag}` })
+    const rows = res && res.ok && Array.isArray(res.results) ? res.results.filter(r => r && candidates.includes(String(r.path))) : null
+    if (!rows || rows.length !== candidates.length) { out.stoppedAt = `protected checks after ${tag} (${res ? res.summary || 'no exit codes for every path' : 'no result'})`; return false }
+    // existed before (exit 0) and differs now (exit 1): the decision is the workflow's, from the exit codes
+    const hit = rows.filter(r => r.existedExit === 0 && r.diffExit === 1).map(r => String(r.path))
     const isAllowed = (p) => { try { return allowed.has(key(p)) } catch { return false } }
     const ok = hit.filter(isAllowed)
     if (ok.length) out.checkChanges = [...new Set([...(out.checkChanges || []), ...ok])]
