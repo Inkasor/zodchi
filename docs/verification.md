@@ -169,6 +169,7 @@ with the Codex pid, `fake-login-started` with the loginId) are written whole, th
 | `server-sign-in` | device code with the completion after and before the answer; one open sign-in per user; cancel; sign-out of that user only; the caller's own account |
 | `server-threads` | `--threads 1` and `0` refused; with two, `/health` answers while a long poll waits: the poll is shown admitted first (a probe poll is answered at once because the one poll place is taken) and still waiting after every `/health` |
 | `server-stop` | POSIX: SIGTERM while the fake holds a sign-in start; once the server says it is stopping, the start is released: the request is answered, the sign-in cancelled with its loginId, its app-server gone, the lock free; finished workers are reaped |
+| `flow-approve`, `flow-close-round`, `flow-round-exhaustion`, `flow-outside-claim`, `flow-protected`, `flow-failing-verify`, `flow-resume-cuts` | `zodchi flow code-package` on a throwaway fixture repository against `scripts/e2e/fake-codex-flow.mjs`, which answers each model turn by its step: approval with a `Verified:` stamp, a close round, round exhaustion, a patch outside the claim refused, a patch editing an existing test stopped before review, a failing verify, cuts after a submission and after a commit resumed with no duplicate effect; see [flow.md](flow.md) |
 
 ### Inventory of the tests this replaced, and where each behaviour went
 

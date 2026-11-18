@@ -1,0 +1,7 @@
+{
+  "description": "The writer of zodchi flow code-package: one structured patch (create, modify, delete, rename, each against the blob id it was written for) from a strong model with no tools. The engine supplies the output schema of its own version and applies the patch itself.",
+  "mode": "expert",
+  "model": "gpt-6.2-sol",
+  "effort": "medium",
+  "frame": "flow-patch.md"
+}
