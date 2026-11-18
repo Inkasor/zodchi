@@ -109,6 +109,8 @@ only `ANTHROPIC_API_KEY` in an allow-listed environment, no retry.
 
 Where it runs: a dedicated, disposable container or VM with no checkout but the one it runs from, no credential store
 mounted and outbound network only to the model service. `--disposable` states that, always (`CI=true` does not count).
+Known limit: the harness cannot prove that the machine is disposable; `--disposable` is the operator's word for it. Run it
+only where that word is true. The release run moves to `zodchi flow`, which keeps writers without a shell.
 The session runs with permissions bypassed, as the user who started the run, so its shell can reach whatever the
 container holds; the script cannot limit the network or the file system, which is the container's job. It refuses
 when it sees a machine that is not disposable: a credential store in the real home (`.ssh`, `.git-credentials`,
