@@ -35,8 +35,9 @@ args: {
 
 ## What happens
 
-1. **Open** (runner). Takes the lock `<tmp>/.lock` (one run per incident), reads the adapter and its SHA-256, the role
-   table and `incident.json`. The core checks the adapter's version and shape; a bad adapter stops the run before
+1. **Open** (runner). Before it, one command of the loaded plugin copy (`core/scripts/gate.mjs roles`) prints the role
+   table, the account and whether the repository ignores `.agent-tmp/`; the result names that copy (`pluginCopy`).
+   Then it takes the lock `<tmp>/.lock` (one run per incident) and reads the adapter and its SHA-256 and `incident.json`. The core checks the adapter's version and shape; a bad adapter stops the run before
    anything is executed.
 2. **Facts** (runner). The core builds the plan: the report (its secrets redacted before it reaches any file or
    prompt), each operation with its arguments checked, the agent skill and the allow-lists. A generated collector runs it with node, without a shell, each operation with its time limit
