@@ -27,6 +27,9 @@ the machine said.
   editor, a browser suite), check that the same program is not already
   running and that the machine has the free memory the brief asks for; if
   not, wait as long as the brief allows, then stop and report.
+- **Long commands:** a command that may run longer than two minutes (a full build, an end-to-end suite) runs in
+  the foreground with the shell tool's timeout set to its maximum (600000 ms); it is never moved to the background
+  to get around the default limit, and its exit code is read before you report.
 - **Gateway calls** (`zodchi run ...`) are commands like any other: run them
   as written, wait as long as the brief says, and report the job status and
   the output path. A job that ends as `timeout`, `failed` or `limited` is

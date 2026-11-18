@@ -30,6 +30,10 @@ workflow are our own agents, not attackers.
   for a link between steps by someone else), and anything that needs a second process editing the checkout during
   a run.
 
+- nit for the flow executors (2026-11-18, the lead after two rounds): a server that answers 409 for a key and later
+  finds it; an account binding by organization without a per-user id; directory flushes that Windows does not
+  confirm; a path of another package re-checked after that package's claim closed.
+
 ## Severity
 `important` blocks. `nit` and `pre-existing` never block. When unsure whether something is important, ask: would
 the owner stop a release for it?
