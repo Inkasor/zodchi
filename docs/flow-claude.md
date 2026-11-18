@@ -14,7 +14,9 @@ Claude runs only when the person enabled it in their own `~/.zodchi/flow.json` (
 ```
 
 Nothing else enables it: not a repository's `.zodchi/models.json`, not `args.models`, not a server. Without it every
-Claude candidate is skipped with the reason `Claude is not an executor of this run: not enabled`.
+Claude candidate is skipped with the reason `Claude is not an executor of this run: not enabled`. The setting is read
+again right before every Claude call: a run that was started with Claude and resumed after it was turned off sends
+nothing more to Claude (see [Outcomes](#outcomes)).
 
 Then put Claude candidates in the role table, as for any provider:
 
@@ -49,11 +51,13 @@ Run at the gate only for the Claude candidates the walk reaches, each model and 
 
 1. the program is found and `claude --version` answers;
 2. `claude auth status` says it is signed in with a Claude subscription (`authMethod` `claude.ai`, first-party API):
-   an API key, a key helper or another provider is refused; only the kind of sign-in is read and named, never the
-   account;
-3. a tiny structured call with the candidate's model and effort answers `{"ok": true}` in the asked form. A passed
-   call is cached in `~/.zodchi/claude-preflight.json` by CLI version, model and effort for a day; a newer CLI or
-   another model is checked again.
+   an API key, a key helper or another provider is refused; only the kind of sign-in is named. The account it names
+   (its `email` and `orgId`) becomes the run's binding: a digest, `claude-` and 16 hex digits, recorded with the
+   pinned pick in `run.json` (`pair.expertWriter.account`). Neither the address nor the organization is written
+   anywhere; a sign-in that names neither is refused, since the run could not be bound to it;
+3. a tiny structured call with the candidate's model and effort answers `{"ok": true}` in the asked form; it counts
+   only when the program also exits 0. A passed call is cached in `~/.zodchi/claude-preflight.json` by CLI version,
+   account binding, model and effort for a day; a newer CLI, another account or another model is checked again.
 
 A failed preflight skips the candidate with the reason (`Claude preflight: the claude program is missing ...`,
 `... is not signed in with a Claude subscription ...`, `... did not answer a tiny structured call: ...`), before
@@ -78,9 +82,13 @@ claude -p --model <m> --effort <e> --output-format json --tools "" --strict-mcp-
   `--fallback-model`.
 - A wall-clock limit: the role's `timeoutMin` (30 minutes for an expert role). A call still running then is stopped
   with what it started.
+- Right before the program starts, the call is authorized again: `"claude": true` is still in `flow.json`, and
+  `claude auth status`, with the environment of the call, names the account the run was bound to at the gate. If
+  not, the call ends `refused` and nothing is sent.
 - The engine reads the final result itself: `is_error` or a non-success result is a failure; the answer must be one
   JSON object (a single code fence around it is accepted) that follows the step's schema (types, enums, required
-  fields, no extra fields), and then the step's own validation of a patch or a review.
+  fields, no extra fields), and then the step's own validation of a patch or a review. The program must also exit 0:
+  a valid answer followed by a crash or another exit code is a failure, never a success.
 
 ## The journal
 
@@ -90,9 +98,13 @@ The job of a key lives in the run's journal, `flows/<run-id>/claude/<key>/`:
 
 - `job.json`, written and synced before the program starts, with `turnStartedAt` written and synced right before;
 - `raw.json`, the raw final output of `claude -p` (the result message as Claude gave it);
-- `final.json`, the final state: `succeeded` with the validated `result.data`, `failed` or `timeout` with the reason.
+- `final.json`, the final state: `succeeded` with the validated `result.data`, `failed`, `timeout` or `refused` with
+  the reason. `job.json` and `final.json` name the account binding (`account`), never the account.
 
-The folder of a key is created exclusively, so a key is called at most once.
+The folder of a key is created exclusively, so a key is called at most once. The new folder, and each file written
+into it, is synced together with its folder entry (on POSIX the parent folder is synced too), so after a power cut
+the folder of a call that started is still there. A folder without `job.json` is a key that was reserved and never
+started: the step is asked again under the next key.
 
 ## Outcomes
 
@@ -100,8 +112,9 @@ The folder of a key is created exclusively, so a key is called at most once.
 |---|---|
 | Claude not enabled, the program missing, not signed in with a subscription, the model or effort refused in the preflight | the candidate is skipped at the gate with the reason; the next candidate is tried; nothing was sent |
 | No valid pair left | the gate refuses visibly; nothing is claimed |
-| The program could not be started once the run was under way (nothing sent) | asked again under the next key (`-r2`, `-r3`), as a gateway job that died before its turn |
-| An answer that is not JSON, outside the schema, an error result, a crash, or the time limit after the call started | a recorded failure: `gateway failed at <step>` or `gateway timeout at <step>`, the reason in `infra`, the claim open; never a silent switch to another model |
+| The program could not be started once the run was under way, or the engine was cut after reserving the key and before writing `job.json` (nothing sent) | asked again under the next key (`-r2`, `-r3`), as a gateway job that died before its turn |
+| Claude no longer enabled, or Claude Code signed in with another account than the one bound at the gate, when a call is about to start | `gateway refused at <step>`, the reason in `infra`, nothing sent, the claim open; after fixing it, `--rerun "<step>"` |
+| An answer that is not JSON, outside the schema, an error result, a crash, a nonzero exit after a valid answer, or the time limit after the call started | a recorded failure: `gateway failed at <step>` or `gateway timeout at <step>`, the reason in `infra`, the claim open; never a silent switch to another model |
 | The engine was cut after Claude was started and before `final.json` was saved | `unknown outcome at <step>` on resume: the call may have run, it is not asked again by itself |
 | The engine was cut after `final.json` was saved | resume reads the saved answer; Claude is not asked again |
 
@@ -116,11 +129,12 @@ it is a `claude` program on PATH; on Windows it is named by `ZODCHI_CLAUDE_BIN`)
 
 | Scenario | What a user would see |
 |---|---|
-| `flow-claude-writer` | the preflight at the gate, a Claude writer with the fake-Codex reviewer to approval, the call without tools and without the caller's API key, the intent and the raw message in the journal, the preflight cached; a resumed finished run calls nothing |
-| `flow-claude-cut` | a cut right after the Claude call: resume reads the saved answer, Claude asked once |
+| `flow-claude-writer` | the preflight at the gate, a Claude writer bound to its account (a digest, no name in the journal) with the fake-Codex reviewer to approval, the sign-in checked again before the call, the call without tools and without the caller's API key, the intent and the raw message in the journal, the preflight cached; a resumed finished run calls nothing |
+| `flow-claude-cut` | a cut right after the Claude call: resume reads the saved answer, Claude asked once; a cut after the key was reserved and before `job.json`: resume goes on under `-r2`, Claude asked once |
 | `flow-claude-disabled` | Claude not enabled: the Codex-only pair, the Claude program never run |
 | `flow-claude-missing` | the program missing or not signed in: skipped with the reason, the Codex pair runs; no pair left: refused at the gate |
-| `flow-claude-invalid` | an answer that is not JSON, then one with a field outside the schema: each stops the run at the write step with the claim open and no other model asked; a rerun with a valid answer goes on to approval |
+| `flow-claude-invalid` | an answer that is not JSON, then one with a field outside the schema, then a valid one followed by exit 3: each stops the run at the write step with the claim open, nothing applied and no other model asked; a rerun with a valid answer and a clean exit goes on to approval |
+| `flow-claude-account` | the sign-in changes between the gate and the call: refused, nothing sent; Claude disabled before a rerun: refused; enabled and signed in with the bound account again: the rerun goes on to approval |
 
 One real smoke run against the real Claude CLI belongs to the before-release run, not to CI.
 
@@ -131,4 +145,8 @@ One real smoke run against the real Claude CLI belongs to the before-release run
 - The schema check covers the keywords the flow schemas use (`type`, `enum`, `const`, `required`, `properties`,
   `additionalProperties`, `items`).
 - A Claude program the engine started and lost when it was cut keeps running to its end; its answer is not used.
+- The binding is as good as what `claude auth status` reports: two sign-ins that name the same e-mail and
+  organization are the same account to the engine.
+- On Windows a folder entry is flushed only where the folder can be opened for writing; otherwise NTFS's own
+  metadata journal is relied on.
 - `run.json` still records `"executors": "codex only"` in its policy; the pinned pair names the providers.
