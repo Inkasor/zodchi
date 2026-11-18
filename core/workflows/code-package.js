@@ -1,12 +1,12 @@
 export const meta = {
   name: 'code-package',
-  description: 'One code package: a gate resolves the role table and refuses overlapping packages, the writer implements, a runner checks, an independent reviewer reviews through the gateway, the writer closes findings; stops after 3 review rounds',
+  description: 'One code package: a gate resolves the role table and refuses overlapping packages, the writer implements, a runner runs the cheap checks and then the real thing end to end, an independent reviewer reviews the fixed commit with the REVIEW.md of the base commit, the writer closes findings; stops after 3 review rounds',
   whenToUse: 'Any code package from a finished brief. Args: see the header of the script.',
   phases: [
     { title: 'Gate', detail: 'runner reads the role table, the subscription limits, open packages, Git state and whether .agent-tmp/ is ignored, then claims the files', model: 'haiku' },
     { title: 'Write', detail: 'writer implements the brief (agent mode) or an expert answers and the applier applies it (expert mode)' },
-    { title: 'Checks', detail: 'runner runs the checks named in the brief and commits the package files', model: 'haiku' },
-    { title: 'Review', detail: 'reviewer (never the author) reviews the change through the gateway', model: 'haiku' },
+    { title: 'Checks', detail: 'runner runs the cheap checks (build, lint, fast tests), then the end-to-end verification, and commits the package files with a Verified stamp', model: 'haiku' },
+    { title: 'Review', detail: 'reviewer (never the author) reviews the commit of the round through the gateway, applying REVIEW.md from the base commit', model: 'haiku' },
     { title: 'Close', detail: 'the same writer closes the findings' },
   ],
 }
@@ -22,8 +22,19 @@ export const meta = {
 //   mode      "agent" (default): the writer edits the files itself. "expert": the writer answers once through
 //             the gateway with the edits, and the applier puts them into the files
 //   hard      true when the lead marked the package hard: the role hardWriter writes instead of writer
-//   checks    run from the repo after each write; each entry is a command string (passes on exit 0)
-//             or { cmd, pass } where pass says in words what success is, e.g. "prints usage, any exit code"
+//   checks    the brief's checks, run from the repo after each write; each entry is a command string (passes on exit 0)
+//             or { cmd, pass, e2e } where pass says in words what success is, e.g. "prints usage, any exit code",
+//             and e2e: true marks a check that runs the real program end to end. Unmarked checks are the cheap ones
+//             (build, lint, fast tests): they run first, and a failure goes back to the writer without the slow run
+//   verify    optional: the repository's end-to-end verification, commands like checks. Without it the runner follows
+//             the repository's skill .claude/skills/verify/SKILL.md as of the base commit, and without that the e2e
+//             checks. When none exists the package is not verified by running: the result carries verifiedBy "none"
+//   protect   optional: more paths whose existing files the package may not change (exact paths, folders, or globs
+//             with * and **), besides tests and end-to-end scenarios (test/, tests/, e2e/, *.test.*, *_test.*,
+//             *.spec.*), REVIEW.md, the verify skill and the files the check and verify commands name. New files are
+//             allowed; a change to an existing one stops the package before review with the list
+//   allowCheckChanges  optional: { "<path>": "<reason>" }: protected paths this package may change, each with the
+//             lead's reason (a deleted flaky test, say); the result records them in checkChanges
 //   rounds    review rounds at most, default 3 (the stop rule: without approval the package returns to a human)
 //   fixes     how many times a check failure caused by the code goes back to the writer, default 1
 //   continuations  fresh writers that may go on after one ran out of context, default 2
@@ -34,17 +45,22 @@ export const meta = {
 //   fixIgnore true: when the repository does not ignore .agent-tmp/ and the package calls the gateway, the runner
 //             appends ".agent-tmp/" to .gitignore and commits that line on its own before the package starts.
 //             Default false: the gate refuses
-//   closeShouldFix  true: when the last review approves with should_fix findings, the same writer closes them and
-//             one more short review checks only those (it counts against rounds). Default false: the run ends
-//             approved, with those findings in openFindings
+//   closeShouldFix  true: when the last review approves with nit findings (should_fix and note are read as nit), the
+//             same writer closes them and one more short review checks only those (it counts against rounds). Default
+//             false: the run ends approved, with those findings in openFindings. pre-existing findings are never closed
 //   rerun     steps that threw for an infrastructure failure, as { "<label>": <attempt> } (the error and out.next name
 //             both, e.g. { "review 1": 2 }): on resume these steps run again instead of coming back from the journal.
 //             A list of labels means attempt 2 for each
 //
-// result: { label, mode, models, rounds[], write, verdict, approved, openFindings[], next, stoppedAt, refused,
-//           question, questions, conflicts, claimAdded, outsideRepo, claimLeftOpen }
+// result: { label, mode, models, rounds[], write, verdict, approved, openFindings[], verifiedBy, verification, next,
+//           stoppedAt, refused, question, questions, conflicts, claimAdded, outsideRepo, claimLeftOpen, protectedChanged,
+//           checkChanges, flaky, stale }
 //   openFindings  always present: every finding of the last review that no later round closed, any severity, as
-//                 "<id> <severity> <location>: <problem>"; [] when there was no review or it had none
+//                 "<id> <severity> <location>: <problem>" with the severity important, nit or pre-existing; [] when
+//                 there was no review or it had none
+//   verifiedBy    always present: "args.verify", "verify skill" or "checks" when the last checks ran the change end to
+//                 end and passed; "none" otherwise (never reported as verified)
+//   verification  { verifiedBy, evidence[] ({ command, exitCode, trace }), checks[], note, stamp, reviewedCommit, review }
 //   next          what the lead does next when the run ends with something left open
 const a = args || {}
 for (const k of ['label', 'brief', 'repo', 'files', 'tmp']) if (!a[k]) throw new Error(`code-package needs args.${k}`)
@@ -162,9 +178,15 @@ const CHECKS = {
   properties: {
     ok: { type: 'boolean' }, results: { type: 'array', items: { type: 'string' } },
     // code: the change is wrong; check: the command or its pass rule is wrong; environment: the machine
-    // (a lock held, low memory, a missing tool). Only "code" goes back to the writer.
-    cause: { type: 'string', enum: ['none', 'code', 'check', 'environment'] },
+    // (a lock held, low memory, a missing tool); flaky: it failed without a cause in the change. Only "code" goes
+    // back to the writer.
+    cause: { type: 'string', enum: ['none', 'code', 'check', 'environment', 'flaky'] },
     logs: { type: 'array', items: { type: 'string' } },
+    // the end-to-end run: one entry per command, with where its log, trace or screenshot is
+    evidence: {
+      type: 'array',
+      items: { type: 'object', required: ['command', 'exitCode', 'trace'], properties: { command: { type: 'string' }, exitCode: { type: 'number' }, trace: { type: 'string' } } },
+    },
   },
 }
 const REVIEW = {
@@ -175,6 +197,8 @@ const REVIEW = {
     summary: { type: 'string' }, reviewFile: { type: 'string' },
     findings: { type: 'array', items: { type: 'string' } },
     blocking: { type: 'number' },
+    // the commit the review names as the one it judged, and HEAD read again after the review was final
+    commit: { type: 'string' }, headAfter: { type: 'string' },
   },
 }
 // A step that makes a gateway call also says whether the gateway worked at all. infra is "" for a job that reached a
@@ -186,10 +210,20 @@ const infraBad = (r) => !r || r.gateway !== 'final'
 const INFRA = `gateway: "final" when the gateway created the job and it reached a final status (any status), and then infra is "". Otherwise gateway is "failed" and infra says what happened, quoting the gateway: ` +
   `it created no job, it refused (for example the repository does not ignore .agent-tmp/, an unknown role, sign-in), every submission died before its turn started, ` +
   `or the wait ran out with the job still running (name its active key). When gateway is "failed", append the line "INFRA: <what happened>" to the progress file as its last line instead of DONE.`
-// The severity is the second word of a finding line "<id> <severity> <location>: <problem>".
-const severity = (f) => (String(f).trim().split(/\s+/)[1] || '').toLowerCase()
+// The severity is the second word of a finding line "<id> <severity> <location>: <problem>". A review says important
+// (blocks approval), nit (does not block) or pre-existing (was there before the change; does not block). Older words
+// are read as their match: blocking as important, should_fix, note and minor as nit. A word that is none of these is
+// read as important, so an unreadable finding never approves a change.
+const SEVERITY = new Map(Object.entries({ important: 'important', blocking: 'important', nit: 'nit', should_fix: 'nit', note: 'nit', minor: 'nit', 'pre-existing': 'pre-existing', pre_existing: 'pre-existing', preexisting: 'pre-existing' }))
+const severity = (f) => SEVERITY.get((String(f).trim().split(/\s+/)[1] || '').toLowerCase()) || 'important'
+const normFinding = (f) => String(f).trim().replace(/^(\S+\s+)(\S+)/, (m, id, word) => id + (SEVERITY.get(word.toLowerCase()) || word))
+// Two commit hashes name the same commit when one is a prefix of the other (a short hash), at least 7 characters long.
+const sameCommit = (x, y) => {
+  const s = String(x || '').trim().toLowerCase(), t = String(y || '').trim().toLowerCase()
+  return /^[0-9a-f]{7,64}$/.test(s) && /^[0-9a-f]{7,64}$/.test(t) && (s.startsWith(t) || t.startsWith(s))
+}
 
-const out = { label: a.label, mode, rounds: [], openFindings: [] }
+const out = { label: a.label, mode, rounds: [], openFindings: [], verifiedBy: 'none' }
 // Set by an infrastructure failure: the claim stays open, because the package goes on when the run is resumed.
 let keepClaim = false
 function infraFail(label, what) {
@@ -215,15 +249,16 @@ const gate = await step(
   `- account: the output of \`zodchi account\` (JSON), or "" when the command fails; put its error into accountError.\n` +
   `- git: true when ${a.repo} is inside a Git work tree. head: \`git rev-parse HEAD\`. ` +
   `dirty: every path \`git status --porcelain -uall\` lists, relative to the repository, without the status letters and quotes (a rename gives both paths); [] when it lists nothing or ${a.repo} is not in a Git work tree.\n` +
-  `- ignoreExit: the exit code of \`git check-ignore -q .agent-tmp/gateway/x\` run from ${a.repo} (0: the gateway's job folder is ignored, 1: it is not, anything else: Git could not check).`,
+  `- ignoreExit: the exit code of \`git check-ignore -q .agent-tmp/gateway/x\` run from ${a.repo} (0: the gateway's job folder is ignored, 1: it is not, anything else: Git could not check).\n` +
+  `- verifySkill: in a Git work tree, true when \`git cat-file -e HEAD:.claude/skills/verify/SKILL.md\` exits 0 (the repository's verify skill is committed); outside Git, true when ${repoKey}/.claude/skills/verify/SKILL.md exists. false otherwise.`,
   {
     agentType: 'zodchi-core:runner', label: `gate ${a.label}`,
     schema: {
-      type: 'object', required: ['homeModels', 'repoModels', 'account', 'git', 'dirty', 'ignoreExit'],
+      type: 'object', required: ['homeModels', 'repoModels', 'account', 'git', 'dirty', 'ignoreExit', 'verifySkill'],
       properties: {
         homeModels: { type: 'string' }, repoModels: { type: 'string' }, account: { type: 'string' }, accountError: { type: 'string' },
         git: { type: 'boolean' }, head: { type: 'string' }, dirty: { type: 'array', items: { type: 'string' } },
-        ignoreExit: { type: 'number' },
+        ignoreExit: { type: 'number' }, verifySkill: { type: 'boolean' },
       },
     },
   })
@@ -346,6 +381,55 @@ async function body() {
     : `Nothing is committed in this run; the writer never commits.`
   const BEFORE = git ? '' : ` Before your first edit of a file, copy it to ${a.tmp}/before/ keeping its file name, so the review can diff it.`
 
+  // The checks: the brief's cheap ones first (build, lint, fast tests), then the end-to-end run. The end-to-end run is
+  // the repository's own verification when it has one: args.verify, else its verify skill, else the brief's e2e checks.
+  const asCheck = (c) => typeof c === 'string' ? { cmd: c, pass: 'exit code 0' } : { pass: 'exit code 0', ...c }
+  const checkList = (a.checks || []).map(asCheck)
+  const cheapChecks = checkList.filter(c => !c.e2e).map(({ cmd, pass }) => ({ cmd, pass }))
+  const e2eChecks = checkList.filter(c => c.e2e).map(({ cmd, pass }) => ({ cmd, pass }))
+  const verifyList = [].concat(a.verify || []).map(asCheck).map(({ cmd, pass }) => ({ cmd, pass }))
+  const verifySource = verifyList.length ? 'args.verify' : gate.verifySkill === true ? 'verify skill' : e2eChecks.length ? 'checks' : 'none'
+  const SKILL = '.claude/skills/verify/SKILL.md'
+  // A check runs once, to its end, and its result is what it said: the same words to the runner and to the writer.
+  const NO_SKIP = `Never skip a check, add a sleep or a wait to make it pass, or run it again until it passes. ` +
+    `A check that fails without a cause in the change (nothing in its output points at the changed code, and the machine is fine) is flaky: report it as flaky with its log; deleting or quarantining a flaky test is the lead's decision, never yours.`
+
+  // Protected checks: a change must not be able to edit the checks that judge it. Existing tests and end-to-end
+  // scenarios, REVIEW.md, the verify skill, the files the check and verify commands name, and args.protect. New files
+  // are allowed; a change to an existing one stops the package before review unless args.allowCheckChanges names it.
+  const globRe = (g) => new RegExp('^' + g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*/g, '\u0000').replace(/\*/g, '[^/]*').replace(/\u0000/g, '.*').replace(/\?/g, '[^/]') + '(/.*)?$', caseless ? 'i' : '')
+  const protectRules = []
+  for (const p of [].concat(a.protect || [])) {
+    const s = String(p).replace(/\\/g, '/').replace(/\/+$/, '')
+    try { protectRules.push(globRe(/^([A-Za-z]:)?\//.test(s) && !s.includes('*') ? rel(s) : s)) } catch (e) { throw new Error(`args.protect: ${e.message}`) }
+  }
+  // Paths named in a check or verify command: each word that looks like a file path in the repository.
+  const commandPaths = new Set()
+  for (const c of [...checkList, ...verifyList]) for (const w of String(c.cmd).split(/\s+/)) {
+    const t = w.replace(/^["']|["']$/g, '')
+    if (!t || t.startsWith('-') || !/^[\w.@/\\:-]+$/.test(t) || !(/[\\/]/.test(t) || /\.\w+$/.test(t))) continue
+    try { commandPaths.add(rel(t).toLowerCase()) } catch {}
+  }
+  const isProtected = (r) => {
+    const l = r.toLowerCase()
+    const parts = l.split('/')
+    const name = parts[parts.length - 1]
+    return parts.slice(0, -1).some(s => ['test', 'tests', 'e2e'].includes(s)) ||
+      /\.test\./.test(name) || /_test\./.test(name) || /\.spec\./.test(name) ||
+      l === 'review.md' || l.startsWith('.claude/skills/verify/') || commandPaths.has(l) ||
+      protectRules.some(re => re.test(r))
+  }
+  const allowed = new Map()
+  const allowIn = a.allowCheckChanges || {}
+  for (const [p, reason] of Array.isArray(allowIn) ? allowIn.map(x => [x && x.path, x && x.reason]) : Object.entries(allowIn)) {
+    if (!p || typeof reason !== 'string' || !reason.trim()) throw new Error(`args.allowCheckChanges: ${JSON.stringify(p)} needs a reason`)
+    allowed.set(key(p), { path: rel(p), reason: reason.trim() })
+  }
+  const PROTECT = ` Protected checks: do not change or delete an existing test or end-to-end scenario (test/, tests/, e2e/, *.test.*, *_test.*, *.spec.*), REVIEW.md, ` +
+    `the verify skill (.claude/skills/verify/), or a file the checks run${commandPaths.size ? ` (${[...commandPaths].join(', ')})` : ''}${protectRules.length ? `, or these: ${JSON.stringify([].concat(a.protect))}` : ''}; never weaken an assertion. ` +
+    `Adding new test files is allowed. A change to an existing protected file stops the package before review` +
+    (allowed.size ? `, except these, which the lead allowed: ${JSON.stringify([...allowed.values()])}` : '') + `. ${NO_SKIP}`
+
   // A long package can outgrow one agent's context. The agent may hand over (more: true) at a clean point, or it may
   // end without a result; either way a fresh agent goes on from the same progress file, up to a.continuations times.
   async function continued(prompt, opts) {
@@ -366,7 +450,7 @@ async function body() {
   let calls = 0
   async function write(job, tag, phaseName, evidence = []) {
     const n = ++calls
-    const task = `${job} ${COMMITS}`
+    const task = `${job} ${COMMITS}${PROTECT}`
     if (mode === 'expert') {
       const ask = await step(
         `Ask an expert for the code through the gateway. Work from ${a.repo}. Write ${a.tmp}/expert-${n}.md: ${task} ` +
@@ -412,7 +496,11 @@ async function body() {
   const atGate = new Set(gate.dirty.map(f => { try { return key(f) } catch { return '' } }))
   const jobFolder = (r) => /^\.agent-tmp(\/|$)/i.test(r)
   const claimed = new Set(claimKeys)
+  // After every write: the claim follows the change, then the protected checks are compared with it.
   async function follow(res, tag, phaseName) {
+    return (await followClaim(res, tag, phaseName)) && (await guard(tag, phaseName))
+  }
+  async function followClaim(res, tag, phaseName) {
     const found = []
     for (const f of res.changed || []) {
       let r
@@ -465,6 +553,32 @@ async function body() {
     return true
   }
 
+  // The package's protected files that existed before it and differ now. Only such a change counts: a new file is
+  // allowed. The comparison is with the base commit (outside Git: with the copies in before/), never with a list the
+  // writer gives.
+  async function guard(tag, phaseName) {
+    const candidates = [...changed].map(rel).filter(isProtected)
+    if (!candidates.length) return true
+    const res = await step(
+      `Compare protected files with the state before the package in ${a.repo}; change nothing. Paths to compare, relative to the repository: ${JSON.stringify(candidates)}. For each path: ` +
+      (git
+        ? `it existed before when \`git cat-file -e ${base}:<path>\` exits 0; such a path differs now when \`git diff --quiet ${base} -- <path>\` exits 1 (changed or deleted). `
+        : `it existed before when ${a.tmp}/before/<its file name> exists; such a path differs now when the file is gone or \`cmp -s ${a.tmp}/before/<its file name> <path>\` exits 1. `) +
+      `paths: every path that existed before and differs now, exactly as given; [] when none. ok is true when every command ran.`,
+      { agentType: 'zodchi-core:runner', schema: STATUS, phase: phaseName, label: `protect ${tag}` })
+    if (!res || !res.ok || !Array.isArray(res.paths)) { out.stoppedAt = `protected checks after ${tag} (${res ? res.summary || 'no paths list' : 'no result'})`; return false }
+    const hit = [...new Set(res.paths.map(p => { try { return rel(p) } catch { return String(p) } }))]
+    const allow = hit.filter(p => allowed.has(p.toLowerCase())).map(p => allowed.get(p.toLowerCase()))
+    if (allow.length) out.checkChanges = [...new Map([...(out.checkChanges || []), ...allow].map(x => [x.path.toLowerCase(), x])).values()]
+    const bad = hit.filter(p => !allowed.has(p.toLowerCase()))
+    if (!bad.length) return true
+    out.protectedChanged = bad
+    out.stoppedAt = `protected checks changed at ${tag}`
+    out.next = `The work changed or deleted existing checks: ${bad.join(', ')}. A change must not edit the checks that judge it, so the package stopped before review; this round's work is not committed and stays in ${a.repo}. ` +
+      `If the change to a check is right (a test of behaviour the brief changes on purpose, a flaky test you decided to delete), run again with args.allowCheckChanges {"<path>": "<reason>"}; otherwise have the writer restore them.`
+    return false
+  }
+
   phase('Write')
   out.write = await write(
     `Implement the package described in ${a.brief}. Read it first; it is the whole task. ` +
@@ -479,22 +593,48 @@ async function body() {
   }
   noteQuestions(out.write)
 
-  const checkList = (a.checks || []).map(c => typeof c === 'string' ? { cmd: c, pass: 'exit code 0' } : { pass: 'exit code 0', ...c })
-  const runChecks = (tag) => checkList.length
-    ? step(`Run these checks from ${a.repo}, in order, each to its end, one log per command in ${a.tmp}/logs: ${JSON.stringify(checkList)}. ` +
-            `A check passes when its output meets its "pass" rule. ok is true only when every check passes. ` +
-            `results: one line per command with its exit code, the decisive output line and pass/fail. logs: the log paths. ` +
-            `cause: "none" when ok; otherwise the first failure's cause - "code" when the changed code is wrong (traceback, compile error, failed assertion, a gate of the change), ` +
-            `"check" when the command or its pass rule is wrong although the code works, ` +
-            `"environment" when the machine stopped it (a lock held by another process, memory, a missing tool).`,
+  const CAUSE = `cause: "none" when ok; otherwise the first failure's cause - "code" when the changed code is wrong (traceback, compile error, failed assertion, a gate of the change), ` +
+    `"check" when the command or its pass rule is wrong although the code works, ` +
+    `"environment" when the machine stopped it (a lock held by another process, memory, a missing tool), ` +
+    `"flaky" when it failed without a cause in the change (say in results why you think so, with the log line).`
+  // Stage 1, the cheap checks: build, lint, fast tests. A failure here goes back to the writer before the slow run.
+  const runCheap = (tag) => cheapChecks.length
+    ? step(`Run these checks from ${a.repo}, in order, each to its end, one log per command in ${a.tmp}/logs: ${JSON.stringify(cheapChecks)}. ` +
+            `A check passes when its output meets its "pass" rule. ${NO_SKIP} ok is true only when every check passes. ` +
+            `results: one line per command with its exit code, the decisive output line and pass/fail. logs: the log paths. ${CAUSE}`,
             { agentType: 'zodchi-core:runner', schema: CHECKS, phase: 'Checks', label: `checks ${tag}` })
     : Promise.resolve({ ok: true, results: [], cause: 'none' })
+  // Stage 2, the end-to-end run: the real program, started and driven through a real flow.
+  const e2eDir = (tag) => `${a.tmp}/e2e-${String(tag).replace(/[^\w.-]+/g, '-')}`
+  const runE2e = (tag) => verifySource === 'none'
+    ? Promise.resolve({ ok: true, results: [], cause: 'none', evidence: [] })
+    : step(`Run the end-to-end verification of a change from ${a.repo}: the real program, started and driven through a real flow. One log per command in ${a.tmp}/logs; keep every trace, screenshot or log the run makes under ${e2eDir(tag)}/.\n` +
+            (verifyList.length ? `- Run these commands, in order, each to its end: ${JSON.stringify(verifyList)}.\n` : '') +
+            (verifySource === 'verify skill'
+              ? `- Follow the repository's verify skill ${git ? `as of the base commit, never the working tree's copy: read it with \`git show ${base}:${SKILL}\`` : `${repoKey}/${SKILL}`}, and do what it says: start the app the way it says and drive the flow it names.\n`
+              : '') +
+            (e2eChecks.length ? `- ${verifyList.length || verifySource === 'verify skill' ? 'Then run' : 'Run'} these checks, each to its end: ${JSON.stringify(e2eChecks)}.\n` : '') +
+            `A command passes when its output meets its "pass" rule (exit code 0 for a step of the skill). ${NO_SKIP} ok is true only when every one passes. ` +
+            `results: one line per command with its exit code, the decisive output line and pass/fail. logs: the log paths. ` +
+            `evidence: one entry per command you ran, in order: command, exitCode, trace (the path of its log, trace or screenshot). ${CAUSE}`,
+            { agentType: 'zodchi-core:runner', schema: CHECKS, phase: 'Checks', label: `verify ${tag}` })
+  const runChecks = async (tag) => {
+    const cheap = await runCheap(tag)
+    if (!cheap || !cheap.ok) return cheap && { ...cheap, stage: 'checks' }
+    const e2e = await runE2e(tag)
+    if (!e2e) return null
+    return {
+      ...e2e, stage: e2e.ok ? 'done' : 'e2e',
+      results: [...(cheap.results || []), ...(e2e.results || [])], logs: [...(cheap.logs || []), ...(e2e.logs || [])], evidence: e2e.evidence || [],
+    }
+  }
 
   async function checked(n) {
     let checks = await runChecks(n)
     for (let f = 1; checks && !checks.ok && checks.cause === 'code' && f <= (a.fixes ?? 1); f++) {
       const fix = await write(
-        `The checks of the package ${a.brief} failed after the change. Results: ${JSON.stringify(checks.results)}. Logs: ${JSON.stringify(checks.logs || [])}. ` +
+        `The ${checks.stage === 'e2e' ? 'end-to-end run' : 'checks'} of the package ${a.brief} failed after the change. Results: ${JSON.stringify(checks.results)}. Logs: ${JSON.stringify(checks.logs || [])}` +
+        `${(checks.evidence || []).length ? `. Evidence: ${JSON.stringify(checks.evidence)}` : ''}. ` +
         `Read the logs and fix the code with the smallest change. done is true when the failing command passes. changed: files changed in this fix.`,
         `fix checks ${n}.${f}`, 'Close', checks.logs || [])
       noteQuestions(fix)
@@ -505,26 +645,59 @@ async function body() {
     return checks
   }
 
-  // A path-limited commit: other staged work in the index stays out of it, and the runner verifies that.
+  // What verified the round: the end-to-end run with its evidence, or plainly nothing. Never "verified" without a run
+  // whose every command the runner reports with exit code 0.
+  function noteVerification(checks) {
+    const evidence = (checks.evidence || []).filter(e => e && e.command)
+    const ran = verifySource !== 'none' && evidence.length > 0 && evidence.every(e => e.exitCode === 0)
+    const cheap = cheapChecks.length ? `; checks ${cheapChecks.length} passed` : ''
+    out.verifiedBy = ran ? verifySource : 'none'
+    out.verification = {
+      verifiedBy: out.verifiedBy, evidence, checks: checks.results || [],
+      note: ran ? '' : verifySource === 'none'
+        ? 'not verified by running: the repository has no args.verify, no verify skill and no e2e check, so only the cheap checks ran'
+        : 'not verified by running: the end-to-end run reported no evidence with exit code 0',
+      stamp: `Verified: ${ran ? `e2e ${evidence.map(e => `${e.command} exit ${e.exitCode}`).join(', ')}` : 'none'}${cheap}`.replace(/\s+/g, ' ').trim(),
+      reviewedCommit: null, review: null,
+    }
+  }
+
+  // A path-limited commit: other staged work in the index stays out of it, and the runner verifies that. The message
+  // ends with the round's verification stamp, so `git log --grep "Verified: none"` finds the commits nothing ran.
+  // Returns the commit the review judges (HEAD after the commit, also when nothing changed), or null on failure.
   async function commitRound(n) {
-    if (!commit) return true
+    if (!commit) return 'none'
     const paths = [...changed].map(rel)
+    const message = `${a.label}: round ${n}\n\n${out.verification.stamp}\n`
     const res = await step(
       `Commit the package's files in ${a.repo}; never push. The package paths, relative to the repository: ${JSON.stringify(paths)}.\n` +
       `1. For each path that exists, or that Git tracks and is now deleted, run \`git add -A -- <path>\`; skip a path that is neither.\n` +
-      `2. If \`git diff --cached --quiet -- <those paths>\` says nothing changed, return ok true with summary "nothing to commit".\n` +
-      `3. Otherwise run \`git commit -m "${a.label}: round ${n}" -- <those paths>\` (the paths after -- limit the commit to them; other staged files stay staged and out of it).\n` +
-      `4. Run \`git show --name-only --format= HEAD\`: every listed file must be one of the package paths. ok is true only then. summary: the commit hash. paths: the listed files.`,
-      { agentType: 'zodchi-core:runner', schema: STEP, phase: 'Checks', label: `commit ${n}` })
-    return Boolean(res && res.ok)
+      `2. If \`git diff --cached --quiet -- <those paths>\` says nothing changed, skip to step 5 with summary "nothing to commit".\n` +
+      `3. Write the commit message to ${a.tmp}/commit-${n}.msg, byte for byte; it is given here as a JSON string, so write the text it stands for (real line breaks). Commit message, as a JSON string: ${JSON.stringify(message)}\n` +
+      `4. Run \`git commit -F ${q(`${a.tmp}/commit-${n}.msg`)} -- <those paths>\` (the paths after -- limit the commit to them; other staged files stay staged and out of it). ` +
+      `Then \`git show --name-only --format= HEAD\`: every listed file must be one of the package paths, and \`git log -1 --format=%B\` must end with the line ${JSON.stringify(out.verification.stamp)}.\n` +
+      `5. head: the full hash \`git rev-parse HEAD\` prints. ok is true when the checks of step 4 hold (or nothing was to commit). summary: the commit hash or "nothing to commit". paths: the files step 4 listed.`,
+      { agentType: 'zodchi-core:runner', schema: { ...STEP, required: [...STEP.required, 'head'], properties: { ...STEP.properties, head: { type: 'string' } } }, phase: 'Checks', label: `commit ${n}` })
+    if (!res || !res.ok || !/^[0-9a-f]{7,64}$/i.test(String(res.head || '').trim())) return null
+    return String(res.head).trim()
   }
 
   // Review diffs come from Git, deleted files included; only attachments of current files need the file to exist.
-  const diffHow = git
-    ? `\`git diff ${base} -- <files>\` over the package paths below (this includes deleted files), plus \`git diff --no-index /dev/null <file>\` for each untracked new one`
-    : `\`git diff --no-index ${a.tmp}/before/<name> <file>\` for every file with a copy in ${a.tmp}/before/ (a deleted file: diff its copy against /dev/null), and \`git diff --no-index /dev/null <file>\` for new files`
+  // With commits, the diff is the fixed commit under review against the base, never the work tree.
+  const diffHow = (target) => commit
+    ? `\`git diff ${base} ${target} -- <files>\` over the package paths below (this includes deleted and new files)`
+    : git
+      ? `\`git diff ${base} -- <files>\` over the package paths below (this includes deleted files), plus \`git diff --no-index /dev/null <file>\` for each untracked new one`
+      : `\`git diff --no-index ${a.tmp}/before/<name> <file>\` for every file with a copy in ${a.tmp}/before/ (a deleted file: diff its copy against /dev/null), and \`git diff --no-index /dev/null <file>\` for new files`
+  // REVIEW.md, the owner's written focus for reviews, always as of the base commit: the package cannot change what
+  // judges it. Without Git there is no base commit: the copy in before/ when the writer changed it, else the file.
+  const focusFile = `${a.tmp}/REVIEW.base.md`
+  const FOCUS = git
+    ? `Save the repository's REVIEW.md as of the base commit, never the work tree's: run \`rm -f ${q(focusFile)}; git show ${base}:REVIEW.md > ${q(focusFile)} || rm -f ${q(focusFile)}\` (no file when the base commit has no REVIEW.md).`
+    : `Save the repository's REVIEW.md as it was before the package: copy ${a.tmp}/before/REVIEW.md when it exists, else ${repoKey}/REVIEW.md when it exists, to ${focusFile}; remove ${focusFile} when neither exists.`
+  const SEVERITIES = `Every finding has a severity: "important" (a real defect the change brings in; it blocks approval), "nit" (worth fixing, does not block) or "pre-existing" (it was there before the change; does not block).`
 
-  // focus: the should_fix findings of an approved review that the writer closed (args.closeShouldFix); the next review
+  // focus: the nit findings of an approved review that the writer closed (args.closeShouldFix); the next review
   // checks only those. carried: open findings of an earlier review that a focused review does not look at again; they
   // stay open through focused reviews and go to the next full review, which repeats those that still hold.
   let focus = null
@@ -535,77 +708,113 @@ async function body() {
     if (checks === 'halted') return
     if (!checks || !checks.ok) {
       out.rounds.push({ n, checks })
-      out.stoppedAt = `checks (${checks ? checks.cause : 'no result'})`
+      // An earlier round's run does not verify the work as it stands now.
+      out.verifiedBy = 'none'
+      if (out.verification) out.verification = { ...out.verification, verifiedBy: 'none', note: `not verified by running: the checks of round ${n} failed; the evidence is of an earlier round` }
+      if (checks && checks.cause === 'flaky') {
+        out.flaky = { results: checks.results || [], logs: checks.logs || [], evidence: checks.evidence || [] }
+        out.next = `A check failed without a cause in the change (flaky): ${JSON.stringify(checks.results || [])}. Nothing was retried or skipped. ` +
+          `Fix the check, or decide to delete or quarantine it: that decision is yours, recorded by running again with args.allowCheckChanges {"<test path>": "<reason>"}.`
+      }
+      out.stoppedAt = `checks (${checks ? `${checks.cause}${checks.stage === 'e2e' ? ', end-to-end run' : ''}` : 'no result'})`
       return
     }
-    if (!(await commitRound(n))) { out.stoppedAt = 'commit'; return }
+    noteVerification(checks)
+    const target = await commitRound(n)
+    if (!target) { out.stoppedAt = 'commit'; return }
+    const fixed = target !== 'none'
 
     const context = `what the change does and why (from ${a.brief} and this summary: ${JSON.stringify(out.write.summary)}), what is verified and what is not ` +
-      `(${JSON.stringify(out.write.unverified || [])})${outside.length ? `, and the files changed outside the repository, not attached: ${JSON.stringify(outside)}` : ''}${n > 1 ? `, and which findings of the previous review (${a.tmp}/review-${n - 1}.json) were closed and how` : ''}` +
+      `(${JSON.stringify(out.write.unverified || [])}), how the runner verified it (${out.verification.stamp}${out.verification.note ? `: ${out.verification.note}` : ''}; evidence ${JSON.stringify(out.verification.evidence)})` +
+      `${outside.length ? `, and the files changed outside the repository, not attached: ${JSON.stringify(outside)}` : ''}${n > 1 ? `, and which findings of the previous review (${a.tmp}/review-${n - 1}.json) were closed and how` : ''}` +
       (focus ? `. This is a short review of the approved change: check only whether these findings of ${a.tmp}/review-${n - 1}.json are closed and whether their fixes break anything: ${JSON.stringify(focus)}; approved when they are closed and nothing broke` : '') +
       (!focus && carried.length ? `. These findings of an earlier review are still open and no later review checked them: ${JSON.stringify(carried)}; repeat in your findings, with the same id, severity and location, each one that still holds` : '') +
-      (commit ? `. The round's commit exists: "${a.label}: round ${n}" (a round that changed nothing has none); the package's commits sit on top of ${base}` : '')
+      (fixed ? `. The commit under review is ${target} ("${a.label}: round ${n}", or an earlier round's when this round changed nothing), on top of the base ${base}; the review's "commit" field names exactly ${target}` : '') +
+      `. ${SEVERITIES} Apply the repository's REVIEW.md as of the base commit when it is attached as REVIEW.base.md: it says what the owner wants flagged and what not; do not add hypothetical edge cases it and the brief do not ask for`
     const files = [...changed]
     const VERDICT = `verdict: the "verdict" field of the review exactly ("approved", "changes_requested" or "blocked"; "missing" when the review file has none). ` +
-      `summary: its summary. findings holds the reviewer's findings only, each as "<id> <severity> <location>: <problem>": an empty array when it has none. blocking: the count of blocking findings.`
+      `summary: its summary. findings holds the reviewer's findings only, each as "<id> <severity> <location>: <problem>" with the severity word as the review gives it: an empty array when it has none. blocking: the count of important findings.`
+    const STALE = `commit: the "commit" field of the review exactly ("" when it has none). headAfter: the full hash \`git rev-parse HEAD\` prints after the review is final.`
     const review = reviewer.provider === 'codex'
       ? await step(
         `Get an independent review of a finished change through the gateway. Work from ${a.repo}. Write ${a.tmp}/review-${n}.md: ${context}. ` +
-        `Save the change as ${a.tmp}/change-${n}.diff with ${diffHow}: ${JSON.stringify(files.map(rel))}. Then ` +
+        `Save the change as ${a.tmp}/change-${n}.diff with ${diffHow(target)}: ${JSON.stringify(files.map(rel))}. ${FOCUS} Then ` +
         gatewayCall({
           role: 'code-review', key: `${a.label}-review-${n}`, label: `review ${n}`, totalMin: 55, out: `${a.tmp}/review-${n}.json`,
           args: `--model ${reviewer.model} --effort ${reviewer.effort} --prompt ${q(`${a.tmp}/review-${n}.md`)}`,
           attach: [`${a.tmp}/change-${n}.diff`, a.brief, ...(n > 1 ? [`${a.tmp}/review-${n - 1}.json`] : [])],
-          attachIfExists: files,
+          attachIfExists: [focusFile, ...files],
         }) + ` ` +
         `A changed file that does not exist now is left out of --attach (the diff already carries deletions). ` +
-        `${VERDICT} reviewFile: the review file path. Change no code. ${INFRA} ` +
+        `${VERDICT} ${STALE} reviewFile: the review file path. Change no code. ${INFRA} ` +
         `A job that reached a final status but left no review with a verdict (verdict "missing") is an infrastructure failure too: infra is "the review has no verdict: <the review file, or the job status>", with the INFRA line in the progress file.`,
         { agentType: 'zodchi-core:runner', schema: withInfra(REVIEW), phase: 'Review', label: `review ${n}` })
       : await step(
-        `You are an independent code reviewer; you did not write this change. Work from ${a.repo} and change nothing. Read ${a.brief}, then the change: ${diffHow}, for these paths: ${JSON.stringify(files.map(rel))}. ` +
+        `You are an independent code reviewer; you did not write this change. Work from ${a.repo} and change nothing. Read ${a.brief}, then the change: ${diffHow(target)}, for these paths: ${JSON.stringify(files.map(rel))}. ` +
+        `Read the repository's REVIEW.md as of the base commit, never the work tree's (${git ? `\`git show ${base}:REVIEW.md\`` : `${a.tmp}/before/REVIEW.md, else ${repoKey}/REVIEW.md`}; none is fine), and apply it. ` +
         `Context: ${context}. Look for correctness bugs, broken contracts, missing checks and unsafe operations; style only when it hides a bug. ` +
-        `Write the review to ${a.tmp}/review-${n}.json as {"verdict": "approved" | "changes_requested" | "blocked", "summary": ..., "findings": [{"id": "F1", "severity": "blocking|should_fix|minor", "location": ..., "problem": ..., "fix": ...}]}; ` +
-        `approved only when no blocking finding is open, blocked when the change cannot be judged. ${VERDICT} reviewFile: the path you wrote.`,
+        `Write the review to ${a.tmp}/review-${n}.json as {"verdict": "approved" | "changes_requested" | "blocked", "summary": ..., "commit": ${fixed ? `"${target}"` : '""'}, "findings": [{"id": "F1", "severity": "important|nit|pre-existing", "location": ..., "problem": ..., "fix": ...}]}; ` +
+        `approved only when no important finding is open, blocked when the change cannot be judged. ${VERDICT} ${STALE} reviewFile: the path you wrote.`,
         { model: reviewer.model, schema: REVIEW, phase: 'Review', label: `review ${n}` })
-    out.rounds.push({ n, checks, review })
+    out.rounds.push({ n, checks, review, commit: fixed ? target : null })
     if (!review) infraFail(`review ${n}`, 'the review step returned no result')
     // Only a review through the gateway reports the gateway outcome; a Claude reviewer has no gateway field.
     const viaGateway = reviewer.provider === 'codex'
     if ((viaGateway && infraBad(review)) || review.verdict === 'missing') infraFail(`review ${n}`, (viaGateway && review.gateway !== 'final' && review.infra) || `the review has no verdict (${review.summary || 'no summary'}; ${review.reviewFile || `${a.tmp}/review-${n}.json`})`)
+    // A review counts only for the commit it names, and only while the branch still points there.
+    if (fixed && (!sameCommit(review.commit, target) || !sameCommit(review.headAfter, target))) {
+      out.rounds[out.rounds.length - 1].stale = true
+      out.stale = { reviewed: review.commit || '', expected: target, headAfter: review.headAfter || '' }
+      out.stoppedAt = `review ${n} stale`
+      out.next = `The review is stale and was not counted: it names the commit ${JSON.stringify(review.commit || '')}, the round's commit is ${target}, and HEAD after the review was ${JSON.stringify(review.headAfter || '')}. ` +
+        `Something moved the branch or the review named another commit. Put the branch back on ${target} or settle what moved it, then resume this run with args.rerun {"review ${n}": 2}; the claim ${claimFile} stays open meanwhile.`
+      keepClaim = true
+      return
+    }
     out.verdict = review.verdict
+    if (out.verification) { out.verification.reviewedCommit = fixed ? target : null; out.verification.review = `${reviewer.provider}/${reviewer.model} ${review.verdict}` }
     // A focused review leaves the carried findings as they were; a full review was given them and repeats those that
     // still hold, so after it they are its own findings.
     if (!focused) carried = []
-    out.openFindings = [...carried, ...(review.findings || [])]
+    const findings = (review.findings || []).map(normFinding)
+    out.openFindings = [...carried, ...findings]
+    // Only important findings block approval and count against the stop rule; nit and pre-existing ones stay open.
+    const important = findings.filter(f => severity(f) === 'important')
+    if (review.verdict === 'approved' && important.length) log(`review ${n}: approved with ${important.length} important finding(s); read as changes requested`)
+    if (review.verdict === 'changes_requested' && !findings.length) {
+      out.stoppedAt = `review verdict ${review.verdict} without findings`
+      out.question = `The reviewer asked for changes but listed no finding: ${review.summary || ''} See ${a.tmp}/review-${n}.json.`
+      return
+    }
     let task
-    if (review.verdict === 'approved') {
-      const shouldFix = (review.findings || []).filter(f => severity(f) === 'should_fix')
-      if (!shouldFix.length || !a.closeShouldFix || n === rounds) {
+    if (review.verdict !== 'blocked' && !important.length) {
+      const nits = findings.filter(f => severity(f) === 'nit')
+      if (!nits.length || !a.closeShouldFix || n === rounds) {
         out.approved = true
         claimStatus = 'done'
+        if (review.verdict !== 'approved') log(`review ${n}: ${review.verdict} with only nit and pre-existing findings; approved`)
         if (out.openFindings.length) out.next = `Approved with ${out.openFindings.length} open finding(s) in openFindings` +
-          (!shouldFix.length ? ' (none is should_fix): read them and decide.'
-            : a.closeShouldFix ? `; the ${rounds} review rounds are used up, so the should_fix ones stay open: close them in a new package or by hand.`
-            : '; the should_fix ones were not closed: run again with closeShouldFix true, or close them by hand.')
+          (!nits.length ? ' (none is nit): read them and decide.'
+            : a.closeShouldFix ? `; the ${rounds} review rounds are used up, so the nit ones stay open: close them in a new package or by hand.`
+            : '; the nit ones were not closed: run again with closeShouldFix true, or close them by hand.')
         return
       }
-      focus = shouldFix
-      carried = out.openFindings.filter(f => !shouldFix.includes(f))
-      task = `Close these should_fix findings of the approved review ${a.tmp}/review-${n}.json for the package ${a.brief}: ${JSON.stringify(shouldFix)}. Fix each in the reviewer's sense with the smallest change; ` +
+      focus = nits
+      carried = out.openFindings.filter(f => !nits.includes(f))
+      task = `Close these nit findings of the approved review ${a.tmp}/review-${n}.json for the package ${a.brief}: ${JSON.stringify(nits)}. Fix each in the reviewer's sense with the smallest change; ` +
         `a finding you reject, say why instead of changing code. Leave every other finding alone. done is true when each of them is closed or answered. changed: files changed this round.`
-    } else if (review.verdict !== 'changes_requested') {
+    } else if (review.verdict === 'blocked') {
       out.stoppedAt = `review verdict ${review.verdict}`
       out.question = `The reviewer could not approve or ask for changes (${review.verdict}): ${review.summary || ''} See ${a.tmp}/review-${n}.json.`
       return
     } else if (n === rounds) {
       out.stoppedAt = `stop rule: ${rounds} review rounds without approval`
-      out.question = `The package has findings after ${rounds} rounds: ${review.findings.join(' | ')}. Decide: accept as is, change the brief, or mark it hard and start again.`
+      out.question = `The package has important findings after ${rounds} rounds: ${important.join(' | ')}. Decide: accept as is, change the brief, or mark it hard and start again.`
       return
     } else {
       focus = null
-      task = `Close the findings of the review ${a.tmp}/review-${n}.json for the package ${a.brief}. Fix each finding in the reviewer's sense with the smallest change; ` +
-        `a finding you reject, say why instead of changing code. done is true when every finding is closed or answered. changed: files changed this round.`
+      task = `Close the important findings of the review ${a.tmp}/review-${n}.json for the package ${a.brief}: ${JSON.stringify(important)}. Fix each in the reviewer's sense with the smallest change; ` +
+        `a finding you reject, say why instead of changing code. Leave nit and pre-existing findings alone unless a fix above closes them anyway. done is true when every important finding is closed or answered. changed: files changed this round.`
     }
 
     const fix = await write(task, `close ${n}`, 'Close', [`${a.tmp}/review-${n}.json`])

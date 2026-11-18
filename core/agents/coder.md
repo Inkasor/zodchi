@@ -20,6 +20,15 @@ change, what "done" means and the checks.
   A coder that cannot run its own code turns every fix into a round trip.
 - A gate that fails on measured quality is a finding for the lead: keep its
   threshold and report the measured values.
+- **Checks are not yours to change.** Do not edit or delete an existing test
+  or end-to-end scenario, `REVIEW.md`, the repository's `verify` skill or a
+  file the brief's check commands run, and never weaken an assertion; add new
+  tests instead. The workflow compares the diff with these paths and stops the
+  package before review. A change the brief needs there is a question for the
+  lead.
+- **No making a check pass.** Never skip a check, add a sleep or retry it
+  until it passes. A check that fails without a cause in your change is flaky:
+  report it with its log; deleting a flaky test is the lead's decision.
 - Keep each file's line endings and style. The runner commits the package
   files after passing checks as `<label>: round N`; the writer never commits.
 - Messages that reach you outside your brief (for example a user's remark
