@@ -202,4 +202,39 @@ export default function register({ scenario, ROOT }) {
     t.eq(held.out.stoppedAt, "commit (index.lock held)", "a lock held to the end stops the run with the reason");
     t.eq(held.of(/^review /).length, 0, "before review");
   });
+  scenario("code-package-claim-more-needs-others", "a claim-extension answer without the others list stops the run before anything is recorded or committed", async (t) => {
+    const own = { "write pkg": { done: true, summary: "w", changed: ["/r/src/a.js", "/r/src/n.js"], unverified: [] }, "status write pkg": { ok: true, paths: ["src/a.js", "src/n.js"] } };
+    const r = await run({ answers: { ...own, "claim more write pkg": { ok: true, conflicts: [] } } });
+    t.eq(r.out.stoppedAt, "claim more (the answer has no others list)", "the missing list stops the run");
+    t.eq(r.of(/^commit /).length, 0, "nothing was committed");
+    t.ok(r.out.claimAdded === undefined, "the claim record did not grow");
+    const ok = await run({ answers: { ...own, "claim more write pkg": { ok: true, conflicts: [], others: [] } } });
+    t.eq(ok.out.approved, true, "an empty list is a valid answer");
+  });
+
+  scenario("code-package-review-ids-never-reused", "a new finding gets an id above every id of every round, so it never merges into a closed finding", async (t) => {
+    const r = await run({
+      reviews: [
+        bad(imp("F1", "src/a.js", "one"), imp("F2", "src/a.js", "two")),
+        bad(imp("F1", "src/a.js", "one")),
+        bad(imp("F3", "src/a.js", "a different defect")),
+      ],
+    });
+    const p3 = r.of(/^review 3$/)[0].prompt;
+    t.ok(p3.includes("number it on after F2"), "round 3 is told to number above F2, the highest id of round 1");
+    t.ok(p3.includes('"F2 src/a.js"'), "round 3 gets the ids used so far with their locations");
+    t.eq(r.out.stoppedAt, "review went deeper", "the new defect in the same file is deeper, not a repeat");
+    t.eq(r.out.boundary.map((b) => b.id), ["F3"], "it is listed for the lead");
+  });
+
+  scenario("code-package-focused-review-goes-deeper", "a focused nit-fix review that reports a new important finding, with no earlier important one open, stops as deeper", async (t) => {
+    const r = await run({
+      args: { closeShouldFix: true },
+      reviews: [{ verdict: "approved", summary: "s", findings: ["F1 nit src/a.js: naming"] }, bad(imp("F2", "src/b.js", "regression"))],
+    });
+    t.eq(r.out.stoppedAt, "review went deeper", "the boundary rule applies to the focused round");
+    t.eq(r.of(/^review /).length, 2, "no third review");
+    t.eq(r.out.boundary.map((b) => b.id), ["F2"], "the new important finding is for the lead");
+    t.eq(r.of(/^close \d+$/).length, 1, "the writer closed only the nit");
+  });
 }
