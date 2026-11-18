@@ -10,6 +10,7 @@
 use crate::args::{self, is_protected, Args};
 use crate::checks;
 use crate::claims;
+use crate::executor;
 use crate::gateway;
 use crate::git::Git;
 use crate::journal::Journal;
@@ -641,6 +642,13 @@ impl Run {
         if let Some(d) = self.done(step) {
             return Ok(d);
         }
+        let exec = match executor::for_pick(&self.cfg, pick) {
+            Ok(e) => e,
+            Err(why) => {
+                self.halt_infra(step, format!("infrastructure at {step}"), why);
+                return Err(Halt);
+            }
+        };
         let base = gateway::base_key(&self.id, step, attempt);
         let intents: Vec<Value> = self.journal.all("intent", step, attempt).into_iter().cloned().collect();
         // `fresh`: the intent of `key` was recorded by this process, so its job cannot have been submitted before.
@@ -660,14 +668,14 @@ impl Run {
                     self.out.insert("next".into(), json!(format!("The request of {step} is {} KB with its required attachments, over the gateway's {} KB: split the package or claim fewer files. Nothing was submitted.", prompt.len() / 1024, LIMIT_PROMPT / 1024)));
                     return Err(Halt);
                 }
-                let role = gateway::role(&self.cfg, role_name, pick, schema);
+                let role = exec.role(role_name, pick, schema);
                 let role = self.infra(step, role)?;
                 let stored = json!({ "role": role, "prompt": prompt });
                 let file = format!("requests/{}.json", gateway::slug(&base));
                 let w = self.journal.write_value(&file, &stored);
                 self.infra(step, w)?;
                 let digest = sha256_hex(stored.to_string());
-                let r = self.record_intent(step, round, "gateway job", &digest, json!({ "key": base, "request": file, "role": role_name, "model": pick.model, "effort": pick.effort }));
+                let r = self.record_intent(step, round, "gateway job", &digest, json!({ "key": base, "request": file, "role": role_name, "model": pick.model, "effort": pick.effort, "executor": exec.name() }));
                 self.infra(step, r)?;
                 (base.clone(), stored, true)
             }
@@ -675,13 +683,12 @@ impl Run {
         let mut retries = intents.len().saturating_sub(1) as u32;
         loop {
             if fresh {
-                let req = gateway::request(&key, &stored["role"], stored["prompt"].as_str().unwrap_or(""));
-                let sub = job::submit(&self.cfg, &req, true);
-                let (_, created) = self.infra(step, sub)?;
+                let sub = exec.submit(&key, &stored);
+                let created = self.infra(step, sub)?;
                 cut(&format!("submit {step}"));
                 let r = self.journal.append(json!({ "kind": "submitted", "step": step, "attempt": attempt, "key": key, "created": created }));
                 self.infra(step, r)?;
-            } else if !gateway::exists(&self.cfg, &key) {
+            } else if !exec.exists(&key) {
                 // A key of an earlier process is never submitted again (a submission can create a job): its job is
                 // looked up and waited for. Without its folder nothing proves that the job never ran (a cleaned or
                 // swept folder looks the same), so it is not asked again by itself.
@@ -691,7 +698,7 @@ impl Run {
                 return Err(Halt);
             }
             // Waiting only reads the job: a folder removed meanwhile is an error here and an unknown outcome on resume.
-            let waited = gateway::wait_final(&self.cfg, &key);
+            let waited = exec.wait_final(&key);
             let fin = self.infra(step, waited)?;
             let status = fin["status"].as_str().unwrap_or("").to_string();
             if status == "succeeded" {
@@ -708,12 +715,12 @@ impl Run {
                 self.halt_infra(step, format!("unknown outcome at {step}"), format!("job {key}: {}", fin["error"].as_str().unwrap_or("unknown")));
                 return Err(Halt);
             }
-            if gateway::died_before_turn(&fin) && retries < 2 {
+            if exec.died_before_turn(&fin) && retries < 2 {
                 retries += 1;
                 key = format!("{base}-r{}", retries + 1);
                 let file = format!("requests/{}.json", gateway::slug(&base));
                 let digest = sha256_hex(stored.to_string());
-                let r = self.record_intent(step, round, "gateway job", &digest, json!({ "key": key, "request": file, "after": gateway::summary(&fin) }));
+                let r = self.record_intent(step, round, "gateway job", &digest, json!({ "key": key, "request": file, "after": gateway::summary(&fin), "executor": exec.name() }));
                 self.infra(step, r)?;
                 fresh = true;
                 continue;

@@ -223,3 +223,11 @@ command and a REVIEW.md):
 - F16 (important), src/code_package.rs: Direct command strings are gone from the prompt templates, but the engine truncates raw logs before sanitizing them and forwards whatever the marker list does not recognize.
 - F20 (important), src/checks.rs: Failure to create a log or launch bash returns a null exit code as an ordinary check failure rather than an infrastructure stop.
 - F13 (nit), src/code_package.rs: The release CLI still honors inherited ZODCHI_FLOW_CUT, now including the result boundary.
+
+## Model steps through a server
+
+Not in this version yet.
+
+## Claude as an executor
+
+Not in this version yet.
