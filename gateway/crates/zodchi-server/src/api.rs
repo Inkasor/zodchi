@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use zodchi_core::appserver::image_type;
 use zodchi_core::config::Config;
 use zodchi_core::job::{self, compose_prompt, is_terminal, read_job, Request, LIMIT_IMAGES, LIMIT_IMAGE_BYTES, LIMIT_PROMPT};
-use zodchi_core::role::{load_role, roles, Overrides};
+use zodchi_core::role::{check_role, load_role, roles, Overrides, LIMIT_SCHEMA};
 use zodchi_core::util::{fail, is_key, is_role_name, is_user_id, pretty, sha256_hex, GatewayError, Result};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -131,7 +131,37 @@ fn refused_field(name: &str) -> Option<&'static str> {
     })
 }
 
-const FIELDS: [&str; 8] = ["key", "role", "prompt", "images", "model", "effort", "timeoutMin", "credits"];
+const FIELDS: [&str; 9] = ["key", "role", "prompt", "images", "model", "effort", "timeoutMin", "credits", "schema"];
+
+/// The deepest nesting of a `schema` sent with a job.
+const MAX_SCHEMA_DEPTH: usize = 32;
+
+/// The optional `schema` of a job: the output schema the caller's answer must follow, used in place of the role's own
+/// (a workflow of the caller's version sends the schema of that version). A JSON Schema of an object, at most
+/// `LIMIT_SCHEMA` bytes and `MAX_SCHEMA_DEPTH` levels deep; the role check then confirms that the role is a text role.
+fn check_schema(schema: &Value) -> std::result::Result<(), String> {
+    fn depth(v: &Value) -> usize {
+        match v {
+            Value::Object(m) => 1 + m.values().map(depth).max().unwrap_or(0),
+            Value::Array(a) => 1 + a.iter().map(depth).max().unwrap_or(0),
+            _ => 0,
+        }
+    }
+    let Value::Object(map) = schema else { return Err("schema is a JSON Schema: a JSON object.".into()) };
+    if schema.to_string().len() > LIMIT_SCHEMA {
+        return Err(format!("schema is larger than {} KB.", LIMIT_SCHEMA / 1024));
+    }
+    if depth(schema) > MAX_SCHEMA_DEPTH {
+        return Err(format!("schema is nested deeper than {MAX_SCHEMA_DEPTH} levels."));
+    }
+    if map.get("type").and_then(Value::as_str) != Some("object") {
+        return Err("schema describes a JSON object: its \"type\" is \"object\".".into());
+    }
+    if map.get("properties").is_some_and(|p| !p.is_object()) || map.get("required").is_some_and(|r| !r.as_array().is_some_and(|a| a.iter().all(Value::is_string))) {
+        return Err("schema: \"properties\" is an object and \"required\" a list of names.".into());
+    }
+    Ok(())
+}
 
 /// The client's request, checked, with its fingerprint.
 struct JobRequest {
@@ -141,6 +171,8 @@ struct JobRequest {
     images: Vec<Vec<u8>>,
     overrides: Overrides,
     credits: bool,
+    /// The output schema sent with the request, used in place of the role's (checked by `check_schema`).
+    schema: Option<Value>,
     fingerprint: String,
 }
 
@@ -220,12 +252,23 @@ fn job_request(body: &[u8]) -> std::result::Result<JobRequest, String> {
         Some(Value::Bool(b)) => *b,
         Some(_) => return Err("credits is true or false.".into()),
     };
+    let schema = match map.get("schema") {
+        None | Some(Value::Null) => None,
+        Some(value) => {
+            check_schema(value)?;
+            Some(value.clone())
+        }
+    };
     // The fingerprint is the canonical client request, so a later change of the installed role does not turn a
-    // repeat of the same request into a conflict.
-    let canonical = json!({ "role": role, "prompt": prompt, "images": image_hashes, "model": model, "effort": effort,
+    // repeat of the same request into a conflict. A schema enters it by its hash, and only when it is sent, so the
+    // fingerprint of a request without one is what it always was.
+    let mut canonical = json!({ "role": role, "prompt": prompt, "images": image_hashes, "model": model, "effort": effort,
         "timeoutMin": timeout_min.map(zodchi_core::role::js_number), "credits": credits });
+    if let Some(s) = &schema {
+        canonical["schema"] = json!(sha256_hex(s.to_string()));
+    }
     let fingerprint = format!("client:{}", sha256_hex(canonical.to_string()));
-    Ok(JobRequest { key, role, prompt, images, overrides: Overrides { model, effort, timeout_min, questions: None }, credits, fingerprint })
+    Ok(JobRequest { key, role, prompt, images, overrides: Overrides { model, effort, timeout_min, questions: None }, credits, schema, fingerprint })
 }
 
 fn query_value<'a>(query: &'a str, name: &str) -> Option<&'a str> {
@@ -456,6 +499,16 @@ impl App {
             if role.get("mode").and_then(Value::as_str) == Some("work") {
                 return Reply::public(&PublicError::new(400, "role_not_allowed", format!("Role {} works in a repository; the server has no repository of the caller to work in.", req.role)).field("role"));
             }
+            // The schema sent replaces the role's; the role check confirms it fits the role (a text role only).
+            let mut role = role;
+            if let Some(schema) = &req.schema {
+                role["outputSchema"] = schema.clone();
+                if let Err(e) = check_role(&role) {
+                    let public = format!("schema is not accepted for role {}: only a text role answers by a schema.", req.role);
+                    log(&public, &e.0);
+                    return Reply::public(&PublicError::new(400, "bad_request", public).field("schema"));
+                }
+            }
             let (mine, all) = match self.unfinished(&who.id) {
                 Ok(counts) => counts,
                 // The reason names folders of the data root: it is logged, the caller learns only that the key is free.
@@ -685,4 +738,49 @@ pub fn serve_until(opts: &Options, auth: Box<dyn Authenticator>, ready: &dyn Fn(
     drop(http);
     drop(_lock);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(body: Value) -> std::result::Result<JobRequest, String> {
+        job_request(body.to_string().as_bytes())
+    }
+
+    #[test]
+    fn a_request_without_schema_keeps_its_fingerprint() {
+        let req = request(json!({ "key": "k1", "role": "ask", "prompt": "hello" })).expect("accepted");
+        let canonical = json!({ "role": "ask", "prompt": "hello", "images": Vec::<String>::new(), "model": null, "effort": null,
+            "timeoutMin": null, "credits": false });
+        assert_eq!(req.fingerprint, format!("client:{}", sha256_hex(canonical.to_string())));
+        assert!(req.schema.is_none());
+    }
+
+    #[test]
+    fn a_schema_is_accepted_and_enters_the_fingerprint() {
+        let schema = json!({ "type": "object", "properties": { "a": { "type": "string" } }, "required": ["a"], "additionalProperties": false });
+        let plain = request(json!({ "key": "k1", "role": "ask", "prompt": "hello" })).expect("plain");
+        let with = request(json!({ "key": "k1", "role": "ask", "prompt": "hello", "schema": schema })).expect("with schema");
+        let other = request(json!({ "key": "k1", "role": "ask", "prompt": "hello", "schema": { "type": "object" } })).expect("other schema");
+        assert_eq!(with.schema.as_ref(), Some(&schema));
+        assert_ne!(plain.fingerprint, with.fingerprint);
+        assert_ne!(with.fingerprint, other.fingerprint);
+        let again = request(json!({ "key": "k1", "role": "ask", "prompt": "hello", "schema": schema })).expect("again");
+        assert_eq!(with.fingerprint, again.fingerprint);
+    }
+
+    #[test]
+    fn a_wrong_schema_is_refused() {
+        let refused = |schema: Value| request(json!({ "key": "k1", "role": "ask", "prompt": "hello", "schema": schema })).err().expect("refused");
+        assert!(refused(json!("text")).contains("JSON object"));
+        assert!(refused(json!({ "type": "string" })).contains("\"object\""));
+        assert!(refused(json!({ "type": "object", "properties": [] })).contains("properties"));
+        assert!(refused(json!({ "type": "object", "description": "x".repeat(LIMIT_SCHEMA) })).contains("KB"));
+        let mut deep = json!({ "type": "string" });
+        for _ in 0..40 {
+            deep = json!({ "type": "object", "properties": { "a": deep } });
+        }
+        assert!(refused(deep).contains("deeper"));
+    }
 }
