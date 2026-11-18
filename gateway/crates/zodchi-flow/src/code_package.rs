@@ -134,8 +134,14 @@ pub fn start(raw: &Value) -> Result<Exit> {
     let Ok(brief) = std::fs::read_to_string(&args.brief) else {
         return Ok(refused(&label, format!("Cannot read the brief {}", args.brief)));
     };
-    let top = git.run(&["rev-parse", "--show-toplevel"]).ok().and_then(|t| claims::norm(t.trim()).ok());
-    if top.as_deref().map(|t| claims::fold(&args.repo_norm, t)) != Some(claims::fold(&args.repo_norm, &args.repo_norm)) {
+    let top_raw = git.run(&["rev-parse", "--show-toplevel"]).ok();
+    let top = top_raw.as_deref().and_then(|t| claims::norm(t.trim()).ok());
+    // The same folder can have two spellings: a short 8.3 name on Windows (RUNNER~1), a linked /var on macOS
+    // (/private/var). Compare the canonical paths when the spelled ones differ.
+    let same_canonical = top_raw.as_deref().is_some_and(|t| {
+        match (std::fs::canonicalize(t.trim()), std::fs::canonicalize(&repo)) { (Ok(a), Ok(b)) => a == b, _ => false }
+    });
+    if !same_canonical && top.as_deref().map(|t| claims::fold(&args.repo_norm, t)) != Some(claims::fold(&args.repo_norm, &args.repo_norm)) {
         return Ok(refused(&label, format!("{} is not the top folder of a Git work tree: code-package reads the protected checks and REVIEW.md from the base commit.", args.repo)));
     }
     let Ok(base) = git.rev("HEAD^{commit}") else {
