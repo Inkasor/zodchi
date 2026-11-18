@@ -18,6 +18,8 @@ Run it inside the repository the call is for: jobs are stored in its .agent-tmp/
   roles    the roles a call from this repository can name
   check    open the thread of a role and print its sandbox and MCP servers (no model call)
   account  every subscription in ~/.zodchi/accounts.json: sign-in, limits, credits (no model call)
+  flow     run a workflow as code: zodchi flow code-package --args <file.json> [--resume <run-id>]
+           (docs/flow.md; exit 0 approved, 2 any other end, 1 a wrong call)
 
 Job options (run, submit):
   --role <name|file.json>  what the call is: kind, mode, model, effort, frame, schema, tools
@@ -154,6 +156,11 @@ fn main_inner(args: Vec<String>) -> Result<u8> {
         println!("{USAGE}");
         return Ok(0);
     };
+    if command == "flow" {
+        let exit = zodchi_flow::cli(&args[1..])?;
+        print(&exit.result);
+        return Ok(exit.code);
+    }
     let o = parse(&args[1..])?;
     let root = o.get("root").map(PathBuf::from);
     let cfg = Config::new(root.as_deref())?;

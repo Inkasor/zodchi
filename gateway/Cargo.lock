@@ -399,6 +399,7 @@ version = "1.0.0-dev"
 dependencies = [
  "serde_json",
  "zodchi-core",
+ "zodchi-flow",
 ]
 
 [[package]]
@@ -411,6 +412,15 @@ dependencies = [
  "serde_json",
  "sha2",
  "time",
+]
+
+[[package]]
+name = "zodchi-flow"
+version = "1.0.0-dev"
+dependencies = [
+ "rand",
+ "serde_json",
+ "zodchi-core",
 ]
 
 [[package]]

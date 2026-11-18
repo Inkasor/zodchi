@@ -1,0 +1,80 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Independent review of one finished code package",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "verdict",
+    "summary",
+    "findings",
+    "notVerified"
+  ],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "approved",
+        "changes_requested",
+        "blocked"
+      ],
+      "description": "approved: no important finding is open (nit and pre-existing findings do not block); changes_requested: at least one important finding; blocked: the package cannot be judged from what the request holds"
+    },
+    "summary": {
+      "type": "string",
+      "description": "Two to four sentences: what was compared with what, and the outcome"
+    },
+    "findings": {
+      "type": "array",
+      "description": "Empty when nothing was found. Style remarks only when they hide a behavioural risk",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "severity",
+          "location",
+          "problem",
+          "consequence",
+          "fix"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "F1, F2 ... stable across follow-up rounds"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "important",
+              "nit",
+              "pre-existing"
+            ],
+            "description": "important: a real defect the change brings in, it blocks approval; nit: worth fixing, does not block; pre-existing: it was there before the change, does not block"
+          },
+          "location": {
+            "type": "string",
+            "description": "file:line or a symbol"
+          },
+          "problem": {
+            "type": "string"
+          },
+          "consequence": {
+            "type": "string",
+            "description": "What goes wrong at runtime or for a consumer"
+          },
+          "fix": {
+            "type": "string",
+            "description": "The smallest change that closes it"
+          }
+        }
+      }
+    },
+    "notVerified": {
+      "type": "array",
+      "description": "What could not be judged from the request: name the missing file and what it would settle",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

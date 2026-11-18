@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "A structured patch of one code package (zodchi flow code-package v1)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "changes", "unverified", "questions"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["done", "blocked"],
+      "description": "done: the changes do the task; blocked: the task cannot be done from what the request holds (say why in summary and questions)"
+    },
+    "summary": { "type": "string", "description": "What the changes do and why, in a few sentences" },
+    "changes": {
+      "type": "array",
+      "description": "Every file change, each path once. Empty when nothing needs to change (a finding answered instead of fixed)",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["op", "path", "from", "baseBlob", "content"],
+        "properties": {
+          "op": { "type": "string", "enum": ["create", "modify", "delete", "rename"] },
+          "path": { "type": "string", "description": "Path relative to the repository root, with forward slashes; for rename the new path" },
+          "from": { "type": ["string", "null"], "description": "rename: the old path; null otherwise" },
+          "baseBlob": { "type": ["string", "null"], "description": "The blob id the request gave for the file this change was written against (modify, delete, rename: of the old path); null for create" },
+          "content": { "type": ["string", "null"], "description": "create and modify: the whole new content of the file; rename: the whole new content, or null to keep it; delete: null" }
+        }
+      }
+    },
+    "unverified": { "type": "array", "items": { "type": "string" }, "description": "What you could not be sure of from the request alone" },
+    "questions": { "type": "array", "items": { "type": "string" }, "description": "Open questions for the lead, each one line: the question, its options and your recommendation" }
+  }
+}

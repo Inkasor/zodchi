@@ -12,4 +12,5 @@ path = "src/main.rs"
 
 [dependencies]
 zodchi-core = { path = "../zodchi-core" }
+zodchi-flow = { path = "../zodchi-flow" }
 serde_json.workspace = true

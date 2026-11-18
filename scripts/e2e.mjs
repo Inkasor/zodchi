@@ -27,6 +27,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const FAKE = path.join(ROOT, "scripts", "e2e", "fake-codex.mjs");
+const FAKE_FLOW = path.join(ROOT, "scripts", "e2e", "fake-codex-flow.mjs");
 const WIN = process.platform === "win32";
 const EXE = WIN ? ".exe" : "";
 const ZODCHI = path.join(ROOT, "gateway", "target", "release", "zodchi" + EXE);
@@ -1065,6 +1066,193 @@ scenario("server-stop", "POSIX: SIGTERM stops the server: a sign-in whose start 
   const next = await serve(t, w, data);
   t.eq((await call(t, next, "GET", "/health")).status, 200, "the lock is free: a new server starts");
 }, "posix");
+
+// ---------------------------------------------------------------------------------------------------------------
+// zodchi flow code-package: the engine against scripts/e2e/fake-codex-flow.mjs, which answers each model turn by its
+// step from fake-flow/<step>.json, on a throwaway fixture repository (a clamp stub, its test, a smoke command and a
+// REVIEW.md). The roles are those of this repository; the role table names two distinct fake Codex models.
+
+const gitOut = (r, args, input) => {
+  const res = spawnSync("git", ["-C", r, ...args], { encoding: "utf8", input });
+  return (res.stdout || "").trim();
+};
+const STUB = "export const clamp = (x, lo, hi) => x;\n";
+const FIXED = "export const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));\n";
+const CLOSED = "// clamp keeps x between lo and hi.\nexport const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));\n";
+const blobOf = (r, text) => gitOut(r, ["hash-object", "--no-filters", "--stdin"], text);
+
+function flowWorld(t, name) {
+  const w = world(name);
+  w.env = { ...w.env, ZODCHI_CODEX_BIN: FAKE_FLOW, ZODCHI_ROLES: path.join(ROOT, "roles") };
+  delete w.env.ZODCHI_FLOW_CUT;
+  // The first writer is Claude (skipped: not an executor of this version); the first reviewer is the writer's model
+  // (skipped: not independent).
+  fs.writeFileSync(path.join(w.zhome, "models.json"), JSON.stringify({ version: 1, roles: {
+    expertWriter: { candidates: [{ provider: "claude", model: "opus", effort: "high" }, { provider: "codex", model: "fake-writer", effort: "medium" }] },
+    reviewer: { candidates: [{ provider: "codex", model: "fake-writer", effort: "medium" }, { provider: "codex", model: "fake-reviewer", effort: "high" }] },
+  } }));
+  const r = repo(t, w);
+  const put = (rel, text) => { fs.mkdirSync(path.dirname(path.join(r, rel)), { recursive: true }); fs.writeFileSync(path.join(r, rel), text); };
+  put("src/math.mjs", STUB);
+  put("src/other.mjs", "export const other = 1;\n");
+  put("test/math.test.mjs", 'import { clamp } from "../src/math.mjs";\nif (clamp(5, 0, 3) !== 3 || clamp(-1, 0, 3) !== 0) { console.error("clamp is wrong"); process.exit(1); }\nconsole.log("clamp ok");\n');
+  put("smoke.mjs", 'import { clamp } from "./src/math.mjs";\nconsole.log("smoke", clamp(9, 1, 4));\nprocess.exit(process.argv.includes("--fail") ? 1 : 0);\n');
+  put("REVIEW.md", "# Review focus\n\nFlag:\n- A clamp that lets a value out of its range (REVIEW-BASE-MARKER).\n");
+  for (const args of [["config", "user.name", "Fixture"], ["config", "user.email", "fixture" + "@" + "example.org"], ["add", "-A"], ["commit", "-q", "-m", "baseline"]]) gitOut(r, args);
+  const base = gitOut(r, ["rev-parse", "HEAD"]);
+  t.ok(/^[0-9a-f]{40}$/.test(base), `the fixture has its baseline commit ${base}`);
+  const brief = path.join(w.dir, "brief.md");
+  fs.writeFileSync(brief, "# Brief: clamp\n\nMake clamp(x, lo, hi) keep x between lo and hi. Done: node test/math.test.mjs passes.\n");
+  const answer = (step, value) => {
+    fs.mkdirSync(path.join(w.codex, "fake-flow"), { recursive: true });
+    fs.writeFileSync(path.join(w.codex, "fake-flow", `${step.replace(/ /g, "-")}.json`), JSON.stringify(value));
+  };
+  const patch = (changes, summary = "clamp keeps x in range") => ({ status: "done", summary, changes, unverified: [], questions: [] });
+  const modify = (rel, from, content) => ({ op: "modify", path: rel, from: null, baseBlob: blobOf(r, from), content });
+  const review = (verdict, findings = []) => ({ verdict, summary: `review: ${verdict}`, findings, notVerified: [] });
+  const finding = (id) => ({ id, severity: "important", location: "src/math.mjs:1", problem: "no comment says what clamp keeps", consequence: "a reader guesses", fix: "add one line" });
+  const args = (extra = {}) => {
+    const file = path.join(w.dir, `args-${crypto.randomUUID()}.json`);
+    fs.writeFileSync(file, JSON.stringify({ label: "clamp", brief, repo: r, files: ["src/math.mjs"], checks: ["node test/math.test.mjs"], verify: ["node smoke.mjs"], ...extra }));
+    return file;
+  };
+  const flow = (argv, env = {}) => zodchi(t, w, ["flow", "code-package", ...argv], { cwd: r, env: { ...w.env, ...env } });
+  const steps = () => readJsonl(path.join(w.codex, "fake-turns.jsonl")).map((x) => x.step);
+  const claim = () => {
+    const dir = path.join(w.home, ".zodchi", "packages");
+    const [folder] = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+    const file = folder && path.join(dir, folder, "clamp.json");
+    return file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null;
+  };
+  const commits = () => gitOut(r, ["rev-list", `${base}..HEAD`]).split("\n").filter(Boolean);
+  return { w, r, base, brief, answer, patch, modify, review, finding, args, flow, steps, claim, commits };
+}
+
+scenario("flow-approve", "zodchi flow code-package to approval: the patch is applied, the cheap check runs before verify on an exported tree, one commit with a Verified stamp of real exit codes, the review carries the base REVIEW.md", async (t) => {
+  const f = flowWorld(t, "flow-approve");
+  f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
+  f.answer("review 1", f.review("approved"));
+  const res = await f.flow(["--args", f.args()]);
+  t.eq([res.code, res.json && res.json.verdict, res.json && res.json.approved], [0, "approved", true], "the run ends approved, exit 0");
+  t.eq([res.json.rounds.length, res.json.verifiedBy, res.json.openFindings], [1, "args.verify", []], "one round, verified by args.verify, nothing open");
+  t.eq([res.json.models.expertWriter.model, res.json.models.reviewer.model], ["fake-writer", "fake-reviewer"], "the pair: distinct Codex models, pinned");
+  t.ok(res.json.skipped.some((s) => /claude\/opus: Claude is not an executor/.test(s)) && res.json.skipped.some((s) => /fake-writer: the same model as the writer/.test(s)), "skipped candidates are recorded with their reasons");
+  const ev = res.json.verification.evidence;
+  t.eq(ev.map((e) => [e.source, e.exitCode]), [["checks", 0], ["args.verify", 0]], "the cheap check ran first, then verify, each with its real exit code");
+  t.ok(ev.every((e) => fs.existsSync(e.log) && fs.readFileSync(e.log, "utf8").trim()), "each command has a non-empty log");
+  t.ok(ev.every((e) => !samePath(path.dirname(e.log), f.r) && !e.log.toLowerCase().startsWith(path.resolve(f.r).toLowerCase())), "the logs are outside the checkout");
+  t.eq(f.commits().length, 1, "one commit on top of the base");
+  const message = gitOut(f.r, ["log", "-1", "--format=%B"]);
+  t.ok(message.startsWith("clamp: round 1") && message.includes("Verified: checks exit 0; args.verify exit 0"), "the commit message carries the stamp");
+  t.ok(!/node |smoke|math\.test/.test(message), "the stamp names sources and exit codes, never a command");
+  t.eq(gitOut(f.r, ["show", "--name-only", "--format=", "HEAD"]).split("\n"), ["src/math.mjs"], "the commit holds the claimed file only");
+  t.eq(fs.readFileSync(path.join(f.r, "src", "math.mjs"), "utf8"), FIXED, "the work tree holds the patch");
+  t.eq(gitOut(f.r, ["status", "--porcelain"]), "", "the work tree is clean after the commit");
+  t.eq(f.steps(), ["write", "review 1"], "the writer and the reviewer each ran once");
+  const reviewTurn = readJsonl(path.join(f.w.codex, "fake-turns.jsonl")).find((x) => x.step === "review 1");
+  t.ok(reviewTurn.prompt.includes("REVIEW-BASE-MARKER") && reviewTurn.prompt.includes('<attachment path="REVIEW.base.md">'), "the review carries REVIEW.md of the base commit");
+  t.ok(reviewTurn.prompt.includes('<attachment path="change.diff">') && reviewTurn.prompt.includes("Math.max(lo, x)"), "the review carries the diff");
+  t.eq(f.claim().status, "done", "the claim is closed as done");
+  const again = await f.flow(["--resume", res.json.runId]);
+  t.eq([again.code, again.json.verdict, again.json.rounds.length], [0, "approved", 1], "resuming a finished run returns its result");
+  t.eq(f.steps().length, 2, "and runs nothing");
+});
+
+scenario("flow-close-round", "a review asks for a change: the writer closes it, the new round is checked, committed and approved by a second review that sees the first", async (t) => {
+  const f = flowWorld(t, "flow-close-round");
+  f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
+  f.answer("review 1", f.review("changes_requested", [f.finding("F1")]));
+  f.answer("close 1", f.patch([f.modify("src/math.mjs", FIXED, CLOSED)], "comment added"));
+  f.answer("review 2", f.review("approved"));
+  const res = await f.flow(["--args", f.args()]);
+  t.eq([res.code, res.json.verdict, res.json.rounds.length], [0, "approved", 2], "approved in the second round");
+  t.eq(res.json.rounds.map((x) => x.verdict), ["changes_requested", "approved"], "round verdicts");
+  t.ok(/F1 important src\/math\.mjs:1/.test(res.json.rounds[0].review.findings[0]), "the finding is read with its severity");
+  t.eq(gitOut(f.r, ["log", "--format=%s", `${f.base}..HEAD`]).split("\n"), ["clamp: round 2", "clamp: round 1"], "one commit per round");
+  t.eq(fs.readFileSync(path.join(f.r, "src", "math.mjs"), "utf8"), CLOSED, "the close round's patch is in place");
+  const close = readJsonl(path.join(f.w.codex, "fake-turns.jsonl")).find((x) => x.step === "close 1");
+  t.ok(close.prompt.includes("F1 important") && close.prompt.includes('<attachment path="review-1.json">'), "the writer got the finding and the review");
+  const second = readJsonl(path.join(f.w.codex, "fake-turns.jsonl")).find((x) => x.step === "review 2");
+  t.ok(second.prompt.includes('<attachment path="review-1.json">'), "the second review sees the first");
+  t.eq(f.steps(), ["write", "review 1", "close 1", "review 2"], "each step ran once");
+});
+
+scenario("flow-round-exhaustion", "important findings in every review: the run stops by the rounds rule, the findings stay open, the claim is closed as stopped", async (t) => {
+  const f = flowWorld(t, "flow-round-exhaustion");
+  f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
+  f.answer("review 1", f.review("changes_requested", [f.finding("F1")]));
+  f.answer("close 1", f.patch([f.modify("src/math.mjs", FIXED, CLOSED)], "comment added"));
+  f.answer("review 2", f.review("changes_requested", [f.finding("F1")]));
+  const res = await f.flow(["--args", f.args({ rounds: 2 })]);
+  t.eq([res.code, res.json.verdict, res.json.approved], [2, "changes_requested", undefined], "not approved, exit 2");
+  t.eq(res.json.stoppedAt, "stop rule: 2 review rounds without approval", "stopped by the rounds rule");
+  t.ok(res.json.openFindings.length === 1 && /^F1 important/.test(res.json.openFindings[0]), "the finding stays open");
+  t.ok(/after 2 rounds/.test(res.json.question), "the question goes back to a human");
+  t.eq(f.commits().length, 2, "both rounds were committed");
+  t.eq(f.claim().status, "stopped", "the claim is closed as stopped");
+  t.eq(f.steps().filter((s) => s.startsWith("close")), ["close 1"], "no close after the last round");
+});
+
+scenario("flow-outside-claim", "unsupported options are refused before any claim; a patch that touches a file outside the claim is refused whole: nothing applied, committed or reviewed", async (t) => {
+  const f = flowWorld(t, "flow-outside-claim");
+  const branch = await f.flow(["--args", f.args({ branch: "elsewhere" })]);
+  t.ok(branch.code === 2 && /args\.branch is not supported/.test(branch.json.refused), "an unsupported option is refused");
+  const pass = await f.flow(["--args", f.args({ checks: [{ cmd: "node test/math.test.mjs", pass: "prints ok" }] })]);
+  t.ok(pass.code === 2 && /exit code only/.test(pass.json.refused), "a pass rule in words is refused");
+  t.ok(f.claim() === null && f.steps().length === 0, "neither claimed anything nor called a model");
+  f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED), f.modify("src/other.mjs", "export const other = 1;\n", "export const other = 2;\n")]));
+  const res = await f.flow(["--args", f.args()]);
+  t.eq([res.code, res.json.stoppedAt], [2, "patch outside the claim at apply write"], "the patch is refused");
+  t.eq(res.json.outsideClaim, ["src/other.mjs"], "the result names the file outside the claim");
+  t.eq([fs.readFileSync(path.join(f.r, "src", "math.mjs"), "utf8"), fs.readFileSync(path.join(f.r, "src", "other.mjs"), "utf8")], [STUB, "export const other = 1;\n"], "nothing of it was applied");
+  t.eq([f.commits().length, f.steps()], [0, ["write"]], "no commit, no review");
+  t.eq(f.claim().status, "stopped", "the claim is closed as stopped");
+});
+
+scenario("flow-protected", "a patch that edits an existing test stops the package before review; nothing applied", async (t) => {
+  const f = flowWorld(t, "flow-protected");
+  const test = fs.readFileSync(path.join(f.r, "test", "math.test.mjs"), "utf8");
+  f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED), f.modify("test/math.test.mjs", test, 'console.log("clamp ok");\n')]));
+  const res = await f.flow(["--args", f.args({ files: ["src/math.mjs", "test/math.test.mjs"] })]);
+  t.eq([res.code, res.json.stoppedAt, res.json.protectedChanged], [2, "protected checks changed at apply write", ["test/math.test.mjs"]], "stopped before review with the protected file");
+  t.eq(fs.readFileSync(path.join(f.r, "test", "math.test.mjs"), "utf8"), test, "the test is unchanged");
+  t.eq([f.commits().length, f.steps()], [0, ["write"]], "no commit, no review");
+});
+
+scenario("flow-failing-verify", "the cheap check passes and verify fails: no commit, no review, verifiedBy none with both exit codes", async (t) => {
+  const f = flowWorld(t, "flow-failing-verify");
+  f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
+  const res = await f.flow(["--args", f.args({ verify: ["node smoke.mjs --fail"], fixes: 0 })]);
+  t.eq([res.code, res.json.stoppedAt, res.json.verifiedBy], [2, "checks (args.verify exit 1)", "none"], "stopped at the checks, not verified");
+  t.eq(res.json.verification.evidence.map((e) => [e.source, e.exitCode]), [["checks", 0], ["args.verify", 1]], "both ran in order with their real exit codes");
+  t.eq(res.json.verification.stamp, "Verified: none", "the stamp says nothing verified it");
+  t.ok(/smoke 4/.test(fs.readFileSync(res.json.verification.evidence[1].log, "utf8")), "the verify log holds the program's output");
+  t.eq([f.commits().length, f.steps()], [0, ["write"]], "no commit, no review");
+  t.eq(fs.readFileSync(path.join(f.r, "src", "math.mjs"), "utf8"), FIXED, "the work stays in the work tree");
+});
+
+scenario("flow-resume-cuts", "a cut right after the writer's gateway submission and one right after the commit: each --resume goes on from the journal with no duplicate model call and no second commit", async (t) => {
+  const f = flowWorld(t, "flow-resume-cuts");
+  f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
+  f.answer("review 1", f.review("approved"));
+  const first = await f.flow(["--args", f.args()], { ZODCHI_FLOW_CUT: "submit write" });
+  t.eq(first.code, 75, "cut after the submission of the write turn");
+  const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
+  t.ok(id, `the journal holds the run ${id}`);
+  t.eq(f.claim().status, "open", "the claim stays open across the cut");
+  const second = await f.flow(["--resume", id], { ZODCHI_FLOW_CUT: "commit 1" });
+  t.eq(second.code, 75, "cut after the commit of round 1");
+  t.eq(f.commits().length, 1, "the commit exists");
+  const third = await f.flow(["--resume", id]);
+  t.eq([third.code, third.json.verdict, third.json.runId], [0, "approved", id], "the resumed run ends approved");
+  t.eq(f.commits().length, 1, "still one commit: the interrupted commit was reconciled, not repeated");
+  t.eq(third.json.rounds[0].commit.commit, gitOut(f.r, ["rev-parse", "HEAD"]), "the receipt names that commit");
+  t.eq(f.steps(), ["write", "review 1"], "each model turn ran once");
+  const events = readJsonl(path.join(f.w.zhome, "flows", id, "events.jsonl"));
+  t.eq(events.filter((e) => e.kind === "intent" && e.step === "write").length, 1, "one intent for the write call: never resubmitted under a new key");
+  t.eq(events.filter((e) => e.kind === "intent" && e.step === "commit 1").length, 1, "one intent for the commit");
+  t.eq(f.claim().status, "done", "the claim is closed as done");
+});
 
 // ---------------------------------------------------------------------------------------------------------------
 // Main
