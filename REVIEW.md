@@ -34,6 +34,8 @@ workflow are our own agents, not attackers.
   finds it; an account binding by organization without a per-user id; directory flushes that Windows does not
   confirm; a path of another package re-checked after that package's claim closed.
 
+- nit (2026-11-18, the lead): the installer seeing the same Codex skill path in two letter cases on Windows.
+
 ## Severity
 `important` blocks. `nit` and `pre-existing` never block. When unsure whether something is important, ask: would
 the owner stop a release for it?
