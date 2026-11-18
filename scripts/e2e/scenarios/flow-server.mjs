@@ -17,12 +17,14 @@ export default function (h) {
 
   /** A flow world whose model steps go to a zodchi-server: its user (signed in for the fake unless `signedIn` is
    *  false), the server (its roles folder made by `roles(dir)`, default the roles of this repository), flow.json and
+   *  the token file. With `other`, a second user of the same server, signed in, whose token the scenario may put in
    *  the token file. */
-  async function serverWorld(t, name, { signedIn = true, roles = null, extra = [] } = {}) {
+  async function serverWorld(t, name, { signedIn = true, roles = null, extra = [], other = false } = {}) {
     const f = flowWorld(t, name);
     const data = path.join(f.w.dir, "server-data");
     const sw = roles ? { ...f.w, env: { ...f.w.env, ZODCHI_ROLES: roles(f.w.dir) } } : f.w;
     const u = await user(t, sw, data, "Flow user", signedIn);
+    const o = other ? await user(t, sw, data, "Other user", true) : null;
     const server = await serve(t, sw, data, extra);
     const tokenFile = path.join(f.w.dir, "flow-token");
     fs.writeFileSync(tokenFile, `${u.token}\n`);
@@ -46,7 +48,7 @@ export default function (h) {
       t.ok(!res.out.includes(u.token) && !res.err.includes(u.token), "the token is in no output of the run");
       t.ok(!gitOut(f.r, ["log", "-p", "--all"]).includes(u.token), "the token is in no commit");
     };
-    return { ...f, data, u, server, tokenFile, jobsDir, answer, steps, turn, jobs, request, runId, events, noToken };
+    return { ...f, data, u, o, server, tokenFile, jobsDir, answer, steps, turn, jobs, request, runId, events, noToken };
   }
 
   const schemaOf = (name) => JSON.parse(fs.readFileSync(path.join(ROOT, "gateway", "crates", "zodchi-flow", "flows", "code-package", "v1", name), "utf8"));
@@ -93,6 +95,43 @@ export default function (h) {
     const events = s.events(id);
     t.eq(events.filter((e) => e.kind === "intent" && e.step === "write").length, 1, "one intent for the write step");
     t.eq(events.filter((e) => e.kind === "submitted" && e.step === "write").length, 0, "the resumed run did not submit the write step again");
+    t.eq(s.commits().length, 1, "one commit");
+    s.noToken(res, id);
+  });
+
+  scenario("flow-server-resume-before-post", "the write step's intent is journaled and its POST /v1/jobs stores nothing, as a cut between the two leaves it: --resume posts the journaled request again under the same key, and only with the token of the account it was made for; the model is asked once", async (t) => {
+    const s = await serverWorld(t, "flow-server-resume-before-post", { other: true });
+    s.answer("write", s.patch([s.modify("src/math.mjs", STUB, FIXED)]));
+    s.answer("review 1", s.review("approved"));
+    // A file where the user's job folder belongs: the roles and the account read as usual, but the server cannot count
+    // the user's unfinished jobs, so it refuses the POST and stores nothing (the key stays free).
+    t.eq(s.jobs(), [], "the user has no job yet");
+    fs.rmSync(s.jobsDir, { recursive: true, force: true });
+    fs.mkdirSync(path.dirname(s.jobsDir), { recursive: true });
+    fs.writeFileSync(s.jobsDir, "not a folder");
+    const first = await s.flow(["--args", s.args()]);
+    t.eq([first.code, first.json && first.json.stoppedAt], [2, "infrastructure at write"], "the POST of the write step was refused: an infrastructure stop at write");
+    const id = s.runId();
+    const writeIntents = () => s.events(id).filter((e) => e.kind === "intent" && e.step === "write").length;
+    t.eq([writeIntents(), s.events(id).filter((e) => e.kind === "submitted").length], [1, 0], "the write step has its intent and no submitted record");
+    fs.rmSync(s.jobsDir, { force: true });
+    t.log("removed the file that held the user's job folder");
+    // Another person's token in the token file: that account does not know the key either, and the request is never
+    // posted under it.
+    fs.writeFileSync(s.tokenFile, `${s.o.token}\n`);
+    const foreign = await s.flow(["--resume", id]);
+    t.eq([foreign.code, foreign.json && foreign.json.stoppedAt], [2, "unknown outcome at write"], "with another account's token the resume stops with an unknown outcome");
+    t.ok(/not the one of the account the request was made for/.test(foreign.err), "it says the token is not the request's account");
+    const otherJobs = path.join(s.data, "users", s.o.id, "jobs");
+    t.eq([fs.existsSync(otherJobs) ? fs.readdirSync(otherJobs) : [], readJsonl(path.join(s.o.home, "fake-turns.jsonl")).length], [[], 0], "no job and no model turn under the other account");
+    fs.writeFileSync(s.tokenFile, `${s.u.token}\n`);
+    t.log("put the user's own token back");
+    const res = await s.flow(["--resume", id]);
+    t.eq([res.code, res.json && res.json.verdict, res.json && res.json.runId], [0, "approved", id], "the resumed run ends approved");
+    t.ok(res.err.includes(`did not know flow-${id}-write; its journaled request was posted again under the same key (a new job)`), "the journaled request of the write step was posted again under its own key");
+    t.eq(s.steps(), ["write", "review 1"], "each model turn ran once");
+    t.eq(s.jobs(), [`flow-${id}-review-1`, `flow-${id}-write`], "one job per step, under the journaled keys");
+    t.eq(writeIntents(), 1, "still one intent for the write step: no new key");
     t.eq(s.commits().length, 1, "one commit");
     s.noToken(res, id);
   });
