@@ -21,6 +21,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
+import crypto from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -389,6 +390,7 @@ scenario("cli-dead-worker", "a worker killed after its turn entered: a fresh loo
   t.eq([running.code, running.json.job.status], [3, "running"], "the job is running");
   const worker = running.json.job.workerPid;
   const codexPid = Number(fs.readFileSync(path.join(w.codex, "fake-entered-dead"), "utf8"));
+  t.ok(codexPid > 0 && alive(codexPid), `the Codex process ${codexPid} of the turn is alive`);
   t.ok(worker > 0 && alive(worker), `the worker ${worker} is alive`);
   process.kill(worker, "SIGKILL");
   t.log(`killed the worker ${worker}`);
@@ -469,7 +471,8 @@ scenario("cli-commands", "help, roles of this repository, the account and the ch
 });
 
 // A Windows job object around the submitting shell, as an agent's shell has: the worker must break away and live on.
-const JOB_OBJECT_PS1 = String.raw`param([string]$Zodchi, [string]$Repo, [string]$Prompt, [string]$Key, [int]$Breakaway)
+// With a sixth argument (a file), the shell and with it the job object stay open after the submit until that file exists.
+const JOB_OBJECT_PS1 = String.raw`param([string]$Zodchi, [string]$Repo, [string]$Prompt, [string]$Key, [int]$Breakaway, [string]$Wait = '')
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @"
 using System; using System.Runtime.InteropServices;
@@ -488,7 +491,8 @@ $inJob = $false
 if ($inJob) {
   $info = New-Object byte[] 144
   if (-not [ZJob]::QueryInformationJobObject([IntPtr]::Zero, 9, $info, 144, [IntPtr]::Zero)) { 'SKIP: the job object around this process cannot be read'; exit 0 }
-  if (([BitConverter]::ToUInt32($info, 16) -band 0x1800) -eq 0) { 'SKIP: the job object around this process forbids breakaway, so no worker can leave one here'; exit 0 }
+  # Only the survival case needs breakaway from the outer job object; the fallback case does not.
+  if ($Breakaway -eq 1 -and ([BitConverter]::ToUInt32($info, 16) -band 0x1800) -eq 0) { 'SKIP: the job object around this process forbids breakaway, so no worker can leave one here'; exit 0 }
 }
 $job = [ZJob]::CreateJobObjectW([IntPtr]::Zero, [IntPtr]::Zero)
 $info = New-Object byte[] 144
@@ -507,6 +511,13 @@ $start.UseShellExecute = $false
 $submit = [System.Diagnostics.Process]::Start($start)
 $submit.WaitForExit()
 "SUBMITTED $($submit.ExitCode)"
+if ($Wait) {
+  $deadline = (Get-Date).AddSeconds(60)
+  while (-not (Test-Path -LiteralPath $Wait)) {
+    if ((Get-Date) -gt $deadline) { 'TIMEOUT: the scenario never asked to close the job object'; exit 1 }
+    Start-Sleep -Milliseconds 25
+  }
+}
 # This process ends here; with it the last handle of the job object closes and everything still inside it is killed.
 `;
 
@@ -530,16 +541,32 @@ scenario("cli-worker-outlives-job-object", "Windows: the submitting shell runs i
   t.eq([done.code, done.json.job.status], [0, "succeeded"], "the job finished");
 }, "win32");
 
-scenario("cli-job-object-without-breakaway", "Windows: a job object that forbids breakaway does not make the submit fail; the worker starts inside it", async (t) => {
+scenario("cli-job-object-without-breakaway", "Windows: a job object that forbids breakaway does not make the submit fail; the worker starts inside it, runs the turn and dies when the job object closes", async (t) => {
   const w = world("cli-job-object-without-breakaway");
   const r = repo(t, w);
   const ps1 = path.join(w.dir, "job-object.ps1");
   fs.writeFileSync(ps1, JOB_OBJECT_PS1);
   const p = prompt(w, "jn.md", `no breakaway ${hold(t, w.codex, "jn")}\n`);
-  const ps = await run(t, "powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ps1, ZODCHI, r, p, "jn1", "0"], { cwd: w.dir, env: psEnv(w), label: "powershell" });
-  if (/^SKIP: /m.test(ps.out)) return { skip: ps.out.match(/^SKIP: (.*)$/m)[1].trim() };
-  t.ok(ps.code === 0 && /SUBMITTED 0/.test(ps.out), "the submit succeeds: the worker is started without breakaway");
-  t.ok(fs.existsSync(path.join(r, ".agent-tmp", "gateway", "jn1", "job.json")), "the job is stored");
+  const gate = path.join(w.dir, "close-the-job-object");
+  t.cleanups.push(() => fs.writeFileSync(gate, ""));
+  let ps = null;
+  const shell = run(t, "powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ps1, ZODCHI, r, p, "jn1", "0", gate], { cwd: w.dir, env: psEnv(w), label: "powershell" }).then((x) => (ps = x));
+  await t.until("the turn entered the fake, or the shell ended", () => entered(w.codex, "jn") || ps);
+  if (ps && /^SKIP: /m.test(ps.out)) return { skip: ps.out.match(/^SKIP: (.*)$/m)[1].trim() };
+  t.ok(!ps, "the turn entered while the shell and its job object are still open");
+  const running = await zodchi(t, w, ["job", "--key", "jn1"], { cwd: r });
+  const worker = running.json && running.json.job.workerPid;
+  t.ok(running.json && running.json.job.status === "running" && worker > 0 && alive(worker), `the worker ${worker} runs the turn`);
+  const codexPid = Number(fs.readFileSync(path.join(w.codex, "fake-entered-jn"), "utf8"));
+  t.ok(codexPid > 0 && alive(codexPid), `its Codex process ${codexPid} is alive`);
+  fs.writeFileSync(gate, "");
+  t.log("asked the shell to end, which closes its job object");
+  const ended = await shell;
+  t.ok(ended.code === 0 && /SUBMITTED 0/.test(ended.out), "the submit had succeeded: the worker was started without breakaway");
+  await t.until(`the worker ${worker} died with the job object`, () => !alive(worker), 10000);
+  await t.until(`its Codex process ${codexPid} died with it`, () => !alive(codexPid), 10000);
+  const settled = await zodchi(t, w, ["job", "--key", "jn1"], { cwd: r });
+  t.eq([settled.code, settled.json.job.status], [2, "unknown"], "a fresh look-up settles the job as unknown");
 }, "win32");
 
 scenario("server-auth", "the server's tokens: no token and a wrong one are refused, only hashes are stored, a new token or a removed user takes effect without a restart, one server per data folder", async (t) => {
@@ -547,8 +574,11 @@ scenario("server-auth", "the server's tokens: no token and a wrong one are refus
   const data = path.join(w.dir, "data");
   const a = await user(t, w, data, "Ada Lovelace");
   t.ok(a.id.startsWith("ada-lovelace"), `the id is made from the name (${a.id})`);
+  const sha256 = (token) => crypto.createHash("sha256").update(token).digest("hex");
+  const hashesOf = (id) => JSON.parse(fs.readFileSync(path.join(data, "server.json"), "utf8")).users.find((u) => u.id === id).tokenHashes;
   const registry = fs.readFileSync(path.join(data, "server.json"), "utf8");
   t.ok(!registry.includes(a.token), "server.json holds no token");
+  t.eq(hashesOf(a.id), [sha256(a.token)], "server.json holds the SHA-256 of the token in tokenHashes");
   const server = await serve(t, w, data);
   const health = await call(t, server, "GET", "/health");
   t.eq([health.status, health.json.ok], [200, true], "/health needs no token");
@@ -566,6 +596,8 @@ scenario("server-auth", "the server's tokens: no token and a wrong one are refus
   t.ok(second.code !== 0 && /server\.lock/.test(second.err), "a second server on the same data folder refuses to start");
 
   const renewed = await admin(t, w, data, ["user", "token", a.id]);
+  t.eq(hashesOf(a.id), [sha256(renewed.token)], "a new token replaces the stored hash with its own SHA-256");
+  t.ok(!fs.readFileSync(path.join(data, "server.json"), "utf8").includes(renewed.token), "and holds no token");
   t.eq((await call(t, server, "GET", "/v1/roles", { token: a.token })).status, 401, "the old token stops at once");
   t.eq((await call(t, server, "GET", "/v1/roles", { token: renewed.token })).status, 200, "the new token works without a restart");
   const listed = await admin(t, w, data, ["user", "list"]);
@@ -696,19 +728,33 @@ scenario("server-results", "every kind of result through HTTP, the refusals of t
   const stored = fs.readdirSync(path.join(data, "users", a.id, "jobs")).sort();
   t.eq(stored, ["fail-1", "json-1", "png-1", "text-1"], "nothing was stored for a refused request");
 
-  // The body limit: a body announced over 32 MB is refused before it is read.
-  const big = await new Promise((resolve, reject) => {
+  // The body limit, both ways a client can send a body: a length announced over 32 MB is refused before anything is
+  // read; a chunked body without a length is read and refused once its real bytes pass 32 MB. The chunked body is a
+  // valid job padded with spaces, so a broken limit would create the job big-1. Each request has a deadline.
+  const LIMIT_BODY = 32 * 1024 * 1024;
+  const oversized = (what, headers, body) => new Promise((resolve, reject) => {
     const [host, port] = [server.address.slice(0, server.address.lastIndexOf(":")), Number(server.address.slice(server.address.lastIndexOf(":") + 1))];
-    const req = http.request({ host, port, method: "POST", path: "/v1/jobs", agent: false, headers: { Authorization: `Bearer ${a.token}`, "Content-Type": "application/json", "Content-Length": 32 * 1024 * 1024 + 1, Connection: "close" } }, (res) => {
-      let s = "";
-      res.on("data", (d) => (s += d));
-      res.on("end", () => resolve({ status: res.statusCode, text: s }));
+    let answered = false;
+    const timer = setTimeout(() => req.destroy(new Error(`no answer to ${what} in 60 s`)), 60000);
+    const req = http.request({ host, port, method: "POST", path: "/v1/jobs", agent: false, headers: { Authorization: `Bearer ${a.token}`, "Content-Type": "application/json", Connection: "close", ...headers } }, (res) => {
+      let text = "";
+      answered = true;
+      res.on("data", (d) => (text += d));
+      res.on("end", () => { clearTimeout(timer); resolve({ status: res.statusCode, text }); });
     });
-    req.on("error", reject);
-    req.flushHeaders();
+    // The server may close the connection right after its answer; a write error after the answer is not a failure.
+    req.on("error", (e) => { if (!answered) { clearTimeout(timer); reject(e); } });
+    if (body) { for (let i = 0; i < body.length; i += 1024 * 1024) req.write(body.subarray(i, i + 1024 * 1024)); req.end(); } else req.flushHeaders();
   });
-  t.log(`> POST /v1/jobs with Content-Length 32 MB + 1\n  ${big.status} ${big.text}`);
-  t.ok(big.status === 400 && /32 MB/.test(big.text), "a body over 32 MB is refused");
+  const announced = await oversized("an announced length", { "Content-Length": LIMIT_BODY + 1 }, null);
+  t.log(`> POST /v1/jobs with Content-Length 32 MB + 1 and no body\n  ${announced.status} ${announced.text}`);
+  t.ok(announced.status === 400 && /32 MB/.test(announced.text), "a length announced over 32 MB is refused before the body is read");
+  const job = Buffer.from(JSON.stringify({ key: "big-1", role: "ask", prompt: "p" }));
+  const padded = Buffer.concat([job, Buffer.alloc(LIMIT_BODY + 1 - job.length, " ")]);
+  const chunked = await oversized("a chunked body", { "Transfer-Encoding": "chunked" }, padded);
+  t.log(`> POST /v1/jobs with a chunked body of 32 MB + 1 bytes (a valid job padded with spaces)\n  ${chunked.status} ${chunked.text}`);
+  t.ok(chunked.status === 400 && /32 MB/.test(chunked.text), "a chunked body whose bytes pass 32 MB is refused");
+  t.eq((await call(t, server, "GET", "/v1/jobs/big-1", { token: a.token })).status, 404, "no job was created from it");
 
   // The prompt limit is exact: the composed prompt (trailing whitespace trimmed, one newline added) is at most 512 KB.
   const limit = 512 * 1024;
@@ -918,22 +964,29 @@ scenario("server-threads", "a long poll holds an HTTP thread: one thread is refu
   t.eq([polled.status, polled.json.job.status], [200, "succeeded"], "the poll ends with the final status");
 });
 
-scenario("server-stop", "POSIX: SIGTERM stops the server: a sign-in whose start is still on its way is answered and cancelled and its app-server ends, the lock is free for the next server, finished workers were reaped", async (t) => {
+scenario("server-stop", "POSIX: SIGTERM stops the server: a sign-in whose start is still held in Codex is answered and cancelled and its app-server ends, the lock is free for the next server, finished workers were reaped", async (t) => {
   const w = world("server-stop");
   const data = path.join(w.dir, "data");
   const a = await user(t, w, data, "Anna");
   const slow = await user(t, w, data, "Slow", false);
-  fs.writeFileSync(path.join(slow.home, "fake-login-mode"), "slow");
+  fs.writeFileSync(path.join(slow.home, "fake-login-mode"), "held");
+  t.cleanups.push(() => fs.writeFileSync(path.join(slow.home, "fake-login-release"), ""));
   const server = await serve(t, w, data);
   t.eq((await call(t, server, "POST", "/v1/jobs", { token: a.token, body: { key: "reap-1", role: "ask", prompt: "hello" } })).status, 201, "a job");
   const done = await finished(t, server, a.token, "reap-1");
   await t.until(`the worker ${done.workerPid} was reaped (no zombie)`, () => spawnSync("ps", ["-o", "stat=", "-p", String(done.workerPid)], { encoding: "utf8" }).stdout.trim() === "", 20000);
   t.ok(server.child.exitCode === null, "the server runs on");
-  // The fake answers this start only after 1.5 s: the server is told to stop while the start is on its way.
+  // The fake holds this start until the scenario releases it: the server is told to stop while the start is held,
+  // and the start is answered only once the server has said it is stopping.
   const inFlight = call(t, server, "POST", "/v1/login", { token: slow.token });
   await t.until("the sign-in start reached Codex", () => fs.existsSync(path.join(slow.home, "fake-login-started")));
   const loginId = fs.readFileSync(path.join(slow.home, "fake-login-started"), "utf8");
+  t.ok(/^login-\d+$/.test(loginId), `the start names its loginId (${loginId})`);
   server.child.kill("SIGTERM");
+  await t.until("the server is stopping while the start is held", () => server.stderr().includes("zodchi-server: stopping"));
+  t.ok(!fs.existsSync(path.join(slow.home, "fake-login-cancelled")), "nothing was cancelled before the start was answered");
+  fs.writeFileSync(path.join(slow.home, "fake-login-release"), "");
+  t.log("released the sign-in start");
   const answered = await inFlight;
   t.ok(answered.status === 200 && answered.text.includes(loginId), "the request in flight is answered");
   const ended = await server.exited;

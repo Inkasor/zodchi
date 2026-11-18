@@ -6,10 +6,13 @@
 //
 //   node scripts/e2e-release.mjs --disposable [--max-usd <n>] [--deadline-min <n>] [--model <id>] [--keep]
 //
-//   --disposable      required outside CI (CI=true): states that this machine or container is disposable. The run
-//                     isolates the session (its own home, its own Claude config, an allow-listed environment, a
-//                     throwaway fixture repository) but it is not a sandbox: an agent's shell can still reach the
-//                     file system. Run it on a CI runner or in a container without your repositories and credentials.
+//   --disposable      required, always (CI=true does not count): states that this runs in a dedicated, disposable
+//                     container or VM with no checkout but this one, no credential store mounted, and outbound
+//                     network only to the model service. The run isolates the session (its own home, its own Claude
+//                     config, an allow-listed environment, a throwaway fixture repository) but it is not a sandbox: an
+//                     agent's shell can still reach the file system and the network. The run cannot enforce the
+//                     network limit; that is the container's job. It refuses when it sees signs of a machine that is
+//                     not disposable: a credential store in the real home, or a Git credential kept in this checkout.
 //   --max-usd <n>     the cost cap of the whole run, default 3; passed to `claude -p --max-budget-usd`, which counts
 //                     subagents and workflow agents too. The run refuses to start when that flag is not available.
 //   --deadline-min <n> wall-clock deadline, default 40; the session and everything it started is killed after it
@@ -20,19 +23,24 @@
 // Git credentials, no SSH agent. Nothing is retried: a failed paid run is reported and left for a human.
 //
 // What decides the outcome, apart from the session's own exit:
+//   0. the session itself: it started, exited 0 before the deadline, and its JSON on stdout is a success
+//      (is_error false, subtype "success") with a cost receipt (total_cost_usd, a positive number within the cap);
+//      the candidate plugin, roles, gateway binary and brief the session got are unchanged after it;
 //   1. the workflow result (written by the session to a file the harness names) has the shape of the code-package
 //      result and a terminal status: verdict "approved", approved true, no stoppedAt, verifiedBy "args.verify";
-//   2. the harness's acceptance check, kept outside the fixture, passes on the final committed tree (git archive of
-//      the branch tip), not on the working tree;
+//   2. on the final committed tree (git archive of the branch tip), not on the working tree: the harness reruns the
+//      cheap check and the smoke command itself, and runs its own acceptance check, which is written outside the
+//      fixture only after the session has ended;
 //   3. the branch tip is a commit made after the harness's baseline, its message ends with the `Verified:` stamp the
-//      result reports, the package files have no uncommitted change (so the stamp's commit is the final state), and
-//      the protected test of the baseline is unchanged;
+//      result reports, no tracked file of the fixture has an uncommitted change (so the stamp's commit is the final
+//      state), and the baseline test and smoke command are unchanged at the tip;
 //   4. the review was routed through the gateway: the fake Codex ran a turn with the review schema whose prompt holds
 //      the REVIEW.md of the baseline commit (proof of routing, not of review quality);
 //   5. nothing changed in this working tree.
 // The trace of each step is in .agent-tmp/e2e-release/trace-<time>.log of this repository; the summary names it.
 import fs from "node:fs";
 import os from "node:os";
+import crypto from "node:crypto";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -45,7 +53,7 @@ const EXE = WIN ? ".exe" : "";
 const argv = process.argv.slice(2);
 const flag = (name) => { const i = argv.indexOf(name); if (i < 0) return false; argv.splice(i, 1); return true; };
 const option = (name, fallback) => { const i = argv.indexOf(name); if (i < 0) return fallback; const v = argv[i + 1]; argv.splice(i, 2); return v; };
-const disposable = flag("--disposable") || process.env.CI === "true";
+const disposable = flag("--disposable");
 const keep = flag("--keep");
 const maxUsd = Number(option("--max-usd", "3"));
 const deadlineMin = Number(option("--deadline-min", "40"));
@@ -78,8 +86,15 @@ const sh = (program, args, opts = {}) => {
 // ---------------------------------------------------------------------------------------------------------------
 // 1. Preconditions: fail closed when the limits cannot be enforced.
 log(`# e2e-release: model ${model}, cap ${maxUsd} USD, deadline ${deadlineMin} min, scratch ${scratch}`);
-if (!disposable) stop("refused: pass --disposable (or run under CI=true) on a machine or container that is disposable; this run spends model tokens and is not a sandbox");
-if (!(maxUsd > 0) || !(deadlineMin > 0)) stop("--max-usd and --deadline-min must be positive numbers");
+if (!disposable) stop("refused: pass --disposable, in a dedicated disposable container or VM (no other checkout, no credential store, network only to the model service); this run spends model tokens and is not a sandbox. CI=true alone does not count");
+if (!(Number.isFinite(maxUsd) && maxUsd > 0) || !(Number.isFinite(deadlineMin) && deadlineMin > 0)) stop("--max-usd and --deadline-min must be finite positive numbers");
+// Signs of a machine that is not disposable: a credential store in the real home, a Git credential in this checkout.
+const stores = [".ssh", ".git-credentials", ".netrc", ".aws", path.join(".config", "gh"), ".codex", ".zodchi", path.join(".claude", ".credentials.json")]
+  .map((p) => path.join(os.homedir(), p)).filter((p) => fs.existsSync(p));
+if (stores.length) stop(`refused: this machine is not disposable, its home holds credential stores (${stores.join(", ")})`);
+if (sh("git", ["config", "--local", "--get-regexp", "^(http\\..*\\.extraheader|credential\\..*)$"], { cwd: ROOT }).stdout.trim()) {
+  stop("refused: this checkout keeps a Git credential (http.*.extraheader or credential.*); run from a checkout without one");
+}
 if (!process.env.ANTHROPIC_API_KEY) stop("ANTHROPIC_API_KEY is not set: the clean home of the session has no other sign-in");
 const version = sh("claude", ["--version"], { shell: WIN });
 if (version.status !== 0) stop("the claude command is not available");
@@ -163,24 +178,23 @@ fs.writeFileSync(brief, [
   "`clamp` is exported and behaves as above; `node test/math.test.mjs` and `node scripts/smoke.mjs` exit 0.",
   "",
 ].join("\n"));
-// The acceptance check stays outside the fixture: the session cannot change what judges it.
-const acceptance = path.join(scratch, "acceptance.mjs");
-fs.writeFileSync(acceptance, [
-  "import { pathToFileURL } from 'node:url'",
-  "import path from 'node:path'",
-  "const m = await import(pathToFileURL(path.join(process.argv[2], 'src', 'math.mjs')).href)",
-  "const cases = [[5, 0, 3, 3], [-2, 0, 3, 0], [2, 0, 3, 2], [0, 0, 3, 0], [3, 0, 3, 3]]",
-  "const bad = cases.filter(([x, lo, hi, want]) => m.clamp(x, lo, hi) !== want)",
-  "if (m.add(2, 3) !== 5) bad.push('add changed')",
-  "if (bad.length) { console.error('acceptance FAIL', JSON.stringify(bad)); process.exit(1) }",
-  "console.log('acceptance ok')",
-  "",
-].join("\n"));
 const label = "e2e-clamp";
 const resultFile = path.join(scratch, "result.json");
 const workflowArgs = { label, brief, repo: fixture, files: ["src/math.mjs"], tmp: path.join(scratch, "package"), branch: "e2e-clamp",
   checks: ["node test/math.test.mjs"], verify: ["node scripts/smoke.mjs"], rounds: 1, models: table.roles };
 const before = sh("git", ["status", "--porcelain"], { cwd: ROOT }).stdout;
+// What the session is given and must not change: compared after it has ended.
+const digest = (target) => {
+  const h = crypto.createHash("sha256");
+  const walk = (p) => {
+    if (fs.statSync(p).isDirectory()) for (const name of fs.readdirSync(p).sort()) walk(path.join(p, name));
+    else h.update(path.relative(target, p) + "\0").update(fs.readFileSync(p));
+  };
+  try { walk(target); } catch (e) { return `unreadable (${e.code || e.message})`; }
+  return h.digest("hex");
+};
+const inputs = [path.join(plugins, "zodchi-core"), roles, bin, brief];
+const inputDigests = inputs.map(digest);
 
 // 5. The session.
 const promptText = [
@@ -210,15 +224,20 @@ const session = await new Promise((resolve) => {
     if (WIN) spawnSync("taskkill", ["/T", "/F", "/PID", String(child.pid)]);
     else { try { process.kill(-child.pid, "SIGKILL"); } catch { /* gone */ } }
   }, deadlineMin * 60_000);
+  child.on("error", (e) => { clearTimeout(timer); resolve({ code: null, timedOut, error: String(e) }); });
   child.on("exit", (code) => { clearTimeout(timer); resolve({ code, timedOut }); });
 });
 const sessionMs = Date.now() - sessionStarted;
-log(`session exit ${session.code}${session.timedOut ? " (killed at the deadline)" : ""} after ${(sessionMs / 60000).toFixed(1)} min`);
+log(`session exit ${session.code}${session.timedOut ? " (killed at the deadline)" : ""}${session.error ? ` (did not start: ${session.error})` : ""} after ${(sessionMs / 60000).toFixed(1)} min`);
 let transport = null;
 try { transport = JSON.parse(fs.readFileSync(path.join(scratch, "session.json"), "utf8")); } catch { /* not JSON */ }
 log(`session transport: ${transport ? JSON.stringify({ is_error: transport.is_error, subtype: transport.subtype, total_cost_usd: transport.total_cost_usd, num_turns: transport.num_turns }) : "no JSON on stdout"}`);
 check(!session.timedOut, `the session ended before the deadline of ${deadlineMin} min`);
-if (transport && typeof transport.total_cost_usd === "number") check(transport.total_cost_usd <= maxUsd, `the session cost ${transport.total_cost_usd} USD, within the cap of ${maxUsd}`);
+check(!session.error && session.code === 0, `the session started and exited 0 (exit ${session.code}${session.error ? `, ${session.error}` : ""})`);
+check(Boolean(transport) && transport.is_error === false && transport.subtype === "success", `the session's JSON reports success (${transport ? `is_error ${transport.is_error}, subtype ${transport.subtype}` : "no JSON on stdout"})`);
+const cost = transport ? transport.total_cost_usd : undefined;
+check(typeof cost === "number" && Number.isFinite(cost) && cost > 0 && cost <= maxUsd, `the session has a cost receipt within the cap of ${maxUsd} USD (total_cost_usd ${JSON.stringify(cost)})`);
+inputs.forEach((p, i) => check(digest(p) === inputDigests[i], `the session left ${path.basename(p)} as it was given`));
 
 // 6. The workflow result: schema and terminal status, apart from the session's own exit.
 let result = null;
@@ -247,15 +266,34 @@ check(/^Verified: /.test(stamp) && message.endsWith(stamp), `the tip's message e
 if (result && result.verification) check(stamp === `Verified: ${result.verification.stamp}` || stamp === result.verification.stamp, "the stamp of the tip is the one the result reports");
 check(stamp === "Verified: checks exit 0; args.verify exit 0", "the stamp names the checks and the verify command with their exit codes");
 check(!/node |scripts\/|test\//.test(message), "the commit message names no command");
-check(git("status", "--porcelain", "--", "src/math.mjs").stdout.trim() === "", "the package file has no uncommitted change: the stamped commit is the final state");
-check(git("diff", "--quiet", base, tip, "--", "test/math.test.mjs").status === 0, "the protected test of the baseline is unchanged");
+const head = git("rev-parse", "HEAD").stdout.trim();
+check(head === tip, `the fixture's HEAD is the branch tip (${head || "none"})`);
+const dirty = git("status", "--porcelain", "--untracked-files=no").stdout.trim();
+check(dirty === "", `no tracked file of the fixture has an uncommitted change: the stamped commit is the final state${dirty ? ` (${dirty.replace(/\n/g, ", ")})` : ""}`);
+check(git("diff", "--quiet", base, tip, "--", "test/math.test.mjs", "scripts/smoke.mjs").status === 0, "the baseline test and the smoke command are unchanged at the tip");
 
-// 8. The acceptance check on the final committed tree.
+// 8. On the final committed tree: the harness reruns the check and the smoke command, and runs its acceptance check,
+// written outside the fixture only now that the session has ended, so the session never saw or reached it.
 const final = path.join(scratch, "final");
 fs.mkdirSync(final, { recursive: true });
 const archive = path.join(scratch, "final.tar");
 git("archive", "--format=tar", "-o", archive, tip);
 sh("tar", ["-xf", archive, "-C", final]);
+for (const command of ["test/math.test.mjs", "scripts/smoke.mjs"]) {
+  check(sh(process.execPath, [command], { cwd: final }).status === 0, `node ${command} exits 0 on the committed tree`);
+}
+const acceptance = path.join(scratch, "acceptance.mjs");
+fs.writeFileSync(acceptance, [
+  "import { pathToFileURL } from 'node:url'",
+  "import path from 'node:path'",
+  "const m = await import(pathToFileURL(path.join(process.argv[2], 'src', 'math.mjs')).href)",
+  "const cases = [[5, 0, 3, 3], [-2, 0, 3, 0], [2, 0, 3, 2], [0, 0, 3, 0], [3, 0, 3, 3]]",
+  "const bad = cases.filter(([x, lo, hi, want]) => m.clamp(x, lo, hi) !== want)",
+  "if (m.add(2, 3) !== 5) bad.push('add changed')",
+  "if (bad.length) { console.error('acceptance FAIL', JSON.stringify(bad)); process.exit(1) }",
+  "console.log('acceptance ok')",
+  "",
+].join("\n"));
 const accepted = sh(process.execPath, [acceptance, final]);
 check(accepted.status === 0, "the acceptance check passes on the committed tree");
 
@@ -267,7 +305,7 @@ check(turns.some((x) => x.schema && x.prompt.includes("e2e-review-base-7f3a")), 
 check(sh("git", ["status", "--porcelain"], { cwd: ROOT }).stdout === before, "nothing changed in this working tree");
 
 const verdict = problems.length ? "FAIL" : "PASS";
-console.log(`${verdict} e2e-release: session ${(sessionMs / 60000).toFixed(1)} min${transport && typeof transport.total_cost_usd === "number" ? `, ${transport.total_cost_usd} USD` : ""}${problems.length ? `\n  - ${problems.join("\n  - ")}` : ""}\n     trace ${traceFile}`);
+console.log(`${verdict} e2e-release: session ${(sessionMs / 60000).toFixed(1)} min${typeof cost === "number" ? `, ${cost} USD` : ", no cost receipt"}${problems.length ? `\n  - ${problems.join("\n  - ")}` : ""}\n     trace ${traceFile}`);
 if (!problems.length && !keep) {
   try { fs.rmSync(scratch, { recursive: true, force: true }); } catch { /* left in the temp folder */ }
 }
