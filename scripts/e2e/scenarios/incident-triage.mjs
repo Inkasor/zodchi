@@ -63,14 +63,16 @@ export default function register({ scenario, ROOT }) {
     t.ok(Boolean(m) && m.command === command, `the step "${label}" runs the helper command ${command} (${m ? m.command : "none"})`);
     if (!m || m.command !== command) throw new Error(`the step "${label}" does not run ${command}`);
     const spec = m.spec;
+    // The argument is typed in the form the workflow sent it (b64: for a short spec, plain JSON for a long one), also when a fault changes a value.
+    const argOf = (sp) => (m.arg.startsWith("b64:") ? encodeSpec(sp) : JSON.stringify(sp));
     t.ok(spec.api === 1 && spec.tmp === ctx.tmp && spec.incident === ctx.incident, `the step "${label}" names this incident folder and incident`);
     // retype: a fault of the runner, which typed the command with a value changed (the workflow's spec is what the prompt holds).
     // The publish command is run with a trace of the files it moves into place (in order), to check the order of the publish.
     const traced = command === "incident-publish";
     const traceFile = path.join(ctx.tmp, "..", `trace-${path.basename(ctx.tmp)}.log`);
     const r = traced
-      ? spawnSync(process.execPath, ["-e", TRACE_PRELOAD, command, encodeSpec(retype(spec))], { encoding: "utf8", windowsHide: true, env: { ...process.env, ZODCHI_TRACE: traceFile, ZODCHI_GATE: GATE } })
-      : spawnSync(process.execPath, [GATE, command, encodeSpec(retype(spec))], { encoding: "utf8", windowsHide: true });
+      ? spawnSync(process.execPath, ["-e", TRACE_PRELOAD, command, argOf(retype(spec))], { encoding: "utf8", windowsHide: true, env: { ...process.env, ZODCHI_TRACE: traceFile, ZODCHI_GATE: GATE } })
+      : spawnSync(process.execPath, [GATE, command, argOf(retype(spec))], { encoding: "utf8", windowsHide: true });
     if (traced) { ctx.publishRan = true; try { ctx.publishOrder = fs.readFileSync(traceFile, "utf8").split("\n").filter(Boolean); fs.rmSync(traceFile, { force: true }); } catch { ctx.publishOrder = []; } }
     return { spec, answer: { exitCode: r.status ?? -1, stdout: r.stdout || "", error: (r.stderr || "").slice(0, 300) } };
   }
@@ -394,6 +396,25 @@ export default function register({ scenario, ROOT }) {
     const plain = await runCase(t, "stale");
     const spec = specIn(plain.ctx.prompts.find((p) => /^collect /.test(p.label)).prompt, "incident-collect");
     t.ok(/^[0-9a-f]{64}$/.test(spec.inputSha256) && plain.result.state === "drafted", "the command carries the digest of its inputs, and a run typed exactly goes through");
+  });
+
+  // The helper spec goes as b64: only while the argument is short (B64_MAX); a long Russian report is three bytes of base64 per two of text, which
+  // on Windows made the collect command longer than a process can start. It goes as the plain JSON of before, and the run works.
+  scenario("incident-triage-long-report", "a long Russian incident report is sent to the collect helper as plain JSON (the command stays as short as before, not b64), the run goes through, and a short report still goes as b64:", async (t) => {
+    const report = "Не удалось выгрузить заказы за вчера: на шаге проверки остатки не сошлись, выгрузка остановилась. ".repeat(150);
+    t.ok(report.length > 14000, `the report is long (${report.length} characters)`);
+    const run = await runCase(t, "stale", { report });
+    t.eq(run.result.state, "drafted", `the run goes through (${run.result.stoppedAt || ""})`);
+    const bad = verify(run);
+    t.ok(!bad.length, `the case meets its expectations with a long report${bad.length ? `:\n  - ${bad.join("\n  - ")}` : ""}`);
+    const collect = run.ctx.prompts.find((p) => /^collect /.test(p.label)).prompt;
+    const [cmd] = commandsIn(collect, "incident-collect");
+    t.ok(Boolean(cmd) && !cmd.arg.startsWith("b64:") && cmd.arg === JSON.stringify(cmd.spec), "the collect command carries plain JSON");
+    t.eq(cmd.spec.report, report, "and the whole report");
+    t.ok(collect.length < 20000, `the prompt is ${collect.length} characters (b64 of this report would have made it over 35000)`);
+    const short = await runCase(t, "stale");
+    const [small] = commandsIn(short.ctx.prompts.find((p) => /^collect /.test(p.label)).prompt, "incident-collect");
+    t.ok(small.arg.startsWith("b64:") && short.result.state === "drafted", "a short report still goes as b64:");
   });
 
   scenario("incident-triage-cases-covered", "every case folder of scripts/e2e/fixtures/incident-triage/cases is run by one of the incident-triage scenarios, and every name a scenario runs is a case folder", async (t) => {

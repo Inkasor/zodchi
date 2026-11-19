@@ -586,8 +586,8 @@ if (IO.includes(command)) {
   };
 }
 if (!COMMANDS[command]) print({ ok: false, api: API, error: `unknown command ${JSON.stringify(command)}; one of ${[...new Set([...Object.keys(COMMANDS), ...IO])].join(", ")}` }, 2);
-// The spec comes in two forms: plain JSON, or "b64:" and the standard base64 of the UTF-8 JSON text. The workflows send the second:
-// it holds no quote, backslash or brace, so a runner that retypes the command has nothing to "repair" (a cut tail that looks like an
+// The spec comes in two forms: plain JSON, or "b64:" and the standard base64 of the UTF-8 JSON text. The workflows send the second
+// (up to 12000 characters of argument; a longer spec goes as plain JSON, so that no command is longer than it was): it holds no quote, backslash or brace, so a runner that retypes the command has nothing to "repair" (a cut tail that looks like an
 // unfinished escape was repaired into another text). Each failure of the second form says which step failed.
 const B64_PREFIX = "b64:";
 function specFrom(text) {
