@@ -41,3 +41,10 @@ workflow are our own agents, not attackers.
 ## Severity
 `important` blocks. `nit` and `pre-existing` never block. When unsure whether something is important, ask: would
 the owner stop a release for it?
+
+- nit for design-brief (2026-11-19, the lead after two rounds): machine paths of the lead's own args (out, tmp) in what
+  our own gateway reviewer sees; a secret inside a source file a researcher reads reaching a runner's output; args.out
+  pointed at one of the workflow's own artifacts; Git fetching objects in a partial clone. The briefs and the gateway
+  are ours; what matters is that the brief itself carries no secret and, in a public repository, no private name.
+- nit for the installer (2026-11-19): a missing installed_plugins.json read as "Claude Code keeps no such file"; the
+  hand-refresh hint when two scopes share one cache folder.

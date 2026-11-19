@@ -624,6 +624,7 @@ const fixed = await step(
   `The facts of the researchers are in ${factsFile}; the repositories you may read: ${JSON.stringify(repos)}.\n` +
   `For each finding: first verify it (read the cited file, re-read the sentence of the brief it is about). When it holds, change the brief in place (the same file, no copy; keep its first line ${MARK}) and say what you changed. ` +
   `When it is wrong, leave the brief as it is for that finding and say why. When the fix would be an owner decision, list it in "Owner decisions" with a marked default instead of deciding. Leave the minor findings and everything else alone. ` +
+  `What you write names no secret value (name the variable or the file)${a.publicRepo ? ' and, because the repository is public, no company, product or person name and no machine path: write /path/to/... for a path' : ''}. ` +
   `You only read and write that one file (and your progress file): start no program of the project, run no test, call no product API, contact no server, never print a secret value.\n` +
   `done is true when every finding is fixed or answered. fixed: one entry per finding you fixed, { id, what }. left: one per finding you left, { id, reason }. ` +
   `ownerDecisions: the complete list of owner decisions of the brief as it now stands, each { question, default, options }.`,
