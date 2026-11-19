@@ -146,7 +146,9 @@ function claude(args, { cwd } = {}) {
 }
 
 const samePath = (a, b) => {
-  const n = (p) => path.resolve(p).replace(/[\\/]+$/, "");
+  // The real path when it exists: a short 8.3 name on Windows (RUNNER~1) and a symlinked folder (/var on macOS is
+  // /private/var) name the same folder as its long or resolved form.
+  const n = (p) => { const r = path.resolve(p); let s = r; try { s = fs.realpathSync.native(r); } catch { /* not there yet */ } return s.replace(/[\\/]+$/, ""); };
   return process.platform === "win32" ? n(a).toLowerCase() === n(b).toLowerCase() : n(a) === n(b);
 };
 
