@@ -5,6 +5,8 @@
 //   3. every JSON file parses, every role's frame and schema exist;
 //   4. publish guard: no machine paths, e-mail addresses, keys or tokens, and none of the words in the
 //      private deny-list (one per line) at $ZODCHI_DENYLIST or ~/.zodchi/private-words.txt, which never enters the repo.
+//      A private fork may list its own words in .zodchi/allowed-words.txt (docs/fork.md); the list counts only in a
+//      checkout with a remote named `upstream`, and anywhere else the file itself is a problem.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -116,10 +118,21 @@ const PATTERNS = [
 // Allowed on purpose: the placeholder addresses of git attribution and the guard's own patterns.
 const ALLOW = [/noreply@anthropic\.com/, /^scripts\/check\.mjs$/];
 const denyFile = process.env.ZODCHI_DENYLIST || path.join(os.homedir(), ".zodchi", "private-words.txt");
-const deny = fs.existsSync(denyFile) ? fs.readFileSync(denyFile, "utf8").split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith("#")) : [];
+const words = (file) => fs.existsSync(file) ? fs.readFileSync(file, "utf8").split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith("#")) : [];
+const allowFile = path.join(ROOT, ".zodchi", "allowed-words.txt");
+let allowed = [];
+if (fs.existsSync(allowFile)) {
+  let remotes = [];
+  try { remotes = execFileSync("git", ["remote"], { cwd: ROOT, encoding: "utf8" }).split(/\r?\n/).map(s => s.trim()); } catch { /* no git: not a fork */ }
+  // Only a fork (a checkout that pulls from `upstream`) may name its own words; in the public repository or its CI
+  // clone the file would silently switch the deny-list off, so there it is a problem of its own.
+  if (remotes.includes("upstream")) allowed = words(allowFile).map(w => w.toLowerCase());
+  else bad(allowFile, "an allow-list of private words outside a fork (no remote named upstream)");
+}
+const deny = words(denyFile).filter(w => !allowed.includes(w.toLowerCase()));
 for (const f of tracked) {
   const rel = path.relative(ROOT, f).replace(/\\/g, "/");
-  if (ALLOW[1].test(rel) || rel === "LICENSE") continue;
+  if (ALLOW[1].test(rel) || rel === "LICENSE" || rel === ".zodchi/allowed-words.txt") continue;
   const buf = fs.readFileSync(f);
   if (buf.includes(0)) continue;
   const text = buf.toString("utf8");
@@ -132,6 +145,7 @@ for (const f of tracked) {
   for (const w of deny) if (lower.includes(w.toLowerCase())) bad(f, "a word from the private deny-list");
 }
 if (!deny.length) console.log(`note: no private deny-list at ${denyFile}; only generic patterns were checked`);
+if (allowed.length) console.log(`note: ${allowed.length} word(s) allowed by .zodchi/allowed-words.txt in this fork`);
 
 if (problems.length) { console.error(problems.join("\n")); console.error(`\n${problems.length} problem(s)`); process.exit(1); }
 console.log(`ok: ${tracked.length} files checked`);

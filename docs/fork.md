@@ -23,3 +23,11 @@ names, hosts or paths.
 The company's own installer can call `install/install.mjs` of the fork with
 `--domains` and `--gateway-cli` (later: the gateway binary), so that its
 people get the same setup in one step.
+
+## The publish guard in a fork
+
+`node scripts/check.mjs` refuses the words of the owner's private deny-list, and in a fork those are often the
+company's own name and hosts. List them in `.zodchi/allowed-words.txt` (one per line) in the fork: the guard then
+skips just those words and says how many it skipped. The list counts only in a checkout with a remote named
+`upstream`; in the public repository and its CI clone (no such remote) the file itself is reported as a problem, so
+it cannot switch the guard off there. Keys, tokens, e-mail addresses and machine paths are still refused.
