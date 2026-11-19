@@ -18,8 +18,13 @@
 //      .git is refused unless --dev. A copy is staged beside its final name, every file is checked against the
 //      commit's blob hash, it gets a .complete file last and is renamed into place; a copy is reused only with
 //      .complete and every file of the commit present, otherwise it is moved aside and made again. A rerun after
-//      `git pull` makes a new copy, moves the marketplace to it and updates zodchi-core and the domains named in that
-//      run (a domain enabled in another project is updated by rerunning with --project <repo> --domains <name>);
+//      `git pull` makes a new copy, moves the marketplace to it and refreshes zodchi-core and the domains named in that
+//      run (a domain enabled in another project is refreshed by rerunning with --project <repo> --domains <name>).
+//      A plugin that is already installed is uninstalled and installed again in the same scope, not `plugin update`d:
+//      with one version in plugin.json Claude Code keeps the copy it cached at the first install. Afterwards the
+//      registration (installed_plugins.json in the Claude config dir) is read back and one file of each plugin in
+//      Claude Code's cache is compared with the copy's; a difference is an error. Claude Code sessions that are open
+//      keep the plugins they started with (/reload-plugins in each, or a new session);
 //      the registered copy, the one registered before it, the two newest complete ones and every copy made in the last
 //      7 days (a running Claude Code session keeps reading the copy it started with) are kept, the rest are
 //      removed. After the marketplace command the registration is read back and reported. One install at a time:
@@ -419,11 +424,21 @@ function plugins(o, domains, say, home, copy) {
   } else say(`--dev: the clone ${SRC} is the marketplace; every Claude session on this machine reads its working tree as it is`);
   const present = claude(["--version"]).ok;
   if (!present && !o.dryRun) throw new Error("Claude Code (`claude`) does not run here; install it, or rerun with --no-plugins.");
+  // A plugin that is already installed is uninstalled and installed again in the same scope (and the same folder for
+  // local scope). `claude plugin update` is not used: while plugin.json keeps one version, it answers "already at the
+  // latest version" and leaves the copy Claude Code cached at the first install, so sessions kept running old workflows.
   const install = (plugin, scope, cwd) => () => {
-    const r = claude(["plugin", "install", `${plugin}@${MARKETPLACE}`, "--scope", scope], { cwd });
-    if (r.ok || !/already/i.test(r.out)) return r;
-    // Installed before: bring it to the version in the marketplace as it reads now.
-    return claude(["plugin", "update", `${plugin}@${MARKETPLACE}`, "--scope", scope], { cwd });
+    const id = `${plugin}@${MARKETPLACE}`;
+    const r = claude(["plugin", "install", id, "--scope", scope], { cwd });
+    if (r.ok || !/already/i.test(r.out)) return { ...r, plugin, scope, cwd };
+    const gone = claude(["plugin", "uninstall", id, "--scope", scope], { cwd });
+    if (!gone.ok) return { ...gone, out: `${gone.out}\nThe plugin ${id} (${scope} scope) is still installed, with the copy Claude Code cached for it earlier.`, plugin, scope, cwd };
+    const again = claude(["plugin", "install", id, "--scope", scope], { cwd });
+    if (!again.ok) {
+      return { ok: false, missing: again.missing, plugin, scope, cwd, out: `${again.out}\nThe plugin ${id} was uninstalled to refresh it and is now NOT installed (${scope} scope). ` +
+        `Install it again with: claude plugin install ${id} --scope ${scope}${cwd ? ` (run it in ${cwd})` : ""}` };
+    }
+    return { ...again, refreshed: true, plugin, scope, cwd };
   };
   const steps = [{ what: "zodchi-core for you in every project (user scope)", run: install("zodchi-core", "user") }];
   for (const d of domains) {
@@ -467,14 +482,61 @@ function plugins(o, domains, say, home, copy) {
       throw new Error(`the marketplace command succeeded, but marketplace ${MARKETPLACE} is ${now}, not ${target}; no plugin was installed or updated.`);
     }
     console.log(`plugin: ${change.text} - ok; marketplace ${MARKETPLACE} is ${now}`);
+    const done = [];
     for (const s of steps) {
       const p = s.run();
       if (p.missing) throw new Error("Claude Code (`claude`) is not on PATH; install it, or rerun with --no-plugins.");
       if (!p.ok) throw new Error(`plugin step failed: ${s.what}\n${p.out}\nThe marketplace ${MARKETPLACE} already reads from ${target}; rerun the installer to finish the plugin steps.`);
-      console.log(`plugin: ${s.what} - ok`);
+      console.log(`plugin: ${s.what} - ok${p.refreshed ? " (uninstalled and installed again, so that Claude Code takes the files of this copy)" : ""}`);
+      done.push(p);
     }
+    // What Claude Code registered is read back and compared with the copy: a cache that still holds older files is an error.
+    const problems = verifyCache(done, target, project);
     if (copy) pruneCopies(home, [copy.dir, previous], say);
+    if (problems.length) throw new Error(`the plugins were installed, but what Claude Code cached is not what this install copied:\n${problems.join("\n")}`);
   } finally { release(); }
+}
+
+const claudeConfigDir = () => path.resolve(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"));
+
+// The file of a plugin that is compared with Claude Code's cached copy of it: code-package.js for zodchi-core, else the
+// first workflow of the plugin (in name order), else its plugin.json. Paths are relative to the plugin folder.
+function probeFile(dir, plugin) {
+  const wf = path.join(dir, "workflows");
+  const names = (() => { try { return fs.readdirSync(wf).filter(n => n.endsWith(".js")).sort(); } catch { return []; } })();
+  const found = plugin === "zodchi-core" ? ["workflows/code-package.js"] : [...names.slice(0, 1).map(n => `workflows/${n}`), ".claude-plugin/plugin.json"];
+  return found.find(f => fs.existsSync(path.join(dir, ...f.split("/")))) || null;
+}
+
+// Reads installed_plugins.json of Claude Code back and compares, for every plugin the run installed, one file of the
+// folder Claude Code says it installed from with the same file in the marketplace's copy, byte for byte. Returns the
+// problems found, one line each; a Claude Code that keeps no such file is a note, not a failure.
+function verifyCache(done, target, project) {
+  const file = path.join(claudeConfigDir(), "plugins", "installed_plugins.json");
+  if (!fs.existsSync(file)) { console.log(`note: ${file} does not exist, so what Claude Code cached for the plugins was not compared with the copy`); return []; }
+  let registered;
+  try { registered = JSON.parse(fs.readFileSync(file, "utf8")).plugins; } catch (e) { return [`${file} could not be read (${e.message}); what Claude Code cached was not compared with ${target}.`]; }
+  if (!registered || typeof registered !== "object") return [`${file} has no "plugins" list; what Claude Code cached was not compared with ${target}.`];
+  const manifest = JSON.parse(fs.readFileSync(path.join(target, ".claude-plugin", "marketplace.json"), "utf8"));
+  const problems = [];
+  for (const p of done) {
+    const id = `${p.plugin}@${MARKETPLACE}`;
+    const entries = Array.isArray(registered[id]) ? registered[id] : [];
+    const mine = entries.find(e => e && e.scope === p.scope && (p.scope !== "local" || (e.projectPath && project && samePath(e.projectPath, project))));
+    const fix = `claude plugin uninstall ${id} --scope ${p.scope}, then claude plugin install ${id} --scope ${p.scope}${p.cwd ? ` (in ${p.cwd})` : ""}`;
+    if (!mine || !mine.installPath) { problems.push(`${id} (${p.scope} scope) is not registered in ${file} after its install.`); continue; }
+    const source = (manifest.plugins || []).find(x => x.name === p.plugin);
+    const dir = source && typeof source.source === "string" ? path.resolve(target, source.source) : null;
+    const rel = dir && probeFile(dir, p.plugin);
+    if (!rel) { problems.push(`${id}: the copy ${dir || target} has no file to compare with what Claude Code cached.`); continue; }
+    const ours = path.join(dir, ...rel.split("/"));
+    const cached = path.join(mine.installPath, ...rel.split("/"));
+    let same = false;
+    try { same = fs.readFileSync(ours).equals(fs.readFileSync(cached)); } catch { /* a missing cached file is a difference */ }
+    if (same) console.log(`plugin: ${id} (${p.scope} scope): ${rel} in Claude Code's cache ${mine.installPath} is the copy's`);
+    else problems.push(`${id} (${p.scope} scope): ${cached} (Claude Code's cache) differs from ${ours} (the copy); sessions would run the cached, older file. Refresh it by hand: ${fix}.`);
+  }
+  return problems;
 }
 
 // The name of the marketplace to uninstall: the one a registered plugin copy carries, else the name in HEAD's commit,
@@ -504,7 +566,7 @@ async function main() {
   if (o.help) { console.log(fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1).filter((l, i, all) => all.slice(0, i + 1).every(x => x.startsWith("//"))).map(l => l.replace(/^\/\/ ?/, "")).join("\n")); return; }
   const home = path.resolve(process.env.ZODCHI_HOME || path.join(os.homedir(), ".zodchi"));
   // Agents and workflows of an earlier 1.0 install were copied here; they are removed now that plugins carry them.
-  const claudeDir = path.resolve(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"));
+  const claudeDir = claudeConfigDir();
   // Where Codex reads skills: $CODEX_HOME/skills, else ~/.codex/skills.
   const codexSkillsDir = path.join(path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), ".codex")), "skills");
   const underCodexSkills = (f) => path.resolve(f).toLowerCase().startsWith(codexSkillsDir.toLowerCase() + path.sep);
@@ -695,6 +757,7 @@ async function main() {
   else console.log("Gateway: not installed - install Rust (https://rustup.rs) and rerun, or pass --gateway-cli <path to a Node gateway cli.mjs>.");
   const bin = path.join(home, "bin");
   if (!(process.env.PATH || "").split(path.delimiter).some(p => path.resolve(p) === bin)) console.log(`Add ${bin} to PATH so agents can run \`zodchi\`.`);
+  if (!o.noPlugins && !o.dryRun) console.log("Open Claude Code sessions keep the plugins they started with: run /reload-plugins in each, or start a new session.");
 }
 
 main().catch(e => { console.error(`zodchi install: ${e.message}`); process.exit(1); });
