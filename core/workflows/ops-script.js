@@ -243,10 +243,12 @@ const specArg = (spec) => {
   return arg
 }
 // A helper copy older than this workflow reads plain JSON only: it answers a b64: spec with exit 2 and "the spec is not JSON: Unexpected token 'b'..." (the spec
-// starts with the b of b64:). A plain JSON spec starts with "{", so that answer can only come from a call that sent b64:, and the check needs no state
-// of the run. It is a stop that names the cause (stale marks it, so nothing is sent again); there is no plain-JSON fallback.
+// starts with the b of b64:). Only the first helper call of the run (the gate: short, and always sent as b64:) is read that way: once a helper answered
+// a b64: spec, the copy reads b64:, and the same text later is a command the runner damaged (e.g. a dropped colon), which is retried or reported as
+// such. It is a stop that names the cause (stale marks it); there is no plain-JSON fallback.
+let helperReadsB64 = false
 const OLD_HELPER = /^the spec is not JSON: Unexpected token '?b'?(,| in JSON at position 0)/
-const oldHelperStop = (what, r, facts) => r.exitCode === 2 && OLD_HELPER.test(String(facts.error || ''))
+const oldHelperStop = (what, r, facts) => !helperReadsB64 && r.exitCode === 2 && OLD_HELPER.test(String(facts.error || ''))
   ? `${what}: the zodchi-core copy ${a.pluginRoot ? `at ${a.pluginRoot}` : 'this session loaded'} is older than this workflow (it does not read b64: specs): rerun the installer, reload plugins, or pass args.pluginRoot of a current copy`
   : ''
 const helperRun = (command, spec) => `${a.pluginRoot ? `ZODCHI_PLUGIN_ROOT=${q(a.pluginRoot)} ` : ''}node -e ${q(GATE_BOOT)} -- ${SESSION_PROJECT} ${command} ${q(specArg(spec))}`
@@ -264,6 +266,7 @@ function readHelper(r, what) {
   if (r.exitCode !== 0 || facts.ok !== true) return { error: `${what}: ${facts.error || 'it reported a failure'} (exit ${r.exitCode})${Array.isArray(facts.tried) ? `; looked in ${JSON.stringify(facts.tried)}` : ''}` }
   if (facts.api !== GATE_API) return { error: `${what}: api ${facts.api}, this workflow needs ${GATE_API}` }
   if (!facts.plugin || !facts.plugin.root) return { error: `${what}: it did not name its plugin copy` }
+  helperReadsB64 = true
   return { facts }
 }
 
