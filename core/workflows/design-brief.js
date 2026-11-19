@@ -476,6 +476,7 @@ const pre = preRead.facts
 // The screening mode is the workflow's: a preflight that screened in another mode (a runner that dropped or changed publicRepo) is no screen.
 if (pre.publicRepo !== Boolean(a.publicRepo)) return stopPre(`the preflight screened the brief as ${pre.publicRepo === true ? 'public' : pre.publicRepo === false ? 'not public' : 'an unknown mode'}, but the repository is ${a.publicRepo ? 'public' : 'not public'}`, 'Run again.')
 if (pre.changed) return stopPre('the brief read for the screen is not the brief that was inspected: it changed', 'Run again.')
+if (shaOf(pre.briefSha256) !== reviewedSha) return stopPre('the brief the preflight read is not the brief the writer inspected (its sha256 differs from the reviewed one)', 'Run again.')
 if ((pre.problems || []).length) return stopPre(`the brief holds material that is not sent to a reviewer: ${pre.problems.slice(0, 10).join('; ')}`, `Correct the brief by hand (name the variable or the file, write /path/to/... for a path) and run the review yourself, or run again; the values are not repeated here.`)
 if (pre.inputSha256 !== sha256(materialText)) return stopPre('the facts and the goal did not reach the helper exactly (their sha256 differs)', 'Run again.')
 if (!pre.written) return stopPre('the helper wrote no review request', 'Run again.')

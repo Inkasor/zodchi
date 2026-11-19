@@ -483,6 +483,10 @@ export default function register({ scenario, ROOT }) {
     t.ok(quiet.out.stoppedAt === undefined && quiet.of(/^review$/).length === 1, "a repository not marked public may name a path");
     const other = await run({ answers: { "preflight db": preAnswer(`${BRIEF}\nchanged\n`, { briefSha256: HEX_A }) } });
     t.ok(/is not the brief that was inspected/.test(other.out.stoppedAt) && other.of(/^review$/).length === 0, "a brief that is not the inspected one (hash) is not sent");
+    const sameDirOther = await run({ answers: { "preflight db": (prompt) => { const other = `${BRIEF}
+another clean copy
+`; return { ...preAnswer(other)(prompt), retype: (spec) => ({ ...spec, expectSha256: sha(other) }) }; } } });
+    t.ok(/^review \(the brief the preflight read is not the brief the writer inspected/.test(sameDirOther.out.stoppedAt) && sameDirOther.of(/^review$/).length === 0, `a preflight that read another clean copy (its own hash matches what the runner typed, but not the reviewed one) stops before the gateway (${sameDirOther.out.stoppedAt})`);
     const none = await run({ answers: { "preflight db": null } });
     t.ok(/the preflight read no brief/.test(none.out.stoppedAt) && none.of(/^review$/).length === 0, "no preflight answer: not sent");
 

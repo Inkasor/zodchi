@@ -32,6 +32,13 @@ export default function register({ scenario, ROOT }) {
     t.ok(json.api === 1 && json.plugin && json.plugin.root, `${command}: the line names its api and plugin copy`);
     return json;
   };
+  /** The publish run with a trace of the files moved into place, in order (incident.json with its state). */
+  const TRACE_PRELOAD = String.raw`const fs = require("fs"), log = process.env.ZODCHI_TRACE, rn = fs.renameSync; fs.renameSync = function (a, b) { let s = ""; if (/incident\.json$/.test(b)) { try { s = ":" + JSON.parse(fs.readFileSync(a, "utf8")).state; } catch { /* not a record */ } } fs.appendFileSync(log, String(b).replace(/\\/g, "/").split("/").pop() + s + "\n"); return rn.apply(this, arguments); }; process.argv.splice(1, 0, process.env.ZODCHI_GATE); import(require("url").pathToFileURL(process.env.ZODCHI_GATE).href);`;
+  const tracedPublish = (t, spec, traceFile) => {
+    const r = spawnSync(process.execPath, ["-e", TRACE_PRELOAD, "incident-publish", JSON.stringify({ api: 1, ...spec })], { encoding: "utf8", windowsHide: true, env: { ...process.env, ZODCHI_TRACE: traceFile, ZODCHI_GATE: GATE } });
+    t.log(`traced incident-publish: exit ${r.status}\n${r.stdout.slice(0, 600)}${r.stderr}`);
+    return { json: JSON.parse(r.stdout), order: fs.existsSync(traceFile) ? fs.readFileSync(traceFile, "utf8").split("\n").filter(Boolean) : [] };
+  };
   /** Every file under a folder, relative, sorted. */
   const listing = (dir) => {
     const out = [];
@@ -104,6 +111,41 @@ export default function register({ scenario, ROOT }) {
     t.ok(bad.ok === false && /absolute/.test(bad.error) && !fs.existsSync(path.join(process.cwd(), "relative")), "a relative folder is refused and nothing is made");
   });
 
+  scenario("io-helper-incident-link", "incident.json that is a link (dangling or not) or not a regular file is refused with a reason, never read as missing and never replaced", async (t) => {
+    const dir = scratch(t, "link");
+    const { adapter } = product(dir);
+    const tmp = `${dir}/inc`;
+    fs.mkdirSync(tmp, { recursive: true });
+    const link = (target, file) => {
+      try { fs.symlinkSync(target, file, "file"); return true; } catch { /* no right to make links */ }
+      return false;
+    };
+    const mine = io(t, "incident-open", { tmp, incident: "i1", adapter });
+    t.eq([mine.incident.present, mine.incident.valid], [false, true], "no incident.json: absent, as before");
+    io(t, "incident-unlock", { tmp, incident: "i1", token: mine.token });
+    if (!link(`${dir}/nowhere.json`, `${tmp}/incident.json`)) {
+      t.log("the dangling link case is skipped: this OS refused to create a symbolic link (no right to make links)");
+    } else {
+      const r = io(t, "incident-open", { tmp, incident: "i1", adapter });
+      t.eq([r.incident.present, r.incident.valid], [true, false], "a dangling incident.json link is present and not valid, not missing");
+      t.ok(/link/.test(r.incident.error), `with a clear reason (${r.incident.error})`);
+      t.ok(fs.lstatSync(`${tmp}/incident.json`).isSymbolicLink(), "and the link is left as it was");
+      io(t, "incident-unlock", { tmp, incident: "i1", token: r.token });
+      fs.rmSync(`${tmp}/incident.json`, { force: true });
+      fs.writeFileSync(`${dir}/real.json`, JSON.stringify({ id: "i1", revision: 1, state: "drafted", revisions: [{ n: 1, state: "drafted" }] }));
+      if (link(`${dir}/real.json`, `${tmp}/incident.json`)) {
+        const r2 = io(t, "incident-open", { tmp, incident: "i1", adapter });
+        t.eq([r2.incident.present, r2.incident.valid], [true, false], "a link to a valid record is refused too");
+        io(t, "incident-unlock", { tmp, incident: "i1", token: r2.token });
+      }
+    }
+    fs.rmSync(`${tmp}/incident.json`, { force: true });
+    fs.mkdirSync(`${tmp}/incident.json`);
+    const d = io(t, "incident-open", { tmp, incident: "i1", adapter });
+    t.eq([d.incident.present, d.incident.valid], [true, false], "incident.json that is a folder is present and not valid");
+    t.ok(/regular file/.test(d.incident.error), `with a clear reason (${d.incident.error})`);
+  });
+
   scenario("io-helper-incident-collect-publish", "incident-collect writes the revision's files itself and runs the collector once (a failing and a refusing operation are results), incident-publish reads the answer file with its hash and writes the classification and the draft; nothing is written outside the incident folder", async (t) => {
     const dir = scratch(t, "collect");
     const { adapter, adapterSha } = product(dir);
@@ -149,7 +191,10 @@ export default function register({ scenario, ROOT }) {
       fixBrief: { goal: "", files: [], done: [], checks: [], agentsAffected: false, agentSkillChange: "" },
     }, null, 2) + "\r\n";
     fs.writeFileSync(`${tmp}/rev-1/classification.raw.json`, answer);
-    const p = io(t, "incident-publish", pub);
+    const traceFile = `${dir}/publish-trace.log`;
+    const traced = tracedPublish(t, pub, traceFile);
+    t.eq(traced.order, ["classification.json", "incident.json:classified", "draft.md", "incident.json:drafted"], "publish order: classification and the intermediate pointer are written before draft.md and the final pointer");
+    const p = traced.json;
     t.eq([p.published, p.answer.sha256, p.answer.bytes], [true, sha(Buffer.from(answer, "utf8")), Buffer.byteLength(answer)], "the answer file is read with its hash and size, as it is on disk (CRLF included)");
     t.eq([p.state, p.route, p.kinds, p.role, p.refused], ["drafted", "awaiting-operator", ["infra"], "the operator", []], "the judged answer: state, route, kinds and role");
     const cls = JSON.parse(fs.readFileSync(`${tmp}/rev-1/classification.json`, "utf8"));

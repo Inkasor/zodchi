@@ -705,7 +705,13 @@ function holdLock(at, token) {
 }
 // incident.json: presence apart from content. A file that exists and is not a record of this incident is refused, never read as missing.
 function readIncident(at, id) {
-  if (!fs.existsSync(at.file)) return { present: false, valid: true, record: null, error: "" };
+  let st = null;
+  try { st = fs.lstatSync(at.file); } catch (e) {
+    if (e && e.code === "ENOENT") return { present: false, valid: true, record: null, error: "" };
+    return { present: true, valid: false, record: null, error: `${at.file} cannot be inspected (${e && e.code || "error"}): the incident folder needs a look by hand` };
+  }
+  if (st.isSymbolicLink()) return { present: true, valid: false, record: null, error: `${at.file} is a link: refused, the incident folder needs a look by hand` };
+  if (!st.isFile()) return { present: true, valid: false, record: null, error: `${at.file} is not a regular file: refused, the incident folder needs a look by hand` };
   const text = readText(at.file);
   if (text === null) return { present: true, valid: false, record: null, error: `${at.file} cannot be read` };
   let rec;
