@@ -530,7 +530,9 @@ function verifyCache(done, target, project) {
     const rels = dir ? comparedFiles(dir) : [];
     if (!rels.length) { problems.push(`${id}: the copy ${dir || target} has no file to compare with what Claude Code cached.`); continue; }
     const hand = `Refresh it by hand: ${fix}.`;
-    const extra = rels[0].startsWith("workflows/") ? comparedFiles(mine.installPath).filter(r => !rels.includes(r)) : [];
+    // Every cached workflow the copy lacks, also when the copy has no workflow left (then rels is plugin.json alone).
+    const workflowsOf = (d) => comparedFiles(d).filter(r => r.startsWith("workflows/"));
+    const extra = workflowsOf(mine.installPath).filter(r => !workflowsOf(dir).includes(r));
     for (const r of extra) problems.push(`${id} (${p.scope} scope): ${path.join(mine.installPath, ...r.split("/"))} (Claude Code's cache) has no counterpart in the copy ${dir}; sessions would run a workflow this commit no longer has. ${hand}`);
     let bad = 0;
     for (const rel of rels) {

@@ -198,6 +198,8 @@ export default function register(h) {
       { name: "core-changed", plugin: "zodchi-core", file: "core/workflows/gate.js", first: "// gate, commit 1\n", next: "// gate, commit 2\n" },
       { name: "domain-added", plugin: "zodchi-web-apps", file: "domains/web-apps/workflows/extra.js", first: null, next: "// extra, commit 2\n" },
       { name: "domain-removed", plugin: "zodchi-web-apps", file: "domains/web-apps/workflows/old.js", first: "// old, commit 1\n", next: null },
+      // the domain's last workflow goes: the copy then has only plugin.json to compare, and the cached workflow is still extra
+      { name: "domain-last-removed", plugin: "zodchi-web-apps", file: "domains/web-apps/workflows/branch-review.js", first: null, next: null },
     ];
     for (const c of cases) {
       const w = clone(t, `install-stale-${c.name}`);
