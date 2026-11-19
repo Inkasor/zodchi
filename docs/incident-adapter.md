@@ -165,4 +165,4 @@ Every name here is made up.
 }
 ```
 
-The fixtures in `core/workflows/fixtures/incident-triage/cases/` hold more adapters of the same made-up product.
+The fixtures in `scripts/e2e/fixtures/incident-triage/cases/` hold more adapters of the same made-up product; the cases run with `node scripts/e2e.mjs --no-build incident-triage-kinds incident-triage-adapter-refused` (and the other `incident-triage-*` scenarios), and `npm run e2e` runs them with the rest.

@@ -65,7 +65,7 @@ args: {
      `op:processes`, `agentSkill` or `allowList:<name>`), and the same text is the cause in the incident-log note and
      what the lead hands to the operator or owner. `classification.json` keeps the summaries apart from the findings
      (under `modelWording.findingSummaries`). An infra finding whose summary says "Grant the lead read access to the
-     processes table." therefore appears in the draft only under the wording heading (fixture `access-in-summary`);
+     processes table." therefore appears in the draft only under the wording heading (case `access-in-summary`);
    - a fix brief with an empty or blank entry in files, done or checks refuses the answer;
    - a retry recommendation without a retry in the adapter refuses the answer;
    - `stale` without evidence that a specific release fixes the error and that the environment runs it becomes
@@ -159,6 +159,11 @@ reply meanwhile.
 
 ## Checks
 
-`node core/workflows/fixtures/incident-triage/mock.mjs` runs the workflow over the synthetic cases with a fake agent:
-the facts are collected for real from a made-up product, only the model's answer is a saved file. It prints the
-verdict of each case and exits 0 when all pass.
+`node scripts/e2e.mjs --no-build incident-triage-kinds incident-triage-adapter-refused incident-triage-answer-refused incident-triage-reply incident-triage-stale-unknown incident-triage-untrusted-input incident-triage-runs incident-triage-cases-covered`
+runs the real workflow body over the synthetic cases in `scripts/e2e/fixtures/incident-triage/cases/` with a fake agent
+(`scripts/e2e/scenarios/incident-triage.mjs`): the facts are collected for real from a made-up product
+(`scripts/e2e/fixtures/incident-triage/product.mjs`), only the model's answer is the case's `classification.json` and
+the gate helper's line is scripted. The four kinds of the plan are the first scenario (`incident-triage-kinds`): an
+error older than the release (`stale`), a skill the allow-list contradicts (`skill-allowlist`), a question about access
+answered by a better tool report (`blocked-release`) and a product fix without a skill change (`agent-capability`).
+`npm run e2e` runs them with the rest of the suite; `--no-build` skips the Rust build when the binaries exist.
