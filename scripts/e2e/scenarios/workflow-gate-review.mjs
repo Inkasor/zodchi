@@ -94,16 +94,17 @@ export default function register({ scenario, ROOT }) {
     t.ok(r.json.tried[0].startsWith(projectOnly) && r.json.error.includes(projectOnly), "and it is named");
     t.eq([boot(sub).code, boot(`${projA}/`).code], [4, 4], "from a folder inside the project, or with a trailing slash, it is the same copy");
     r = boot(other);
-    t.eq([r.code, r.json.plugin.root], [0, user], "another project gets the user copy, and the answer names it");
+    // macOS: the temp folder is a symlink (/var -> /private/var), so both sides are compared as real paths
+    t.eq([r.code, fs.realpathSync(r.json.plugin.root)], [0, fs.realpathSync(user)], "another project gets the user copy, and the answer names it");
     // the most specific project install wins
     register([{ scope: "user", installPath: user }, { scope: "local", projectPath: projA, installPath: projectOk }, { scope: "local", projectPath: sub, installPath: projectOnly }]);
-    t.eq([boot(sub).code, boot(projA).json.plugin.root], [4, projectOk], "the most specific project install is the one that counts");
+    t.eq([boot(sub).code, fs.realpathSync(boot(projA).json.plugin.root)], [4, fs.realpathSync(projectOk)], "the most specific project install is the one that counts");
     // an explicit folder without the helper is a stop as well, and the first explicit folder decides
     register([{ scope: "user", installPath: user }]);
     r = boot(other, { CLAUDE_PLUGIN_ROOT: projectOnly });
     t.eq([r.code, r.json.tried.length], [4, 1], "a folder Claude Code names that lacks the helper: exit 4, the registration is not consulted");
     t.eq(boot(other, { ZODCHI_PLUGIN_ROOT: projectOnly, CLAUDE_PLUGIN_ROOT: user }).code, 4, "the first explicit folder decides");
-    t.eq(boot(other, { ZODCHI_PLUGIN_ROOT: projectOk, CLAUDE_PLUGIN_ROOT: projectOnly }).json.plugin.root, projectOk, "and is the one that runs");
+    t.eq(fs.realpathSync(boot(other, { ZODCHI_PLUGIN_ROOT: projectOk, CLAUDE_PLUGIN_ROOT: projectOnly }).json.plugin.root), fs.realpathSync(projectOk), "and is the one that runs");
 
     const SESSION = /^const SESSION_PROJECT = '"\$\(pwd -W 2>\/dev\/null \|\| pwd\)"'$/m;
     for (const rel of ["core/workflows/code-package.js", "core/workflows/incident-triage.js", "core/workflows/ops-script.js", "domains/gamedev-unity/workflows/asset-round.js",
