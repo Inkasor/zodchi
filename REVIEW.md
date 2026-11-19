@@ -48,3 +48,8 @@ the owner stop a release for it?
   are ours; what matters is that the brief itself carries no secret and, in a public repository, no private name.
 - nit for the installer (2026-11-19): a missing installed_plugins.json read as "Claude Code keeps no such file"; the
   hand-refresh hint when two scopes share one cache folder.
+- nit for the e2e fakes (2026-11-19, the lead after three rounds): a fake agent that checks a step's instructions by
+  the presence of each command and path, not by parsing every write group in order with duplicates; absolute
+  scratch and checkout paths in the traces of a local or CI run (local traces stay in .agent-tmp/, CI traces carry
+  only the runner's paths). The parity that matters is that each old assertion still runs and a dropped instruction
+  fails a scenario.
