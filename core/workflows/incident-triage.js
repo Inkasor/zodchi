@@ -151,6 +151,14 @@ function collectMain(PLAN) {
 }
 
 // SHA-256 of the UTF-8 bytes of a string: the workflow checks with it that a runner wrote a file exactly as given.
+// A runner that copies a file into its answer may drop the final line break, or turn LF into CRLF: the text whose
+// sha256 is the file's is the copy (with that line break put back); anything else is not a copy (null).
+function exactCopy(text, hash) {
+  const t = String(text == null ? '' : text)
+  const crlf = t.replace(/\r?\n/g, '\r\n')
+  for (const v of [t, t + '\n', crlf, crlf + '\r\n']) if (sha256(v) === hash) return v
+  return null
+}
 function sha256(text) {
   const bytes = []
   for (const ch of String(text)) {
@@ -870,7 +878,8 @@ return out
 async function body() {
   if (!open.ok) { out.state = 'failed'; out.stoppedAt = `open (${open.summary || 'not ok'})`; return }
   const parse = (t, what) => { if (!t || !t.trim()) return null; try { return JSON.parse(t) } catch { out.notes.push(`${what} is not JSON; ignored`); return null } }
-  if (open.incident && open.incident.trim()) {
+  // A runner sometimes writes the "" of the prompt literally for a missing file: that is no file, not a broken one.
+  if (open.incident && !/^\s*(""|''|)\s*$/.test(open.incident)) {
     incident = parse(open.incident, 'incident.json')
     if (!incident) { out.refused = [`${tmp}/incident.json is not JSON: the incident folder needs a look by hand`]; return }
     if (incident.id !== a.incident) { out.refused = [`${tmp}/incident.json belongs to incident ${JSON.stringify(incident.id)}, not ${a.incident}`]; return }
@@ -884,12 +893,13 @@ async function body() {
 
   if (!open.adapter) { revision = null; out.refused = [`the adapter ${a.adapter} cannot be read: ${open.adapterError || 'empty'}`]; return }
   adapterHash = String(open.adapterSha256 || '').trim().split(/\s+/)[0].toLowerCase()
-  if (adapterHash !== sha256(open.adapter) && adapterHash !== sha256(open.adapter.replace(/\r?\n/g, '\r\n'))) {
+  const adapterText = exactCopy(open.adapter, adapterHash)
+  if (adapterText === null) {
     revision = null
     out.refused = ['the adapter text the runner returned does not match its sha256: the runner did not copy it exactly; run again']
     return
   }
-  const { adapter: ad, problems } = checkAdapter(open.adapter)
+  const { adapter: ad, problems } = checkAdapter(adapterText)
   if (problems.length) { revision = null; out.refused = problems.map(p => `adapter: ${p}`); out.next = 'Fix the adapter (docs/incident-adapter.md) and run again.'; return }
 
   // The classifier: the first candidate of its role that is available, as in code-package.
@@ -931,11 +941,11 @@ async function body() {
     `3. Run \`node ${q(`${revDir}/collect.cjs`)} > ${q(`${revDir}/collect.out`)} 2> ${q(`${revDir}/collect.err`)}\` once, in the foreground, and keep its exit code. ` +
     `The script runs every read-only operation of the product itself, each with its own time limit and output cap, and goes on after a failed, refused or timed-out one: those are results, not failures of this step. ` +
     `This overrides the usual rule to stop at the first failed command. Never rerun it, never run an operation by hand, never work around a refused one and never ask for access.\n` +
-    `4. summary: the content of ${revDir}/collect.out exactly as read (one line of JSON). evidenceSha256: what \`sha256sum ${q(`${revDir}/evidence.json`)}\` prints, "" when the file is missing. exitCode: the script's exit code; when it is not 0, put the last lines of collect.err into error.\n` +
+    `4. collectOut: the content of ${revDir}/collect.out exactly as read (\`cat\` it; one line of JSON), never a description of it. summary: your own short words, optional. evidenceSha256: what \`sha256sum ${q(`${revDir}/evidence.json`)}\` prints, "" when the file is missing. exitCode: the script's exit code; when it is not 0, put the last lines of collect.err into error.\n` +
     `ok is true when every file was written with its hash and the script exited 0. wrote: each file you wrote with the sha256 you checked.`,
     {
       agentType: 'zodchi-core:runner', phase: 'Facts', label: `collect ${a.incident} rev ${revision}`,
-      schema: { type: 'object', required: ['ok', 'summary', 'evidenceSha256', 'exitCode', 'wrote'], properties: { ok: { type: 'boolean' }, summary: { type: 'string' }, evidenceSha256: { type: 'string' }, exitCode: { type: 'number' }, error: { type: 'string' }, wrote: WROTE } },
+      schema: { type: 'object', required: ['ok', 'collectOut', 'evidenceSha256', 'exitCode', 'wrote'], properties: { ok: { type: 'boolean' }, collectOut: { type: 'string' }, summary: { type: 'string' }, evidenceSha256: { type: 'string' }, exitCode: { type: 'number' }, error: { type: 'string' }, wrote: WROTE } },
     })
   if (!facts || !facts.ok || !wroteAll(facts, files)) {
     out.state = 'failed'
@@ -943,7 +953,7 @@ async function body() {
     return
   }
   let summary
-  try { summary = JSON.parse(facts.summary) } catch { out.state = 'failed'; out.stoppedAt = 'facts (the collector summary is not JSON)'; return }
+  try { summary = JSON.parse(facts.collectOut) } catch { out.state = 'failed'; out.stoppedAt = 'facts (the collector summary is not JSON)'; return }
   const evSha = String(facts.evidenceSha256 || '').trim().split(/\s+/)[0].toLowerCase()
   const planIds = plan.items.map(i => i.id)
   if (!summary || summary.evidenceSha256 !== evSha || !Array.isArray(summary.items) || summary.items.map(i => i.id).join() !== planIds.join() ||
@@ -977,10 +987,11 @@ async function body() {
       return
     }
     if (!res || res.infra || !res.ok) { out.state = 'failed'; out.stoppedAt = `classify (${!res ? 'no result' : res.infra || res.summary || 'the job did not succeed'})`; out.next = 'Run the workflow again: it starts the next revision.'; return }
-    if (String(res.answerSha256 || '').trim().split(/\s+/)[0].toLowerCase() !== sha256(res.answer) && String(res.answerSha256 || '').trim().split(/\s+/)[0].toLowerCase() !== sha256(res.answer.replace(/\r?\n/g, '\r\n'))) {
+    const answerText = exactCopy(res.answer, String(res.answerSha256 || '').trim().split(/\s+/)[0].toLowerCase())
+    if (answerText === null) {
       out.state = 'failed'; out.stoppedAt = 'classify (the answer the runner returned does not match the sha256 of the file)'; return
     }
-    raw = res.answer
+    raw = answerText
     try { answer = JSON.parse(raw) } catch { answer = null }
   } else {
     // A Claude model plays the role: it reads the three files and nothing else, and runs nothing.
