@@ -45,6 +45,20 @@ args: {
 | `publicRepo` | `true` when the brief is for a public repository: the review also looks for company, product and person names and machine paths |
 | `models`, `pluginRoot`, `rerun` | as in `code-package` |
 
+## What runs where
+
+The researchers, the writer and the reviewer are models; every other file step is a command of the helper of the loaded
+plugin copy (`core/scripts/gate.mjs` hands `brief-inspect`, `brief-material`, `brief-preflight` and `review-read` to
+`core/scripts/io.mjs`). A runner (the cheap model) only runs one such command and returns the one JSON line it printed;
+the workflow checks it against the `lineSha256` printed with it and decides from its fields. No file content passes
+through a model: the brief is written by the writer and read back by the helper as its hash, size, first line and
+headings; the review request (prompt, facts, excerpts) is written by the helper; the review's answer is read by the
+helper as its hash and its parsed verdict and findings (at most 40 findings, each text capped at 800 characters; the
+writer of the fix reads the whole file). The workflow's own material for the request (the goal, the questions, the facts
+and the unknowns) grows with the research, so it never travels in one command: its JSON text is cut into parts of at most
+3000 characters, each written by one `brief-material` command and checked by its hash, and `brief-preflight` joins the
+parts and checks the whole hash before it uses them.
+
 ## The stages
 
 1. **Gate.** One command of the loaded plugin copy (`core/scripts/gate.mjs roles`) prints the role table, the account
@@ -64,11 +78,13 @@ args: {
    fact it relies on by reading the cited file (a fact that does not hold is not used and is reported), cuts the scope to
    one package and says what is left for later, and lists the **owner decisions** apart, each with a marked default,
    instead of inventing an answer. A runner then checks that the file exists, starts with the workflow's line and has a
-   title, a `## Review boundary` and a `## Checks` section; a brief without them is not reviewed.
+   title, a `## Review boundary` and a `## Checks` section (the helper's `brief-inspect`); a brief without them is not
+   reviewed.
 4. **Review.** An independent review through the gateway, role `architect`, the same way `code-package` reviews a change:
-   a runner calls `zodchi run` in the foreground. Before anything is sent, a runner only reads the brief and the lines the
-   facts cite, and the workflow itself screens them: a brief that holds a secret-shaped value (in a public repository also a
-   machine path) is not sent, and the run stops naming the lines (not the values) for you to correct. The brief, the facts
+   a runner calls `zodchi run` in the foreground. Before anything is sent, the helper (`brief-preflight`, run by a runner)
+   reads the brief and the lines the facts cite and screens the brief: a brief that holds a secret-shaped value (in a
+   public repository also a machine path) is not sent and nothing is written for the gateway, and the run stops naming the
+   lines (not the values) for you to correct. The brief, the facts
    file and one excerpts file are attached: the cited lines with three lines around them, redacted, never a whole source
    file. With `publicRepo` the facts, excerpts and prompt show `<repo1>/path` instead of machine paths (the attachment
    names are the paths of `out` and `tmp`: name them neutrally). Every attachment is required; the exact list is recorded
@@ -76,7 +92,7 @@ args: {
    run). The reviewer looks for: wrong facts, places where the writer of the code would have to
    guess, a scope bigger than one package, a missing or vague review boundary, checks that would pass with the goal
    unmet, secrets or private names, and owner decisions that are answered instead of listed. Findings are `blocker`,
-   `important` or `minor`. The answer is checked before it counts: its hash must match its file and it must be a review
+   `important` or `minor`. The answer is checked before it counts: the helper reads it with its hash, and it must be a review
    with a verdict and findings, and the verdict must agree with them: `approved` with a blocker or important finding, or
    `changes_requested` with only minor ones, stops the run instead of becoming an approval.
 5. **Fix.** When there is a blocker or an important finding, the writer fixes the brief once. It verifies each finding

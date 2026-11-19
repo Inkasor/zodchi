@@ -13,7 +13,13 @@
 //                  unity-check name the copy that ran in their result)
 //   claim          the claim step of code-package: compares the package's files with the other open claims and writes its claim
 //   claim-more     the claim extensions of code-package: compares the files the work changed with the other open claims and adds them
-//                  (both under the claims lock, see "The claim commands" below)
+//                  (both under the claims lock, see "The claim commands" below). Given the repository, it takes the changed files
+//                  from Git itself, so the command a runner types stays short whatever the change
+//   incident-open, incident-collect, incident-publish, incident-fail, incident-unlock, brief-inspect, brief-material, brief-preflight,
+//   review-read
+//                  the file work of incident-triage and design-brief, in io.mjs beside this file (see its header): every file
+//                  those workflows read or write goes through these commands, never through a model. Their answers carry
+//                  lineSha256, the SHA-256 of the answer without that field, so the workflow sees whether the runner copied the line
 //
 // It prints ONE line of compact JSON to stdout and nothing else. The workflow reads that line and decides; the exit
 // code is 0 when the line is the answer, 2 for a bad call (no spec, a spec that is not JSON, a field missing), 3 when the
@@ -350,18 +356,21 @@ function needFields(spec, strings, lists) {
   if (!/^[\w.-]+$/.test(spec.label)) print({ ok: false, api: API, error: "spec.label may hold letters, digits, \".\", \"_\" and \"-\" only" }, 2);
 }
 
-// claim: { dir, label, files, branch, brief, tmp, base }. An open claim of another label that lists one of files is a conflict
+// claim: { dir, label, files, branch, brief, tmp, base, repo? }. An open claim of another label that lists one of files is a conflict
 // "<label>: <file>"; an open claim of another label whose "branch" is set and differs is a branch conflict "<label>: <branch>". Without
 // either, <dir>/<label>.json is written: { label, status "open", files, branch, brief, tmp, base, openedAt }. An open claim of the same
 // label (a resumed package) is kept as it is, with files it lacks added and its branch set to the requested one (checked against the
 // others above; branchWas names the one it had); it is no conflict. Open claims in the folder under Node's home folder, when that is another
 // folder (legacyDirOf), stop the claim (legacyDir, legacyClaims "<label>: <n> file(s)"): they must be closed or moved first.
+// With repo, the claim records atGate: every path `git status` lists in the repository when the package starts (keyed), so that
+// claim-more later leaves the changes that were there before the package alone; a reused claim keeps the atGate it has.
 function claimCmd(spec) {
   needFields(spec, ["dir", "label", "branch", "brief", "tmp", "base"], ["files"]);
   const dir = claimsDirOf(spec);
   const files = keysOf(spec.files);
   const file = path.join(dir, `${spec.label}.json`);
   const base = { ok: false, api: API, plugin: pluginCopy(), conflicts: [], branchConflicts: [], file: norm(file), reused: false, files: [] };
+  if (spec.repo !== undefined && (typeof spec.repo !== "string" || !spec.repo)) print({ ok: false, api: API, error: "spec.repo is not a string" }, 2);
   try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { return { ...base, error: `the claims folder: ${e.message}` }; }
   const legacyDir = legacyDirOf(spec);
   const done = withLock(dir, () => {
@@ -377,27 +386,43 @@ function claimCmd(spec) {
       if (o.branch && o.branch !== spec.branch) branchConflicts.push(`${o.label}: ${o.branch}`);
     }
     if (conflicts.length || branchConflicts.length) return { ...base, conflicts, branchConflicts };
+    // What Git lists before the package starts, read only once nothing stands against the claim.
+    let atGate = null;
+    if (spec.repo !== undefined) {
+      const st = dirtyList(spec.repo);
+      if (st.error) return { ...base, error: `the changes at the start are unknown: ${st.error}` };
+      atGate = keysOf(st.paths);
+    }
     const own = readJson(file).value;
     if (own && typeof own === "object" && own.label === spec.label && own.status === "open") {
       const have = Array.isArray(own.files) ? own.files.map(String) : [];
       const haveKeys = new Set(have.map(pathKey));
       const add = files.filter((f) => !haveKeys.has(f));
       const moved = own.branch !== spec.branch;
-      if (add.length || moved) writeClaim(file, { ...own, files: [...have, ...add], branch: spec.branch });
+      const gateAdd = Boolean(atGate) && !Array.isArray(own.atGate);
+      if (add.length || moved || gateAdd) writeClaim(file, { ...own, files: [...have, ...add], branch: spec.branch, ...(gateAdd ? { atGate } : {}) });
       return { ...base, ok: true, reused: true, files: [...have, ...add], ...(moved ? { branchWas: typeof own.branch === "string" ? own.branch : "" } : {}) };
     }
-    writeClaim(file, { label: spec.label, status: "open", files, branch: spec.branch, brief: spec.brief, tmp: spec.tmp, base: spec.base, openedAt: stamp() });
+    writeClaim(file, { label: spec.label, status: "open", files, branch: spec.branch, brief: spec.brief, tmp: spec.tmp, base: spec.base, openedAt: stamp(), ...(atGate ? { atGate } : {}) });
     return { ...base, ok: true, files };
   }, { waitMs: lockWait(spec), staleMs: null });
   if (done.locked) return done.value;
   return { ...base, conflicts: done.busy ? ["lock busy"] : [], error: done.why };
 }
 
-// claim-more: { dir, label, hard, soft }. Every hard file (the writer reported it) that another open claim lists is a conflict
-// "<label>: <file>"; every soft file (only Git shows it changed) that another open claim lists is that package's work and goes to others.
-// Without conflicts, every hard file and every soft file not in others that this label's open claim lacks is added to it (added).
-// The open claims of other labels in the folder under Node's home folder (legacyDirOf) count as other claims here too.
+// claim-more: { dir, label, repo }. The helper runs `git status --porcelain -z -uall` in repo itself: the changed files are every path it
+// lists, except the job folder .agent-tmp/ and the paths the claim recorded as changed before the package started (atGate). A changed file
+// that another open claim lists is that package's work: it goes to others (as Git spells it) and owners ("<label>: <path>"), and is never
+// added. Every other changed file is this package's: changed lists them as Git spells them, and those the claim lacks are added (keyed).
+// The workflow compares the files its writer reported with others: such a file is a conflict, decided there. No list of paths is in the
+// command, so it stays short however many files a round changes.
+// The older form { dir, label, hard, soft } (a workflow that hands the lists over): every hard file (the writer reported it) that another
+// open claim lists is a conflict "<label>: <file>"; every soft file (only Git shows it changed) that another open claim lists is that
+// package's work and goes to others. Without conflicts, every hard file and every soft file not in others that this label's open claim
+// lacks is added to it (added).
+// In both, the open claims of other labels in the folder under Node's home folder (legacyDirOf) count as other claims too.
 function claimMoreCmd(spec) {
+  if (spec.repo !== undefined && spec.hard === undefined && spec.soft === undefined) return claimMoreFromGit(spec);
   needFields(spec, ["dir", "label"], ["hard", "soft"]);
   const dir = claimsDirOf(spec);
   const hard = keysOf(spec.hard), soft = keysOf(spec.soft);
@@ -417,6 +442,38 @@ function claimMoreCmd(spec) {
     const added = [...new Set([...hard, ...soft.filter((f) => !others.includes(f))])].filter((f) => !haveKeys.has(f));
     if (added.length) writeClaim(file, { ...own, files: [...have, ...added] });
     return { ...base, ok: true, others, added };
+  }, { waitMs: lockWait(spec), staleMs: null });
+  if (done.locked) return done.value;
+  return { ...base, conflicts: done.busy ? ["lock busy"] : [], error: done.why };
+}
+
+function claimMoreFromGit(spec) {
+  needFields(spec, ["dir", "label", "repo"], []);
+  const dir = claimsDirOf(spec);
+  const file = path.join(dir, `${spec.label}.json`);
+  const base = { ok: false, api: API, plugin: pluginCopy(), conflicts: [], others: [], owners: [], changed: [], added: [], file: norm(file) };
+  const st = dirtyList(spec.repo);
+  if (st.error) return { ...base, error: st.error, gitError: true };
+  const done = withLock(dir, () => {
+    const own = readJson(file).value;
+    if (!own || typeof own !== "object" || own.label !== spec.label || own.status !== "open") return { ...base, error: `${spec.label} has no open claim at ${norm(file)}` };
+    const atGate = new Set(keysOf(own.atGate));
+    const seen = new Map();
+    for (const p of st.paths) {
+      const k = pathKey(p);
+      if (!k || /^\.agent-tmp(\/|$)/.test(k) || atGate.has(k) || seen.has(k)) continue;
+      seen.set(k, norm(p));
+    }
+    const owner = new Map();
+    const legacyDir = legacyDirOf(spec);
+    for (const o of [...othersOpen(dir, spec.label), ...(legacyDir ? othersOpen(legacyDir, spec.label) : [])]) for (const f of o.files) if (!owner.has(f)) owner.set(f, o.label);
+    const others = [...seen].filter(([k]) => owner.has(k));
+    const mine = [...seen].filter(([k]) => !owner.has(k));
+    const have = Array.isArray(own.files) ? own.files.map(String) : [];
+    const haveKeys = new Set(have.map(pathKey));
+    const added = mine.map(([k]) => k).filter((k) => !haveKeys.has(k));
+    if (added.length) writeClaim(file, { ...own, files: [...have, ...added] });
+    return { ...base, ok: true, others: others.map(([, p]) => p), owners: others.map(([k, p]) => `${owner.get(k)}: ${p}`), changed: mine.map(([, p]) => p), added, atGate: Array.isArray(own.atGate) };
   }, { waitMs: lockWait(spec), staleMs: null });
   if (done.locked) return done.value;
   return { ...base, conflicts: done.busy ? ["lock busy"] : [], error: done.why };
@@ -514,9 +571,20 @@ function roles(spec) {
   return { ok: true, api: API, plugin: pluginCopy(), roles: m.roles, modelsErrors: m.errors, account: acc.account, accountError: acc.accountError, ignoreExit: ignore };
 }
 
+// The file commands live in io.mjs beside this file, loaded only for them: the gate commands need nothing but this file.
+const IO = ["incident-open", "incident-collect", "incident-publish", "incident-fail", "incident-unlock", "brief-inspect", "brief-material", "brief-preflight", "review-read"];
 const COMMANDS = { "code-package": codePackage, "branch-review": branchReview, ledger, plugin, roles, claim: claimCmd, "claim-more": claimMoreCmd };
 const [command, specText] = process.argv.slice(2);
-if (!COMMANDS[command]) print({ ok: false, api: API, error: `unknown command ${JSON.stringify(command)}; one of ${Object.keys(COMMANDS).join(", ")}` }, 2);
+if (IO.includes(command)) {
+  let io;
+  try { io = await import("./io.mjs"); } catch (e) { print({ ok: false, api: API, error: `the plugin copy at ${norm(path.resolve(HERE, ".."))} has no usable scripts/io.mjs (${String(e.message).slice(0, 200)}); reinstall the plugin` }, 2); }
+  // The answer with api and the plugin copy, and lineSha256 over all of it: the workflow checks that the runner copied the line exactly.
+  COMMANDS[command] = (spec) => {
+    const answer = { ...io.IO_COMMANDS[command](spec), api: API, plugin: pluginCopy() };
+    return { ...answer, lineSha256: io.lineSha(answer) };
+  };
+}
+if (!COMMANDS[command]) print({ ok: false, api: API, error: `unknown command ${JSON.stringify(command)}; one of ${[...new Set([...Object.keys(COMMANDS), ...IO])].join(", ")}` }, 2);
 let spec;
 try { spec = JSON.parse(specText); } catch (e) { print({ ok: false, api: API, error: `the spec is not JSON: ${e.message}` }, 2); }
 if (!spec || typeof spec !== "object") print({ ok: false, api: API, error: "the spec is not an object" }, 2);

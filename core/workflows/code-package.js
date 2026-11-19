@@ -475,11 +475,13 @@ const LOCKWAIT = `If a Git command fails with an error that names index.lock (an
 // The ignore repair changes .gitignore, so the claim holds it too, checked against other open packages like any file.
 const claimKeys = needIgnore && !myKeys.includes('.gitignore') ? [...myKeys, '.gitignore'] : myKeys
 try {
+// With the repository, the helper also records in the claim what `git status` lists before the package starts (atGate), which claim-more
+// later leaves alone.
 // The helper compares claimKeys with every other open claim (a conflict "<label>: <file>"), and the branch with theirs (a branch conflict
 // "<label>: <branch>": a package may not start on another branch while another open package of this repository works on its own, since
 // switching would pull the branch from under it); without either it writes the claim, or reuses this label's open claim on a resume.
 const claimRead = readClaimHelper(await helperStep('claim',
-  { dir: claimsSpecDir, label: a.label, files: claimKeys, branch: myBranch, brief: a.brief, tmp: a.tmp, base }, `claim ${a.label}`), 'the claim helper')
+  { dir: claimsSpecDir, label: a.label, files: claimKeys, branch: myBranch, brief: a.brief, tmp: a.tmp, base, repo: repoKey }, `claim ${a.label}`), 'the claim helper')
 const claim = claimRead.facts
 // Open claims in the claims folder under Node's home folder, which a build of this workflow used, when that is not the folder the helper keeps
 // claims in (the shell's $HOME): they would go unseen, so nothing is claimed until a person closes or moves them.
@@ -675,44 +677,52 @@ async function body() {
       out.next = `The work changed files that had uncommitted changes before the package started: ${touched.join(', ')}. This round's work is not committed: it stays in ${a.repo} for a human to separate from the earlier changes.`
       return false
     }
+    // A first look at the work tree only decides whether the claim needs the helper at all: nothing new (every file reported or listed is
+    // claimed already) is the common case of a later round, and the claim is left as it is.
     const st = await step(
       `List what changed in the work tree of ${a.repo}; change nothing. Run \`git status --porcelain -uall\`. ` +
       `paths: every path it lists, relative to the repository, without the status letters and quotes (a rename gives both paths); [] when it lists nothing. ok is true when the command ran.`,
       { agentType: 'zodchi-core:runner', schema: STATUS, phase: phaseName, label: `status ${tag}` })
     // A missing list is not a clean work tree: unreported files would escape the claim and the review.
     if (!st || !st.ok || !Array.isArray(st.paths)) { out.stoppedAt = `git status after ${tag}${st && st.ok ? ' (no paths list)' : ''}`; return false }
-    const reported = found.slice()
-    const seen = []
+    const listed = []
     for (const p of st.paths) {
+      let r
+      try { r = rel(p) } catch { continue }
+      if (!atGate.has(r.toLowerCase()) && !jobFolder(r) && !foreign.has(r.toLowerCase())) listed.push(r)
+    }
+    if (!uniqueNew([...found, ...listed]).length) { noteChanged([...found, ...listed]); return true }
+    // Something is new: the helper runs `git status --porcelain -uall` in the repository itself and compares what it lists with the open
+    // claims under the lock. The command names no file, so it stays short however many files a round changes, and the list it decides from
+    // is Git's, not the runner's retelling above. changed: the files Git lists that are this package's (not dirty before it started, not the
+    // job folder, in no other open claim); the ones the claim lacked are added. others: the files Git lists that another open package
+    // claims, its own work in the shared checkout; owners names the package of each.
+    const moreRead = readClaimHelper(await helperStep('claim-more', { dir: claimsSpecDir, label: a.label, repo: repoKey }, `claim more ${tag}`, phaseName), 'the claim-more helper')
+    const more = moreRead.facts
+    // A missing list is not a clean work tree: unreported files would escape the claim and the review.
+    if (more && !more.ok && more.gitError) { out.stoppedAt = `git status after ${tag} (${more.error || 'it failed'})`; return false }
+    if (!more || !more.ok) { out.stoppedAt = `claim more (${more ? more.error || more.conflicts.join(', ') || 'the helper added nothing' : moreRead.error})`; return false }
+    // An answer without the others, the changed or the added list cannot tell which files are another package's: nothing is recorded or committed.
+    for (const k of ['others', 'changed', 'added']) if (!Array.isArray(more[k])) { out.stoppedAt = `claim more (the answer has no ${k} list)`; return false }
+    // A file the writer reported that another open package claims is a conflict: the work stays uncommitted for a human.
+    const otherKeys = new Map(more.others.map((o, i) => [String(o).toLowerCase(), Array.isArray(more.owners) && more.owners[i] ? String(more.owners[i]) : `another package: ${o}`]))
+    const clash = [...new Set(found.map(r => r.toLowerCase()))].filter(k => otherKeys.has(k))
+    if (clash.length) {
+      out.conflicts = clash.map(k => otherKeys.get(k))
+      out.stoppedAt = 'claim conflict'
+      out.next = `The work changed files that another open package claims: ${out.conflicts.join('; ')}. This round's work is not committed: it stays in ${a.repo} for a human to settle with that package.`
+      return false
+    }
+    for (const k of otherKeys.keys()) foreign.add(k)
+    const seen = []
+    for (const p of more.changed) {
       let r
       try { r = rel(p) } catch { continue }
       if (!atGate.has(r.toLowerCase()) && !jobFolder(r) && !foreign.has(r.toLowerCase())) seen.push(r)
     }
-    const hard = uniqueNew(reported)
-    const hardKeys = hard.map(r => r.toLowerCase())
-    const soft = uniqueNew(seen).filter(r => !hardKeys.includes(r.toLowerCase()))
-    if (!hard.length && !soft.length) { noteChanged([...reported, ...seen]); return true }
-    // hard: files the writer reported as changed; another open package listing one is a conflict. soft: files only Git shows changed;
-    // one another open package lists is that package's own work in the shared checkout (others), never ours and never a conflict.
-    // The helper compares and extends the claim under the lock; what is a conflict, what is another's and what was added is its answer.
-    const moreRead = readClaimHelper(await helperStep('claim-more',
-      { dir: claimsSpecDir, label: a.label, hard: hardKeys, soft: soft.map(r => r.toLowerCase()) }, `claim more ${tag}`, phaseName), 'the claim-more helper')
-    const more = moreRead.facts
-    if (more && !more.ok && more.conflicts.length && more.conflicts[0] !== 'lock busy') {
-      out.conflicts = more.conflicts
-      out.stoppedAt = 'claim conflict'
-      out.next = `The work changed files that another open package claims: ${more.conflicts.join('; ')}. This round's work is not committed: it stays in ${a.repo} for a human to settle with that package.`
-      return false
-    }
-    if (!more || !more.ok) { out.stoppedAt = `claim more (${more ? more.error || more.conflicts.join(', ') || 'the helper added nothing' : moreRead.error})`; return false }
-    // An answer without the others or the added list cannot tell which soft files are another package's: nothing is recorded or committed.
-    if (!Array.isArray(more.others) || !Array.isArray(more.added)) { out.stoppedAt = `claim more (the answer has no ${!Array.isArray(more.others) ? 'others' : 'added'} list)`; return false }
-    // Only a soft file the helper names is another package's; the match is by the lower-case path, as claims are kept.
-    const others = new Set(more.others.map(o => String(o).toLowerCase()).filter(o => soft.some(r => r.toLowerCase() === o)))
-    for (const o of others) foreign.add(o)
-    const mine = [...hard, ...soft.filter(r => !others.has(r.toLowerCase()))]
+    const mine = uniqueNew([...found, ...seen])
     for (const r of mine) claimed.add(r.toLowerCase())
-    noteChanged([...reported, ...seen.filter(r => !others.has(r.toLowerCase()))])
+    noteChanged([...found, ...seen])
     // What the helper added to the claim, in the case the files have (a file the claim already listed, on a resume, is ours but not added).
     const addedKeys = new Set(more.added.map(f => String(f).toLowerCase()))
     const added = mine.filter(r => addedKeys.has(r.toLowerCase()))
@@ -720,7 +730,7 @@ async function body() {
       out.claimAdded = [...(out.claimAdded || []), ...added]
       log(`Claim of ${a.label} extended by ${added.join(', ')}`)
     }
-    if (others.size) log(`Left out of ${a.label}: ${[...others].join(', ')} (claimed by another open package, changed in the shared checkout)`)
+    if (otherKeys.size) log(`Left out of ${a.label}: ${more.others.join(', ')} (claimed by another open package, changed in the shared checkout)`)
     return true
   }
 

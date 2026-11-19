@@ -33,14 +33,38 @@ args: {
   another). Without it, or without a Codex limit, the first Claude candidate of the role classifies.
 - One folder per incident. A second run in the same folder is a new revision; it never edits an older one.
 
+## What runs where
+
+Every file of the incident folder is read and written by the helper of the loaded plugin copy: `core/scripts/gate.mjs`
+hands the commands `incident-open`, `incident-collect`, `incident-publish`, `incident-fail` and `incident-unlock` to
+`core/scripts/io.mjs`, found by the same bootstrap as the gate itself. A runner (the cheap model) only runs one such
+command per step and returns the one JSON line it printed; the workflow checks that line against the `lineSha256` the
+helper printed with it, so a line that was not copied exactly is no answer, and decides from its parsed fields. No file
+content passes through a model in either direction: the adapter, `incident.json`, the collector's output, the evidence
+bundle and the classifier's answer stay on disk and come back as hashes and small, capped fields. The only text a model
+writes on purpose is the classifier's answer, which it writes into its own answer file. The redacted report is the
+one input of the workflow that travels in a command (the spec of `incident-collect`); the helper answers its hash
+(`reportSha256`) and the workflow refuses a report that did not arrive exactly.
+
+| Step | Who | What |
+| --- | --- | --- |
+| Open | runner runs `incident-open` | the lock with this run's token, `incident.json` (whether it exists apart from what it holds), the `rev-<n>` folders, the adapter: its hash and its check |
+| Facts | runner runs `incident-collect` | `rev-<n>` and its generated files, one run of the collector, the check of its output and of `evidence.json` |
+| Classify | the gateway (Codex) or a Claude subagent | the answer file `rev-<n>/classification.raw.json`; the runner only says how the job ended |
+| Draft | runner runs `incident-publish` | the answer file and its hash, the checks below, `classification.json`, `draft.md`, `incident.json` |
+| end | runner runs `incident-fail`, then `incident-unlock` | a revision that did not publish is marked failed (and that write checked) before the lock goes; the lock goes only with this run's token |
+
 ## What happens
 
 1. **Open** (runner). Before it, one command of the loaded plugin copy (`core/scripts/gate.mjs roles`) prints the role
    table, the account and whether the repository ignores `.agent-tmp/`; the result names that copy (`pluginCopy`).
-   Then it takes the lock `<tmp>/.lock` (one run per incident) and reads the adapter and its SHA-256 and `incident.json`. The core checks the adapter's version and shape; a bad adapter stops the run before
-   anything is executed.
-2. **Facts** (runner). The core builds the plan: the report (its secrets redacted before it reaches any file or
-   prompt), each operation with its arguments checked, the agent skill and the allow-lists. A generated collector runs it with node, without a shell, each operation with its time limit
+   Then the helper takes the lock `<tmp>/.lock` (one run per incident) and reads the adapter and its SHA-256 and
+   `incident.json`. It says whether `incident.json` exists apart from what it holds: an existing file that is not a
+   record of this incident (an empty string included) is refused, never taken for a new incident. The helper checks the
+   adapter's version and shape; a bad adapter stops the run before anything is executed.
+2. **Facts** (runner). The helper builds the plan: the report (its secrets redacted by the workflow before it reaches any
+   file or prompt), each operation with its arguments checked, the agent skill and the allow-lists. A generated collector
+   runs it with node, without a shell, each operation with its time limit
    and output cap, from the adapter's folder, under your own permissions. A failed, refused or timed-out operation is
    recorded and the others go on; one that depends on it is skipped with the reason. Nothing is retried or worked
    around, and a refused read never turns into a request for access. The result is `rev-<n>/evidence.json`: one item
@@ -51,8 +75,8 @@ args: {
    with a kind, a confidence and the evidence ids it rests on, plus a summary in the model's own words), gaps (missing evidence and the operation that would supply it, or the
    product report to build when none exists), one route, plain facts for the reporter, and the model's own wording (a
    suggested reply, a line for the lead, the route's reason).
-4. **Draft** (the workflow, then a runner publishes). The workflow checks the answer before anything is written as a
-   draft:
+4. **Draft** (a runner runs the helper, which reads the answer file and publishes). The answer is checked before
+   anything is written as a draft:
    - an evidence id that is not in the bundle refuses the answer;
    - a finding about what agents may do must cite both the agent skill and an allow-list;
    - a text the lead acts on (the question for the owner, each gap's what and proposal, every
@@ -161,9 +185,12 @@ reply meanwhile.
 
 `node scripts/e2e.mjs --no-build incident-triage-kinds incident-triage-adapter-refused incident-triage-answer-refused incident-triage-reply incident-triage-stale-unknown incident-triage-untrusted-input incident-triage-runs incident-triage-cases-covered`
 runs the real workflow body over the synthetic cases in `scripts/e2e/fixtures/incident-triage/cases/` with a fake agent
-(`scripts/e2e/scenarios/incident-triage.mjs`): the facts are collected for real from a made-up product
-(`scripts/e2e/fixtures/incident-triage/product.mjs`), only the model's answer is the case's `classification.json` and
-the gate helper's line is scripted. The four kinds of the plan are the first scenario (`incident-triage-kinds`): an
+(`scripts/e2e/scenarios/incident-triage.mjs`): every file step runs the helper for real in a scratch incident folder
+and the facts are collected for real from a made-up product (`scripts/e2e/fixtures/incident-triage/product.mjs`); only
+the model's answer is the case's `classification.json` and the `roles` line of the gate is scripted. The helper's
+commands on their own (lock taken and busy, a missing `incident.json`, the adapter's hash, a collector run with a failing
+and a refusing operation, the answer file's hash) are `io-helper-incident-lock` and `io-helper-incident-collect-publish`
+(`scripts/e2e/scenarios/io-helper.mjs`). The four kinds of the plan are the first scenario (`incident-triage-kinds`): an
 error older than the release (`stale`), a skill the allow-list contradicts (`skill-allowlist`), a question about access
 answered by a better tool report (`blocked-release`) and a product fix with a second package for the agent skill (`agent-capability`).
 `npm run e2e` runs them with the rest of the suite; `--no-build` skips the Rust build when the binaries exist.
