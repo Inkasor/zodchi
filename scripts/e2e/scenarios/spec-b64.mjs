@@ -89,7 +89,7 @@ export default function register({ scenario, ROOT }) {
     const src = fs.readFileSync(path.join(ROOT, "core", "workflows", `${name}.js`), "utf8");
     const one = (re, what) => { const m = src.match(re); if (!m) throw new Error(`${name}.js: no ${what}`); return m[0]; };
     const encoder = one(/const B64 = [^\n]*\nconst b64 = \(text\) => \{\n[\s\S]*?\n\}\n/, "b64 encoder");
-    const cap = one(/let sentB64 = [^\n]*\nconst B64_MAX = [^\n]*\nconst specArg = \(spec\) => \{\n[\s\S]*?\n\}\n/, "B64_MAX and specArg");
+    const cap = one(/const B64_MAX = [^\n]*\nconst specArg = \(spec\) => \{\n[\s\S]*?\n\}\n/, "B64_MAX and specArg");
     const code = [one(/^const q = [^\n]*$/m, "q"), one(/^const GATE_API = [^\n]*$/m, "GATE_API"), one(/^const GATE_BOOT = [^\n]*$/m, "GATE_BOOT"), one(/^const SESSION_PROJECT = [^\n]*$/m, "SESSION_PROJECT"), encoder, cap, one(/^const helperRun = [^\n]*$/m, "helperRun")].join("\n");
     const ctx = vm.createContext({ a: {}, result: null });
     vm.runInContext(`${code}\nresult = { helperRun, specArg, b64, B64_MAX, GATE_BOOT, GATE_API }`, ctx);

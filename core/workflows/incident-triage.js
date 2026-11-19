@@ -196,19 +196,18 @@ const b64 = (text) => {
 // Base64 is a third longer than the bytes it carries, and Cyrillic is two bytes a letter in UTF-8 (about 2.7 times the characters of the plain JSON).
 // A long spec must not make a command line longer than the plain JSON of before (Windows refuses about 32000 characters), so the b64: argument
 // is sent only up to B64_MAX characters (prefix included); a longer spec goes as plain JSON, exactly as it always did.
-let sentB64 = false
 const B64_MAX = 12000
 const specArg = (spec) => {
   const json = JSON.stringify({ api: GATE_API, ...spec })
   const arg = 'b64:' + b64(json)
   if (arg.length > B64_MAX) return json
-  sentB64 = true
   return arg
 }
 // A helper copy older than this workflow reads plain JSON only: it answers a b64: spec with exit 2 and "the spec is not JSON: Unexpected token 'b'..." (the spec
-// starts with the b of b64:). When this workflow sent b64:, exactly that answer is a stop that names the cause; there is no plain-JSON fallback.
+// starts with the b of b64:). A plain JSON spec starts with "{", so that answer can only come from a call that sent b64:, and the check needs no state
+// of the run. It is a stop that names the cause (stale marks it, so nothing is sent again); there is no plain-JSON fallback.
 const OLD_HELPER = /^the spec is not JSON: Unexpected token '?b'?(,| in JSON at position 0)/
-const oldHelperStop = (what, r, facts) => sentB64 && r.exitCode === 2 && OLD_HELPER.test(String(facts.error || ''))
+const oldHelperStop = (what, r, facts) => r.exitCode === 2 && OLD_HELPER.test(String(facts.error || ''))
   ? `${what}: the zodchi-core copy ${a.pluginRoot ? `at ${a.pluginRoot}` : 'this session loaded'} is older than this workflow (it does not read b64: specs): rerun the installer, reload plugins, or pass args.pluginRoot of a current copy`
   : ''
 const helperRun = (command, spec) => `${a.pluginRoot ? `ZODCHI_PLUGIN_ROOT=${q(a.pluginRoot)} ` : ''}node -e ${q(GATE_BOOT)} -- ${SESSION_PROJECT} ${command} ${q(specArg(spec))}`
@@ -223,7 +222,7 @@ function readHelper(r, what) {
   try { facts = JSON.parse(line) } catch {}
   if (!facts || typeof facts !== 'object') return { error: `${what} printed no JSON line (exit ${r.exitCode}${r.error ? `: ${r.error}` : ''})` }
   const stale = oldHelperStop(what, r, facts)
-  if (stale) return { error: stale }
+  if (stale) return { error: stale, stale: true }
   if (r.exitCode !== 0 || facts.ok !== true) return { error: `${what}: ${facts.error || 'it reported a failure'} (exit ${r.exitCode})${Array.isArray(facts.tried) ? `; looked in ${JSON.stringify(facts.tried)}` : ''}` }
   if (facts.api !== GATE_API) return { error: `${what}: api ${facts.api}, this workflow needs ${GATE_API}` }
   if (!facts.plugin || !facts.plugin.root) return { error: `${what}: it did not name its plugin copy` }
