@@ -16,6 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import { spawnSync } from "node:child_process";
+import { commandsIn, encodeSpec, plainPrompt } from "../spec-arg.mjs";
 
 const sha = (text) => crypto.createHash("sha256").update(text, "utf8").digest("hex");
 const MARK = "<!-- design-brief: db -->";
@@ -88,7 +89,7 @@ export default function register({ scenario, ROOT }) {
     };
     /** The real helper with the spec as the workflow typed it; the answer as gate.mjs printed it. */
     const helper = (command, spec) => {
-      const r = spawnSync(process.execPath, [GATE, command, JSON.stringify(spec)], { encoding: "utf8", windowsHide: true });
+      const r = spawnSync(process.execPath, [GATE, command, encodeSpec(spec)], { encoding: "utf8", windowsHide: true });
       return { exitCode: r.status ?? -1, stdout: r.stdout || "", error: (r.stderr || "").slice(0, 300) };
     };
     // The file steps: the answer a test scripted describes what is on disk; the helper reads and writes it.
@@ -133,13 +134,13 @@ export default function register({ scenario, ROOT }) {
       args, phase: () => {}, log: () => {},
       parallel: (thunks) => Promise.all(thunks.map((th) => th())),
       agent: async (prompt, opts) => {
-        const shown = fromDisk(prompt);
+        const shown = fromDisk(plainPrompt(prompt));
         calls.push({ label: opts.label, prompt: shown, opts });
         const given = answer(opts.label, shown, opts);
         if (opts.label === "review") { reviewGiven = given; if (!given) return given; const { answer: _a, answerSha256: _s, ...gw } = given; return gw; }
         // The command as the workflow typed it (paths on the scratch folder), not the mapped text.
-        const m = prompt.match(/ -- "\$\(pwd -W 2>\/dev\/null \|\| pwd\)" (brief-inspect|brief-material|brief-preflight|review-read) '((?:[^']|'\\'')*)'\n/);
-        return m ? io(m[1], JSON.parse(m[2].replace(/'\\''/g, "'")), given) : given;
+        const m = commandsIn(prompt, "brief-inspect|brief-material|brief-preflight|review-read")[0];
+        return m ? io(m.command, m.spec, given) : given;
       },
     };
     const fn = vm.runInNewContext(`(async () => {\n${SRC.replace(/^export const meta/, "const meta")}\n})`, sandbox, { filename: "design-brief.js" });
@@ -537,18 +538,21 @@ another clean copy
     t.ok(ok.out.stoppedAt === undefined && /The review approved the brief/.test(ok.out.next), "approved with only a minor finding is an approval");
   });
 
-  scenario("design-brief-material-parts", "the workflow's material for the review (goal, questions, facts, unknowns) reaches the helper in parts of at most 3000 characters, one command each, so no command a runner types grows with the research; a part that did not arrive exactly stops the run before the preflight", async (t) => {
+  scenario("design-brief-material-parts", "the workflow's material for the review (goal, questions, facts, unknowns) reaches the helper in parts of at most 2000 characters, one command each, so no command a runner types grows with the research; a part that did not arrive exactly stops the run before the preflight", async (t) => {
     const many = { facts: Array.from({ length: 60 }, (_, i) => ({ claim: `The export writes row group ${i} with its own checkpoint and a long explanation of why it matters here (fact ${i}).`, source: `/r/src/export.js:${i + 1}` })), unknowns: [] };
     const r = await run({ answers: { "facts 1": many } });
     const parts = r.of(/^material /);
     const texts = parts.map((c) => JSON.parse(c.prompt.match(/ brief-material '(.*)'$/m)[1].replace(/'\\''/g, "'")));
-    t.ok(parts.length > 1 && texts.every((x) => x.text.length <= 3000 && x.of === parts.length), "the material is cut into several parts of at most 3000 characters");
+    t.ok(parts.length > 1 && texts.every((x) => x.text.length <= 2000 && x.of === parts.length), "the material is cut into several parts of at most 2000 characters");
     t.ok(parts.every((c) => c.opts.agentType === "zodchi-core:runner" && (c.prompt.match(/node -e /g) || []).length === 1), "each part is one helper command a runner runs");
     t.ok(!/"facts":/.test(r.of(/^preflight /)[0].prompt) && r.out.stoppedAt === undefined && r.of(/^review$/).length === 1, "the preflight command carries no facts, only the parts' count and hash; the review was sent");
     const doc = JSON.parse(r.file("/r/.agent-tmp/db/review/facts.json"));
     t.eq(doc.facts.length, 61, "every fact reached the facts file of the review");
-    const bad = await run({ answers: { "material 1/1 db": ioLine({ part: 1, of: 1, sha256: "0".repeat(64), chars: 1 }) } });
-    t.ok(/^review \(part 1 of the material did not reach the helper exactly/.test(bad.out.stoppedAt) && bad.of(/^preflight /).length === 0 && bad.of(/^review$/).length === 0, "a part whose hash differs stops the run: no preflight, nothing sent");
+    // A part whose answer is wrong is sent once more (under a label of its own); wrong both times, the run stops with the stop text of the second.
+    const wrong = ioLine({ part: 1, of: 1, sha256: "0".repeat(64), chars: 1 });
+    const bad = await run({ answers: { "material 1/1 db": wrong, "material 1/1 again db": wrong } });
+    t.ok(/^review \(part 1 of the material did not reach the helper exactly/.test(bad.out.stoppedAt) && bad.of(/^preflight /).length === 0 && bad.of(/^review$/).length === 0, "a part whose hash differs both times stops the run: no preflight, nothing sent");
+    t.eq(bad.of(/^material /).map((c) => c.label), ["material 1/1 db", "material 1/1 again db"], "the part was sent twice, the second time by a fresh runner under its own label, and no more");
     const cmd = JSON.parse(r.of(/^preflight /)[0].prompt.match(/ brief-preflight '(.*)'$/m)[1].replace(/'\\''/g, "'"));
     t.eq(cmd.material.parts, parts.length, "the preflight is given the workflow's own part count, and the real helper joined those parts");
   });

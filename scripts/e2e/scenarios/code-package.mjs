@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
+import { specIn } from "../spec-arg.mjs";
 
 const LINE = "work in the checkout you were given; do not create clones or worktrees and do not switch branches";
 const BOUNDARY = "Important: a normal run loses work between packages.\nOut of scope: two leads starting at the same instant.";
@@ -76,7 +77,7 @@ export default function register({ scenario, ROOT }) {
     t.eq(withIt.out.approved, true, "a brief with a boundary runs to approval");
     t.ok(withIt.out.notes === undefined, "no note when the boundary is there");
     const gate = withIt.of(/^gate /)[0].prompt;
-    t.ok(gate.includes('"brief":"/r/brief.md"'), "the gate helper is given the brief, and reads its Review boundary section itself");
+    t.eq(specIn(gate, "code-package").brief, "/r/brief.md", "the gate helper is given the brief, and reads its Review boundary section itself");
     const review = withIt.of(/^review 1$/)[0].prompt;
     t.ok(review.includes(JSON.stringify(BOUNDARY)), "the review prompt quotes the section exactly");
     t.ok(review.includes('"nit" or "pre-existing" finding, never "important"'), "a point outside the boundary is never important");
@@ -164,15 +165,15 @@ export default function register({ scenario, ROOT }) {
     t.ok(String(r.out.refused).includes("different branch") && r.out.refused.includes("other: feat") && r.out.refused.includes("main"), `refused with the reason (${r.out.refused})`);
     t.eq(r.calls.map((c) => c.label), ["gate pkg", "claim pkg"], "nothing ran after the claim step, and no claim was left to close");
     const claim = r.of(/^claim pkg$/)[0].prompt;
-    t.ok(claim.includes('"branch":"main"'), "the claim file it would write names the branch");
-    t.ok(claim.includes(` claim '{"api":1,"dir":"~/.zodchi/packages/`) && !claim.includes("branchConflicts"), "the comparison is the claim helper's: the prompt only runs its command");
+    t.eq(specIn(claim, "claim").branch, "main", "the claim file it would write names the branch");
+    t.ok(specIn(claim, "claim").api === 1 && specIn(claim, "claim").dir.startsWith("~/.zodchi/packages/") && !claim.includes("branchConflicts"), "the comparison is the claim helper's: the prompt only runs its command");
 
     const same = await run({});
     t.eq(same.out.approved, true, "with the same branch (no branch conflicts) the package runs");
     const named = await run({ args: { branch: "feat" } });
-    t.ok(named.of(/^claim pkg$/)[0].prompt.includes('"branch":"feat"'), "args.branch is the branch the claim records");
+    t.eq(specIn(named.of(/^claim pkg$/)[0].prompt, "claim").branch, "feat", "args.branch is the branch the claim records");
     const detached = await run({ branch: "" });
-    t.ok(detached.of(/^claim pkg$/)[0].prompt.includes('"branch":"(detached)"'), "a detached HEAD is recorded as such");
+    t.eq(specIn(detached.of(/^claim pkg$/)[0].prompt, "claim").branch, "(detached)", "a detached HEAD is recorded as such");
   });
 
   scenario("code-package-shared-checkout-files", "a file another open package claims, changed in the shared checkout, stays out of this package's claim and commit; a reported one is a conflict", async (t) => {
@@ -187,8 +188,9 @@ export default function register({ scenario, ROOT }) {
     t.eq(r.out.approved, true, "the run goes on");
     t.eq(moreCalls, 1, "the other package's file is asked about once, then remembered");
     const more = r.of(/^claim more write pkg$/)[0].prompt;
-    t.ok(more.includes('"repo":"/r"') && !more.includes("other.js") && !more.includes('"hard"'), "the claim-more helper is asked with the repository, not a list: it reads Git and the claims itself");
-    t.ok(more.includes(" claim-more '") && (more.match(/node -e /g) || []).length === 1, "the step runs the helper's one command; the helper decides");
+    const moreSpec = specIn(more, "claim-more");
+    t.ok(moreSpec.repo === "/r" && !more.includes("other.js") && !JSON.stringify(moreSpec).includes("other.js") && !("hard" in moreSpec), "the claim-more helper is asked with the repository, not a list: it reads Git and the claims itself");
+    t.ok(moreSpec && (more.match(/node -e /g) || []).length === 1, "the step runs the helper's one command; the helper decides");
     for (const c of r.of(/^commit /)) {
       t.ok(c.prompt.includes('["src/a.js"]') && !c.prompt.includes("other.js"), `${c.label}: only the package's own path is committed`);
       t.ok(c.prompt.includes("never commit with -a"), `${c.label}: told not to take other files`);
