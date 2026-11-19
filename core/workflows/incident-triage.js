@@ -156,7 +156,8 @@ function collectMain(PLAN) {
 function exactCopy(text, hash) {
   const t = String(text == null ? '' : text)
   const crlf = t.replace(/\r?\n/g, '\r\n')
-  for (const v of [t, t + '\n', crlf, crlf + '\r\n']) if (sha256(v) === hash) return v
+  const lf = t.replace(/\r\n/g, '\n')
+  for (const v of [t, t + '\n', crlf, crlf + '\r\n', lf, lf + '\n']) if (sha256(v) === hash) return v
   return null
 }
 function sha256(text) {
