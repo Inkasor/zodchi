@@ -178,17 +178,17 @@ export default function register({ scenario, ROOT }) {
   const SRC = () => fs.readFileSync(path.join(ROOT, "core", "workflows", "design-brief.js"), "utf8");
 
   /** `damage(label, arg, attempt)` returns the argument the fake runner types, or undefined for a correct copy. */
-  async function run(damage) {
+  async function run(damage, opts = {}) {
     const disk = `${SCRATCH}/run-${++runs}`;
     const repo = `${disk}/repo`;
     fs.mkdirSync(repo, { recursive: true });
-    const args = { label: "db", goal: "Make the export resumable, because a cut run loses an hour.", repos: [repo], questions: ["How is the export written?"], out: `${repo}/.agent-tmp/db/brief.md`, tmp: `${repo}/.agent-tmp/db` };
+    const args = { label: "db", goal: "Make the export resumable, because a cut run loses an hour.", repos: [repo], questions: ["How is the export written?"], out: `${repo}/.agent-tmp/db/brief.md`, tmp: `${repo}/.agent-tmp/db${opts.tmpTail || ""}` };
     const calls = [];
     const attempts = new Map();
     const reviewDir = `${args.tmp}/review`;
     const ioLine = (facts) => { const body = { ok: true, ...facts, api: 1, plugin: PLUGIN }; return { exitCode: 0, stdout: JSON.stringify({ ...body, lineSha256: sha(JSON.stringify(body)) }) + "\n" }; };
     // Long claims, so that the material is several parts.
-    const facts = Array.from({ length: 6 }, (_, i) => ({ claim: `The export writes row group ${i} with a long explanation. ${"Why it matters here, ".repeat(70)}`, source: `${repo}/src/export.js:${i + 1}` }));
+    const facts = opts.facts ? opts.facts(repo) : Array.from({ length: 6 }, (_, i) => ({ claim: `The export writes row group ${i} with a long explanation. ${"Why it matters here, ".repeat(70)}`, source: `${repo}/src/export.js:${i + 1}` }));
     const sandbox = {
       args, phase: () => {}, log: () => {},
       parallel: (thunks) => Promise.all(thunks.map((th) => th())),
@@ -270,6 +270,29 @@ export default function register({ scenario, ROOT }) {
     // A fault in the first part is reported first, as before.
     const both = await run((label, arg) => (/^material [12]\//.test(label) ? arg.slice(0, -3) : undefined));
     t.ok(/^review \(part 1 of the material was not written/.test(both.out.stoppedAt || ""), "when several parts fail twice, the first is named");
+  });
+
+  scenario("spec-b64-material-long-folder", "the material is cut by the size of the whole spec: with a long review folder and the heaviest text the parts are smaller than 2000 code points, every one still goes as b64: within the cap, and they rejoin exactly", async (t) => {
+    // 5 folders of 200 letters: about 1000 bytes in every part's spec, so 2000 four-byte code points (8000 bytes) no longer fit beside it.
+    const tail = Array.from({ length: 5 }, (_, i) => `/${String.fromCharCode(97 + i).repeat(200)}`).join("");
+    const emoji = (repo) => Array.from({ length: 4 }, (_, i) => ({ claim: "😀".repeat(2500), source: `${repo}/src/export.js:${i + 1}` }));
+    const r = await run(() => undefined, { tmpTail: tail, facts: emoji });
+    const parts = r.of(/^material /);
+    const dir = parts.length ? partOf(parts[0].prompt).dir : "";
+    t.ok(dir.length > 1000, `the review folder of the run is long (${dir.length} characters)`);
+    t.ok(parts.length >= 6, `the material is several parts (${parts.length})`);
+    t.ok(parts.every((c) => / brief-material 'b64:[A-Za-z0-9+/]+={0,2}'\n/.test(c.prompt)), "every part goes as b64:, none as plain JSON");
+    const lens = parts.map((c) => Array.from(partOf(c.prompt).text).length);
+    t.ok(lens.every((n) => n <= 2000) && lens.some((n) => n < 2000), `no part is over 2000 code points and the folder made some smaller (largest ${Math.max(...lens)}, smallest ${Math.min(...lens)})`);
+    t.ok(parts.every((c) => c.prompt.match(/ brief-material '(b64:[A-Za-z0-9+/]+={0,2})'\n/)[1].length <= 12000), "every argument is within the 12000-character cap");
+    const joined = parts.map((c) => partOf(c.prompt)).sort((x, y) => x.part - y.part);
+    t.ok(joined.every((x, i) => x.part === i + 1 && x.of === parts.length), "the parts are numbered 1..n of n");
+    const text = joined.map((x) => x.text).join("");
+    t.eq(JSON.parse(text).facts.length, 4, "the parts rejoin to the material JSON");
+    t.ok(/^review \(the fake stops here\)/.test(r.out.stoppedAt || "") && r.of(/^material .* again /).length === 0, `the run reaches the review with no part sent again (the helper's hash of each part and of the whole matched; ${r.out.stoppedAt})`);
+    // A folder so long that nothing fits beside it stops before anything is sent, with its own text.
+    const huge = await run(() => undefined, { tmpTail: Array.from({ length: 45 }, (_, i) => `/${"x".repeat(200)}${i}`).join("") });
+    t.ok(/^review \(the review folder name is too long/.test(huge.out.stoppedAt || "") && huge.of(/^material /).length === 0, `a folder with no room stops the run (${huge.out.stoppedAt})`);
   });
 
   scenario("spec-b64-quote-escape", "the shared reader of the scenarios undoes exactly the shell escape q() of the workflows writes (an apostrophe is four characters), and writes exactly that escape when it shows a b64: argument as plain JSON", async (t) => {

@@ -476,17 +476,28 @@ const excerptsFile = `${reviewDir}/excerpts.md`
 // request: the review prompt, facts.json and excerpts.md (redacted; in a public repository without machine paths), the frame, the schema
 // and the role file. A brief that does not pass is not sent and nothing is written; the lead corrects it. The goal, the questions, the
 // facts and the unknowns are this workflow's (already redacted). They grow with the research, so their JSON text is cut into parts of at
-// most MATERIAL_PART characters (whole code points); a runner hands each part to the helper (brief-material), which writes it into the
+// most MATERIAL_PART characters (whole code points; fewer when the folder name leaves less room, see below); a runner hands each part to the helper (brief-material), which writes it into the
 // review folder and answers its hash. The preflight joins the parts and checks the whole hash; its inputSha256 shows they arrived exactly.
 const material = { goal: goalText, questions: questions.map(x => x.question), facts: factList, unknowns }
 const materialText = JSON.stringify(material)
 const MATERIAL_PART = 2000
 const materialParts = []
-{
-  const points = Array.from(materialText)
-  for (let i = 0; i < points.length; i += MATERIAL_PART) materialParts.push(points.slice(i, i + MATERIAL_PART).join(''))
-}
+// A part is cut so that the whole brief-material spec (api, the actual review folder, the part counters at their largest, and the part's text, which
+// the spec escapes once more) stays within the JSON that B64_MAX allows, so every part goes as b64:, whatever the folder name is. MATERIAL_PART is only
+// the upper bound. The counters are taken at 200 (the most parts there may be), so the room is never more than the real spec has.
+const u8len = (s) => { let n = 0; for (const ch of s) { const c = ch.codePointAt(0); n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4 } return n }
 const stopPre = (why, next) => stop(`review (${why})`, `${next} The brief ${outPath} is written and was not sent to the review.`)
+{
+  const room = Math.floor((B64_MAX - 4) / 4) * 3 - u8len(JSON.stringify({ api: GATE_API, dir: reviewDir, part: 200, of: 200, text: '' }))
+  if (room < 12) return stopPre(`the review folder name is too long to send the facts of the research (${reviewDir.length} characters)`, 'Name a shorter args.tmp and run again.')
+  let part = [], used = 0
+  for (const ch of Array.from(materialText)) {
+    const cost = u8len(JSON.stringify(ch).slice(1, -1))
+    if (part.length >= MATERIAL_PART || used + cost > room) { materialParts.push(part.join('')); part = []; used = 0 }
+    part.push(ch); used += cost
+  }
+  if (part.length) materialParts.push(part.join(''))
+}
 if (materialParts.length > 200) return stopPre(`the facts of the research are too many to send (${materialText.length} characters in ${materialParts.length} parts, at most 200)`, 'Narrow the questions (args.questions) and run again.')
 // A part that arrives damaged (no JSON line, not ok, or a hash that is not its text's) is sent once more by a fresh runner under a label of its
 // own (the journal keeps the first answer under the first label). brief-material rewrites the part file, so a second send is safe. A part that
@@ -498,8 +509,10 @@ const partProblem = (r, i) => {
   return ''
 }
 const sendPart = async (i, again) => {
+  const spec = { dir: reviewDir, part: i + 1, of: materialParts.length, text: materialParts[i] }
+  if (!specArg(spec).startsWith('b64:')) return { r: null, problem: `part ${i + 1} of the material does not fit the base64 form of a command` }
   const label = `material ${i + 1}/${materialParts.length} ${again ? 'again ' : ''}${a.label}`
-  const r = await ioRun('brief-material', { dir: reviewDir, part: i + 1, of: materialParts.length, text: materialParts[i] }, label, 'Review').catch(() => null)
+  const r = await ioRun('brief-material', spec, label, 'Review').catch(() => null)
   return { r, problem: partProblem(r, i) }
 }
 const partProblems = await parallel(materialParts.map((_, i) => async () => {
