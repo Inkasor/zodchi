@@ -64,6 +64,10 @@ brace to "repair". The `b64:` argument is used up to 12000 characters (`B64_MAX`
 so no command is longer than before. A material part is cut by the size of its whole spec (the actual review folder, the part counters and the text, which the spec escapes once more), so it is at most 2000 characters and as many fewer as the folder name and the text need to stay under the cap: every part goes as `b64:`, and a folder name so long that no room is left stops the run before anything is sent. A part that arrives damaged (no JSON line, an answer with `ok: false`, or a hash that differs) is sent once more by a fresh runner;
 only a second failure stops the run.
 
+A zodchi-core copy older than the workflow (for instance one picked with `args.pluginRoot`) reads plain JSON only and answers a `b64:` spec with `the spec is not JSON` and exit 2. When the workflow sent `b64:`, every helper reader of the four workflows turns exactly that answer into a stop: "the zodchi-core copy at <path> is older than this workflow (it does not read b64: specs): rerun the installer, reload plugins, or pass args.pluginRoot of a current copy". There is no fallback to plain JSON. Without `args.pluginRoot` the old helper does not name its copy, so the stop says "the zodchi-core copy this session loaded".
+
+A zodchi-core copy older than the workflow (for instance one picked with `args.pluginRoot`) reads plain JSON only and answers a `b64:` spec with `the spec is not JSON` and exit 2. When the workflow sent `b64:`, every helper reader of the four workflows turns exactly that answer into a stop: "the zodchi-core copy at <path> is older than this workflow (it does not read b64: specs): rerun the installer, reload plugins, or pass args.pluginRoot of a current copy". There is no fallback to plain JSON. Without `args.pluginRoot` the old helper does not name its copy, so the stop says "the zodchi-core copy this session loaded".
+
 ## The stages
 
 1. **Gate.** One command of the loaded plugin copy (`core/scripts/gate.mjs roles`) prints the role table, the account
