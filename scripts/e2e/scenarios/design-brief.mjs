@@ -12,7 +12,9 @@ import vm from "node:vm";
 
 const sha = (text) => crypto.createHash("sha256").update(text, "utf8").digest("hex");
 const MARK = "<!-- design-brief: db -->";
-const HEX_A = "a".repeat(64);
+/** The brief the preflight reads; HEX_A is its hash, the one the draft inspection reports. */
+const BRIEF = `${MARK}\n# Title\n\n## Goal\nMake the export resumable.\n\n## Review boundary\nImportant: a lost row.\n\n## Checks\nnode scripts/check.mjs\n`;
+const HEX_A = sha(BRIEF);
 const HEX_B = "b".repeat(64);
 const PLUGIN = { root: "/plugin/core", commit: "c0ffee", version: "1.0.0-dev", via: "installed_plugins.json, scope user" };
 const CONNECTED = { connected: true, ordinaryUsageAllowed: true, primary: { usedPercent: 10 }, secondary: null };
@@ -47,6 +49,7 @@ export default function register({ scenario, ROOT }) {
       if (label.startsWith("facts ")) return { facts: [{ claim: `The export writes rows one by one (${label})`, source: `/r/src/export.js:${12 + Number(label.slice(6))}` }], unknowns: [] };
       if (label === "draft db") return { done: true, summary: "wrote", ownerDecisions: [{ question: "Keep a copy of the old export?", default: "No" }], leftForLater: ["the UI"], wrongFacts: [], unverified: [] };
       if (label === "inspect draft db") return { ok: true, exists: true, sha256: HEX_A, bytes: 100, firstLine: MARK, headings: HEADINGS };
+      if (label === "preflight db") return { ok: true, brief: BRIEF, briefSha256: HEX_A, excerpts: JSON.parse(prompt.match(/^Ranges: (.*)$/m)[1]).map((r) => ({ id: r.id, text: `${r.from}: the cited line of ${r.id}` })) };
       if (label === "review files db") return wrote(prompt);
       if (label === "review") return review({ verdict: "approved", findings: [] });
       if (label === "fix db") return { done: true, summary: "fixed", fixed: [], left: [], ownerDecisions: [{ question: "Keep a copy of the old export?", default: "No" }] };
@@ -140,7 +143,10 @@ export default function register({ scenario, ROOT }) {
     const files = r.of(/^review files /)[0].prompt;
     t.ok(!files.includes(key) && !/\.env|server\.pem/.test(files), "nor does it reach the facts file of the review");
     const gw = r.of(/^review$/)[0].prompt;
-    t.ok(gw.includes("--attach '/r/src/client.js'") && gw.includes("--attach '/r/src/z.js'"), "the cited files are attached to the review");
+    t.ok(!gw.includes("--attach '/r/src/client.js'") && !gw.includes("--attach '/r/src/z.js'"), "a cited source file is not attached whole");
+    t.ok(gw.includes("--attach '/r/.agent-tmp/db/review/excerpts.md'"), "its cited lines are attached as one excerpts file");
+    const pre = r.of(/^preflight /)[0].prompt.match(/^Ranges: (.*)$/m)[1];
+    t.ok(pre.includes('"file":"/r/src/client.js"') && !/\.env|server\.pem/.test(pre), "the runner is asked for the lines of the good facts only");
     t.ok(!/--attach '\/r\/\.env'|server\.pem/.test(gw), "a secret file is never attached");
     const none = await run({ args: { questions: ["q1"] }, answers: { "facts 1": { facts: [{ claim: "x", source: "/other/x.js:1" }], unknowns: [] } } });
     t.ok(/^facts /.test(none.out.stoppedAt) && none.of(/^draft /).length === 0, "no usable fact stops the run before the draft");
@@ -167,10 +173,10 @@ export default function register({ scenario, ROOT }) {
     const r = await run();
     const files = r.of(/^review files /)[0];
     t.ok(files.opts.agentType === "zodchi-core:runner", "the files of the request are written by a runner");
-    for (const f of ["facts.json", "prompt.md", "design-review.md", "design-review.schema.json", "design-review.json"]) t.ok(files.prompt.includes(`/r/.agent-tmp/db/review/${f}`), `the request has ${f}`);
+    for (const f of ["facts.json", "excerpts.md", "prompt.md", "design-review.md", "design-review.schema.json", "design-review.json"]) t.ok(files.prompt.includes(`/r/.agent-tmp/db/review/${f}`), `the request has ${f}`);
     const rv = r.of(/^review$/)[0];
     t.ok(rv.opts.agentType === "zodchi-core:runner" && rv.opts.model === undefined, "the review is a runner step that calls the gateway");
-    t.ok(/zodchi run --role '\/r\/\.agent-tmp\/db\/review\/design-review\.json' --key db-design-review --model gpt-x --effort high --prompt '\/r\/\.agent-tmp\/db\/review\/prompt\.md' --attach '\/r\/\.agent-tmp\/db\/brief\.md' --attach '\/r\/\.agent-tmp\/db\/review\/facts\.json' --attach '\/r\/src\/export\.js'/.test(rv.prompt), "the command names the role, the key, the model, the prompt and the attachments");
+    t.ok(/zodchi run --role '\/r\/\.agent-tmp\/db\/review\/design-review\.json' --key db-design-review --model gpt-x --effort high --prompt '\/r\/\.agent-tmp\/db\/review\/prompt\.md' --attach '\/r\/\.agent-tmp\/db\/brief\.md' --attach '\/r\/\.agent-tmp\/db\/review\/facts\.json' --attach '\/r\/\.agent-tmp\/db\/review\/excerpts\.md' --wait-sec 540/.test(rv.prompt), "the command names the role, the key, the model, the prompt and the attachments");
     t.ok(/foreground/.test(rv.prompt) && /Never in the background/.test(rv.prompt), "it waits in the foreground");
     t.ok(/is final with status "unknown" never gets a new key/.test(rv.prompt), "a job that ended unknown is never submitted again");
     const body = JSON.parse(files.prompt.match(/design-review\.json" sha256=[0-9a-f]{64}>>>\n([\s\S]*?)<<<END FILE>>>/)[1]);
@@ -248,8 +254,8 @@ export default function register({ scenario, ROOT }) {
     t.eq(minor.of(/^fix /).length, 0, "a minor finding does not start a fix");
     t.ok(minor.out.left.length === 1 && minor.out.left[0].includes("minor: not fixed"), "it is left, and says so");
 
-    const odd = await run({ answers: { review: review({ verdict: "approved", findings: [{ ...finding("F1", "critical") }] }) } });
-    t.eq(odd.of(/^fix /).length, 1, "an approved verdict with a finding of an unknown severity still goes to the fix: the workflow, not the reviewer's word, decides");
+    const odd = await run({ answers: { review: review({ verdict: "changes_requested", findings: [{ ...finding("F1", "critical") }] }) } });
+    t.eq(odd.of(/^fix /).length, 1, "a finding of an unknown severity goes to the fix: the workflow, not the reviewer's spelling, decides");
     t.ok(odd.out.reviewFindings[0].startsWith("F1 important"), "an unknown severity word is read as important");
   });
 
@@ -342,5 +348,104 @@ export default function register({ scenario, ROOT }) {
     t.ok(r.calls.filter((c) => c.opts.model === "sonnet").every((c) => /^(draft|fix|plan) /.test(c.label)), "only the writer steps use the writer model");
     const prompts = r.calls.map((c) => c.prompt).join("\n");
     t.ok(!/codex exec/.test(prompts), "no step runs codex directly: the gateway is the only way");
+  });
+
+  // ------------------------------------------------------------------ review-1 findings (F1 to F6)
+  const KEY = ["sk", "A1b2C3d4E5f6G7h8I9j0K1l2"].join("-");
+  const driveRoot = ["C", ":"].join("") + "/work/ann";
+  const preAnswer = (brief, over = {}) => (prompt) => ({
+    ok: true, brief, briefSha256: sha(brief),
+    excerpts: JSON.parse(prompt.match(/^Ranges: (.*)$/m)[1]).map((r) => ({ id: r.id, text: `${r.from}: the cited line of ${r.id}` })), ...over,
+  });
+  const inspected = (brief) => ({ ok: true, exists: true, sha256: sha(brief), firstLine: MARK, headings: HEADINGS });
+
+  scenario("design-brief-research-writes-nothing", "F1: no research prompt allows a plain git command (git status writes the index), and the planner is not told to keep a progress file", async (t) => {
+    const r = await run();
+    const plan = r.of(/^plan /)[0];
+    t.ok(plan.opts.agentType === undefined && !/Resume rule|progress file of|Shell rule/.test(plan.prompt), "the planner is a plain agent: no wrapper that tells it to create, append to or rename a progress file");
+    t.ok(/write nothing \(no progress file, no note\)/.test(plan.prompt), "and it is told to write nothing, not even a note");
+    for (const c of [plan, ...r.of(/^facts /)]) {
+      t.ok(/git --no-optional-locks log\|show\|diff\|grep/.test(c.prompt), `${c.label}: git only with --no-optional-locks, and only log, show, diff or grep`);
+      t.ok(!/git log, git show, git diff, git status|\bgit status\b[^.]*(allowed|read-only shell)/.test(c.prompt), `${c.label}: git status is not offered as a read-only command`);
+    }
+  });
+
+  scenario("design-brief-no-secret-or-path-to-reviewer", "F2: a secret in a question never leaves the workflow; in a public repository the reviewer gets repository aliases and relative paths", async (t) => {
+    const q = `Why does the client send password: hunter2xyz and ${KEY}?`;
+    const r = await run({ args: { questions: [q] }, answers: { "facts 1": null } });
+    t.ok(!r.calls.some((c) => c.prompt.includes("hunter2xyz") || c.prompt.includes(KEY)), "no prompt holds the secret of the question");
+    t.ok(r.out.notes.some((n) => n.includes("The researcher of question 1 returned no result")) && !JSON.stringify(r.out).includes("hunter2xyz") && !JSON.stringify(r.out).includes(KEY), "nor the notes or the result when the researcher fails");
+    const ok = await run({ args: { questions: [q] } });
+    const factsFile = ok.of(/^review files /)[0].prompt.match(/facts\.json" sha256=[0-9a-f]{64}>>>\n([\s\S]*?)<<<END FILE>>>/)[1];
+    t.ok(!factsFile.includes("hunter2xyz") && !factsFile.includes(KEY) && factsFile.includes("[REDACTED"), "the facts file of the review carries the redacted question");
+    const pub = await run({ args: { publicRepo: true, goal: `Resume the export in ${driveRoot}/app and /r/src.` }, answers: { "facts 1": { facts: [{ claim: `Rows are written by /r/src/export.js; see ${driveRoot}/x`, source: "/r/src/export.js:13" }], unknowns: [`Not found under ${driveRoot}/y`] } } });
+    const files = pub.of(/^review files /)[0].prompt;
+    const body = (name) => files.match(new RegExp(`${name}" sha256=[0-9a-f]{64}>>>\\n([\\s\\S]*?)<<<END FILE>>>`))[1];
+    const material = body("facts\\.json") + body("prompt\\.md") + body("excerpts\\.md");
+    t.ok(!material.includes("/r/") && !material.includes(driveRoot) && !/[A-Za-z]:\//.test(material), "the facts, the excerpts and the prompt of the review hold no machine path");
+    t.ok(material.includes("<repo1>/src/export.js:13") && material.includes("<path>"), "the repository is an alias and a relative path, and a foreign path is <path>");
+    const local = await run({ args: { goal: "Resume the export in /r/src." } });
+    t.ok(local.of(/^review files /)[0].prompt.includes("/r/src/export.js:13"), "a repository not marked public keeps its paths");
+  });
+
+  scenario("design-brief-preflight", "F3: the brief is screened and the cited lines redacted before anything goes to the gateway; no whole source file is attached", async (t) => {
+    const dirty = `${BRIEF}\nThe client sends ${KEY} to the queue.\n`;
+    const r = await run({ answers: { "preflight db": preAnswer(dirty), "inspect draft db": inspected(dirty) } });
+    t.ok(/^review \(the brief holds material that is not sent to a reviewer: line \d+: a secret-shaped value/.test(r.out.stoppedAt), "a brief with a secret-shaped value stops before the review");
+    t.eq([r.of(/^review files /).length, r.of(/^review$/).length, r.of(/^fix /).length], [0, 0, 0], "nothing was written for the gateway, sent, or fixed");
+    t.ok(!JSON.stringify(r.out).includes(KEY) && r.out.path === ARGS.out && /was not sent to the review/.test(r.out.next), "the value is not repeated; the brief is named");
+    const pathy = `${BRIEF}\nRun it in ${driveRoot}/app.\n`;
+    const publicRun = await run({ args: { publicRepo: true }, answers: { "preflight db": preAnswer(pathy), "inspect draft db": inspected(pathy) } });
+    t.ok(/a machine path/.test(publicRun.out.stoppedAt) && publicRun.of(/^review$/).length === 0, "in a public repository a machine path stops it too");
+    const quiet = await run({ answers: { "preflight db": preAnswer(pathy), "inspect draft db": inspected(pathy) } });
+    t.ok(quiet.out.stoppedAt === undefined && quiet.of(/^review$/).length === 1, "a repository not marked public may name a path");
+    const other = await run({ answers: { "preflight db": preAnswer(`${BRIEF}\nchanged\n`, { briefSha256: HEX_A }) } });
+    t.ok(/is not the brief that was inspected/.test(other.out.stoppedAt) && other.of(/^review$/).length === 0, "a brief that is not the inspected one (hash) is not sent");
+    const none = await run({ answers: { "preflight db": null } });
+    t.ok(/the preflight read no brief/.test(none.out.stoppedAt) && none.of(/^review$/).length === 0, "no preflight answer: not sent");
+
+    const leak = await run({ answers: { "preflight db": (prompt) => ({ ...preAnswer(BRIEF)(prompt), excerpts: [{ id: "T1", text: `3: const token = "abcd1234efgh5678"\n4: key ${KEY}` }, { id: "T2", text: "" }] }) } });
+    const ex = leak.of(/^review files /)[0].prompt.match(/excerpts\.md" sha256=[0-9a-f]{64}>>>\n([\s\S]*?)<<<END FILE>>>/)[1];
+    t.ok(!ex.includes("abcd1234efgh5678") && !ex.includes(KEY) && ex.includes("[REDACTED"), "a secret in a cited line is redacted in the excerpts");
+    t.ok(/## T2 .*\n\(not available\)/.test(ex) && leak.out.notes.some((n) => n.includes("1 cited excerpt(s) could not be read")), "an excerpt that could not be read is said, not invented");
+    const ask = leak.of(/^preflight /)[0];
+    t.ok(ask.opts.agentType === "zodchi-core:runner" && /change nothing/.test(ask.prompt) && !/Resume rule/.test(ask.prompt), "the preflight is a read-only runner that keeps no progress file");
+  });
+
+  scenario("design-brief-gateway-attachments", "F4: every attachment is required and its list is recorded per key; a missing one is reported, never answered by another submission", async (t) => {
+    const rv = (await run()).of(/^review$/)[0].prompt;
+    t.ok(!/Not attached for size|optional file|drop the largest/.test(rv), "no file is dropped for size: nothing is optional");
+    t.ok(/Every attachment is required/.test(rv) && /exact list of the --attach paths submitted under it/.test(rv), "the exact list is recorded with each key and checked against");
+    t.ok(/must contain \`<attachment path="\.\.\.">\` .* for every path of the list recorded for the active key/.test(rv), "request.json is checked against that list");
+    t.ok(/do not submit again for it, because the model turn may have run/.test(rv) && !/run the full command again with the next key \(counted with the retries\), every attachment included/.test(rv), "a missing attachment is a failure, not a new submission");
+    t.ok(/over 500 KB do not submit/.test(rv), "a request over the size limit is not sent");
+    t.ok(/no attachment is missing/.test(rv), "ok means that no attachment is missing");
+  });
+
+  scenario("design-brief-fix-claims", "F5: a changed hash only shows the file changed; an unfinished fix is an attempt; without an edit the owner decisions of the draft stay", async (t) => {
+    const two = { verdict: "changes_requested", findings: [finding("F1", "blocker"), finding("F2", "important")] };
+    const half = await run({ answers: { review: review(two), "fix db": { done: false, summary: "half", fixed: [{ id: "F1", what: "did it" }], left: [], ownerDecisions: [{ question: "Keep a copy of the old export?", default: "No" }] } } });
+    t.eq(half.out.fixed, [], "the writer says done false: nothing is reported as fixed even though the file changed");
+    t.ok(half.out.left.some((x) => x.startsWith("F1") && x.includes("an attempt, not confirmed")), "the claim is an attempt in left");
+    t.ok(/edited once/.test(half.out.next) && /0 finding\(s\) fixed/.test(half.out.next), "and the next step does not say the brief was fixed");
+    const noop = await run({ answers: { review: review(two), "fix db": { done: true, summary: "x", fixed: [{ id: "F1", what: "did it" }], left: [], ownerDecisions: [{ question: "Keep a copy of the old export?", default: "No" }, { question: "A new question?", default: "Yes" }] }, "inspect fix db": { ok: true, exists: true, sha256: HEX_A, firstLine: MARK, headings: HEADINGS } } });
+    t.eq(noop.out.ownerDecisions, ["Keep a copy of the old export? (default: No)"], "no edit: the owner decisions are those of the draft, not the writer's new list");
+    t.ok(noop.out.notes.some((n) => n.includes("the brief did not change")), "the difference is noted");
+    t.ok(/did not change the brief/.test(noop.out.next) && !/fixed once|was fixed/.test(noop.out.next) && /nothing is fixed/.test(noop.out.next), "the lead is told nothing was fixed");
+    const real = await run({ answers: { review: review(two), "fix db": { done: true, summary: "x", fixed: [{ id: "F1", what: "did it" }, { id: "F2", what: "and it" }], left: [], ownerDecisions: [] } } });
+    t.eq(real.out.fixed.length, 2, "a changed file and a finished fix are reported, as what the writer says");
+    t.ok(/the writer reports 2 finding\(s\) fixed \(not checked finding by finding\)/.test(real.out.next), "and the next step says so");
+  });
+
+  scenario("design-brief-verdict-agrees", "F6: a verdict that contradicts its findings stops the run: it is never reported as an approval", async (t) => {
+    const a1 = await run({ answers: { review: review({ verdict: "approved", findings: [finding("F1", "important")] }) } });
+    t.ok(/^review \(the verdict approved does not match its findings/.test(a1.out.stoppedAt) && a1.of(/^fix /).length === 0, "approved with an important finding stops and fixes nothing");
+    t.ok(!/approved the brief\b(?! but)/.test(a1.out.next) && /not approved/.test(a1.out.next), "and the lead is told the brief is not approved");
+    t.eq(a1.out.review.verdict, "approved", "the reviewer's own word is kept in review.verdict");
+    const c1 = await run({ answers: { review: review({ verdict: "changes_requested", findings: [finding("F1", "minor")] }) } });
+    t.ok(/^review \(the verdict changes_requested does not match its findings/.test(c1.out.stoppedAt) && c1.of(/^fix /).length === 0, "changes_requested with only minor findings stops too");
+    t.ok(!/The review approved/.test(c1.out.next || ""), "and is never described as an approval");
+    const ok = await run({ answers: { review: review({ verdict: "approved", findings: [finding("F1", "minor")] }) } });
+    t.ok(ok.out.stoppedAt === undefined && /The review approved the brief/.test(ok.out.next), "approved with only a minor finding is an approval");
   });
 }

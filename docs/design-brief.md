@@ -54,7 +54,10 @@ args: {
    spent: a review that does not go through the gateway is not independent of the writer, so there is no fallback.
 2. **Facts.** One researcher per question, in parallel, on the cheap model, read-only. A researcher changes no file,
    starts no program of the project, calls no product API, contacts no server and names a variable or a file instead of
-   printing a secret value. It returns `{ facts: [{ claim, source }], unknowns }`, with `source` as
+   printing a secret value. It uses git only as `git --no-optional-locks log|show|diff|grep` (a plain `git status` refreshes
+   and writes the index); the planner that proposes the questions is a plain read-only agent without a progress file.
+   Questions are redacted once, before any prompt, file or result. (The runtime has no read-only switch for an agent: the
+   limit is the prompt and the check of the facts.) It returns `{ facts: [{ claim, source }], unknowns }`, with `source` as
    `<absolute path>:<line>`. The workflow keeps a fact only when its source is inside `repos` and is not a file that holds
    secrets by its name (`.env`, key and credential files), redacts token-shaped values in the claims, and drops repeats.
 3. **Draft.** One writer writes the brief to `out`. It reads each repository's `AGENTS.md` or `CLAUDE.md`, verifies every
@@ -63,15 +66,24 @@ args: {
    instead of inventing an answer. A runner then checks that the file exists, starts with the workflow's line and has a
    title, a `## Review boundary` and a `## Checks` section; a brief without them is not reviewed.
 4. **Review.** An independent review through the gateway, role `architect`, the same way `code-package` reviews a change:
-   a runner calls `zodchi run` in the foreground. The brief, the facts file and the cited files (as far as the size
-   limit allows) are attached. The reviewer looks for: wrong facts, places where the writer of the code would have to
+   a runner calls `zodchi run` in the foreground. Before anything is sent, a runner only reads the brief and the lines the
+   facts cite, and the workflow itself screens them: a brief that holds a secret-shaped value (in a public repository also a
+   machine path) is not sent, and the run stops naming the lines (not the values) for you to correct. The brief, the facts
+   file and one excerpts file are attached: the cited lines with three lines around them, redacted, never a whole source
+   file. With `publicRepo` the facts, excerpts and prompt show `<repo1>/path` instead of machine paths (the attachment
+   names are the paths of `out` and `tmp`: name them neutrally). Every attachment is required; the exact list is recorded
+   per key, and a missing attachment is reported as a failure, never answered by another submission (the model turn may have
+   run). The reviewer looks for: wrong facts, places where the writer of the code would have to
    guess, a scope bigger than one package, a missing or vague review boundary, checks that would pass with the goal
    unmet, secrets or private names, and owner decisions that are answered instead of listed. Findings are `blocker`,
    `important` or `minor`. The answer is checked before it counts: its hash must match its file and it must be a review
-   with a verdict and findings.
+   with a verdict and findings, and the verdict must agree with them: `approved` with a blocker or important finding, or
+   `changes_requested` with only minor ones, stops the run instead of becoming an approval.
 5. **Fix.** When there is a blocker or an important finding, the writer fixes the brief once. It verifies each finding
-   first; a wrong one is left, with the reason. There is no second review round. A fix is reported only when the file
-   really changed since the reviewed version.
+   first; a wrong one is left, with the reason. There is no second review round. A changed file hash shows only that the
+   file changed, not which finding was fixed: fixes are listed (as what the writer says it did) only when the file changed
+   and the writer said the fix was done; otherwise they are attempts and the finding is left. Without a change the owner
+   decisions stay those of the draft, and `next` says that nothing was fixed.
 
 A gateway job that ends `unknown` is never submitted again by the workflow (the request may already have run): the result
 carries `unknown` with the key and `next` says how to decide.
