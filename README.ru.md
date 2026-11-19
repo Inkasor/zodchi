@@ -18,7 +18,7 @@ Zodchi — набор рабочих приёмов для Claude Code. В нё�
 
 | Папка | Что в ней |
 | --- | --- |
-| `core/` | Агенты для всех разделов: `coder`, `runner`, `applier`, `researcher`. Процессы: `code-package`, `ops-script`, `incident-triage` (сообщение пользователя об ошибке — в черновик ответа или задания на исправление, см. [docs/incident-triage.md](docs/incident-triage.md)). Навыки: `workspace-audit` (разбор захламлённой папки: исследователи только читают, решения одной пачкой, потом один исполнитель) и `zodchi-flow` (выполнить задачу кода через `zodchi flow code-package` из сессии Claude Code) |
+| `core/` | Агенты для всех разделов: `coder`, `runner`, `applier`, `researcher`. Процессы: `code-package`, `ops-script`, `incident-triage` (сообщение пользователя об ошибке — в черновик ответа или задания на исправление, см. [docs/incident-triage.md](docs/incident-triage.md)), `design-brief` (от цели к заданию, которое может выполнить `code-package`: факты только чтением, черновик, независимая проверка через шлюз, одна правка, см. [docs/design-brief.md](docs/design-brief.md)). Навыки: `workspace-audit` (разбор захламлённой папки: исследователи только читают, решения одной пачкой, потом один исполнитель) и `zodchi-flow` (выполнить задачу кода через `zodchi flow code-package` из сессии Claude Code) |
 | `codex/` | Навык Codex `zodchi-flow`: то же, из сессии Codex (см. [Три способа запустить пакет](#три-способа-запустить-пакет)) |
 | `domains/web-apps/` | Веб-приложения: `branch-review` перед выпуском |
 | `domains/gamedev-unity/` | Ассеты игры в Blender и Unity: `asset-round`, `method-question`, `rubric-probe`, `unity-check`, агенты `modeller`, `unity-runner`, `art-critic` |
