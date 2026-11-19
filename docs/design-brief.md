@@ -56,8 +56,11 @@ headings; the review request (prompt, facts, excerpts) is written by the helper;
 helper as its hash and its parsed verdict and findings (at most 40 findings, each text capped at 800 characters; the
 writer of the fix reads the whole file). The workflow's own material for the request (the goal, the questions, the facts
 and the unknowns) grows with the research, so it never travels in one command: its JSON text is cut into parts of at most
-3000 characters, each written by one `brief-material` command and checked by its hash, and `brief-preflight` joins the
-parts and checks the whole hash before it uses them.
+2000 characters, each written by one `brief-material` command and checked by its hash, and `brief-preflight` joins the
+parts and checks the whole hash before it uses them. Every helper command carries its spec as `b64:` and the base64 of the
+spec's UTF-8 JSON text (`gate.mjs` also takes plain JSON), so a runner that retypes the command has no quote, backslash or
+brace to "repair". A part that arrives damaged (no JSON line, or a hash that differs) is sent once more by a fresh runner;
+only a second failure stops the run.
 
 ## The stages
 

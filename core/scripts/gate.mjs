@@ -2,6 +2,7 @@
 // The gate facts of the zodchi workflows, from commands and files, not from a runner's retelling.
 //
 //   node gate.mjs <command> '<spec json>'
+//   node gate.mjs <command> b64:<base64 of the spec's UTF-8 JSON text>      (the form the workflows send)
 //
 //   code-package   the gate of code-package: role table, account, Git state, dirty list, ignore rule, verify skill,
 //                  REVIEW.md, owner config, the brief's Review boundary, the claims of the repository (and the stale ones
@@ -22,7 +23,7 @@
 //                  lineSha256, the SHA-256 of the answer without that field, so the workflow sees whether the runner copied the line
 //
 // It prints ONE line of compact JSON to stdout and nothing else. The workflow reads that line and decides; the exit
-// code is 0 when the line is the answer, 2 for a bad call (no spec, a spec that is not JSON, a field missing), 3 when the
+// code is 0 when the line is the answer, 2 for a bad call (no spec, a spec that is not JSON or not valid base64 after b64:, a field missing), 3 when the
 // workflow speaks another `api` than this script (the plugin copy it was found in is older or newer than the workflow).
 // A command that cannot be run (no Git work tree, no zodchi) is a field in the line, never a reason to hide the rest.
 //
@@ -585,8 +586,22 @@ if (IO.includes(command)) {
   };
 }
 if (!COMMANDS[command]) print({ ok: false, api: API, error: `unknown command ${JSON.stringify(command)}; one of ${[...new Set([...Object.keys(COMMANDS), ...IO])].join(", ")}` }, 2);
-let spec;
-try { spec = JSON.parse(specText); } catch (e) { print({ ok: false, api: API, error: `the spec is not JSON: ${e.message}` }, 2); }
+// The spec comes in two forms: plain JSON, or "b64:" and the standard base64 of the UTF-8 JSON text. The workflows send the second:
+// it holds no quote, backslash or brace, so a runner that retypes the command has nothing to "repair" (a cut tail that looks like an
+// unfinished escape was repaired into another text). Each failure of the second form says which step failed.
+const B64_PREFIX = "b64:";
+function specFrom(text) {
+  if (typeof text !== "string" || !text.startsWith(B64_PREFIX)) {
+    try { return JSON.parse(text); } catch (e) { print({ ok: false, api: API, error: `the spec is not JSON: ${e.message}` }, 2); }
+  }
+  const body = text.slice(B64_PREFIX.length);
+  // Strict: Buffer.from(..., "base64") skips what is not base64 and would hide a damaged argument.
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(body)) print({ ok: false, api: API, error: "the spec is not valid base64 (b64: must be followed by standard base64 with its = padding)" }, 2);
+  let decoded;
+  try { decoded = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(Buffer.from(body, "base64")); } catch { print({ ok: false, api: API, error: "the spec is valid base64 but does not decode to valid UTF-8" }, 2); }
+  try { return JSON.parse(decoded); } catch (e) { print({ ok: false, api: API, error: `the spec is valid base64 but what it decodes to is not JSON: ${e.message}` }, 2); }
+}
+const spec = specFrom(specText);
 if (!spec || typeof spec !== "object") print({ ok: false, api: API, error: "the spec is not an object" }, 2);
 if (spec.api !== API) print({ ok: false, api: API, plugin: pluginCopy(), error: `the workflow speaks api ${spec.api} and this script ${API}: the plugin copy at ${norm(path.resolve(HERE, ".."))} does not match the workflow that was loaded; reinstall the plugin` }, 3);
 try { print(COMMANDS[command](spec)); } catch (e) { print({ ok: false, api: API, error: String((e && e.message) || e).slice(0, 500) }, 2); }

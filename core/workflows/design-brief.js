@@ -211,7 +211,26 @@ const GATE_API = 1
 const GATE_BOOT = 'const fs=require(\"fs\"),os=require(\"os\"),path=require(\"path\"),cp=require(\"child_process\");const project=process.argv[1]||\"\";const rest=process.argv.slice(2);const out=(o,c)=>{fs.writeSync(1,JSON.stringify(o)+\"\\n\");process.exit(c)};const rd=f=>{try{return JSON.parse(fs.readFileSync(f,\"utf8\"))}catch(e){return null}};const nm=p=>{const s=path.resolve(p).split(path.sep).join(\"/\");return process.platform===\"linux\"?s:s.toLowerCase()};const pre=n=>n.endsWith(\"/\")?n:n+\"/\";const tried=[];let root=\"\",via=\"\";const fail=(why)=>out({ok:false,api:0,error:why,tried},4);for(const name of [\"ZODCHI_PLUGIN_ROOT\",\"CLAUDE_PLUGIN_ROOT\"]){const env=process.env[name];if(root||!env)continue;const m=rd(path.join(env,\".claude-plugin\",\"plugin.json\"));if(m&&m.name===\"zodchi-core\"){root=env;via=name}else if(name===\"ZODCHI_PLUGIN_ROOT\"){tried.push(env+\" (no zodchi-core manifest)\");fail(\"ZODCHI_PLUGIN_ROOT names no zodchi-core plugin copy: a checkout or another folder is never used instead\")}}if(!root){const reg=rd(path.join(process.env.CLAUDE_CONFIG_DIR||path.join(os.homedir(),\".claude\"),\"plugins\",\"installed_plugins.json\"));const list=(reg&&reg.plugins&&reg.plugins[\"zodchi-core@zodchi\"])||[];const here=pre(nm(project));const own=list.filter(e=>e.projectPath&&here.startsWith(pre(nm(e.projectPath)))).sort((a,b)=>nm(b.projectPath).length-nm(a.projectPath).length);const e=own[0]||list.find(e=>!e.projectPath);if(e&&e.installPath){root=e.installPath;via=\"installed_plugins.json, scope \"+e.scope}}if(!root)fail(\"no zodchi-core plugin copy is registered for the project this session runs in (not installed): update the plugin; a checkout is never used instead\");const ok=fs.existsSync(path.join(root,\"scripts\",\"gate.mjs\"));tried.push(root+(ok?\"\":\" (no scripts/gate.mjs)\"));if(!ok)fail(\"the zodchi-core plugin copy this session loaded (\"+root+\") has no scripts/gate.mjs (an older copy than this workflow): update the plugin; no other copy is tried and a checkout is never used\");const r=cp.spawnSync(process.execPath,[path.join(root,\"scripts\",\"gate.mjs\"),...rest],{stdio:\"inherit\",env:{...process.env,ZODCHI_GATE_VIA:via}});process.exit(r.status===null?5:r.status)'
 // The folder the runner starts in is the project the session runs in: it says which registered plugin copy the session loaded (the Windows form of the path on Git Bash).
 const SESSION_PROJECT = '"$(pwd -W 2>/dev/null || pwd)"'
-const helperRun = (command, spec) => `${a.pluginRoot ? `ZODCHI_PLUGIN_ROOT=${q(a.pluginRoot)} ` : ''}node -e ${q(GATE_BOOT)} -- ${SESSION_PROJECT} ${command} ${q(JSON.stringify({ api: GATE_API, ...spec }))}`
+// The spec goes to the helper as "b64:" and the base64 of its UTF-8 JSON text: no quote, backslash or brace for a runner to "repair" when it
+// retypes the command. The sandbox may have no Buffer or btoa, so the encoder is plain code (the same text in every workflow that sends a spec).
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+const b64 = (text) => {
+  const bytes = []
+  for (const ch of String(text)) {
+    const c = ch.codePointAt(0)
+    if (c < 0x80) bytes.push(c)
+    else if (c < 0x800) bytes.push(0xc0 | (c >> 6), 0x80 | (c & 63))
+    else if (c < 0x10000) bytes.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63))
+    else bytes.push(0xf0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63))
+  }
+  let res = ''
+  for (let i = 0; i < bytes.length; i += 3) {
+    const n = (bytes[i] << 16) | ((bytes[i + 1] || 0) << 8) | (bytes[i + 2] || 0)
+    res += B64[(n >> 18) & 63] + B64[(n >> 12) & 63] + (i + 1 < bytes.length ? B64[(n >> 6) & 63] : '=') + (i + 2 < bytes.length ? B64[n & 63] : '=')
+  }
+  return res
+}
+const helperRun = (command, spec) => `${a.pluginRoot ? `ZODCHI_PLUGIN_ROOT=${q(a.pluginRoot)} ` : ''}node -e ${q(GATE_BOOT)} -- ${SESSION_PROJECT} ${command} ${q('b64:' + b64(JSON.stringify({ api: GATE_API, ...spec })))}`
 const HELPER_ANSWER = { type: 'object', required: ['exitCode', 'stdout'], properties: { exitCode: { type: 'number' }, stdout: { type: 'string' }, error: { type: 'string' } } }
 const HELPER_NEXT = 'Update the zodchi-core plugin (rerun the installer, then reload plugins in Claude Code) so that the copy this workflow runs from has scripts/gate.mjs with the brief commands (an older copy answers "unknown command"), or pass args.pluginRoot, the folder of a zodchi-core copy that has it. Nothing was written.'
 function readHelper(r, what) {
@@ -452,7 +471,7 @@ const excerptsFile = `${reviewDir}/excerpts.md`
 // review folder and answers its hash. The preflight joins the parts and checks the whole hash; its inputSha256 shows they arrived exactly.
 const material = { goal: goalText, questions: questions.map(x => x.question), facts: factList, unknowns }
 const materialText = JSON.stringify(material)
-const MATERIAL_PART = 3000
+const MATERIAL_PART = 2000
 const materialParts = []
 {
   const points = Array.from(materialText)
@@ -460,13 +479,26 @@ const materialParts = []
 }
 const stopPre = (why, next) => stop(`review (${why})`, `${next} The brief ${outPath} is written and was not sent to the review.`)
 if (materialParts.length > 200) return stopPre(`the facts of the research are too many to send (${materialText.length} characters in ${materialParts.length} parts, at most 200)`, 'Narrow the questions (args.questions) and run again.')
-const partReads = await parallel(materialParts.map((text, i) => () =>
-  ioRun('brief-material', { dir: reviewDir, part: i + 1, of: materialParts.length, text }, `material ${i + 1}/${materialParts.length} ${a.label}`, 'Review').catch(() => null)))
-for (const [i, r] of partReads.entries()) {
+// A part that arrives damaged (no JSON line, not ok, or a hash that is not its text's) is sent once more by a fresh runner under a label of its
+// own (the journal keeps the first answer under the first label). brief-material rewrites the part file, so a second send is safe. A part that
+// fails twice stops the run, with the stop text of the second failure. No other helper command is repeated: they write state.
+const partProblem = (r, i) => {
   const read = readIo(r, `the material helper (part ${i + 1})`)
-  if (read.error) return stopPre(`part ${i + 1} of the material was not written: ${read.error}`, 'Run again.')
-  if (read.facts.sha256 !== sha256(materialParts[i])) return stopPre(`part ${i + 1} of the material did not reach the helper exactly (its sha256 differs)`, 'Run again.')
+  if (read.error) return `part ${i + 1} of the material was not written: ${read.error}`
+  if (read.facts.sha256 !== sha256(materialParts[i])) return `part ${i + 1} of the material did not reach the helper exactly (its sha256 differs)`
+  return ''
 }
+const sendPart = async (i, again) => {
+  const label = `material ${i + 1}/${materialParts.length} ${again ? 'again ' : ''}${a.label}`
+  const r = await ioRun('brief-material', { dir: reviewDir, part: i + 1, of: materialParts.length, text: materialParts[i] }, label, 'Review').catch(() => null)
+  return { r, problem: partProblem(r, i) }
+}
+const partProblems = await parallel(materialParts.map((_, i) => async () => {
+  const first = await sendPart(i, false)
+  if (!first.problem) return ''
+  return (await sendPart(i, true)).problem
+}))
+for (const problem of partProblems) if (problem) return stopPre(problem, 'Run again.')
 const preRead = readIo(await ioRun('brief-preflight', {
   label: a.label, brief: outPath, expectSha256: reviewedSha, dir: reviewDir, tmp, repos, gatewayRepo, publicRepo: Boolean(a.publicRepo),
   reviewer: { model: reviewer.model, effort: reviewer.effort || 'high' }, material: { parts: materialParts.length, sha256: sha256(materialText) },
