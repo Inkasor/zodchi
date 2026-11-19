@@ -280,6 +280,13 @@ export default function register({ scenario, ROOT }) {
     // 5 folders of 200 letters: about 1000 bytes in every part's spec, so 2000 four-byte code points (8000 bytes) no longer fit beside it.
     const tail = Array.from({ length: 5 }, (_, i) => `/${String.fromCharCode(97 + i).repeat(200)}`).join("");
     const emoji = (repo) => Array.from({ length: 4 }, (_, i) => ({ claim: "😀".repeat(2500), source: `${repo}/src/export.js:${i + 1}` }));
+    // macOS refuses a path over 1024 bytes (PATH_MAX), so the helper cannot write into a 1000-character folder there and such a folder cannot occur.
+    // The cut by the whole spec is the same code on every platform; it runs on Windows and Linux. The folder-too-long stop below needs no folder.
+    if (process.platform === "darwin") {
+      const huge = await run(() => undefined, { tmpTail: Array.from({ length: 45 }, (_, i) => `/${"x".repeat(200)}${i}`).join("") });
+      t.ok(/^review \(the review folder name is too long/.test(huge.out.stoppedAt || "") && huge.of(/^material /).length === 0, `a folder with no room stops the run (${huge.out.stoppedAt})`);
+      return { skip: "macOS: a review folder over 1024 bytes cannot be created (PATH_MAX); the long-folder cut runs on Windows and Linux" };
+    }
     const r = await run(() => undefined, { tmpTail: tail, facts: emoji });
     const parts = r.of(/^material /);
     const dir = parts.length ? partOf(parts[0].prompt).dir : "";
