@@ -3,7 +3,7 @@ export const meta = {
   description: 'One code package: a gate resolves the role table and refuses overlapping packages, the writer implements, a runner runs the cheap checks and then the verify commands or skill, an independent reviewer reviews with the REVIEW.md of the base commit, the writer closes findings; stops after 3 review rounds, or earlier when a round only goes deeper (review boundary)',
   whenToUse: 'Any code package from a finished brief. Args: see the header of the script.',
   phases: [
-    { title: 'Gate', detail: 'one helper command of the loaded plugin copy prints the role table, the subscription limits, open packages, Git state and whether .agent-tmp/ is ignored (a stale claim of a finished package is closed); the runner returns its output, then claims the files', model: 'haiku' },
+    { title: 'Gate', detail: 'one helper command of the loaded plugin copy prints the role table, the subscription limits, open packages, Git state and whether .agent-tmp/ is ignored (a stale claim of a finished package is closed); the runner returns its output, then the helper compares and writes the claim under the claims lock', model: 'haiku' },
     { title: 'Write', detail: 'writer implements the brief (agent mode) or an expert answers and the applier applies it (expert mode)' },
     { title: 'Checks', detail: 'runner runs the cheap checks, then the verify commands or skill, and commits the package files with a Verified line', model: 'haiku' },
     { title: 'Review', detail: 'reviewer (never the author) reviews the change through the gateway, applying REVIEW.md from the base commit', model: 'haiku' },
@@ -280,10 +280,12 @@ function infraFail(label, what) {
 }
 // Claims live outside the repository, in the shell's home folder, so that no .gitignore matters: one folder per
 // repository, named by its path with every character outside [A-Za-z0-9] replaced by "-" (case folded on Windows).
-// $HOME is written for the shell, which expands it: commands name the folder in double quotes.
+// $HOME is written for the shell, which expands it: commands name the folder in double quotes. Once the claim helper has written the
+// claim, both name the file it reports (its home folder is Node's, which a shell's $HOME may differ from), so that the later steps
+// mark and close the very file it wrote.
 const claimsName = fold(repoKey).replace(/[^A-Za-z0-9]/g, '-')
-const claimsDir = `$HOME/.zodchi/packages/${claimsName}`
-const claimFile = `${claimsDir}/${a.label}.json`
+let claimsDir = `$HOME/.zodchi/packages/${claimsName}`
+let claimFile = `${claimsDir}/${a.label}.json`
 
 // ---------------------------------------------------------------- Gate
 // The gate helper (core/scripts/gate.mjs) is looked up in the plugin copy the session loaded, never in a checkout: the bootstrap below
@@ -437,51 +439,69 @@ if (needIgnore) {
   if (gate.dirty.some(f => key(f) === '.gitignore')) { out.refused = `${a.repo} does not ignore .agent-tmp/ and its .gitignore has uncommitted changes: add ".agent-tmp/" to it by hand.`; return out }
 }
 
-// Claiming happens under a lock folder (mkdir is atomic), so two packages started at once cannot both pass. From the
-// claim on, whatever happens, the claim is closed at the end and the closing is checked; only a refusal for
-// conflicts, which writes no claim, skips that, and an infrastructure failure, after which the run is resumed.
+// Claims are compared and written by the gate helper (core/scripts/gate.mjs claim and claim-more), never by a model: it reads every
+// claim under the claims lock (mkdir is atomic, so two packages started at once cannot both pass), compares the lists of paths and writes
+// the claim atomically. The runner only runs its command and returns the printed line and the exit code; the workflow decides from that
+// line. From the claim on, whatever happens, the claim is closed at the end and the closing is checked; only a refusal for conflicts,
+// which writes no claim, skips that, and an infrastructure failure, after which the run is resumed.
 let claimStatus = 'stopped'
 let claimWritten = true
-// The lock and the comparison with other open claims, worded once for the claim and for every later extension of it.
-const LOCK = `1. Lock: run \`mkdir "${claimsDir}/.lock"\` (create "${claimsDir}" with \`mkdir -p\` first if it is missing; $HOME is the shell's home folder, so keep the path in double quotes). If the lock folder already exists, wait 10 seconds and try again, ` +
-  `for at most 2 minutes; a lock folder older than 10 minutes is stale: remove it and try again. If you cannot take the lock, return ok false with conflicts ["lock busy"].\n`
-// A claim is the file <label>.json whose "label" field is its own name; anything else in the folder (x.json.bak-1, x.bak.json, x.json.tmp-1)
-// is not a claim and is never read as one, and nothing is ever copied into the folder as a backup: a claim file is changed in place.
-const CLAIM_FILES = `Claims are the files named exactly "<label>.json" in "${claimsDir}" whose "label" field is that same name; a file with any other name (for example x.json.bak-1, x.bak.json, x.json.tmp-1) is not a claim: skip it, never read it as one. Never make a backup or any other copy in that folder: change a claim file in place.`
-const compare = (list) => `2. ${CLAIM_FILES} Read every claim. For each one whose "status" is "open" and whose "label" is not "${a.label}", compare its "files" list with this list, ` +
-  `entry by entry, as exact strings: ${JSON.stringify(list)}. Every equal pair is a conflict "<its label>: <file>".\n`
-const UNLOCK = `4. Always remove the lock folder (\`rmdir "${claimsDir}/.lock"\`), whatever happened above.\n`
+// The same folder as claimsDir, for the helper: it resolves "~/" to the home folder itself (no shell expands it inside the spec).
+const claimsSpecDir = `~/.zodchi/packages/${claimsName}`
+const helperStep = (command, spec, label, phaseName) => step(
+  `Run ONE command and return what it printed; change nothing and run nothing else. In the foreground, once:\n${helperRun(command, spec)}\n` +
+  `Do not change, split or rerun it with other options, and never touch the claims folder or its lock yourself. exitCode: its exit code, a number. stdout: everything it printed to standard output, exactly, as one string (it is one line of JSON): ` +
+  `do not parse, summarize, reorder or shorten it. error: what it printed to standard error, at most 300 characters, "" when nothing. ` +
+  `If the command could not be started at all, exitCode is -1 and stdout is "".`,
+  { agentType: 'zodchi-core:runner', label, schema: HELPER_ANSWER, ...(phaseName ? { phase: phaseName } : {}) })
+// The answer of a claim command: its one JSON line with exit code 0, from this workflow's api and a named plugin copy. Unlike readHelper,
+// a line with ok false is an answer (conflicts, a busy lock); only an unreadable answer is an error.
+function readClaimHelper(r, what) {
+  if (!r) return { error: `${what}: the runner returned no result` }
+  const line = String(r.stdout || '').split(/\r?\n/).map(l => l.trim()).filter(l => l.startsWith('{')).pop()
+  let facts = null
+  try { facts = JSON.parse(line) } catch {}
+  if (!facts || typeof facts !== 'object') return { error: `${what} printed no JSON line (exit ${r.exitCode}${r.error ? `: ${r.error}` : ''})` }
+  if (r.exitCode !== 0) return { error: `${what}: ${facts.error || 'it reported a failure'} (exit ${r.exitCode})${Array.isArray(facts.tried) ? `; looked in ${JSON.stringify(facts.tried)}` : ''}` }
+  if (facts.api !== GATE_API) return { error: `${what}: api ${facts.api}, this workflow needs ${GATE_API}` }
+  if (!facts.plugin || !facts.plugin.root) return { error: `${what}: it did not name its plugin copy` }
+  if (typeof facts.ok !== 'boolean' || !Array.isArray(facts.conflicts)) return { error: `${what}: its answer has no ok or no conflicts list` }
+  return { facts }
+}
 // Git commands of this package may meet an index.lock that a command of another package in the same checkout holds for a moment.
 const LOCKWAIT = `If a Git command fails with an error that names index.lock (another package's Git command holds it), wait 3 seconds and run the same command again, at most 10 times in all; ` +
   `never delete, move or overwrite the lock file or anything else in .git. If it is still held after the last try, stop with ok false and the summary "index.lock held".`
 // The ignore repair changes .gitignore, so the claim holds it too, checked against other open packages like any file.
 const claimKeys = needIgnore && !myKeys.includes('.gitignore') ? [...myKeys, '.gitignore'] : myKeys
 try {
-const claim = await step(
-  `Claim files for the package ${a.label} in ${a.repo}. Follow these steps exactly.\n` +
-  LOCK + compare(claimKeys) +
-  `2b. Branch: for each of those open claims (label not "${a.label}") that has a "branch" field different from ${JSON.stringify(myBranch)} (exact string), add "<its label>: <its branch>" to branchConflicts. ` +
-  `A package may not start on another branch while another open package of this repository works on its own: switching would pull the branch from under it. A claim without a "branch" field is not a branch conflict.\n` +
-  `3. If there is no conflict and no branch conflict, write "${claimFile}": ${JSON.stringify({ label: a.label, status: 'open', files: claimKeys, branch: myBranch, brief: a.brief, tmp: a.tmp, base })}, plus "openedAt" with \`date -u +%Y-%m-%dT%H:%M:%SZ\`.\n` +
-  UNLOCK +
-  (a.branch && !sharedBranch ? `5. If the claim file was written, switch to the Git branch ${a.branch}: \`git switch ${q(a.branch)}\`, or \`git switch -c ${q(a.branch)}\` when it does not exist.\n` : '') +
-  `ok is true when the claim file was written${a.branch && !sharedBranch ? ` and \`git branch --show-current\` prints ${a.branch}` : ''}. conflicts: the file conflicts found, [] when none. branchConflicts: the branch conflicts found, [] when none.`,
-  {
-    agentType: 'zodchi-core:runner', label: `claim ${a.label}`,
-    schema: { type: 'object', required: ['ok', 'conflicts'], properties: { ok: { type: 'boolean' }, conflicts: { type: 'array', items: { type: 'string' } }, branchConflicts: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' } } },
-  })
+// The helper compares claimKeys with every other open claim (a conflict "<label>: <file>"), and the branch with theirs (a branch conflict
+// "<label>: <branch>": a package may not start on another branch while another open package of this repository works on its own, since
+// switching would pull the branch from under it); without either it writes the claim, or reuses this label's open claim on a resume.
+const claimRead = readClaimHelper(await helperStep('claim',
+  { dir: claimsSpecDir, label: a.label, files: claimKeys, branch: myBranch, brief: a.brief, tmp: a.tmp, base }, `claim ${a.label}`), 'the claim helper')
+const claim = claimRead.facts
 if (claim && !claim.ok && Array.isArray(claim.branchConflicts) && claim.branchConflicts.length) {
   claimWritten = false
   out.refused = `Another open package of this repository works on a different branch (${claim.branchConflicts.join('; ')}) and this one would work on ${myBranch}; switching would pull the branch from under it. ` +
     `Start this package on the same branch, finish the other one first, or run it in a worktree or clone (docs/parallel.md).`
   return out
 }
-if (claim && claim.conflicts && claim.conflicts.length && claim.conflicts[0] !== 'lock busy' && !claim.ok) {
+if (claim && !claim.ok && claim.conflicts.length && claim.conflicts[0] !== 'lock busy') {
   claimWritten = false
   out.refused = `Open packages claim the same files: ${claim.conflicts.join('; ')}. Finish them, or close a stale one (status "closed" in ${claimsDir}/<label>.json).`
   return out
 }
-  if (!claim || !claim.ok) { out.stoppedAt = `claim (${claim ? claim.summary || claim.conflicts.join(', ') : 'no result'})`; return out }
+  if (!claim || !claim.ok) { out.stoppedAt = `claim (${claim ? claim.error || claim.conflicts.join(', ') || 'the helper wrote no claim' : claimRead.error})`; return out }
+  if (typeof claim.file === 'string' && claim.file.endsWith(`/${a.label}.json`)) { claimFile = claim.file; claimsDir = claim.file.replace(/\/[^/]+$/, '') }
+  if (claim.reused) log(`Claim of ${a.label}: its open claim from an earlier run is reused (${claim.file})`)
+  if (a.branch && !sharedBranch) {
+    // The switch to args.branch, once the claim is written: a step of its own, so that the claim step only runs the helper.
+    const sw = await step(
+      `Switch the Git work tree ${a.repo} to the branch ${a.branch}: \`git switch ${q(a.branch)}\`, or \`git switch -c ${q(a.branch)}\` when it does not exist. ${LOCKWAIT} ` +
+      `ok is true when \`git branch --show-current\` then prints ${a.branch}.`,
+      { agentType: 'zodchi-core:runner', schema: STEP, label: `switch ${a.label}` })
+    if (!sw || !sw.ok) { out.stoppedAt = `switch to ${a.branch} (${sw ? sw.summary : 'no result'})`; return out }
+  }
   if (needIgnore) {
     const ignored = await step(
       `Make ${a.repo} ignore the zodchi job folders, in a commit of its own; never push.\n` +
@@ -652,38 +672,33 @@ async function body() {
     const hardKeys = hard.map(r => r.toLowerCase())
     const soft = uniqueNew(seen).filter(r => !hardKeys.includes(r.toLowerCase()))
     if (!hard.length && !soft.length) { noteChanged([...reported, ...seen]); return true }
-    const hardList = JSON.stringify(hardKeys), softList = JSON.stringify(soft.map(r => r.toLowerCase()))
-    const more = await step(
-      `Extend the claim of the package ${a.label} by files its work changed. Follow these steps exactly.\n` +
-      LOCK +
-      `2. ${CLAIM_FILES} Read every claim. For each one whose "status" is "open" and whose "label" is not "${a.label}", compare its "files" list with these two lists, entry by entry, as exact strings. ` +
-      `hard: ${hardList} (files the writer reported as changed). soft: ${softList} (files Git shows changed that the writer did not report). ` +
-      `Every hard file that another package lists is a conflict "<its label>: <file>". Every soft file that another package lists is that package's own work in the shared checkout: it is not ours and never a conflict; list it in others.\n` +
-      `3. If there is no conflict, add each hard file and each soft file that is not in others to the "files" list of "${claimFile}" when it is missing; keep every other field and entry.\n` +
-      UNLOCK +
-      `ok is true when there was no conflict and "${claimFile}" lists every hard file and every soft file that is not in others. conflicts: the conflicts found, [] when none. others: the soft files another package lists, [] when none.`,
-      {
-        agentType: 'zodchi-core:runner', phase: phaseName, label: `claim more ${tag}`,
-        schema: { type: 'object', required: ['ok', 'conflicts', 'others'], properties: { ok: { type: 'boolean' }, conflicts: { type: 'array', items: { type: 'string' } }, others: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' } } },
-      })
-    if (more && !more.ok && more.conflicts && more.conflicts.length && more.conflicts[0] !== 'lock busy') {
+    // hard: files the writer reported as changed; another open package listing one is a conflict. soft: files only Git shows changed;
+    // one another open package lists is that package's own work in the shared checkout (others), never ours and never a conflict.
+    // The helper compares and extends the claim under the lock; what is a conflict, what is another's and what was added is its answer.
+    const moreRead = readClaimHelper(await helperStep('claim-more',
+      { dir: claimsSpecDir, label: a.label, hard: hardKeys, soft: soft.map(r => r.toLowerCase()) }, `claim more ${tag}`, phaseName), 'the claim-more helper')
+    const more = moreRead.facts
+    if (more && !more.ok && more.conflicts.length && more.conflicts[0] !== 'lock busy') {
       out.conflicts = more.conflicts
       out.stoppedAt = 'claim conflict'
       out.next = `The work changed files that another open package claims: ${more.conflicts.join('; ')}. This round's work is not committed: it stays in ${a.repo} for a human to settle with that package.`
       return false
     }
-    if (!more || !more.ok) { out.stoppedAt = `claim more (${more ? more.summary || (more.conflicts || []).join(', ') : 'no result'})`; return false }
-    // An answer without the others list cannot tell which soft files are another package's: nothing is recorded or committed.
-    if (!Array.isArray(more.others)) { out.stoppedAt = 'claim more (the answer has no others list)'; return false }
-    // Only a soft file the runner names is another package's; the match is by the lower-case path, as claims are kept.
+    if (!more || !more.ok) { out.stoppedAt = `claim more (${more ? more.error || more.conflicts.join(', ') || 'the helper added nothing' : moreRead.error})`; return false }
+    // An answer without the others or the added list cannot tell which soft files are another package's: nothing is recorded or committed.
+    if (!Array.isArray(more.others) || !Array.isArray(more.added)) { out.stoppedAt = `claim more (the answer has no ${!Array.isArray(more.others) ? 'others' : 'added'} list)`; return false }
+    // Only a soft file the helper names is another package's; the match is by the lower-case path, as claims are kept.
     const others = new Set(more.others.map(o => String(o).toLowerCase()).filter(o => soft.some(r => r.toLowerCase() === o)))
     for (const o of others) foreign.add(o)
     const mine = [...hard, ...soft.filter(r => !others.has(r.toLowerCase()))]
     for (const r of mine) claimed.add(r.toLowerCase())
     noteChanged([...reported, ...seen.filter(r => !others.has(r.toLowerCase()))])
-    if (mine.length) {
-      out.claimAdded = [...(out.claimAdded || []), ...mine]
-      log(`Claim of ${a.label} extended by ${mine.join(', ')}`)
+    // What the helper added to the claim, in the case the files have (a file the claim already listed, on a resume, is ours but not added).
+    const addedKeys = new Set(more.added.map(f => String(f).toLowerCase()))
+    const added = mine.filter(r => addedKeys.has(r.toLowerCase()))
+    if (added.length) {
+      out.claimAdded = [...(out.claimAdded || []), ...added]
+      log(`Claim of ${a.label} extended by ${added.join(', ')}`)
     }
     if (others.size) log(`Left out of ${a.label}: ${[...others].join(', ')} (claimed by another open package, changed in the shared checkout)`)
     return true

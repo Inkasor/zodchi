@@ -11,6 +11,9 @@
 //   roles          the gate of incident-triage: the role table, the account, whether the repository ignores .agent-tmp/
 //   plugin         nothing but the plugin copy this script runs from (incident-triage, ops-script, method-question, rubric-probe,
 //                  unity-check name the copy that ran in their result)
+//   claim          the claim step of code-package: compares the package's files with the other open claims and writes its claim
+//   claim-more     the claim extensions of code-package: compares the files the work changed with the other open claims and adds them
+//                  (both under the claims lock, see "The claim commands" below)
 //
 // It prints ONE line of compact JSON to stdout and nothing else. The workflow reads that line and decides; the exit
 // code is 0 when the line is the answer, 2 for a bad call (no spec, a spec that is not JSON, a field missing), 3 when the
@@ -225,14 +228,17 @@ function whyKept(repo, entry, dirtyKeys, defBranch, staleMs) {
   return "";
 }
 
-function withLock(dir, fn) {
+// The claims lock: the folder <dir>/.lock (mkdir is atomic). Tried every 500 ms for waitMs; a lock older than staleMs is removed
+// (the gate's stale-claim cleanup), and with staleMs null it is never removed: the claim commands report it busy instead. The lock is
+// removed after fn whatever fn did.
+function withLock(dir, fn, { waitMs = 120000, staleMs = 600000 } = {}) {
   const lock = path.join(dir, ".lock");
-  const deadline = Date.now() + 120000;
+  const deadline = Date.now() + waitMs;
   for (;;) {
     try { fs.mkdirSync(lock); break; } catch (e) {
-      if (e.code !== "EEXIST") return { locked: false, why: `lock: ${e.message}` };
-      try { if (Date.now() - fs.statSync(lock).mtimeMs > 600000) { fs.rmdirSync(lock); continue; } } catch {}
-      if (Date.now() > deadline) return { locked: false, why: `lock busy (${norm(lock)})` };
+      if (e.code !== "EEXIST") return { locked: false, busy: false, why: `lock: ${e.message}` };
+      if (staleMs !== null) try { if (Date.now() - fs.statSync(lock).mtimeMs > staleMs) { fs.rmdirSync(lock); continue; } } catch {}
+      if (Date.now() > deadline) return { locked: false, busy: true, why: `lock busy (${norm(lock)})` };
       sleep(500);
     }
   }
@@ -283,6 +289,97 @@ function claimFacts(spec, repo, dirtyKeys) {
     .filter((e) => e.claim.status === "open" && !closedLabels.has(e.label))
     .map((e) => ({ label: e.label, branch: e.claim.branch || "", files: Array.isArray(e.claim.files) ? e.claim.files.length : 0 }));
   return answer;
+}
+
+// The claim commands. Lists of paths are compared here, never by a model: a path is keyed as the workflow keys it (slashes forward, lower
+// case, relative to the repository; a leading "./" dropped). Both commands run under the claims lock, never break it (a lock still held after
+// lockWaitSec, default 120, at most 600, is reported as the conflict "lock busy"), and write a claim file atomically: the new text goes to
+// <file>.tmp-<pid>, which is no claim, and is renamed over the claim.
+const pathKey = (f) => norm(f).replace(/^(\.\/)+/, "").toLowerCase();
+const keysOf = (list) => [...new Set((Array.isArray(list) ? list : []).map(pathKey).filter(Boolean))];
+const claimsDirOf = (spec) => {
+  const d = norm(spec.dir);
+  return path.resolve(/^(~|\$HOME)(\/|$)/.test(d) ? path.join(os.homedir(), d.replace(/^(~|\$HOME)\/?/, "")) : d);
+};
+const lockWait = (spec) => {
+  const s = Number(spec.lockWaitSec ?? 120);
+  return (Number.isFinite(s) ? Math.min(Math.max(s, 0), 600) : 120) * 1000;
+};
+const stamp = () => new Date().toISOString().replace(/\.\d+Z$/, "Z");
+function writeClaim(file, value) {
+  const tmp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(value) + "\n");
+  fs.renameSync(tmp, file);
+}
+// The open claims of other labels, each with its files keyed.
+const othersOpen = (dir, label) => readClaims(dir).claims
+  .filter((e) => e.claim.status === "open" && e.label !== label)
+  .map((e) => ({ label: e.label, branch: typeof e.claim.branch === "string" ? e.claim.branch : "", files: keysOf(e.claim.files) }));
+function needFields(spec, strings, lists) {
+  for (const k of strings) if (typeof spec[k] !== "string" || (["dir", "label"].includes(k) && !spec[k])) print({ ok: false, api: API, error: `spec.${k} is missing or not a string` }, 2);
+  for (const k of lists) if (!Array.isArray(spec[k])) print({ ok: false, api: API, error: `spec.${k} is missing or not a list` }, 2);
+  if (!/^[\w.-]+$/.test(spec.label)) print({ ok: false, api: API, error: "spec.label may hold letters, digits, \".\", \"_\" and \"-\" only" }, 2);
+}
+
+// claim: { dir, label, files, branch, brief, tmp, base }. An open claim of another label that lists one of files is a conflict
+// "<label>: <file>"; an open claim of another label whose "branch" is set and differs is a branch conflict "<label>: <branch>". Without
+// either, <dir>/<label>.json is written: { label, status "open", files, branch, brief, tmp, base, openedAt }. An open claim of the same
+// label (a resumed package) is kept as it is, with files it lacks added; it is no conflict.
+function claimCmd(spec) {
+  needFields(spec, ["dir", "label", "branch", "brief", "tmp", "base"], ["files"]);
+  const dir = claimsDirOf(spec);
+  const files = keysOf(spec.files);
+  const file = path.join(dir, `${spec.label}.json`);
+  const base = { ok: false, api: API, plugin: pluginCopy(), conflicts: [], branchConflicts: [], file: norm(file), reused: false, files: [] };
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { return { ...base, error: `the claims folder: ${e.message}` }; }
+  const done = withLock(dir, () => {
+    const mine = new Set(files);
+    const conflicts = [], branchConflicts = [];
+    for (const o of othersOpen(dir, spec.label)) {
+      for (const f of o.files) if (mine.has(f)) conflicts.push(`${o.label}: ${f}`);
+      if (o.branch && o.branch !== spec.branch) branchConflicts.push(`${o.label}: ${o.branch}`);
+    }
+    if (conflicts.length || branchConflicts.length) return { ...base, conflicts, branchConflicts };
+    const own = readJson(file).value;
+    if (own && typeof own === "object" && own.label === spec.label && own.status === "open") {
+      const have = Array.isArray(own.files) ? own.files.map(String) : [];
+      const haveKeys = new Set(have.map(pathKey));
+      const add = files.filter((f) => !haveKeys.has(f));
+      if (add.length) writeClaim(file, { ...own, files: [...have, ...add] });
+      return { ...base, ok: true, reused: true, files: [...have, ...add] };
+    }
+    writeClaim(file, { label: spec.label, status: "open", files, branch: spec.branch, brief: spec.brief, tmp: spec.tmp, base: spec.base, openedAt: stamp() });
+    return { ...base, ok: true, files };
+  }, { waitMs: lockWait(spec), staleMs: null });
+  if (done.locked) return done.value;
+  return { ...base, conflicts: done.busy ? ["lock busy"] : [], error: done.why };
+}
+
+// claim-more: { dir, label, hard, soft }. Every hard file (the writer reported it) that another open claim lists is a conflict
+// "<label>: <file>"; every soft file (only Git shows it changed) that another open claim lists is that package's work and goes to others.
+// Without conflicts, every hard file and every soft file not in others that this label's open claim lacks is added to it (added).
+function claimMoreCmd(spec) {
+  needFields(spec, ["dir", "label"], ["hard", "soft"]);
+  const dir = claimsDirOf(spec);
+  const hard = keysOf(spec.hard), soft = keysOf(spec.soft);
+  const file = path.join(dir, `${spec.label}.json`);
+  const base = { ok: false, api: API, plugin: pluginCopy(), conflicts: [], others: [], added: [], file: norm(file) };
+  const done = withLock(dir, () => {
+    const owner = new Map();
+    for (const o of othersOpen(dir, spec.label)) for (const f of o.files) if (!owner.has(f)) owner.set(f, o.label);
+    const conflicts = hard.filter((f) => owner.has(f)).map((f) => `${owner.get(f)}: ${f}`);
+    const others = soft.filter((f) => owner.has(f));
+    if (conflicts.length) return { ...base, conflicts, others };
+    const own = readJson(file).value;
+    if (!own || typeof own !== "object" || own.label !== spec.label || own.status !== "open") return { ...base, others, error: `${spec.label} has no open claim at ${norm(file)}` };
+    const have = Array.isArray(own.files) ? own.files.map(String) : [];
+    const haveKeys = new Set(have.map(pathKey));
+    const added = [...new Set([...hard, ...soft.filter((f) => !others.includes(f))])].filter((f) => !haveKeys.has(f));
+    if (added.length) writeClaim(file, { ...own, files: [...have, ...added] });
+    return { ...base, ok: true, others, added };
+  }, { waitMs: lockWait(spec), staleMs: null });
+  if (done.locked) return done.value;
+  return { ...base, conflicts: done.busy ? ["lock busy"] : [], error: done.why };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -377,7 +474,7 @@ function roles(spec) {
   return { ok: true, api: API, plugin: pluginCopy(), roles: m.roles, modelsErrors: m.errors, account: acc.account, accountError: acc.accountError, ignoreExit: ignore };
 }
 
-const COMMANDS = { "code-package": codePackage, "branch-review": branchReview, ledger, plugin, roles };
+const COMMANDS = { "code-package": codePackage, "branch-review": branchReview, ledger, plugin, roles, claim: claimCmd, "claim-more": claimMoreCmd };
 const [command, specText] = process.argv.slice(2);
 if (!COMMANDS[command]) print({ ok: false, api: API, error: `unknown command ${JSON.stringify(command)}; one of ${Object.keys(COMMANDS).join(", ")}` }, 2);
 let spec;

@@ -266,14 +266,14 @@ export default function register({ scenario, ROOT }) {
   const cpAnswers = (over = {}) => (label) => {
     if (over[label] !== undefined) return typeof over[label] === "function" ? over[label]() : over[label];
     if (label === "gate pkg") return printed(CP_FACTS);
-    if (label === "claim pkg") return { ok: true, conflicts: [], branchConflicts: [] };
+    if (label === "claim pkg") return printed({ conflicts: [], branchConflicts: [], reused: false, files: ["src/a.js"] });
     if (label === "write pkg") return { done: true, summary: "wrote", changed: ["/r/src/a.js"], unverified: [] };
     if (label.startsWith("status ")) return { ok: true, paths: ["src/a.js"] };
     if (label.startsWith("checks ")) return { ok: true, results: ["ok"], cause: "none", logs: [], evidence: [{ command: "node t.js", exitCode: 0, log: "l" }] };
     if (label.startsWith("commit ")) return { ok: true, summary: "deadbeef", paths: ["src/a.js"] };
     if (label.startsWith("review ")) return { verdict: "approved", findings: [], gateway: "final", infra: "" };
     if (label.startsWith("close claim")) return { ok: true, summary: "closed" };
-    if (label.startsWith("claim more")) return { ok: true, conflicts: [], others: [] };
+    if (label.startsWith("claim more")) return printed({ conflicts: [], others: [], added: [] });
     throw new Error(`no scripted answer for the step "${label}"`);
   };
   const CODEX_REVIEWER = { reviewer: { candidates: [{ provider: "codex", model: "gpt-x", effort: "medium" }] } };
@@ -333,17 +333,17 @@ export default function register({ scenario, ROOT }) {
 
   scenario("workflow-gate-code-package-claims-and-choice", "claims are read as <label>.json only and never backed up; the claim records its tmp folder; the result says which candidate each role took and the effort handed to Claude steps", async (t) => {
     const r = await runWorkflow("core/workflows/code-package.js", CP_ARGS, cpAnswers());
-    const claimPrompt = r.of(/^claim pkg$/)[0].prompt, closePrompt = r.of(/^close claim/)[0].prompt;
-    t.ok(claimPrompt.includes('named exactly "<label>.json"') && claimPrompt.includes("whose \"label\" field is that same name"), "the claim step reads <label>.json whose label is its name");
-    t.ok(claimPrompt.includes("x.json.bak-1") && claimPrompt.includes("never read it as one"), "strays are not claims");
-    t.ok(claimPrompt.includes("Never make a backup"), "and no backup is made");
+    const claimStep = r.of(/^claim pkg$/)[0], claimPrompt = claimStep.prompt, closePrompt = r.of(/^close claim/)[0].prompt;
+    t.ok((claimPrompt.match(/node -e /g) || []).length === 1 && claimPrompt.includes(` claim '{"api":1,"dir":"~/.zodchi/packages/`), "the claim step runs the claim helper's one command (which reads only <label>.json whose label is its name)");
+    t.eq(claimStep.opts.schema.required, ["exitCode", "stdout"], "and returns its exit code and printed line, nothing it read itself");
+    t.ok(claimPrompt.includes("never touch the claims folder or its lock yourself"), "the runner never writes a claim itself");
     t.ok(closePrompt.includes("make no backup"), "the close step changes the file in place and makes no backup either");
     for (const p of [claimPrompt, closePrompt]) t.ok(!p.includes("every *.json file"), "never the glob that reads a .bak");
     t.ok(r.of(/^claim pkg$/)[0].prompt.includes('"tmp":"/r/.agent-tmp/pkg"'), "the claim records the package's tmp folder (the gate uses it to tell a running package from a finished one)");
     const more = await runWorkflow("core/workflows/code-package.js", CP_ARGS, cpAnswers({
       "write pkg": { done: true, summary: "w", changed: ["/r/src/a.js", "/r/src/n.js"], unverified: [] }, "status write pkg": { ok: true, paths: ["src/a.js", "src/n.js"] },
     }));
-    t.ok(more.of(/^claim more write pkg$/)[0].prompt.includes('named exactly "<label>.json"'), "the extension step reads claims the same way");
+    t.ok(more.of(/^claim more write pkg$/)[0].prompt.includes(` claim-more '{"api":1,"dir":"~/.zodchi/packages/`), "the extension step runs the claim-more helper the same way");
     t.eq(r.out.choice, ["writer: claude/sonnet (effort high), the first candidate", "reviewer: claude/opus (effort medium), the first candidate"], "the choice of each role is in the result");
     t.eq(r.out.effort, { writer: "high", reviewer: "medium" }, "the effort handed to the Claude steps is in the result");
     t.eq([r.of(/^write pkg$/)[0].opts.effort, r.of(/^review 1$/)[0].opts.effort], ["high", "medium"], "and was passed to agent() as its effort");
