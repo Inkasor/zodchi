@@ -165,5 +165,5 @@ runs the real workflow body over the synthetic cases in `scripts/e2e/fixtures/in
 (`scripts/e2e/fixtures/incident-triage/product.mjs`), only the model's answer is the case's `classification.json` and
 the gate helper's line is scripted. The four kinds of the plan are the first scenario (`incident-triage-kinds`): an
 error older than the release (`stale`), a skill the allow-list contradicts (`skill-allowlist`), a question about access
-answered by a better tool report (`blocked-release`) and a product fix without a skill change (`agent-capability`).
+answered by a better tool report (`blocked-release`) and a product fix with a second package for the agent skill (`agent-capability`).
 `npm run e2e` runs them with the rest of the suite; `--no-build` skips the Rust build when the binaries exist.
