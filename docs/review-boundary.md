@@ -69,3 +69,5 @@ A lead reads it to see how much a review was worth: many findings `closed` by a
 code change mean the rounds earned their time; findings `to sort` that the lead
 rules out of scope mean `REVIEW.md` needs a line, or the brief a sharper
 boundary.
+
+To write the boundary of a package whose brief does not exist yet, see [design-brief.md](design-brief.md): the workflow `design-brief` drafts the brief with its `## Review boundary` section and has an independent reviewer check that the section fits the package.

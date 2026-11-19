@@ -19,7 +19,7 @@ same everywhere lives in `core/`.
 
 | Folder | What is inside |
 | --- | --- |
-| `core/` | Agents every domain uses: `coder`, `runner`, `applier`, `researcher`. Workflows: `code-package`, `ops-script`, `incident-triage` (a user's error report to a draft reply or fix brief, see [docs/incident-triage.md](docs/incident-triage.md)). Skills: `workspace-audit` (tidy a cluttered folder: read-only researchers, one batch of decisions, then one worker) and `zodchi-flow` (run a code task through `zodchi flow code-package` from a Claude Code session) |
+| `core/` | Agents every domain uses: `coder`, `runner`, `applier`, `researcher`. Workflows: `code-package`, `ops-script`, `incident-triage` (a user's error report to a draft reply or fix brief, see [docs/incident-triage.md](docs/incident-triage.md)), `design-brief` (a goal to a brief that `code-package` can run: read-only fact finding, a draft, an independent review through the gateway, one fix, see [docs/design-brief.md](docs/design-brief.md)). Skills: `workspace-audit` (tidy a cluttered folder: read-only researchers, one batch of decisions, then one worker) and `zodchi-flow` (run a code task through `zodchi flow code-package` from a Claude Code session) |
 | `codex/` | The Codex skill `zodchi-flow`: the same, from a Codex session (see [Three ways to run a package](#three-ways-to-run-a-package)) |
 | `domains/web-apps/` | Web application work: `branch-review` before a release |
 | `domains/gamedev-unity/` | Game asset pipeline in Blender and Unity: `asset-round`, `method-question`, `rubric-probe`, `unity-check`, and the `modeller`, `unity-runner`, `art-critic` agents |
