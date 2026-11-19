@@ -499,17 +499,17 @@ function plugins(o, domains, say, home, copy) {
 
 const claudeConfigDir = () => path.resolve(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"));
 
-// The file of a plugin that is compared with Claude Code's cached copy of it: code-package.js for zodchi-core, else the
-// first workflow of the plugin (in name order), else its plugin.json. Paths are relative to the plugin folder.
-function probeFile(dir, plugin) {
-  const wf = path.join(dir, "workflows");
-  const names = (() => { try { return fs.readdirSync(wf).filter(n => n.endsWith(".js")).sort(); } catch { return []; } })();
-  const found = plugin === "zodchi-core" ? ["workflows/code-package.js"] : [...names.slice(0, 1).map(n => `workflows/${n}`), ".claude-plugin/plugin.json"];
-  return found.find(f => fs.existsSync(path.join(dir, ...f.split("/")))) || null;
-}
+// The files of a plugin that are compared with Claude Code's cached copy of it: every workflow (workflows/*.js, in name
+// order), else, for a plugin without workflows, its plugin.json. Paths are relative to the plugin folder.
+const comparedFiles = (dir) => {
+  const names = (() => { try { return fs.readdirSync(path.join(dir, "workflows")).filter(n => n.endsWith(".js")).sort(); } catch { return []; } })();
+  if (names.length) return names.map(n => `workflows/${n}`);
+  return fs.existsSync(path.join(dir, ".claude-plugin", "plugin.json")) ? [".claude-plugin/plugin.json"] : [];
+};
 
 // Reads installed_plugins.json of Claude Code back and compares, for every plugin the run installed, one file of the
-// folder Claude Code says it installed from with the same file in the marketplace's copy, byte for byte. Returns the
+// folder Claude Code says it installed from with the same files in the marketplace's copy, byte for byte: every workflow,
+// a missing or extra one included (a cache kept from an earlier install can differ in any of them). Returns the
 // problems found, one line each; a Claude Code that keeps no such file is a note, not a failure.
 function verifyCache(done, target, project) {
   const file = path.join(claudeConfigDir(), "plugins", "installed_plugins.json");
@@ -527,14 +527,20 @@ function verifyCache(done, target, project) {
     if (!mine || !mine.installPath) { problems.push(`${id} (${p.scope} scope) is not registered in ${file} after its install.`); continue; }
     const source = (manifest.plugins || []).find(x => x.name === p.plugin);
     const dir = source && typeof source.source === "string" ? path.resolve(target, source.source) : null;
-    const rel = dir && probeFile(dir, p.plugin);
-    if (!rel) { problems.push(`${id}: the copy ${dir || target} has no file to compare with what Claude Code cached.`); continue; }
-    const ours = path.join(dir, ...rel.split("/"));
-    const cached = path.join(mine.installPath, ...rel.split("/"));
-    let same = false;
-    try { same = fs.readFileSync(ours).equals(fs.readFileSync(cached)); } catch { /* a missing cached file is a difference */ }
-    if (same) console.log(`plugin: ${id} (${p.scope} scope): ${rel} in Claude Code's cache ${mine.installPath} is the copy's`);
-    else problems.push(`${id} (${p.scope} scope): ${cached} (Claude Code's cache) differs from ${ours} (the copy); sessions would run the cached, older file. Refresh it by hand: ${fix}.`);
+    const rels = dir ? comparedFiles(dir) : [];
+    if (!rels.length) { problems.push(`${id}: the copy ${dir || target} has no file to compare with what Claude Code cached.`); continue; }
+    const hand = `Refresh it by hand: ${fix}.`;
+    const extra = rels[0].startsWith("workflows/") ? comparedFiles(mine.installPath).filter(r => !rels.includes(r)) : [];
+    for (const r of extra) problems.push(`${id} (${p.scope} scope): ${path.join(mine.installPath, ...r.split("/"))} (Claude Code's cache) has no counterpart in the copy ${dir}; sessions would run a workflow this commit no longer has. ${hand}`);
+    let bad = 0;
+    for (const rel of rels) {
+      const ours = path.join(dir, ...rel.split("/"));
+      const cached = path.join(mine.installPath, ...rel.split("/"));
+      let same = false;
+      try { same = fs.readFileSync(ours).equals(fs.readFileSync(cached)); } catch { /* a missing cached file is a difference */ }
+      if (!same) { bad++; problems.push(`${id} (${p.scope} scope): ${cached} (Claude Code's cache) differs from ${ours} (the copy); sessions would run the cached, older file. ${hand}`); }
+    }
+    if (!bad && !extra.length) console.log(`plugin: ${id} (${p.scope} scope): ${rels.join(", ")} in Claude Code's cache ${mine.installPath} are the copy's`);
   }
   return problems;
 }

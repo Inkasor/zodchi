@@ -102,7 +102,7 @@ export default function register(h) {
     t.ok(samePath(reg["zodchi-core@zodchi"][0].installPath, cacheOf(w, "zodchi-core")) && samePath(reg["zodchi-web-apps@zodchi"][0].installPath, cacheOf(w, "zodchi-web-apps")), "both plugins are registered with a cache folder keyed by name and version");
     t.eq(read(path.join(cacheOf(w, "zodchi-core"), "workflows", "code-package.js")), "// code-package, commit 1\n", "the cached code-package.js is the copy's");
     t.eq(read(path.join(cacheOf(w, "zodchi-web-apps"), "workflows", "branch-review.js")), "// branch-review, commit 1\n", "the cached domain workflow is the copy's");
-    t.ok(r.out.includes("code-package.js in Claude Code's cache") && r.out.includes("is the copy's"), "the installer says it compared the cache with the copy");
+    t.ok(/code-package.js.* in Claude Code's cache .* are the copy's/.test(r.out), "the installer says it compared the cache with the copy");
     t.eq(r.lines[r.lines.length - 1], SESSIONS, "the last line says that open sessions keep the plugins they started with");
     t.ok(!fakeCalls(w).some((c) => c.args[1] === "uninstall" || c.args[1] === "update"), "a first install neither uninstalls nor updates anything");
     // The model itself: an update at an unchanged version is a no-op, which is why the installer does not use it.
@@ -190,6 +190,30 @@ export default function register(h) {
     t.ok(r.err.includes(path.join(w.env.ZODCHI_HOME, "plugins")) && r.err.includes(path.join("core", "workflows", "code-package.js")), "and the copy's file");
     t.ok(r.err.includes("claude plugin uninstall zodchi-core@zodchi --scope user"), "and how to refresh it by hand");
     t.ok(!r.out.includes("Open Claude Code sessions keep"), "no success note");
+  });
+
+  scenario("install-plugins-stale-other-workflow", "a retained cache that differs in a workflow other than code-package.js (zodchi-core or a domain: changed, new or removed) is an error even though the probe file is identical", async (t) => {
+    // The commit changes only a workflow beside code-package.js (core), adds one or removes one (domain); the other cache folder is kept.
+    const cases = [
+      { name: "core-changed", plugin: "zodchi-core", file: "core/workflows/gate.js", first: "// gate, commit 1\n", next: "// gate, commit 2\n" },
+      { name: "domain-added", plugin: "zodchi-web-apps", file: "domains/web-apps/workflows/extra.js", first: null, next: "// extra, commit 2\n" },
+      { name: "domain-removed", plugin: "zodchi-web-apps", file: "domains/web-apps/workflows/old.js", first: "// old, commit 1\n", next: null },
+    ];
+    for (const c of cases) {
+      const w = clone(t, `install-stale-${c.name}`);
+      if (c.first) { write(w, c.file, c.first); git(w, ["add", "-A"]); git(w, ["commit", "-q", "-m", "gate"]); }
+      t.eq(install(t, w, ["--domains", "web-apps"]).code, 0, `${c.name}: the first install succeeds`);
+      if (c.next === null) fs.rmSync(path.join(w.clone, ...c.file.split("/"))); else write(w, c.file, c.next);
+      git(w, ["add", "-A"]);
+      git(w, ["commit", "-q", "-m", "next"]);
+      fs.writeFileSync(path.join(w.fake, "keep-cache"), "");
+      const r = install(t, w, ["--domains", "web-apps"]);
+      t.ok(r.code !== 0, `${c.name}: the installer fails although code-package.js and the domain's first workflow are identical in the cache`);
+      t.eq(read(path.join(cacheOf(w, "zodchi-core"), "workflows", "code-package.js")), "// code-package, commit 1\n", `${c.name}: the probe file of the cache is the copy's`);
+      t.ok(r.err.includes(path.basename(c.file)) && r.err.includes(cacheOf(w, c.plugin)), `${c.name}: the error names the workflow ${path.basename(c.file)}`);
+      t.ok(r.err.includes(`${c.plugin}@zodchi`) && r.err.includes(`claude plugin uninstall ${c.plugin}@zodchi --scope user`), `${c.name}: and the plugin and how to refresh it by hand`);
+      t.ok(!r.out.includes("Open Claude Code sessions keep"), `${c.name}: no success note`);
+    }
   });
 
   scenario("install-plugins-uninstall", "--uninstall takes the plugins and the marketplace out of Claude Code, and the copies of the plugins with them, and touches no other marketplace", async (t) => {
