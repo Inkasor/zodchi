@@ -249,6 +249,8 @@ export default function register({ scenario, ROOT }) {
     for (const [name, damage] of [
       ["the last 3 characters dropped", cut(3)],
       ["the last 4 characters dropped (valid base64, cut JSON)", cut(4)],
+      // The helper answers this one exactly as a copy that does not read b64: does ("Unexpected token 'b'"): after the gate answered, it is damage.
+      ["the colon of b64: dropped", (arg) => arg.replace(/^b64:/, "b64")],
     ]) {
       const r = await run(when(pickSecond, damage));
       const parts = r.of(/^material /);
@@ -368,9 +370,10 @@ export default function register({ scenario, ROOT }) {
         t.ok(want.test(stop) && !/older than this workflow/.test(stop), `${name}: ${what} is not taken for an old copy (${stop.slice(0, 160)})`);
       }
     }
-    // design-brief, a material part: the old copy is found there too (the gate answered), and the run stops before the review.
+    // design-brief, a material part answered with the old copy's text after the gate answered a b64: spec: the copy reads b64:, so this is damage, not an
+    // old copy. The part is sent once more and, answered the same way again, the run stops before the review with the usual text, not the reinstall one.
     const r = await run(() => undefined, { oldHelperLine: errorLine(OLD_ANSWERS[0]) });
-    t.ok(/older than this workflow/.test(r.out.stoppedAt || "") && r.of(/^material /).length >= 1 && r.of(/^preflight /).length === 0 && r.of(/^review$/).length === 0, `design-brief: a material part answered by an old copy stops the run before the review (${String(r.out.stoppedAt).slice(0, 200)})`);
+    t.ok(!/older than this workflow/.test(r.out.stoppedAt || "") && /^review \(part \d+ of the material was not written: /.test(r.out.stoppedAt || "") && r.of(/^material .* again /).length >= 1 && r.of(/^preflight /).length === 0 && r.of(/^review$/).length === 0, `design-brief: the old copy's text on a material part after the gate is damage: sent again, then the usual stop before the review (${String(r.out.stoppedAt).slice(0, 200)})`);
   });
 
   scenario("spec-b64-too-many-parts", "the 200-part limit and its message are kept with the smaller parts", async (t) => {
