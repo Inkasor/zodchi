@@ -37,7 +37,11 @@ agent may not be allowed to do either. Nothing is shared, nothing is locked.
   slashes forward, relative to the repository) and writes the claim atomically (a temp file
   renamed over it). The runner returns the printed line and the exit code; the conflicts, the
   files of other packages (`others`) and what was added come only from that line. An open claim
-  of the same label is reused on a resume. (Seen on 2026-11-19: a runner asked to compare 45
+  of the same label is reused on a resume, its branch set to the one the resumed run asks for
+  (after the same branch check against the others). The helper keeps claims under Node's home
+  folder; where the shell's `$HOME` names another folder (Windows), the claim step refuses while
+  open claims of earlier versions lie there, and `claim more` counts them as other packages.
+  (Seen on 2026-11-19: a runner asked to compare 45
   changed paths with two other claims answered that none were theirs, and its package committed
   all 45.)
 - **Stale claims.** A package finished by hand, outside `code-package`, leaves its claim open
