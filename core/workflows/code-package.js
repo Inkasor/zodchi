@@ -480,6 +480,14 @@ try {
 const claimRead = readClaimHelper(await helperStep('claim',
   { dir: claimsSpecDir, label: a.label, files: claimKeys, branch: myBranch, brief: a.brief, tmp: a.tmp, base }, `claim ${a.label}`), 'the claim helper')
 const claim = claimRead.facts
+// Open claims in the claims folder of the shell's $HOME, which earlier versions of this workflow used, when that is not the folder the helper
+// keeps claims in (Node's home folder): they would go unseen, so nothing is claimed until a person closes or moves them.
+if (claim && !claim.ok && Array.isArray(claim.legacyClaims) && claim.legacyClaims.length) {
+  claimWritten = false
+  out.refused = `Open claims lie in ${claim.legacyDir}, the claims folder of the shell's home folder ($HOME), which is not the folder the claims are kept in now (${String(claim.file || '').replace(/\/[^/]+$/, '')}): ${claim.legacyClaims.join('; ')}. ` +
+    `Finish them or close them (status "closed"), or move the open ones into the new folder, then start again.`
+  return out
+}
 if (claim && !claim.ok && Array.isArray(claim.branchConflicts) && claim.branchConflicts.length) {
   claimWritten = false
   out.refused = `Another open package of this repository works on a different branch (${claim.branchConflicts.join('; ')}) and this one would work on ${myBranch}; switching would pull the branch from under it. ` +
@@ -493,7 +501,7 @@ if (claim && !claim.ok && claim.conflicts.length && claim.conflicts[0] !== 'lock
 }
   if (!claim || !claim.ok) { out.stoppedAt = `claim (${claim ? claim.error || claim.conflicts.join(', ') || 'the helper wrote no claim' : claimRead.error})`; return out }
   if (typeof claim.file === 'string' && claim.file.endsWith(`/${a.label}.json`)) { claimFile = claim.file; claimsDir = claim.file.replace(/\/[^/]+$/, '') }
-  if (claim.reused) log(`Claim of ${a.label}: its open claim from an earlier run is reused (${claim.file})`)
+  if (claim.reused) log(`Claim of ${a.label}: its open claim from an earlier run is reused (${claim.file})${typeof claim.branchWas === 'string' ? `; its branch ${claim.branchWas || '(none)'} is now ${myBranch}` : ''}`)
   if (a.branch && !sharedBranch) {
     // The switch to args.branch, once the claim is written: a step of its own, so that the claim step only runs the helper.
     const sw = await step(

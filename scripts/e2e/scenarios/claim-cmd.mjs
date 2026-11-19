@@ -16,8 +16,8 @@ export default function register({ scenario, ROOT }) {
     return `${home.replace(/\\/g, "/")}/packages/repo`;
   };
   /** The helper's one line, parsed, with its exit code. */
-  const helper = (t, cmd, spec) => {
-    const r = spawnSync(process.execPath, [GATE, cmd, JSON.stringify({ api: 1, ...spec })], { encoding: "utf8" });
+  const helper = (t, cmd, spec, env = {}) => {
+    const r = spawnSync(process.execPath, [GATE, cmd, JSON.stringify({ api: 1, ...spec })], { encoding: "utf8", env: { ...process.env, ...env } });
     t.log(`gate.mjs ${cmd} ${spec.label}: exit ${r.status}\n${r.stdout}${r.stderr}`);
     let json = null;
     try { json = JSON.parse(r.stdout); } catch { /* checked by the caller */ }
@@ -102,6 +102,81 @@ export default function register({ scenario, ROOT }) {
     onlyClaims(t, dir, ["lm-release", "pkg-a", "pkg-b"]);
   });
 
+  scenario("claim-cmd-keys", "claims of labels beginning with a dot are seen, equivalent spellings of a path conflict, a resumed claim takes the branch it asks for, and open claims in the shell's $HOME folder are not lost when Node's home folder differs", async (t) => {
+    // a label beginning with a dot: its claim is written and seen by the other packages
+    const dir = claimsDir(t, "keys");
+    t.eq(claim(t, dir, ".release", ["src/a.js"]).ok, true, "a package labelled .release claims");
+    t.ok(fs.existsSync(`${dir}/.release.json`), "its claim file is written");
+    let r = claim(t, dir, "two", ["SRC/A.js"]);
+    t.eq([r.ok, r.conflicts], [false, [".release: src/a.js"]], "another package's overlapping path conflicts with it");
+    r = more(t, dir, ".release", [], ["src/a.js"]);
+    t.eq([r.ok, r.others], [true, []], "claim-more of .release finds its own claim and no other");
+
+    // equivalent spellings of one path: dot segments and repeated slashes are collapsed, in the request and in a stored claim
+    const dir2 = claimsDir(t, "spell");
+    t.eq(claim(t, dir2, "one", ["src/../a.js", "x//y/./z.js"]).ok, true, "a package claims src/../a.js and x//y/./z.js");
+    t.eq(read(dir2, "one").files, ["a.js", "x/y/z.js"], "they are stored as the workflow keys them");
+    r = claim(t, dir2, "two", ["a.js", "./x/y/z.js"]);
+    t.eq([r.ok, r.conflicts], [false, ["one: a.js", "one: x/y/z.js"]], "the same files spelled otherwise conflict");
+    fs.writeFileSync(`${dir2}/older.json`, JSON.stringify({ label: "older", status: "open", files: ["lib/./b/../c.js", "docs//d.md"], branch: "main" }));
+    r = claim(t, dir2, "three", ["lib/c.js"]);
+    t.eq([r.ok, r.conflicts], [false, ["older: lib/c.js"]], "a stored claim spelled otherwise conflicts too");
+    r = more(t, dir2, "one", ["docs/d.md"], ["lib/sub/../c.js"]);
+    t.eq([r.ok, r.conflicts, r.others], [false, ["older: docs/d.md"], ["lib/c.js"]], "claim-more keys both sides the same way");
+
+    // a resumed claim asks for another branch: it takes it when no other open claim stands against it, and the others then see it
+    const dir3 = claimsDir(t, "resume");
+    t.eq(claim(t, dir3, "one", ["a.js"]).ok, true, "a package claims on main");
+    r = claim(t, dir3, "one", ["a.js"], { branch: "feat" });
+    t.eq([r.ok, r.reused, r.branchWas], [true, true, "main"], "the resume on feat reuses the claim and names the branch it had");
+    t.eq(read(dir3, "one").branch, "feat", "the claim now names feat");
+    r = claim(t, dir3, "two", ["b.js"]);
+    t.eq([r.ok, r.branchConflicts], [false, ["one: feat"]], "a package on main is refused against the resumed one");
+    t.eq(claim(t, dir3, "three", ["c.js"], { branch: "feat" }).ok, true, "a package on feat claims");
+    r = claim(t, dir3, "one", ["a.js"], { branch: "main" });
+    t.eq([r.ok, r.branchConflicts], [false, ["three: feat"]], "a resume onto main is refused while another open claim works on feat");
+    t.eq(read(dir3, "one").branch, "feat", "and its claim keeps feat");
+    r = claim(t, dir3, "one", ["a.js"], { branch: "feat" });
+    t.eq([r.ok, r.reused, r.branchWas], [true, true, undefined], "a resume on the same branch names no earlier one");
+
+    // the shell's $HOME and Node's home folder differ (Windows: Node reads USERPROFILE): open claims under $HOME are not lost
+    if (process.platform !== "win32") { t.log("Node's home folder is $HOME on this platform: the two folders cannot differ"); return; }
+    const scratch = (name) => {
+      const h = fs.mkdtempSync(path.join(os.tmpdir(), `zodchi-claim-${name}-`)).replace(/\\/g, "/");
+      t.cleanups.push(() => fs.rmSync(h, { recursive: true, force: true }));
+      return h;
+    };
+    const nodeHome = scratch("node"), shellHome = scratch("shell");
+    const spec = "~/.zodchi/packages/-r";
+    const legacy = `${shellHome}/.zodchi/packages/-r`, now = `${nodeHome}/.zodchi/packages/-r`;
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(`${legacy}/old.json`, JSON.stringify({ label: "old", status: "open", files: ["src/a.js", "src/b.js"], branch: "main" }));
+    fs.writeFileSync(`${legacy}/done.json`, JSON.stringify({ label: "done", status: "closed", files: ["src/c.js"], branch: "main" }));
+    const msys = shellHome.replace(/^([A-Za-z]):/, (_, l) => `/${l.toLowerCase()}`);
+    const newSpec = { dir: spec, label: "new", files: ["src/z.js"], branch: "main", brief: "/r/b.md", tmp: "/r/.agent-tmp/new", base: "abc1234" };
+    for (const [form, home] of [["Windows", shellHome], ["Git Bash", msys]]) {
+      r = helper(t, "claim", newSpec, { HOME: home, USERPROFILE: nodeHome });
+      t.eq([r.ok, r.legacyClaims, r.conflicts], [false, ["old: 2 file(s)"], []], `$HOME in ${form} form: the open claim in its folder stops the claim`);
+      t.ok(String(r.legacyDir).toLowerCase() === legacy.toLowerCase(), `and the answer names that folder (${r.legacyDir})`);
+      t.ok(!fs.existsSync(`${now}/new.json`), "nothing is written in the new folder");
+    }
+    r = helper(t, "claim", newSpec, { HOME: nodeHome, USERPROFILE: nodeHome });
+    t.eq([r.ok, r.legacyClaims], [true, undefined], "with one home folder for both there is nothing else to read and the claim goes through");
+    r = helper(t, "claim-more", { dir: spec, label: "new", hard: ["src/y.js"], soft: ["src/a.js", "src/x.js"] }, { HOME: shellHome, USERPROFILE: nodeHome });
+    t.eq([r.ok, r.others, r.added], [true, ["src/a.js"], ["src/y.js", "src/x.js"]], "claim-more leaves a file of an open claim under $HOME to it");
+    r = helper(t, "claim-more", { dir: spec, label: "new", hard: ["src/b.js"], soft: [] }, { HOME: shellHome, USERPROFILE: nodeHome });
+    t.eq([r.ok, r.conflicts], [false, ["old: src/b.js"]], "and a hard file of it is a conflict");
+    t.eq(read(now, "new").files, ["src/z.js", "src/y.js", "src/x.js"], "the claim holds only this package's files");
+    t.ok(!fs.existsSync(`${legacy}/new.json`) && !fs.existsSync(`${legacy}/.lock`), "nothing is written in the folder under $HOME");
+
+    // the workflow refuses on that answer and writes and closes no claim
+    const { home: wfHome, dir: wfDir } = homeFor(t, "wf-legacy");
+    const w = await runBody({ "claim lm-release": realRunner(t, wfHome, undefined, { HOME: shellHome }) });
+    t.ok(String(w.out.refused).startsWith(`Open claims lie in ${legacy}`) && w.out.refused.includes("old: 2 file(s)"), `the workflow refuses (${w.out.refused})`);
+    t.eq(w.calls.map((x) => x.label), ["gate lm-release", "claim lm-release"], "nothing ran after the claim step, and no claim was left to close");
+    t.ok(!fs.existsSync(`${wfDir}/lm-release.json`), "no claim was written");
+  });
+
   scenario("claim-cmd-lock-busy", "a held claims lock is retried for a bounded time, then reported as the conflict \"lock busy\" and left in place; nothing is written", async (t) => {
     const dir = claimsDir(t, "lock");
     t.eq(claim(t, dir, "one", ["a.js"]).ok, true, "a package claims");
@@ -148,12 +223,12 @@ export default function register({ scenario, ROOT }) {
    * The runner of a claim step: it runs the command of the prompt (the bootstrap, then gate.mjs of this checkout as the plugin copy) with
    * the scratch home as the home folder, and returns its exit code and stdout as they are. `tweak` may change the spec (a short lock wait).
    */
-  const realRunner = (t, home, tweak = (s) => s) => (prompt) => {
+  const realRunner = (t, home, tweak = (s) => s, env = {}) => (prompt) => {
     const m = prompt.match(/ (claim|claim-more) '(\{.*\})'\n/);
     if (!m) throw new Error(`no claim command in the prompt: ${prompt.slice(0, 300)}`);
     const spec = tweak(JSON.parse(m[2].replace(/'\\''/g, "'")));
     const r = spawnSync(process.execPath, ["-e", BOOT, "--", home, m[1], JSON.stringify(spec)], {
-      encoding: "utf8", env: { ...process.env, HOME: home, USERPROFILE: home, ZODCHI_PLUGIN_ROOT: path.join(ROOT, "core"), CLAUDE_PLUGIN_ROOT: "" },
+      encoding: "utf8", env: { ...process.env, HOME: home, USERPROFILE: home, ZODCHI_PLUGIN_ROOT: path.join(ROOT, "core"), CLAUDE_PLUGIN_ROOT: "", ...env },
     });
     t.log(`runner: gate.mjs ${m[1]} ${JSON.stringify(spec)}: exit ${r.status}\n${r.stdout}${r.stderr}`);
     return { exitCode: r.status, stdout: r.stdout, error: (r.stderr || "").slice(0, 300) };

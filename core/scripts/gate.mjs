@@ -160,14 +160,15 @@ function pluginCopy() {
 const CLAIM_NAME = /^[\w.-]+\.json$/;
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
-// The open claims of this repository: only <label>.json whose "label" is the file's own name.
+// The open claims of this repository: only <label>.json whose "label" is the file's own name. A label may begin with a dot, so a name
+// beginning with one is a claim like any other (the lock folder .lock and other dot files match no claim name and are passed over).
 function readClaims(dir) {
   const claims = [];
   const skipped = [];
   let names = [];
   try { names = fs.readdirSync(dir); } catch { return { claims, skipped, exists: false }; }
   for (const name of names.sort()) {
-    if (name.startsWith(".")) continue;
+    if (name.startsWith(".") && !CLAIM_NAME.test(name)) continue;
     if (!CLAIM_NAME.test(name)) { skipped.push(name); continue; }
     const r = readJson(path.join(dir, name));
     const label = name.slice(0, -5);
@@ -292,14 +293,36 @@ function claimFacts(spec, repo, dirtyKeys) {
 }
 
 // The claim commands. Lists of paths are compared here, never by a model: a path is keyed as the workflow keys it (slashes forward, lower
-// case, relative to the repository; a leading "./" dropped). Both commands run under the claims lock, never break it (a lock still held after
-// lockWaitSec, default 120, at most 600, is reported as the conflict "lock busy"), and write a claim file atomically: the new text goes to
+// case, relative to the repository; "." segments and repeated slashes dropped, a ".." segment taking the one before it, so stored claims are
+// keyed the same way). Both commands run under the claims lock, never break it (a lock still held after lockWaitSec, default 120, at most
+// 600, is reported as the conflict "lock busy"), and write a claim file atomically: the new text goes to
 // <file>.tmp-<pid>, which is no claim, and is renamed over the claim.
-const pathKey = (f) => norm(f).replace(/^(\.\/)+/, "").toLowerCase();
+const pathKey = (f) => {
+  const s = norm(f);
+  const lead = /^[A-Za-z]:\//.test(s) ? s.slice(0, 3) : s.startsWith("/") ? "/" : "";
+  const parts = [];
+  for (const seg of s.slice(lead.length).split("/")) {
+    if (!seg || seg === ".") continue;
+    if (seg === ".." && parts.length && parts[parts.length - 1] !== "..") parts.pop(); else parts.push(seg);
+  }
+  return (lead + parts.join("/")).toLowerCase();
+};
 const keysOf = (list) => [...new Set((Array.isArray(list) ? list : []).map(pathKey).filter(Boolean))];
 const claimsDirOf = (spec) => {
   const d = norm(spec.dir);
   return path.resolve(/^(~|\$HOME)(\/|$)/.test(d) ? path.join(os.homedir(), d.replace(/^(~|\$HOME)\/?/, "")) : d);
+};
+// The claims folder an earlier workflow used: it named the folder for the shell, under $HOME, while this helper resolves "~" to Node's home
+// folder. On Windows the two may differ (Node reads USERPROFILE, Git Bash may set HOME elsewhere); "" when they are the same folder or the
+// spec names no home-relative folder. Open claims there are read too (see claimCmd and claimMoreCmd), so an upgrade never hides them.
+const legacyDirOf = (spec) => {
+  const d = norm(spec.dir);
+  if (!/^(~|\$HOME)(\/|$)/.test(d) || !process.env.HOME) return "";
+  let home = norm(process.env.HOME);
+  if (process.platform === "win32") home = home.replace(/^\/([A-Za-z])(\/|$)/, (_, l) => `${l.toUpperCase()}:/`);
+  const legacy = path.resolve(path.join(home, d.replace(/^(~|\$HOME)\/?/, "")));
+  const now = claimsDirOf(spec);
+  return (process.platform === "linux" ? legacy === now : legacy.toLowerCase() === now.toLowerCase()) ? "" : legacy;
 };
 const lockWait = (spec) => {
   const s = Number(spec.lockWaitSec ?? 120);
@@ -324,7 +347,9 @@ function needFields(spec, strings, lists) {
 // claim: { dir, label, files, branch, brief, tmp, base }. An open claim of another label that lists one of files is a conflict
 // "<label>: <file>"; an open claim of another label whose "branch" is set and differs is a branch conflict "<label>: <branch>". Without
 // either, <dir>/<label>.json is written: { label, status "open", files, branch, brief, tmp, base, openedAt }. An open claim of the same
-// label (a resumed package) is kept as it is, with files it lacks added; it is no conflict.
+// label (a resumed package) is kept as it is, with files it lacks added and its branch set to the requested one (checked against the
+// others above; branchWas names the one it had); it is no conflict. Open claims in the folder of the shell's $HOME, when that is another
+// folder (legacyDirOf), stop the claim (legacyDir, legacyClaims "<label>: <n> file(s)"): they must be closed or moved first.
 function claimCmd(spec) {
   needFields(spec, ["dir", "label", "branch", "brief", "tmp", "base"], ["files"]);
   const dir = claimsDirOf(spec);
@@ -332,7 +357,13 @@ function claimCmd(spec) {
   const file = path.join(dir, `${spec.label}.json`);
   const base = { ok: false, api: API, plugin: pluginCopy(), conflicts: [], branchConflicts: [], file: norm(file), reused: false, files: [] };
   try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { return { ...base, error: `the claims folder: ${e.message}` }; }
+  const legacyDir = legacyDirOf(spec);
   const done = withLock(dir, () => {
+    const legacy = legacyDir ? readClaims(legacyDir).claims.filter((e) => e.claim.status === "open") : [];
+    if (legacy.length) {
+      return { ...base, legacyDir: norm(legacyDir), legacyClaims: legacy.map((e) => `${e.label}: ${Array.isArray(e.claim.files) ? e.claim.files.length : 0} file(s)`),
+        error: `open claims lie in ${norm(legacyDir)}, the claims folder of the shell's $HOME, which is not the home folder the claims are kept in now` };
+    }
     const mine = new Set(files);
     const conflicts = [], branchConflicts = [];
     for (const o of othersOpen(dir, spec.label)) {
@@ -345,8 +376,9 @@ function claimCmd(spec) {
       const have = Array.isArray(own.files) ? own.files.map(String) : [];
       const haveKeys = new Set(have.map(pathKey));
       const add = files.filter((f) => !haveKeys.has(f));
-      if (add.length) writeClaim(file, { ...own, files: [...have, ...add] });
-      return { ...base, ok: true, reused: true, files: [...have, ...add] };
+      const moved = own.branch !== spec.branch;
+      if (add.length || moved) writeClaim(file, { ...own, files: [...have, ...add], branch: spec.branch });
+      return { ...base, ok: true, reused: true, files: [...have, ...add], ...(moved ? { branchWas: typeof own.branch === "string" ? own.branch : "" } : {}) };
     }
     writeClaim(file, { label: spec.label, status: "open", files, branch: spec.branch, brief: spec.brief, tmp: spec.tmp, base: spec.base, openedAt: stamp() });
     return { ...base, ok: true, files };
@@ -358,6 +390,7 @@ function claimCmd(spec) {
 // claim-more: { dir, label, hard, soft }. Every hard file (the writer reported it) that another open claim lists is a conflict
 // "<label>: <file>"; every soft file (only Git shows it changed) that another open claim lists is that package's work and goes to others.
 // Without conflicts, every hard file and every soft file not in others that this label's open claim lacks is added to it (added).
+// The open claims of other labels in the folder of the shell's $HOME (legacyDirOf) count as other claims here too.
 function claimMoreCmd(spec) {
   needFields(spec, ["dir", "label"], ["hard", "soft"]);
   const dir = claimsDirOf(spec);
@@ -366,7 +399,8 @@ function claimMoreCmd(spec) {
   const base = { ok: false, api: API, plugin: pluginCopy(), conflicts: [], others: [], added: [], file: norm(file) };
   const done = withLock(dir, () => {
     const owner = new Map();
-    for (const o of othersOpen(dir, spec.label)) for (const f of o.files) if (!owner.has(f)) owner.set(f, o.label);
+    const legacyDir = legacyDirOf(spec);
+    for (const o of [...othersOpen(dir, spec.label), ...(legacyDir ? othersOpen(legacyDir, spec.label) : [])]) for (const f of o.files) if (!owner.has(f)) owner.set(f, o.label);
     const conflicts = hard.filter((f) => owner.has(f)).map((f) => `${owner.get(f)}: ${f}`);
     const others = soft.filter((f) => owner.has(f));
     if (conflicts.length) return { ...base, conflicts, others };
