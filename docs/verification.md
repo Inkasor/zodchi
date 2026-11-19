@@ -232,7 +232,8 @@ Gateway, `#[cfg(test)]` modules:
 
 CI: "the gateway lists the roles of this repository" (`zodchi help`, `zodchi roles`, at least ten, none with an error). -> `cli-commands`.
 
-Workflows, `core/workflows/fixtures/code-package/mock.mjs` (the workflow with fake agents):
+Workflows, the old `core/workflows/fixtures/code-package/mock.mjs` (the workflow with fake agents; deleted in the
+e2e move, its live parts are in `scripts/e2e/scenarios/code-package.mjs`):
 - `verify-passes`: the cheap check before verify, both in the evidence, the stamp `Verified: checks exit 0; args.verify exit 0`, a new test file allowed, the writer and runner told the check rules. -> the release run (verdict, `verifiedBy`, the stamp of the tip, evidence order with logs, and the new test `test/clamp.test.mjs` the brief requires, committed and not refused). Dropped: the wording of the rules in the prompts.
 - `nothing-to-run`: `verifiedBy` none, said in the result, the commit and the review. Dropped until the release run gets a second package.
 - `stamp-no-commands`: no command string in the commit message. -> the release run (the tip's message holds no command).
@@ -242,21 +243,22 @@ Workflows, `core/workflows/fixtures/code-package/mock.mjs` (the workflow with fa
 - `nits-approve`: nit and pre-existing findings approve. Dropped until the fake Codex answers a scripted nit review in a second package.
 - `review-md-from-base`: the review carries REVIEW.md of the base. -> the release run (the review turn holds the baseline REVIEW.md). Dropped: the variant where the package itself changes REVIEW.md.
 
-Workflows, `core/workflows/fixtures/incident-triage/` (`mock.mjs`, `product.mjs` and 24 cases: adapter checks
+Workflows, incident-triage: the old mock is now `scripts/e2e/scenarios/incident-triage.mjs` over the fixtures in
+`scripts/e2e/fixtures/incident-triage/` (`product.mjs` and 24 cases: adapter checks
 `bad-adapter`, `interpreter-flags`, `remote-launcher`, `loose-pattern`, `secret-param`; checks of the classifier's
 answer `unknown-evidence-id`, `blank-brief`, `access-in-brief`, `access-in-gap`, `access-in-summary`,
 `security-prohibitions`, `injection`; stale handling `stale`, `stale-no-deploy`, `stale-assertive`,
 `stale-owner-mixed`; reply wording `plain-wait`, `no-retry-lead`, `repeat-in-facts`, `retry-in-facts`,
-`retry-text-unflagged`; routes `blocked-release`, `agent-capability`, `skill-allowlist`), and three runs of the mock
-itself:
+`retry-text-unflagged`; routes `blocked-release`, `agent-capability`, `skill-allowlist`), and three runs of the
+workflow itself (scenario `incident-triage-runs`):
 - `revisions`: a second run in the same folder makes `rev-2` and leaves `rev-1` byte for byte; a held lock refuses a
   run and makes no revision.
 - `infra`: a gateway failure at Classify marks the revision failed, drafts nothing and releases the lock.
 - `cleanup-faults`: a failed revision whose failed pointer is not verified (the runner left the file out, or reported
   another hash) keeps the lock, says so in the result, and runs no unlock step.
 
-Open, for the owner: no end-to-end run of `incident-triage` exists yet, so none of these guards is checked by any gate
-now.
+These run in `npm run e2e` and in CI with the rest of the suite (scenarios `incident-triage-*`), so the incident-triage
+entries in the paragraph below are closed: only `no-evidence` and `edits-test` stay open.
 
 Open, for the owner, and not a decision: the entries marked "Open" above (`no-evidence`, `edits-test`, the 24
 incident-triage cases, `revisions`, `infra`, `cleanup-faults`) are what a user sees (a weakened check accepted, a
