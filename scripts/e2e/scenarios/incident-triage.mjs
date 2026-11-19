@@ -45,6 +45,8 @@ export default function register({ scenario, ROOT }) {
     t.ok(ok, `the schema of the step "${label}" does not require the field ${field}`);
     if (!ok) throw new Error(`the schema of the step "${label}" does not require ${field}`);
   };
+  /** Preloaded code of a traced helper run: it logs the name (and, for incident.json, the state) of every file moved into place. */
+  const TRACE_PRELOAD = String.raw`const fs = require("fs"), log = process.env.ZODCHI_TRACE, rn = fs.renameSync; fs.renameSync = function (a, b) { let s = ""; if (/incident\.json$/.test(b)) { try { s = ":" + JSON.parse(fs.readFileSync(a, "utf8")).state; } catch { /* not a record */ } } fs.appendFileSync(log, String(b).replace(/\\/g, "/").split("/").pop() + s + "\n"); return rn.apply(this, arguments); }; process.argv.splice(1, 0, process.env.ZODCHI_GATE); import(require("url").pathToFileURL(process.env.ZODCHI_GATE).href);`;
   /**
    * A helper step: the prompt holds ONE command of the bootstrap with the expected helper command and a spec for this incident folder; the
    * runner runs it and returns its exit code and the line it printed. The fake runs gate.mjs of this checkout with that spec (the bootstrap
@@ -62,7 +64,13 @@ export default function register({ scenario, ROOT }) {
     const spec = JSON.parse(m[2].replace(/'\\''/g, "'"));
     t.ok(spec.api === 1 && spec.tmp === ctx.tmp && spec.incident === ctx.incident, `the step "${label}" names this incident folder and incident`);
     // retype: a fault of the runner, which typed the command with a value changed (the workflow's spec is what the prompt holds).
-    const r = spawnSync(process.execPath, [GATE, command, JSON.stringify(retype(spec))], { encoding: "utf8", windowsHide: true });
+    // The publish command is run with a trace of the files it moves into place (in order), to check the order of the publish.
+    const traced = command === "incident-publish";
+    const traceFile = path.join(ctx.tmp, "..", `trace-${path.basename(ctx.tmp)}.log`);
+    const r = traced
+      ? spawnSync(process.execPath, ["-e", TRACE_PRELOAD, command, JSON.stringify(retype(spec))], { encoding: "utf8", windowsHide: true, env: { ...process.env, ZODCHI_TRACE: traceFile, ZODCHI_GATE: GATE } })
+      : spawnSync(process.execPath, [GATE, command, JSON.stringify(retype(spec))], { encoding: "utf8", windowsHide: true });
+    if (traced) { try { ctx.publishOrder = fs.readFileSync(traceFile, "utf8").split("\n").filter(Boolean); fs.rmSync(traceFile, { force: true }); } catch { ctx.publishOrder = []; } }
     return { spec, answer: { exitCode: r.status ?? -1, stdout: r.stdout || "", error: (r.stderr || "").slice(0, 300) } };
   }
 
@@ -161,6 +169,16 @@ export default function register({ scenario, ROOT }) {
     const cls = readIf(`${rev}/classification.json`) ? JSON.parse(readIf(`${rev}/classification.json`)) : null;
     const item = (id) => evidence.items.find((i) => i.id === id) || {};
     if (fs.existsSync(`${tmp}/.lock`)) bad.push("the lock was left behind");
+    // Publish order: classification and the intermediate pointer come before draft.md and the final pointer.
+    if (ctx.publishOrder && ctx.publishOrder.length) {
+      const seen = ctx.publishOrder.filter((x) => /^(classification\.json|draft\.md|incident\.json:.*)$/.test(x));
+      const i = (x) => seen.indexOf(x);
+      const mid = seen.findIndex((x) => x.startsWith("incident.json:"));
+      if (i("classification.json") < 0 || i("draft.md") < 0 || i("classification.json") > i("draft.md")) bad.push(`publish order ${JSON.stringify(seen)}: classification.json must come before draft.md`);
+      if (mid < 0 || mid > i("draft.md")) bad.push(`publish order ${JSON.stringify(seen)}: the intermediate incident.json pointer must be written before draft.md`);
+      if (i("incident.json:drafted") >= 0 && i("incident.json:drafted") < i("draft.md")) bad.push(`publish order ${JSON.stringify(seen)}: drafted was written before draft.md`);
+      if (r.state === "drafted" && seen[seen.length - 1] !== "incident.json:drafted") bad.push(`publish order ${JSON.stringify(seen)}: the final drafted pointer must come last, after draft.md`);
+    }
     // The gate step ran first and asked the helper for the classifier role; nothing was locked before it answered.
     if (!ctx.prompts.length || !/^gate /.test(ctx.prompts[0].label) || !/ roles '\{"api":1,"want":\["architect"\]/.test(ctx.prompts[0].prompt)) bad.push("the first step is not the gate helper's roles command");
     if (e.noRevision) {

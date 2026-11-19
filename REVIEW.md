@@ -53,3 +53,7 @@ the owner stop a release for it?
   scratch and checkout paths in the traces of a local or CI run (local traces stay in .agent-tmp/, CI traces carry
   only the runner's paths). The parity that matters is that each old assertion still runs and a dropped instruction
   fails a scenario.
+- nit for the io helper (2026-11-19, the lead after two rounds): claim-more reading the worktree status but not a
+  diff against the package base (a package's own commits are claimed when it writes them); the whole redacted report
+  passed as one command argument (reports are short; the collector caps the excerpt); part limits counted in code
+  points by the workflow and UTF-16 units by the helper, and an 803-character field cap.
