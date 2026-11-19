@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import { spawnSync } from "node:child_process";
+import { commandsIn, encodeSpec } from "../spec-arg.mjs";
 
 export default function register({ scenario, ROOT }) {
   const GATE = path.join(ROOT, "core", "scripts", "gate.mjs");
@@ -240,19 +241,19 @@ export default function register({ scenario, ROOT }) {
    * round leaves changed in it, written before claim-more runs (claim-more reads Git itself).
    */
   const realRunner = (t, home, tweak = (s) => s, env = {}, changes = []) => (prompt) => {
-    const m = prompt.match(/ (claim|claim-more) '(\{.*\})'\n/);
+    const m = commandsIn(prompt, "claim|claim-more")[0];
     if (!m) throw new Error(`no claim command in the prompt: ${prompt.slice(0, 300)}`);
-    const spec = tweak(JSON.parse(m[2].replace(/'\\''/g, "'")));
+    const spec = tweak(m.spec);
     if (spec.repo === "/r") {
       const repo = `${home}/repo`;
       if (!fs.existsSync(`${repo}/.git`)) { fs.mkdirSync(repo, { recursive: true }); spawnSync("git", ["-C", repo, "init", "-q"]); }
-      if (m[1] === "claim-more") for (const f of changes) { fs.mkdirSync(path.dirname(`${repo}/${f}`), { recursive: true }); fs.writeFileSync(`${repo}/${f}`, "changed\n"); }
+      if (m.command === "claim-more") for (const f of changes) { fs.mkdirSync(path.dirname(`${repo}/${f}`), { recursive: true }); fs.writeFileSync(`${repo}/${f}`, "changed\n"); }
       spec.repo = repo;
     }
-    const r = spawnSync(process.execPath, ["-e", BOOT, "--", home, m[1], JSON.stringify(spec)], {
+    const r = spawnSync(process.execPath, ["-e", BOOT, "--", home, m.command, encodeSpec(spec)], {
       encoding: "utf8", env: { ...process.env, HOME: home, USERPROFILE: home, ZODCHI_PLUGIN_ROOT: path.join(ROOT, "core"), CLAUDE_PLUGIN_ROOT: "", ...env },
     });
-    t.log(`runner: gate.mjs ${m[1]} ${JSON.stringify(spec)}: exit ${r.status}\n${r.stdout}${r.stderr}`);
+    t.log(`runner: gate.mjs ${m.command} ${JSON.stringify(spec)}: exit ${r.status}\n${r.stdout}${r.stderr}`);
     return { exitCode: r.status, stdout: r.stdout, error: (r.stderr || "").slice(0, 300) };
   };
   /** Runs the code-package body once; `answers[label]` (a value or a function of the prompt) replaces a default answer. */
@@ -306,7 +307,9 @@ export default function register({ scenario, ROOT }) {
     t.eq([...r.out.claimAdded].sort(), ["release/F03.js", "release/f01.js", "release/f02.js", "release/main.js"], "claimAdded is what the helper added");
     const more = r.of(/^claim more /)[0].prompt;
     t.ok(!/compare its "files"|entry by entry|Read every claim/.test(more), "the runner is never asked to compare lists itself");
-    const moreCmd = (more.match(/ claim-more '(.*)'\n/) || [])[1] || "";
+    const moreSent = commandsIn(more, "claim-more")[0];
+    const moreCmd = moreSent ? JSON.stringify(moreSent.spec) : "";
+    t.ok(moreSent && moreSent.arg.startsWith("b64:") && moreSent.arg.length < 400, `the spec is sent as b64: (${moreSent && moreSent.arg.length} characters)`);
     t.ok(moreCmd.includes('"repo":"/r"') && !/release\/|pkg-a\/|pkg-b\//.test(moreCmd) && moreCmd.length < 300, `the claim-more command names no file, the helper reads Git itself: ${moreCmd.length} characters for 45 changed paths`);
     t.ok(!fs.existsSync(`${dir}/.lock`), "no lock is left held after the run");
     t.ok(r.of(/^close claim/)[0].prompt.includes(`"${dir}/lm-release.json"`), "the close step names the very file the helper wrote");

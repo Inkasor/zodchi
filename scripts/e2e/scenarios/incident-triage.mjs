@@ -15,6 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { commandsIn, specIn, encodeSpec } from "../spec-arg.mjs";
 
 export default function register({ scenario, ROOT }) {
   const WORKFLOW = path.join(ROOT, "core", "workflows", "incident-triage.js");
@@ -58,18 +59,18 @@ export default function register({ scenario, ROOT }) {
     need(t, prompt, label, "never touch the incident folder or its lock yourself", "the rule that the runner touches no file itself");
     for (const fld of ["exitCode", "stdout"]) needField(t, opts, label, fld);
     t.ok((prompt.match(/node -e /g) || []).length === 1, `the step "${label}" runs one command`);
-    const m = prompt.match(/ -- "\$\(pwd -W 2>\/dev\/null \|\| pwd\)" ([a-z-]+) '((?:[^']|'\\'')*)'\n/);
-    t.ok(Boolean(m) && m[1] === command, `the step "${label}" runs the helper command ${command} (${m ? m[1] : "none"})`);
-    if (!m || m[1] !== command) throw new Error(`the step "${label}" does not run ${command}`);
-    const spec = JSON.parse(m[2].replace(/'\\''/g, "'"));
+    const m = commandsIn(prompt)[0];
+    t.ok(Boolean(m) && m.command === command, `the step "${label}" runs the helper command ${command} (${m ? m.command : "none"})`);
+    if (!m || m.command !== command) throw new Error(`the step "${label}" does not run ${command}`);
+    const spec = m.spec;
     t.ok(spec.api === 1 && spec.tmp === ctx.tmp && spec.incident === ctx.incident, `the step "${label}" names this incident folder and incident`);
     // retype: a fault of the runner, which typed the command with a value changed (the workflow's spec is what the prompt holds).
     // The publish command is run with a trace of the files it moves into place (in order), to check the order of the publish.
     const traced = command === "incident-publish";
     const traceFile = path.join(ctx.tmp, "..", `trace-${path.basename(ctx.tmp)}.log`);
     const r = traced
-      ? spawnSync(process.execPath, ["-e", TRACE_PRELOAD, command, JSON.stringify(retype(spec))], { encoding: "utf8", windowsHide: true, env: { ...process.env, ZODCHI_TRACE: traceFile, ZODCHI_GATE: GATE } })
-      : spawnSync(process.execPath, [GATE, command, JSON.stringify(retype(spec))], { encoding: "utf8", windowsHide: true });
+      ? spawnSync(process.execPath, ["-e", TRACE_PRELOAD, command, encodeSpec(retype(spec))], { encoding: "utf8", windowsHide: true, env: { ...process.env, ZODCHI_TRACE: traceFile, ZODCHI_GATE: GATE } })
+      : spawnSync(process.execPath, [GATE, command, encodeSpec(retype(spec))], { encoding: "utf8", windowsHide: true });
     if (traced) { ctx.publishRan = true; try { ctx.publishOrder = fs.readFileSync(traceFile, "utf8").split("\n").filter(Boolean); fs.rmSync(traceFile, { force: true }); } catch { ctx.publishOrder = []; } }
     return { spec, answer: { exitCode: r.status ?? -1, stdout: r.stdout || "", error: (r.stderr || "").slice(0, 300) } };
   }
@@ -184,7 +185,7 @@ export default function register({ scenario, ROOT }) {
       }
     }
     // The gate step ran first and asked the helper for the classifier role; nothing was locked before it answered.
-    if (!ctx.prompts.length || !/^gate /.test(ctx.prompts[0].label) || !/ roles '\{"api":1,"want":\["architect"\]/.test(ctx.prompts[0].prompt)) bad.push("the first step is not the gate helper's roles command");
+    if (!ctx.prompts.length || !/^gate /.test(ctx.prompts[0].label) || !/^\["architect"\]$/.test(JSON.stringify((specIn(ctx.prompts[0].prompt, "roles") || {}).want)) || (specIn(ctx.prompts[0].prompt, "roles") || {}).api !== 1) bad.push("the first step is not the gate helper's roles command");
     if (e.noRevision) {
       if (fs.readdirSync(tmp).some((n) => /^rev-/.test(n))) bad.push("a revision folder was made although the adapter was refused");
       if (ctx.prompts.some((p) => /^collect /.test(p.label))) bad.push("the collector ran although the adapter was refused");
@@ -390,8 +391,7 @@ export default function register({ scenario, ROOT }) {
       t.ok(!fs.existsSync(`${run.tmp}/.lock`), `${what}: the lock was released`);
     }
     const plain = await runCase(t, "stale");
-    const m = plain.ctx.prompts.find((p) => /^collect /.test(p.label)).prompt.match(/ incident-collect '((?:[^']|'\'')*)'\n/);
-    const spec = JSON.parse(m[1].replace(/'\''/g, "'"));
+    const spec = specIn(plain.ctx.prompts.find((p) => /^collect /.test(p.label)).prompt, "incident-collect");
     t.ok(/^[0-9a-f]{64}$/.test(spec.inputSha256) && plain.result.state === "drafted", "the command carries the digest of its inputs, and a run typed exactly goes through");
   });
 

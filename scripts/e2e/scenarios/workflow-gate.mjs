@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import { spawnSync } from "node:child_process";
+import { specIn } from "../spec-arg.mjs";
 
 export default function register({ scenario, ROOT }) {
   const GATE = path.join(ROOT, "core", "scripts", "gate.mjs");
@@ -286,7 +287,8 @@ export default function register({ scenario, ROOT }) {
     t.eq(gate[0].opts.schema.required, ["exitCode", "stdout"], "its answer is the exit code and the one string the command printed");
     t.eq((gate[0].prompt.match(/node -e /g) || []).length, 1, "its prompt holds one command");
     t.ok(gate[0].prompt.includes("do not parse, summarize, reorder or shorten it"), "and tells the runner to return the output as it is");
-    t.ok(/ code-package '\{"api":1,"repo":"\/r","brief":"\/r\/brief\.md","label":"pkg","claimsKey":"[^"]+","want":\["writer","reviewer"\]\}'/.test(gate[0].prompt), "the command carries the spec: repo, brief, label, claims key, wanted roles");
+    const gateSpec = specIn(gate[0].prompt, "code-package") || {};
+    t.ok(Object.keys(gateSpec).join() === "api,repo,brief,label,claimsKey,want" && gateSpec.api === 1 && gateSpec.repo === "/r" && gateSpec.brief === "/r/brief.md" && gateSpec.label === "pkg" && /^.+$/.test(gateSpec.claimsKey) && JSON.stringify(gateSpec.want) === '["writer","reviewer"]', "the command carries the spec: repo, brief, label, claims key, wanted roles");
     t.ok(!/ZODCHI_PLUGIN_ROOT=/.test(gate[0].prompt), "without args.pluginRoot it does not set the folder");
     t.eq(r.out.pluginCopy, { path: "/plugin/core", commit: "c0ffee", version: "1.0.0-dev", via: "installed_plugins.json, scope user" }, "the result names the plugin copy: path and commit");
     const named = await runWorkflow("core/workflows/code-package.js", { ...CP_ARGS, pluginRoot: "/my/copy/core" }, cpAnswers());
@@ -334,16 +336,17 @@ export default function register({ scenario, ROOT }) {
   scenario("workflow-gate-code-package-claims-and-choice", "claims are read as <label>.json only and never backed up; the claim records its tmp folder; the result says which candidate each role took and the effort handed to Claude steps", async (t) => {
     const r = await runWorkflow("core/workflows/code-package.js", CP_ARGS, cpAnswers());
     const claimStep = r.of(/^claim pkg$/)[0], claimPrompt = claimStep.prompt, closePrompt = r.of(/^close claim/)[0].prompt;
-    t.ok((claimPrompt.match(/node -e /g) || []).length === 1 && claimPrompt.includes(` claim '{"api":1,"dir":"~/.zodchi/packages/`), "the claim step runs the claim helper's one command (which reads only <label>.json whose label is its name)");
+    t.ok((claimPrompt.match(/node -e /g) || []).length === 1 && specIn(claimPrompt, "claim") && specIn(claimPrompt, "claim").api === 1 && specIn(claimPrompt, "claim").dir.startsWith("~/.zodchi/packages/"), "the claim step runs the claim helper's one command (which reads only <label>.json whose label is its name)");
     t.eq(claimStep.opts.schema.required, ["exitCode", "stdout"], "and returns its exit code and printed line, nothing it read itself");
     t.ok(claimPrompt.includes("never touch the claims folder or its lock yourself"), "the runner never writes a claim itself");
     t.ok(closePrompt.includes("make no backup"), "the close step changes the file in place and makes no backup either");
     for (const p of [claimPrompt, closePrompt]) t.ok(!p.includes("every *.json file"), "never the glob that reads a .bak");
-    t.ok(r.of(/^claim pkg$/)[0].prompt.includes('"tmp":"/r/.agent-tmp/pkg"'), "the claim records the package's tmp folder (the gate uses it to tell a running package from a finished one)");
+    t.eq(specIn(r.of(/^claim pkg$/)[0].prompt, "claim").tmp, "/r/.agent-tmp/pkg", "the claim records the package's tmp folder (the gate uses it to tell a running package from a finished one)");
     const more = await runWorkflow("core/workflows/code-package.js", CP_ARGS, cpAnswers({
       "write pkg": { done: true, summary: "w", changed: ["/r/src/a.js", "/r/src/n.js"], unverified: [] }, "status write pkg": { ok: true, paths: ["src/a.js", "src/n.js"] },
     }));
-    t.ok(more.of(/^claim more write pkg$/)[0].prompt.includes(` claim-more '{"api":1,"dir":"~/.zodchi/packages/`), "the extension step runs the claim-more helper the same way");
+    const moreSpec = specIn(more.of(/^claim more write pkg$/)[0].prompt, "claim-more");
+    t.ok(moreSpec && moreSpec.api === 1 && moreSpec.dir.startsWith("~/.zodchi/packages/"), "the extension step runs the claim-more helper the same way");
     t.eq(r.out.choice, ["writer: claude/sonnet (effort high), the first candidate", "reviewer: claude/opus (effort medium), the first candidate"], "the choice of each role is in the result");
     t.eq(r.out.effort, { writer: "high", reviewer: "medium" }, "the effort handed to the Claude steps is in the result");
     t.eq([r.of(/^write pkg$/)[0].opts.effort, r.of(/^review 1$/)[0].opts.effort], ["high", "medium"], "and was passed to agent() as its effort");
@@ -399,7 +402,7 @@ export default function register({ scenario, ROOT }) {
     const br = await runWorkflow("domains/web-apps/workflows/branch-review.js", brArgs, (l) => (l.startsWith("gate ") ? brGate : approved));
     t.eq([br.out.approved, br.out.pluginCopy.path, br.out.pluginCopy.commit], [true, "/plugin/core", "c0ffee"], "branch-review approves on an approved review and names the plugin copy");
     const brGatePrompt = br.of(/^gate /)[0].prompt;
-    t.ok(/ branch-review '\{"api":1,"repo":"\/r","base":"main","want":\["reviewer","architect"\]\}'/.test(brGatePrompt) && (brGatePrompt.match(/node -e /g) || []).length === 1, "its gate is one command with a spec");
+    t.ok(JSON.stringify(specIn(brGatePrompt, "branch-review")) === '{"api":1,"repo":"/r","base":"main","want":["reviewer","architect"]}' && (brGatePrompt.match(/node -e /g) || []).length === 1, "its gate is one command with a spec");
     const review = br.of(/^review$/)[0].prompt;
     t.ok(review.includes(`the commits ${sha("b")}..${sha("a")}`) && review.includes("review.diff is that change and nothing else") && review.includes("never from the working tree"), "the review is of the recorded range, given as a diff, not of the working tree");
     t.ok(review.includes(`git diff ${sha("b")} ${sha("a")} -- <the files above>`) && review.includes("--attach '/r/.agent-tmp/br/review.diff'"), "the diff is made from the range and attached");
@@ -421,7 +424,7 @@ export default function register({ scenario, ROOT }) {
     };
     const ar = await runWorkflow("domains/gamedev-unity/workflows/asset-round.js", arArgs, arAnswer({ "rubric r1": { ok: true, summary: "pass" } }));
     t.eq([ar.out.stoppedAt, ar.out.pluginCopy.path, ar.out.gate.hasMethod, "plugin" in ar.out.gate], [null, "/plugin/core", true, false], "asset-round reads the ledger gate from the helper and names the plugin copy");
-    t.ok(/ ledger '\{"api":1,"file":"\/l\.json","stage":1,"accepted":"accepted"\}'/.test(ar.of(/^gate /)[0].prompt), "its gate command carries the ledger, the stage and the acceptance word");
+    t.ok(JSON.stringify(specIn(ar.of(/^gate /)[0].prompt, "ledger")) === '{"api":1,"file":"/l.json","stage":1,"accepted":"accepted"}', "its gate command carries the ledger, the stage and the acceptance word");
     const refused = await runWorkflow("domains/gamedev-unity/workflows/asset-round.js", arArgs, arAnswer({ "gate r1": printed({ ...ledger, hasMethod: false }) }));
     t.ok(String(refused.out.refused).includes("No method in the ledger"), "the gate rules are applied to the helper's facts");
     const arUnknown = await runWorkflow("domains/gamedev-unity/workflows/asset-round.js", arArgs, arAnswer({ "rubric r1": { ok: false, summary: "UNKNOWN: key r1-rubric-1: ended unknown", unknownKey: "r1-rubric-1" } }));
@@ -450,7 +453,7 @@ export default function register({ scenario, ROOT }) {
       t.ok(String(stopped.out.stoppedAt).startsWith("plugin copy (the plugin copy helper: no helper") && /Update the zodchi-core plugin/.test(stopped.out.next), `${rel}: a missing helper stops the run first`);
       t.eq(stopped.calls.map((c) => c.label), ["plugin copy"], `${rel}: and nothing else was started`);
       const first = stopped.calls[0].prompt;
-      t.ok((first.match(/node -e /g) || []).length === 1 && / plugin '\{"api":1\}'/.test(first), `${rel}: the copy step is one command of the helper`);
+      t.ok((first.match(/node -e /g) || []).length === 1 && JSON.stringify(specIn(first, "plugin")) === '{"api":1}', `${rel}: the copy step is one command of the helper`);
     }
     const uc = await runWorkflow("domains/gamedev-unity/workflows/unity-check.js", cases[1][1], (l) => (l === "plugin copy" ? printed({}) : { ok: true, steps: [], editor: "e" }));
     t.eq([uc.out.ok, uc.out.pluginCopy], [true, COPY], "unity-check names the copy next to the runner's result");
@@ -465,7 +468,7 @@ export default function register({ scenario, ROOT }) {
     t.ok(String(itStale.out.stoppedAt).startsWith("gate (the gate helper: no helper") && itStale.calls.length === 1, "incident-triage: a missing helper stops it before the lock is taken");
     const roles = { classifier: 1 };
     const itOpen = await runWorkflow("core/workflows/incident-triage.js", itArgs, (l) => (l.startsWith("gate ") ? printed({ roles: { architect: { candidates: [{ provider: "claude", model: "opus", effort: "high" }] } }, modelsErrors: ["~/.zodchi/models.json: not JSON: x"], account: null, accountError: "none", ignoreExit: 0 }) : { ok: false, locked: false, incident: "", revs: [], adapter: "", adapterSha256: "", summary: "stop here" }));
-    t.ok(/ roles '\{"api":1,"want":\["architect"\],"repo":"\/r"\}'/.test(itOpen.of(/^gate /)[0].prompt), "incident-triage: the gate command asks for the classifier role and the repository");
+    t.ok(JSON.stringify(specIn(itOpen.of(/^gate /)[0].prompt, "roles")) === '{"api":1,"want":["architect"],"repo":"/r"}', "incident-triage: the gate command asks for the classifier role and the repository");
     t.eq(itOpen.out.pluginCopy, COPY, "and its result names the plugin copy");
     t.ok(itOpen.out.notes.some((n) => n.includes("not JSON")), "an unreadable role table is a note, apart from a missing one");
     t.ok(!itOpen.of(/^open /)[0].prompt.includes("homeModels") && !itOpen.of(/^open /)[0].prompt.includes("zodchi account"), "the Open step no longer asks a runner to retell the role table or the account");
