@@ -432,7 +432,8 @@ function plugins(o, domains, say, home, copy) {
   const install = (plugin, scope, cwd) => () => {
     const id = `${plugin}@${MARKETPLACE}`;
     const r = claude(["plugin", "install", id, "--scope", scope], { cwd });
-    if (r.ok || !/already/i.test(r.out)) return { ...r, plugin, scope, cwd };
+    // Claude Code answers an installed plugin with exit 0 and "is already installed": that is not a fresh install.
+    if (!/already installed/i.test(r.out)) return { ...r, plugin, scope, cwd };
     const gone = claude(["plugin", "uninstall", id, "--scope", scope], { cwd });
     if (!gone.ok) return { ...gone, out: `${gone.out}\nThe plugin ${id} (${scope} scope) is still installed, with the copy Claude Code cached for it earlier.`, plugin, scope, cwd };
     const again = claude(["plugin", "install", id, "--scope", scope], { cwd });

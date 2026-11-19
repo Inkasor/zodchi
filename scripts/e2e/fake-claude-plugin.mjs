@@ -102,7 +102,8 @@ if (["install", "uninstall", "update"].includes(args[1])) {
   const fill = () => { if (!fs.existsSync(installPath)) fs.cpSync(source, installPath, { recursive: true }); };
 
   if (args[1] === "install") {
-    if (mine) say(`Plugin "${id}" is already installed in ${scope} scope`, 1);
+    // As the real one: an installed plugin is answered with exit 0, and nothing is refreshed.
+    if (mine) say(`Installing plugin "${id}"...✔ Plugin "${id}" is already installed (scope: ${scope})`, 0);
     if (fs.existsSync(file("fail-reinstall")) && state.uninstalled.includes(id)) say(`could not fetch ${id}: connection reset`, 1);
     fill();
     registry.plugins[id] = [...list, { scope, ...(projectPath ? { projectPath } : {}), installPath, version }];
