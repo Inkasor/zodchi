@@ -236,11 +236,19 @@ export default function register({ scenario, ROOT }) {
   /**
    * The runner of a claim step: it runs the command of the prompt (the bootstrap, then gate.mjs of this checkout as the plugin copy) with
    * the scratch home as the home folder, and returns its exit code and stdout as they are. `tweak` may change the spec (a short lock wait).
+   * The repository "/r" of the workflow is a scratch Git repository <home>/repo, clean when the claim is made; `changes` are the files the
+   * round leaves changed in it, written before claim-more runs (claim-more reads Git itself).
    */
-  const realRunner = (t, home, tweak = (s) => s, env = {}) => (prompt) => {
+  const realRunner = (t, home, tweak = (s) => s, env = {}, changes = []) => (prompt) => {
     const m = prompt.match(/ (claim|claim-more) '(\{.*\})'\n/);
     if (!m) throw new Error(`no claim command in the prompt: ${prompt.slice(0, 300)}`);
     const spec = tweak(JSON.parse(m[2].replace(/'\\''/g, "'")));
+    if (spec.repo === "/r") {
+      const repo = `${home}/repo`;
+      if (!fs.existsSync(`${repo}/.git`)) { fs.mkdirSync(repo, { recursive: true }); spawnSync("git", ["-C", repo, "init", "-q"]); }
+      if (m[1] === "claim-more") for (const f of changes) { fs.mkdirSync(path.dirname(`${repo}/${f}`), { recursive: true }); fs.writeFileSync(`${repo}/${f}`, "changed\n"); }
+      spec.repo = repo;
+    }
     const r = spawnSync(process.execPath, ["-e", BOOT, "--", home, m[1], JSON.stringify(spec)], {
       encoding: "utf8", env: { ...process.env, HOME: home, USERPROFILE: home, ZODCHI_PLUGIN_ROOT: path.join(ROOT, "core"), CLAUDE_PLUGIN_ROOT: "", ...env },
     });
@@ -283,34 +291,36 @@ export default function register({ scenario, ROOT }) {
     const ownSoft = ["release/f01.js", "release/f02.js", "release/F03.js"];
     const status = ["src/a.js", "release/main.js", ...ownSoft, ...a.slice(0, 20), ...b, ...a.slice(20).map((p) => p.toUpperCase())];
     t.eq(status.length, 45, "45 paths changed in the shared checkout");
-    const real = realRunner(t, home);
+    const real = realRunner(t, home, undefined, {}, status);
     const r = await runBody({
       "claim lm-release": real, "claim more write lm-release": real,
       "write lm-release": { done: true, summary: "wrote", changed: ["/r/src/a.js", "/r/release/main.js"], unverified: [] },
       "status write lm-release": { ok: true, paths: status },
     });
     t.eq([r.error, r.out && r.out.approved], [null, true], "the run goes through to approval");
-    t.eq(read(dir, "lm-release").files, ["src/a.js", "release/main.js", "release/f01.js", "release/f02.js", "release/f03.js"], "the claim the helper wrote holds the package's own files and none of the others'");
+    t.eq([...read(dir, "lm-release").files].sort(), ["release/f01.js", "release/f02.js", "release/f03.js", "release/main.js", "src/a.js"], "the claim the helper wrote holds the package's own files and none of the others'");
     t.eq(otherClaims(), [25, 15], "the other two claims are untouched");
     const commits = r.of(/^commit /);
     t.eq(commits.length, 1, "one commit step");
     t.eq(commitPaths(commits[0]).sort(), ["release/F03.js", "release/f01.js", "release/f02.js", "release/main.js", "src/a.js"], "the commit step's path list holds only the package's own files");
-    t.eq(r.out.claimAdded, ["release/main.js", "release/f01.js", "release/f02.js", "release/F03.js"], "claimAdded is what the helper added");
+    t.eq([...r.out.claimAdded].sort(), ["release/F03.js", "release/f01.js", "release/f02.js", "release/main.js"], "claimAdded is what the helper added");
     const more = r.of(/^claim more /)[0].prompt;
     t.ok(!/compare its "files"|entry by entry|Read every claim/.test(more), "the runner is never asked to compare lists itself");
+    const moreCmd = (more.match(/ claim-more '(.*)'\n/) || [])[1] || "";
+    t.ok(moreCmd.includes('"repo":"/r"') && !/release\/|pkg-a\/|pkg-b\//.test(moreCmd) && moreCmd.length < 300, `the claim-more command names no file, the helper reads Git itself: ${moreCmd.length} characters for 45 changed paths`);
     t.ok(!fs.existsSync(`${dir}/.lock`), "no lock is left held after the run");
     t.ok(r.of(/^close claim/)[0].prompt.includes(`"${dir}/lm-release.json"`), "the close step names the very file the helper wrote");
 
     // a file the writer reports, which another open package claims: the helper's conflict stops the run before any commit
     const { home: home2, dir: dir2 } = homeFor(t, "wf-hard");
     claim(t, dir2, "pkg-b", b);
-    const real2 = realRunner(t, home2);
+    const real2 = realRunner(t, home2, undefined, {}, ["src/a.js", "pkg-b/f03.js"]);
     const c = await runBody({
       "claim lm-release": real2, "claim more write lm-release": real2,
       "write lm-release": { done: true, summary: "wrote", changed: ["/r/src/a.js", "/r/pkg-b/f03.js"], unverified: [] },
       "status write lm-release": { ok: true, paths: ["src/a.js", "pkg-b/f03.js"] },
     });
-    t.eq([c.out.stoppedAt, c.out.conflicts], ["claim conflict", ["pkg-b: pkg-b/f03.js"]], "the helper's conflict stops the run");
+    t.eq([c.out.stoppedAt, c.out.conflicts], ["claim conflict", ["pkg-b: pkg-b/f03.js"]], "a reported file the helper names as another package's stops the run");
     t.eq(c.of(/^commit /).length, 0, "nothing was committed");
     t.eq(read(dir2, "lm-release").files, ["src/a.js"], "and the claim did not grow");
 
@@ -363,5 +373,44 @@ export default function register({ scenario, ROOT }) {
     t.eq(s.out.stoppedAt, "switch to feat (branch is checked out elsewhere)", "a failed switch stops the run");
     t.ok(s.of(/^switch /)[0].prompt.includes("git switch 'feat'") && !s.of(/^claim lm-release$/)[0].prompt.includes("git switch"), "the switch is not in the claim step");
     t.eq(s.of(/^close claim/).length, 1, "and the claim it wrote is closed");
+  });
+
+  scenario("claim-cmd-more-from-git", "claim-more with the repository reads Git itself: the command stays short with 61 changed files, a file another open claim lists goes to others with its owner, the job folder and what was changed before the package started stay out", async (t) => {
+    const dir = claimsDir(t, "git");
+    const repo = `${path.dirname(path.dirname(dir))}/repo`;
+    fs.mkdirSync(`${repo}/src`, { recursive: true });
+    const git = (...args) => spawnSync("git", ["-C", repo, "-c", "user.name=tester", "-c", `user.email=${["tester", "example.test"].join("@")}`, "-c", "commit.gpgsign=false", ...args], { encoding: "utf8" });
+    git("init", "-q");
+    fs.writeFileSync(`${repo}/src/a.js`, "a\n");
+    git("add", "src/a.js");
+    git("commit", "-q", "-m", "base");
+    fs.writeFileSync(`${repo}/notes.txt`, "somebody's change before the package\n");
+    let r = claim(t, dir, "pkg", ["src/a.js"], { repo });
+    t.eq([r.ok, read(dir, "pkg").atGate], [true, ["notes.txt"]], "the claim records what Git listed when the package started");
+    t.eq(claim(t, dir, "other", ["lib/o.js"]).ok, true, "another package claims lib/o.js");
+    // the round: the package's own files, 60 generated ones, the other package's file, the job folder, and the earlier change edited again
+    fs.writeFileSync(`${repo}/src/a.js`, "a2\n");
+    fs.writeFileSync(`${repo}/src/New.js`, "n\n");
+    fs.mkdirSync(`${repo}/gen`); for (let i = 0; i < 60; i++) fs.writeFileSync(`${repo}/gen/f${i}.js`, `${i}\n`);
+    fs.mkdirSync(`${repo}/lib`); fs.writeFileSync(`${repo}/lib/o.js`, "o\n");
+    fs.mkdirSync(`${repo}/.agent-tmp/pkg`, { recursive: true }); fs.writeFileSync(`${repo}/.agent-tmp/pkg/log.txt`, "l\n");
+    fs.writeFileSync(`${repo}/notes.txt`, "edited again\n");
+    const spec = { dir, label: "pkg", repo };
+    t.ok(JSON.stringify(spec).length < 400, `the spec names no changed file (${JSON.stringify(spec).length} characters for 64 changed paths)`);
+    r = helper(t, "claim-more", spec);
+    t.eq([r.ok, r.conflicts, r.others, r.owners], [true, [], ["lib/o.js"], ["other: lib/o.js"]], "the other package's file is its own, with its owner, and no conflict here");
+    t.eq(r.changed.length, 62, "changed: src/a.js, src/New.js and the 60 generated files");
+    t.ok(r.changed.includes("src/New.js") && !r.changed.includes("notes.txt") && !r.changed.some((p) => p.startsWith(".agent-tmp")), "spelled as Git spells them, without the earlier change and the job folder");
+    t.eq(r.added.length, 61, "every changed file the claim lacked is added (src/a.js was claimed)");
+    t.ok(r.added.includes("src/new.js") && !r.added.includes("lib/o.js"), "keyed, and never the other package's file");
+    t.eq(read(dir, "pkg").files.length, 62, "the claim holds them");
+    t.eq(read(dir, "other").files, ["lib/o.js"], "the other claim is untouched");
+    r = helper(t, "claim-more", spec);
+    t.eq([r.ok, r.added], [true, []], "a second look adds nothing");
+    r = helper(t, "claim-more", { ...spec, repo: `${repo}/no-such-folder` });
+    t.eq([r.ok, r.gitError, r.added], [false, true, []], "a repository Git cannot read is an error, never a clean work tree");
+    r = helper(t, "claim-more", { ...spec, label: "ghost" });
+    t.ok(r.ok === false && /no open claim/.test(r.error), "a label without an open claim adds nothing");
+    onlyClaims(t, dir, ["other", "pkg"]);
   });
 }

@@ -3,12 +3,17 @@
 // The workflow (core/workflows/design-brief.js) is run here the way Claude Code runs it: as the body of an async function with
 // `args`, `agent`, `parallel`, `phase` and `log` in scope. `agent` is a script of answers keyed by the step's label, so every
 // decision the workflow itself makes (which facts reach the writer and the review, which candidate reviews, what is reported as
-// fixed, what is left, what is never answered) is tested on those answers. What a prompt asks of a runner (the gateway call, the
-// files) is checked as text of the prompt; it is carried out by the runner agent.
+// fixed, what is left, what is never answered) is tested on those answers. What a prompt asks of a runner (the gateway call) is
+// checked as text of the prompt. The file steps are commands of the helper (core/scripts/gate.mjs brief-inspect, brief-preflight,
+// review-read): the inspection is scripted (its answer is wrapped as the helper's line), the preflight and the reading of the review
+// run the real helper on a scratch folder that stands for the paths of the run (/r, /g and a drive path are mapped onto it and back), with
+// the brief, the cited lines and the review answer the scripted answers describe written there first.
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
+import { spawnSync } from "node:child_process";
 
 const sha = (text) => crypto.createHash("sha256").update(text, "utf8").digest("hex");
 const MARK = "<!-- design-brief: db -->";
@@ -27,20 +32,34 @@ const HEADINGS = ["# Title", "## Goal", "## What to build", "## Owner decisions"
 export default function register({ scenario, ROOT }) {
   const source = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8");
   const SRC = source("core/workflows/design-brief.js");
+  const GATE = path.join(ROOT, "core", "scripts", "gate.mjs");
+  // One scratch folder for the file steps of every run of this file, removed when the suite ends.
+  const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), "design-brief-")).replace(/\\/g, "/");
+  process.on("exit", () => { try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch { /* best effort */ } });
+  let runs = 0;
 
   const printed = (facts) => ({ exitCode: 0, stdout: JSON.stringify({ ok: true, api: 1, plugin: PLUGIN, ...facts }) + "\n" });
+  /** A helper line of a file command: the answer with api, plugin and its lineSha256, as gate.mjs prints it. */
+  const ioLine = (facts) => { const body = { ok: true, ...facts, api: 1, plugin: PLUGIN }; return { exitCode: 0, stdout: JSON.stringify({ ...body, lineSha256: sha(JSON.stringify(body)) }) + "\n" }; };
   const gateFacts = (over = {}) => ({ roles: ROLES, modelsErrors: [], account: CONNECTED, accountError: "", ignoreExit: 0, ...over });
-  /** What a runner answers to a "write these files" prompt: each file with the hash the prompt states. */
-  const wrote = (prompt) => ({ ok: true, summary: "written", wrote: [...prompt.matchAll(/<<<FILE path=("(?:[^"\\]|\\.)*") sha256=([0-9a-f]{64})>>>/g)].map((m) => ({ path: JSON.parse(m[1]), sha256: m[2] })) });
   const review = (doc, over = {}) => { const answer = JSON.stringify({ notVerified: [], summary: "s", ...doc }); return { ok: true, answer, answerSha256: sha(answer), gateway: "final", infra: "", ...over }; };
   const finding = (id, severity, problem = "p") => ({ id, severity, location: "section Goal", problem, fix: "change it" });
 
   const ARGS = { label: "db", goal: "Make the export resumable, because a cut run loses an hour.", repos: ["/r"], out: "/r/.agent-tmp/db/brief.md", tmp: "/r/.agent-tmp/db" };
+  const ROOTS = [["C", ":"].join("") + "/work/r", "/r", "/g"];
+  const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
   /** Runs the workflow once. `o.answers[label]` (a value or a function of the prompt and the calls) replaces a default answer. */
   async function run(o = {}) {
     const calls = [];
     const args = { ...ARGS, ...(o.args || {}) };
+    const disk = `${SCRATCH}/run-${++runs}`;
+    // The paths of the run on the scratch folder and back.
+    const map = ROOTS.map((r, i) => [r, `${disk}/root${i}`]);
+    const toDisk = (text) => map.reduce((t, [r, d]) => t.replace(new RegExp(`(?<![\\w.:/-])${escRe(r)}(?=[/"'\\s.,;:)]|$)`, "g"), d), String(text));
+    const fromDisk = (text) => map.reduce((t, [r, d]) => t.split(d).join(r), String(text));
+    const onDisk = (p) => toDisk(p);
+    let reviewGiven = null;
     const answer = (label, prompt, opts) => {
       const given = o.answers && o.answers[label];
       if (given !== undefined) return typeof given === "function" ? given(prompt, calls, opts) : given;
@@ -49,22 +68,88 @@ export default function register({ scenario, ROOT }) {
       if (label.startsWith("facts ")) return { facts: [{ claim: `The export writes rows one by one (${label})`, source: `/r/src/export.js:${12 + Number(label.slice(6))}` }], unknowns: [] };
       if (label === "draft db") return { done: true, summary: "wrote", ownerDecisions: [{ question: "Keep a copy of the old export?", default: "No" }], leftForLater: ["the UI"], wrongFacts: [], unverified: [] };
       if (label === "inspect draft db") return { ok: true, exists: true, sha256: HEX_A, bytes: 100, firstLine: MARK, headings: HEADINGS };
-      if (label === "preflight db") return { ok: true, brief: BRIEF, briefSha256: HEX_A, excerpts: JSON.parse(prompt.match(/^Ranges: (.*)$/m)[1]).map((r) => ({ id: r.id, text: `${r.from}: the cited line of ${r.id}` })) };
-      if (label === "review files db") return wrote(prompt);
+      if (label.startsWith("material ")) return "real";
+      if (label === "preflight db") return { ok: true, brief: BRIEF, excerpts: "default" };
       if (label === "review") return review({ verdict: "approved", findings: [] });
+      if (label === "read review db") return "real";
       if (label === "fix db") return { done: true, summary: "fixed", fixed: [], left: [], ownerDecisions: [{ question: "Keep a copy of the old export?", default: "No" }] };
       if (label === "inspect fix db") return { ok: true, exists: true, sha256: HEX_B, bytes: 120, firstLine: MARK, headings: HEADINGS };
       throw new Error(`no scripted answer for the step "${label}"`);
     };
+    /** The real helper on the scratch folder: the spec mapped onto it, the answer as gate.mjs printed it. */
+    const helper = (command, spec) => {
+      const r = spawnSync(process.execPath, [GATE, command, toDisk(JSON.stringify(spec))], { encoding: "utf8", windowsHide: true });
+      return { exitCode: r.status ?? -1, stdout: r.stdout || "", error: (r.stderr || "").slice(0, 300) };
+    };
+    /** A helper line changed by the fake (the material's hash put back for the paths of the run): its lineSha256 is made again. */
+    const reline = (stdout, change) => {
+      const { lineSha256: _old, ...body } = JSON.parse(stdout);
+      const next = change(body);
+      return JSON.stringify({ ...next, lineSha256: sha(JSON.stringify(next)) }) + "\n";
+    };
+    // The file steps: the answer a test scripted describes what is on disk; the helper reads and writes it.
+    const io = (command, spec, given) => {
+      if (given === null || given === undefined) return given;
+      if (typeof given === "object" && "exitCode" in given) return given;
+      if (command === "brief-inspect") return ioLine({ exists: true, bytes: 0, firstLine: "", headings: [], ...given, ok: true });
+      // A part of the material: the real helper writes it as given (only its folder is on the scratch disk), so its hash is the part's.
+      if (command === "brief-material") {
+        const r = spawnSync(process.execPath, [GATE, command, JSON.stringify({ ...spec, dir: onDisk(spec.dir) })], { encoding: "utf8", windowsHide: true });
+        return { exitCode: r.status ?? -1, stdout: r.stdout || "", error: (r.stderr || "").slice(0, 300) };
+      }
+      if (command === "brief-preflight") {
+        fs.mkdirSync(path.dirname(onDisk(spec.brief)), { recursive: true });
+        fs.writeFileSync(onDisk(spec.brief), given.brief);
+        // The parts the runs of brief-material wrote, joined; the helper gets them as one part with the run's paths on the scratch disk.
+        const dir = onDisk(spec.dir);
+        const n = spec.material && spec.material.parts;
+        const joined = Array.from({ length: n || 0 }, (_, i) => { try { return fs.readFileSync(`${dir}/material/${i + 1}-of-${n}.part`, "utf8"); } catch { return ""; } }).join("");
+        const mat = JSON.parse(joined);
+        const mapped = toDisk(joined);
+        fs.mkdirSync(`${dir}/material`, { recursive: true });
+        fs.writeFileSync(`${dir}/material/1-of-1.part`, mapped);
+        const lines = new Map();
+        for (const f of mat.facts) {
+          const m = f.source.match(/^(.+):(\d+)(?:-(\d+))?$/);
+          const from = Math.max(1, Number(m[2]) - 3);
+          const text = given.excerpts === "default" ? `${from}: the cited line of ${f.id}` : ((given.excerpts || []).find((e) => e.id === f.id) || {}).text || "";
+          if (!text) continue;
+          const file = onDisk(m[1]);
+          const have = lines.get(file) || [];
+          text.split("\n").forEach((l, k) => { have[from - 1 + k] = l.replace(/^\d+: /, ""); });
+          lines.set(file, have);
+        }
+        for (const [file, have] of lines) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, Array.from(have, (l) => l ?? "").join("\n") + "\n"); }
+        const r = helper(command, { ...spec, material: { parts: 1, sha256: sha(mapped) } });
+        try { return { ...r, stdout: reline(r.stdout, (b) => (b.inputSha256 === sha(mapped) ? { ...b, inputSha256: sha(joined) } : b)) }; } catch { return r; }
+      }
+      if (command === "review-read") {
+        if (reviewGiven && typeof reviewGiven.answer === "string") { fs.mkdirSync(path.dirname(onDisk(spec.file)), { recursive: true }); fs.writeFileSync(onDisk(spec.file), reviewGiven.answer); }
+        const r = helper(command, spec);
+        // A runner that did not return the line as printed (the gateway step reported a hash that is not the answer's): a hash in it differs.
+        if (reviewGiven && reviewGiven.answerSha256 && reviewGiven.answerSha256 !== sha(reviewGiven.answer || "")) return { ...r, stdout: r.stdout.replace(/"sha256":"[0-9a-f]{64}"/, `"sha256":"${reviewGiven.answerSha256}"`) };
+        return r;
+      }
+      throw new Error(`no fake for the helper command ${command}`);
+    };
     const sandbox = {
       args, phase: () => {}, log: () => {},
       parallel: (thunks) => Promise.all(thunks.map((th) => th())),
-      agent: async (prompt, opts) => { calls.push({ label: opts.label, prompt, opts }); return answer(opts.label, prompt, opts); },
+      agent: async (prompt, opts) => {
+        calls.push({ label: opts.label, prompt, opts });
+        const given = answer(opts.label, prompt, opts);
+        if (opts.label === "review") { reviewGiven = given; if (!given) return given; const { answer: _a, answerSha256: _s, ...gw } = given; return gw; }
+        const m = prompt.match(/ -- "\$\(pwd -W 2>\/dev\/null \|\| pwd\)" (brief-inspect|brief-material|brief-preflight|review-read) '((?:[^']|'\\'')*)'\n/);
+        return m ? io(m[1], JSON.parse(m[2].replace(/'\\''/g, "'")), given) : given;
+      },
     };
     const fn = vm.runInNewContext(`(async () => {\n${SRC.replace(/^export const meta/, "const meta")}\n})`, sandbox, { filename: "design-brief.js" });
     let out, error = null;
     try { out = await fn(); } catch (e) { error = e; }
-    return { out, error, calls, of: (re) => calls.filter((c) => re.test(c.label)) };
+    /** A file the helper wrote for a path of the run, with the run's paths in it (""), and whether it exists. */
+    const file = (p) => (fs.existsSync(onDisk(p)) ? fromDisk(fs.readFileSync(onDisk(p), "utf8")) : "");
+    const exists = (p) => fs.existsSync(onDisk(p));
+    return { out, error, calls, of: (re) => calls.filter((c) => re.test(c.label)), file, exists };
   }
 
   scenario("design-brief-happy-path", "facts, a draft, a review through the gateway and one fix: the result says what was found, fixed and left, and lists the owner decisions with their default", async (t) => {
@@ -140,13 +225,13 @@ export default function register({ scenario, ROOT }) {
     t.ok(!/\/other\/x\.js|\.env|server\.pem|src\/y\.js/.test(draft), "no dropped fact is in the draft prompt");
     t.ok(draft.includes("Which queue is used?"), "what the researchers could not settle is handed to the writer");
     t.ok(r.out.notes.some((n) => n.includes("6 fact(s) were dropped")), "the drop is said in the notes");
-    const files = r.of(/^review files /)[0].prompt;
-    t.ok(!files.includes(key) && !/\.env|server\.pem/.test(files), "nor does it reach the facts file of the review");
+    const files = r.file("/r/.agent-tmp/db/review/facts.json");
+    t.ok(files.includes('"/r/src/client.js:7"') && !files.includes(key) && !/\.env|server\.pem/.test(files), "nor does it reach the facts file of the review");
     const gw = r.of(/^review$/)[0].prompt;
     t.ok(!gw.includes("--attach '/r/src/client.js'") && !gw.includes("--attach '/r/src/z.js'"), "a cited source file is not attached whole");
     t.ok(gw.includes("--attach '/r/.agent-tmp/db/review/excerpts.md'"), "its cited lines are attached as one excerpts file");
-    const pre = r.of(/^preflight /)[0].prompt.match(/^Ranges: (.*)$/m)[1];
-    t.ok(pre.includes('"file":"/r/src/client.js"') && !/\.env|server\.pem/.test(pre), "the runner is asked for the lines of the good facts only");
+    const pre = r.of(/^material /).map((c) => JSON.parse(c.prompt.match(/ brief-material '(.*)'$/m)[1].replace(/'\\''/g, "'")).text).join("");
+    t.ok(pre.includes('"source":"/r/src/client.js:7"') && !/\.env|server\.pem/.test(pre), "the helper is asked for the lines of the good facts only");
     t.ok(!/--attach '\/r\/\.env'|server\.pem/.test(gw), "a secret file is never attached");
     const none = await run({ args: { questions: ["q1"] }, answers: { "facts 1": { facts: [{ claim: "x", source: "/other/x.js:1" }], unknowns: [] } } });
     t.ok(/^facts /.test(none.out.stoppedAt) && none.of(/^draft /).length === 0, "no usable fact stops the run before the draft");
@@ -171,21 +256,21 @@ export default function register({ scenario, ROOT }) {
 
   scenario("design-brief-review-gateway", "the review goes through the gateway to a Codex candidate of the role architect, with the brief, the facts and the cited files attached; the run never falls back to a Claude reviewer", async (t) => {
     const r = await run();
-    const files = r.of(/^review files /)[0];
-    t.ok(files.opts.agentType === "zodchi-core:runner", "the files of the request are written by a runner");
-    for (const f of ["facts.json", "excerpts.md", "prompt.md", "design-review.md", "design-review.schema.json", "design-review.json"]) t.ok(files.prompt.includes(`/r/.agent-tmp/db/review/${f}`), `the request has ${f}`);
+    const files = r.of(/^preflight /)[0];
+    t.ok(files.opts.agentType === "zodchi-core:runner" && files.prompt.includes(' brief-preflight \'') && files.prompt.includes('"dir":"/r/.agent-tmp/db/review"'), "the files of the request are written by the helper a runner runs");
+    for (const f of ["facts.json", "excerpts.md", "prompt.md", "design-review.md", "design-review.schema.json", "design-review.json"]) t.ok(r.exists(`/r/.agent-tmp/db/review/${f}`), `the request has ${f}`);
     const rv = r.of(/^review$/)[0];
     t.ok(rv.opts.agentType === "zodchi-core:runner" && rv.opts.model === undefined, "the review is a runner step that calls the gateway");
     t.ok(/zodchi run --role '\/r\/\.agent-tmp\/db\/review\/design-review\.json' --key db-design-review --model gpt-x --effort high --prompt '\/r\/\.agent-tmp\/db\/review\/prompt\.md' --attach '\/r\/\.agent-tmp\/db\/brief\.md' --attach '\/r\/\.agent-tmp\/db\/review\/facts\.json' --attach '\/r\/\.agent-tmp\/db\/review\/excerpts\.md' --wait-sec 540/.test(rv.prompt), "the command names the role, the key, the model, the prompt and the attachments");
     t.ok(/foreground/.test(rv.prompt) && /Never in the background/.test(rv.prompt), "it waits in the foreground");
     t.ok(/is final with status "unknown" never gets a new key/.test(rv.prompt), "a job that ended unknown is never submitted again");
-    const body = JSON.parse(files.prompt.match(/design-review\.json" sha256=[0-9a-f]{64}>>>\n([\s\S]*?)<<<END FILE>>>/)[1]);
+    const body = JSON.parse(r.file("/r/.agent-tmp/db/review/design-review.json"));
     t.eq([body.mode, body.model, body.effort], ["expert", "gpt-x", "high"], "the role file carries the chosen candidate");
-    const reviewPrompt = files.prompt.match(/prompt\.md" sha256=[0-9a-f]{64}>>>\n([\s\S]*?)<<<END FILE>>>/)[1];
+    const reviewPrompt = r.file("/r/.agent-tmp/db/review/prompt.md");
     for (const s of ["Facts.", "Guessing.", "Scope.", "Review boundary.", "Checks.", "Secrets and names.", "Owner decisions."]) t.ok(reviewPrompt.includes(s), `the review asks about: ${s}`);
     t.ok(!/no company, product or person name/.test(reviewPrompt), "a repository not marked public is not asked about private names");
     const pub = await run({ args: { publicRepo: true } });
-    t.ok(/no company, product or person name and no machine path/.test(pub.of(/^review files /)[0].prompt), "a public repository is also checked for names and machine paths");
+    t.ok(/no company, product or person name and no machine path/.test(pub.file("/r/.agent-tmp/db/review/prompt.md")), "a public repository is also checked for names and machine paths");
 
     // the role table leaves no Codex reviewer: the run is refused before any agent but the gate was spent
     for (const [name, over] of [
@@ -353,10 +438,8 @@ export default function register({ scenario, ROOT }) {
   // ------------------------------------------------------------------ review-1 findings (F1 to F6)
   const KEY = ["sk", "A1b2C3d4E5f6G7h8I9j0K1l2"].join("-");
   const driveRoot = ["C", ":"].join("") + "/work/ann";
-  const preAnswer = (brief, over = {}) => (prompt) => ({
-    ok: true, brief, briefSha256: sha(brief),
-    excerpts: JSON.parse(prompt.match(/^Ranges: (.*)$/m)[1]).map((r) => ({ id: r.id, text: `${r.from}: the cited line of ${r.id}` })), ...over,
-  });
+  /** What the preflight finds on disk: the brief and, by default, one cited line per fact (written where the fact points). */
+  const preAnswer = (brief, over = {}) => () => ({ ok: true, brief, briefSha256: sha(brief), excerpts: "default", ...over });
   const inspected = (brief) => ({ ok: true, exists: true, sha256: sha(brief), firstLine: MARK, headings: HEADINGS });
 
   scenario("design-brief-research-writes-nothing", "F1: no research prompt allows a plain git command (git status writes the index), and the planner is not told to keep a progress file", async (t) => {
@@ -376,23 +459,23 @@ export default function register({ scenario, ROOT }) {
     t.ok(!r.calls.some((c) => c.prompt.includes("hunter2xyz") || c.prompt.includes(KEY)), "no prompt holds the secret of the question");
     t.ok(r.out.notes.some((n) => n.includes("The researcher of question 1 returned no result")) && !JSON.stringify(r.out).includes("hunter2xyz") && !JSON.stringify(r.out).includes(KEY), "nor the notes or the result when the researcher fails");
     const ok = await run({ args: { questions: [q] } });
-    const factsFile = ok.of(/^review files /)[0].prompt.match(/facts\.json" sha256=[0-9a-f]{64}>>>\n([\s\S]*?)<<<END FILE>>>/)[1];
+    const factsFile = ok.file("/r/.agent-tmp/db/review/facts.json");
     t.ok(!factsFile.includes("hunter2xyz") && !factsFile.includes(KEY) && factsFile.includes("[REDACTED"), "the facts file of the review carries the redacted question");
     const pub = await run({ args: { publicRepo: true, goal: `Resume the export in ${driveRoot}/app and /r/src.` }, answers: { "facts 1": { facts: [{ claim: `Rows are written by /r/src/export.js; see ${driveRoot}/x`, source: "/r/src/export.js:13" }], unknowns: [`Not found under ${driveRoot}/y`] } } });
-    const files = pub.of(/^review files /)[0].prompt;
-    const body = (name) => files.match(new RegExp(`${name}" sha256=[0-9a-f]{64}>>>\\n([\\s\\S]*?)<<<END FILE>>>`))[1];
-    const material = body("facts\\.json") + body("prompt\\.md") + body("excerpts\\.md");
+    const body = (name) => pub.file(`/r/.agent-tmp/db/review/${name}`);
+    const material = body("facts.json") + body("prompt.md") + body("excerpts.md");
+    t.ok(material.length > 0 && pub.out.stoppedAt === undefined, "the request was written and sent");
     t.ok(!material.includes("/r/") && !material.includes(driveRoot) && !/[A-Za-z]:\//.test(material), "the facts, the excerpts and the prompt of the review hold no machine path");
     t.ok(material.includes("<repo1>/src/export.js:13") && material.includes("<path>"), "the repository is an alias and a relative path, and a foreign path is <path>");
     const local = await run({ args: { goal: "Resume the export in /r/src." } });
-    t.ok(local.of(/^review files /)[0].prompt.includes("/r/src/export.js:13"), "a repository not marked public keeps its paths");
+    t.ok(local.file("/r/.agent-tmp/db/review/facts.json").includes("/r/src/export.js:13"), "a repository not marked public keeps its paths");
   });
 
   scenario("design-brief-preflight", "F3: the brief is screened and the cited lines redacted before anything goes to the gateway; no whole source file is attached", async (t) => {
     const dirty = `${BRIEF}\nThe client sends ${KEY} to the queue.\n`;
     const r = await run({ answers: { "preflight db": preAnswer(dirty), "inspect draft db": inspected(dirty) } });
     t.ok(/^review \(the brief holds material that is not sent to a reviewer: line \d+: a secret-shaped value/.test(r.out.stoppedAt), "a brief with a secret-shaped value stops before the review");
-    t.eq([r.of(/^review files /).length, r.of(/^review$/).length, r.of(/^fix /).length], [0, 0, 0], "nothing was written for the gateway, sent, or fixed");
+    t.eq([r.exists("/r/.agent-tmp/db/review/facts.json"), r.exists("/r/.agent-tmp/db/review/prompt.md"), r.of(/^review$/).length, r.of(/^fix /).length], [false, false, 0, 0], "nothing was written for the gateway, sent, or fixed");
     t.ok(!JSON.stringify(r.out).includes(KEY) && r.out.path === ARGS.out && /was not sent to the review/.test(r.out.next), "the value is not repeated; the brief is named");
     const pathy = `${BRIEF}\nRun it in ${driveRoot}/app.\n`;
     const publicRun = await run({ args: { publicRepo: true }, answers: { "preflight db": preAnswer(pathy), "inspect draft db": inspected(pathy) } });
@@ -404,12 +487,14 @@ export default function register({ scenario, ROOT }) {
     const none = await run({ answers: { "preflight db": null } });
     t.ok(/the preflight read no brief/.test(none.out.stoppedAt) && none.of(/^review$/).length === 0, "no preflight answer: not sent");
 
-    const leak = await run({ answers: { "preflight db": (prompt) => ({ ...preAnswer(BRIEF)(prompt), excerpts: [{ id: "T1", text: `3: const token = "abcd1234efgh5678"\n4: key ${KEY}` }, { id: "T2", text: "" }] }) } });
-    const ex = leak.of(/^review files /)[0].prompt.match(/excerpts\.md" sha256=[0-9a-f]{64}>>>\n([\s\S]*?)<<<END FILE>>>/)[1];
+    // T2 cites a file that cannot be read (here: none is there)
+    const leak = await run({ answers: { "facts 2": { facts: [{ claim: "The state is kept in one file (facts 2)", source: "/r/src/state.js:14" }], unknowns: [] }, "preflight db": (prompt) => ({ ...preAnswer(BRIEF)(prompt), excerpts: [{ id: "T1", text: `3: const token = "abcd1234efgh5678"\n4: key ${KEY}` }, { id: "T2", text: "" }] }) } });
+    const ex = leak.file("/r/.agent-tmp/db/review/excerpts.md");
     t.ok(!ex.includes("abcd1234efgh5678") && !ex.includes(KEY) && ex.includes("[REDACTED"), "a secret in a cited line is redacted in the excerpts");
     t.ok(/## T2 .*\n\(not available\)/.test(ex) && leak.out.notes.some((n) => n.includes("1 cited excerpt(s) could not be read")), "an excerpt that could not be read is said, not invented");
     const ask = leak.of(/^preflight /)[0];
-    t.ok(ask.opts.agentType === "zodchi-core:runner" && /change nothing/.test(ask.prompt) && !/Resume rule/.test(ask.prompt), "the preflight is a read-only runner that keeps no progress file");
+    t.ok(ask.opts.agentType === "zodchi-core:runner" && /change nothing/.test(ask.prompt) && !/Resume rule/.test(ask.prompt), "the preflight is a runner that only runs the helper (it changes nothing itself) and keeps no progress file");
+    t.ok(!/exactly as read|every character|<<<FILE/.test(ask.prompt) && (ask.prompt.match(/node -e /g) || []).length === 1, "and is never asked to return or write a file's content: one helper command");
   });
 
   scenario("design-brief-gateway-attachments", "F4: every attachment is required and its list is recorded per key; a missing one is reported, never answered by another submission", async (t) => {
@@ -447,5 +532,19 @@ export default function register({ scenario, ROOT }) {
     t.ok(!/The review approved/.test(c1.out.next || ""), "and is never described as an approval");
     const ok = await run({ answers: { review: review({ verdict: "approved", findings: [finding("F1", "minor")] }) } });
     t.ok(ok.out.stoppedAt === undefined && /The review approved the brief/.test(ok.out.next), "approved with only a minor finding is an approval");
+  });
+
+  scenario("design-brief-material-parts", "the workflow's material for the review (goal, questions, facts, unknowns) reaches the helper in parts of at most 3000 characters, one command each, so no command a runner types grows with the research; a part that did not arrive exactly stops the run before the preflight", async (t) => {
+    const many = { facts: Array.from({ length: 60 }, (_, i) => ({ claim: `The export writes row group ${i} with its own checkpoint and a long explanation of why it matters here (fact ${i}).`, source: `/r/src/export.js:${i + 1}` })), unknowns: [] };
+    const r = await run({ answers: { "facts 1": many } });
+    const parts = r.of(/^material /);
+    const texts = parts.map((c) => JSON.parse(c.prompt.match(/ brief-material '(.*)'$/m)[1].replace(/'\\''/g, "'")));
+    t.ok(parts.length > 1 && texts.every((x) => x.text.length <= 3000 && x.of === parts.length), "the material is cut into several parts of at most 3000 characters");
+    t.ok(parts.every((c) => c.opts.agentType === "zodchi-core:runner" && (c.prompt.match(/node -e /g) || []).length === 1), "each part is one helper command a runner runs");
+    t.ok(!/"facts":/.test(r.of(/^preflight /)[0].prompt) && r.out.stoppedAt === undefined && r.of(/^review$/).length === 1, "the preflight command carries no facts, only the parts' count and hash; the review was sent");
+    const doc = JSON.parse(r.file("/r/.agent-tmp/db/review/facts.json"));
+    t.eq(doc.facts.length, 61, "every fact reached the facts file of the review");
+    const bad = await run({ answers: { "material 1/1 db": ioLine({ part: 1, of: 1, sha256: "0".repeat(64), chars: 1 }) } });
+    t.ok(/^review \(part 1 of the material did not reach the helper exactly/.test(bad.out.stoppedAt) && bad.of(/^preflight /).length === 0 && bad.of(/^review$/).length === 0, "a part whose hash differs stops the run: no preflight, nothing sent");
   });
 }

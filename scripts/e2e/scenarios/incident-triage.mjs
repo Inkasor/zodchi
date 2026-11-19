@@ -1,22 +1,24 @@
 // incident-triage: the synthetic cases of scripts/e2e/fixtures/incident-triage/cases, run through the real workflow.
 //
 // The body of core/workflows/incident-triage.js runs the way Claude Code runs it (an async function of args, agent, phase, log, ...)
-// with a fake agent. The fake does what each runner step's prompt asks, for real, in a temporary incident folder: it takes the lock,
-// writes the exact files the workflow hands over (checking their SHA-256, which also checks the workflow's own SHA-256), runs the
-// generated collector with node (so the evidence is collected for real from the synthetic product of fixtures/incident-triage/product.mjs)
-// and publishes the draft. Only the model and the gate helper are scripted: the classifier's answer is the case's classification.json,
-// returned as the gateway would (a Codex candidate) or as a Claude subagent would (when the case's role table has only Claude), and the
-// gate step prints the line core/scripts/gate.mjs would print (its own checks are in workflow-gate.mjs).
+// with a fake agent. The fake does what each runner step's prompt asks, for real, in a temporary incident folder: every file step is one
+// command of the helper (core/scripts/gate.mjs incident-open, incident-collect, incident-publish, incident-fail, incident-unlock), which the
+// fake runs for real and whose printed line it returns as the runner would. So the lock is taken, the revision's files are generated, the
+// collector runs with node (the evidence is collected for real from the synthetic product of fixtures/incident-triage/product.mjs) and
+// the draft is published by the helper itself. Only the model and the gate helper are scripted: the classifier's answer is the case's
+// classification.json, written to the answer file as the gateway would (a Codex candidate) or as a Claude subagent would (when the case's
+// role table has only Claude), and the gate step prints the line core/scripts/gate.mjs would print (its own checks are in workflow-gate.mjs).
 // Each case folder holds case.json: { about, report, params, models?, adapterFrom?, twinReport?, expect }; the keys of expect are read
 // by verify() below.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 
 export default function register({ scenario, ROOT }) {
   const WORKFLOW = path.join(ROOT, "core", "workflows", "incident-triage.js");
+  const GATE = path.join(ROOT, "core", "scripts", "gate.mjs");
   const FIXTURES = path.join(ROOT, "scripts", "e2e", "fixtures", "incident-triage");
   const CASES = path.join(FIXTURES, "cases");
   const slash = (p) => p.replace(/\\/g, "/");
@@ -31,11 +33,6 @@ export default function register({ scenario, ROOT }) {
   const ACCOUNT = { connected: true, ordinaryUsageAllowed: true, primary: { usedPercent: 10 }, secondary: { usedPercent: 10 } };
   const PLUGIN = { root: "/plugin/core", commit: "c0ffee", version: "1.0.0-dev", via: "installed_plugins.json, scope user" };
 
-  /** The exact-file blocks of a prompt, in order. */
-  function blocks(prompt) {
-    const re = /<<<FILE path=("(?:[^"\\]|\\.)*") sha256=([0-9a-f]{64})>>>\n([\s\S]*?)<<<END FILE>>>/g;
-    return [...prompt.matchAll(re)].map((m) => ({ path: JSON.parse(m[1]), sha: m[2], text: m[3] }));
-  }
   /** The fake acts only on what the prompt says: a missing instruction fails the scenario (and the step does nothing). */
   const quote = (p) => `'${String(p).replace(/'/g, `'\\''`)}'`;
   function need(t, prompt, label, needle, what) {
@@ -48,27 +45,24 @@ export default function register({ scenario, ROOT }) {
     t.ok(ok, `the schema of the step "${label}" does not require the field ${field}`);
     if (!ok) throw new Error(`the schema of the step "${label}" does not require ${field}`);
   };
-  function writeBlocks(prompt, t, label) {
-    const wrote = [];
-    need(t, prompt, label, "Write each file below exactly as given.", "the instruction to write the file blocks");
-    need(t, prompt, label, "sha256sum", "the sha256 check of a written file");
-    need(t, prompt, label, "a revision is never overwritten", "the rule that a revision is never overwritten");
-    // The list of files is searched outside the file blocks: a block header alone is not the list.
-    const outside = prompt.replace(/<<<FILE path=[\s\S]*?<<<END FILE>>>/g, "");
-    for (const b of blocks(prompt)) need(t, outside, label, JSON.stringify(b.path), "the path of the file block in the list of files");
-    const replace = new Set();
-    // "(replace)" follows the quoted path in the list of files of each group.
-    for (const m of prompt.matchAll(/("(?:[^"\\]|\\.)*") \(replace\)/g)) replace.add(JSON.parse(m[1]));
-    for (const b of blocks(prompt)) {
-      const got = sha(Buffer.from(b.text, "utf8"));
-      if (got !== b.sha) throw new Error(`the workflow's sha256 of ${b.path} is ${b.sha}, node says ${got}`);
-      fs.mkdirSync(path.dirname(b.path), { recursive: true });
-      if (!replace.has(b.path) && fs.existsSync(b.path)) throw new Error(`${b.path} exists and is not marked replace: a revision is never overwritten`);
-      fs.writeFileSync(b.path + ".tmp", b.text);
-      fs.renameSync(b.path + ".tmp", b.path);
-      wrote.push({ path: b.path, sha256: got });
-    }
-    return wrote;
+  /**
+   * A helper step: the prompt holds ONE command of the bootstrap with the expected helper command and a spec for this incident folder; the
+   * runner runs it and returns its exit code and the line it printed. The fake runs gate.mjs of this checkout with that spec (the bootstrap
+   * itself is checked in workflow-gate.mjs) and returns what it printed, as it is.
+   */
+  function helperStep(t, ctx, prompt, opts, label, command) {
+    need(t, prompt, label, "Run ONE command and return what it printed", "the instruction to run one command and return its output");
+    need(t, prompt, label, "copy it unchanged", "the instruction to return the printed line unchanged");
+    need(t, prompt, label, "never touch the incident folder or its lock yourself", "the rule that the runner touches no file itself");
+    for (const fld of ["exitCode", "stdout"]) needField(t, opts, label, fld);
+    t.ok((prompt.match(/node -e /g) || []).length === 1, `the step "${label}" runs one command`);
+    const m = prompt.match(/ -- "\$\(pwd -W 2>\/dev\/null \|\| pwd\)" ([a-z-]+) '((?:[^']|'\\'')*)'\n/);
+    t.ok(Boolean(m) && m[1] === command, `the step "${label}" runs the helper command ${command} (${m ? m[1] : "none"})`);
+    if (!m || m[1] !== command) throw new Error(`the step "${label}" does not run ${command}`);
+    const spec = JSON.parse(m[2].replace(/'\\''/g, "'"));
+    t.ok(spec.api === 1 && spec.tmp === ctx.tmp && spec.incident === ctx.incident, `the step "${label}" names this incident folder and incident`);
+    const r = spawnSync(process.execPath, [GATE, command, JSON.stringify(spec)], { encoding: "utf8", windowsHide: true });
+    return { spec, answer: { exitCode: r.status ?? -1, stdout: r.stdout || "", error: (r.stderr || "").slice(0, 300) } };
   }
 
   function fakeAgent(ctx) {
@@ -81,101 +75,61 @@ export default function register({ scenario, ROOT }) {
         return { exitCode: 0, stdout: JSON.stringify({ ok: true, api: 1, plugin: PLUGIN, roles: CODEX_TABLE, modelsErrors: [], account: ACCOUNT, accountError: "", ignoreExit: 0 }) + "\n", error: "" };
       }
       if (label.startsWith("open ")) {
-        need(t, prompt, label, `mkdir -p ${quote(tmp)}`, "the command that makes the incident folder");
-        need(t, prompt, label, `mkdir ${quote(`${tmp}/.lock`)}`, "the command that takes the lock");
-        need(t, prompt, label, "return locked false", "the instruction to refuse when the lock is held");
-        need(t, prompt, label, `sha256sum ${quote(ctx.adapter)}`, "the command that hashes the adapter");
-        need(t, prompt, label, `${tmp}/incident.json`, "the incident.json to read");
-        for (const fld of ["locked", "incident", "revs", "adapter", "adapterSha256"]) needField(t, opts, label, fld);
-        let locked = true;
-        try { fs.mkdirSync(tmp, { recursive: true }); fs.mkdirSync(`${tmp}/.lock`); } catch { locked = false; }
-        if (!locked) return { ok: false, locked: false, incident: "", revs: [], adapter: "", adapterSha256: "" };
-        const adapter = fs.readFileSync(ctx.adapter);
-        return {
-          ok: true, locked: true,
-          incident: readIf(`${tmp}/incident.json`),
-          revs: fs.readdirSync(tmp).filter((n) => /^rev-\d+$/.test(n)),
-          adapter: adapter.toString("utf8"), adapterSha256: `${sha(adapter)}  ${ctx.adapter}`,
-        };
+        const { spec, answer } = helperStep(t, ctx, prompt, opts, label, "incident-open");
+        t.ok(spec.adapter === ctx.adapter, `the step "${label}" names the adapter`);
+        return answer;
       }
       if (label.startsWith("collect ")) {
-        const collector = blocks(prompt).find((b) => b.path.endsWith("/collect.cjs"));
-        t.ok(Boolean(collector), `the prompt of the step "${label}" holds no collect.cjs file block`);
-        if (!collector) throw new Error("no collector block");
-        const revDir = path.dirname(collector.path);
-        need(t, prompt, label, `mkdir ${quote(revDir)}\``, "the command that makes the new revision folder");
-        need(t, prompt, label, "not -p", "the rule that the revision folder must be new");
-        fs.mkdirSync(revDir); // not recursive: the revision folder must be new
-        const wrote = writeBlocks(prompt, t, label);
-        const cmd = `node ${quote(collector.path)} > ${quote(`${revDir}/collect.out`)} 2> ${quote(`${revDir}/collect.err`)}`;
-        need(t, prompt, label, cmd, "the command that runs the generated collector");
-        need(t, prompt, label, "once, in the foreground", "the rule to run the collector once in the foreground");
-        need(t, prompt, label, `collectOut: the content of ${revDir}/collect.out exactly as read`, "the instruction to return collect.out in collectOut");
-        need(t, prompt, label, `sha256sum ${quote(`${revDir}/evidence.json`)}`, "the command that hashes evidence.json");
-        for (const fld of ["collectOut", "evidenceSha256", "exitCode", "wrote"]) needField(t, opts, label, fld);
-        ctx.collector = collector.text;
-        ctx.revDir = revDir;
-        let summary = "", exitCode = 0, error = "";
-        try { summary = execFileSync(process.execPath, [collector.path], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim(); } catch (e) { exitCode = e.status ?? 1; error = String(e.stderr || e.message).slice(-2000); }
-        const ev = `${revDir}/evidence.json`;
-        // The runner keeps the collector's stdout in collect.out and returns it in collectOut, the field the prompt and the schema name;
-        // the collector's exit code and the hash of evidence.json are what the runner measured.
-        fs.writeFileSync(`${revDir}/collect.out`, summary);
-        return { ok: exitCode === 0, collectOut: summary, evidenceSha256: fs.existsSync(ev) ? sha(fs.readFileSync(ev)) : "", exitCode, error, wrote };
+        const { spec, answer } = helperStep(t, ctx, prompt, opts, label, "incident-collect");
+        for (const k of ["token", "revision", "adapterSha256", "report", "classifier"]) t.ok(spec[k] !== undefined && spec[k] !== "", `the step "${label}" hands the helper ${k}`);
+        ctx.revDir = `${tmp}/rev-${spec.revision}`;
+        ctx.collector = readIf(`${ctx.revDir}/collect.cjs`);
+        return answer;
       }
       if (label.startsWith("classify ")) {
-        if (ctx.failClassify) return { ok: false, answer: "", answerSha256: "", infra: "the gateway created no job (mock)" };
+        if (ctx.failClassify) return { ok: false, infra: "the gateway created no job (mock)", unknownKey: "" };
         const text = fs.readFileSync(path.join(ctx.caseDir, "classification.json"), "utf8");
         const revDir = ctx.revDir; // the revision folder the collect step made
         t.ok(Boolean(revDir), `the step "${label}" ran before any collect step`);
         if (!revDir) throw new Error("no revision folder");
-        if (opts.schema && opts.schema.properties && opts.schema.properties.answer) {
-          // The gateway path: the runner returns the file the gateway wrote with --out.
+        const rawFile = `${revDir}/classification.raw.json`;
+        if (opts.agentType === "zodchi-core:runner") {
+          // The gateway path: the gateway writes the answer to the --out file; the runner reports how the job ended, never the file.
           need(t, prompt, label, "zodchi run --role", "the gateway command");
           need(t, prompt, label, "in the foreground", "the rule to wait in the foreground");
-          needField(t, opts, label, "answer");
-          const outFile = (prompt.match(/--out '([^']+)'/) || [])[1];
-          t.ok(Boolean(outFile), `the prompt of the step "${label}" names no --out file`);
-          if (!outFile) throw new Error("no --out file");
-          need(t, prompt, label, `answer: the content of ${outFile} exactly as read`, "the instruction to return the --out file in answer");
-          need(t, prompt, label, `sha256sum ${quote(outFile)}`, "the command that hashes the answer file");
           need(t, prompt, label, `--prompt ${quote(`${revDir}/classify-prompt.md`)}`, "the generated classification request (--prompt)");
           need(t, prompt, label, `--attach ${quote(`${revDir}/evidence.json`)}`, "the evidence attachment");
-          need(t, prompt, label, `--out ${quote(outFile)}`, "the --out file");
-          fs.writeFileSync(outFile, text);
+          need(t, prompt, label, `--out ${quote(rawFile)}`, "the answer file (--out)");
+          need(t, prompt, label, "Do not open, copy or return the answer file", "the rule that the runner never retells the answer");
+          for (const fld of ["ok", "infra"]) needField(t, opts, label, fld);
+          t.ok(!(opts.schema.properties || {}).answer, `the step "${label}" asks for no answer text`);
+          fs.writeFileSync(rawFile, text);
           ctx.classifier = "codex/" + (prompt.match(/--model (\S+)/) || [])[1];
-          return { ok: true, answer: text, answerSha256: sha(Buffer.from(text, "utf8")), infra: "", unknownKey: "" };
+          return { ok: true, infra: "", unknownKey: "" };
         }
-        // A Claude subagent: it reads the frame, the request and the evidence, runs nothing and answers by the schema.
+        // A Claude subagent: it reads the frame, the schema, the request and the evidence, runs nothing and writes its own answer file.
         need(t, prompt, label, "with the Read tool", "the instruction to read the files");
         need(t, prompt, label, `${revDir}/classifier/incident-classify.md`, "the frame file");
+        need(t, prompt, label, `${revDir}/classifier/incident-classify.schema.json`, "the schema file");
         need(t, prompt, label, `${revDir}/classify-prompt.md`, "the generated classification request");
         need(t, prompt, label, `${revDir}/evidence.json`, "the evidence file");
         need(t, prompt, label, "Run no command", "the rule to run nothing");
+        need(t, prompt, label, `with the Write tool to ${rawFile}`, "the answer file it writes");
         t.ok(Boolean(opts.schema) && Boolean(opts.model), `the step "${label}" gives the Claude classifier no schema or model`);
+        fs.writeFileSync(rawFile, text);
         ctx.classifier = `claude/${opts.model}`;
-        return JSON.parse(text);
+        return { written: true };
       }
       if (label.startsWith("mark failed ")) {
-        // Fault injection: a runner that says ok but left the file out, or reports a hash that is not the file's.
-        if (ctx.faultCleanup === "omit") return { ok: true, summary: "written", wrote: [] };
-        need(t, prompt, label, "leave the lock folder as it is", "the rule to leave the lock");
-        need(t, prompt, label, `${tmp}/incident.json`, "the incident.json to write");
-        const wrote = writeBlocks(prompt, t, label);
-        if (ctx.faultCleanup === "badhash") return { ok: true, summary: "written", wrote: wrote.map((w) => ({ ...w, sha256: "0".repeat(64) })) };
-        return { ok: true, summary: "written", wrote };
+        // Fault injection: a runner that never ran the command, or one that changed the line it returns (a hash retyped).
+        if (ctx.faultCleanup === "omit") return { exitCode: -1, stdout: "", error: "" };
+        const { spec, answer } = helperStep(t, ctx, prompt, opts, label, "incident-fail");
+        t.ok(Number.isInteger(spec.revision) && /^[0-9a-f]{16,}$/.test(spec.token), `the step "${label}" names the revision and the lock token`);
+        if (ctx.faultCleanup === "badhash") return { ...answer, stdout: answer.stdout.replace(/"sha256":"[0-9a-f]{64}"/, `"sha256":"${"0".repeat(64)}"`) };
+        return answer;
       }
-      if (label.startsWith("publish ") || label.startsWith("unlock ")) {
-        let wrote = [];
-        if (label.startsWith("publish ")) {
-          need(t, prompt, label, "Group 1.", "the first group of files");
-          need(t, prompt, label, "Group 2.", "the second group of files");
-          need(t, prompt, label, "the first group fully before the second", "the order of the groups");
-          wrote = writeBlocks(prompt, t, label);
-        } else need(t, prompt, label, `rmdir ${quote(`${tmp}/.lock`)}`, "the command that removes the lock");
-        if (label.startsWith("unlock ")) { try { fs.rmdirSync(`${tmp}/.lock`); } catch { return { ok: false, summary: "no lock", wrote }; } }
-        return { ok: true, summary: "written", wrote };
-      }
+      if (label.startsWith("publish ")) return helperStep(t, ctx, prompt, opts, label, "incident-publish").answer;
+      if (label.startsWith("unlock ")) return helperStep(t, ctx, prompt, opts, label, "incident-unlock").answer;
       throw new Error(`the fake agent has no answer for the step "${label}"`);
     };
   }
@@ -187,7 +141,7 @@ export default function register({ scenario, ROOT }) {
     const adapter = slash(path.join(CASES, c.adapterFrom || name, "adapter.json"));
     const tmp = overrides.tmp || slash(fs.mkdtempSync(path.join(os.tmpdir(), `incident-triage-${name}-`)));
     if (!overrides.tmp) t.cleanups.push(() => fs.rmSync(tmp, { recursive: true, force: true }));
-    const ctx = { t, tmp, adapter, caseDir, prompts: [], failClassify: Boolean(overrides.failClassify), faultCleanup: overrides.faultCleanup || "" };
+    const ctx = { t, tmp, adapter, caseDir, incident: `case-${name}`, prompts: [], failClassify: Boolean(overrides.failClassify), faultCleanup: overrides.faultCleanup || "" };
     const args = { incident: `case-${name}`, tmp, adapter, report: overrides.report ?? c.report, params: c.params, repo: tmp, ...(c.models ? { models: c.models } : {}) };
     const logs = [];
     const result = await runWorkflow(args, fakeAgent(ctx), () => {}, (m) => logs.push(m), null, null, { total: null });
@@ -353,7 +307,7 @@ export default function register({ scenario, ROOT }) {
     t.ok(!fs.existsSync(`${down.tmp}/rev-1/draft.md`), "no draft was written");
     t.ok(!fs.existsSync(`${down.tmp}/.lock`), "the lock was released");
 
-    // a failed revision whose failed pointer is not verified (the runner left the file out, or reported another hash):
+    // a failed revision whose failed pointer is not verified (the runner did not run the helper, or changed the line it printed):
     // the lock stays, the result says so, and no unlock step runs
     for (const fault of ["omit", "badhash"]) {
       const run = await runCase(t, "stale", { failClassify: true, faultCleanup: fault });
@@ -363,6 +317,19 @@ export default function register({ scenario, ROOT }) {
       t.ok(/not verified as failed/.test(r.persistError || ""), `${fault}: persistError ${JSON.stringify(r.persistError)}`);
       t.ok(/kept/.test(r.lockLeft || ""), `${fault}: lockLeft ${JSON.stringify(r.lockLeft)}`);
       t.eq(r.state, "failed", `${fault}: state failed`);
+    }
+  });
+
+  scenario("incident-triage-incident-record", "an incident.json that exists is a record or a refusal: one holding \"\" (what a runner once returned for a missing file) refuses the run and starts no revision; a lock held by another run's token is never taken over", async (t) => {
+    for (const [what, text] of [["\"\"", "\"\""], ["an empty file", ""], ["not JSON", "{"], ["another incident", JSON.stringify({ id: "other", revision: 1, state: "drafted", adapterHash: "", revisions: [{ n: 1, state: "drafted" }] })]]) {
+      const tmp = slash(fs.mkdtempSync(path.join(os.tmpdir(), "incident-triage-record-")));
+      t.cleanups.push(() => fs.rmSync(tmp, { recursive: true, force: true }));
+      fs.writeFileSync(`${tmp}/incident.json`, text);
+      const run = await runCase(t, "stale", { tmp });
+      t.ok(Array.isArray(run.result.refused) && /incident\.json/.test(run.result.refused[0]), `${what}: the run is refused (${JSON.stringify(run.result.refused)})`);
+      t.ok(!fs.readdirSync(tmp).some((n) => /^rev-/.test(n)) && !run.ctx.prompts.some((p) => /^collect /.test(p.label)), `${what}: no revision was started`);
+      t.eq(readIf(`${tmp}/incident.json`), text, `${what}: incident.json is left as it was`);
+      t.ok(!fs.existsSync(`${tmp}/.lock`), `${what}: the lock this run took is released`);
     }
   });
 
