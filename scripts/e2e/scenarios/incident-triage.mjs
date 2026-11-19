@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { commandsIn, specIn, encodeSpec } from "../spec-arg.mjs";
+import { commandsIn, specIn, encodeSpec, seenIn } from "../spec-arg.mjs";
 
 export default function register({ scenario, ROOT }) {
   const WORKFLOW = path.join(ROOT, "core", "workflows", "incident-triage.js");
@@ -204,7 +204,8 @@ export default function register({ scenario, ROOT }) {
     // A secret reaches no generated file (collector, prompt, classification, draft, progress) and no step's prompt.
     for (const s of e.secretsExclude || []) {
       for (const f of filesUnder(tmp)) if (fs.readFileSync(f, "utf8").includes(s)) bad.push(`${slash(path.relative(tmp, f))} holds ${JSON.stringify(s)}`);
-      for (const p of ctx.prompts) if (p.prompt.includes(s)) bad.push(`the prompt of the step "${p.label}" holds ${JSON.stringify(s)}`);
+      // the helper commands carry their spec as base64: search what the encoded arguments hide as well
+      for (const p of ctx.prompts) if (seenIn(p.prompt).some((x) => x.includes(s))) bad.push(`the prompt of the step "${p.label}" (or a spec it carries) holds ${JSON.stringify(s)}`);
       if (JSON.stringify(r).includes(s)) bad.push(`the workflow's result holds ${JSON.stringify(s)}`);
     }
     for (const s of e.classificationExcludes || []) if (cls && JSON.stringify(cls).includes(s)) bad.push(`classification.json holds ${JSON.stringify(s)}`);

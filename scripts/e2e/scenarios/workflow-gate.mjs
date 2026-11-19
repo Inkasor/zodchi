@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import { spawnSync } from "node:child_process";
-import { specIn } from "../spec-arg.mjs";
+import { specIn, seenIn } from "../spec-arg.mjs";
 
 export default function register({ scenario, ROOT }) {
   const GATE = path.join(ROOT, "core", "scripts", "gate.mjs");
@@ -288,7 +288,7 @@ export default function register({ scenario, ROOT }) {
     t.eq((gate[0].prompt.match(/node -e /g) || []).length, 1, "its prompt holds one command");
     t.ok(gate[0].prompt.includes("do not parse, summarize, reorder or shorten it"), "and tells the runner to return the output as it is");
     const gateSpec = specIn(gate[0].prompt, "code-package") || {};
-    t.ok(Object.keys(gateSpec).join() === "api,repo,brief,label,claimsKey,want" && gateSpec.api === 1 && gateSpec.repo === "/r" && gateSpec.brief === "/r/brief.md" && gateSpec.label === "pkg" && /^.+$/.test(gateSpec.claimsKey) && JSON.stringify(gateSpec.want) === '["writer","reviewer"]', "the command carries the spec: repo, brief, label, claims key, wanted roles");
+    t.ok(Object.keys(gateSpec).join() === "api,repo,brief,label,claimsKey,want" && gateSpec.api === 1 && gateSpec.repo === "/r" && gateSpec.brief === "/r/brief.md" && gateSpec.label === "pkg" && typeof gateSpec.claimsKey === "string" && gateSpec.claimsKey.length > 0 && JSON.stringify(gateSpec.want) === '["writer","reviewer"]', "the command carries the spec: repo, brief, label, claims key, wanted roles");
     t.ok(!/ZODCHI_PLUGIN_ROOT=/.test(gate[0].prompt), "without args.pluginRoot it does not set the folder");
     t.eq(r.out.pluginCopy, { path: "/plugin/core", commit: "c0ffee", version: "1.0.0-dev", via: "installed_plugins.json, scope user" }, "the result names the plugin copy: path and commit");
     const named = await runWorkflow("core/workflows/code-package.js", { ...CP_ARGS, pluginRoot: "/my/copy/core" }, cpAnswers());
@@ -471,7 +471,7 @@ export default function register({ scenario, ROOT }) {
     t.ok(JSON.stringify(specIn(itOpen.of(/^gate /)[0].prompt, "roles")) === '{"api":1,"want":["architect"],"repo":"/r"}', "incident-triage: the gate command asks for the classifier role and the repository");
     t.eq(itOpen.out.pluginCopy, COPY, "and its result names the plugin copy");
     t.ok(itOpen.out.notes.some((n) => n.includes("not JSON")), "an unreadable role table is a note, apart from a missing one");
-    t.ok(!itOpen.of(/^open /)[0].prompt.includes("homeModels") && !itOpen.of(/^open /)[0].prompt.includes("zodchi account"), "the Open step no longer asks a runner to retell the role table or the account");
+    t.ok(!seenIn(itOpen.of(/^open /)[0].prompt).some((x) => x.includes("homeModels") || x.includes("zodchi account")), "the Open step no longer asks a runner to retell the role table or the account");
     void roles;
   });
 

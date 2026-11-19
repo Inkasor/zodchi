@@ -8,7 +8,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
-import { specIn } from "../spec-arg.mjs";
+import { specIn, seenIn } from "../spec-arg.mjs";
+
+/** Whether a prompt, or any spec its base64 arguments carry, holds the text: the raw prompt alone cannot show an absence any more. */
+const holds = (prompt, text) => seenIn(prompt).some((x) => x.includes(text));
 
 const LINE = "work in the checkout you were given; do not create clones or worktrees and do not switch branches";
 const BOUNDARY = "Important: a normal run loses work between packages.\nOut of scope: two leads starting at the same instant.";
@@ -104,7 +107,7 @@ export default function register({ scenario, ROOT }) {
     t.eq([ledger.F1.status, ledger.F1.closedBy, ledger.F1.closedInRound], ["closed", "code change", 2], "F1 was closed by a code change in round 2");
     t.eq([ledger.F2.status, ledger.F3.status, ledger.F4.status], ["to sort", "to sort", "open"], "the new important ones wait for the lead; the nit stays open");
     t.ok(String(r.out.next).includes("REVIEW.md"), "next tells the lead what to do with REVIEW.md");
-    t.ok(r.of(/claim/).every((c) => !/REVIEW\.md.*(append|write|edit)/i.test(c.prompt.replace(/REVIEW\.md as of the base commit/g, ""))), "no step is asked to write REVIEW.md");
+    t.ok(r.of(/claim/).every((c) => seenIn(c.prompt).every((x) => !/REVIEW\.md.*(append|write|edit)/i.test(x.replace(/REVIEW\.md as of the base commit/g, "")))), "no step is asked to write REVIEW.md");
     t.ok(r.out.claimLeftOpen === undefined && r.of(/^close claim/).length === 1, "the claim is closed");
   });
 
@@ -145,19 +148,19 @@ export default function register({ scenario, ROOT }) {
     t.ok(after.length >= 5, `steps after the gate ran (${after.length})`);
     t.ok(after.every((c) => c.prompt.includes(LINE)), `every step after the gate carries the line (${after.filter((c) => !c.prompt.includes(LINE)).map((c) => c.label)} lack it)`);
     t.ok(on.of(/^write /)[0].prompt.includes(LINE), "the writer's task carries it");
-    t.ok(!on.calls[0].prompt.includes(LINE), "the gate only reads: it has not read the setting yet");
+    t.ok(!holds(on.calls[0].prompt, LINE), "the gate only reads: it has not read the setting yet");
 
     const off = await run({});
-    t.ok(off.calls.every((c) => !c.prompt.includes("clones or worktrees")), "unset: no agent is told anything about clones or worktrees");
+    t.ok(off.calls.every((c) => !holds(c.prompt, "clones or worktrees")), "unset: no agent is told anything about clones or worktrees");
     const other = await run({ config: JSON.stringify({ parallel: "worktrees" }) });
-    t.ok(other.calls.every((c) => !c.prompt.includes("clones or worktrees")), "an unknown value is ignored");
+    t.ok(other.calls.every((c) => !holds(c.prompt, "clones or worktrees")), "an unknown value is ignored");
 
     const sw = await run({ config: JSON.stringify({ parallel: "shared-branch" }), branch: "main", args: { branch: "feat" } });
     t.ok(String(sw.out.refused).includes("shared-branch"), "args.branch other than the checked-out branch is refused: the setting forbids switching");
     t.eq(sw.calls.length, 1, "nothing was claimed");
     const same = await run({ config: JSON.stringify({ parallel: "shared-branch" }), branch: "feat", args: { branch: "feat" } });
     t.eq(same.out.approved, true, "args.branch equal to the checked-out branch runs");
-    t.ok(!same.of(/^claim pkg$/)[0].prompt.includes("git switch"), "and the claim step does not switch");
+    t.ok(!holds(same.of(/^claim pkg$/)[0].prompt, "git switch"), "and the claim step does not switch");
   });
 
   scenario("code-package-branch-refusal", "a package refuses to start while another open package of the repository is on a different branch; the claim records the branch", async (t) => {
@@ -165,8 +168,10 @@ export default function register({ scenario, ROOT }) {
     t.ok(String(r.out.refused).includes("different branch") && r.out.refused.includes("other: feat") && r.out.refused.includes("main"), `refused with the reason (${r.out.refused})`);
     t.eq(r.calls.map((c) => c.label), ["gate pkg", "claim pkg"], "nothing ran after the claim step, and no claim was left to close");
     const claim = r.of(/^claim pkg$/)[0].prompt;
-    t.eq(specIn(claim, "claim").branch, "main", "the claim file it would write names the branch");
-    t.ok(specIn(claim, "claim").api === 1 && specIn(claim, "claim").dir.startsWith("~/.zodchi/packages/") && !claim.includes("branchConflicts"), "the comparison is the claim helper's: the prompt only runs its command");
+    const claimSpec = specIn(claim, "claim");
+    t.ok(claimSpec !== null, "the claim step runs the claim command, and its spec can be read");
+    t.eq(claimSpec.branch, "main", "the claim file it would write names the branch");
+    t.ok(claimSpec.api === 1 && claimSpec.dir.startsWith("~/.zodchi/packages/") && !holds(claim, "branchConflicts") && !("branchConflicts" in claimSpec), "the comparison is the claim helper's: neither the prompt nor the spec it carries holds the conflicts");
 
     const same = await run({});
     t.eq(same.out.approved, true, "with the same branch (no branch conflicts) the package runs");
@@ -189,10 +194,10 @@ export default function register({ scenario, ROOT }) {
     t.eq(moreCalls, 1, "the other package's file is asked about once, then remembered");
     const more = r.of(/^claim more write pkg$/)[0].prompt;
     const moreSpec = specIn(more, "claim-more");
-    t.ok(moreSpec.repo === "/r" && !more.includes("other.js") && !JSON.stringify(moreSpec).includes("other.js") && !("hard" in moreSpec), "the claim-more helper is asked with the repository, not a list: it reads Git and the claims itself");
+    t.ok(moreSpec.repo === "/r" && !holds(more, "other.js") && !JSON.stringify(moreSpec).includes("other.js") && !("hard" in moreSpec), "the claim-more helper is asked with the repository, not a list: it reads Git and the claims itself");
     t.ok(moreSpec && (more.match(/node -e /g) || []).length === 1, "the step runs the helper's one command; the helper decides");
     for (const c of r.of(/^commit /)) {
-      t.ok(c.prompt.includes('["src/a.js"]') && !c.prompt.includes("other.js"), `${c.label}: only the package's own path is committed`);
+      t.ok(c.prompt.includes('["src/a.js"]') && !holds(c.prompt, "other.js"), `${c.label}: only the package's own path is committed`);
       t.ok(c.prompt.includes("never commit with -a"), `${c.label}: told not to take other files`);
     }
     t.ok(r.out.claimAdded === undefined, "the claim did not grow by the other package's file");
