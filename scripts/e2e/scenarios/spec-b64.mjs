@@ -4,8 +4,10 @@
 // (code-package, design-brief, incident-triage, ops-script) send the second form, so that a runner which retypes the command has no
 // quote, backslash or brace to "repair". Here: the real helper with both forms (same answer byte for byte, every kind of damage named,
 // text with quotes, backslashes, apostrophes, Russian and emoji round-tripping exactly), the encoder and the helperRun of each workflow
-// (taken from the source and run in a context without Buffer), and design-brief run for real over a fake agent whose runner damages
-// the end of the argument of a material part: once (the run reaches the review) and twice (the run stops with its stop text).
+// (taken from the source and run in a context without Buffer), the cap on the length of the argument (b64: only up to B64_MAX characters,
+// a longer spec as plain JSON exactly as before; a material part of the worst text always fits), and design-brief run for real over a fake
+// agent whose runner damages the end of the argument of a material part: once (the run reaches the review) and twice (the run stops with
+// its stop text).
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -87,18 +89,21 @@ export default function register({ scenario, ROOT }) {
     const src = fs.readFileSync(path.join(ROOT, "core", "workflows", `${name}.js`), "utf8");
     const one = (re, what) => { const m = src.match(re); if (!m) throw new Error(`${name}.js: no ${what}`); return m[0]; };
     const encoder = one(/const B64 = [^\n]*\nconst b64 = \(text\) => \{\n[\s\S]*?\n\}\n/, "b64 encoder");
-    const code = [one(/^const q = [^\n]*$/m, "q"), one(/^const GATE_API = [^\n]*$/m, "GATE_API"), one(/^const GATE_BOOT = [^\n]*$/m, "GATE_BOOT"), one(/^const SESSION_PROJECT = [^\n]*$/m, "SESSION_PROJECT"), encoder, one(/^const helperRun = [^\n]*$/m, "helperRun")].join("\n");
+    const cap = one(/const B64_MAX = [^\n]*\nconst specArg = \(spec\) => \{\n[\s\S]*?\n\}\n/, "B64_MAX and specArg");
+    const code = [one(/^const q = [^\n]*$/m, "q"), one(/^const GATE_API = [^\n]*$/m, "GATE_API"), one(/^const GATE_BOOT = [^\n]*$/m, "GATE_BOOT"), one(/^const SESSION_PROJECT = [^\n]*$/m, "SESSION_PROJECT"), encoder, cap, one(/^const helperRun = [^\n]*$/m, "helperRun")].join("\n");
     const ctx = vm.createContext({ a: {}, result: null });
-    vm.runInContext(`${code}\nresult = { helperRun, b64, GATE_BOOT, GATE_API }`, ctx);
-    return { ...ctx.result, encoder, src };
+    vm.runInContext(`${code}\nresult = { helperRun, specArg, b64, B64_MAX, GATE_BOOT, GATE_API }`, ctx);
+    return { ...ctx.result, encoder, cap, src };
   };
 
-  scenario("spec-b64-workflow-encoder", "the four workflows carry the same pure-JS UTF-8 to base64 encoder, it matches Buffer for every length and every kind of text, and helperRun sends b64: only", async (t) => {
+  scenario("spec-b64-workflow-encoder", "the four workflows carry the same pure-JS UTF-8 to base64 encoder, it matches Buffer for every length and every kind of text, and helperRun sends b64: for a spec that fits the cap", async (t) => {
     const samples = ["", "a", "ab", "abc", "abcd", "{\"api\":1}", HARD, "Привет", "😀", "😀😀😀", "\u0000\u007f\u0080\u07ff\u0800\uffff", ...Array.from({ length: 9 }, (_, i) => "x".repeat(i) + "я")];
     const first = helperOf(WORKFLOWS[0]);
     for (const name of WORKFLOWS) {
       const h = helperOf(name);
       t.eq(h.encoder, first.encoder, `${name}: the encoder is the text of the others`);
+      t.eq(h.cap, first.cap, `${name}: the cap and the choice of the form are the text of the others`);
+      t.eq(h.B64_MAX, 12000, `${name}: the cap is 12000 characters`);
       t.ok(samples.every((s) => h.b64(s) === Buffer.from(s, "utf8").toString("base64")), `${name}: b64 equals the real base64 of the UTF-8 text`);
       t.ok(!/Buffer|btoa/.test(h.encoder), `${name}: the encoder needs neither Buffer nor btoa`);
       const spec = { text: HARD, list: ["it's", "\\"], nested: { ru: "Ёж", emoji: "😀" } };
@@ -112,8 +117,58 @@ export default function register({ scenario, ROOT }) {
       let line = null;
       try { line = JSON.parse(r.stdout); } catch { /* checked below */ }
       t.ok(r.status === 0 && line && line.ok === true, `${name}: the bootstrap passes the b64: argument through to the helper (exit ${r.status}: ${r.stdout.slice(0, 200)}${r.stderr.slice(0, 200)})`);
-      t.ok(!/q\(JSON\.stringify\(\{ api: GATE_API/.test(h.src), `${name}: no plain-JSON spec is built any more`);
+      t.ok(!/q\(JSON\.stringify\(\{ api: GATE_API/.test(h.src), `${name}: helperRun does not build the plain form itself (specArg chooses)`);
     }
+  });
+
+  scenario("spec-b64-cap", "a spec goes as b64: only while the argument is at most B64_MAX (12000) characters, prefix included; a longer one goes as the plain JSON of before, which a long Russian report needs (b64 of it would not start on Windows); every workflow draws the line at the same place", async (t) => {
+    const MAX = 12000;
+    const ESC = String.raw`'\''`;
+    for (const name of WORKFLOWS) {
+      const h = helperOf(name);
+      const jsonOf = (spec) => JSON.stringify({ api: h.GATE_API, ...spec });
+      // The edge: the longest spec that fits is 8997 bytes of JSON (4 + 4 * 2999 = 12000 characters); one byte more goes plain.
+      const base = jsonOf({ text: "" }).length;
+      const fit = { text: "x".repeat(8997 - base) };
+      const over = { text: "x".repeat(8998 - base) };
+      t.eq(h.specArg(fit).length, MAX, `${name}: the longest spec that fits is sent as b64: of exactly ${MAX} characters`);
+      t.ok(h.specArg(fit).startsWith("b64:"), `${name}: and it is the b64: form`);
+      t.eq(h.specArg(over), jsonOf(over), `${name}: one byte more is sent as plain JSON, as the older workflows sent it`);
+      // A long Russian report: plain, the very command of before; b64 of the same spec would be far over what Windows starts.
+      const long = { report: "Не удалось выгрузить заказы, остатки не сошлись. ".repeat(290), incident: "inc-1" };
+      const cmd = h.helperRun("incident-collect", long);
+      t.ok(cmd.endsWith(` incident-collect '${jsonOf(long).replace(/'/g, ESC)}'`), `${name}: a long Russian spec is sent as plain JSON, exactly as before`);
+      const asB64 = cmd.length - jsonOf(long).length + ("b64:" + h.b64(jsonOf(long))).length;
+      t.ok(asB64 > 30000 && cmd.length < 20000, `${name}: the command stays ${cmd.length} characters; as b64 it would have been ${asB64}`);
+      // The real process start with that argument: the bootstrap passes it on and the helper reads it.
+      const r = spawnSync(process.execPath, ["-e", h.GATE_BOOT, "--", ROOT, "plugin", h.specArg(long)], { encoding: "utf8", windowsHide: true, env: { ...process.env, ZODCHI_PLUGIN_ROOT: path.join(ROOT, "core") } });
+      let line = null;
+      try { line = JSON.parse(r.stdout); } catch { /* checked below */ }
+      t.ok(r.status === 0 && line && line.ok === true, `${name}: the long plain argument starts the bootstrap and the helper takes it (exit ${r.status}, ${r.error ? r.error.message : r.stderr.slice(0, 200)})`);
+      // Nothing is longer than on main beyond the cap: b64 never exceeds it, and a longer spec is main's own text.
+      for (const text of ["я".repeat(5000), "😀".repeat(2200), "a".repeat(20000), HARD.repeat(300)]) {
+        const arg = h.specArg({ text });
+        t.ok(arg.startsWith("b64:") ? arg.length <= MAX : arg === jsonOf({ text }), `${name}: ${text.length} characters of ${text.slice(0, 2)}... are b64 within the cap or exactly the plain JSON`);
+      }
+    }
+  });
+
+  scenario("spec-b64-material-part-fits", "a material part of the worst text (2000 code points of 4-byte, 3-byte, escaped or Cyrillic characters, with a long folder name and the largest part numbers) always goes as b64:, within the cap, in design-brief", async (t) => {
+    const src = SRC();
+    const part = Number(src.match(/^const MATERIAL_PART = (\d+)$/m)[1]);
+    t.eq(part, 2000, "a part is 2000 code points");
+    const h = helperOf("design-brief");
+    // The parts are cut from JSON.stringify of the material, so a part never holds a control character or a lone surrogate (JSON writes those
+    // as ASCII escapes); each of its characters is then one of these, and the longest in the spec is the 4-byte emoji (a backslash and a quote double).
+    const dir = `/srv/Проекты/${"Очень длинное имя папки ".repeat(12)}.agent-tmp/db/review`;
+    for (const [what, ch] of [["4-byte emoji", "😀"], ["3-byte characters", "字"], ["Cyrillic", "ж"], ["backslashes (each doubled)", "\\"], ["quotes (each escaped)", "\""], ["ASCII", "a"]]) {
+      const text = ch.repeat(part);
+      const arg = h.specArg({ dir, part: 200, of: 200, text });
+      t.ok(arg.startsWith("b64:") && arg.length <= h.B64_MAX, `${what}: the part goes as b64: (${arg.length} of ${h.B64_MAX} characters, a folder name of ${dir.length} characters)`);
+    }
+    // The cap leaves room for a folder name of about 900 bytes beside the worst part.
+    const room = h.specArg({ dir: "ж".repeat(400), part: 200, of: 200, text: "😀".repeat(part) });
+    t.ok(room.startsWith("b64:"), "a folder name of 400 Cyrillic letters beside the worst part still goes as b64:");
   });
 
   /** design-brief for real, over a fake agent: the material parts run through the real helper with the argument as typed (and damaged on request). */

@@ -59,7 +59,9 @@ and the unknowns) grows with the research, so it never travels in one command: i
 2000 characters, each written by one `brief-material` command and checked by its hash, and `brief-preflight` joins the
 parts and checks the whole hash before it uses them. Every helper command carries its spec as `b64:` and the base64 of the
 spec's UTF-8 JSON text (`gate.mjs` also takes plain JSON), so a runner that retypes the command has no quote, backslash or
-brace to "repair". A part that arrives damaged (no JSON line, an answer with `ok: false`, or a hash that differs) is sent once more by a fresh runner;
+brace to "repair". The `b64:` argument is used up to 12000 characters (`B64_MAX`, the same in the four workflows); a longer spec
+(for instance a long Russian incident report, which base64 makes about 2.7 times longer) goes as the plain JSON it always was,
+so no command is longer than before. A material part of 2000 characters always fits under the cap. A part that arrives damaged (no JSON line, an answer with `ok: false`, or a hash that differs) is sent once more by a fresh runner;
 only a second failure stops the run.
 
 ## The stages
