@@ -54,7 +54,8 @@ fs.mkdirSync(traces, { recursive: true });
 const redact = (text) => String(text).replace(/zs_[A-Za-z0-9_-]+/g, "zs_<redacted>").replace(/(Bearer\s+)\S+/gi, "$1<redacted>");
 const clip = (text, n = 1500) => (text.length > n ? text.slice(0, n) + `... (${text.length} chars)` : text);
 const samePath = (a, b) => {
-  const n = (p) => path.resolve(String(p)).replace(/[\\/]+$/, "");
+  // The real path when it exists: macOS temp folders sit behind /var -> /private/var, Windows may give 8.3 short names.
+  const n = (p) => { const r = path.resolve(String(p)); let s = r; try { s = fs.realpathSync.native(r); } catch { /* not there */ } return s.replace(/[\\/]+$/, ""); };
   return WIN ? n(a).toLowerCase() === n(b).toLowerCase() : n(a) === n(b);
 };
 const alive = (pid) => {
