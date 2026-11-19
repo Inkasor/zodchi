@@ -37,7 +37,7 @@ export default function register({ scenario, ROOT }) {
     return [...prompt.matchAll(re)].map((m) => ({ path: JSON.parse(m[1]), sha: m[2], text: m[3] }));
   }
   /** The fake acts only on what the prompt says: a missing instruction fails the scenario (and the step does nothing). */
-  const quote = (p) => `'${p}'`;
+  const quote = (p) => `'${String(p).replace(/'/g, `'\\''`)}'`;
   function need(t, prompt, label, needle, what) {
     const ok = prompt.includes(needle);
     t.ok(ok, `the prompt of the step "${label}" no longer holds ${what}: ${needle.length > 160 ? needle.slice(0, 160) + "..." : needle}`);
@@ -53,7 +53,9 @@ export default function register({ scenario, ROOT }) {
     need(t, prompt, label, "Write each file below exactly as given.", "the instruction to write the file blocks");
     need(t, prompt, label, "sha256sum", "the sha256 check of a written file");
     need(t, prompt, label, "a revision is never overwritten", "the rule that a revision is never overwritten");
-    for (const b of blocks(prompt)) need(t, prompt, label, JSON.stringify(b.path), "the path of the file block in the list of files");
+    // The list of files is searched outside the file blocks: a block header alone is not the list.
+    const outside = prompt.replace(/<<<FILE path=[\s\S]*?<<<END FILE>>>/g, "");
+    for (const b of blocks(prompt)) need(t, outside, label, JSON.stringify(b.path), "the path of the file block in the list of files");
     const replace = new Set();
     // "(replace)" follows the quoted path in the list of files of each group.
     for (const m of prompt.matchAll(/("(?:[^"\\]|\\.)*") \(replace\)/g)) replace.add(JSON.parse(m[1]));
@@ -112,6 +114,7 @@ export default function register({ scenario, ROOT }) {
         need(t, prompt, label, `sha256sum ${quote(`${revDir}/evidence.json`)}`, "the command that hashes evidence.json");
         for (const fld of ["collectOut", "evidenceSha256", "exitCode", "wrote"]) needField(t, opts, label, fld);
         ctx.collector = collector.text;
+        ctx.revDir = revDir;
         let summary = "", exitCode = 0, error = "";
         try { summary = execFileSync(process.execPath, [collector.path], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim(); } catch (e) { exitCode = e.status ?? 1; error = String(e.stderr || e.message).slice(-2000); }
         const ev = `${revDir}/evidence.json`;
@@ -123,7 +126,9 @@ export default function register({ scenario, ROOT }) {
       if (label.startsWith("classify ")) {
         if (ctx.failClassify) return { ok: false, answer: "", answerSha256: "", infra: "the gateway created no job (mock)" };
         const text = fs.readFileSync(path.join(ctx.caseDir, "classification.json"), "utf8");
-        const revDir = (prompt.match(/([^\s'"`]+)\/classify-prompt\.md/) || prompt.match(/([^\s'"`]+)\/evidence\.json/) || [])[1] || "";
+        const revDir = ctx.revDir; // the revision folder the collect step made
+        t.ok(Boolean(revDir), `the step "${label}" ran before any collect step`);
+        if (!revDir) throw new Error("no revision folder");
         if (opts.schema && opts.schema.properties && opts.schema.properties.answer) {
           // The gateway path: the runner returns the file the gateway wrote with --out.
           need(t, prompt, label, "zodchi run --role", "the gateway command");
@@ -134,7 +139,9 @@ export default function register({ scenario, ROOT }) {
           if (!outFile) throw new Error("no --out file");
           need(t, prompt, label, `answer: the content of ${outFile} exactly as read`, "the instruction to return the --out file in answer");
           need(t, prompt, label, `sha256sum ${quote(outFile)}`, "the command that hashes the answer file");
+          need(t, prompt, label, `--prompt ${quote(`${revDir}/classify-prompt.md`)}`, "the generated classification request (--prompt)");
           need(t, prompt, label, `--attach ${quote(`${revDir}/evidence.json`)}`, "the evidence attachment");
+          need(t, prompt, label, `--out ${quote(outFile)}`, "the --out file");
           fs.writeFileSync(outFile, text);
           ctx.classifier = "codex/" + (prompt.match(/--model (\S+)/) || [])[1];
           return { ok: true, answer: text, answerSha256: sha(Buffer.from(text, "utf8")), infra: "", unknownKey: "" };
@@ -142,6 +149,7 @@ export default function register({ scenario, ROOT }) {
         // A Claude subagent: it reads the frame, the request and the evidence, runs nothing and answers by the schema.
         need(t, prompt, label, "with the Read tool", "the instruction to read the files");
         need(t, prompt, label, `${revDir}/classifier/incident-classify.md`, "the frame file");
+        need(t, prompt, label, `${revDir}/classify-prompt.md`, "the generated classification request");
         need(t, prompt, label, `${revDir}/evidence.json`, "the evidence file");
         need(t, prompt, label, "Run no command", "the rule to run nothing");
         t.ok(Boolean(opts.schema) && Boolean(opts.model), `the step "${label}" gives the Claude classifier no schema or model`);
@@ -296,7 +304,7 @@ export default function register({ scenario, ROOT }) {
   };
 
   // The four kinds the plan names, each as one case: an error older than the release, a skill that tells the agent to do
-  // something the allow-list refuses, a question about access instead of a fix of the tool, a product fix without a skill change.
+  // something the allow-list refuses, a question about access instead of a fix of the tool, a product fix with a second package for the agent skill.
   scenario("incident-triage-kinds", "incident-triage over the four synthetic kinds: an error older than the release (stale), a skill the allow-list contradicts (product-bug citing both), a blocked release that needs a better product report and no access request (missing-tool), and a product fix with a second package for the agent skill (agent-capability, Claude classifier)", async (t) => {
     await runCases(t, GROUPS.kinds);
   });
@@ -326,7 +334,7 @@ export default function register({ scenario, ROOT }) {
     const first = await runCase(t, "stale");
     const snapshot = (dir) => Object.fromEntries(filesUnder(dir).map((f) => [slash(path.relative(dir, f)), sha(fs.readFileSync(f))]).sort(([a], [b]) => (a < b ? -1 : 1)));
     const before = snapshot(`${first.tmp}/rev-1`);
-    t.ok(Object.keys(before).length >= 4, `rev-1 holds ${Object.keys(before).length} files before the second run: ${Object.keys(before).join(", ")}`);
+    for (const f of ["evidence.json", "classification.json", "draft.md", "adapterHash"]) t.ok(f in before, `rev-1 holds ${f} before the second run: ${Object.keys(before).join(", ")}`);
     const second = await runCase(t, "stale", { tmp: first.tmp });
     t.eq(second.result.revision, 2, "the second run in the same folder gets revision 2");
     t.eq(snapshot(`${first.tmp}/rev-1`), before, "rev-1 is left as it was: the same files with the same sha256, none added, removed or changed");
