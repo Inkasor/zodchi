@@ -1,0 +1,4 @@
+# Commands the assistant agent may run
+catalog job show <id>
+catalog job status <id>
+catalog release

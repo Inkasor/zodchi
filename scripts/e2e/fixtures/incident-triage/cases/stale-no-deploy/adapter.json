@@ -1,0 +1,46 @@
+{
+  "adapterVersion": 1,
+  "product": "Example Catalog",
+  "owner": "product owner of Example Catalog",
+  "operations": {
+    "job": {
+      "description": "the export job by id: status, error and times",
+      "provides": ["job", "status", "error"],
+      "argv": ["node", "../../product.mjs", "job", "{id}"],
+      "args": { "id": "[0-9]{1,9}" }
+    },
+    "release": {
+      "description": "the release the production environment runs, with its time",
+      "provides": ["release"],
+      "argv": ["node", "../../product.mjs", "release"]
+    },
+    "release-notes": {
+      "description": "the notes of the release the environment runs",
+      "provides": ["changelog"],
+      "argv": ["node", "../../product.mjs", "release-notes"],
+      "after": ["release"]
+    },
+    "changelog": {
+      "description": "the changes of the last releases, with the error codes each one fixes",
+      "provides": ["changelog"],
+      "argv": ["node", "../../product.mjs", "changelog"]
+    },
+    "health": {
+      "description": "the health of the service",
+      "provides": ["health"],
+      "argv": ["node", "../../product.mjs", "health"],
+      "timeoutSec": 1
+    },
+    "audit-log": {
+      "description": "the audit log of the export service",
+      "provides": ["logs"],
+      "argv": ["node", "../../product.mjs", "audit-log"]
+    }
+  },
+  "retry": {
+    "how": "press Retry on the job page",
+    "conditions": "the job ended failed and wrote no file"
+  },
+  "releaseCommand": "the product's own release command, run by its operator",
+  "incidentLog": "the incident log of the product"
+}

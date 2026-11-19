@@ -1,0 +1,126 @@
+{
+  "$comment": "Placeholders that would reach code: a combined shell flag, a launcher, an interpreter without a script file, and sed, awk or Windows PowerShell even after a file (they take code or options from any position: GNU sed reads \"-ee <command>\" as an option). Every one is refused before anything runs; the plain node script operation passes.",
+  "adapterVersion": 1,
+  "product": "Example Catalog",
+  "owner": "product owner of Example Catalog",
+  "operations": {
+    "sh-lc": {
+      "description": "a job through a login shell",
+      "argv": [
+        "sh",
+        "-lc",
+        "{id}"
+      ],
+      "args": {
+        "id": ".+"
+      }
+    },
+    "bash-ec": {
+      "description": "a job through bash with -e and -c combined",
+      "argv": [
+        "/bin/bash",
+        "-ec",
+        "{id}"
+      ],
+      "args": {
+        "id": ".+"
+      }
+    },
+    "pwsh-com": {
+      "description": "a job through an abbreviated -Command",
+      "argv": [
+        "pwsh",
+        "-com",
+        "{id}"
+      ],
+      "args": {
+        "id": ".+"
+      }
+    },
+    "env-sh": {
+      "description": "a job through env and a shell",
+      "argv": [
+        "env",
+        "LANG=C",
+        "sh",
+        "-c",
+        "{id}"
+      ],
+      "args": {
+        "id": ".+"
+      }
+    },
+    "deno-eval": {
+      "description": "a job through a code subcommand",
+      "argv": [
+        "deno",
+        "eval",
+        "{id}"
+      ],
+      "args": {
+        "id": ".+"
+      }
+    },
+    "ssh-remote": {
+      "description": "a job on another machine",
+      "argv": [
+        "ssh",
+        "build-host",
+        "catalog",
+        "job",
+        "{id}"
+      ],
+      "args": {
+        "id": "[0-9]+"
+      }
+    },
+    "sed-file": {
+      "description": "a job line through sed with an input file first",
+      "argv": [
+        "sed",
+        "input.txt",
+        "{id}"
+      ],
+      "args": {
+        "id": ".+"
+      }
+    },
+    "awk-file": {
+      "description": "a job line through awk with a program-looking file first",
+      "argv": [
+        "awk",
+        "prog.awk",
+        "{id}"
+      ],
+      "args": {
+        "id": ".+"
+      }
+    },
+    "powershell-file": {
+      "description": "a job through Windows PowerShell with a script first",
+      "argv": [
+        "powershell",
+        "read-job.ps1",
+        "{id}"
+      ],
+      "args": {
+        "id": "[0-9]+"
+      }
+    },
+    "node-script": {
+      "description": "the job by id through a script file",
+      "provides": [
+        "job"
+      ],
+      "argv": [
+        "node",
+        "../../product.mjs",
+        "job",
+        "{id}"
+      ],
+      "args": {
+        "id": "[0-9]+"
+      }
+    }
+  }
+}

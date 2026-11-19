@@ -1,0 +1,19 @@
+{
+  "$comment": "An adapter with a pattern that lets anything through: the core still refuses a value that holds shell characters.",
+  "adapterVersion": 1,
+  "product": "Example Catalog",
+  "owner": "product owner of Example Catalog",
+  "operations": {
+    "job": {
+      "description": "the export job by id: status, error and times",
+      "provides": ["job", "status", "error"],
+      "argv": ["node", "../../product.mjs", "job", "{id}"],
+      "args": { "id": ".+" }
+    },
+    "health": {
+      "description": "the health of the service",
+      "provides": ["health"],
+      "argv": ["node", "../../product.mjs", "health"]
+    }
+  }
+}

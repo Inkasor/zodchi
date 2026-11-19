@@ -1,0 +1,13 @@
+{
+  "about": "The skill tells the model to run a command that the product's allow-list refuses: product-bug, both sources cited.",
+  "report": "The assistant says it cannot restart my import 5120 and tells me to ask an administrator. Who is that?",
+  "params": { "id": "5120" },
+  "expect": {
+    "state": "drafted",
+    "route": "fix-brief",
+    "kinds": ["product-bug", "user-action"],
+    "outcomes": { "E2": "ok", "E3": "ok", "E4": "ok", "E5": "ok", "E6": "ok" },
+    "citesBothSources": true,
+    "draftIncludes": ["## Fix brief", "## Agent skill: a second package"]
+  }
+}

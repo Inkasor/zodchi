@@ -1,0 +1,20 @@
+{
+  "about": "Review F5: the adapter documents no retry and the answer recommends none: no part of the draft (next step, incident log note) speaks of a retry.",
+  "adapterFrom": "blocked-release",
+  "report": "Release 2.5.0 has been blocked all morning by something called P-7f3a2.",
+  "params": {},
+  "expect": {
+    "state": "drafted",
+    "route": "reply",
+    "kinds": [
+      "user-action"
+    ],
+    "draftExcludes": [
+      "retr",
+      "try again",
+      "restart",
+      "re-run",
+      "rerun"
+    ]
+  }
+}

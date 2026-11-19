@@ -1,0 +1,13 @@
+{
+  "about": "A pattern that lets anything through does not let shell characters through: the operation is skipped and nothing runs with the value.",
+  "adapterFrom": "loose-pattern",
+  "report": "Job 4711 failed.",
+  "params": { "id": "4711$(reboot)" },
+  "expect": {
+    "state": "needs-evidence",
+    "route": "needs-evidence",
+    "kinds": ["unknown"],
+    "outcomes": { "E2": "skipped", "E3": "ok" },
+    "reasonIncludes": { "E2": "holds a character a shell gives meaning to" }
+  }
+}

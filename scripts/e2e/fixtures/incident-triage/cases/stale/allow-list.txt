@@ -1,0 +1,3 @@
+catalog job show <id>
+catalog release
+catalog changelog

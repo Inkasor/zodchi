@@ -1,0 +1,26 @@
+{
+  "about": "Review F5, rounds 2 and 3: with no adapter retry and no recommendation, the line for the lead tells the reporter to restart the export and the route's reason tells the reporter to `press Retry`. Both stay model wording under its own heading; the reply to the reporter, assembled by the workflow, speaks of no retry, and nothing outside that heading does either.",
+  "adapterFrom": "blocked-release",
+  "report": "Release 2.5.0 has been blocked all morning by something called P-7f3a2.",
+  "params": {},
+  "expect": {
+    "state": "drafted",
+    "route": "reply",
+    "kinds": [
+      "user-action"
+    ],
+    "replyExcludes": [
+      "retr",
+      "try again",
+      "restart"
+    ],
+    "wordingOnly": [
+      "Tell the reporter to restart export 4711.",
+      "Tell the reporter to `press Retry`."
+    ],
+    "draftExcludes": [
+      "It recommends the product's retry",
+      "verifies by the product's retry"
+    ]
+  }
+}

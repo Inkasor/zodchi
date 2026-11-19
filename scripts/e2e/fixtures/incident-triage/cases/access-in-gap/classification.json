@@ -1,0 +1,55 @@
+{
+  "findings": [
+    {
+      "kind": "missing-tool",
+      "hypothesis": "",
+      "about": "capability",
+      "confidence": "high",
+      "summary": "The release status names the blocker only by its internal id P-7f3a2; the lead skill and the lead-tools allow-list offer no command that says what that process is, and the database read was refused by policy.",
+      "evidence": [
+        "E2",
+        "E3",
+        "E5",
+        "E6"
+      ],
+      "fixedBy": [],
+      "deployedIn": []
+    }
+  ],
+  "gaps": [
+    {
+      "what": "Grant database access to read the processes table",
+      "evidence": [
+        "E3"
+      ],
+      "operation": "",
+      "proposal": ""
+    }
+  ],
+  "next": {
+    "route": "fix-brief",
+    "role": "",
+    "question": "",
+    "reason": "The product has no sanctioned report that explains a blocking process."
+  },
+  "facts": "Release 2.5.0 waits for process P-7f3a2, which is still running.",
+  "reply": "Release 2.5.0 waits for process P-7f3a2, which is still running. The release report will be extended so that it says what such a process is and who runs it; we will write to you as soon as the release can go on.",
+  "leadLine": "2.5.0 blocked by P-7f3a2; no sanctioned way to learn what it is; fix the release status report.",
+  "recommendRetry": false,
+  "fixBrief": {
+    "goal": "The release status report names the process behind each internal id that blocks a release: kind, starter, progress and whether it can be stopped safely.",
+    "files": [
+      "the release status command of the product",
+      "its tests"
+    ],
+    "done": [
+      "`catalog release status` prints, for a blocking process, its kind, who started it, its progress and whether it can be stopped safely."
+    ],
+    "checks": [
+      "the product's test suite",
+      "a release blocked by a test process shows all four fields"
+    ],
+    "agentsAffected": false,
+    "agentSkillChange": ""
+  }
+}
