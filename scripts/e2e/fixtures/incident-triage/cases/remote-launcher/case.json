@@ -1,0 +1,16 @@
+{
+  "about": "Review F2, round 4: a remote or container launcher anywhere in argv refuses the adapter, whatever comes after it. [\"ssh\", \"host\", \"node\", \"read-job.mjs\", \"{id}\"] is refused although node has a script right after it; a launcher without a placeholder is refused too. A local script is accepted.",
+  "report": "Job 4711 failed.",
+  "params": { "id": "4711" },
+  "expect": {
+    "noRevision": true,
+    "refusedIncludes": [
+      "operation job-remote: argv holds ssh, a remote or container launcher",
+      "operation job-remote: {id} reaches ssh, which passes its arguments on",
+      "operation health-container: argv holds docker, a remote or container launcher"
+    ],
+    "refusedExcludes": [
+      "operation job-local"
+    ]
+  }
+}

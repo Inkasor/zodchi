@@ -1,0 +1,53 @@
+{
+  "about": "Review F4 (rounds 1 to 3): stale without deployment evidence becomes unknown and the whole answer goes: the facts and the suggested reply (they assert the fix and a retry), the finding's summary (it claims production runs the fix and would be the log's cause), the line for the lead and the route's reason. The reply to the reporter is the fixed needs-evidence text, the gap is the workflow's own (the deployment of the fix, through the release operation), and no retry stands.",
+  "adapterFrom": "stale-no-deploy",
+  "report": "My export 4711 failed again.",
+  "params": {
+    "id": "4711"
+  },
+  "expect": {
+    "state": "needs-evidence",
+    "route": "needs-evidence",
+    "kinds": [
+      "unknown"
+    ],
+    "notesInclude": [
+      "stale became unknown",
+      "was discarded",
+      "and its retry recommendation",
+      "the route reply became needs-evidence"
+    ],
+    "replyIncludes": [
+      "We are looking into the error and will write to you with what we find."
+    ],
+    "replyExcludes": [
+      "retr",
+      "try again",
+      "installed"
+    ],
+    "draftIncludes": [
+      "Who verifies: not settled",
+      "May be stale, not confirmed",
+      "Cause: unknown (hypothesis: stale), high confidence; evidence",
+      "Missing evidence: the deployment of the fix in the affected environment",
+      "Operation that supplies it: release.",
+      "everything the classifier wrote was discarded"
+    ],
+    "draftExcludes": [
+      "Press Retry on the job page now",
+      "is installed",
+      "It recommends the product's retry",
+      "Fixed and deployed",
+      "which production runs",
+      "reporter retries"
+    ],
+    "classificationExcludes": [
+      "Press Retry on the job page now",
+      "The update that fixed this error is installed",
+      "\"recommendRetry\":true",
+      "Fixed and deployed",
+      "which production runs",
+      "reporter retries"
+    ]
+  }
+}

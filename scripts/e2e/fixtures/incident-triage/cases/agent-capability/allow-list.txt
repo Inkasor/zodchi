@@ -1,0 +1,2 @@
+catalog card show <id>
+catalog card set <id> <field> <value>

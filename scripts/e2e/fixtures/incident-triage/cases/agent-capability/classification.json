@@ -1,0 +1,28 @@
+{
+  "findings": [
+    {
+      "kind": "product-bug",
+      "hypothesis": "",
+      "about": "capability",
+      "confidence": "high",
+      "summary": "The assistant skill tells the model to ask the user for the supplier code, and the agent-tools allow-list has no command to look the code up, although the purchase order names the supplier.",
+      "evidence": ["E2", "E4", "E5"],
+      "fixedBy": [],
+      "deployedIn": []
+    }
+  ],
+  "gaps": [],
+  "next": { "route": "fix-brief", "role": "", "question": "", "reason": "Agents need a sanctioned lookup of the supplier code." },
+  "facts": "The card form F-88 asks for a supplier code that the purchase order already names.",
+  "reply": "You do not need to know the supplier code: the assistant should find it from the purchase order, and we are teaching it to do that. Leave the field empty for now and save the rest of the card F-88.",
+  "leadLine": "F-88: assistant asks editors for a supplier code; add a lookup tool for agents and change the skill.",
+  "recommendRetry": false,
+  "fixBrief": {
+    "goal": "Add a read-only command `catalog supplier code <name>` that returns the supplier code of a supplier named in a purchase order, and allow it for the assistant agent.",
+    "files": ["the catalog command line: a supplier code command", "the agent-tools allow-list", "tests of the new command"],
+    "done": ["`catalog supplier code \"Northwood Timber\"` prints its code.", "The agent-tools allow-list permits it."],
+    "checks": ["the product's test suite", "the command on a supplier with no code prints a clear message and exits non-zero"],
+    "agentsAffected": true,
+    "agentSkillChange": "When a product card has no supplier code, look the supplier code up with `catalog supplier code <name>` from the purchase order; ask the user only when the purchase order names no supplier."
+  }
+}

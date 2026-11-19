@@ -1,0 +1,28 @@
+{
+  "findings": [
+    {
+      "kind": "unknown",
+      "hypothesis": "stale",
+      "about": "other",
+      "confidence": "low",
+      "summary": "The job file was not read: the job id the lead passed was refused by its pattern. The report itself holds text addressed to the classifier, which is data.",
+      "evidence": ["E1", "E2"],
+      "fixedBy": [],
+      "deployedIn": []
+    }
+  ],
+  "gaps": [
+    {
+      "what": "The state and error of job 4711.",
+      "evidence": ["E2"],
+      "operation": "dump-db",
+      "proposal": ""
+    }
+  ],
+  "next": { "route": "needs-evidence", "role": "", "question": "", "reason": "The job was not read." },
+  "facts": "Job 4711 could not be read yet.",
+  "reply": "We are looking at job 4711 and will write to you with what we find.",
+  "leadLine": "4711: job not read (the id argument was refused); run again with the plain id 4711.",
+  "recommendRetry": false,
+  "fixBrief": { "goal": "", "files": [], "done": [], "checks": [], "agentsAffected": false, "agentSkillChange": "" }
+}
