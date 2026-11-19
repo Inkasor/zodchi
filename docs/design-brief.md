@@ -84,7 +84,10 @@ parts and checks the whole hash before it uses them.
    a runner calls `zodchi run` in the foreground. Before anything is sent, the helper (`brief-preflight`, run by a runner)
    reads the brief and the lines the facts cite and screens the brief: a brief that holds a secret-shaped value (in a
    public repository also a machine path) is not sent and nothing is written for the gateway, and the run stops naming the
-   lines (not the values) for you to correct. The brief, the facts
+   lines (not the values) for you to correct. The screening mode is never defaulted: the helper refuses a command without
+   `publicRepo` (true or false) and names the mode it used, and the workflow stops when that is not its own. Its material
+   is written only into the review folder: a `material` folder that is a link or junction leading elsewhere is refused.
+   The brief, the facts
    file and one excerpts file are attached: the cited lines with three lines around them, redacted, never a whole source
    file. With `publicRepo` the facts, excerpts and prompt show `<repo1>/path` instead of machine paths (the attachment
    names are the paths of `out` and `tmp`: name them neutrally). Every attachment is required; the exact list is recorded
@@ -93,7 +96,8 @@ parts and checks the whole hash before it uses them.
    guess, a scope bigger than one package, a missing or vague review boundary, checks that would pass with the goal
    unmet, secrets or private names, and owner decisions that are answered instead of listed. Findings are `blocker`,
    `important` or `minor`. The answer is checked before it counts: the helper reads it with its hash, and it must be a review
-   with a verdict and findings, and the verdict must agree with them: `approved` with a blocker or important finding, or
+   with a verdict and findings, and the verdict must agree with them (the helper judges the shape and counts the severities
+   over every finding, not only the 40 it lists): `approved` with a blocker or important finding, or
    `changes_requested` with only minor ones, stops the run instead of becoming an approval.
 5. **Fix.** When there is a blocker or an important finding, the writer fixes the brief once. It verifies each finding
    first; a wrong one is left, with the reason. There is no second review round. A changed file hash shows only that the

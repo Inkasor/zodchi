@@ -37,6 +37,8 @@ const sha = (data) => crypto.createHash("sha256").update(data).digest("hex");
 const norm = (p) => String(p).replace(/\\/g, "/");
 const lf = (s) => String(s).replace(/\r\n?/g, "\n");
 const cap = (s, n) => { const t = String(s == null ? "" : s); return t.length > n ? t.slice(0, n) + "..." : t; };
+// JSON with the keys of every object in sorted order: the digest of the inputs the workflow and the helper compute alike (incident-collect).
+const canon = (v) => (Array.isArray(v) ? `[${v.map(canon).join(",")}]` : v && typeof v === "object" ? `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canon(v[k])}`).join(",")}}` : JSON.stringify(v === undefined ? null : v));
 const absOk = (p) => typeof p === "string" && /^([A-Za-z]:\/|\/)/.test(norm(p)) && !/(^|\/)\.\.(\/|$)/.test(norm(p));
 class Refusal extends Error {}
 const refuse = (msg) => { throw new Refusal(msg); };
@@ -677,6 +679,9 @@ function draftText(j, ad, incident, rev, ev, cls) {
 // incident-triage: the incident folder
 
 const INCIDENT_ID = /^[\w.-]{1,64}$/
+// The states of incident.json (docs/incident-triage.md): collecting and classified only while a run works.
+const STATES = ["collecting", "classified", "drafted", "needs-evidence", "failed"];
+const revNo = (n) => Number.isSafeInteger(n) && n >= 1;
 function incidentSpec(spec, more = []) {
   need(spec, ["tmp", "incident", ...more]);
   if (!absOk(spec.tmp)) refuse("spec.tmp must be an absolute path without \"..\"");
@@ -707,7 +712,7 @@ function readIncident(at, id) {
   try { rec = JSON.parse(text.replace(/^﻿/, "")); } catch (e) { return { present: true, valid: false, record: null, error: `${at.file} is not JSON: the incident folder needs a look by hand` }; }
   if (!rec || typeof rec !== "object" || Array.isArray(rec)) return { present: true, valid: false, record: null, error: `${at.file} is not an incident record (not a JSON object): the incident folder needs a look by hand` };
   if (rec.id !== id) return { present: true, valid: false, record: null, error: `${at.file} belongs to incident ${JSON.stringify(rec.id)}, not ${id}` };
-  if (!(rec.revision === null || Number.isInteger(rec.revision)) || typeof rec.state !== "string" || !Array.isArray(rec.revisions) || rec.revisions.some((r) => !r || !Number.isInteger(r.n))) {
+  if (!(rec.revision === null || revNo(rec.revision)) || !STATES.includes(rec.state) || !Array.isArray(rec.revisions) || rec.revisions.some((r) => !r || typeof r !== "object" || !revNo(r.n) || !STATES.includes(r.state))) {
     return { present: true, valid: false, record: null, error: `${at.file} is not an incident record (revision, state or revisions are missing or malformed): the incident folder needs a look by hand` };
   }
   return { present: true, valid: true, record: rec, error: "" };
@@ -778,6 +783,11 @@ function incidentCollect(spec) {
   const withheld = spec.withheld && typeof spec.withheld === "object" && !Array.isArray(spec.withheld) ? spec.withheld : {};
   const cls = spec.classifier && typeof spec.classifier === "object" ? spec.classifier : {};
   if (typeof cls.model !== "string" || !cls.model) refuse("spec.classifier.model is missing");
+  // The inputs the files are made from (the report, the operation values, the withheld decisions, the classifier, the revision) must be the
+  // ones the workflow decided on: spec.inputSha256 is its SHA-256 of their canonical JSON. A value retyped wrongly that still matches its
+  // pattern would collect evidence for another job; nothing is made or run before they agree.
+  const inputs = { incident: spec.incident, revision: spec.revision, report: spec.report, params: spec.params, withheld: spec.withheld, classifier: spec.classifier };
+  if (!/^[0-9a-f]{64}$/.test(String(spec.inputSha256 || "")) || sha(Buffer.from(canon(inputs), "utf8")) !== spec.inputSha256) refuse("the inputs of the collection (report, params, withheld, classifier, revision) are not the ones the workflow decided on (spec.inputSha256 differs): nothing was made or run");
   const ad = readAdapter(spec.adapter, String(spec.adapterSha256));
   if (!ad.readable) refuse(`the adapter ${norm(spec.adapter)} cannot be read: ${ad.error}`);
   if (ad.problems.length) refuse(`the adapter has problems: ${ad.problems.slice(0, 5).join("; ")}`);
@@ -994,6 +1004,14 @@ function screenBrief(text, publicRepo) {
 const MATERIAL_PART = 4000;
 const MATERIAL_PARTS = 200;
 const materialFile = (dir, part, of) => `${dir}/material/${part}-of-${of}.part`;
+// The folder a command writes into must resolve inside the folder it was given: a symlink or junction at <dir>/material that leads
+// elsewhere is refused before anything is written.
+function confined(root, sub) {
+  fs.mkdirSync(sub, { recursive: true });
+  let r = "", s = "";
+  try { r = norm(fs.realpathSync.native(root)); s = norm(fs.realpathSync.native(sub)); } catch (e) { refuse(`${norm(sub)} cannot be resolved: ${e.message}`); }
+  if (fs.lstatSync(sub).isSymbolicLink() || !inside(s, r)) refuse(`${norm(sub)} is a link or resolves outside ${norm(root)}: nothing was written`);
+}
 function briefMaterial(spec) {
   need(spec, ["dir", "part", "of"]);
   if (!absOk(spec.dir)) refuse("spec.dir must be an absolute path without \"..\"");
@@ -1001,6 +1019,8 @@ function briefMaterial(spec) {
   if (!Number.isInteger(of) || of < 1 || of > MATERIAL_PARTS || !Number.isInteger(part) || part < 1 || part > of) refuse(`spec.part and spec.of must be whole numbers with 1 <= part <= of <= ${MATERIAL_PARTS}`);
   if (typeof spec.text !== "string" || !spec.text || spec.text.length > MATERIAL_PART) refuse(`spec.text must be a string of 1 to ${MATERIAL_PART} characters`);
   const dir = norm(spec.dir).replace(/\/+$/, "");
+  fs.mkdirSync(dir, { recursive: true });
+  confined(dir, `${dir}/material`);
   const sha256 = writeNew(materialFile(dir, part, of), spec.text, true);
   return { ok: true, part, of, sha256, chars: spec.text.length };
 }
@@ -1025,19 +1045,22 @@ function briefPreflight(spec) {
   if (!Array.isArray(spec.repos) || !spec.repos.length || spec.repos.some((r) => !absOk(r))) refuse("spec.repos must be a list of absolute paths");
   const reviewer = spec.reviewer && typeof spec.reviewer === "object" ? spec.reviewer : {};
   if (typeof reviewer.model !== "string" || !reviewer.model) refuse("spec.reviewer.model is missing");
+  // The screening mode is never defaulted: a command without it is refused, and the answer names the mode used, for the workflow to compare.
+  if (typeof spec.publicRepo !== "boolean") refuse("spec.publicRepo must be true or false");
+  const publicRepo = spec.publicRepo;
   const dir = norm(spec.dir).replace(/\/+$/, "");
   const repos = spec.repos.map((r) => norm(r).replace(/\/+$/, ""));
   const brief = briefFacts(norm(spec.brief), null);
-  const answer = { ok: true, written: false, inputSha256: "", briefSha256: brief.sha256, briefBytes: brief.bytes, problems: [], files: {} };
+  const answer = { ok: true, publicRepo, written: false, inputSha256: "", briefSha256: brief.sha256, briefBytes: brief.bytes, problems: [], files: {} };
   if (!brief.exists) return { ...answer, problems: ["the brief cannot be read"] };
   if (brief.sha256 !== spec.expectSha256) return { ...answer, changed: true, problems: ["the brief is not the one that was inspected: it changed"] };
   const text = fs.readFileSync(norm(spec.brief), "utf8");
-  const bad = screenBrief(text, Boolean(spec.publicRepo));
+  const bad = screenBrief(text, publicRepo);
   if (bad.length) return { ...answer, problems: bad.slice(0, 20) };
   // The material only after the screen: a brief that does not pass is refused whatever the material holds.
   const mat = readMaterial(dir, spec.material);
   answer.inputSha256 = sha(Buffer.from(JSON.stringify({ goal: mat.goal, questions: mat.questions, facts: mat.facts, unknowns: mat.unknowns }), "utf8"));
-  const scrub = scrubber({ ...spec, repos });
+  const scrub = scrubber({ ...spec, publicRepo, repos });
   // The excerpts: the cited lines of each fact, redacted, in a public repository without machine paths; read here, never by a model.
   let excerptSize = 0, missing = 0;
   const facts = mat.facts.map((f) => ({ id: String(f.id), claim: String(f.claim), source: String(f.source), question: f.question }));
@@ -1056,7 +1079,7 @@ function briefPreflight(spec) {
   const put = (name, body) => { answer.files[name] = writeNew(`${dir}/${name}`, body, true); };
   put("facts.json", factsDoc);
   put("excerpts.md", excerptDoc);
-  put("prompt.md", reviewPrompt(String(mat.goal), Boolean(spec.publicRepo), scrub));
+  put("prompt.md", reviewPrompt(String(mat.goal), publicRepo, scrub));
   put("design-review.md", REVIEW_FRAME + "\n");
   put("design-review.schema.json", JSON.stringify(REVIEW_SCHEMA, null, 2) + "\n");
   put("design-review.json", JSON.stringify({ description: "Independent review of a design brief (design-brief).", mode: "expert", model: reviewer.model, effort: reviewer.effort || "high", frame: "design-review.md", schema: "design-review.schema.json" }, null, 2) + "\n");
@@ -1065,8 +1088,9 @@ function briefPreflight(spec) {
 }
 
 // The review answer: presence, size and hash, then the verdict and the findings parsed and capped (each text at most 800
-// characters, at most 40 findings and 20 notVerified), so the line a runner returns stays bounded; the workflow decides from these
-// fields, and the writer of the fix reads the whole answer file itself.
+// characters, at most 40 findings and 20 notVerified), so the line a runner returns stays bounded; the writer of the fix reads the whole
+// answer file itself. What the workflow decides on is judged here over the whole list, not the capped one: shapeOk (every finding is an
+// object) and the severity counts of every finding (an unknown severity word counted as other).
 function reviewRead(spec) {
   need(spec, ["file"]);
   if (!absOk(spec.file)) refuse("spec.file must be an absolute path without \"..\"");
@@ -1077,10 +1101,18 @@ function reviewRead(spec) {
   try { doc = JSON.parse(text.replace(/^﻿/, "")); facts.json = true; } catch { return { ok: true, answer: facts }; }
   if (!doc || typeof doc !== "object" || Array.isArray(doc)) return { ok: true, answer: facts };
   const str = (x) => cap(typeof x === "string" ? x : x == null ? "" : String(x), 800);
-  const findings = Array.isArray(doc.findings) ? doc.findings.slice(0, 40).map((f) => (f && typeof f === "object" ? { id: str(f.id), severity: str(f.severity), location: str(f.location), problem: str(f.problem), fix: str(f.fix) } : null)) : null;
+  const isFinding = (f) => Boolean(f && typeof f === "object" && !Array.isArray(f));
+  const findings = Array.isArray(doc.findings) ? doc.findings.slice(0, 40).map((f) => (isFinding(f) ? { id: str(f.id), severity: str(f.severity), location: str(f.location), problem: str(f.problem), fix: str(f.fix) } : null)) : null;
+  const all = Array.isArray(doc.findings) ? doc.findings : [];
+  const severities = { blocker: 0, important: 0, minor: 0, other: 0 };
+  for (const f of all.filter(isFinding)) { const s = String(f.severity || "").toLowerCase(); severities[["blocker", "important", "minor"].includes(s) ? s : "other"]++; }
   return {
     ok: true, answer: facts,
-    review: { verdict: typeof doc.verdict === "string" ? cap(doc.verdict, 40) : "", summary: str(doc.summary), findings, findingsTotal: Array.isArray(doc.findings) ? doc.findings.length : 0, notVerified: Array.isArray(doc.notVerified) ? doc.notVerified.slice(0, 20).map(str) : [] },
+    review: {
+      verdict: typeof doc.verdict === "string" ? cap(doc.verdict, 40) : "", summary: str(doc.summary), findings, findingsTotal: all.length,
+      shapeOk: Array.isArray(doc.findings) && all.every(isFinding), severities,
+      notVerified: Array.isArray(doc.notVerified) ? doc.notVerified.slice(0, 20).map(str) : [],
+    },
   };
 }
 
