@@ -129,6 +129,8 @@ function sha256(text) {
 
 // The report is handed over with LF line breaks only, so its hash is the same on every system.
 const lf = (s) => String(s).replace(/\r\n?/g, '\n')
+// JSON with the keys of every object in sorted order, as the helper computes it: the digest of the collection's inputs (inputSha256).
+const canon = (v) => (Array.isArray(v) ? `[${v.map(canon).join(',')}]` : v && typeof v === 'object' ? `{${Object.keys(v).sort().map(k => `${JSON.stringify(k)}:${canon(v[k])}`).join(',')}}` : JSON.stringify(v === undefined ? null : v))
 
 // ------------------------------------------------------------------ steps
 // A finished agent() comes back from the journal when the run is resumed (resumeFromRunId); an unfinished one starts
@@ -320,9 +322,11 @@ async function body() {
     withheld[name] = { kind: SHELL_META.test(s) ? 'shell' : 'secret', fails }
   }
   const report = redact(lf(a.report))
+  // The helper makes and runs nothing unless the values it got are these: a value the runner retyped wrongly that still matches its pattern
+  // would otherwise collect evidence for another job.
+  const inputs = { incident: a.incident, revision, report, params: sendParams, withheld, classifier: { model: pick.model, effort: pick.effort || 'high' } }
   const collectRead = readIo(await ioRun('incident-collect', {
-    tmp, incident: a.incident, adapter: a.adapter, adapterSha256: adapterHash, token, revision, report, params: sendParams, withheld,
-    classifier: { model: pick.model, effort: pick.effort || 'high' },
+    tmp, adapter: a.adapter, adapterSha256: adapterHash, token, ...inputs, inputSha256: sha256(canon(inputs)),
   }, `collect ${a.incident} rev ${revision}`, 'Facts'), 'the collect helper')
   if (collectRead.error) { out.state = 'failed'; out.stoppedAt = `facts (${collectRead.error})`; return }
   const collected = collectRead.facts

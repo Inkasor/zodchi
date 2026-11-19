@@ -50,7 +50,7 @@ export default function register({ scenario, ROOT }) {
    * runner runs it and returns its exit code and the line it printed. The fake runs gate.mjs of this checkout with that spec (the bootstrap
    * itself is checked in workflow-gate.mjs) and returns what it printed, as it is.
    */
-  function helperStep(t, ctx, prompt, opts, label, command) {
+  function helperStep(t, ctx, prompt, opts, label, command, retype = (spec) => spec) {
     need(t, prompt, label, "Run ONE command and return what it printed", "the instruction to run one command and return its output");
     need(t, prompt, label, "copy it unchanged", "the instruction to return the printed line unchanged");
     need(t, prompt, label, "never touch the incident folder or its lock yourself", "the rule that the runner touches no file itself");
@@ -61,7 +61,8 @@ export default function register({ scenario, ROOT }) {
     if (!m || m[1] !== command) throw new Error(`the step "${label}" does not run ${command}`);
     const spec = JSON.parse(m[2].replace(/'\\''/g, "'"));
     t.ok(spec.api === 1 && spec.tmp === ctx.tmp && spec.incident === ctx.incident, `the step "${label}" names this incident folder and incident`);
-    const r = spawnSync(process.execPath, [GATE, command, JSON.stringify(spec)], { encoding: "utf8", windowsHide: true });
+    // retype: a fault of the runner, which typed the command with a value changed (the workflow's spec is what the prompt holds).
+    const r = spawnSync(process.execPath, [GATE, command, JSON.stringify(retype(spec))], { encoding: "utf8", windowsHide: true });
     return { spec, answer: { exitCode: r.status ?? -1, stdout: r.stdout || "", error: (r.stderr || "").slice(0, 300) } };
   }
 
@@ -80,7 +81,7 @@ export default function register({ scenario, ROOT }) {
         return answer;
       }
       if (label.startsWith("collect ")) {
-        const { spec, answer } = helperStep(t, ctx, prompt, opts, label, "incident-collect");
+        const { spec, answer } = helperStep(t, ctx, prompt, opts, label, "incident-collect", ctx.retypeCollect || undefined);
         for (const k of ["token", "revision", "adapterSha256", "report", "classifier"]) t.ok(spec[k] !== undefined && spec[k] !== "", `the step "${label}" hands the helper ${k}`);
         ctx.revDir = `${tmp}/rev-${spec.revision}`;
         ctx.collector = readIf(`${ctx.revDir}/collect.cjs`);
@@ -141,7 +142,7 @@ export default function register({ scenario, ROOT }) {
     const adapter = slash(path.join(CASES, c.adapterFrom || name, "adapter.json"));
     const tmp = overrides.tmp || slash(fs.mkdtempSync(path.join(os.tmpdir(), `incident-triage-${name}-`)));
     if (!overrides.tmp) t.cleanups.push(() => fs.rmSync(tmp, { recursive: true, force: true }));
-    const ctx = { t, tmp, adapter, caseDir, incident: `case-${name}`, prompts: [], failClassify: Boolean(overrides.failClassify), faultCleanup: overrides.faultCleanup || "" };
+    const ctx = { t, tmp, adapter, caseDir, incident: `case-${name}`, prompts: [], failClassify: Boolean(overrides.failClassify), faultCleanup: overrides.faultCleanup || "", retypeCollect: overrides.retypeCollect || null };
     const args = { incident: `case-${name}`, tmp, adapter, report: overrides.report ?? c.report, params: c.params, repo: tmp, ...(c.models ? { models: c.models } : {}) };
     const logs = [];
     const result = await runWorkflow(args, fakeAgent(ctx), () => {}, (m) => logs.push(m), null, null, { total: null });
@@ -331,6 +332,45 @@ export default function register({ scenario, ROOT }) {
       t.eq(readIf(`${tmp}/incident.json`), text, `${what}: incident.json is left as it was`);
       t.ok(!fs.existsSync(`${tmp}/.lock`), `${what}: the lock this run took is released`);
     }
+    // A record of this incident whose state or history is not one of the documented states, or whose revision numbers are not whole numbers
+    // from 1, is refused the same way: no revision, and the file is not replaced (its malformed history is not carried on).
+    const rec = (over) => JSON.stringify({ id: "case-stale", revision: 1, state: "drafted", adapterHash: "", revisions: [{ n: 1, state: "drafted" }], ...over });
+    for (const [what, text] of [
+      ["an unknown state", rec({ state: "done" })],
+      ["a history entry without a state", rec({ revisions: [{ n: 1 }] })],
+      ["a history entry with an unknown state", rec({ revisions: [{ n: 1, state: "weird" }] })],
+      ["revision 0", rec({ revision: 0, revisions: [{ n: 0, state: "drafted" }] })],
+      ["a history entry that is not an object", rec({ revisions: [1] })],
+    ]) {
+      const tmp = slash(fs.mkdtempSync(path.join(os.tmpdir(), "incident-triage-record-")));
+      t.cleanups.push(() => fs.rmSync(tmp, { recursive: true, force: true }));
+      fs.writeFileSync(`${tmp}/incident.json`, text);
+      const run = await runCase(t, "stale", { tmp });
+      t.ok(Array.isArray(run.result.refused) && /incident\.json/.test(run.result.refused[0]), `${what}: the run is refused (${JSON.stringify(run.result.refused)})`);
+      t.ok(!fs.readdirSync(tmp).some((n) => /^rev-/.test(n)) && !run.ctx.prompts.some((p) => /^collect /.test(p.label)), `${what}: no revision was started`);
+      t.eq(readIf(`${tmp}/incident.json`), text, `${what}: incident.json is left as it was`);
+    }
+  });
+
+  scenario("incident-triage-collect-inputs", "a runner that types the collect command with another operation value (one that still matches its pattern), another report, another withheld decision or another classifier gets a refusal from the helper: no revision folder, no operation run, nothing classified, the revision marked failed", async (t) => {
+    for (const [what, retype] of [
+      ["another job id that matches its pattern", (spec) => ({ ...spec, params: { ...spec.params, id: "4712" } })],
+      ["a report without its last character", (spec) => ({ ...spec, report: spec.report.slice(0, -1) })],
+      ["a withheld decision added", (spec) => ({ ...spec, withheld: { id: { kind: "shell", fails: [] } } })],
+      ["another classifier effort", (spec) => ({ ...spec, classifier: { ...spec.classifier, effort: "low" } })],
+    ]) {
+      const run = await runCase(t, "stale", { retypeCollect: retype });
+      const r = run.result;
+      t.ok(/^facts \(.*inputSha256 differs/.test(r.stoppedAt || ""), `${what}: the helper refuses (${r.stoppedAt})`);
+      t.ok(!fs.existsSync(`${run.tmp}/rev-1`) && !run.ctx.collector, `${what}: no revision folder was made and no collector was written or run`);
+      t.ok(!run.ctx.prompts.some((p) => /^classify /.test(p.label)), `${what}: nothing was classified`);
+      t.eq((JSON.parse(readIf(`${run.tmp}/incident.json`) || "{}")).state, "failed", `${what}: the revision is marked failed`);
+      t.ok(!fs.existsSync(`${run.tmp}/.lock`), `${what}: the lock was released`);
+    }
+    const plain = await runCase(t, "stale");
+    const m = plain.ctx.prompts.find((p) => /^collect /.test(p.label)).prompt.match(/ incident-collect '((?:[^']|'\'')*)'\n/);
+    const spec = JSON.parse(m[1].replace(/'\''/g, "'"));
+    t.ok(/^[0-9a-f]{64}$/.test(spec.inputSha256) && plain.result.state === "drafted", "the command carries the digest of its inputs, and a run typed exactly goes through");
   });
 
   scenario("incident-triage-cases-covered", "every case folder of scripts/e2e/fixtures/incident-triage/cases is run by one of the incident-triage scenarios, and every name a scenario runs is a case folder", async (t) => {

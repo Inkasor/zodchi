@@ -4,10 +4,12 @@
 // `args`, `agent`, `parallel`, `phase` and `log` in scope. `agent` is a script of answers keyed by the step's label, so every
 // decision the workflow itself makes (which facts reach the writer and the review, which candidate reviews, what is reported as
 // fixed, what is left, what is never answered) is tested on those answers. What a prompt asks of a runner (the gateway call) is
-// checked as text of the prompt. The file steps are commands of the helper (core/scripts/gate.mjs brief-inspect, brief-preflight,
-// review-read): the inspection is scripted (its answer is wrapped as the helper's line), the preflight and the reading of the review
-// run the real helper on a scratch folder that stands for the paths of the run (/r, /g and a drive path are mapped onto it and back), with
-// the brief, the cited lines and the review answer the scripted answers describe written there first.
+// checked as text of the prompt. The file steps are commands of the helper (core/scripts/gate.mjs brief-inspect, brief-material,
+// brief-preflight, review-read): the inspection is scripted (its answer is wrapped as the helper's line); the material, the preflight and
+// the reading of the review run the real helper with the command exactly as the workflow typed it, and the workflow gets the helper's
+// line as printed. For that the run works on a scratch folder from the start: the paths of the args and of the scripted answers (/r, /g
+// and a drive path) are mapped onto it before the workflow sees them, and the prompts and the result are mapped back for the checks. The
+// brief, the cited lines and the review answer the scripted answers describe are written there before the helper runs.
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -52,15 +54,18 @@ export default function register({ scenario, ROOT }) {
   /** Runs the workflow once. `o.answers[label]` (a value or a function of the prompt and the calls) replaces a default answer. */
   async function run(o = {}) {
     const calls = [];
-    const args = { ...ARGS, ...(o.args || {}) };
     const disk = `${SCRATCH}/run-${++runs}`;
     // The paths of the run on the scratch folder and back.
     const map = ROOTS.map((r, i) => [r, `${disk}/root${i}`]);
     const toDisk = (text) => map.reduce((t, [r, d]) => t.replace(new RegExp(`(?<![\\w.:/-])${escRe(r)}(?=[/"'\\s.,;:)]|$)`, "g"), d), String(text));
     const fromDisk = (text) => map.reduce((t, [r, d]) => t.split(d).join(r), String(text));
+    // A drive path written with backslashes (as args may name it) goes to the scratch folder written the same way.
+    const backDisk = (text) => map.filter(([r]) => /^[A-Za-z]:\//.test(r)).reduce((t, [r, d]) => t.split(r.replace(/\//g, "\\")).join(d.replace(/\//g, "\\")), String(text));
+    const deep = (v, f) => (typeof v === "string" ? f(v) : Array.isArray(v) ? v.map((x) => deep(x, f)) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, deep(x, f)])) : v);
     const onDisk = (p) => toDisk(p);
+    const args = deep({ ...ARGS, ...(o.args || {}) }, (x) => toDisk(backDisk(x)));
     let reviewGiven = null;
-    const answer = (label, prompt, opts) => {
+    const scripted = (label, prompt, opts) => {
       const given = o.answers && o.answers[label];
       if (given !== undefined) return typeof given === "function" ? given(prompt, calls, opts) : given;
       if (label === "gate db") return printed(gateFacts(o.gate));
@@ -76,55 +81,47 @@ export default function register({ scenario, ROOT }) {
       if (label === "inspect fix db") return { ok: true, exists: true, sha256: HEX_B, bytes: 120, firstLine: MARK, headings: HEADINGS };
       throw new Error(`no scripted answer for the step "${label}"`);
     };
-    /** The real helper on the scratch folder: the spec mapped onto it, the answer as gate.mjs printed it. */
-    const helper = (command, spec) => {
-      const r = spawnSync(process.execPath, [GATE, command, toDisk(JSON.stringify(spec))], { encoding: "utf8", windowsHide: true });
-      return { exitCode: r.status ?? -1, stdout: r.stdout || "", error: (r.stderr || "").slice(0, 300) };
+    // The answers of the planner, the researchers and the writer name paths of the run (questions, sources): mapped onto the scratch folder.
+    const answer = (label, prompt, opts) => {
+      const given = scripted(label, prompt, opts);
+      return /^(plan|facts|draft|fix) /.test(label) ? deep(given, toDisk) : given;
     };
-    /** A helper line changed by the fake (the material's hash put back for the paths of the run): its lineSha256 is made again. */
-    const reline = (stdout, change) => {
-      const { lineSha256: _old, ...body } = JSON.parse(stdout);
-      const next = change(body);
-      return JSON.stringify({ ...next, lineSha256: sha(JSON.stringify(next)) }) + "\n";
+    /** The real helper with the spec as the workflow typed it; the answer as gate.mjs printed it. */
+    const helper = (command, spec) => {
+      const r = spawnSync(process.execPath, [GATE, command, JSON.stringify(spec)], { encoding: "utf8", windowsHide: true });
+      return { exitCode: r.status ?? -1, stdout: r.stdout || "", error: (r.stderr || "").slice(0, 300) };
     };
     // The file steps: the answer a test scripted describes what is on disk; the helper reads and writes it.
     const io = (command, spec, given) => {
       if (given === null || given === undefined) return given;
       if (typeof given === "object" && "exitCode" in given) return given;
       if (command === "brief-inspect") return ioLine({ exists: true, bytes: 0, firstLine: "", headings: [], ...given, ok: true });
-      // A part of the material: the real helper writes it as given (only its folder is on the scratch disk), so its hash is the part's.
-      if (command === "brief-material") {
-        const r = spawnSync(process.execPath, [GATE, command, JSON.stringify({ ...spec, dir: onDisk(spec.dir) })], { encoding: "utf8", windowsHide: true });
-        return { exitCode: r.status ?? -1, stdout: r.stdout || "", error: (r.stderr || "").slice(0, 300) };
-      }
+      // A part of the material: the real helper writes it as given.
+      if (command === "brief-material") return helper(command, spec);
       if (command === "brief-preflight") {
-        fs.mkdirSync(path.dirname(onDisk(spec.brief)), { recursive: true });
-        fs.writeFileSync(onDisk(spec.brief), given.brief);
-        // The parts the runs of brief-material wrote, joined; the helper gets them as one part with the run's paths on the scratch disk.
-        const dir = onDisk(spec.dir);
+        fs.mkdirSync(path.dirname(spec.brief), { recursive: true });
+        fs.writeFileSync(spec.brief, given.brief);
+        // The cited lines, written where the facts of the material (as the runs of brief-material wrote it) point; the parts stay as they are.
         const n = spec.material && spec.material.parts;
-        const joined = Array.from({ length: n || 0 }, (_, i) => { try { return fs.readFileSync(`${dir}/material/${i + 1}-of-${n}.part`, "utf8"); } catch { return ""; } }).join("");
-        const mat = JSON.parse(joined);
-        const mapped = toDisk(joined);
-        fs.mkdirSync(`${dir}/material`, { recursive: true });
-        fs.writeFileSync(`${dir}/material/1-of-1.part`, mapped);
+        let mat = { facts: [] };
+        try { mat = JSON.parse(Array.from({ length: n || 0 }, (_, i) => fs.readFileSync(`${spec.dir}/material/${i + 1}-of-${n}.part`, "utf8")).join("")); } catch { /* the helper says what is wrong */ }
         const lines = new Map();
-        for (const f of mat.facts) {
-          const m = f.source.match(/^(.+):(\d+)(?:-(\d+))?$/);
+        for (const f of mat.facts || []) {
+          const m = String(f.source).match(/^(.+):(\d+)(?:-(\d+))?$/);
+          if (!m) continue;
           const from = Math.max(1, Number(m[2]) - 3);
           const text = given.excerpts === "default" ? `${from}: the cited line of ${f.id}` : ((given.excerpts || []).find((e) => e.id === f.id) || {}).text || "";
           if (!text) continue;
-          const file = onDisk(m[1]);
-          const have = lines.get(file) || [];
+          const have = lines.get(m[1]) || [];
           text.split("\n").forEach((l, k) => { have[from - 1 + k] = l.replace(/^\d+: /, ""); });
-          lines.set(file, have);
+          lines.set(m[1], have);
         }
         for (const [file, have] of lines) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, Array.from(have, (l) => l ?? "").join("\n") + "\n"); }
-        const r = helper(command, { ...spec, material: { parts: 1, sha256: sha(mapped) } });
-        try { return { ...r, stdout: reline(r.stdout, (b) => (b.inputSha256 === sha(mapped) ? { ...b, inputSha256: sha(joined) } : b)) }; } catch { return r; }
+        // given.retype: a fault of the runner, which typed the command with a field changed.
+        return helper(command, given.retype ? given.retype(spec) : spec);
       }
       if (command === "review-read") {
-        if (reviewGiven && typeof reviewGiven.answer === "string") { fs.mkdirSync(path.dirname(onDisk(spec.file)), { recursive: true }); fs.writeFileSync(onDisk(spec.file), reviewGiven.answer); }
+        if (reviewGiven && typeof reviewGiven.answer === "string") { fs.mkdirSync(path.dirname(spec.file), { recursive: true }); fs.writeFileSync(spec.file, reviewGiven.answer); }
         const r = helper(command, spec);
         // A runner that did not return the line as printed (the gateway step reported a hash that is not the answer's): a hash in it differs.
         if (reviewGiven && reviewGiven.answerSha256 && reviewGiven.answerSha256 !== sha(reviewGiven.answer || "")) return { ...r, stdout: r.stdout.replace(/"sha256":"[0-9a-f]{64}"/, `"sha256":"${reviewGiven.answerSha256}"`) };
@@ -136,16 +133,18 @@ export default function register({ scenario, ROOT }) {
       args, phase: () => {}, log: () => {},
       parallel: (thunks) => Promise.all(thunks.map((th) => th())),
       agent: async (prompt, opts) => {
-        calls.push({ label: opts.label, prompt, opts });
-        const given = answer(opts.label, prompt, opts);
+        const shown = fromDisk(prompt);
+        calls.push({ label: opts.label, prompt: shown, opts });
+        const given = answer(opts.label, shown, opts);
         if (opts.label === "review") { reviewGiven = given; if (!given) return given; const { answer: _a, answerSha256: _s, ...gw } = given; return gw; }
+        // The command as the workflow typed it (paths on the scratch folder), not the mapped text.
         const m = prompt.match(/ -- "\$\(pwd -W 2>\/dev\/null \|\| pwd\)" (brief-inspect|brief-material|brief-preflight|review-read) '((?:[^']|'\\'')*)'\n/);
         return m ? io(m[1], JSON.parse(m[2].replace(/'\\''/g, "'")), given) : given;
       },
     };
     const fn = vm.runInNewContext(`(async () => {\n${SRC.replace(/^export const meta/, "const meta")}\n})`, sandbox, { filename: "design-brief.js" });
     let out, error = null;
-    try { out = await fn(); } catch (e) { error = e; }
+    try { out = deep(await fn(), fromDisk); } catch (e) { error = e; }
     /** A file the helper wrote for a path of the run, with the run's paths in it (""), and whether it exists. */
     const file = (p) => (fs.existsSync(onDisk(p)) ? fromDisk(fs.readFileSync(onDisk(p), "utf8")) : "");
     const exists = (p) => fs.existsSync(onDisk(p));
@@ -546,5 +545,29 @@ export default function register({ scenario, ROOT }) {
     t.eq(doc.facts.length, 61, "every fact reached the facts file of the review");
     const bad = await run({ answers: { "material 1/1 db": ioLine({ part: 1, of: 1, sha256: "0".repeat(64), chars: 1 }) } });
     t.ok(/^review \(part 1 of the material did not reach the helper exactly/.test(bad.out.stoppedAt) && bad.of(/^preflight /).length === 0 && bad.of(/^review$/).length === 0, "a part whose hash differs stops the run: no preflight, nothing sent");
+    const cmd = JSON.parse(r.of(/^preflight /)[0].prompt.match(/ brief-preflight '(.*)'$/m)[1].replace(/'\\''/g, "'"));
+    t.eq(cmd.material.parts, parts.length, "the preflight is given the workflow's own part count, and the real helper joined those parts");
+  });
+
+  scenario("design-brief-screen-mode", "the screening mode is the workflow's: a preflight command whose publicRepo a runner dropped is refused by the helper, and one whose mode a runner changed is refused by the workflow; nothing goes to the gateway", async (t) => {
+    const pathy = `${BRIEF}\nRun it in ${driveRoot}/app.\n`;
+    const drop = (spec) => { const { publicRepo: _p, ...rest } = spec; return rest; };
+    const dropped = await run({ args: { publicRepo: true }, answers: { "preflight db": preAnswer(pathy, { retype: drop }), "inspect draft db": inspected(pathy) } });
+    t.ok(/^review \(the preflight read no brief: .*publicRepo must be true or false/.test(dropped.out.stoppedAt) && dropped.of(/^review$/).length === 0, `an omitted mode is refused, not screened as not public (${dropped.out.stoppedAt})`);
+    const flipped = await run({ args: { publicRepo: true }, answers: { "preflight db": preAnswer(pathy, { retype: (spec) => ({ ...spec, publicRepo: false }) }), "inspect draft db": inspected(pathy) } });
+    t.ok(/^review \(the preflight screened the brief as not public, but the repository is public/.test(flipped.out.stoppedAt) && flipped.of(/^review$/).length === 0, `a changed mode stops the run before the gateway (${flipped.out.stoppedAt})`);
+    const right = await run({ args: { publicRepo: true } });
+    t.ok(right.out.stoppedAt === undefined && right.of(/^review$/).length === 1 && /"publicRepo":true/.test(right.of(/^preflight /)[0].prompt), "the command carries the mode, and a matching answer goes on");
+  });
+
+  scenario("design-brief-review-beyond-40", "the verdict and the shape of the review are judged over every finding, not only the 40 the helper lists: a blocker after the first 40 contradicts an approval, a malformed finding after them makes it no review, and a fix is still asked for one", async (t) => {
+    const minors = Array.from({ length: 40 }, (_, i) => finding(`M${i}`, "minor"));
+    const hidden = await run({ answers: { review: review({ verdict: "approved", findings: [...minors, finding("F41", "important")] }) } });
+    t.ok(/^review \(the verdict approved does not match its findings: 1 blocker or important, 40 minor\)/.test(hidden.out.stoppedAt) && hidden.of(/^fix /).length === 0, `an approval with an important finding at 41 stops (${hidden.out.stoppedAt})`);
+    const bad = await run({ answers: { review: review({ verdict: "approved", findings: [...minors, "not an object"] }) } });
+    t.ok(/not a review/.test(bad.out.stoppedAt) && bad.out.reviewFindings === null, `a malformed finding at 41 is no review (${bad.out.stoppedAt})`);
+    const asked = await run({ answers: { review: review({ verdict: "changes_requested", findings: [...minors, finding("F41", "blocker")] }) } });
+    t.eq(asked.of(/^fix /).length, 1, "changes requested for a blocker at 41: the fix runs");
+    t.ok(/1 more blocker or important finding\(s\) after the first 40/.test(asked.of(/^fix /)[0].prompt), "and the writer is told to read it in the answer file");
   });
 }

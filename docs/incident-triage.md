@@ -44,7 +44,12 @@ content passes through a model in either direction: the adapter, `incident.json`
 bundle and the classifier's answer stay on disk and come back as hashes and small, capped fields. The only text a model
 writes on purpose is the classifier's answer, which it writes into its own answer file. The redacted report is the
 one input of the workflow that travels in a command (the spec of `incident-collect`); the helper answers its hash
-(`reportSha256`) and the workflow refuses a report that did not arrive exactly.
+(`reportSha256`) and the workflow refuses a report that did not arrive exactly. The other inputs the revision is made from
+(the operation values, the values the workflow withheld, the classifier and the revision) travel in the same command, so
+the workflow also sends `inputSha256`, the SHA-256 of the canonical JSON (sorted keys) of all of them with the report; the
+helper makes and runs nothing unless it computes the same digest. An existing `incident.json` must be a record of this
+incident whose state and every history entry's state is one of `collecting`, `classified`, `drafted`, `needs-evidence`,
+`failed`, with whole revision numbers from 1; anything else refuses the run and the file is left as it is.
 
 | Step | Who | What |
 | --- | --- | --- |

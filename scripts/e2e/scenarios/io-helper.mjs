@@ -13,6 +13,8 @@ import { spawnSync } from "node:child_process";
 export default function register({ scenario, ROOT }) {
   const GATE = path.join(ROOT, "core", "scripts", "gate.mjs");
   const sha = (data) => crypto.createHash("sha256").update(data).digest("hex");
+  /** The canonical JSON (sorted keys) the workflow hashes for inputSha256 of incident-collect. */
+  const canon = (v) => (Array.isArray(v) ? `[${v.map(canon).join(",")}]` : v && typeof v === "object" ? `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canon(v[k])}`).join(",")}}` : JSON.stringify(v === undefined ? null : v));
   const scratch = (t, name) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), `zodchi-io-${name}-`)).replace(/\\/g, "/");
     t.cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -80,7 +82,12 @@ export default function register({ scenario, ROOT }) {
     t.eq(io(t, "incident-unlock", { tmp, incident: "i1", token: broken.token }).removed, true, "the holder removes it");
     t.ok(!fs.existsSync(`${tmp}/.lock`), "and it is gone");
 
-    for (const [what, text] of [["\"\"", "\"\""], ["empty", ""], ["not JSON", "{"], ["a string", "\"x\""], ["another incident", JSON.stringify({ id: "i2", revision: 1, state: "drafted", revisions: [{ n: 1, state: "drafted" }] })]]) {
+    for (const [what, text] of [["\"\"", "\"\""], ["empty", ""], ["not JSON", "{"], ["a string", "\"x\""], ["another incident", JSON.stringify({ id: "i2", revision: 1, state: "drafted", revisions: [{ n: 1, state: "drafted" }] })],
+      ["an unknown state", JSON.stringify({ id: "i1", revision: 1, state: "done", revisions: [{ n: 1, state: "drafted" }] })],
+      ["a history entry without a state", JSON.stringify({ id: "i1", revision: 1, state: "drafted", revisions: [{ n: 1 }] })],
+      ["a history entry with an unknown state", JSON.stringify({ id: "i1", revision: 1, state: "drafted", revisions: [{ n: 1, state: "odd" }] })],
+      ["revision 0", JSON.stringify({ id: "i1", revision: 0, state: "drafted", revisions: [{ n: 0, state: "drafted" }] })],
+      ["a revision beyond the safe integers", JSON.stringify({ id: "i1", revision: 2 ** 60, state: "drafted", revisions: [] })]]) {
       fs.writeFileSync(`${tmp}/incident.json`, text);
       const r = io(t, "incident-open", { tmp, incident: "i1", adapter });
       t.eq([r.locked, r.incident.present, r.incident.valid], [true, true, false], `incident.json holding ${what}: present and not a record`);
@@ -103,10 +110,15 @@ export default function register({ scenario, ROOT }) {
     const tmp = `${dir}/inc`;
     const open = io(t, "incident-open", { tmp, incident: "i1", adapter });
     const report = "Job 4711 failed at night. token: [REDACTED]";
-    const base = { tmp, incident: "i1", adapter, adapterSha256: adapterSha, revision: 1, report, params: { id: "4711" }, withheld: {}, classifier: { model: "m", effort: "high" } };
+    const inputs = { incident: "i1", revision: 1, report, params: { id: "4711" }, withheld: {}, classifier: { model: "m", effort: "high" } };
+    const base = { tmp, adapter, adapterSha256: adapterSha, ...inputs, inputSha256: sha(Buffer.from(canon(inputs), "utf8")) };
     const refusedToken = io(t, "incident-collect", { ...base, token: "f".repeat(24) });
     t.ok(refusedToken.ok === false && !fs.existsSync(`${tmp}/rev-1`), "without the lock's token nothing is written");
     const outside = listing(dir).filter((f) => !f.startsWith("inc/"));
+    for (const [what, wrong] of [["another job id that matches its pattern", { params: { id: "4712" } }], ["no digest", { inputSha256: undefined }], ["another report", { report: `${report}.` }], ["a withheld value", { withheld: { id: { kind: "shell", fails: [] } } }]]) {
+      const x = io(t, "incident-collect", { ...base, token: open.token, ...wrong });
+      t.ok(x.ok === false && /inputSha256 differs/.test(x.error) && !fs.existsSync(`${tmp}/rev-1`) && !fs.existsSync(`${tmp}/incident.json`), `${what}: refused before anything is made or run`);
+    }
     const c = io(t, "incident-collect", { ...base, token: open.token });
     t.eq(c.ok, true, `the collector ran (${c.error || ""})`);
     t.eq(c.reportSha256, sha(Buffer.from(report, "utf8")), "reportSha256 is the hash of the report the helper got");
@@ -183,10 +195,14 @@ export default function register({ scenario, ROOT }) {
     const dirty = `${clean}Run it in ${drive}/work/app.\nThe client sends ${key}.\n`;
     fs.writeFileSync(brief, dirty);
     const screened = io(t, "brief-preflight", { ...spec, expectSha256: sha(dirty) });
-    t.eq([screened.written, screened.problems], [false, ["line 9: a machine path", "line 10: a secret-shaped value"]], "a public brief with a machine path and a secret-shaped value: both lines are named");
+    t.eq([screened.written, screened.publicRepo, screened.problems], [false, true, ["line 9: a machine path", "line 10: a secret-shaped value"]], "a public brief with a machine path and a secret-shaped value: both lines are named, and the mode used is said");
+    for (const [what, mode] of [["omitted", undefined], ["a string", "true"], ["null", null]]) {
+      const x = io(t, "brief-preflight", { ...spec, publicRepo: mode, expectSha256: sha(dirty) });
+      t.ok(x.ok === false && /publicRepo must be true or false/.test(x.error) && !fs.existsSync(reviewDir), `publicRepo ${what}: refused, never screened as not public`);
+    }
     t.ok(!JSON.stringify(screened).includes(key) && !fs.existsSync(reviewDir), "the value is not repeated, and nothing was written");
     const priv = io(t, "brief-preflight", { ...spec, publicRepo: false, expectSha256: sha(dirty) });
-    t.eq(priv.problems, ["line 10: a secret-shaped value"], "a brief not marked public may name a path, never a secret");
+    t.eq([priv.publicRepo, priv.problems], [false, ["line 10: a secret-shaped value"]], "a brief not marked public may name a path, never a secret; the answer says it screened as not public");
     fs.writeFileSync(brief, clean);
     const changed = io(t, "brief-preflight", { ...spec, expectSha256: sha(dirty) });
     t.ok(changed.changed === true && !changed.written && !fs.existsSync(reviewDir), "a brief that is not the one inspected is not screened or sent");
@@ -204,6 +220,14 @@ export default function register({ scenario, ROOT }) {
     t.eq(io(t, "brief-material", { dir: reviewDir, part: 1, of: 2, text: "x".repeat(4001) }).ok, false, "a part longer than 4000 characters is refused");
     t.eq(io(t, "brief-material", { dir: reviewDir, part: 3, of: 2, text: "x" }).ok, false, "a part number beyond its count is refused");
     t.eq(io(t, "brief-material", { dir: reviewDir, part: 1, of: 2, text: parts[0] }).sha256, sha(parts[0]), "the part written again, exactly");
+    // A material folder that is a link (a junction on Windows) to a folder outside the review folder: refused, nothing written there.
+    const linked = `${repo}/.agent-tmp/b/linked`;
+    const away = `${dir}/away`;
+    fs.mkdirSync(linked, { recursive: true }); fs.mkdirSync(away, { recursive: true });
+    fs.symlinkSync(away, `${linked}/material`, "junction");
+    const viaLink = io(t, "brief-material", { dir: linked, part: 1, of: 1, text: "x" });
+    t.ok(viaLink.ok === false && /is a link or resolves outside/.test(viaLink.error) && listing(away).length === 0, "a material folder that is a link to elsewhere is refused and nothing is written outside the review folder");
+    fs.rmSync(`${linked}/material`, { recursive: true, force: true });
     const before = listing(dir).filter((f) => !f.startsWith("repo/.agent-tmp/b/review/"));
     const ok = io(t, "brief-preflight", spec);
     t.eq([ok.written, ok.problems, ok.excerpts], [true, [], { total: 2, missing: 1 }], "a clean brief: the request is written; an excerpt that cannot be read is counted");
@@ -226,6 +250,13 @@ export default function register({ scenario, ROOT }) {
     fs.writeFileSync(rv, many);
     const big = io(t, "review-read", { file: rv });
     t.ok(big.review.findings.length === 40 && big.review.findingsTotal === 100 && big.review.notVerified.length === 20 && JSON.stringify(big).length < 160000, "a long answer gives a bounded line: 40 findings, 20 notVerified, each text capped; the total is said");
+    t.eq([big.review.shapeOk, big.review.severities], [true, { blocker: 0, important: 0, minor: 100, other: 0 }], "the shape and the severities are judged over every finding");
+    const f = (i, severity) => ({ id: `F${i}`, severity, location: "l", problem: "p", fix: "f" });
+    fs.writeFileSync(rv, JSON.stringify({ verdict: "approved", summary: "s", findings: [...Array.from({ length: 40 }, (_, i) => f(i, "minor")), f(40, "important"), f(41, "Critical")], notVerified: [] }));
+    const hidden = io(t, "review-read", { file: rv });
+    t.eq([hidden.review.findings.length, hidden.review.shapeOk, hidden.review.severities], [40, true, { blocker: 0, important: 1, minor: 40, other: 1 }], "a blocking finding after the first 40 is counted, though not listed");
+    fs.writeFileSync(rv, JSON.stringify({ verdict: "approved", summary: "s", findings: [...Array.from({ length: 40 }, (_, i) => f(i, "minor")), "not an object"], notVerified: [] }));
+    t.eq(io(t, "review-read", { file: rv }).review.shapeOk, false, "a malformed finding after the first 40 makes the shape fail");
     fs.writeFileSync(rv, "no json");
     t.eq([io(t, "review-read", { file: rv }).answer.json, io(t, "review-read", { file: `${reviewDir}/none.json` }).answer.present], [false, false], "an answer that is not JSON, and none at all, are said apart");
   });
