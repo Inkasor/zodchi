@@ -198,7 +198,11 @@ export default function register({ scenario, ROOT }) {
     // The whole spec, field by field: the repository and the claims folder, no list of files and no marker of one. The marker and the other
     // package's file are also looked for in the raw prompt and in every text its encoded argument hides.
     t.eq(Object.keys(moreSpec).sort(), ["api", "dir", "label", "repo"], "the claim-more spec has exactly its four fields (no list of files, nothing else)");
-    t.ok(moreSpec.api === 1 && moreSpec.repo === "/r" && moreSpec.label === "pkg" && String(moreSpec.dir).startsWith("~/.zodchi/packages/"), "the claim-more helper is asked with the repository, not a list: it reads Git and the claims itself");
+    // The claims folder is the one of this repository, exactly: the claim step writes the claim there and claim-more must read that same folder
+    // (a folder of another repository would not find the open claim). "/r" is named "-r" (every character outside [A-Za-z0-9] becomes "-").
+    const claimSpec = specIn(r.of(/^claim pkg$/)[0].prompt, "claim");
+    t.eq(claimSpec.dir, "~/.zodchi/packages/-r", "the claim step keeps the claim in the folder of this repository");
+    t.eq(moreSpec, { api: 1, dir: "~/.zodchi/packages/-r", label: "pkg", repo: "/r" }, "the claim-more helper is asked with the repository, not a list, and with the very folder the claim step used: it reads Git and the claims itself");
     t.ok(!holds(more, "other.js") && !more.includes("other.js") && !holds(more, '"hard"') && !more.includes('"hard"'), "neither the prompt nor the spec it carries names the other package's file or a hard list");
     t.ok((more.match(/node -e /g) || []).length === 1, "the step runs the helper's one command; the helper decides");
     for (const c of r.of(/^commit /)) {

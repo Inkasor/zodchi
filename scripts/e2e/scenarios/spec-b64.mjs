@@ -89,7 +89,7 @@ export default function register({ scenario, ROOT }) {
     const src = fs.readFileSync(path.join(ROOT, "core", "workflows", `${name}.js`), "utf8");
     const one = (re, what) => { const m = src.match(re); if (!m) throw new Error(`${name}.js: no ${what}`); return m[0]; };
     const encoder = one(/const B64 = [^\n]*\nconst b64 = \(text\) => \{\n[\s\S]*?\n\}\n/, "b64 encoder");
-    const cap = one(/const B64_MAX = [^\n]*\nconst specArg = \(spec\) => \{\n[\s\S]*?\n\}\n/, "B64_MAX and specArg");
+    const cap = one(/let sentB64 = [^\n]*\nconst B64_MAX = [^\n]*\nconst specArg = \(spec\) => \{\n[\s\S]*?\n\}\n/, "B64_MAX and specArg");
     const code = [one(/^const q = [^\n]*$/m, "q"), one(/^const GATE_API = [^\n]*$/m, "GATE_API"), one(/^const GATE_BOOT = [^\n]*$/m, "GATE_BOOT"), one(/^const SESSION_PROJECT = [^\n]*$/m, "SESSION_PROJECT"), encoder, cap, one(/^const helperRun = [^\n]*$/m, "helperRun")].join("\n");
     const ctx = vm.createContext({ a: {}, result: null });
     vm.runInContext(`${code}\nresult = { helperRun, specArg, b64, B64_MAX, GATE_BOOT, GATE_API }`, ctx);
@@ -179,6 +179,7 @@ export default function register({ scenario, ROOT }) {
 
   /** `damage(label, arg, attempt)` returns the argument the fake runner types, or undefined for a correct copy. */
   async function run(damage, opts = {}) {
+    const oldHelperLine = opts.oldHelperLine;
     const disk = `${SCRATCH}/run-${++runs}`;
     const repo = `${disk}/repo`;
     fs.mkdirSync(repo, { recursive: true });
@@ -202,6 +203,7 @@ export default function register({ scenario, ROOT }) {
         if (/^material /.test(label)) {
           const m = prompt.match(/ -- "\$\(pwd -W 2>\/dev\/null \|\| pwd\)" brief-material '((?:[^']|'\\'')*)'\n/);
           if (!m) throw new Error(`${label}: no brief-material command in the prompt`);
+          if (oldHelperLine) return { exitCode: 2, stdout: `${oldHelperLine}\n` };
           const typed = m[1].replace(/'\\''/g, "'");
           const n = (attempts.get(label) || 0) + 1;
           attempts.set(label, n);
@@ -313,6 +315,62 @@ export default function register({ scenario, ROOT }) {
     t.eq(specIn(shown, "claim"), spec, "the plain form it shows is read back to the same spec (apostrophes survive the round trip)");
     t.eq(specIn(b64Prompt, "claim"), spec, "the b64: form of the same prompt gives the same spec");
     t.eq(commandsIn(shown, "claim").map((c) => c.arg), [JSON.stringify(spec)], "the unquoted argument is the plain JSON text");
+  });
+
+  /** What a helper copy of before b64: answers: exit 2 and the error JSON.parse makes of "b64:..." (the text of this Node, and the text of an older Node). */
+  const OLD_ANSWERS = [
+    (() => { try { JSON.parse(enc("{}")); } catch (e) { return `the spec is not JSON: ${e.message}`; } throw new Error("JSON.parse took b64:"); })(),
+    "the spec is not JSON: Unexpected token b in JSON at position 0",
+  ];
+  const errorLine = (error) => JSON.stringify({ ok: false, api: 1, error });
+  /** One workflow run to its first helper answer: every agent call is answered with the given runner result. */
+  async function runFirst(name, answer, extra = {}) {
+    const dir = `${SCRATCH}/first-${++runs}`;
+    fs.mkdirSync(dir, { recursive: true });
+    const ARGS = {
+      "code-package": { label: "pkg", brief: `${dir}/brief.md`, repo: dir, files: ["src/a.js"], tmp: `${dir}/.agent-tmp/pkg`, checks: ["node t.js"], models: { writer: { candidates: [{ provider: "claude", model: "sonnet" }] }, reviewer: { candidates: [{ provider: "claude", model: "opus" }] } } },
+      "design-brief": { label: "db", goal: "Make the export resumable.", repos: [dir], questions: ["How?"], out: `${dir}/brief.md`, tmp: `${dir}/.agent-tmp/db` },
+      "incident-triage": { incident: "inc-1", tmp: `${dir}/tmp`, adapter: `${dir}/adapter.json`, report: "The export stopped." },
+      "ops-script": { script: `${dir}/ops.sh`, tmp: `${dir}/tmp`, sudo: "sudo bash ops.sh" },
+    }[name];
+    const calls = [];
+    const sandbox = {
+      args: { ...ARGS, ...extra }, phase: () => {}, log: () => {},
+      parallel: (thunks) => Promise.all(thunks.map((th) => th())),
+      agent: async (prompt, opts) => { calls.push({ label: opts.label, prompt }); return answer; },
+    };
+    const src = fs.readFileSync(path.join(ROOT, "core", "workflows", `${name}.js`), "utf8").replace(/^export const meta/, "const meta");
+    const out = await vm.runInNewContext(`(async () => {\n${src}\n})`, sandbox, { filename: `${name}.js` })();
+    return { out, calls };
+  }
+  const OLD_STOP = (at) => new RegExp(`the zodchi-core copy ${at} is older than this workflow \\(it does not read b64: specs\\): rerun the installer, reload plugins, or pass args.pluginRoot of a current copy`);
+
+  scenario("spec-b64-old-helper", "a helper copy of before b64: (it answers a b64: spec with exit 2 and 'the spec is not JSON: Unexpected token b...') stops every workflow with a text that names the cause and the way out, with no plain-JSON fallback; every other answer keeps its own text", async (t) => {
+    for (const name of WORKFLOWS) {
+      for (const error of OLD_ANSWERS) {
+        const answer = { exitCode: 2, stdout: `${errorLine(error)}\n` };
+        const bare = await runFirst(name, answer);
+        const stop = String(bare.out.stoppedAt);
+        t.ok(OLD_STOP("this session loaded").test(stop) && !stop.includes(error), `${name}: the stop names the old copy and the way out, not the bare parse error (${stop.slice(0, 230)})`);
+        t.eq(bare.calls.length, 1, `${name}: it stopped at the first helper answer; nothing else was asked`);
+        t.ok(/ 'b64:[A-Za-z0-9+/]+={0,2}'\n/.test(bare.calls[0].prompt), `${name}: that first command did go as b64:`);
+        const named = await runFirst(name, answer, { pluginRoot: "/old/core" });
+        t.ok(OLD_STOP("at /old/core").test(String(named.out.stoppedAt)), `${name}: with args.pluginRoot the stop names that folder (${String(named.out.stoppedAt).slice(0, 120)})`);
+      }
+      // Anything else keeps its own text: another error with exit 2, a failure of a current helper, the old text with another exit code.
+      for (const [what, answer, want] of [
+        ["a bad base64 told by a current helper", { exitCode: 2, stdout: `${errorLine("the spec is not valid base64 (b64: must be followed by standard base64 with its = padding)")}\n` }, /not valid base64/],
+        ["a plain JSON failure of the helper", { exitCode: 2, stdout: `${errorLine("the spec is not JSON: Unexpected token '{', \"{\\\"api\\\":1\"... is not valid JSON")}\n` }, /the spec is not JSON: Unexpected token '\{'/],
+        ["exit 1 with the old text", { exitCode: 1, stdout: `${errorLine(OLD_ANSWERS[0])}\n` }, /the spec is not JSON/],
+      ]) {
+        const r = await runFirst(name, answer);
+        const stop = String(r.out.stoppedAt);
+        t.ok(want.test(stop) && !/older than this workflow/.test(stop), `${name}: ${what} is not taken for an old copy (${stop.slice(0, 160)})`);
+      }
+    }
+    // design-brief, a material part: the old copy is found there too (the gate answered), and the run stops before the review.
+    const r = await run(() => undefined, { oldHelperLine: errorLine(OLD_ANSWERS[0]) });
+    t.ok(/older than this workflow/.test(r.out.stoppedAt || "") && r.of(/^material /).length >= 1 && r.of(/^preflight /).length === 0 && r.of(/^review$/).length === 0, `design-brief: a material part answered by an old copy stops the run before the review (${String(r.out.stoppedAt).slice(0, 200)})`);
   });
 
   scenario("spec-b64-too-many-parts", "the 200-part limit and its message are kept with the smaller parts", async (t) => {
