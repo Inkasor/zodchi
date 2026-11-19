@@ -260,15 +260,10 @@ workflow itself (scenario `incident-triage-runs`):
 These run in `npm run e2e` and in CI with the rest of the suite (scenarios `incident-triage-*`), so the incident-triage
 entries in the paragraph below are closed: only `no-evidence` and `edits-test` stay open.
 
-Open, for the owner, and not a decision: the entries marked "Open" above (`no-evidence`, `edits-test`, the 24
-incident-triage cases, `revisions`, `infra`, `cleanup-faults`) are what a user sees (a weakened check accepted, a
-success claimed without a receipt, sensitive evidence in a triage draft, a revision overwritten, a lock left or
-released wrongly after a failed write), not internal details, and with this change no gate checks them. Until the
-owner decides, this change must not be merged with their mock runs deleted. They were never in CI (the mock runs
-were started by hand), but they could be run. Two ways out: the owner drops these guarantees by name, or a bounded
-release run replaces them in version 2: `code-package` on a brief that asks to edit the protected test (the package
-must stop with `protectedChanged`), and `incident-triage` on a product adapter with the classifier on a Codex role,
-answered by the fake Codex from `fake-answer.json` like the review (the refusal and redaction cases, `revisions`,
-`infra`). A runner that reports success without evidence (`no-evidence`), or a
-written file it left out or reported with another hash (`cleanup-faults`), needs a fake agent, which no real run
-has, so for those cases only the owner's decision is left.
+Open, for the owner, and not a decision: `no-evidence` and `edits-test` are what a user sees (a weakened check
+accepted, a success claimed without a receipt), not internal details, and no gate checks them now. Two ways out: the
+owner drops these guarantees by name, or a bounded release run replaces them: `code-package` on a brief that asks to
+edit the protected test (the package must stop with `protectedChanged`); a runner that reports success without
+evidence (`no-evidence`) needs a fake agent, which no real run has, so for that case only the owner's decision is
+left. The incident-triage cases, `revisions`, `infra` and `cleanup-faults` were in this list until the scenarios
+`incident-triage-*` brought them back.
