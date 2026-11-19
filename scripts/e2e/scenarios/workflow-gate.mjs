@@ -186,9 +186,10 @@ export default function register({ scenario, ROOT }) {
     t.ok(!r.json.tried.some((p) => p.includes(checkout)), "the checkout it runs from is not a place it looks at");
     register([{ scope: "user", installPath: ok }]);
     r = boot("/some/repo");
-    t.eq([r.code, r.json.plugin.root, r.json.plugin.via], [0, ok, "installed_plugins.json, scope user"], "the registered copy with the helper runs it, and the answer names the copy and how it was found");
+    // macOS: the temp folder is a symlink (/var -> /private/var), so both sides are compared as real paths
+    t.eq([r.code, fs.realpathSync(r.json.plugin.root), r.json.plugin.via], [0, fs.realpathSync(ok), "installed_plugins.json, scope user"], "the registered copy with the helper runs it, and the answer names the copy and how it was found");
     register([{ scope: "user", installPath: stale }, { scope: "local", projectPath: "/project/a", installPath: ok }]);
-    t.eq(boot("/project/a").json.plugin.root, ok, "an install made for this project is preferred");
+    t.eq(fs.realpathSync(boot("/project/a").json.plugin.root), fs.realpathSync(ok), "an install made for this project is preferred");
     t.eq(boot("/project/b").code, 4, "an install made for another project is not used");
     register([{ scope: "user", installPath: stale }]);
     r = boot("/some/repo", { ZODCHI_PLUGIN_ROOT: ok });
