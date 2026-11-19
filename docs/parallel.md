@@ -38,9 +38,12 @@ agent may not be allowed to do either. Nothing is shared, nothing is locked.
   renamed over it). The runner returns the printed line and the exit code; the conflicts, the
   files of other packages (`others`) and what was added come only from that line. An open claim
   of the same label is reused on a resume, its branch set to the one the resumed run asks for
-  (after the same branch check against the others). The helper keeps claims under Node's home
-  folder; where the shell's `$HOME` names another folder (Windows), the claim step refuses while
-  open claims of earlier versions lie there, and `claim more` counts them as other packages.
+  (after the same branch check against the others). The helper keeps claims, and takes the lock,
+  in the folder under the shell's `$HOME`, the one every version of the workflow uses; where Node's
+  home folder is another one (Windows), the claim step refuses while open claims written there by
+  an earlier build lie in it, and `claim more` counts them as other packages. Until the helper's
+  answer confirms the claim file, the run marks and closes no claim; an answer it cannot read
+  stops the run with `claimUnknown`, for a person to look at the claims folder.
   (Seen on 2026-11-19: a runner asked to compare 45
   changed paths with two other claims answered that none were theirs, and its package committed
   all 45.)

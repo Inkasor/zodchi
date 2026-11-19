@@ -41,7 +41,7 @@ export default function register({ scenario, ROOT }) {
       const given = o.answers && o.answers[label];
       if (given !== undefined) return typeof given === "function" ? given(prompt, calls) : given;
       if (label === "gate pkg") return gateAnswer({ config: o.config ? JSON.parse(o.config) : {}, branch: o.branch ?? "main", boundary: o.boundary ?? BOUNDARY });
-      if (label === "claim pkg") return helperLine({ ok: true, conflicts: [], branchConflicts: [], reused: false, files: ["src/a.js"] });
+      if (label === "claim pkg") return helperLine({ ok: true, conflicts: [], branchConflicts: [], reused: false, files: ["src/a.js"], file: "/h/.zodchi/packages/-r/pkg.json" });
       if (label === "switch pkg") return { ok: true, summary: "switched" };
       if (label === "write pkg") return { done: true, summary: "wrote", changed: ["/r/src/a.js"], unverified: [] };
       if (label === "base pkg") return { ok: true, head: "abc1234", branch: args.branch || "main", verifySkill: false, reviewMd: false };
