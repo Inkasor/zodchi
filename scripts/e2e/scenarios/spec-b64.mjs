@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import { spawnSync } from "node:child_process";
+import { unquote, plainPrompt, commandsIn, encodeSpec, specIn } from "../spec-arg.mjs";
 
 const sha = (text) => crypto.createHash("sha256").update(text, "utf8").digest("hex");
 const MARK = "<!-- design-brief: db -->";
@@ -214,6 +215,26 @@ export default function register({ scenario, ROOT }) {
     // A fault in the first part is reported first, as before.
     const both = await run((label, arg) => (/^material [12]\//.test(label) ? arg.slice(0, -3) : undefined));
     t.ok(/^review \(part 1 of the material was not written/.test(both.out.stoppedAt || ""), "when several parts fail twice, the first is named");
+  });
+
+  scenario("spec-b64-quote-escape", "the shared reader of the scenarios undoes exactly the shell escape q() of the workflows writes (an apostrophe is four characters), and writes exactly that escape when it shows a b64: argument as plain JSON", async (t) => {
+    const ESC = String.raw`'\''`;
+    t.eq(ESC.length, 4, "the escape is four characters: apostrophe, backslash, apostrophe, apostrophe");
+    for (const name of WORKFLOWS) {
+      const ctx = vm.createContext({});
+      vm.runInContext(`${helperOf(name).src.match(/^const q = [^\n]*$/m)[0]}\nglobalThis.q = q`, ctx);
+      const q = ctx.q;
+      t.eq(q("it's"), `'it${ESC}s'`, `${name}: q() writes an apostrophe as the four-character escape`);
+      for (const text of ["it's", "'", "''", "a'b'c", "\'", "x\\'' y", "Привет, it's 😀"]) t.eq(unquote(q(text).slice(1, -1)), text, `${name}: unquote of the inside of q(${JSON.stringify(text)}) is the text`);
+    }
+    const spec = { api: 1, text: "it's a test", list: ["'", "\'"] };
+    const b64Prompt = `run it\n -- "$(pwd -W 2>/dev/null || pwd)" claim '${encodeSpec(spec)}'\nthen stop`;
+    const shown = plainPrompt(b64Prompt);
+    t.ok(shown.includes(`claim '${JSON.stringify(spec).replace(/'/g, ESC)}'\n`), "plainPrompt writes the apostrophes of the plain JSON as the same escape q() writes");
+    t.ok(!shown.includes("b64:"), "and leaves no b64: argument in the text it shows");
+    t.eq(specIn(shown, "claim"), spec, "the plain form it shows is read back to the same spec (apostrophes survive the round trip)");
+    t.eq(specIn(b64Prompt, "claim"), spec, "the b64: form of the same prompt gives the same spec");
+    t.eq(commandsIn(shown, "claim").map((c) => c.arg), [JSON.stringify(spec)], "the unquoted argument is the plain JSON text");
   });
 
   scenario("spec-b64-too-many-parts", "the 200-part limit and its message are kept with the smaller parts", async (t) => {
