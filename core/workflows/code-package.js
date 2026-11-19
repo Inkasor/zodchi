@@ -280,9 +280,9 @@ function infraFail(label, what) {
 }
 // Claims live outside the repository, in the shell's home folder, so that no .gitignore matters: one folder per
 // repository, named by its path with every character outside [A-Za-z0-9] replaced by "-" (case folded on Windows).
-// $HOME is written for the shell, which expands it: commands name the folder in double quotes. Once the claim helper has written the
-// claim, both name the file it reports (its home folder is Node's, which a shell's $HOME may differ from), so that the later steps
-// mark and close the very file it wrote.
+// $HOME is written for the shell, which expands it: commands name the folder in double quotes. The claim helper keeps claims in the same
+// folder (it reads the shell's $HOME too). Once it has confirmed the claim, both name the file it reports, so that the later steps mark and
+// close the very file it wrote; before that no step marks or closes any claim file.
 const claimsName = fold(repoKey).replace(/[^A-Za-z0-9]/g, '-')
 let claimsDir = `$HOME/.zodchi/packages/${claimsName}`
 let claimFile = `${claimsDir}/${a.label}.json`
@@ -442,11 +442,12 @@ if (needIgnore) {
 // Claims are compared and written by the gate helper (core/scripts/gate.mjs claim and claim-more), never by a model: it reads every
 // claim under the claims lock (mkdir is atomic, so two packages started at once cannot both pass), compares the lists of paths and writes
 // the claim atomically. The runner only runs its command and returns the printed line and the exit code; the workflow decides from that
-// line. From the claim on, whatever happens, the claim is closed at the end and the closing is checked; only a refusal for conflicts,
-// which writes no claim, skips that, and an infrastructure failure, after which the run is resumed.
+// line. From the moment the helper confirms the claim (ok, and the claim file it wrote or reused), whatever happens, the claim is closed at
+// the end and the closing is checked; an infrastructure failure, after which the run is resumed, marks it instead. Before that confirmation
+// (a refusal, a busy lock, an answer that cannot be read) no claim file is marked or closed.
 let claimStatus = 'stopped'
-let claimWritten = true
-// The same folder as claimsDir, for the helper: it resolves "~/" to the home folder itself (no shell expands it inside the spec).
+let claimWritten = false
+// The same folder as claimsDir, for the helper: it resolves "~/" to the shell's $HOME itself (no shell expands it inside the spec).
 const claimsSpecDir = `~/.zodchi/packages/${claimsName}`
 const helperStep = (command, spec, label, phaseName) => step(
   `Run ONE command and return what it printed; change nothing and run nothing else. In the foreground, once:\n${helperRun(command, spec)}\n` +
@@ -480,27 +481,38 @@ try {
 const claimRead = readClaimHelper(await helperStep('claim',
   { dir: claimsSpecDir, label: a.label, files: claimKeys, branch: myBranch, brief: a.brief, tmp: a.tmp, base }, `claim ${a.label}`), 'the claim helper')
 const claim = claimRead.facts
-// Open claims in the claims folder of the shell's $HOME, which earlier versions of this workflow used, when that is not the folder the helper
-// keeps claims in (Node's home folder): they would go unseen, so nothing is claimed until a person closes or moves them.
+// Open claims in the claims folder under Node's home folder, which a build of this workflow used, when that is not the folder the helper keeps
+// claims in (the shell's $HOME): they would go unseen, so nothing is claimed until a person closes or moves them.
 if (claim && !claim.ok && Array.isArray(claim.legacyClaims) && claim.legacyClaims.length) {
-  claimWritten = false
-  out.refused = `Open claims lie in ${claim.legacyDir}, the claims folder of the shell's home folder ($HOME), which is not the folder the claims are kept in now (${String(claim.file || '').replace(/\/[^/]+$/, '')}): ${claim.legacyClaims.join('; ')}. ` +
-    `Finish them or close them (status "closed"), or move the open ones into the new folder, then start again.`
+  out.refused = `Open claims lie in ${claim.legacyDir}, under Node's home folder, which is not the folder the claims are kept in (${String(claim.file || '').replace(/\/[^/]+$/, '')}, under the shell's $HOME): ${claim.legacyClaims.join('; ')}. ` +
+    `Finish them or close them (status "closed"), or move the open ones into that folder, then start again.`
   return out
 }
 if (claim && !claim.ok && Array.isArray(claim.branchConflicts) && claim.branchConflicts.length) {
-  claimWritten = false
   out.refused = `Another open package of this repository works on a different branch (${claim.branchConflicts.join('; ')}) and this one would work on ${myBranch}; switching would pull the branch from under it. ` +
     `Start this package on the same branch, finish the other one first, or run it in a worktree or clone (docs/parallel.md).`
   return out
 }
 if (claim && !claim.ok && claim.conflicts.length && claim.conflicts[0] !== 'lock busy') {
-  claimWritten = false
   out.refused = `Open packages claim the same files: ${claim.conflicts.join('; ')}. Finish them, or close a stale one (status "closed" in ${claimsDir}/<label>.json).`
   return out
 }
-  if (!claim || !claim.ok) { out.stoppedAt = `claim (${claim ? claim.error || claim.conflicts.join(', ') || 'the helper wrote no claim' : claimRead.error})`; return out }
-  if (typeof claim.file === 'string' && claim.file.endsWith(`/${a.label}.json`)) { claimFile = claim.file; claimsDir = claim.file.replace(/\/[^/]+$/, '') }
+  // A readable answer with ok false (a busy lock, an error the helper names) wrote nothing. An answer that cannot be read, or a success
+  // without the absolute claim file, leaves unknown whether the helper wrote or changed the claim: no claim file is guessed, marked or
+  // closed; the person looks at the folder first.
+  const confirmed = claim && claim.ok && typeof claim.file === 'string' && /^([A-Za-z]:)?\//.test(claim.file) && claim.file.endsWith(`/${a.label}.json`)
+  if (claim && !claim.ok) { out.stoppedAt = `claim (${claim.error || claim.conflicts.join(', ') || 'the helper wrote no claim'})`; return out }
+  if (!confirmed) {
+    const why = claim ? 'the helper reported success without its claim file' : claimRead.error
+    out.stoppedAt = `claim (${why})`
+    out.claimUnknown = `Whether the claim helper wrote or changed the claim of ${a.label} is unknown (${why}). Look at "${claimsDir}/${a.label}.json" ($HOME is the shell's home folder): ` +
+      `if this run wrote it (its "tmp" is ${a.tmp} and no other run of ${a.label} is open), set its "status" to "closed", then start again.`
+    out.next = out.claimUnknown
+    return out
+  }
+  claimWritten = true
+  claimFile = claim.file
+  claimsDir = claim.file.replace(/\/[^/]+$/, '')
   if (claim.reused) log(`Claim of ${a.label}: its open claim from an earlier run is reused (${claim.file})${typeof claim.branchWas === 'string' ? `; its branch ${claim.branchWas || '(none)'} is now ${myBranch}` : ''}`)
   if (a.branch && !sharedBranch) {
     // The switch to args.branch, once the claim is written: a step of its own, so that the claim step only runs the helper.

@@ -266,7 +266,7 @@ export default function register({ scenario, ROOT }) {
   const cpAnswers = (over = {}) => (label) => {
     if (over[label] !== undefined) return typeof over[label] === "function" ? over[label]() : over[label];
     if (label === "gate pkg") return printed(CP_FACTS);
-    if (label === "claim pkg") return printed({ conflicts: [], branchConflicts: [], reused: false, files: ["src/a.js"] });
+    if (label === "claim pkg") return printed({ conflicts: [], branchConflicts: [], reused: false, files: ["src/a.js"], file: "/h/.zodchi/packages/-r/pkg.json" });
     if (label === "write pkg") return { done: true, summary: "wrote", changed: ["/r/src/a.js"], unverified: [] };
     if (label.startsWith("status ")) return { ok: true, paths: ["src/a.js"] };
     if (label.startsWith("checks ")) return { ok: true, results: ["ok"], cause: "none", logs: [], evidence: [{ command: "node t.js", exitCode: 0, log: "l" }] };

@@ -247,7 +247,7 @@ function withLock(dir, fn, { waitMs = 120000, staleMs = 600000 } = {}) {
 }
 
 function claimFacts(spec, repo, dirtyKeys) {
-  const dir = path.join(os.homedir(), ".zodchi", "packages", String(spec.claimsKey || ""));
+  const dir = path.join(claimsHome(), ".zodchi", "packages", String(spec.claimsKey || ""));
   const answer = { dir: norm(dir), open: [], closed: [], kept: [], skipped: [], notes: [] };
   if (!spec.claimsKey) { answer.notes.push("no claims key given"); return answer; }
   const first = readClaims(dir);
@@ -308,19 +308,25 @@ const pathKey = (f) => {
   return (lead + parts.join("/")).toLowerCase();
 };
 const keysOf = (list) => [...new Set((Array.isArray(list) ? list : []).map(pathKey).filter(Boolean))];
-const claimsDirOf = (spec) => {
+const underHome = (spec, home) => {
   const d = norm(spec.dir);
-  return path.resolve(/^(~|\$HOME)(\/|$)/.test(d) ? path.join(os.homedir(), d.replace(/^(~|\$HOME)\/?/, "")) : d);
+  return path.resolve(/^(~|\$HOME)(\/|$)/.test(d) ? path.join(home, d.replace(/^(~|\$HOME)\/?/, "")) : d);
 };
-// The claims folder an earlier workflow used: it named the folder for the shell, under $HOME, while this helper resolves "~" to Node's home
-// folder. On Windows the two may differ (Node reads USERPROFILE, Git Bash may set HOME elsewhere); "" when they are the same folder or the
-// spec names no home-relative folder. Open claims there are read too (see claimCmd and claimMoreCmd), so an upgrade never hides them.
+// The claims folder is the one the shell's $HOME names, as every version of the workflow named it for its runners (they read, write and lock
+// claims there), so that one folder and one lock serve all versions; on Windows the Git Bash form /c/... is read with its drive letter. Without HOME it
+// is Node's home folder.
+function claimsHome() {
+  if (!process.env.HOME) return os.homedir();
+  const home = norm(process.env.HOME);
+  return process.platform === "win32" ? home.replace(/^\/([A-Za-z])(\/|$)/, (_, l) => `${l.toUpperCase()}:/`) : home;
+}
+const claimsDirOf = (spec) => underHome(spec, claimsHome());
+// The claims folder under Node's home folder, which a build of this helper used for a while: on Windows Node reads USERPROFILE, and Git Bash
+// may set HOME elsewhere. "" when it is the claims folder itself or the spec names no home-relative folder. Open claims there are read too
+// (see claimCmd and claimMoreCmd), so that none written there is lost; they are moved or closed by a person.
 const legacyDirOf = (spec) => {
-  const d = norm(spec.dir);
-  if (!/^(~|\$HOME)(\/|$)/.test(d) || !process.env.HOME) return "";
-  let home = norm(process.env.HOME);
-  if (process.platform === "win32") home = home.replace(/^\/([A-Za-z])(\/|$)/, (_, l) => `${l.toUpperCase()}:/`);
-  const legacy = path.resolve(path.join(home, d.replace(/^(~|\$HOME)\/?/, "")));
+  if (!/^(~|\$HOME)(\/|$)/.test(norm(spec.dir))) return "";
+  const legacy = underHome(spec, os.homedir());
   const now = claimsDirOf(spec);
   return (process.platform === "linux" ? legacy === now : legacy.toLowerCase() === now.toLowerCase()) ? "" : legacy;
 };
@@ -348,7 +354,7 @@ function needFields(spec, strings, lists) {
 // "<label>: <file>"; an open claim of another label whose "branch" is set and differs is a branch conflict "<label>: <branch>". Without
 // either, <dir>/<label>.json is written: { label, status "open", files, branch, brief, tmp, base, openedAt }. An open claim of the same
 // label (a resumed package) is kept as it is, with files it lacks added and its branch set to the requested one (checked against the
-// others above; branchWas names the one it had); it is no conflict. Open claims in the folder of the shell's $HOME, when that is another
+// others above; branchWas names the one it had); it is no conflict. Open claims in the folder under Node's home folder, when that is another
 // folder (legacyDirOf), stop the claim (legacyDir, legacyClaims "<label>: <n> file(s)"): they must be closed or moved first.
 function claimCmd(spec) {
   needFields(spec, ["dir", "label", "branch", "brief", "tmp", "base"], ["files"]);
@@ -362,7 +368,7 @@ function claimCmd(spec) {
     const legacy = legacyDir ? readClaims(legacyDir).claims.filter((e) => e.claim.status === "open") : [];
     if (legacy.length) {
       return { ...base, legacyDir: norm(legacyDir), legacyClaims: legacy.map((e) => `${e.label}: ${Array.isArray(e.claim.files) ? e.claim.files.length : 0} file(s)`),
-        error: `open claims lie in ${norm(legacyDir)}, the claims folder of the shell's $HOME, which is not the home folder the claims are kept in now` };
+        error: `open claims lie in ${norm(legacyDir)}, under Node's home folder, which is not the folder of the shell's $HOME the claims are kept in` };
     }
     const mine = new Set(files);
     const conflicts = [], branchConflicts = [];
@@ -390,7 +396,7 @@ function claimCmd(spec) {
 // claim-more: { dir, label, hard, soft }. Every hard file (the writer reported it) that another open claim lists is a conflict
 // "<label>: <file>"; every soft file (only Git shows it changed) that another open claim lists is that package's work and goes to others.
 // Without conflicts, every hard file and every soft file not in others that this label's open claim lacks is added to it (added).
-// The open claims of other labels in the folder of the shell's $HOME (legacyDirOf) count as other claims here too.
+// The open claims of other labels in the folder under Node's home folder (legacyDirOf) count as other claims here too.
 function claimMoreCmd(spec) {
   needFields(spec, ["dir", "label"], ["hard", "soft"]);
   const dir = claimsDirOf(spec);

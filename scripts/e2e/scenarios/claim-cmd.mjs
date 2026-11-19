@@ -139,7 +139,9 @@ export default function register({ scenario, ROOT }) {
     r = claim(t, dir3, "one", ["a.js"], { branch: "feat" });
     t.eq([r.ok, r.reused, r.branchWas], [true, true, undefined], "a resume on the same branch names no earlier one");
 
-    // the shell's $HOME and Node's home folder differ (Windows: Node reads USERPROFILE): open claims under $HOME are not lost
+    // the shell's $HOME and Node's home folder differ (Windows: Node reads USERPROFILE). The claims folder and its lock are the ones under the
+    // shell's $HOME, which every version of the workflow reads, writes and locks, so an older session sees a new session's claim; open claims
+    // that a build of the helper wrote under Node's home folder are not lost either
     if (process.platform !== "win32") { t.log("Node's home folder is $HOME on this platform: the two folders cannot differ"); return; }
     const scratch = (name) => {
       const h = fs.mkdtempSync(path.join(os.tmpdir(), `zodchi-claim-${name}-`)).replace(/\\/g, "/");
@@ -148,31 +150,43 @@ export default function register({ scenario, ROOT }) {
     };
     const nodeHome = scratch("node"), shellHome = scratch("shell");
     const spec = "~/.zodchi/packages/-r";
-    const legacy = `${shellHome}/.zodchi/packages/-r`, now = `${nodeHome}/.zodchi/packages/-r`;
-    fs.mkdirSync(legacy, { recursive: true });
-    fs.writeFileSync(`${legacy}/old.json`, JSON.stringify({ label: "old", status: "open", files: ["src/a.js", "src/b.js"], branch: "main" }));
-    fs.writeFileSync(`${legacy}/done.json`, JSON.stringify({ label: "done", status: "closed", files: ["src/c.js"], branch: "main" }));
+    const shellDir = `${shellHome}/.zodchi/packages/-r`, nodeDir = `${nodeHome}/.zodchi/packages/-r`;
     const msys = shellHome.replace(/^([A-Za-z]):/, (_, l) => `/${l.toLowerCase()}`);
     const newSpec = { dir: spec, label: "new", files: ["src/z.js"], branch: "main", brief: "/r/b.md", tmp: "/r/.agent-tmp/new", base: "abc1234" };
+    r = helper(t, "claim", newSpec, { HOME: msys, USERPROFILE: nodeHome });
+    t.eq(r.ok, true, "$HOME in Git Bash form: a clean file is claimed");
+    t.ok(String(r.file).toLowerCase() === `${shellDir}/new.json`.toLowerCase(), `the claim lies under the shell's $HOME, where an older session reads it (${r.file})`);
+    t.eq(read(shellDir, "new").files, ["src/z.js"], "it is there for an older session to compare with");
+    t.ok(!fs.existsSync(nodeDir), "nothing is written under Node's home folder");
+    r = helper(t, "claim", newSpec, { HOME: shellHome, USERPROFILE: nodeHome });
+    t.eq([r.ok, r.reused], [true, true], "$HOME in Windows form names the same folder: the claim is reused");
+    fs.mkdirSync(`${shellDir}/.lock`);
+    r = helper(t, "claim", { ...newSpec, label: "late", files: ["src/w.js"], lockWaitSec: 1 }, { HOME: msys, USERPROFILE: nodeHome });
+    t.eq([r.ok, r.conflicts], [false, ["lock busy"]], "the lock an older session holds under $HOME is the helper's lock too");
+    fs.rmdirSync(`${shellDir}/.lock`);
+
+    fs.mkdirSync(nodeDir, { recursive: true });
+    fs.writeFileSync(`${nodeDir}/old.json`, JSON.stringify({ label: "old", status: "open", files: ["src/a.js", "src/b.js"], branch: "main" }));
+    fs.writeFileSync(`${nodeDir}/done.json`, JSON.stringify({ label: "done", status: "closed", files: ["src/c.js"], branch: "main" }));
     for (const [form, home] of [["Windows", shellHome], ["Git Bash", msys]]) {
-      r = helper(t, "claim", newSpec, { HOME: home, USERPROFILE: nodeHome });
-      t.eq([r.ok, r.legacyClaims, r.conflicts], [false, ["old: 2 file(s)"], []], `$HOME in ${form} form: the open claim in its folder stops the claim`);
-      t.ok(String(r.legacyDir).toLowerCase() === legacy.toLowerCase(), `and the answer names that folder (${r.legacyDir})`);
-      t.ok(!fs.existsSync(`${now}/new.json`), "nothing is written in the new folder");
+      r = helper(t, "claim", { ...newSpec, label: "next", files: ["src/n.js"] }, { HOME: home, USERPROFILE: nodeHome });
+      t.eq([r.ok, r.legacyClaims, r.conflicts], [false, ["old: 2 file(s)"], []], `$HOME in ${form} form: the open claim under Node's home folder stops the claim`);
+      t.ok(String(r.legacyDir).toLowerCase() === nodeDir.toLowerCase(), `and the answer names that folder (${r.legacyDir})`);
+      t.ok(!fs.existsSync(`${shellDir}/next.json`), "nothing is written");
     }
-    r = helper(t, "claim", newSpec, { HOME: nodeHome, USERPROFILE: nodeHome });
+    r = helper(t, "claim", { ...newSpec, label: "next", files: ["src/n.js"] }, { HOME: shellHome, USERPROFILE: shellHome });
     t.eq([r.ok, r.legacyClaims], [true, undefined], "with one home folder for both there is nothing else to read and the claim goes through");
-    r = helper(t, "claim-more", { dir: spec, label: "new", hard: ["src/y.js"], soft: ["src/a.js", "src/x.js"] }, { HOME: shellHome, USERPROFILE: nodeHome });
-    t.eq([r.ok, r.others, r.added], [true, ["src/a.js"], ["src/y.js", "src/x.js"]], "claim-more leaves a file of an open claim under $HOME to it");
-    r = helper(t, "claim-more", { dir: spec, label: "new", hard: ["src/b.js"], soft: [] }, { HOME: shellHome, USERPROFILE: nodeHome });
+    r = helper(t, "claim-more", { dir: spec, label: "new", hard: ["src/y.js"], soft: ["src/a.js", "src/x.js"] }, { HOME: msys, USERPROFILE: nodeHome });
+    t.eq([r.ok, r.others, r.added], [true, ["src/a.js"], ["src/y.js", "src/x.js"]], "claim-more leaves a file of an open claim under Node's home folder to it");
+    r = helper(t, "claim-more", { dir: spec, label: "new", hard: ["src/b.js"], soft: [] }, { HOME: msys, USERPROFILE: nodeHome });
     t.eq([r.ok, r.conflicts], [false, ["old: src/b.js"]], "and a hard file of it is a conflict");
-    t.eq(read(now, "new").files, ["src/z.js", "src/y.js", "src/x.js"], "the claim holds only this package's files");
-    t.ok(!fs.existsSync(`${legacy}/new.json`) && !fs.existsSync(`${legacy}/.lock`), "nothing is written in the folder under $HOME");
+    t.eq(read(shellDir, "new").files, ["src/z.js", "src/y.js", "src/x.js"], "the claim holds only this package's files");
+    t.ok(!fs.existsSync(`${nodeDir}/new.json`) && !fs.existsSync(`${nodeDir}/.lock`), "nothing is written under Node's home folder");
 
     // the workflow refuses on that answer and writes and closes no claim
     const { home: wfHome, dir: wfDir } = homeFor(t, "wf-legacy");
-    const w = await runBody({ "claim lm-release": realRunner(t, wfHome, undefined, { HOME: shellHome }) });
-    t.ok(String(w.out.refused).startsWith(`Open claims lie in ${legacy}`) && w.out.refused.includes("old: 2 file(s)"), `the workflow refuses (${w.out.refused})`);
+    const w = await runBody({ "claim lm-release": realRunner(t, wfHome, undefined, { USERPROFILE: nodeHome }) });
+    t.ok(String(w.out.refused).startsWith(`Open claims lie in ${nodeDir}`) && w.out.refused.includes("old: 2 file(s)"), `the workflow refuses (${w.out.refused})`);
     t.eq(w.calls.map((x) => x.label), ["gate lm-release", "claim lm-release"], "nothing ran after the claim step, and no claim was left to close");
     t.ok(!fs.existsSync(`${wfDir}/lm-release.json`), "no claim was written");
   });
@@ -316,6 +330,7 @@ export default function register({ scenario, ROOT }) {
     t.ok(/^claim \(lock busy/.test(l.out.stoppedAt) && l.out.refused === undefined, `a busy lock stops the run at the claim (${l.out.stoppedAt})`);
     t.ok(fs.existsSync(`${dir4}/.lock`) && !fs.existsSync(`${dir4}/lm-release.json`), "the lock is left in place and nothing was written");
     t.eq(l.of(/^write /).length, 0, "nothing was written by the writer either");
+    t.eq(l.of(/^(close|await) claim/).length, 0, "and no claim file is marked or closed: the helper confirmed none");
 
     // an answer the workflow cannot read is no claim: a bad exit code, no JSON line, another api
     const bad = {
@@ -327,11 +342,19 @@ export default function register({ scenario, ROOT }) {
     for (const [what, answer] of Object.entries(bad)) {
       const x = await runBody({ "claim lm-release": answer });
       t.ok(/^claim \(the claim helper/.test(String(x.out.stoppedAt)) && x.of(/^write /).length === 0, `${what}: the run stops at the claim (${x.out.stoppedAt})`);
+      t.ok(x.of(/^(close|await) claim/).length === 0 && /is unknown/.test(String(x.out.claimUnknown)), `${what}: no guessed claim file is closed; the claim state is reported unknown (${x.out.claimUnknown})`);
       const y = await runBody({
-        "claim lm-release": { exitCode: 0, stdout: JSON.stringify({ ok: true, api: 1, plugin: PLUGIN, conflicts: [], branchConflicts: [] }) + "\n" }, "claim more write lm-release": answer,
+        "claim lm-release": { exitCode: 0, stdout: JSON.stringify({ ok: true, api: 1, plugin: PLUGIN, conflicts: [], branchConflicts: [], file: "/h/.zodchi/packages/-r/lm-release.json" }) + "\n" }, "claim more write lm-release": answer,
         "write lm-release": { done: true, summary: "w", changed: ["/r/src/a.js", "/r/src/n.js"], unverified: [] }, "status write lm-release": { ok: true, paths: ["src/a.js", "src/n.js"] },
       });
       t.ok(/^claim more \(the claim-more helper/.test(String(y.out.stoppedAt)) && y.of(/^commit /).length === 0, `${what}: the run stops at the extension, nothing committed (${y.out.stoppedAt})`);
+      t.ok(y.of(/^close claim/)[0].prompt.includes('"/h/.zodchi/packages/-r/lm-release.json"'), `${what}: the claim the helper confirmed is closed by its own path`);
+    }
+    // a success without this label's absolute claim file confirms no claim: the run stops with the claim state unknown, nothing is closed
+    for (const file of [undefined, "lm-release.json", "/h/.zodchi/packages/-r/other.json"]) {
+      const z = await runBody({ "claim lm-release": { exitCode: 0, stdout: JSON.stringify({ ok: true, api: 1, plugin: PLUGIN, conflicts: [], branchConflicts: [], file }) + "\n" } });
+      t.ok(z.out.stoppedAt === "claim (the helper reported success without its claim file)" && /is unknown/.test(String(z.out.claimUnknown)), `file ${JSON.stringify(file)}: the run stops with the claim state unknown (${z.out.stoppedAt})`);
+      t.eq([z.of(/^write /).length, z.of(/^(close|await) claim/).length], [0, 0], `file ${JSON.stringify(file)}: nothing ran after it and no claim file was marked or closed`);
     }
 
     // args.branch outside the shared-branch mode: the switch is a runner step of its own, after the helper wrote the claim
