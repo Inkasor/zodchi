@@ -29,6 +29,17 @@ agent may not be allowed to do either. Nothing is shared, nothing is locked.
   the file `<label>.json` whose `label` field is its own name and nothing else: a stray
   `x.json.bak-1` or `x.bak.json` is never read as a second open claim, and no agent makes a
   backup in that folder (a file is changed in place).
+- **Who compares.** Lists of paths are never compared by a model. The claim step and every
+  extension of the claim after a write (`claim <label>`, `claim more <step>`) run one command of
+  the gate helper, `gate.mjs claim` or `gate.mjs claim-more`, which takes the claims lock (the
+  folder `.lock`; a lock still held after two minutes is reported as the conflict `lock busy`,
+  never broken), reads every claim, compares the paths as the workflow keys them (lower case,
+  slashes forward, relative to the repository) and writes the claim atomically (a temp file
+  renamed over it). The runner returns the printed line and the exit code; the conflicts, the
+  files of other packages (`others`) and what was added come only from that line. An open claim
+  of the same label is reused on a resume. (Seen on 2026-11-19: a runner asked to compare 45
+  changed paths with two other claims answered that none were theirs, and its package committed
+  all 45.)
 - **Stale claims.** A package finished by hand, outside `code-package`, leaves its claim open
   and would block later packages. The gate closes an open claim of another label when all
   of these hold: none of its files has an uncommitted change; it has commits after its recorded

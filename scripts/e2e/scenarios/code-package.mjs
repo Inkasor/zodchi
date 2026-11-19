@@ -25,6 +25,8 @@ export default function register({ scenario, ROOT }) {
       ...over,
     }),
   });
+  /** The answer of a claim step: the exit code and the one JSON line the claim helper prints (gate.mjs claim, claim-more). */
+  const helperLine = (facts) => ({ exitCode: 0, stdout: JSON.stringify({ api: 1, plugin: { root: "/plugin/core", commit: "c0ffee", version: "1.0.0-dev", via: "installed_plugins.json, scope user" }, ...facts }) + "\n" });
 
   /** Runs the workflow once. `o.reviews[i]` answers review round i+1; `o.answers` replaces the answer of a step label. */
   async function run(o = {}) {
@@ -39,7 +41,8 @@ export default function register({ scenario, ROOT }) {
       const given = o.answers && o.answers[label];
       if (given !== undefined) return typeof given === "function" ? given(prompt, calls) : given;
       if (label === "gate pkg") return gateAnswer({ config: o.config ? JSON.parse(o.config) : {}, branch: o.branch ?? "main", boundary: o.boundary ?? BOUNDARY });
-      if (label === "claim pkg") return { ok: true, conflicts: [], branchConflicts: [] };
+      if (label === "claim pkg") return helperLine({ ok: true, conflicts: [], branchConflicts: [], reused: false, files: ["src/a.js"] });
+      if (label === "switch pkg") return { ok: true, summary: "switched" };
       if (label === "write pkg") return { done: true, summary: "wrote", changed: ["/r/src/a.js"], unverified: [] };
       if (label === "base pkg") return { ok: true, head: "abc1234", branch: args.branch || "main", verifySkill: false, reviewMd: false };
       if (label.startsWith("status ")) return { ok: true, paths: ["src/a.js"] };
@@ -48,7 +51,7 @@ export default function register({ scenario, ROOT }) {
       if (label.startsWith("review ")) return reviews.shift() || { verdict: "approved", findings: [] };
       if (label.startsWith("close ") && label.includes("claim")) return { ok: true, summary: "closed" };
       if (label.startsWith("close ")) return { done: true, summary: "fixed", changed: o.closeChanged === false ? [] : ["/r/src/a.js"], unverified: [] };
-      if (label.startsWith("claim more")) return { ok: true, conflicts: [], others: [] };
+      if (label.startsWith("claim more")) return helperLine({ ok: true, conflicts: [], others: [], added: [] });
       throw new Error(`no scripted answer for the step "${label}"`);
     };
     const sandbox = {
@@ -157,12 +160,12 @@ export default function register({ scenario, ROOT }) {
   });
 
   scenario("code-package-branch-refusal", "a package refuses to start while another open package of the repository is on a different branch; the claim records the branch", async (t) => {
-    const r = await run({ answers: { "claim pkg": { ok: false, conflicts: [], branchConflicts: ["other: feat"] } } });
+    const r = await run({ answers: { "claim pkg": helperLine({ ok: false, conflicts: [], branchConflicts: ["other: feat"] }) } });
     t.ok(String(r.out.refused).includes("different branch") && r.out.refused.includes("other: feat") && r.out.refused.includes("main"), `refused with the reason (${r.out.refused})`);
     t.eq(r.calls.map((c) => c.label), ["gate pkg", "claim pkg"], "nothing ran after the claim step, and no claim was left to close");
     const claim = r.of(/^claim pkg$/)[0].prompt;
     t.ok(claim.includes('"branch":"main"'), "the claim file it would write names the branch");
-    t.ok(claim.includes("branchConflicts") && claim.includes("A claim without a \"branch\" field is not a branch conflict"), "the comparison is in the prompt");
+    t.ok(claim.includes(` claim '{"api":1,"dir":"~/.zodchi/packages/`) && !claim.includes("branchConflicts"), "the comparison is the claim helper's: the prompt only runs its command");
 
     const same = await run({});
     t.eq(same.out.approved, true, "with the same branch (no branch conflicts) the package runs");
@@ -177,15 +180,15 @@ export default function register({ scenario, ROOT }) {
     const withOther = {
       "status write pkg": { ok: true, paths: ["src/a.js", "src/other.js"] },
       "status close 1": { ok: true, paths: ["src/a.js", "src/other.js"] },
-      "claim more write pkg": () => { moreCalls++; return { ok: true, conflicts: [], others: ["src/other.js"] }; },
-      "claim more close 1": () => { moreCalls++; return { ok: true, conflicts: [], others: ["src/other.js"] }; },
+      "claim more write pkg": () => { moreCalls++; return helperLine({ ok: true, conflicts: [], others: ["src/other.js"], added: [] }); },
+      "claim more close 1": () => { moreCalls++; return helperLine({ ok: true, conflicts: [], others: ["src/other.js"], added: [] }); },
     };
     const r = await run({ answers: withOther, reviews: [bad(imp("F1", "src/a.js", "x")), { verdict: "approved", findings: [] }] });
     t.eq(r.out.approved, true, "the run goes on");
     t.eq(moreCalls, 1, "the other package's file is asked about once, then remembered");
     const more = r.of(/^claim more write pkg$/)[0].prompt;
-    t.ok(more.includes('hard: []') && more.includes('soft: ["src/other.js"]'), "it is asked as a soft file");
-    t.ok(more.includes("never a conflict"), "a soft file claimed by another package is not a conflict");
+    t.ok(more.includes('"hard":[],"soft":["src/other.js"]'), "it is given to the claim-more helper as a soft file");
+    t.ok(more.includes(" claim-more '") && (more.match(/node -e /g) || []).length === 1, "the step runs the helper's one command; the helper decides");
     for (const c of r.of(/^commit /)) {
       t.ok(c.prompt.includes('["src/a.js"]') && !c.prompt.includes("other.js"), `${c.label}: only the package's own path is committed`);
       t.ok(c.prompt.includes("never commit with -a"), `${c.label}: told not to take other files`);
@@ -195,12 +198,12 @@ export default function register({ scenario, ROOT }) {
     const reported = await run({
       answers: {
         "write pkg": { done: true, summary: "w", changed: ["/r/src/a.js", "/r/src/other.js"], unverified: [] },
-        "claim more write pkg": { ok: false, conflicts: ["other: src/other.js"], others: [] },
+        "claim more write pkg": helperLine({ ok: false, conflicts: ["other: src/other.js"], others: [], added: [] }),
       },
     });
     t.eq(reported.out.stoppedAt, "claim conflict", "a file the writer itself reports, which another package claims, stops the run");
     t.eq(reported.of(/^commit /).length, 0, "and nothing was committed");
-    t.ok(reported.of(/^claim more/)[0].prompt.includes('hard: ["src/other.js"]'), "it was asked as a hard file");
+    t.ok(reported.of(/^claim more/)[0].prompt.includes('"hard":["src/other.js"]'), "it was given as a hard file");
   });
 
   scenario("code-package-commit-lock", "the commit step waits for index.lock a bounded number of times and never deletes it; a lock that stays held ends the run with that reason", async (t) => {
@@ -215,11 +218,11 @@ export default function register({ scenario, ROOT }) {
   });
   scenario("code-package-claim-more-needs-others", "a claim-extension answer without the others list stops the run before anything is recorded or committed", async (t) => {
     const own = { "write pkg": { done: true, summary: "w", changed: ["/r/src/a.js", "/r/src/n.js"], unverified: [] }, "status write pkg": { ok: true, paths: ["src/a.js", "src/n.js"] } };
-    const r = await run({ answers: { ...own, "claim more write pkg": { ok: true, conflicts: [] } } });
+    const r = await run({ answers: { ...own, "claim more write pkg": helperLine({ ok: true, conflicts: [] }) } });
     t.eq(r.out.stoppedAt, "claim more (the answer has no others list)", "the missing list stops the run");
     t.eq(r.of(/^commit /).length, 0, "nothing was committed");
     t.ok(r.out.claimAdded === undefined, "the claim record did not grow");
-    const ok = await run({ answers: { ...own, "claim more write pkg": { ok: true, conflicts: [], others: [] } } });
+    const ok = await run({ answers: { ...own, "claim more write pkg": helperLine({ ok: true, conflicts: [], others: [], added: ["src/n.js"] }) } });
     t.eq(ok.out.approved, true, "an empty list is a valid answer");
   });
 

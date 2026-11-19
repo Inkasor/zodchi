@@ -139,7 +139,7 @@ export default function register({ scenario, ROOT }) {
       models: { writer: { candidates: [{ provider: "claude", model: "sonnet", effort: "high" }] }, reviewer: { candidates: [{ provider: "codex", model: "gpt-x", effort: "medium" }] } } };
     const answers = (review) => (label) => {
       if (label === "gate pkg") return { exitCode: 0, stdout: JSON.stringify(facts) + "\n" };
-      if (label === "claim pkg") return { ok: true, conflicts: [], branchConflicts: [] };
+      if (label === "claim pkg") return { exitCode: 0, stdout: JSON.stringify({ ok: true, api: 1, plugin: PLUGIN, conflicts: [], branchConflicts: [] }) + "\n" };
       if (label === "write pkg") return { done: true, summary: "wrote", changed: ["/r/src/a.js"], unverified: [] };
       if (label.startsWith("status ")) return { ok: true, paths: ["src/a.js"] };
       if (label.startsWith("checks ")) return { ok: true, results: ["ok"], cause: "none", logs: [], evidence: [{ command: "node t.js", exitCode: 0, log: "l" }] };
