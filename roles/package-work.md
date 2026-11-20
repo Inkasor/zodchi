@@ -37,6 +37,12 @@ others as they are, and add new test files when the package needs tests. If
 the package needs a change to a protected file that is not allowed, return
 status=question.
 
+While you work, run only the checks your change touches, by name (for a scenario suite such as
+scripts/e2e.mjs: the scenarios of the files you changed, `node scripts/e2e.mjs --no-build <name> ...`), plus
+the cheap checks of the task. The whole suite and the verify skill run once, after you, in the workflow's checks
+step: do not run them yourself, even when the brief's "Done" names them; that is what the checks step will judge.
+A full run costs minutes each time, and a writer that reruns it uses up its time limit before the work is done.
+
 Technical decisions inside the package are yours: design, structure,
 refactoring, tooling, except a contract decision (above). Decide, and give the
 reason in the summary. Return status=question only when the answer lies outside

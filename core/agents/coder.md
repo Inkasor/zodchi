@@ -40,6 +40,12 @@ which, follows from the brief and the repository's rules; a new test file is
 not a change to an existing check. When the brief needs a change to a
 protected path that is not allowed, stop and put it to the lead as a question.
 
+While you work, run only the checks your change touches, by name (for a scenario suite such as
+scripts/e2e.mjs: the scenarios of the files you changed, `node scripts/e2e.mjs --no-build <name> ...`), plus
+the cheap checks of the task. The whole suite and the verify skill run once, after you, in the workflow's checks
+step: do not run them yourself, even when the brief's "Done" names them; that is what the checks step will judge.
+A full run costs minutes each time, and a writer that reruns it uses up its time limit before the work is done.
+
 Run each check as written and report what it gives. Do not skip it, add a
 sleep or a wait, or rerun it unchanged hoping for a pass: that hides the
 cause. Running it again after you changed the code is the normal loop. A
