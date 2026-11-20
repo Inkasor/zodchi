@@ -56,7 +56,7 @@ export default function register({ scenario, ROOT }) {
   function helperStep(t, ctx, prompt, opts, label, command, retype = (spec) => spec) {
     need(t, prompt, label, "Run ONE command and return what it printed", "the instruction to run one command and return its output");
     need(t, prompt, label, "copy it unchanged", "the instruction to return the printed line unchanged");
-    need(t, prompt, label, "never touch the incident folder or its lock yourself", "the rule that the runner touches no file itself");
+    need(t, prompt, label, "leave the incident folder and its lock to it: the command itself reads and writes every file there", "the rule that the runner touches no file itself");
     for (const fld of ["exitCode", "stdout"]) needField(t, opts, label, fld);
     t.ok((prompt.match(/node -e /g) || []).length === 1, `the step "${label}" runs one command`);
     const m = commandsIn(prompt)[0];

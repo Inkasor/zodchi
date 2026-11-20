@@ -198,7 +198,7 @@ export default function register(h) {
       t.ok(s.lines.every((l) => !/[&|;<>]\s*$|nohup|\bstart\b|\bdisown\b/.test(l.replace(/<[a-z-]+>/g, ""))), `${s.rel}: no command is backgrounded or detached`);
       t.ok(/foreground/i.test(s.body) && /no `&`/.test(s.body) && /no `nohup`/.test(s.body), `${s.rel}: it says to run in the foreground, with no &, no nohup`);
       t.ok(/timeout/i.test(s.body), `${s.rel}: it says to set the longest timeout the shell tool allows`);
-      t.ok(/Never edit, delete or copy files in the journal/.test(s.body), `${s.rel}: it forbids editing the journal`);
+      t.ok(/Do not edit, delete or add files in the journal/.test(s.body), `${s.rel}: it forbids editing the journal`);
       t.ok(/Never resubmit a model step by hand/.test(s.body) && /Resume is the only way back/.test(s.body), `${s.rel}: it forbids resubmitting by hand and names resume`);
       t.ok(/Never switch branches/.test(s.body), `${s.rel}: it forbids switching branches during a run`);
       t.ok(/## Review boundary/.test(s.brief) && /Important:/.test(s.brief) && /Out of scope:/.test(s.brief), `${s.rel}: the brief template carries the Review boundary section`);

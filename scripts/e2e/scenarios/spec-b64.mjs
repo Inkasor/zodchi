@@ -197,7 +197,8 @@ export default function register({ scenario, ROOT }) {
     const facts = opts.facts ? opts.facts(repo) : Array.from({ length: 6 }, (_, i) => ({ claim: `The export writes row group ${i} with a long explanation. ${"Why it matters here, ".repeat(70)}`, source: `${repo}/src/export.js:${i + 1}` }));
     const sandbox = {
       args, phase: () => {}, log: () => {},
-      parallel: (thunks) => Promise.all(thunks.map((th) => th())),
+      // As the Workflow runtime: a thunk result reaches the script as plain data (JSON), and a thunk that throws comes back as null.
+      parallel: (thunks) => Promise.all(thunks.map(async (th) => { try { const v = await th(); return v === undefined ? null : JSON.parse(JSON.stringify(v)); } catch { return null; } })),
       agent: async (prompt, opts) => {
         const label = opts.label;
         calls.push({ label, prompt, opts });
@@ -415,7 +416,8 @@ export default function register({ scenario, ROOT }) {
     const calls = [];
     const sandbox = {
       args: { ...ARGS, ...extra }, phase: () => {}, log: () => {},
-      parallel: (thunks) => Promise.all(thunks.map((th) => th())),
+      // As the Workflow runtime: a thunk result reaches the script as plain data (JSON), and a thunk that throws comes back as null.
+      parallel: (thunks) => Promise.all(thunks.map(async (th) => { try { const v = await th(); return v === undefined ? null : JSON.parse(JSON.stringify(v)); } catch { return null; } })),
       agent: async (prompt, opts) => { calls.push({ label: opts.label, prompt }); return answer; },
     };
     const src = fs.readFileSync(path.join(ROOT, "core", "workflows", `${name}.js`), "utf8").replace(/^export const meta/, "const meta");

@@ -385,7 +385,7 @@ export default function register({ scenario, ROOT, scratch: suiteScratch }) {
     const writes = r.calls.filter((c) => c.opts.agentType === "zodchi-core:coder");
     t.ok(writes.length >= 2, `the writer ran for the package and for the findings (${writes.map((c) => c.label)})`);
     for (const w of writes) {
-      t.ok(seenIn(w.prompt).some((x) => x.includes("Logs, scratch files, notes and command outputs go only under /r/.agent-tmp/pkg") && x.includes("never into the repository")), `${w.label}: logs and scratch files go under the tmp folder only`);
+      t.ok(seenIn(w.prompt).some((x) => x.includes("Logs, scratch files, notes and command outputs go only under /r/.agent-tmp/pkg") && x.includes("a stray file in the repository can fail its own checks")), `${w.label}: logs and scratch files go under the tmp folder only`);
     }
   });
 
@@ -423,20 +423,20 @@ export default function register({ scenario, ROOT, scratch: suiteScratch }) {
   scenario("fixes-gateway-progress-of-earlier-run", "a gateway call tells the step that a key in the progress file without this run's key prefix belongs to an earlier run of the label and is ignored; a resume of the same run (same prefix) is unchanged; another run has another prefix", async (t) => {
     const r = await run();
     const review = r.of(/^review 1$/)[0].prompt;
-    t.ok(review.includes("Keys of this run all start with pkg-abc1234-a1b2c3d4-."), "the call names the prefix of this run");
-    t.ok(/does not start with it[^]*belongs to an earlier run of this label: ignore it, never wait on it, reuse it or count its retries, and submit under pkg-abc1234-a1b2c3d4-review-1/.test(review), "a key without it is ignored and the step submits under its own key");
-    t.ok(review.includes("UNKNOWN:") && review.includes("nor an \"UNKNOWN:\" line"), "an UNKNOWN line that names such a key is ignored too");
+    t.ok(review.includes("Keys of this run all start with pkg-abc1234-a1b2c3d4-; count only those."), "the call names the prefix of this run");
+    t.ok(/A key without it[^]*belong to an earlier run of this label: leave them out of every wait, reuse and retry count[^]*With none, submit under pkg-abc1234-a1b2c3d4-review-1/.test(review), "a key without it is left out and the step submits under its own key");
+    t.ok(review.includes("UNKNOWN:") && review.includes("any \"UNKNOWN:\" line that names it belong to an earlier run"), "an UNKNOWN line that names such a key is ignored too");
     t.ok(review.includes("The active key is the key of the latest submission: pkg-abc1234-a1b2c3d4-review-1 at first"), "the rest of the resume rules stay");
     const again = await run();
     t.eq(again.of(/^review 1$/)[0].prompt, review, "the same run again (a resume) gets the same prompt, so its own recorded keys are waited on");
     const other = await run({}, {}, { gate: { runId: "b2c3d4e5" } });
     const otherPrompt = other.of(/^review 1$/)[0].prompt;
-    t.ok(otherPrompt.includes("Keys of this run all start with pkg-abc1234-b2c3d4e5-.") && !otherPrompt.includes("pkg-abc1234-a1b2c3d4-"), "a fresh run of the same label and tmp has another prefix: the earlier run's keys do not match it");
+    t.ok(otherPrompt.includes("Keys of this run all start with pkg-abc1234-b2c3d4e5-;") && !otherPrompt.includes("pkg-abc1234-a1b2c3d4-"), "a fresh run of the same label and tmp has another prefix: the earlier run's keys do not match it");
     const work = await run({ "write pkg": { done: true, summary: "w", changed: ["/r/src/a.js"], unverified: [], gateway: "final", infra: "" } }, { models: { writer: { candidates: [CODEX] }, reviewer: { candidates: [{ provider: "claude", model: "opus" }] } } });
-    t.ok(work.of(/^write pkg$/)[0].prompt.includes("Keys of this run all start with pkg-abc1234-a1b2c3d4-."), "the writer's gateway call carries it too");
-    t.ok(/wait on the latest key recorded for that call in the foreground \(only a key that starts with pkg-abc1234-a1b2c3d4- counts: skip a key without it, its retries and an "UNKNOWN:" line that names it/.test(review), "the shared resume rule picks the latest key of this run only: the prefix check sits in the rule that chooses what to wait on");
+    t.ok(work.of(/^write pkg$/)[0].prompt.includes("Keys of this run all start with pkg-abc1234-a1b2c3d4-; count only those."), "the writer's gateway call carries it too");
+    t.ok(/First look in the progress file for a submission of this call by this run: if it records pkg-abc1234-a1b2c3d4-review-1, [^]*the latest of them is the active key/.test(review), "the resume rule picks the latest key of this run only: the prefix is named before the rule that chooses what to wait on");
     const re = await run({}, { rerun: { "review 1": 2 } });
-    t.ok(/take the latest key it records for this call that starts with pkg-abc1234-a1b2c3d4- \(a foreign key never counts\)/.test(re.of(/^review 1$/)[0].prompt), "the rerun rule filters by the prefix before it takes the latest key");
+    t.ok(/take the latest key of this run \(it starts with pkg-abc1234-a1b2c3d4-\) that the progress file records for this call/.test(re.of(/^review 1$/)[0].prompt), "the rerun rule filters by the prefix before it takes the latest key");
   });
 
   scenario("fixes-continuation-commit-list", "the commit step of a continuation commits only paths that exist, are in the index or are tracked in HEAD: the old side of a rename and a file deleted in an earlier round are dropped from the pathspec, because git commit rejects a pathspec that matches nothing", async (t) => {

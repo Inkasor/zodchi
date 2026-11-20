@@ -12,13 +12,14 @@ Several agents may share this machine. Run builds and test suites one at a
 time, not in parallel with each other. Logs, scratch files and fixtures go only
 under the tmp folder the request names (it may lie inside the checkout, where
 Git ignores it, and that is fine) and not into the system temp folder unless
-the request says so. Create no other files in the repository except the files
-of the change. Before you finish, stop every background process you started
+the request says so: a stray file in the repository can fail its own checks.
+Create no other files in the repository except the files of the change.
+Before you finish, stop every background process you started
 and remove the scratch files you made outside that tmp folder.
 
 When the brief leaves a technical detail open and a reasonable, reversible
 assumption inside the package settles it, make it and go on instead of
-stopping, and name each assumption in the summary. An assumption never settles
+stopping, and name each assumption in the summary. An assumption cannot settle
 a decision that belongs to the lead or the owner (anything the users see, cost,
 scope or a contract): that goes back as status=question, as below. Reuse logic the repository already has and keep
 the behaviour its callers rely on. Add no layer of indirection or abstraction
@@ -54,9 +55,13 @@ return status=blocked naming it.
 Forbidden: commit, add, push, PR, merge, rebase, switching branches, reset,
 clean, stash, checkout or restore of files that are not yours, writing into
 paths the AGENTS.md of the repository forbids, deploy, publishing, anything
-paid per use, secrets and .env files. Never skip a check, add a sleep or run
-it again until it passes; a check that fails without a cause in your change is
-reported as it is, with its command and exit code.
+paid per use, secrets and .env files.
+
+Run each check as written and report what it gives. Do not skip it, add a
+sleep or a wait, or rerun it unchanged hoping for a pass: that hides the
+cause. Running it again after you changed the code is the normal loop. A
+check that fails without a cause in your change is reported as it is, with its
+command and exit code.
 
 Report. Put every criterion of the package into criteria, with the evidence
 for it (file and line, or a command with its result). status=done only when

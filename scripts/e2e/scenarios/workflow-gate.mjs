@@ -243,7 +243,8 @@ export default function register({ scenario, ROOT }) {
       args,
       phase: () => {},
       log: () => {},
-      parallel: (thunks) => Promise.all(thunks.map((th) => th())),
+      // As the Workflow runtime: a thunk result reaches the script as plain data (JSON), and a thunk that throws comes back as null.
+      parallel: (thunks) => Promise.all(thunks.map(async (th) => { try { const v = await th(); return v === undefined ? null : JSON.parse(JSON.stringify(v)); } catch { return null; } })),
       agent: async (prompt, opts) => { calls.push({ label: opts.label, prompt, opts }); return answer(opts.label, prompt, calls); },
     };
     const fn = vm.runInNewContext(`(async () => {\n${source(rel).replace(/^export const meta/, "const meta")}\n})`, sandbox, { filename: rel });
@@ -338,7 +339,7 @@ export default function register({ scenario, ROOT }) {
     const claimStep = r.of(/^claim pkg$/)[0], claimPrompt = claimStep.prompt, closePrompt = r.of(/^close claim/)[0].prompt;
     t.ok((claimPrompt.match(/node -e /g) || []).length === 1 && specIn(claimPrompt, "claim") && specIn(claimPrompt, "claim").api === 1 && specIn(claimPrompt, "claim").dir.startsWith("~/.zodchi/packages/"), "the claim step runs the claim helper's one command (which reads only <label>.json whose label is its name)");
     t.eq(claimStep.opts.schema.required, ["exitCode", "stdout"], "and returns its exit code and printed line, nothing it read itself");
-    t.ok(claimPrompt.includes("never touch the claims folder or its lock yourself"), "the runner never writes a claim itself");
+    t.ok(claimPrompt.includes("the command itself reads and writes the claims folder and its lock, so leave them to it"), "the runner leaves the claims folder and its lock to the command");
     t.ok(closePrompt.includes("make no backup"), "the close step changes the file in place and makes no backup either");
     for (const p of [claimPrompt, closePrompt]) t.ok(!p.includes("every *.json file"), "never the glob that reads a .bak");
     t.eq(specIn(r.of(/^claim pkg$/)[0].prompt, "claim").tmp, "/r/.agent-tmp/pkg", "the claim records the package's tmp folder (the gate uses it to tell a running package from a finished one)");
@@ -387,7 +388,7 @@ export default function register({ scenario, ROOT }) {
     t.ok(review.includes('return gateway "unknown" with unknownKey set to the active key'), "and is reported with its key");
     t.ok(review.includes("a \"failed\" job whose turnRequestedAt is set included, is not retried"), "a failed job that asked for the turn is not retried either");
     const step = u.of(/^write pkg$/)[0].prompt;
-    t.ok(step.includes('if it is final with status "unknown", never submit again and never wait on it'), "the resume rule of every step says the same");
+    t.ok(!/UNKNOWN:|zodchi wait|never submit again/.test(step), "a step without a gateway call does not read the gateway resume rule (it lives in the gateway call)");
     for (const rel of WORKFLOWS) {
       const s = source(rel);
       t.ok(!/or "failed" with no turnStartedAt/.test(s) && !/final with status "unknown", or/.test(s), `${rel}: no rule is left that resubmits an unknown job`);
@@ -404,7 +405,7 @@ export default function register({ scenario, ROOT }) {
     const brGatePrompt = br.of(/^gate /)[0].prompt;
     t.ok(JSON.stringify(specIn(brGatePrompt, "branch-review")) === '{"api":1,"repo":"/r","base":"main","want":["reviewer","architect"]}' && (brGatePrompt.match(/node -e /g) || []).length === 1, "its gate is one command with a spec");
     const review = br.of(/^review$/)[0].prompt;
-    t.ok(review.includes(`the commits ${sha("b")}..${sha("a")}`) && review.includes("review.diff is that change and nothing else") && review.includes("never from the working tree"), "the review is of the recorded range, given as a diff, not of the working tree");
+    t.ok(review.includes(`the commits ${sha("b")}..${sha("a")}`) && review.includes("review.diff is that change and nothing else") && review.includes("not from the working tree"), "the review is of the recorded range, given as a diff, not of the working tree");
     t.ok(review.includes(`git diff ${sha("b")} ${sha("a")} -- <the files above>`) && review.includes("--attach '/r/.agent-tmp/br/review.diff'"), "the diff is made from the range and attached");
     const brStale = await runWorkflow("domains/web-apps/workflows/branch-review.js", brArgs, (l) => ({ exitCode: 4, stdout: JSON.stringify({ ok: false, api: 0, error: "no helper", tried: ["/c"] }) }));
     t.ok(String(brStale.out.stoppedAt).startsWith("gate (the gate helper: no helper") && brStale.calls.length === 1, "a missing helper stops branch-review at the gate");

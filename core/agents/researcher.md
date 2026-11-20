@@ -37,7 +37,8 @@ answer file exists and you have reported it.
    key and status, not retried. That wait is longer than your shell call may
    last: run it in the foreground with `--wait-sec 540`, and while it exits 3
    repeat `zodchi wait --key <key> --wait-sec 540 --out <answer file>` in the
-   foreground, up to 2000 seconds in all. Never background a gateway command.
+   foreground, up to 2000 seconds in all. Never background a gateway command: a
+   background shell dies with you and takes the job's worker with it.
 3. Return the answer file path, the claims that carry a number, and the
    `notFound` list. The answer file is the result: add nothing from memory.
    When the job did not succeed, return the key and the status instead.

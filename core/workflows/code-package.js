@@ -118,18 +118,20 @@ const gatewayCall = ({ role, key: baseKey, label, args, attach = [], attachIfExi
   const flags = [...attach, ...attachIfExists].map(f => `--attach ${q(f)}`).join(' ')
   const run = `zodchi run --role ${role} --key ${key} ${args}${flags ? ' ' + flags : ''} --wait-sec 540 --out ${q(out)}`
   return `Gateway call, base key ${key}. ` +
-    (runKeyPrefix ? `Keys of this run all start with ${runKeyPrefix}. A key in the progress file that does not start with it (nor an "UNKNOWN:" line or retry that names such a key) belongs to an earlier run of this label: ignore it, never wait on it, reuse it or count its retries, and submit under ${key}. ` : '') +
+    (runKeyPrefix ? `Keys of this run all start with ${runKeyPrefix}; count only those. A key without it, its retries and any "UNKNOWN:" line that names it belong to an earlier run of this label: leave them out of every wait, reuse and retry count. ` : '') +
     (n > 1 ? `This is attempt ${n} after an infrastructure failure; earlier attempts used other keys (${baseKey}${n > 2 ? `, ${baseKey}-a2` : ''}${n > 3 ? ' and on' : ''}, with their -r2 and -r3). ` +
-      `Unless the progress file already records a key that starts with ${key}: take the latest key it records for this call that starts with ${runKeyPrefix || 'the prefix of this run'} (a foreign key never counts); if \`zodchi job --key <that key>\` shows the job not final yet, it is the active key: wait on it as below instead of submitting; if it then dies before its turn (the rule below), the next submission is ${key}, not a suffix of that key. ` +
-      `Otherwise (it is final, whatever its status, or there is none) never wait on it or reuse it: submit under ${key}. ` : '') +
+      `First look in the progress file for a submission of this attempt: a key that starts with ${key} (${key}, ${key}-r2, ${key}-r3). If there is one, the latest of them is the active key: wait on it as below instead of submitting. ` +
+      `If there is none, take the latest key ${runKeyPrefix ? `of this run (it starts with ${runKeyPrefix}) ` : ''}that the progress file records for this call: if \`zodchi job --key <that key>\` shows the job not final yet, it is the active key: wait on it as below; if it then dies before its turn (the rule below), the next submission is ${key}, not a suffix of that key. ` +
+      `If it is final, whatever its status, or there is none, that key is finished: submit under ${key}. `
+      : `First look in the progress file for a submission of this call${runKeyPrefix ? ' by this run' : ''}: if it records ${key}, ${key}-r2 or ${key}-r3, the latest of them is the active key, and a resumed run waits on it as below instead of submitting again. With none, submit under ${key}. `) +
     `Run it in the foreground from ${repo}: \`${run}\`. ` +
     `zodchi attaches files only: an --attach path that is a folder is replaced, before the first submission, by one --attach per file under it (all levels, in name order); everything below about attachments then counts those files. ` +
     (attachIfExists.length ? `Before every submission, retries included, drop the --attach of each optional file that does not exist on disk: ${JSON.stringify(attachIfExists)}; keep every other --attach. ` : '') +
-    `The gateway refuses a request over 512 KB (prompt plus attachments). Before every submission, first remove a "Not attached for size" line left by an earlier attempt from the prompt file, then add up the size of the prompt file and of every file you attach. While the sum is over 500 KB and an optional file is still attached${attachIfExists.length ? ` (optional: ${JSON.stringify(attachIfExists)})` : ' (there are none here)'}, drop the largest optional one (never a required one) and add its name to one line at the end of the prompt file, "Not attached for size: <names>"; then count again, the prompt included. If the sum is still over 500 KB with no optional file left, do not submit: report that as the infrastructure failure. ` +
-    `Never in the background (no &, nohup or run_in_background), never through Monitor: the worker of the job ends with your shell. ` +
-    `The active key is the key of the latest submission: ${key} at first, then ${key}-r2, then ${key}-r3 (at most 2 retries in all). Every wait, \`zodchi job\` and request.json check below names the active key, never an earlier one, also after a resume (the progress file holds the latest key). ` +
-    `While it exits 3 (still running), repeat \`zodchi wait --key <active key> --wait-sec 540 --out ${q(out)}\` in the foreground, up to ${totalMin} minutes in all since the first command; ` +
-    `never return before the job is final (exit 0 or 2); if the ${totalMin} minutes run out, report failure (ok false; verdict "missing" for a review) and say the job still runs under its active key. ` +
+    `The gateway refuses a request over 512 KB (prompt plus attachments). Before every submission, first remove a "Not attached for size" line left by an earlier attempt from the prompt file, then add up the size of the prompt file and of every file you attach. While the sum is over 500 KB and an optional file is still attached${attachIfExists.length ? ` (optional: ${JSON.stringify(attachIfExists)})` : ' (there are none here)'}, drop the largest optional one (required files stay: the request is useless without them) and add its name to one line at the end of the prompt file, "Not attached for size: <names>"; then count again, the prompt included. If the sum is still over 500 KB with no optional file left, do not submit: report that as the infrastructure failure. ` +
+    `Never start it in the background (no &, nohup, run_in_background or Monitor): the worker of the job ends with your shell, and a dead worker can leave a paid job with an unknown outcome. ` +
+    `The active key is the key of the latest submission: ${key} at first, then ${key}-r2, then ${key}-r3 (at most 2 retries in all). Every wait, \`zodchi job\` and request.json check below uses the active key, after a resume too (the progress file holds the latest key). ` +
+    `Wait in the foreground with \`zodchi wait --key <active key> --wait-sec 540 --out ${q(out)}\`, repeated while it exits 3 (still running), until the job is final (exit 0 or 2) or ${totalMin} minutes have passed since the first command, whichever comes first. ` +
+    `If the time runs out, report failure (ok false; verdict "missing" for a review) and say the job still runs under its active key. Do not return earlier: nobody else waits on the job. ` +
     `A job gets a new key only with evidence that the request was never sent: it is final with status "failed" and \`zodchi job --key <active key>\` shows turnRequestedAt and turnStartedAt both null or missing (the gateway never asked for the model turn). ` +
     `Then run the same full command again with --key set to the next key, wait for it the same way, and write each new key into the progress file at once, with that evidence (the two fields and the job's error). ` +
     `A job that is final with status "unknown" never gets a new key and is never waited on again: the request may already have run and used the subscription. Stop at once: ` +
@@ -195,12 +197,10 @@ let parallelNote = ''
 const SHARED_NOTE = 'Parallel packages share this checkout (owner setting): work in the checkout you were given; do not create clones or worktrees and do not switch branches.'
 const step = (prompt, opts) => agent(prompt +
   (parallelNote ? '\n\n' + parallelNote : '') +
-  (opts && attempt(opts.label) > 1 ? `\n\nThis step runs again after an infrastructure failure, attempt ${attempt(opts.label)}: read its progress file. A key recorded by an earlier attempt is not a submission of this one: the gateway call says when an earlier job is still waited on and which new base key to submit under.` : '') +
-  `\n\nShell rule: run every command with bash (Git Bash on Windows, never PowerShell or cmd); the quoting in these commands is for bash. Resume rule: this run may have been cut off and restarted. If ${progressFile(opts)} exists and its last line is not DONE, read it first and go on from its last line; ` +
+  (opts && attempt(opts.label) > 1 ? `\n\nThis step runs again after an infrastructure failure, attempt ${attempt(opts.label)}: read its progress file; what an earlier attempt recorded there may be unfinished work of this step.` : '') +
+  `\n\nShell rule: run every command with bash (Git Bash on Windows): the quoting in these commands is written for bash, and PowerShell or cmd would read it differently. Resume rule: this run may have been cut off and restarted. If ${progressFile(opts)} exists and its last line is not DONE, read it first and go on from its last line; ` +
   `if its last line is DONE, it is from an earlier finished run: rename it to .old and start fresh. ` +
-  `Do not redo finished work or overwrite its outputs blindly. For a gateway call it records as submitted, wait on the latest key recorded for that call in the foreground${runKeyPrefix ? ` (only a key that starts with ${runKeyPrefix} counts: skip a key without it, its retries and an "UNKNOWN:" line that names it, they belong to an earlier run; with no eligible key submit as the gateway call says)` : ''} (zodchi wait --key <key> --wait-sec 540 --out <file>, repeated while it exits 3) instead of submitting again; ` +
-  `if that job is final with status "failed" and \`zodchi job --key <key>\` shows turnRequestedAt and turnStartedAt both null or missing (the request was never sent), submit again under the next suffix of the base key (<base>-r2, then <base>-r3; at most 2 retries in all, those already recorded counted) and record the new key and that evidence in the progress file; ` +
-  `if it is final with status "unknown", never submit again and never wait on it: the request may already have run. Write "UNKNOWN: key <key>: <the job's error>" as the last line of the progress file instead of DONE and ${UNKNOWN_RETURN}. ` +
+  `Do not redo finished work or overwrite its outputs blindly. ` +
   `After each finished step append one line to it (create the folder if needed): what is done, the paths it produced, what comes next. When your whole task is finished, append a last line DONE.`, opts)
 
 const STEP = {
@@ -315,7 +315,7 @@ const GATE_API = 1
 // The stamp of this script (see "The workflow build" in core/scripts/gate.mjs): the first 16 hex digits of the SHA-256 of this file with this
 // line's stamp emptied. The gate sends it to the helper, which stamps the code-package.js of its own plugin copy; a script that is not the copy's
 // own is refused at the gate. After every edit of this file: `node core/scripts/gate.mjs workflow-build core/workflows/code-package.js --write`.
-const WORKFLOW_BUILD = '0e9b532edacadaba'
+const WORKFLOW_BUILD = 'e80a0caff32f1901'
 const GATE_BOOT = 'const fs=require(\"fs\"),os=require(\"os\"),path=require(\"path\"),cp=require(\"child_process\");const project=process.argv[1]||\"\";const rest=process.argv.slice(2);const out=(o,c)=>{fs.writeSync(1,JSON.stringify(o)+\"\\n\");process.exit(c)};const rd=f=>{try{return JSON.parse(fs.readFileSync(f,\"utf8\"))}catch(e){return null}};const nm=p=>{const s=path.resolve(p).split(path.sep).join(\"/\");return process.platform===\"linux\"?s:s.toLowerCase()};const pre=n=>n.endsWith(\"/\")?n:n+\"/\";const tried=[];let root=\"\",via=\"\";const fail=(why)=>out({ok:false,api:0,error:why,tried},4);for(const name of [\"ZODCHI_PLUGIN_ROOT\",\"CLAUDE_PLUGIN_ROOT\"]){const env=process.env[name];if(root||!env)continue;const m=rd(path.join(env,\".claude-plugin\",\"plugin.json\"));if(m&&m.name===\"zodchi-core\"){root=env;via=name}else if(name===\"ZODCHI_PLUGIN_ROOT\"){tried.push(env+\" (no zodchi-core manifest)\");fail(\"ZODCHI_PLUGIN_ROOT names no zodchi-core plugin copy: a checkout or another folder is never used instead\")}}if(!root){const reg=rd(path.join(process.env.CLAUDE_CONFIG_DIR||path.join(os.homedir(),\".claude\"),\"plugins\",\"installed_plugins.json\"));const list=(reg&&reg.plugins&&reg.plugins[\"zodchi-core@zodchi\"])||[];const here=pre(nm(project));const own=list.filter(e=>e.projectPath&&here.startsWith(pre(nm(e.projectPath)))).sort((a,b)=>nm(b.projectPath).length-nm(a.projectPath).length);const e=own[0]||list.find(e=>!e.projectPath);if(e&&e.installPath){root=e.installPath;via=\"installed_plugins.json, scope \"+e.scope}}if(!root)fail(\"no zodchi-core plugin copy is registered for the project this session runs in (not installed): update the plugin; a checkout is never used instead\");const ok=fs.existsSync(path.join(root,\"scripts\",\"gate.mjs\"));tried.push(root+(ok?\"\":\" (no scripts/gate.mjs)\"));if(!ok)fail(\"the zodchi-core plugin copy this session loaded (\"+root+\") has no scripts/gate.mjs (an older copy than this workflow): update the plugin; no other copy is tried and a checkout is never used\");const r=cp.spawnSync(process.execPath,[path.join(root,\"scripts\",\"gate.mjs\"),...rest],{stdio:\"inherit\",env:{...process.env,ZODCHI_GATE_VIA:via}});process.exit(r.status===null?5:r.status)'
 // The folder the runner starts in is the project the session runs in: it says which registered plugin copy the session loaded (the Windows form of the path on Git Bash).
 const SESSION_PROJECT = '"$(pwd -W 2>/dev/null || pwd)"'
@@ -483,7 +483,7 @@ const checkList = (a.checks || []).map(asCheck)
 const verifyList = [].concat(a.verify || []).map(asCheck)
 const pickSource = () => verifyList.length ? 'args.verify' : hasVerifySkill ? 'verify skill' : checkList.length ? 'checks' : 'none'
 let verifySource = pickSource()
-const NO_SKIP = `Never skip a check, add a sleep or a wait to make it pass, or run it again until it passes. ` +
+const NO_SKIP = `Run each check as written and report what it gives. Do not skip it, add a sleep or a wait, or rerun it unchanged hoping for a pass: that hides the cause. Running it again after you changed the code is the normal loop. ` +
   `A check that fails without a cause in the change is flaky: report it as flaky with its log; deleting or quarantining a flaky test is the lead's decision.`
 
 // Protected checks: existing files under test/, tests/, e2e/, the verify skill, REVIEW.md and args.protect. New files
@@ -529,7 +529,7 @@ let claimWritten = false
 const claimsSpecDir = `~/.zodchi/packages/${claimsName}`
 const helperStep = (command, spec, label, phaseName) => step(
   `Run ONE command and return what it printed; change nothing and run nothing else. In the foreground, once:\n${helperRun(command, spec)}\n` +
-  `Do not change, split or rerun it with other options, and never touch the claims folder or its lock yourself. exitCode: its exit code, a number. stdout: everything it printed to standard output, exactly, as one string (it is one line of JSON): ` +
+  `Do not change, split or rerun it with other options: the command itself reads and writes the claims folder and its lock, so leave them to it. exitCode: its exit code, a number. stdout: everything it printed to standard output, exactly, as one string (it is one line of JSON): ` +
   `do not parse, summarize, reorder or shorten it. error: what it printed to standard error, at most 300 characters, "" when nothing. ` +
   `If the command could not be started at all, exitCode is -1 and stdout is "".`,
   { agentType: 'zodchi-core:runner', label, schema: HELPER_ANSWER, ...(phaseName ? { phase: phaseName } : {}) })
@@ -552,7 +552,7 @@ function readClaimHelper(r, what) {
 }
 // Git commands of this package may meet an index.lock that a command of another package in the same checkout holds for a moment.
 const LOCKWAIT = `If a Git command fails with an error that names index.lock (another package's Git command holds it), wait 3 seconds and run the same command again, at most 10 times in all; ` +
-  `never delete, move or overwrite the lock file or anything else in .git. If it is still held after the last try, stop with ok false and the summary "index.lock held".`
+  `never delete, move or overwrite the lock file or anything else in .git: the lock belongs to the command that holds it, and removing it can corrupt the index. If it is still held after the last try, stop with ok false and the summary "index.lock held".`
 // The ignore repair changes .gitignore, so the claim holds it too, checked against other open packages like any file.
 const claimKeys = needIgnore && !myKeys.includes('.gitignore') ? [...myKeys, '.gitignore'] : myKeys
 try {
@@ -613,7 +613,7 @@ if (claim && !claim.ok && claim.conflicts.length && claim.conflicts[0] !== 'lock
   }
   if (needIgnore) {
     const ignored = await step(
-      `Make ${a.repo} ignore the zodchi job folders, in a commit of its own; never push.\n` +
+      `Make ${a.repo} ignore the zodchi job folders, in a commit of its own, and do not push (publishing is the lead's decision).\n` +
       `1. Append the line \`.agent-tmp/\` to ${repoKey}/.gitignore (create the file when it is missing; when its last line has no line break, add one first, with the line endings the file already uses).\n` +
       `2. Run \`git add -- .gitignore\`, then \`git commit -m "Ignore .agent-tmp (zodchi job folders)" -- .gitignore\`.\n` +
       `3. \`git check-ignore -q .agent-tmp/gateway/x\` must exit 0, and \`git show --name-only --format= HEAD\` must list .gitignore only. ok is true only then. summary: the commit hash. ${LOCKWAIT}`,
@@ -709,11 +709,11 @@ async function body() {
   })
   const HANDOVER = ` If your context is running out before the task is done, stop at a clean point (files consistent, the progress file says what is done and what remains, precisely enough for a stranger), and return done false with more true; a fresh agent will go on.`
   // Where the writer's own output goes: a stray folder in the repository (a logs/ at its root) failed the repository's own checks.
-  const LOGS = `Logs, scratch files, notes and command outputs go only under ${a.tmp} (for example ${a.tmp}/logs), never into the repository: a file there that is not part of the change is not wanted and can fail the repository's own checks. Create no file or folder in ${a.repo} except the files of the change.`
+  const LOGS = `Logs, scratch files, notes and command outputs go only under ${a.tmp} (for example ${a.tmp}/logs), because a stray file in the repository can fail its own checks. Create no file or folder in ${a.repo} except the files of the change.`
   // One truth about commits, in every prompt that touches the writer's commit state.
   const COMMITS = commit
-    ? `The runner commits the package files after passing checks as "${a.label}: round N"; the writer never commits.`
-    : `Nothing is committed in this run; the writer never commits.`
+    ? `The runner commits the package files after passing checks as "${a.label}: round N", so the writer leaves committing to it and every commit holds checked code.`
+    : `Nothing is committed in this run, so the writer does not commit.`
 
   // Every gateway key of this run is built from the label, the package base commit (short hash) and the id of the run the gate allocated. Two runs of one label never share a key
   // (the gateway refuses a key it knows for another request, or hands back the old job), even at the same base and HEAD; a resume of the same run gets the same keys
@@ -945,7 +945,7 @@ async function body() {
     for (let f = 1; checks && !checks.ok && checks.cause === 'code' && f <= (a.fixes ?? 1); f++) {
       const fix = await write(
         `The checks of the package ${a.brief} failed after the change. Results: ${JSON.stringify(checks.results)}. Logs: ${JSON.stringify(checks.logs || [])}. ` +
-        `Read the logs and fix the code with the smallest change. Files that another open package claims (the claim files ${claimsDir}/<label>.json with "status" "open" and another "label") are not yours: never change them; if the failure is in one of them, change nothing and say so. done is true when the failing command passes. changed: files changed in this fix.`,
+        `Read the logs and fix the code with the smallest change. Files that another open package claims (the claim files ${claimsDir}/<label>.json with "status" "open" and another "label") belong to that package: leave them as they are; if the failure is in one of them, change nothing and say so. done is true when the failing command passes. changed: files changed in this fix.`,
         `fix checks ${n}.${f}`, 'Close', checks.logs || [])
       noteQuestions(fix)
       if (fix && !(await follow(fix, `fix checks ${n}.${f}`, 'Close'))) return 'halted'
@@ -962,14 +962,14 @@ async function body() {
     if (!commit) return true
     const paths = [...changed].map(rel)
     const res = await step(
-      `Commit the package's files in ${a.repo}; never push. The package paths, relative to the repository: ${JSON.stringify(paths)}.\n` +
+      `Commit the package's files in ${a.repo}, and do not push (publishing is the lead's decision). The package paths, relative to the repository: ${JSON.stringify(paths)}.\n` +
       `1. Narrow the package paths to "those paths": keep a path that exists in the work tree, or that \`git ls-files -- <path>\` prints (the index), or for which \`git cat-file -e HEAD:<path>\` exits 0 (tracked and now deleted). ` +
       `Drop every other path (the old side of a rename, or a file deleted in an earlier round of a continuation, already committed): \`git commit\` rejects a pathspec that matches nothing. For each of those paths run \`git add -A -- <path>\`, except a path that is gone from the work tree and that \`git ls-files -- <path>\` no longer prints (its deletion is already staged): run no \`git add\` for it, because \`git add -A\` fails on it with "pathspec did not match any files"; it stays in "those paths", and the commit below takes the staged deletion. If those paths are none, return ok true with summary "nothing to commit".\n` +
       `2. Staging can remove the index entry of a path that was only an abandoned addition, and \`git commit\` rejects a pathspec that matches nothing: narrow "those paths" once more, dropping every path that \`git ls-files -- <path>\` no longer prints and for which \`git cat-file -e HEAD:<path>\` fails. "Those paths" below are this second list. If it is empty, return ok true with summary "nothing to commit".\n` +
       `   If \`git diff --cached --quiet -- <those paths>\` says nothing changed, return ok true with summary "nothing to commit".\n` +
       `3. Otherwise run \`git commit -m ${q(`${a.label}: round ${n}`)} -m ${q(out.verification.stamp)} -- <those paths>\` (the paths after -- limit the commit to them; other staged files stay staged and out of it).\n` +
       `4. Run \`git show --name-only --format= HEAD\`: every listed file must be one of the package paths. ok is true only then. summary: the commit hash. paths: the listed files.\n` +
-      `Other packages may share this checkout: never commit with -a, never \`git add\` a path that is not listed above, and leave every other file, staged or not, as it is. ${LOCKWAIT}`,
+      `Other packages share this checkout and may have files staged: never commit with -a and never \`git add\` a path that is not listed above, or their work lands in this package's commit; leave every other file, staged or not, as it is. ${LOCKWAIT}`,
       { agentType: 'zodchi-core:runner', schema: STEP, phase: 'Checks', label: `commit ${n}` })
     commitNote = res && !res.ok ? res.summary || '' : ''
     return Boolean(res && res.ok)
@@ -985,7 +985,7 @@ async function body() {
   // The review boundary the lead wrote into the brief, quoted next to REVIEW.md (docs/review-boundary.md).
   const BOUNDARY = boundaryText
     ? `The brief's "Review boundary" section, written by the lead, says what is important for this package and what is out of scope; apply it. Quoted exactly: ${JSON.stringify(boundaryText)}. ` +
-      `A point outside it is at most a "nit" or "pre-existing" finding, never "important"; do not go deeper than the boundary draws the line`
+      `A point outside it is at most a "nit" or "pre-existing" finding; do not go deeper than the boundary draws the line`
     : `The brief has no "Review boundary" section: judge by the brief, and call a point "important" only when a normal run of the change meets it`
   const SEVERITIES = `Every finding has a severity: "important" (a real defect the change brings in; it blocks approval), "nit" (worth fixing, does not block) or "pre-existing" (it was there before the change; does not block).`
 
@@ -1074,7 +1074,7 @@ async function body() {
       (focus ? `. This is a short review of the approved change: check only whether these findings of ${a.tmp}/review-${n - 1}.json are closed and whether their fixes break anything: ${JSON.stringify(focus)}; approved when they are closed and nothing broke` : '') +
       (!focus && carried.length ? `. These findings of an earlier review are still open and no later review checked them: ${JSON.stringify(carried)}; repeat in your findings, with the same id, severity and location, each one that still holds` : '') +
       (commit ? `. The round's commit exists: "${a.label}: round ${n}" (a round that changed nothing has none); the package's commits sit on top of ${base}; commits of other packages in a shared checkout may lie between them, judge only the package paths` : '') +
-      (n > 1 ? `. Keep the id of a finding of an earlier review that still holds (same id, same location), and give every new finding an id never used in any earlier round: number it on after F${maxLedgerId()}. Ids used so far, with their locations: ${JSON.stringify([...ledger.values()].map(e => `${e.id} ${e.location}`))}` : '') +
+      (n > 1 ? `. Keep the id of a finding of an earlier review that still holds (same id, same location), and give every new finding a fresh id, numbered on after F${maxLedgerId()}, so it cannot be mistaken for a closed one. Ids used so far, with their locations: ${JSON.stringify([...ledger.values()].map(e => `${e.id} ${e.location}`))}` : '') +
       `. ${SEVERITIES} ${FOCUS}. ${BOUNDARY}`
     const files = [...changed]
     const VERDICT = `verdict: the "verdict" field of the review exactly ("approved", "changes_requested" or "blocked"; "missing" when the review file has none). ` +
@@ -1097,7 +1097,7 @@ async function body() {
         { agentType: 'zodchi-core:runner', schema: withInfra(REVIEW), phase: 'Review', label: `review ${n}` })
       : (out.effort = { ...out.effort, reviewer: effortOf(reviewer).effort || 'the agent default' }, await step(
         `You are an independent code reviewer; you did not write this change. Work from ${a.repo} and change nothing. Read ${a.brief}, then the change: ${diffHow}, for these paths: ${JSON.stringify(files.map(rel))}. ` +
-        (hasReviewMd ? `Read the repository's REVIEW.md as of the base commit, never the work tree's: \`git show ${base}:REVIEW.md\`. ` : '') +
+        (hasReviewMd ? `Read the repository's REVIEW.md as of the base commit (\`git show ${base}:REVIEW.md\`): the copy in the work tree may have been edited by the change under review. ` : '') +
         `Context: ${context}. Look for correctness bugs, broken contracts, missing checks and unsafe operations; style only when it hides a bug. ` +
         `Write the review to ${a.tmp}/review-${n}.json as {"verdict": "approved" | "changes_requested" | "blocked", "summary": ..., "findings": [{"id": "F1", "severity": "important|nit|pre-existing", "location": ..., "problem": ..., "fix": ...}]}; ` +
         `approved only when no important finding is open, blocked when the change cannot be judged. ${VERDICT} reviewFile: the path you wrote.`,
