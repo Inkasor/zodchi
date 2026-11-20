@@ -19,6 +19,8 @@ const sha = (text) => crypto.createHash("sha256").update(text, "utf8").digest("h
 const MARK = "<!-- design-brief: db -->";
 const BRIEF = `${MARK}\n# Title\n\n## Goal\nMake the export resumable.\n\n## Review boundary\nImportant: a lost row.\n\n## Checks\nnode scripts/check.mjs\n`;
 const HEADINGS = ["# Title", "## Goal", "## What to build", "## Owner decisions", "## Review boundary", "## Checks"];
+// The repository path the workflow sees in a run with `logical: true`: the same length on every machine.
+const LOGICAL_REPO = "/logical/repo";
 const PLUGIN = { root: "/plugin/core", commit: "c0ffee", version: "1.0.0-dev", via: "installed_plugins.json, scope user" };
 const ROLES = {
   writer: { candidates: [{ provider: "claude", model: "sonnet", effort: "high" }] },
@@ -38,9 +40,18 @@ export default function register({ scenario, ROOT, scratch }) {
    * types for a part (or undefined for the correct one); `lose(label)` makes a runner return nothing; `omit(part, attempt)` leaves that part's entry out of the runner's array;
    * `onlyFirst(label)` makes a runner answer its first command only, as a failed one (a runner that stopped its batch there).
    */
-  async function run({ facts, damage = () => undefined, lose = () => false, omit = () => false, onlyFirst = () => false, folder = "" }) {
-    const repo = `${SCRATCH}/run-${String(++runs).padStart(3, "0")}${folder ? `/${folder}` : ""}/repo`;
-    fs.mkdirSync(repo, { recursive: true });
+  async function run({ facts, damage = () => undefined, lose = () => false, omit = () => false, onlyFirst = () => false, folder = "", logical = false }) {
+    const physical = `${SCRATCH}/run-${String(++runs).padStart(3, "0")}${folder ? `/${folder}` : ""}/repo`;
+    fs.mkdirSync(physical, { recursive: true });
+    // logical: the workflow works on a repository path of a fixed, short length (LOGICAL_REPO), and the fake runner writes where that path stands on disk,
+    // so the size of the material, and with it the number of its parts, does not depend on how long the scratch path of the machine is.
+    const repo = logical ? LOGICAL_REPO : physical;
+    const onDisk = (p) => (logical && p.startsWith(LOGICAL_REPO) ? physical + p.slice(LOGICAL_REPO.length) : p);
+    const retarget = (arg) => {
+      if (!logical) return arg;
+      const spec = JSON.parse(Buffer.from(arg.slice(4), "base64").toString("utf8"));
+      return `b64:${Buffer.from(JSON.stringify({ ...spec, dir: onDisk(spec.dir) }), "utf8").toString("base64")}`;
+    };
     const args = { label: "db", goal: "Make the export resumable, because a cut run loses an hour.", repos: [repo], questions: ["How is the export written?"], out: `${repo}/.agent-tmp/db/brief.md`, tmp: `${repo}/.agent-tmp/db` };
     const reviewDir = `${args.tmp}/review`;
     const calls = [];
@@ -62,15 +73,16 @@ export default function register({ scenario, ROOT, scratch }) {
           if (onlyFirst(label)) return { answers: [{ exitCode: 2, stdout: "", error: "bash: unexpected EOF while looking for matching quote" }] };
           return {
             answers: cmds.filter((c) => !omit(c.spec.part, label.includes(" again ") ? 2 : 1)).map((c) => {
-              const arg = damage(c.spec.part, label.includes(" again ") ? 2 : 1, c.arg) ?? c.arg;
+              const arg = damage(c.spec.part, label.includes(" again ") ? 2 : 1, c.arg) ?? retarget(c.arg);
               const r = spawnSync(process.execPath, [GATE, "brief-material", arg], { encoding: "utf8", windowsHide: true });
               return { exitCode: r.status ?? -1, stdout: r.stdout || "", error: (r.stderr || "").slice(0, 300) };
             }),
           };
         }
         if (label === "preflight db") {
-          const files = fs.existsSync(`${reviewDir}/material`) ? fs.readdirSync(`${reviewDir}/material`).sort((x, y) => parseInt(x, 10) - parseInt(y, 10)) : [];
-          const joined = files.map((f) => fs.readFileSync(`${reviewDir}/material/${f}`, "utf8")).join("");
+          const dir = onDisk(reviewDir);
+          const files = fs.existsSync(`${dir}/material`) ? fs.readdirSync(`${dir}/material`).sort((x, y) => parseInt(x, 10) - parseInt(y, 10)) : [];
+          const joined = files.map((f) => fs.readFileSync(`${dir}/material/${f}`, "utf8")).join("");
           return ioLine({ publicRepo: false, changed: false, briefSha256: sha(BRIEF), problems: [], inputSha256: sha(joined), written: true, excerpts: { missing: 0 } });
         }
         if (label === "review") return { ok: false, summary: "the fake stops here", gateway: "final", infra: "" };
@@ -124,8 +136,10 @@ export default function register({ scenario, ROOT, scratch }) {
       t.ok(reaches(r) && r.of(/^material .* again /).length === 0 && r.of(/^preflight /).length === 1, `${what}: the run reaches the review with no part sent again (${r.out.stoppedAt})`);
     }
     // The runner count follows the number of parts divided by what a runner takes (8 parts), not the research part by part.
-    const big = await run({ facts: factsOf(LATIN, 112000) });
-    t.ok(big.parts.length > 20 && big.material.length === Math.ceil(big.parts.length / 8), `112000 characters: ${big.parts.length} parts in ${big.material.length} runners`);
+    // On a repository path of a fixed length: the number of parts is the same on every machine, whatever the scratch path is.
+    const big = await run({ facts: factsOf(LATIN, 112000), logical: true });
+    t.ok(big.parts.length > 20 && big.parts.length < 100 && big.material.length === Math.ceil(big.parts.length / 8), `112000 characters: ${big.parts.length} parts in ${big.material.length} runners`);
+    t.ok(reaches(big) && big.of(/^material .* again /).length === 0, `112000 characters: the run reaches the review with no part sent again (${big.out.stoppedAt})`);
   });
 
   scenario("design-brief-material-batch-retry", "a part damaged inside a batch is sent again alone by a fresh runner and the parts that arrived are not; a batch that returned nothing sends again its own parts only, each alone; a part damaged twice stops the run before the preflight; an unchanged run has the same labels", async (t) => {

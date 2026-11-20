@@ -76,35 +76,76 @@ export default function register({ scenario, ROOT }) {
   scenario("prompts-never-resumed-runner-waits-on-its-submission", "a resumed gateway step first checks the progress file for a submission of this run and waits on it; it is told to submit under the base key only when there is none (next-fixes 26)", async (t) => {
     const first = (await runCodePackage(ARGS, answers)).calls.find((c) => /^review /.test(c.label));
     const key = /Gateway call, base key (\S+)\./.exec(first.prompt)[1];
-    const iLook = first.prompt.indexOf("First look in the progress file for a submission of this call");
-    const iSubmit = first.prompt.indexOf(`With none, submit under ${key}`);
-    t.ok(iLook >= 0 && iSubmit > iLook, "attempt 1: the check of the progress file comes before the order to submit");
-    t.ok(first.prompt.includes(`if it records ${key}, ${key}-r2 or ${key}-r3, the latest of them is the active key, and a resumed run waits on it as below instead of submitting again`), "and a recorded submission is waited on, not submitted again");
-    t.ok(/Keys of this run all start with \S+-; count only those/.test(first.prompt), "the run's key prefix is named");
+    const p = first.prompt;
+    const iLook = p.indexOf("First look in the progress file for a submission of this call");
+    const iWait = p.indexOf("the latest of them is the active key: wait on it as below and do not run the submit command.");
+    const iNone = p.indexOf(`Only with none, submit under ${key}`);
+    const iCommand = p.indexOf("The submit command (run it in the foreground from");
+    t.ok(iLook >= 0 && iWait > iLook && iNone > iWait && iCommand > iNone, "attempt 1: the check of the progress file, then the wait for a recorded submission, then (only with none) the submit command");
+    t.ok(p.includes(`if it records ${key}, ${key}-r2 or ${key}-r3, the latest of them is the active key`), "a recorded submission is the active key");
+    t.ok(p.slice(iCommand).includes("and only when that check found no submission"), "and the command itself says that it runs only when no submission was found");
+    t.eq(p.split("zodchi run --role").length - 1, 1, "the submit command stands once in the prompt, with no unconditional order to run it");
+    t.ok(!/Run it in the foreground from/.test(p), "no sentence that orders the command regardless of the check");
+    t.ok(/Keys of this run all start with \S+-; count only those/.test(p), "the run's key prefix is named");
 
     const second = (await runCodePackage({ ...ARGS, rerun: { "review 1": 2 } }, answers)).calls.find((c) => /^review /.test(c.label));
     const key2 = /Gateway call, base key (\S+)\./.exec(second.prompt)[1];
     t.eq(key2, `${key}-a2`, "attempt 2 has a base key of its own");
     const look = second.prompt.indexOf(`First look in the progress file for a submission of this attempt: a key that starts with ${key2}`);
-    const wait = second.prompt.indexOf("the latest of them is the active key: wait on it as below instead of submitting");
+    const wait = second.prompt.indexOf("the latest of them is the active key: wait on it as below and do not run the submit command.");
     const none = second.prompt.indexOf("If there is none, take the latest key");
-    const submit = second.prompt.indexOf(`submit under ${key2}`);
-    t.ok(look >= 0 && wait > look && none > wait && submit > none, "attempt 2: look for a submission of this attempt first, wait on the latest one, only then (with none) fall back to the older keys and the base key");
+    const unknown = second.prompt.indexOf('If that job is final with status "unknown"');
+    const submit = second.prompt.indexOf(`run the submit command under ${key2}`);
+    const command = second.prompt.indexOf("The submit command (run it in the foreground from");
+    t.ok(look >= 0 && wait > look && none > wait && unknown > none && submit > unknown && command > submit, "attempt 2: look for a submission of this attempt first, wait on the latest one, then the older key of this run, and only then (with none) the submit command");
     t.ok(second.prompt.includes(`(${key2}, ${key2}-r2, ${key2}-r3)`), "the keys named are the base key and its retries");
+    t.eq(second.prompt.split("zodchi run --role").length - 1, 1, "the submit command stands once in the prompt of attempt 2 as well");
   });
 
-  scenario("prompts-never-one-exit-rule-for-a-gateway-wait", "every workflow that waits on a gateway job words the exit rule the same way: wait until the job is final (exit 0 or 2) or the time is up; on timeout report failure and say the job still runs", async (t) => {
-    const lines = (rel, re) => source(rel).split("\n").filter((l) => re.test(l)).map((l) => l.trim().replace(/\$\{q\(\w+\)\}/, "${q()}"));
-    const wait = new Set(), background = new Set();
-    for (const rel of GATEWAY_WORKFLOWS) {
-      const w = lines(rel, /Wait in the foreground with/), o = lines(rel, /If the time runs out, report failure/), b = lines(rel, /Never start it in the background/);
-      t.ok(w.length === 1 && o.length === 1 && b.length === 1, `${rel}: one wait rule, one timeout rule, one background rule`);
-      wait.add(w[0]);
-      background.add(b[0]);
-      t.ok(/until the job is final \(exit 0 or 2\) or \$\{totalMin\} minutes have passed/.test(w[0]) && /still runs under its active key/.test(o[0]) && /Do not return earlier/.test(o[0]), `${rel}: the exit rule`);
-      t.ok(!/never return before|Never in the background|never through Monitor/.test(source(rel)), `${rel}: the old negative wordings are gone`);
+  // The attempt rule is for a job that failed: an unknown one may already have run and used the subscription, so it is never submitted over (branch review F2).
+  scenario("prompts-never-attempt-rule-spares-an-unknown-job", "an attempt-2 step whose earlier job is final with status unknown is not told to submit: only a failed job (or none) is finished and submitted over; an unknown one stops with the UNKNOWN line", async (t) => {
+    const second = (await runCodePackage({ ...ARGS, rerun: { "review 1": 2 } }, answers)).calls.find((c) => /^review /.test(c.label));
+    const key2 = /Gateway call, base key (\S+)\./.exec(second.prompt)[1];
+    const q = second.prompt;
+    t.ok(!/whatever its status/.test(q), "no rule that finishes a key of every status");
+    const unknown = q.slice(q.indexOf('If that job is final with status "unknown"'), q.indexOf('If it is final with status "failed"'));
+    t.ok(unknown.length > 0 && /never gets a new key/.test(unknown) && /do not run the submit command/.test(unknown) && /stop as the "unknown" rule below says/.test(unknown), "an earlier job that is unknown gets no new key, and the step stops as the unknown rule says");
+    t.ok(!unknown.includes("submit under"), "and the unknown branch names no key to submit under");
+    t.ok(q.includes(`If it is final with status "failed", or there is none, that key is finished: run the submit command under ${key2}`), "only a failed job, or none, is finished and submitted over");
+    t.ok(q.includes('A job that is final with status "unknown" never gets a new key and is never waited on again') && q.includes('"UNKNOWN: key <active key>: <the job\'s error>"'), "the unknown rule below is the one that stops: the UNKNOWN line, never submitted again");
+    for (const rel of ["core/workflows/code-package.js", "core/workflows/design-brief.js"]) {
+      const text = source(rel);
+      t.ok(text.includes('If that job is final with status "unknown", it never gets a new key, here or in any attempt: do not run the submit command; stop as the "unknown" rule below says, with that key as the active key.') && !/whatever its status/.test(text), `${rel}: the attempt rule of the source reads the same`);
+      t.ok(text.includes('If it is final with status "failed", or there is none, that key is finished: run the submit command under ${key}.'), `${rel}: the finished-key rule is for a failed job`);
     }
-    t.eq([wait.size, background.size], [1, 1], "the wait rule and the background rule read the same in all six workflows");
-    t.ok(/a dead worker can leave a paid job with an unknown outcome/.test([...background][0]), "the background rule gives its reason");
+  });
+
+  // The shared sentences of the block are one text in all six workflows, compared whole. Result fields of one workflow follow in a sentence of their own.
+  scenario("prompts-never-one-exit-rule-for-a-gateway-wait", "every workflow that waits on a gateway job words the shared rules the same way, byte for byte: the wait, the timeout, the background rule, the new-key and the unknown rules; the result fields of a workflow are a separate sentence", async (t) => {
+    const lines = (rel, re) => source(rel).split("\n").filter((l) => re.test(l)).map((l) => l.trim().replace(/\$\{q\(\w+\)\}/, "${q()}"));
+    const SHARED = [
+      ["the wait", /Wait in the foreground with/], ["the timeout", /If the time runs out, report failure/], ["the background rule", /Never start it in the background/],
+      ["the active key", /The active key is the key of the latest submission/], ["the new-key rule", /A job gets a new key only with evidence/], ["the new-key command", /Then run the same full command again with --key set to the next key/],
+      ["the unknown rule", /A job that is final with status "unknown" never gets a new key/], ["the UNKNOWN line", /write the line "UNKNOWN: key <active key>/], ["the other statuses", /Any other final status, a "failed" job/],
+    ];
+    for (const [what, re] of SHARED) {
+      const seen = new Set();
+      for (const rel of GATEWAY_WORKFLOWS) {
+        const found = lines(rel, re);
+        t.ok(found.length === 1, `${rel}: ${what} is one line`);
+        seen.add(found[0]);
+      }
+      t.eq(seen.size, 1, `${what} reads the same in all six workflows`);
+    }
+    const timeout = lines(GATEWAY_WORKFLOWS[0], /If the time runs out, report failure/)[0];
+    t.ok(timeout.startsWith("`If the time runs out, report failure and say the job still runs under its active key. Do not return earlier: nobody else waits on the job. `") && !/ok false|verdict|gateway/.test(timeout), "the shared timeout text is the sentence itself, with no result field of one workflow in it");
+    for (const rel of GATEWAY_WORKFLOWS) {
+      const src = source(rel);
+      t.ok(/until the job is final \(exit 0 or 2\) or \$\{totalMin\} minutes have passed/.test(lines(rel, /Wait in the foreground with/)[0]), `${rel}: the exit rule`);
+      t.ok(/In this workflow's result that failure is /.test(src), `${rel}: its own result fields follow in a sentence of their own`);
+      t.ok(!/never return before|Never in the background|never through Monitor/.test(src), `${rel}: the old negative wordings are gone`);
+      t.ok(!/Run it in the foreground from/.test(src) && !/instead of submitting again/.test(src), `${rel}: no unconditional order to run the submit command`);
+    }
+    t.ok(/a dead worker can leave a paid job with an unknown outcome/.test(lines(GATEWAY_WORKFLOWS[0], /Never start it in the background/)[0]), "the background rule gives its reason");
   });
 }
