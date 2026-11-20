@@ -37,7 +37,7 @@ export default function register({ scenario, ROOT }) {
    * types for a part (or undefined for the correct one); `lose(label)` makes a runner return nothing; `omit(part, attempt)` leaves that part's entry out of the runner's array.
    */
   async function run({ facts, damage = () => undefined, lose = () => false, omit = () => false }) {
-    const repo = `${SCRATCH}/run-${++runs}/repo`;
+    const repo = `${SCRATCH}/run-${String(++runs).padStart(3, "0")}/repo`;
     fs.mkdirSync(repo, { recursive: true });
     const args = { label: "db", goal: "Make the export resumable, because a cut run loses an hour.", repos: [repo], questions: ["How is the export written?"], out: `${repo}/.agent-tmp/db/brief.md`, tmp: `${repo}/.agent-tmp/db` };
     const reviewDir = `${args.tmp}/review`;
@@ -91,7 +91,8 @@ export default function register({ scenario, ROOT }) {
     for (const [what, sentence] of [["Latin", LATIN], ["Cyrillic", CYRILLIC]]) {
       const r = await run({ facts: factsOf(sentence, 56000) });
       const total = r.parts.reduce((n, c) => n + c.spec.text.length, 0);
-      t.ok(total >= 56000 && total <= 64000, `${what}: the material is about 56000 characters (${total}) in ${r.parts.length} parts`);
+      // The material carries the scratch paths, which are longer on CI runners: the upper bound leaves room for them.
+      t.ok(total >= 56000 && total <= 72000, `${what}: the material is about 56000 characters (${total}) in ${r.parts.length} parts`);
       t.ok(r.material.length >= 1 && r.material.length <= 3, `${what}: it goes in at most 3 runners (${r.material.length}: ${r.material.map((c) => c.label).join(" | ")})`);
       t.ok(r.material.every((c) => c.opts.agentType === "zodchi-core:runner" && (c.prompt.match(/node -e /g) || []).length <= 8), `${what}: each runner is a Haiku-class runner with at most 8 commands`);
       t.eq(r.material.length, Math.ceil(r.parts.length / 8), `${what}: the runners are the parts divided by 8, rounded up`);
@@ -117,8 +118,12 @@ export default function register({ scenario, ROOT }) {
     t.eq(labels, expected, "a batch is labelled by its parts' numbers and the count");
     const again = await run({ facts });
     t.eq(again.material.map((c) => c.label), labels, "an unchanged run gets the same labels, so a resumed run finds the finished runners in the journal");
-    const texts = (r) => r.parts.map((c) => [c.spec.part, c.spec.of, c.spec.text.split(r.repo).join("<repo>")]);
-    t.eq(texts(again), texts(clean), "and the same parts, in the same order");
+    // The two runs differ only in their scratch folder, which has the same length; a part boundary may fall inside a path, so the parts are
+    // compared by number and length and the joined material with the folder replaced.
+    const shape = (r) => r.parts.map((c) => [c.spec.part, c.spec.of, c.spec.text.length]);
+    const joined = (r) => r.parts.map((c) => c.spec.text).join("").split(r.repo).join("<repo>");
+    t.eq(shape(again), shape(clean), "and the same parts, in the same order");
+    t.ok(joined(again) === joined(clean), "and the same material in them");
 
     // A part of the second batch damaged: dropped end of the argument, or valid base64 of another text.
     const inSecond = 10;
