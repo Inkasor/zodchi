@@ -65,3 +65,6 @@ the owner stop a release for it?
 - nit for the code-package gate (2026-11-20, owner decision): a new workflow run against an older helper copy closing
   stale claims of finished packages before it refuses the mismatch (that cleanup is the gate's normal work on every
   run and touches only claims of finished packages).
+- nit for code-package gateway keys (2026-11-20, owner decision): a key over the gateway's 96-character limit only at
+  call or attempt counts no real package reaches (thousands of calls, dozens of retries); the label cap covers the
+  counts a run actually has.
