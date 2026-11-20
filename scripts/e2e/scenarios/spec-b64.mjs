@@ -159,7 +159,7 @@ export default function register({ scenario, ROOT }) {
     // The parts are cut from JSON.stringify of the material, so a part never holds a control character or a lone surrogate (JSON writes those
     // as ASCII escapes); each of its characters is then one of these, and the longest in the spec is the 4-byte emoji (a backslash and a quote double).
     // A folder of 400 letters (the review folder is longer by the repository and the run name): the cut leaves room for it beside the heaviest part.
-    const tail = `/${"ж".repeat(200)}/${"f".repeat(200)}`;
+    const tail = `/${"ж".repeat(100)}/${"ж".repeat(100)}/${"f".repeat(200)}`;
     for (const [what, ch, whole] of [["4-byte emoji", "😀", false], ["3-byte characters", "字", false], ["Cyrillic", "ж", true], ["backslashes (each doubled)", "\\", true], ["quotes (each escaped)", "\"", true], ["ASCII", "a", true]]) {
       const r = await run(() => undefined, { tmpTail: tail, facts: (repo) => [{ claim: ch.repeat(9000), source: `${repo}/src/export.js:1` }] });
       const calls = r.of(/^material /);

@@ -68,3 +68,7 @@ the owner stop a release for it?
 - nit for code-package gateway keys (2026-11-20, owner decision): a key over the gateway's 96-character limit only at
   call or attempt counts no real package reaches (thousands of calls, dozens of retries); the label cap covers the
   counts a run actually has.
+- nit for design-brief material batches (2026-11-20, the lead after two rounds): a run cut inside a batch sending the
+  whole batch again on resume (brief-material rewrites a part file, so a resend is safe and costs a few runner
+  commands); a wrong or conflicting receipt for a part (the preflight joins the parts and checks the whole hash, so a
+  damaged part stops the run with "run again" before anything reaches a reviewer).
