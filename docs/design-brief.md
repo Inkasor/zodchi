@@ -61,8 +61,9 @@ before using its slot statuses, reasons, totals and manifest hash.
 
 For each accepted slot the helper publishes an immutable `<slot>/entry.json` receipt in the manifest folder. The manifest
 hash covers the input digest and all receipts in question order, including empty positions in a partial run.
-On resume the helper hashes the live files. Accepted slots are reused. A missing or rejected receipt sends only
-that question back to research. A second rejection stops the invocation. If accepted bytes changed or vanished,
+A second rejection stops the invocation. To recover, start a fresh run with the same `args.tmp` and research
+inputs. The helper hashes the live files, reuses accepted slots and asks only the questions whose receipts are
+missing or rejected. Using `resumeFromRunId` with unchanged calls would replay the same stop. If accepted bytes changed or vanished,
 restore the accepted bytes or choose a fresh run folder. Changing the questions or run settings also requires
 a fresh folder.
 

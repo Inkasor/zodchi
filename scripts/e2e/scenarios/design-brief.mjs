@@ -32,6 +32,16 @@ const ROLES = {
 };
 const HEADINGS = ["# Title", "## Goal", "## What to build", "## Owner decisions", "## Review boundary", "## Checks"];
 
+export function runDesignBrief(source, sandbox) {
+  const context = vm.createContext(sandbox);
+  vm.runInContext(`
+    Date.now = () => { throw new Error("Date.now is unavailable in workflows"); };
+    Math.random = () => { throw new Error("Math.random is unavailable in workflows"); };
+  `, context);
+  const body = source.replace(/^export const meta/, "const meta");
+  return vm.runInContext(`(async () => {\n${body}\n})()`, context, { filename: "design-brief.js" });
+}
+
 export default function register({ scenario, ROOT }) {
   const source = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8");
   const SRC = source("core/workflows/design-brief.js");
@@ -146,9 +156,8 @@ export default function register({ scenario, ROOT }) {
         return m ? io(m.command, m.spec, given) : given;
       },
     };
-    const fn = vm.runInNewContext(`(async () => {\n${SRC.replace(/^export const meta/, "const meta")}\n})`, sandbox, { filename: "design-brief.js" });
     let out, error = null;
-    try { out = deep(await fn(), fromDisk); } catch (e) { error = e; }
+    try { out = deep(await runDesignBrief(SRC, sandbox), fromDisk); } catch (e) { error = e; }
     /** A file the helper wrote for a path of the run, with the run's paths in it (""), and whether it exists. */
     const file = (p) => (fs.existsSync(onDisk(p)) ? fromDisk(fs.readFileSync(onDisk(p), "utf8")) : "");
     const exists = (p) => fs.existsSync(onDisk(p));
