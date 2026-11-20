@@ -140,11 +140,15 @@ the e2e suite fails when the stamp is not current.
 
 ## A gateway job that ended unknown
 
-The gateway reports `unknown` when the request may already have run. No workflow submits it again under a new key:
-the run stops with `stoppedAt: "unknown outcome at <step>"`, the key, the reason and the decision that is the
-person's (look at `zodchi job --key <key>`, then take the result or pay once more by running the step again under
-its rerun label). A `failed` job gets a new key only with evidence that the request was never sent: the job shows
-neither `turnRequestedAt` nor `turnStartedAt`.
+The gateway reports `unknown` when the request may already have run. The workflow stops with
+`stoppedAt: "unknown outcome at <step>"`, the key and the reason. A plain resume stops at the same unknown job.
+Within the step, a retry under `-r2` or `-r3` requires a `failed` job with both `turnRequestedAt` and
+`turnStartedAt` unset.
+
+Inspect the job with `zodchi job --key <key>`. You can use its result or authorize another call by naming the
+step in `args.rerun`. Attempt N first reuses any submission it already recorded. Otherwise it waits for an
+earlier job that is still running. If the earlier job is already final with any status, including `unknown`,
+or there is no earlier job, it submits under `<key>-aN`.
 
 ## The owner setting
 

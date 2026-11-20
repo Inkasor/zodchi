@@ -125,9 +125,9 @@ The output is one JSON object. Read these fields and quote them as they are:
 
 - `verdict` (`approved`, `changes_requested`, `blocked`) and `approved`.
 - `refused`: the gate refused; nothing was claimed or written. Fix the cause it names and run again.
-- `stoppedAt`, `next`, `question`, `questions`: why it ended and what the person must decide. Put each
-  to the person as options with a default (the one the work goes on with until they answer), and recommend one if you
-  have a view; the decision is the person's (cost, scope, what users see).
+- `stoppedAt`, `next`, `question`, `questions`: why it ended and what the person must decide. Present each
+  question with options and a proposed default. Resume only after the person answers. Decisions about cost,
+  scope and what users see belong to them.
 - `openFindings`: every finding still open, with its severity. Do not drop or soften one.
 - `verifiedBy` and `verification` (its `evidence[]`: `source`, `exitCode`, `log`): what ran. `verifiedBy: "none"` means
   the run did not establish that the change is verified, not that nothing ran: an empty `evidence` is a run in which no
