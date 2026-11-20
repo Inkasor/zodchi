@@ -259,7 +259,14 @@ export default function register({ scenario, ROOT }) {
     const clean = await run(() => undefined);
     const n = partsIn(clean.of(/^material /)).length;
     t.ok(n >= 3, `the material is several parts (${n})`);
-    t.eq(clean.of(/^material /).map((c) => c.label), [`material 1-${n}/${n} db`], "without damage the parts go in one runner, once, under one label");
+    // The batches follow from the part count (8 parts to a runner), not from a fixed number: a longer scratch path makes more parts. A batch is labeled by its parts: first-last, or the one number.
+    const labelOf = (from, to) => `material ${from === to ? from : `${from}-${to}`}/${n} db`;
+    const initial = Array.from({ length: Math.ceil(n / 8) }, (_, b) => labelOf(b * 8 + 1, Math.min(n, b * 8 + 8)));
+    const firstBatch = Math.min(n, 8);
+    /** The runners of a run split into the first sends (not "again") and the resends, each in call order. */
+    const sends = (r) => ({ first: r.of(/^material /).filter((c) => !/ again /.test(c.label)), again: r.of(/^material /).filter((c) => / again /.test(c.label)) });
+    t.eq(sends(clean).first.map((c) => c.label), initial, "without damage the parts go in one runner for every 8 parts, once, each under its own label");
+    t.eq(sends(clean).again.length, 0, "and nothing is sent again");
     t.ok(partsIn(clean.of(/^material /)).every((c) => c.spec.text.length <= 4000), "no part is over 4000 characters");
     t.ok(clean.out.stoppedAt && /^review \(the fake stops here\)/.test(clean.out.stoppedAt) && clean.of(/^review$/).length === 1, `an undamaged run reaches the review (${clean.out.stoppedAt})`);
     // Every helper command of a prompt carries its spec as b64: a runner of a batch sends several, and one plain-JSON command among them must fail this check.
@@ -291,8 +298,9 @@ export default function register({ scenario, ROOT }) {
       const runners = r.of(/^material /);
       everyPromptB64(t, r, name);
       t.ok(r.out.stoppedAt && /^review \(the fake stops here\)/.test(r.out.stoppedAt) && r.of(/^review$/).length === 1 && r.of(/^preflight /).length === 1, `${name}: the run reaches the review (${r.out.stoppedAt})`);
-      t.eq(runners.map((c) => c.label), [`material 1-${n}/${n} db`, `material ${second}/${n} again db`], `${name}: one runner for the batch, then one more for the damaged part, under a label of its own`);
-      t.eq(partsIn(runners.slice(1)).map((c) => c.spec.part), [second], `${name}: only the damaged part is sent again`);
+      t.eq(sends(r).first.map((c) => c.label), initial, `${name}: one runner for every batch of 8 parts`);
+      t.eq(sends(r).again.map((c) => c.label), [`material ${second}/${n} again db`], `${name}: one more runner for the damaged part, under a label of its own`);
+      t.eq(partsIn(sends(r).again).map((c) => c.spec.part), [second], `${name}: only the damaged part is sent again`);
       t.eq(new Set(runners.map((c) => c.label)).size, runners.length, `${name}: no two runners share a label, so the journal cannot hand back the bad answer`);
     }
     // The text of a part changed but still a valid spec: the helper takes it, the hash of what it got is not the part's.
@@ -306,7 +314,7 @@ export default function register({ scenario, ROOT }) {
     t.ok(/^review \(part 2 of the material was not written: the material helper \(part 2\): /.test(twice.out.stoppedAt || ""), `a part damaged twice stops the run (${twice.out.stoppedAt})`);
     t.ok(twice.of(/^preflight /).length === 0 && twice.of(/^review$/).length === 0, "nothing was preflighted or sent to the gateway");
     t.eq(partsIn(twice.of(/^material /)).filter((c) => c.spec.part === second).length, 2, "the part was sent twice, not more");
-    t.eq(twice.of(/^material /).length, 2, "two runners: the batch and the one that sent the damaged part again");
+    t.eq(twice.of(/^material /).length, initial.length + 1, "the runners of the batches and one that sent the damaged part again");
     const hash = await run((_label, arg, _attempt, part) => (part === second ? changed(arg) : undefined));
     everyPromptB64(t, hash, "a part with a wrong hash twice");
     t.ok(/^review \(part 2 of the material did not reach the helper exactly \(its sha256 differs\)\)/.test(hash.out.stoppedAt || "") && hash.of(/^review$/).length === 0, `a part whose hash differs twice stops the run with the hash text (${hash.out.stoppedAt})`);
@@ -314,15 +322,26 @@ export default function register({ scenario, ROOT }) {
     const both = await run((_label, arg, _attempt, part) => (part <= 2 ? arg.slice(0, -3) : undefined));
     everyPromptB64(t, both, "two parts damaged");
     t.ok(/^review \(part 1 of the material was not written/.test(both.out.stoppedAt || ""), "when several parts fail twice, the first is named");
-    t.eq(both.of(/^material /).map((c) => c.label), [`material 1-${n}/${n} db`, `material 1/${n} again db`, `material 2/${n} again db`], "the damaged parts of a batch are sent again one runner each, the part that arrived is not sent again");
+    t.eq(sends(both).first.map((c) => c.label), initial, "the batches go first");
+    t.eq(sends(both).again.map((c) => c.label).sort(), [`material 1/${n} again db`, `material 2/${n} again db`], "the damaged parts of a batch are sent again one runner each, the part that arrived is not sent again");
     // A runner that returned nothing at all (the whole batch failed): every part of it is sent again, each alone by a fresh runner of its own, and the run goes on.
-    const lost = await run(() => undefined, { lose: (label) => label === `material 1-${n}/${n} db` });
+    const lost = await run(() => undefined, { lose: (label) => label === initial[0] });
     everyPromptB64(t, lost, "a batch that returned nothing, sent again part by part");
     // A resend is checked as a prompt of its own: its one command as plain JSON fails the check, as in the first batch.
     const resend = lost.of(/^material .* again /)[0].prompt, resendCmd = partsIn(lost.of(/^material .* again /))[0];
     const resendPlain = commandsB64(resend.replace(` '${resendCmd.arg}'`, () => ` ${quoted(JSON.stringify(resendCmd.spec))}`));
     t.ok(resendPlain.total > 0 && resendPlain.plain.length === 1, `a resend with its command as plain JSON fails the check (plain: ${JSON.stringify(resendPlain.plain.map((p) => p.command))})`);
-    t.ok(/^review \(the fake stops here\)/.test(lost.out.stoppedAt || "") && lost.of(/^material /).map((c) => c.label).join() === [`material 1-${n}/${n} db`, ...Array.from({ length: n }, (_, k) => `material ${k + 1}/${n} again db`)].join(), `a batch that returned no result has each of its parts sent again alone and the run reaches the review (${lost.out.stoppedAt}; ${lost.of(/^material /).map((c) => c.label)})`);
+    t.ok(/^review \(the fake stops here\)/.test(lost.out.stoppedAt || "") && sends(lost).first.map((c) => c.label).join() === initial.join() && sends(lost).again.map((c) => c.label).sort().join() === Array.from({ length: firstBatch }, (_, k) => `material ${k + 1}/${n} again db`).sort().join(), `a batch that returned no result has each of its parts (and only those) sent again alone and the run reaches the review (${lost.out.stoppedAt}; ${lost.of(/^material /).map((c) => c.label)})`);
+    // More than eight parts (a longer scratch path or more material makes them): the batches are 1-8, 9-16, ..., and the lost runner is the first batch, whatever the part count.
+    const many = (repo) => Array.from({ length: 24 }, (_, i) => ({ claim: `The export writes row group ${i} with a long explanation. ${"Why it matters here, ".repeat(70)}`, source: `${repo}/src/export.js:${i + 1}` }));
+    const big = await run(() => undefined, { facts: many });
+    const m = partsIn(big.of(/^material /)).length;
+    t.ok(m > 8, `the material of the many-part case is more than one batch (${m} parts)`);
+    const bigLabel = (from, to) => `material ${from === to ? from : `${from}-${to}`}/${m} db`;
+    const bigInitial = Array.from({ length: Math.ceil(m / 8) }, (_, b) => bigLabel(b * 8 + 1, Math.min(m, b * 8 + 8)));
+    t.eq(sends(big).first.map((c) => c.label), bigInitial, "more than 8 parts: one runner for every 8 parts, each under its own label");
+    const bigLost = await run(() => undefined, { facts: many, lose: (label) => label === bigInitial[0] });
+    t.ok(/^review \(the fake stops here\)/.test(bigLost.out.stoppedAt || "") && sends(bigLost).first.map((c) => c.label).join() === bigInitial.join() && sends(bigLost).again.map((c) => c.label).sort().join() === Array.from({ length: 8 }, (_, k) => `material ${k + 1}/${m} again db`).sort().join(), `the lost first batch has its 8 parts sent again alone, the other batches none (${bigLost.out.stoppedAt}; ${bigLost.of(/^material /).map((c) => c.label)})`);
   });
 
   scenario("spec-b64-material-long-folder", "the material is cut by the size of the whole spec: with a long review folder and the heaviest text the parts are smaller than 4000 characters, every one still goes as b64: within the cap, and they rejoin exactly", async (t) => {
