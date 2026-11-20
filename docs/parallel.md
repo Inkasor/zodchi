@@ -38,7 +38,16 @@ agent may not be allowed to do either. Nothing is shared, nothing is locked.
   renamed over it). The runner returns the printed line and the exit code; the conflicts, the
   files of other packages (`others`) and what was added come only from that line. An open claim
   of the same label is reused on a resume, its branch set to the one the resumed run asks for
-  (after the same branch check against the others). The helper keeps claims, and takes the lock,
+  (after the same branch check against the others). A claim the earlier run closed `stopped` (not
+  `done`) of the same `tmp` folder is the claim of the package that goes on: the claim command
+  opens it again (with its recorded `base` and what it recorded at the start), and so does
+  `claim-more` when it finds the claim closed `stopped`. This is needed because a resumed run
+  (`resumeFromRunId`) takes the finished `claim` step from the journal and does not run it
+  again, so the first helper call that does run finds the claim closed; it is opened again unless
+  another open claim now lists one of its files (then the run stops with that conflict). The claim
+  records the package's base commit (`claim-base` updates it after a switch to `args.branch`
+  or an ignore commit): a package that goes on reviews `base..HEAD` from that recorded base,
+  with every file its claim lists, not only what this run wrote. The helper keeps claims, and takes the lock,
   in the folder under the shell's `$HOME`, the one every version of the workflow uses; where Node's
   home folder is another one (Windows), the claim step refuses while open claims written there by
   an earlier build lie in it, and `claim more` counts them as other packages. Until the helper's
@@ -74,7 +83,16 @@ agent may not be allowed to do either. Nothing is shared, nothing is locked.
   is on a different branch refuses with that reason: switching would pull the branch
   from under the other package. On the same branch it runs.
 - **Review.** The review diffs only the package's paths against the base commit, so
-  other packages' commits do not enter it.
+  other packages' commits do not enter it. For a package that goes on (a new run of the same
+  label after a stop, or a resume) the base is the one its claim recorded, so the earlier
+  rounds' commits are in the review too.
+- **Gateway keys.** Every gateway key of `code-package` is `<label>-<base7>-<kind>-<n>` (for
+  example `export-csv-1a2b3c4-review-1`): `<base7>` is the first seven characters of the package
+  base commit, followed by `-<head7>` of the HEAD the run started at when that differs from the
+  base (a run that goes on after an earlier run of the label). A new run of a label an earlier run
+  used gets keys of its own, and a resume of the same run (whose gate, claim and base answers come
+  back from the journal) builds the same keys, so the gateway's idempotency holds for it. A rerun
+  after an infrastructure failure keeps its own `-a<n>` suffix.
 
 ## The gate: facts from one command
 
@@ -99,6 +117,20 @@ copy and never falls through to another, and it never looks in a checkout. A cop
 with exit code 4 and the place it looked at; a copy
 whose helper speaks another `api` than the workflow stops it with exit code 3. Every workflow result carries
 `pluginCopy`: `{ path, commit, version, via }`, the copy the helper came from and how it was found.
+
+## The script and the copy must be one
+
+Never point `scriptPath` at a checkout's `core/workflows/code-package.js` while that workflow is
+changed on the branch: the new script sends commands to the helper of the older plugin copy, which
+answers in ways nobody can read (seen: "spec is not JSON" on a `b64:` spec). `code-package` checks it
+itself: the script carries a line `const WORKFLOW_BUILD = '<stamp>'` (the first 16 hex digits of the
+SHA-256 of the file, line ends as LF, the stamp emptied), sends it to the helper, and the helper stamps
+the `code-package.js` of its own copy. Different stamps, or a copy too old to report one, refuse the run at the gate, before anything
+is claimed: `refused` names both stamps, the copy's commit and what to do (take the workflow from the
+copy, `git show main:core/workflows/code-package.js` saved outside the checkout, or run the installer). A
+checkout whose script equals the copy's passes. The result carries `workflow`: `{ build, copyBuild, copyCommit }`.
+After editing the workflow, run `node core/scripts/gate.mjs workflow-build core/workflows/code-package.js --write`;
+the e2e suite fails when the stamp is not current.
 
 ## A gateway job that ended unknown
 

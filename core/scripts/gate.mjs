@@ -16,6 +16,10 @@
 //   claim-more     the claim extensions of code-package: compares the files the work changed with the other open claims and adds them
 //                  (both under the claims lock, see "The claim commands" below). Given the repository, it takes the changed files
 //                  from Git itself, so the command a runner types stays short whatever the change
+//   claim-base     code-package, after a switch to args.branch or an ignore commit: records the base commit the package really starts from in
+//                  its open claim, so that a continuation of the package keeps that base
+//   workflow-build maintenance: `node gate.mjs workflow-build <workflow file> [--write]` prints the build stamp of a workflow file
+//                  (see "The workflow build" below); --write puts it into the file's WORKFLOW_BUILD line
 //   incident-open, incident-collect, incident-publish, incident-fail, incident-unlock, brief-inspect, brief-material, brief-preflight,
 //   review-read
 //                  the file work of incident-triage and design-brief, in io.mjs beside this file (see its header): every file
@@ -46,6 +50,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -380,7 +385,12 @@ function claimCmd(spec) {
       return { ...base, legacyDir: norm(legacyDir), legacyClaims: legacy.map((e) => `${e.label}: ${Array.isArray(e.claim.files) ? e.claim.files.length : 0} file(s)`),
         error: `open claims lie in ${norm(legacyDir)}, under Node's home folder, which is not the folder of the shell's $HOME the claims are kept in` };
     }
-    const mine = new Set(files);
+    const own = readJson(file).value;
+    const ownIs = (status) => Boolean(own && typeof own === "object" && own.label === spec.label && own.status === status);
+    // A claim this label's earlier run left closed "stopped" (not "done"), of the same tmp folder, is the claim of the package that goes on:
+    // it is reopened below, and its files count in the comparison with the other open claims like the ones asked for.
+    const resumable = ownIs("stopped") && own.tmp === spec.tmp;
+    const mine = new Set([...files, ...(resumable && Array.isArray(own.files) ? keysOf(own.files) : [])]);
     const conflicts = [], branchConflicts = [];
     for (const o of othersOpen(dir, spec.label)) {
       for (const f of o.files) if (mine.has(f)) conflicts.push(`${o.label}: ${f}`);
@@ -394,18 +404,24 @@ function claimCmd(spec) {
       if (st.error) return { ...base, error: `the changes at the start are unknown: ${st.error}` };
       atGate = keysOf(st.paths);
     }
-    const own = readJson(file).value;
-    if (own && typeof own === "object" && own.label === spec.label && own.status === "open") {
+    if (ownIs("open") || resumable) {
       const have = Array.isArray(own.files) ? own.files.map(String) : [];
       const haveKeys = new Set(have.map(pathKey));
       const add = files.filter((f) => !haveKeys.has(f));
       const moved = own.branch !== spec.branch;
       const gateAdd = Boolean(atGate) && !Array.isArray(own.atGate);
+      const answer = { ...base, ok: true, reused: true, base: typeof own.base === "string" ? own.base : "", files: [...have, ...add], ...(moved ? { branchWas: typeof own.branch === "string" ? own.branch : "" } : {}) };
+      if (resumable) {
+        // The package goes on after a stop that closed its claim: the same claim is opened again, with its base and what it recorded at the start kept.
+        const { closedAt, awaiting, ...rest } = own;
+        writeClaim(file, { ...rest, status: "open", files: [...have, ...add], branch: spec.branch, reopenedAt: stamp(), ...(gateAdd ? { atGate } : {}) });
+        return { ...answer, reopened: true };
+      }
       if (add.length || moved || gateAdd) writeClaim(file, { ...own, files: [...have, ...add], branch: spec.branch, ...(gateAdd ? { atGate } : {}) });
-      return { ...base, ok: true, reused: true, files: [...have, ...add], ...(moved ? { branchWas: typeof own.branch === "string" ? own.branch : "" } : {}) };
+      return answer;
     }
     writeClaim(file, { label: spec.label, status: "open", files, branch: spec.branch, brief: spec.brief, tmp: spec.tmp, base: spec.base, openedAt: stamp(), ...(atGate ? { atGate } : {}) });
-    return { ...base, ok: true, files };
+    return { ...base, ok: true, base: spec.base, files };
   }, { waitMs: lockWait(spec), staleMs: null });
   if (done.locked) return done.value;
   return { ...base, conflicts: done.busy ? ["lock busy"] : [], error: done.why };
@@ -456,7 +472,21 @@ function claimMoreFromGit(spec) {
   const st = dirtyList(spec.repo);
   if (st.error) return { ...base, error: st.error, gitError: true };
   const done = withLock(dir, () => {
-    const own = readJson(file).value;
+    let own = readJson(file).value;
+    // The run that stopped closed its claim "stopped"; the package that goes on (a resume, where the claim step comes back from the journal and
+    // is not run again) finds it closed here. The claim of this label, closed "stopped", is opened again once no other open claim lists one of its files.
+    let reopened = false;
+    const stopped = Boolean(own && typeof own === "object" && own.label === spec.label && own.status === "stopped");
+    if (stopped) {
+      const taken = new Map();
+      for (const o of [...othersOpen(dir, spec.label), ...(legacyDirOf(spec) ? othersOpen(legacyDirOf(spec), spec.label) : [])]) for (const f of o.files) if (!taken.has(f)) taken.set(f, o.label);
+      const clash = keysOf(own.files).filter((f) => taken.has(f)).map((f) => `${taken.get(f)}: ${f}`);
+      if (clash.length) return { ...base, conflicts: clash, error: `${spec.label} was closed "stopped" and another open claim now lists its files: ${clash.join(", ")}` };
+      const { closedAt, awaiting, ...rest } = own;
+      own = { ...rest, status: "open", reopenedAt: stamp() };
+      writeClaim(file, own);
+      reopened = true;
+    }
     if (!own || typeof own !== "object" || own.label !== spec.label || own.status !== "open") return { ...base, error: `${spec.label} has no open claim at ${norm(file)}` };
     const atGate = new Set(keysOf(own.atGate));
     const seen = new Map();
@@ -474,10 +504,50 @@ function claimMoreFromGit(spec) {
     const haveKeys = new Set(have.map(pathKey));
     const added = mine.map(([k]) => k).filter((k) => !haveKeys.has(k));
     if (added.length) writeClaim(file, { ...own, files: [...have, ...added] });
-    return { ...base, ok: true, others: others.map(([, p]) => p), owners: others.map(([k, p]) => `${owner.get(k)}: ${p}`), changed: mine.map(([, p]) => p), added, atGate: Array.isArray(own.atGate) };
+    return { ...base, ok: true, others: others.map(([, p]) => p), owners: others.map(([k, p]) => `${owner.get(k)}: ${p}`), changed: mine.map(([, p]) => p), added, atGate: Array.isArray(own.atGate), ...(reopened ? { reopened } : {}) };
   }, { waitMs: lockWait(spec), staleMs: null });
   if (done.locked) return done.value;
   return { ...base, conflicts: done.busy ? ["lock busy"] : [], error: done.why };
+}
+
+// claim-base: { dir, label, base }. Sets "base" of the open claim of label to base (a commit hash): the workflow reads the base of the branch
+// the package works on after the claim is written (a switch to args.branch, an ignore commit), and a continuation of the package takes it back
+// from the claim. Only an open claim of that label is changed.
+function claimBaseCmd(spec) {
+  needFields(spec, ["dir", "label", "base"], []);
+  const dir = claimsDirOf(spec);
+  const file = path.join(dir, `${spec.label}.json`);
+  const base = { ok: false, api: API, plugin: pluginCopy(), conflicts: [], file: norm(file) };
+  if (!/^[0-9a-f]{7,64}$/i.test(spec.base)) return { ...base, error: "spec.base is not a commit hash" };
+  const done = withLock(dir, () => {
+    const own = readJson(file).value;
+    if (!own || typeof own !== "object" || own.label !== spec.label || own.status !== "open") return { ...base, error: `${spec.label} has no open claim at ${norm(file)}` };
+    if (own.base !== spec.base) writeClaim(file, { ...own, base: spec.base });
+    return { ...base, ok: true, base: spec.base };
+  }, { waitMs: lockWait(spec), staleMs: null });
+  if (done.locked) return done.value;
+  return { ...base, conflicts: done.busy ? ["lock busy"] : [], error: done.why };
+}
+
+// The workflow build. A workflow script cannot read itself, and the session may run it from a checkout while the helper is the one of the
+// plugin copy (which is another commit): a new script talking to an older copy fails in ways nobody can read ("the spec is not JSON"). So a workflow
+// that depends on its helper carries a line `const WORKFLOW_BUILD = '<stamp>'` and sends the stamp to the helper; the helper stamps the same
+// workflow file of its own copy (this folder's ../workflows/<name>.js) and the answer says whether the two are one script. The stamp is the first
+// 16 hex digits of the SHA-256 of the file with line ends as LF and the stamp itself as an empty string, so it never depends on itself, and a
+// checkout whose script equals the copy's gets the copy's stamp. `workflow-build <file> --write` brings the line up to date after an edit; the
+// e2e suite fails when it is not.
+const BUILD_LINE = /^const WORKFLOW_BUILD = '([0-9a-f]*)'/m;
+const withBuild = (text, stamp) => String(text).replace(BUILD_LINE, `const WORKFLOW_BUILD = '${stamp}'`);
+function buildOf(text) {
+  const t = String(text).replace(/\r\n/g, "\n").replace(BUILD_LINE, "const WORKFLOW_BUILD = ''");
+  return createHash("sha256").update(t, "utf8").digest("hex").slice(0, 16);
+}
+function workflowFacts(spec) {
+  const w = spec.workflow;
+  if (!w || typeof w !== "object" || typeof w.name !== "string" || !/^[\w-]+$/.test(w.name)) return null;
+  const text = readText(path.join(HERE, "..", "workflows", `${w.name}.js`));
+  const copyBuild = text === null ? "" : buildOf(text);
+  return { name: w.name, build: String(w.build || ""), copyBuild, match: Boolean(copyBuild) && copyBuild === String(w.build || "") };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -510,6 +580,7 @@ function codePackage(spec) {
     config: cfg.value && typeof cfg.value === "object" ? cfg.value : {}, configError: cfg.error || "",
     boundary: boundaryOf(String(spec.brief)),
     claims: claimFacts(spec, repo, dirtyKeys),
+    workflow: workflowFacts(spec),
   };
 }
 
@@ -574,8 +645,18 @@ function roles(spec) {
 
 // The file commands live in io.mjs beside this file, loaded only for them: the gate commands need nothing but this file.
 const IO = ["incident-open", "incident-collect", "incident-publish", "incident-fail", "incident-unlock", "brief-inspect", "brief-material", "brief-preflight", "review-read"];
-const COMMANDS = { "code-package": codePackage, "branch-review": branchReview, ledger, plugin, roles, claim: claimCmd, "claim-more": claimMoreCmd };
+const COMMANDS = { "code-package": codePackage, "branch-review": branchReview, ledger, plugin, roles, claim: claimCmd, "claim-more": claimMoreCmd, "claim-base": claimBaseCmd };
 const [command, specText] = process.argv.slice(2);
+if (command === "workflow-build") {
+  const file = specText;
+  const text = file ? readText(file) : null;
+  if (text === null) print({ ok: false, api: API, error: "workflow-build needs the path of a workflow file" }, 2);
+  const have = text.match(BUILD_LINE);
+  if (!have) print({ ok: false, api: API, error: `${file} has no line "const WORKFLOW_BUILD = '...'"` }, 2);
+  const build = buildOf(text);
+  if (process.argv[4] === "--write" && have[1] !== build) fs.writeFileSync(file, withBuild(text, build));
+  print({ ok: true, api: API, build, current: have[1] === build || process.argv[4] === "--write" });
+}
 if (IO.includes(command)) {
   let io;
   try { io = await import("./io.mjs"); } catch (e) { print({ ok: false, api: API, error: `the plugin copy at ${norm(path.resolve(HERE, ".."))} has no usable scripts/io.mjs (${String(e.message).slice(0, 200)}); reinstall the plugin` }, 2); }
