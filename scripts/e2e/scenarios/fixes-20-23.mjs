@@ -42,7 +42,7 @@ export default function register({ scenario, ROOT }) {
   // ------------------------------------------------------------------------------------------------------------- item 20: the claim of a stopped run
 
   scenario("fixes-claim-reopened-after-stop", "a claim the stopped run closed 'stopped' is opened again by claim-more and by claim (same tmp), keeps its base and start record, and is never opened over another open claim's files; a claim closed 'done' or of another tmp is a new claim", async (t) => {
-    const home = scratch(t, "reopen"), dir = `${home}/.zodchi/packages/r`;
+    const home = scratch(t, "reopen"), dir = `${home}/.zodchi/packages/r`, TMP = "/r/.agent-tmp/another";
     const repo = `${home}/repo`;
     fs.mkdirSync(repo);
     spawnSync("git", ["-C", repo, "init", "-q"]);
@@ -82,19 +82,25 @@ export default function register({ scenario, ROOT }) {
     const other = gate(t, "claim", claimSpec(dir, "pkg", ["src/a.js"], { repo, base: "4444444", tmp: "/r/.agent-tmp/another" }), home).json;
     t.eq([other.ok, other.reused, other.base], [true, false, "4444444"], "a stopped claim of another tmp folder is not this run's: a new claim");
     // claim-base records the base a package really starts from
-    const cb = gate(t, "claim-base", { dir, label: "pkg", base: "5555555" }, home).json;
+    const cb = gate(t, "claim-base", { dir, label: "pkg", base: "5555555", tmp: TMP }, home).json;
     t.eq([cb.ok, readClaim(dir, "pkg").base], [true, "5555555"], "claim-base sets the base of the open claim");
     closeClaim(dir, "pkg", "done");
-    t.eq([gate(t, "claim-base", { dir, label: "pkg", base: "6666666" }, home).json.ok, readClaim(dir, "pkg").base], [false, "5555555"], "and changes nothing of a claim closed done");
+    t.eq([gate(t, "claim-base", { dir, label: "pkg", base: "6666666", tmp: TMP }, home).json.ok, readClaim(dir, "pkg").base], [false, "5555555"], "and changes nothing of a claim closed done");
     // a claim closed 'stopped' (the run stopped at claim-base itself) is opened again by claim-base, under the rule claim-more uses
     closeClaim(dir, "pkg", "stopped");
-    const re = gate(t, "claim-base", { dir, label: "pkg", base: "7777777" }, home).json;
+    const re = gate(t, "claim-base", { dir, label: "pkg", base: "7777777", tmp: TMP }, home).json;
     t.eq([re.ok, re.reopened, readClaim(dir, "pkg").status, readClaim(dir, "pkg").base, "closedAt" in readClaim(dir, "pkg")], [true, true, "open", "7777777", false], "claim-base opens a stopped claim of the label again and records the base");
     closeClaim(dir, "pkg", "stopped");
     gate(t, "claim", claimSpec(dir, "rival", readClaim(dir, "pkg").files), home);
-    const no = gate(t, "claim-base", { dir, label: "pkg", base: "8888888" }, home).json;
+    const no = gate(t, "claim-base", { dir, label: "pkg", base: "8888888", tmp: TMP }, home).json;
     t.ok(no.ok === false && no.conflicts.length === 1 && no.conflicts[0].startsWith("rival: "), `but not over another open claim's files (${JSON.stringify(no.conflicts)})`);
     t.eq([readClaim(dir, "pkg").status, readClaim(dir, "pkg").base], ["stopped", "7777777"], "the claim stays closed and keeps its base");
+    // a claim closed 'stopped' by a run of another tmp folder (a newer run of the same label) is not this run's: claim-base leaves it closed with its base
+    fs.rmSync(`${dir}/rival.json`);
+    const wrong = gate(t, "claim-base", { dir, label: "pkg", base: "9999999", tmp: "/r/.agent-tmp/older-run" }, home).json;
+    t.ok(wrong.ok === false && /no open claim/.test(String(wrong.error)), `a stopped claim of another tmp folder is not opened by claim-base (${wrong.error})`);
+    t.eq([readClaim(dir, "pkg").status, readClaim(dir, "pkg").base, readClaim(dir, "pkg").tmp], ["stopped", "7777777", TMP], "it stays closed with its base and tmp folder unchanged");
+    t.ok(gate(t, "claim-base", { dir, label: "pkg", base: "9999999" }, home).code === 2, "claim-base without a tmp folder is refused");
   });
 
   // ---------------------------------------------------------------------------------------- the workflow, run as Claude Code runs it
@@ -365,7 +371,7 @@ export default function register({ scenario, ROOT }) {
     const fresh = await run({ "switch pkg": { ok: true, summary: "ok" }, "base pkg": { ok: true, head: "ccccccc", branch: "feat", verifySkill: false, reviewMd: false } }, { branch: "feat" });
     const cb = fresh.of(/^claim base pkg$/);
     t.eq(cb.length, 1, "a base that differs from the one the claim was written with is recorded");
-    t.eq(specIn(cb[0].prompt, "claim-base"), { api: 1, dir: "~/.zodchi/packages/-r", label: "pkg", base: "ccccccc" }, "with the claim-base command and the base the package works from");
+    t.eq(specIn(cb[0].prompt, "claim-base"), { api: 1, dir: "~/.zodchi/packages/-r", label: "pkg", base: "ccccccc", tmp: "/r/.agent-tmp/pkg" }, "with the claim-base command and the base the package works from");
     t.eq(baseKey(fresh), "pkg-ccccccc-a1b2c3d4-review-1", "and the keys carry it");
     const plain = await run();
     t.eq(plain.of(/claim base/).length, 0, "without a switch there is nothing to record");

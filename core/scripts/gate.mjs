@@ -468,10 +468,11 @@ function claimMoreCmd(spec) {
 
 // The run that stopped closed its claim "stopped"; the package that goes on (a resume, where the claim step comes back from the journal and
 // is not run again) finds it closed here. The claim of this label, closed "stopped", is opened again once no other open claim lists one of its files.
-// Called under the lock of the claims folder, by claim-more and claim-base alike.
+// Called under the lock of the claims folder, by claim-more and claim-base alike. When the spec names a tmp folder (claim-base always does), the stopped
+// claim must be of that tmp folder: a claim a newer run of the same label closed "stopped" is not the claim of this run.
 function reopenStopped(spec, dir, file) {
   let own = readJson(file).value;
-  const stopped = Boolean(own && typeof own === "object" && own.label === spec.label && own.status === "stopped");
+  const stopped = Boolean(own && typeof own === "object" && own.label === spec.label && own.status === "stopped" && (spec.tmp === undefined || own.tmp === spec.tmp));
   if (!stopped) return { own, reopened: false };
   const taken = new Map();
   for (const o of [...othersOpen(dir, spec.label), ...(legacyDirOf(spec) ? othersOpen(legacyDirOf(spec), spec.label) : [])]) for (const f of o.files) if (!taken.has(f)) taken.set(f, o.label);
@@ -517,11 +518,11 @@ function claimMoreFromGit(spec) {
   return { ...base, conflicts: done.busy ? ["lock busy"] : [], error: done.why };
 }
 
-// claim-base: { dir, label, base }. Sets "base" of the open claim of label to base (a commit hash): the workflow reads the base of the branch
+// claim-base: { dir, label, base, tmp }. Sets "base" of the open claim of label to base (a commit hash): the workflow reads the base of the branch
 // the package works on after the claim is written (a switch to args.branch, an ignore commit), and a continuation of the package takes it back
-// from the claim. Only an open claim of that label is changed (a claim of that label closed "stopped" is opened again first, as claim-more does).
+// from the claim. Only an open claim of that label is changed (a claim of that label closed "stopped" and of the same tmp folder is opened again first, as claim-more does).
 function claimBaseCmd(spec) {
-  needFields(spec, ["dir", "label", "base"], []);
+  needFields(spec, ["dir", "label", "base", "tmp"], []);
   const dir = claimsDirOf(spec);
   const file = path.join(dir, `${spec.label}.json`);
   const base = { ok: false, api: API, plugin: pluginCopy(), conflicts: [], file: norm(file) };
