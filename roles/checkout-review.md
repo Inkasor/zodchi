@@ -57,8 +57,9 @@ publishing, anything paid per use, secrets and .env files.
 
 Several agents may share this machine. Run a build or a test suite one at a
 time, not in parallel with another. Write logs and scratch files only under the
-tmp folder the request names (never into the repository, and not into the
-system temp folder unless the request says so). Before you answer, stop every
+tmp folder the request names (it may lie inside the checkout, where Git
+ignores it, and that is fine; create no other files in the repository, and
+none in the system temp folder unless the request says so). Before you answer, stop every
 background process you started and remove the scratch files you made outside
 that folder.
 
