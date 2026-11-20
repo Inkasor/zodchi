@@ -409,6 +409,12 @@ export default function register({ scenario, ROOT }) {
     t.ok(keys.every((k) => k.length + "-a99-r3".length <= LIMIT), `every key fits with the longest suffixes (${Math.max(...keys.map((k) => k.length))} + 7 <= ${LIMIT})`);
     t.eq(baseKey(await run({}, { label }), 1), `${label}-abc1234-a1b2c3d4-review-1`, "no key is shortened: two labels never share one, and a resume builds the same key");
 
+    for (const bad of [{ rerun: { "review 1": 100000 } }, { rerun: { "review 1": 100 } }, { rerun: { "review 1": 0 } }, { rounds: 100 }]) {
+      const e = await run({}, { label, ...bad });
+      t.ok(e.error && /from 1 to 99/.test(e.error.message) && e.calls.length === 0, `${JSON.stringify(bad)}: a round or attempt number the key budget does not hold is refused before any step (${e.error && e.error.message})`);
+    }
+    t.eq(String((await run({}, { label, rounds: 99, rerun: { "review 1": 99 } })).error), "null", "99 for each is the longest accepted and runs");
+
     const long = await run({}, { label: "a".repeat(61) });
     t.ok(long.error && /61 characters/.test(long.error.message) && /shorter label/.test(long.error.message) && long.calls.length === 0, `a label of 61 characters is refused before any step (${long.error && long.error.message})`);
   });
@@ -427,6 +433,9 @@ export default function register({ scenario, ROOT }) {
     t.ok(otherPrompt.includes("Keys of this run all start with pkg-abc1234-b2c3d4e5-.") && !otherPrompt.includes("pkg-abc1234-a1b2c3d4-"), "a fresh run of the same label and tmp has another prefix: the earlier run's keys do not match it");
     const work = await run({ "write pkg": { done: true, summary: "w", changed: ["/r/src/a.js"], unverified: [], gateway: "final", infra: "" } }, { models: { writer: { candidates: [CODEX] }, reviewer: { candidates: [{ provider: "claude", model: "opus" }] } } });
     t.ok(work.of(/^write pkg$/)[0].prompt.includes("Keys of this run all start with pkg-abc1234-a1b2c3d4-."), "the writer's gateway call carries it too");
+    t.ok(/wait on the latest key recorded for that call in the foreground \(only a key that starts with pkg-abc1234-a1b2c3d4- counts: skip a key without it, its retries and an "UNKNOWN:" line that names it/.test(review), "the shared resume rule picks the latest key of this run only: the prefix check sits in the rule that chooses what to wait on");
+    const re = await run({}, { rerun: { "review 1": 2 } });
+    t.ok(/take the latest key it records for this call that starts with pkg-abc1234-a1b2c3d4- \(a foreign key never counts\)/.test(re.of(/^review 1$/)[0].prompt), "the rerun rule filters by the prefix before it takes the latest key");
   });
 
   scenario("fixes-continuation-commit-list", "the commit step of a continuation commits only paths that exist, are in the index or are tracked in HEAD: the old side of a rename and a file deleted in an earlier round are dropped from the pathspec, because git commit rejects a pathspec that matches nothing", async (t) => {
@@ -443,6 +452,8 @@ export default function register({ scenario, ROOT }) {
     t.ok(/Narrow the package paths to "those paths"/.test(commit) && commit.includes("git ls-files -- <path>") && commit.includes("git cat-file -e HEAD:<path>") && /Drop every other path/.test(commit) && /rejects a pathspec that matches nothing/.test(commit), "the step narrows the paths: work tree, index or HEAD, the rest dropped");
     t.ok(/For each of those paths run/.test(commit) && commit.includes("git diff --cached --quiet -- <those paths>") && commit.includes("-- <those paths>` (the paths after --") && !commit.includes("<the commit list>"), "add, the empty check and the commit all use the commit list, never the whole list");
     t.ok(/If those paths are none, return ok true/.test(commit), "no path left is nothing to commit");
+    const again = commit.indexOf('narrow "those paths" once more');
+    t.ok(/Staging can remove the index entry of a path that was only an abandoned addition[^]*once more[^]*no longer prints[^]*cat-file -e HEAD:<path>[^]*second list[^]*If it is empty, return ok true/.test(commit) && again > commit.indexOf("git add -A --") && again < commit.indexOf("git diff --cached --quiet"), "after the add the list is narrowed again, before the empty check and the commit");
 
     // Git itself: a pathspec with the old side of an earlier round's rename is rejected; the commit list the step describes is not
     const home = scratch(t, "commitlist"), repo = `${home}/repo`;
@@ -463,5 +474,20 @@ export default function register({ scenario, ROOT }) {
     t.ok(bad.status !== 0 && /did not match any file/.test(bad.stderr), `the whole list is rejected by git commit (${bad.stderr.trim()})`);
     const good = git("commit", "-q", "-m", "round 2", "--", ...list);
     t.eq([good.status, git("show", "--name-only", "--format=", "HEAD").stdout.split("\n").filter(Boolean).sort()], [0, ["keep.js", "new.js"]], "the commit list commits");
+
+    // a staged addition gone from the work tree before the commit: staging removes its index entry, so it must leave the list after the add
+    fs.writeFileSync(`${repo}/ghost.js`, "ghost\n");
+    git("add", "ghost.js");
+    fs.rmSync(`${repo}/ghost.js`);
+    fs.writeFileSync(`${repo}/keep.js`, "round 3\n");
+    const first = ["ghost.js", "keep.js"].filter(known);
+    t.eq(first, ["ghost.js", "keep.js"], "before staging the abandoned addition still passes the first narrowing (it is in the index)");
+    git("add", "-A", "--", ...first);
+    const stale = git("commit", "-q", "-m", "x", "--", ...first);
+    t.ok(stale.status !== 0 && /did not match any file/.test(stale.stderr), `the list of the first narrowing fails after staging (${stale.stderr.trim()})`);
+    const second = first.filter(known);
+    t.eq(second, ["keep.js"], "narrowed again after the add, the abandoned addition is gone from the list");
+    const round3 = git("commit", "-q", "-m", "round 3", "--", ...second);
+    t.eq([round3.status, git("show", "--name-only", "--format=", "HEAD").stdout.split("\n").filter(Boolean)], [0, ["keep.js"]], "and the commit goes through");
   });
 }
