@@ -181,17 +181,19 @@ const gatewayCall = ({ role, key: baseKey, label, args: runArgs, attach = [], ou
   const run = `zodchi run --role ${q(role)} --key ${key} ${runArgs}${flags ? ' ' + flags : ''} --wait-sec 540 --out ${q(outFile)}`
   return `Gateway call, base key ${key}. ` +
     (n > 1 ? `This is attempt ${n} after an infrastructure failure; earlier attempts used other keys (${baseKey}${n > 2 ? `, ${baseKey}-a2` : ''}${n > 3 ? ' and on' : ''}, with their -r2 and -r3). ` +
-      `First look in the progress file for a submission of this attempt: a key that starts with ${key} (${key}, ${key}-r2, ${key}-r3). If there is one, the latest of them is the active key: wait on it as below instead of submitting. ` +
-      `If there is none, take the latest key that the progress file records for this call: if \`zodchi job --key <that key>\` shows the job not final yet, it is the active key: wait on it as below; if it then dies before its turn (the rule below), the next submission is ${key}, not a suffix of that key. ` +
-      `If it is final, whatever its status, or there is none, that key is finished: submit under ${key}. `
-      : `First look in the progress file for a submission of this call: if it records ${key}, ${key}-r2 or ${key}-r3, the latest of them is the active key, and a resumed run waits on it as below instead of submitting again. With none, submit under ${key}. `) +
-    `Run it in the foreground from ${repo}: \`${run}\`. ` +
+      `First look in the progress file for a submission of this attempt: a key that starts with ${key} (${key}, ${key}-r2, ${key}-r3). If there is one, the latest of them is the active key: wait on it as below and do not run the submit command. ` +
+      `If there is none, take the latest key that the progress file records for this call: if \`zodchi job --key <that key>\` shows the job not final yet, it is the active key: wait on it as below and do not run the submit command; if it then dies before its turn (the rule below), the next submission is ${key}, not a suffix of that key. ` +
+      `If that job is final with status "unknown", it never gets a new key, here or in any attempt: do not run the submit command; stop as the "unknown" rule below says, with that key as the active key. ` +
+      `If it is final with status "failed", or there is none, that key is finished: run the submit command under ${key}. Any other final status is not submitted over: report it as the last rule below says. `
+      : `First look in the progress file for a submission of this call: if it records ${key}, ${key}-r2 or ${key}-r3, the latest of them is the active key: wait on it as below and do not run the submit command. Only with none, submit under ${key}. `) +
+    `The submit command (run it in the foreground from ${repo}, and only when that check found no submission): \`${run}\`. ` +
     `Every attachment is required: no file is dropped. Write into the progress file, at once and with each key, the exact list of the --attach paths submitted under it: that list, not what is on disk, is what the check below compares with. ` +
     `The gateway refuses a request over 512 KB (prompt plus attachments). Before every submission add up the size of the prompt file and of every file you attach; if the sum is over 500 KB do not submit: report that as the infrastructure failure. ` +
     `Never start it in the background (no &, nohup, run_in_background or Monitor): the worker of the job ends with your shell, and a dead worker can leave a paid job with an unknown outcome. ` +
     `The active key is the key of the latest submission: ${key} at first, then ${key}-r2, then ${key}-r3 (at most 2 retries in all). Every wait, \`zodchi job\` and request.json check below uses the active key, after a resume too (the progress file holds the latest key). ` +
     `Wait in the foreground with \`zodchi wait --key <active key> --wait-sec 540 --out ${q(outFile)}\`, repeated while it exits 3 (still running), until the job is final (exit 0 or 2) or ${totalMin} minutes have passed since the first command, whichever comes first. ` +
     `If the time runs out, report failure and say the job still runs under its active key. Do not return earlier: nobody else waits on the job. ` +
+    `In this workflow's result that failure is gateway "failed", with infra naming the active key. ` +
     `A job gets a new key only with evidence that the request was never sent: it is final with status "failed" and \`zodchi job --key <active key>\` shows turnRequestedAt and turnStartedAt both null or missing (the gateway never asked for the model turn). ` +
     `Then run the same full command again with --key set to the next key, wait for it the same way, and write each new key into the progress file at once, with that evidence (the two fields and the job's error). ` +
     `A job that is final with status "unknown" never gets a new key and is never waited on again: the request may already have run and used the subscription. Stop at once: ` +
@@ -316,7 +318,7 @@ const rolesAnswer = await agent(
   `${helperRun('roles', { want: ['writer', 'architect'], repo: gatewayRepo })}\n` +
   `Do not change, split or rerun it with other options. exitCode: its exit code, a number. stdout: everything it printed to standard output, exactly, as one string (it is one line of JSON): ` +
   `do not parse, summarize, reorder or shorten it. error: what it printed to standard error, at most 300 characters, "" when nothing. ` +
-  `If the command could not be started at all, exitCode is -1 and stdout is "".`,
+  `If the command could not be started at all, exitCode is -1 and stdout is "".` + attemptNote(`gate ${a.label}`),
   { agentType: 'zodchi-core:runner', phase: 'Gate', label: `gate ${a.label}`, schema: HELPER_ANSWER })
 const rolesRead = readHelper(rolesAnswer, 'the gate helper')
 if (rolesRead.error) return stop(`gate (${rolesRead.error})`, HELPER_NEXT)

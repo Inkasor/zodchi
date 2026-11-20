@@ -291,7 +291,7 @@ export default function register({ scenario, ROOT }) {
     const writerless = await run({ gate: { roles: { ...ROLES, writer: { candidates: [{ provider: "codex", model: "gpt-y", effort: "high" }] } } } });
     t.ok(/^gate \(no writer\)/.test(writerless.out.stoppedAt) && writerless.calls.length === 1, "a writer role without a Claude candidate is refused");
     const other = await run({ args: { gatewayRepo: "/g" } });
-    t.ok(other.of(/^gate /)[0].prompt.includes('"repo":"/g"') && other.of(/^review$/)[0].prompt.includes(["Run it in the foreground from /g", ":"].join("")), "args.gatewayRepo moves the gateway to another repository");
+    t.ok(other.of(/^gate /)[0].prompt.includes('"repo":"/g"') && other.of(/^review$/)[0].prompt.includes(["run it in the foreground from /g", ","].join("")), "args.gatewayRepo moves the gateway to another repository");
     const dflt = r.of(/^gate /)[0].prompt;
     t.ok(/ roles '\{"api":1,"want":\["writer","architect"\],"repo":"\/r"\}'/.test(dflt), "by default the gateway runs from the first repository");
   });
@@ -325,6 +325,13 @@ export default function register({ scenario, ROOT }) {
     const rv = rerun.of(/^review$/)[0].prompt;
     t.ok(/base key db-design-review-a2/.test(rv) && /attempt 2/.test(rv), "an attempt after an infrastructure failure submits under a key of its own");
     t.eq(rerun.out.review.key, "db-design-review-a2", "and the result names that key");
+    // A helper step named in args.rerun is a new call, not one served from the journal: that holds for the gate step too (branch review F4).
+    const gateOf = (r) => r.of(/^gate /)[0].prompt;
+    const plainGate = gateOf(await run());
+    const againGate = gateOf(await run());
+    const reGate = gateOf(await run({ args: { rerun: { "gate db": 2 } } }));
+    t.ok(plainGate === againGate && !/Attempt \d of this step/.test(plainGate), "a plain resume leaves the prompt of the gate step as it was");
+    t.ok(reGate !== plainGate && /\(Attempt 2 of this step\.\)/.test(reGate), "a gate step named in args.rerun carries its attempt, so a journaled transient failure is not replayed");
   });
 
   scenario("design-brief-blocked-and-approved", "a blocked review fixes nothing; an approved one needs no fix; a minor finding alone is left, not fixed", async (t) => {

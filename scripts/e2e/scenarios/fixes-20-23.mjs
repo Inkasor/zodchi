@@ -424,7 +424,7 @@ export default function register({ scenario, ROOT, scratch: suiteScratch }) {
     const r = await run();
     const review = r.of(/^review 1$/)[0].prompt;
     t.ok(review.includes("Keys of this run all start with pkg-abc1234-a1b2c3d4-; count only those."), "the call names the prefix of this run");
-    t.ok(/A key without it[^]*belong to an earlier run of this label: leave them out of every wait, reuse and retry count[^]*With none, submit under pkg-abc1234-a1b2c3d4-review-1/.test(review), "a key without it is left out and the step submits under its own key");
+    t.ok(/A key without it[^]*belong to an earlier run of this label: leave them out of every wait, reuse and retry count[^]*Only with none, submit under pkg-abc1234-a1b2c3d4-review-1/.test(review), "a key without it is left out and the step submits under its own key");
     t.ok(review.includes("UNKNOWN:") && review.includes("any \"UNKNOWN:\" line that names it belong to an earlier run"), "an UNKNOWN line that names such a key is ignored too");
     t.ok(review.includes("The active key is the key of the latest submission: pkg-abc1234-a1b2c3d4-review-1 at first"), "the rest of the resume rules stay");
     const again = await run();
