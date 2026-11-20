@@ -24,7 +24,7 @@ export default function register({ scenario, ROOT }) {
     exitCode: 0,
     stdout: JSON.stringify({
       ok: true, api: 1, plugin: { root: "/plugin/core", commit: "c0ffee", version: "1.0.0-dev", via: "installed_plugins.json, scope user" },
-      workflow: { name: "code-package", build: "b", copyBuild: "b", match: true }, roles: {}, modelsErrors: [], account: null, accountError: "none", git: true, head: "abc1234", branch: "main", dirty: [], ignoreExit: 0, ignoreLine: "",
+      workflow: { name: "code-package", build: "b", copyBuild: "b", match: true }, roles: {}, modelsErrors: [], account: null, accountError: "none", git: true, head: "abc1234", runId: "a1b2c3d4", branch: "main", dirty: [], ignoreExit: 0, ignoreLine: "",
       verifySkill: false, reviewMd: false, config: {}, configError: "", boundary: "", claims: { dir: "claims-dir/r", open: [], closed: [], kept: [], skipped: [], notes: [] },
       ...over,
     }),

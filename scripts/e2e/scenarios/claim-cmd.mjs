@@ -220,7 +220,7 @@ export default function register({ scenario, ROOT }) {
   const BOOT = vm.runInNewContext(SRC.match(/^const GATE_BOOT = (.*)$/m)[1]);
   const PLUGIN = { root: "/plugin/core", commit: "c0ffee", version: "1.0.0-dev", via: "installed_plugins.json, scope user" };
   const FACTS = {
-    ok: true, api: 1, plugin: PLUGIN, roles: {}, modelsErrors: [], account: null, accountError: "none", git: true, head: "abc1234", branch: "main", dirty: [], dirtyError: "",
+    ok: true, api: 1, plugin: PLUGIN, roles: {}, modelsErrors: [], account: null, accountError: "none", git: true, head: "abc1234", runId: "a1b2c3d4", branch: "main", dirty: [], dirtyError: "",
     workflow: { name: "code-package", build: "b", copyBuild: "b", match: true }, ignoreExit: 0, ignoreLine: ".gitignore:3:.agent-tmp/\t.agent-tmp/gateway/x", verifySkill: false, reviewMd: false, config: {}, configError: "", boundary: "Important: x.\n",
     claims: { dir: "d", open: [], closed: [], kept: [], skipped: [], notes: [] },
   };

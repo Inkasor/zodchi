@@ -50,7 +50,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -581,6 +581,8 @@ function codePackage(spec) {
     boundary: boundaryOf(String(spec.brief)),
     claims: claimFacts(spec, repo, dirtyKeys),
     workflow: workflowFacts(spec),
+    // One id per call of the gate, so per run: the workflow takes the gateway keys of the run from it. The gate answer is journaled, so a resume of the run has the same id; a new run asks again and gets another.
+    runId: randomBytes(4).toString("hex"),
   };
 }
 

@@ -133,7 +133,7 @@ export default function register({ scenario, ROOT }) {
     t.eq(r.json.claims.open.map((c) => c.label), ["waiting"], "the waiting one stays open");
 
     // the workflow side: both stops mark the claim in place with a runner step, and a clean run does not
-    const facts = { ok: true, api: 1, plugin: PLUGIN, roles: {}, modelsErrors: [], account: { connected: true, ordinaryUsageAllowed: true, primary: { usedPercent: 10 }, secondary: null }, accountError: "", git: true, head: "abc1234", branch: "main", dirty: [], dirtyError: "",
+    const facts = { ok: true, api: 1, plugin: PLUGIN, roles: {}, modelsErrors: [], account: { connected: true, ordinaryUsageAllowed: true, primary: { usedPercent: 10 }, secondary: null }, accountError: "", git: true, head: "abc1234", runId: "a1b2c3d4", branch: "main", dirty: [], dirtyError: "",
       workflow: { name: "code-package", build: "b", copyBuild: "b", match: true }, ignoreExit: 0, ignoreLine: ".gitignore:3:.agent-tmp/\t.agent-tmp/gateway/x", verifySkill: false, reviewMd: false, config: {}, configError: "", boundary: "Important: x.\n", claims: { dir: "d", open: [], closed: [], kept: [], skipped: [], notes: [] } };
     const args = { label: "pkg", brief: "/r/brief.md", repo: "/r", files: ["src/a.js"], tmp: "/r/.agent-tmp/pkg", checks: ["node t.js"],
       models: { writer: { candidates: [{ provider: "claude", model: "sonnet", effort: "high" }] }, reviewer: { candidates: [{ provider: "codex", model: "gpt-x", effort: "medium" }] } } };

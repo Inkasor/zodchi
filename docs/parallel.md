@@ -86,13 +86,19 @@ agent may not be allowed to do either. Nothing is shared, nothing is locked.
   other packages' commits do not enter it. For a package that goes on (a new run of the same
   label after a stop, or a resume) the base is the one its claim recorded, so the earlier
   rounds' commits are in the review too.
-- **Gateway keys.** Every gateway key of `code-package` is `<label>-<base7>-<kind>-<n>` (for
-  example `export-csv-1a2b3c4-review-1`): `<base7>` is the first seven characters of the package
-  base commit, followed by `-<head7>` of the HEAD the run started at when that differs from the
-  base (a run that goes on after an earlier run of the label). A new run of a label an earlier run
-  used gets keys of its own, and a resume of the same run (whose gate, claim and base answers come
-  back from the journal) builds the same keys, so the gateway's idempotency holds for it. A rerun
-  after an infrastructure failure keeps its own `-a<n>` suffix.
+- **Gateway keys.** Every gateway key of `code-package` is `<label>-<base7>-<run>-<kind>-<n>` (for
+  example `export-csv-1a2b3c4-9f8e7d6c-review-1`): `<base7>` is the first seven characters of the
+  package base commit, `<run>` an id of eight hex digits that the gate helper allocates at the gate of
+  each run. Two runs of one label never share a key, even at the same base and HEAD. A resume of the
+  same run (whose gate, claim and base answers come back from the journal, the run id with them)
+  builds the same keys, so the gateway's idempotency holds for it. A rerun after an infrastructure
+  failure keeps its own `-a<n>` suffix.
+- **A base that left the branch.** When the base the claim recorded is no longer an ancestor of HEAD
+  (the branch was rebased or reset), the run stops at `base` before any work and leaves the claim's
+  base as it was: HEAD would be no stand-in, the review would miss the package's earlier commits.
+  Set `base` of the claim to the commit the package began at on the branch now and start again.
+  The files of the earlier rounds are read with `git diff --name-only --no-renames`, so a renamed
+  file is in the review with both its old and its new path.
 
 ## The gate: facts from one command
 
