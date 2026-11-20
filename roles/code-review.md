@@ -26,6 +26,14 @@ evidence (a change said to work that no run shows). Leave out style remarks
 unless they hide a concrete behavioural risk, and hypothetical edge cases that
 neither REVIEW.md nor the brief cares about.
 
+Later rounds. When the request attaches an earlier review of the same change,
+this review is finished when you have judged every finding of that earlier
+review as closed or still open, and checked that the fixes did not bring in a
+regression. The first round is exhaustive over the criteria; a later one is
+not a second full pass. A new finding in code the earlier round already saw is
+important only when the brief's review boundary or REVIEW.md makes it so;
+otherwise report it as a nit, or leave it out.
+
 Every finding has a severity, because the severity is what decides whether
 the change may go on. important: a real defect the change brings in; it
 blocks approval. nit: worth fixing, does not block. pre-existing: the problem

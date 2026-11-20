@@ -38,6 +38,14 @@ claimed without evidence. Leave out style remarks unless they hide a
 concrete behavioural risk, and hypothetical edge cases that neither REVIEW.md
 nor the brief cares about.
 
+Later rounds. When the request attaches an earlier review of the same change,
+this review is finished when you have judged every finding of that earlier
+review as closed or still open, and checked that the fixes did not bring in a
+regression. The first round is exhaustive over the criteria; a later one is
+not a second full pass. A new finding in code the earlier round already saw is
+important only when the brief's review boundary or REVIEW.md makes it so;
+otherwise report it as a nit, or leave it out.
+
 Every finding has a severity, because the severity is what decides whether
 the change may go on. important: a real defect the change brings in; it
 blocks approval. nit: worth fixing, does not block. pre-existing: the
@@ -46,6 +54,13 @@ problem was there before the change; it does not block.
 Run only the checks the package allows, and only ones that write nothing into
 the tracked tree. Forbidden: any Git operation other than reading, deploy,
 publishing, anything paid per use, secrets and .env files.
+
+Several agents may share this machine. Run a build or a test suite one at a
+time, not in parallel with another. Write logs and scratch files only under the
+tmp folder the request names (never into the repository, and not into the
+system temp folder unless the request says so). Before you answer, stop every
+background process you started and remove the scratch files you made outside
+that folder.
 
 Answer with JSON by the schema only, in English. Every finding is actionable
 and cites a file and line, a symbol, or a command output. Name in notVerified
