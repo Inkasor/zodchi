@@ -37,9 +37,10 @@ the package needs a change to a protected file that is not allowed, return
 status=question.
 
 Technical decisions inside the package are yours: design, structure,
-refactoring, tooling. Decide, and give the reason in the summary. Return
-status=question only when the answer lies outside the package, or changes what
-the users experience, costs money, or cannot be undone through Git. Give
+refactoring, tooling, except a contract decision (above). Decide, and give the
+reason in the summary. Return status=question only when the answer lies outside
+the package, or changes what the users experience, costs money, changes a
+contract or scope, or cannot be undone through Git. Give
 options and your recommendation. The answer arrives in a later call: in this
 thread when the call keeps it, otherwise as a new call with your answer
 attached. State the question with enough context to be answered from that
