@@ -34,9 +34,9 @@ export default function register({ scenario, ROOT }) {
 
   /**
    * The workflow over a fake agent. `facts(repo)` are the facts the researcher returns. `damage(part, attempt)` returns the argument the fake runner
-   * types for a part (or undefined for the correct one); `lose(label)` makes a runner return nothing.
+   * types for a part (or undefined for the correct one); `lose(label)` makes a runner return nothing; `omit(part, attempt)` leaves that part's entry out of the runner's array.
    */
-  async function run({ facts, damage = () => undefined, lose = () => false }) {
+  async function run({ facts, damage = () => undefined, lose = () => false, omit = () => false }) {
     const repo = `${SCRATCH}/run-${++runs}/repo`;
     fs.mkdirSync(repo, { recursive: true });
     const args = { label: "db", goal: "Make the export resumable, because a cut run loses an hour.", repos: [repo], questions: ["How is the export written?"], out: `${repo}/.agent-tmp/db/brief.md`, tmp: `${repo}/.agent-tmp/db` };
@@ -57,7 +57,7 @@ export default function register({ scenario, ROOT }) {
           const cmds = commandsIn(prompt, "brief-material");
           if ((prompt.match(/node -e /g) || []).length !== cmds.length) throw new Error(`${label}: a command of the prompt is not a brief-material command`);
           return {
-            answers: cmds.map((c) => {
+            answers: cmds.filter((c) => !omit(c.spec.part, label.includes(" again ") ? 2 : 1)).map((c) => {
               const arg = damage(c.spec.part, label.includes(" again ") ? 2 : 1, c.arg) ?? c.arg;
               const r = spawnSync(process.execPath, [GATE, "brief-material", arg], { encoding: "utf8", windowsHide: true });
               return { exitCode: r.status ?? -1, stdout: r.stdout || "", error: (r.stderr || "").slice(0, 300) };
@@ -146,5 +146,26 @@ export default function register({ scenario, ROOT }) {
     const twice = await run({ facts, damage: (part, _attempt, arg) => (part === inSecond ? arg.slice(0, -3) : undefined) });
     t.ok(/^review \(part 10 of the material was not written: the material helper \(part 10\): /.test(twice.out.stoppedAt || "") && twice.of(/^preflight /).length === 0 && twice.of(/^review$/).length === 0, `a part damaged twice stops the run with its text (${twice.out.stoppedAt})`);
     t.eq(twice.parts.filter((c) => c.spec.part === inSecond).length, 2, "the part was sent twice, not more");
+  });
+
+  scenario("design-brief-material-batch-omitted", "a runner that leaves a middle receipt out of its array makes only that part be sent again: the later parts with valid receipts are matched by their part number", async (t) => {
+    const facts = factsOf(LATIN, 56000);
+    const clean = await run({ facts });
+    const n = clean.parts.length;
+    const labels = clean.material.map((c) => c.label);
+    t.ok(n > 8, `the material is more than one batch (${n} parts)`);
+    const sentAgain = (r) => r.material.slice(labels.length).flatMap((c) => commandsIn(c.prompt, "brief-material")).map((c) => c.spec.part);
+    // Part 2 of the first batch has no entry; parts 3 and 4 (and the rest) came back intact in the places before it.
+    const mid = await run({ facts, omit: (part, attempt) => part === 2 && attempt === 1 });
+    t.eq(sentAgain(mid), [2], "part 2 left out: only part 2 is sent again, not parts 3 and 4");
+    t.eq(mid.material.length, labels.length + 1, "in one fresh runner");
+    t.ok(reaches(mid) && mid.of(/^preflight /).length === 1, `the run reaches the review (${mid.out.stoppedAt})`);
+    // Two entries left out, one of them damaged beside: all by number.
+    const two = await run({ facts, omit: (part, attempt) => (part === 3 || part === 5) && attempt === 1 });
+    t.eq(sentAgain(two), [3, 5], "parts 3 and 5 left out: those two only are sent again");
+    t.ok(reaches(two), `the run reaches the review (${two.out.stoppedAt})`);
+    // The part left out twice stops the run before the preflight.
+    const never = await run({ facts, omit: (part) => part === 2 });
+    t.ok(/^review \(part 2 of the material was not written: /.test(never.out.stoppedAt || "") && never.of(/^preflight /).length === 0, `a part left out twice stops the run (${never.out.stoppedAt})`);
   });
 }

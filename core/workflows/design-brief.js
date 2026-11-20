@@ -553,7 +553,17 @@ const sendParts = async (idx, again) => {
   if (problems.size) { for (const i of idx) if (!problems.has(i)) problems.set(i, null); return problems }
   const r = await ioRunMany('brief-material', specs, partsLabel(idx, again), 'Review').catch(() => null)
   const answers = r && Array.isArray(r.answers) ? r.answers : []
-  idx.forEach((i, k) => problems.set(i, partProblem(answers[k] || null, i)))
+  // Receipts are matched by the part number they carry, not by their place in the array: a runner that left one out must not make the parts after it look
+  // like the wrong ones. A part with no receipt of its own is judged by the answer in its place only when the runner returned one per command.
+  const byPart = new Map()
+  for (const ans of answers) {
+    const read = readIo(ans || null, 'a material receipt')
+    const i = read.error ? -1 : Number(read.facts.part) - 1
+    if (idx.includes(i) && !byPart.has(i)) byPart.set(i, ans)
+  }
+  idx.forEach((i, k) => problems.set(i, byPart.has(i) ? partProblem(byPart.get(i), i)
+    : answers.length === idx.length ? partProblem(answers[k] || null, i)
+    : { text: `part ${i + 1} of the material was not written: the runner returned ${answers.length} answers for ${idx.length} commands and none is for this part` }))
   return problems
 }
 const batches = []
