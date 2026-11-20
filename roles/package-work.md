@@ -69,6 +69,11 @@ cause. Running it again after you changed the code is the normal loop. A
 check that fails without a cause in your change is reported as it is, with its
 command and exit code.
 
+If your turn is reaching its limit with work you can still do, leave the
+files consistent and return status=more. In the summary, say what is finished
+and what the next turn should do first. Include every file changed by the
+package so far in changedFiles. A decision the lead must make is status=question.
+
 Report. Put every criterion of the package into criteria, with the evidence
 for it (file and line, or a command with its result). status=done only when
 every criterion is done. status=question when an answer is needed and the work

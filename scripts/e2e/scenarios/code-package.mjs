@@ -75,6 +75,77 @@ export default function register({ scenario, ROOT }) {
   const imp = (id, loc, problem) => `${id} important ${loc}: ${problem}`;
   const bad = (...f) => ({ verdict: "changes_requested", summary: "s", findings: f });
 
+  const workKey = "pkg-abc1234-a1b2c3d4-work-1";
+  const workResult = (activeKey, jobStatus, answerStatus, extra = {}) => ({
+    gateway: "final", infra: "", jobStatus, activeKey, hasThread: true, answerStatus,
+    done: answerStatus === "done", summary: answerStatus || jobStatus, changed: [], questions: [], ...extra,
+  });
+  const runCodex = (answers, args = {}) => run({
+    args: { models: { writer: { candidates: [{ provider: "codex", model: "gpt-x", effort: "medium" }] },
+      reviewer: { candidates: [{ provider: "claude", model: "opus" }] } }, ...args },
+    answers: { "gate pkg": gateAnswer({ account: { connected: true }, ignoreLine: ".gitignore:1:.agent-tmp/\t.agent-tmp/gateway/x" }), ...answers },
+  });
+
+  scenario("code-package-codex-continues", "a final timeout resumes its kept thread, a more answer hands off again, and checks see the whole package", async (t) => {
+    const retry = workKey + "-r2";
+    const cont1 = "pkg-abc1234-a1b2c3d4-c1-1";
+    const cont2 = "pkg-abc1234-a1b2c3d4-c2-1";
+    const r = await runCodex({
+      "write pkg": workResult(retry, "timeout", ""),
+      "write pkg (cont 1)": workResult(cont1, "succeeded", "more", { changed: ["/r/src/partial.js"] }),
+      "write pkg (cont 2)": workResult(cont2, "succeeded", "done", { changed: ["/r/src/a.js"] }),
+    });
+    const writes = r.of(/^write pkg/);
+    t.eq(writes.length, 3, "one job per turn with the default two continuations");
+    for (const [i, key] of [workKey, cont1, cont2].entries()) {
+      const prompt = writes[i].prompt;
+      t.ok(prompt.includes(`zodchi run --role package-work --key ${key} --keep-thread`), "the job has its own key and keeps its thread");
+      t.ok(prompt.includes("queued or running (exit 3)") && prompt.includes("until final (exit 0 or 2)") && !prompt.includes("minutes have passed since the first command"), "each job waits through queueing and cleanup");
+    }
+    const handoff = writes[1].prompt;
+    t.ok(handoff.includes(`--resume '${retry}'`) && handoff.includes(`previous job ${retry} ended timeout without an answer`), "the active retry key is resumed after its timeout");
+    t.ok(["uncommitted", "/r/brief.md", "work-1.md", "git status", "git diff", "go on from the tree"].every(text => handoff.includes(text)), "the timed-out writer leaves a checkout handoff");
+    t.ok(writes[2].prompt.includes(`--resume '${cont1}'`) && writes[2].prompt.includes("work-1-c1.json") && writes[2].prompt.includes("work-1-c1.md"), "the next turn reads the more answer and resumes its immediate predecessor");
+    t.eq(r.out.write.changed, ["/r/src/partial.js", "/r/src/a.js"], "a file reported only by the intermediate turn survives");
+    t.eq([r.of(/^checks /).length, r.out.approved], [1, true], "checks run once after the completed write");
+    t.ok(r.of(/^review 1$/)[0].prompt.includes("src/partial.js"), "review includes the earlier file");
+  });
+
+  scenario("code-package-codex-timeout-limit", "a timeout without a thread uses a fresh checkout handoff, and the configured limit stops the write", async (t) => {
+    const cont1 = "pkg-abc1234-a1b2c3d4-c1-1";
+    for (const limit of [0, 1]) {
+      const r = await runCodex({
+        "write pkg": workResult(workKey, "timeout", "", { hasThread: false }),
+        "write pkg (cont 1)": workResult(cont1, "timeout", ""),
+      }, { continuations: limit });
+      const writes = r.of(/^write pkg/);
+      t.eq(writes.length, 1 + limit, "only the configured number of extra jobs ran");
+      if (limit) {
+        t.ok(writes[1].prompt.includes(`--key ${cont1} --keep-thread --model`) && !writes[1].prompt.includes("--resume"), "the timeout without a thread starts a fresh kept thread");
+        t.ok(writes[1].prompt.includes(workKey) && writes[1].prompt.includes("go on from the tree"), "the fresh job receives the checkout handoff");
+      }
+      t.eq(r.out.stoppedAt, `write pkg (continuations exhausted after ${limit}, last job ${limit ? cont1 : workKey}: timeout)`, "the stop names the exhausted budget and last job");
+      t.eq(r.of(/^checks /).length, 0, "an exhausted write stays out of checks");
+    }
+  });
+
+  scenario("code-package-codex-question", "a writer question returns to the lead with the option it needs", async (t) => {
+    const question = "Which format? Use JSON (recommended), or CSV.";
+    const r = await runCodex({ "write pkg": workResult(workKey, "succeeded", "question", { questions: [question] }) });
+    t.eq([r.out.question, r.of(/^write pkg/).length, r.of(/^checks /).length], [question, 1, 0], "the lead receives the question immediately");
+  });
+
+  scenario("code-package-codex-unknown", "an unknown continuation leaves the claim awaiting a decision for that exact key", async (t) => {
+    const key = "pkg-abc1234-a1b2c3d4-c1-1";
+    const r = await runCodex({
+      "write pkg": workResult(workKey, "succeeded", "more"),
+      "write pkg (cont 1)": workResult(key, "unknown", "", { gateway: "unknown", unknownKey: key, infra: "worker stopped" }),
+      "await claim pkg": { ok: true, summary: "marked" },
+    });
+    t.eq([r.out.stoppedAt, r.out.unknown.key], ["unknown outcome at write pkg (cont 1)", key], "the stop identifies the continuation");
+    t.eq([r.of(/^write pkg/).length, r.of(/^checks /).length, r.of(/^await claim/).length], [2, 0, 1], "the workflow waits for a person");
+  });
+
   scenario("code-package-boundary-quoted", "the review prompt quotes the brief's Review boundary section; a brief without it gets a note, not a refusal", async (t) => {
     const withIt = await run();
     t.eq(withIt.out.approved, true, "a brief with a boundary runs to approval");
