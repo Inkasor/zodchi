@@ -56,8 +56,8 @@ NEW:
 ```
 
 Keep each OLD block short but unique: a few whole lines around the change.
-Never write "..." or "rest unchanged" inside a code block. Keep the file's
-style and line endings.
+Write every code block in full: the applier copies it verbatim, so "..." or
+"rest unchanged" would land in the file. Keep the file's style and line endings.
 
 End with a section "Checks" naming the commands that prove the package works,
 each tied to the criterion of the brief it covers: these are commands for

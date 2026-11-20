@@ -115,10 +115,10 @@ const verifyLocal = (snap) => `cd ${q(snap.dir)} && ${printList(snap)} | sha256s
 const verifyRemote = (snap, dir) => `cd ${dir} && ${printList(snap)} | sha256sum -c -`
 const D = '<DIR>' // the remote folder, until the runner has made it
 
-const shellRule = `\n\nShell rule: run every command with bash (Git Bash on Windows, never PowerShell or cmd); the quoting in these commands is for bash.`
+const shellRule = `\n\nShell rule: run every command with bash (Git Bash on Windows): the quoting in these commands is written for bash, and PowerShell or cmd would read it differently.`
 const snapshotStep = (n) => agent(
   `Make ONE snapshot of a script and its companion files; change nothing else. ` +
-  `Make sure ${q(a.tmp)} exists (\`mkdir -p\`), then run \`mktemp -d ${q(`${a.tmp}/snap.`)}XXXXXXXX\` (the folder must be created, never reused or emptied; stop and report if that fails) and keep the path it prints as SNAP. ` +
+  `Make sure ${q(a.tmp)} exists (\`mkdir -p\`), then run \`mktemp -d ${q(`${a.tmp}/snap.`)}XXXXXXXX\` (the folder must be created by this command, never reused or emptied, because files of an earlier run would pass for this one's; stop and report if that fails) and keep the path it prints as SNAP. ` +
   `Create the folders SNAP-SUFFIX-based \`${a.tmp}/run-SUFFIX/logs\` and \`${a.tmp}/run-SUFFIX/progress\` with mkdir -p, where SUFFIX is the 8 characters after "snap." in SNAP. ` +
   `Copy into SNAP, under exactly these names, one \`cp -- <source> SNAP/<name>\` each (quote every argument as shown; a source is used exactly as written: a missing source is a failure, stop and report it${[a.script, ...files].some(isDrive) ? `; only for a Windows drive path (${[a.script, ...files].filter(isDrive).map(q).join(' ')}) that bash does not find, use the same path with "/" instead of backslashes` : ''}): ` +
   `${[a.script, ...files].map((p, i) => `${q(p)} -> ${q([name, ...names][i])}`).join('; ')}. ` +
@@ -151,11 +151,11 @@ function dryRun(snap, tag) {
     const copy = q(`${D}/${name}`)
     const run = `export PYTHONDONTWRITEBYTECODE=1; cd ${D} && ${check.split('{copy}').join(copy)}`
     return step(
-      `Dry run of a sudo script without root, on the host ${a.remote}, from the snapshot in ${snap.dir}; use only these local copies, never the original files. ` +
-      `1. Make a new folder on the host with \`ssh ${q(a.remote)} 'mktemp -d /tmp/ops-XXXXXXXX'\` (it must be created, never reused; stop and report if that fails) and keep the path it prints as DIR; it must be /tmp/ops- and 8 letters or digits. In every command below replace the text ${D} by that exact path (and nothing else). ` +
+      `Dry run of a sudo script without root, on the host ${a.remote}, from the snapshot in ${snap.dir}; use only these local copies: the human's command runs and checks these same copies, so a check on the originals proves nothing about it. ` +
+      `1. Make a new folder on the host with \`ssh ${q(a.remote)} 'mktemp -d /tmp/ops-XXXXXXXX'\` (it must be created by this command, never reused, because files of an earlier run would pass for this one's; stop and report if that fails) and keep the path it prints as DIR; it must be /tmp/ops- and 8 letters or digits. In every command below replace the text ${D} by that exact path (and nothing else). ` +
       `2. Upload the snapshot once: \`cd ${q(snap.dir)} && scp -- ${all.map(q).join(' ')} ${q(a.remote)}:${D}/\` (from inside the snapshot folder, so a drive letter is not read as a host). ` +
       `3. Write the hash list on the host and check it, and make the script executable: \`${ssh(`cd ${D} && ${sums} > ${LIST} && sha256sum -c ${LIST} && chmod u+x -- ${q(name)}`)}\`; every file must be OK. ` +
-      `4. Run the check as that user, never sudo: \`${ssh(run)}\`. ` +
+      `4. Run the check as that user, never sudo (a dry run is meant to show what the script does without root, and a password prompt would hang the step): \`${ssh(run)}\`. ` +
       `5. Check the hashes again against the accepted list, piped in (not the list file in the folder): \`${ssh(verifyRemote(snap, D))}\`; if any file changed, ok is false (the check mode must not change the files). ` +
       `Do NOT delete the folder: the human runs the final command from it. Return it as dir. ` +
       `Log to ${snap.run}/logs/dry-${tag}.log. ok is true when the check exits 0, its output shows no error and the hashes still match. ` +
@@ -165,9 +165,9 @@ function dryRun(snap, tag) {
   }
   const cmd = check.split('{copy}').join(q(`${snap.dir}/${name}`))
   return step(
-    `Dry run of a sudo script without root, locally, in the snapshot ${snap.dir}; the script and its files already lie there, run them where they are and never use the original files. ` +
+    `Dry run of a sudo script without root, locally, in the snapshot ${snap.dir}; the script and its files already lie there, run them where they are: the human's command runs these same copies, so a check on the originals proves nothing about it. ` +
     `1. Verify the snapshot: \`${verifyLocal(snap)}\`; every file must be OK. ` +
-    `2. Run \`cd ${q(snap.dir)} && ${cmd}\` (from inside the snapshot folder) as the current user with the environment variable PYTHONDONTWRITEBYTECODE=1 set. Never use sudo. ` +
+    `2. Run \`cd ${q(snap.dir)} && ${cmd}\` (from inside the snapshot folder) as the current user with the environment variable PYTHONDONTWRITEBYTECODE=1 set. Never use sudo: a dry run is meant to show what the script does without root, and a password prompt would hang the step. ` +
     `3. Verify the snapshot again with the command of step 1; if any file changed, ok is false (the check mode must not change the files). ` +
     `Leave the snapshot folder in place: the human runs the command from it. Log to ${snap.run}/logs/dry-${tag}.log. ok is true when the check exits 0, its output shows no error and the hashes still match. ` +
     `A failure that only says root is required means the script has no real check mode: report it as a failure with that reason. ` +
@@ -271,7 +271,7 @@ function readHelper(r, what) {
 }
 
 const copyRead = readHelper(await agent(
-  `Run ONE command and return what it printed; change nothing and run nothing else. Run every command with bash (Git Bash on Windows, never PowerShell or cmd). In the foreground, once:
+  `Run ONE command and return what it printed; change nothing and run nothing else. Run every command with bash (Git Bash on Windows): the quoting is written for bash, and PowerShell or cmd would read it differently. In the foreground, once:
 ${helperRun('plugin', {})}
 ` +
   `Do not change, split or rerun it with other options. exitCode: its exit code, a number. stdout: everything it printed to standard output, exactly, as one string (it is one line of JSON): ` +

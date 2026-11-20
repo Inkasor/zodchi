@@ -83,7 +83,7 @@ export default function register({ scenario, ROOT }) {
     t.eq(specIn(gate, "code-package").brief, "/r/brief.md", "the gate helper is given the brief, and reads its Review boundary section itself");
     const review = withIt.of(/^review 1$/)[0].prompt;
     t.ok(review.includes(JSON.stringify(BOUNDARY)), "the review prompt quotes the section exactly");
-    t.ok(review.includes('"nit" or "pre-existing" finding, never "important"'), "a point outside the boundary is never important");
+    t.ok(review.includes('at most a "nit" or "pre-existing" finding; do not go deeper than the boundary draws the line'), "a point outside the boundary is at most a nit or pre-existing");
 
     const without = await run({ boundary: "" });
     t.eq(without.out.approved, true, "a brief without a boundary is not refused");
@@ -251,7 +251,7 @@ export default function register({ scenario, ROOT }) {
       ],
     });
     const p3 = r.of(/^review 3$/)[0].prompt;
-    t.ok(p3.includes("number it on after F2"), "round 3 is told to number above F2, the highest id of round 1");
+    t.ok(p3.includes("numbered on after F2"), "round 3 is told to number above F2, the highest id of round 1");
     t.ok(p3.includes('"F2 src/a.js"'), "round 3 gets the ids used so far with their locations");
     t.eq(r.out.stoppedAt, "review went deeper", "the new defect in the same file is deeper, not a repeat");
     t.eq(r.out.boundary.map((b) => b.id), ["F3"], "it is listed for the lead");

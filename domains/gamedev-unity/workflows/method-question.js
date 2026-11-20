@@ -26,9 +26,7 @@ const progressFile = (o) => `${a.tmp}/progress/${String((o && (o.label || o.phas
 const step = (prompt, opts) => agent(prompt +
   `\n\nResume rule: this run may have been cut off and restarted. If ${progressFile(opts)} exists and its last line is not DONE, read it first and go on from its last line; ` +
   `if its last line is DONE, it is from an earlier finished run: rename it to .old and start fresh. ` +
-  `do not redo finished work or overwrite its outputs blindly. For a gateway call it records as submitted, wait on the latest key recorded for that call in the foreground (zodchi wait --key <key> --wait-sec 540 --out <file>, repeated while it exits 3) instead of submitting again; ` +
-  `if that job is final with status "failed" and \`zodchi job --key <key>\` shows turnRequestedAt and turnStartedAt both null or missing (the request was never sent), submit again under the next suffix of the base key (<base>-r2, then <base>-r3; at most 2 retries in all, those already recorded counted) and record the new key and that evidence in the progress file; ` +
-  `if it is final with status "unknown", never submit again and never wait on it: the request may already have run. Write "UNKNOWN: key <key>: <the job's error>" as the last line of the progress file instead of DONE and ${UNKNOWN_RETURN}. ` +
+  `Do not redo finished work or overwrite its outputs blindly. ` +
   `After each finished step append one line to it (create the folder if needed): what is done, the paths it produced, what comes next. When your whole task is finished, append a last line DONE.`, opts)
 // Which plugin copy ran. A workflow script cannot see its own file, so one cheap runner step runs the "plugin" command of the gate helper
 // (core/scripts/gate.mjs), which the bootstrap below finds in the plugin copy the session loaded (never in a checkout), and the result names
@@ -55,7 +53,7 @@ function readHelper(r, what) {
 }
 
 const copyRead = readHelper(await agent(
-  `Run ONE command and return what it printed; change nothing and run nothing else. Run every command with bash (Git Bash on Windows, never PowerShell or cmd). In the foreground, once:
+  `Run ONE command and return what it printed; change nothing and run nothing else. Run every command with bash (Git Bash on Windows): the quoting is written for bash, and PowerShell or cmd would read it differently. In the foreground, once:
 ${helperRun('plugin', {})}
 ` +
   `Do not change, split or rerun it with other options. exitCode: its exit code, a number. stdout: everything it printed to standard output, exactly, as one string (it is one line of JSON): ` +
@@ -84,7 +82,10 @@ const FOUND = {
 const asked = (await parallel(sides.map(s => () => step(
   `Ask. Side: ${s.side}. Folder: ${a.tmp}. Question file: ${a.tmp}/question-${s.id}.md. Answer file: ${a.tmp}/answer-${s.id}.json. Gateway key: ${a.label}-${s.id}.\n` +
   `Context: ${a.context}\nQuestion: ${s.q}\n` +
-  `If the job ends unknown, do not submit again: return ok false with unknownKey set to its key. ok is true when the job ended with an answer.`,
+  `If the progress file already records a key of this question as submitted, wait on the latest one in the foreground (zodchi wait --key <key> --wait-sec 540 --out <answer file>, repeated while it exits 3) instead of submitting again. ` +
+  `If that job is final with status "failed" and \`zodchi job --key <key>\` shows turnRequestedAt and turnStartedAt both null or missing (the request was never sent), submit again under the next suffix of the base key (<base>-r2, then <base>-r3; at most 2 retries in all, those already recorded counted) and record the new key and that evidence in the progress file. ` +
+  `A job that is final with status "unknown" never gets a new key and is never waited on again: the request may already have run and used the subscription. Write "UNKNOWN: key <key>: <the job's error>" as the last line of the progress file instead of DONE and ${UNKNOWN_RETURN}. ` +
+  `ok is true when the job ended with an answer.`,
   { agentType: 'zodchi-core:researcher', schema: FOUND, phase: s.phase, label: s.id })
   .then(r => r && { ...r, side: s.side })))).filter(Boolean)
 // A question whose gateway job ended unknown may already have run: it is not asked again, the person decides.

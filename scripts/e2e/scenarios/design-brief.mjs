@@ -132,7 +132,8 @@ export default function register({ scenario, ROOT }) {
     };
     const sandbox = {
       args, phase: () => {}, log: () => {},
-      parallel: (thunks) => Promise.all(thunks.map((th) => th())),
+      // As the Workflow runtime: a thunk result reaches the script as plain data (JSON), and a thunk that throws comes back as null.
+      parallel: (thunks) => Promise.all(thunks.map(async (th) => { try { const v = await th(); return v === undefined ? null : JSON.parse(JSON.stringify(v)); } catch { return null; } })),
       agent: async (prompt, opts) => {
         const shown = fromDisk(plainPrompt(prompt));
         calls.push({ label: opts.label, prompt: shown, opts });
@@ -245,7 +246,7 @@ export default function register({ scenario, ROOT }) {
     t.ok(p.includes("/r/.agent-tmp/db/brief.md"), "it writes to args.out");
     t.ok(/Verify each fact you rely on by reading the cited file/.test(p), "it verifies each fact");
     t.ok(/Cut the scope to ONE package/.test(p) && /Left for later/.test(p), "one package, with the rest said as left for later");
-    t.ok(/Never answer it yourself/.test(p) && /marked default/.test(p), "owner decisions are listed with a marked default, never answered");
+    t.ok(/Until the owner answers, the writer of the code uses the default/.test(p) && /marked default/.test(p), "owner decisions are listed with a marked default, and the default stands until the owner answers");
     t.ok(p.includes(MARK) && /do not overwrite it/.test(p), "a file that is not this workflow's is never overwritten");
     t.ok(/call no product API, contact no server, and never print a secret value/.test(p), "no API, no server, no secret");
     t.ok(p.includes('"/r/docs/plan.md"') && p.includes("/r/docs/old-brief.md"), "the context and the template are named");
@@ -264,7 +265,7 @@ export default function register({ scenario, ROOT }) {
     const rv = r.of(/^review$/)[0];
     t.ok(rv.opts.agentType === "zodchi-core:runner" && rv.opts.model === undefined, "the review is a runner step that calls the gateway");
     t.ok(/zodchi run --role '\/r\/\.agent-tmp\/db\/review\/design-review\.json' --key db-design-review --model gpt-x --effort high --prompt '\/r\/\.agent-tmp\/db\/review\/prompt\.md' --attach '\/r\/\.agent-tmp\/db\/brief\.md' --attach '\/r\/\.agent-tmp\/db\/review\/facts\.json' --attach '\/r\/\.agent-tmp\/db\/review\/excerpts\.md' --wait-sec 540/.test(rv.prompt), "the command names the role, the key, the model, the prompt and the attachments");
-    t.ok(/foreground/.test(rv.prompt) && /Never in the background/.test(rv.prompt), "it waits in the foreground");
+    t.ok(/foreground/.test(rv.prompt) && /Never start it in the background/.test(rv.prompt), "it waits in the foreground");
     t.ok(/is final with status "unknown" never gets a new key/.test(rv.prompt), "a job that ended unknown is never submitted again");
     const body = JSON.parse(r.file("/r/.agent-tmp/db/review/design-review.json"));
     t.eq([body.mode, body.model, body.effort], ["expert", "gpt-x", "high"], "the role file carries the chosen candidate");

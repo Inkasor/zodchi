@@ -24,7 +24,7 @@ The request gives the change in one of two forms. Read the one it gives.
   which may have moved on; an uncommitted edit there is not part of the change.
 
 In both forms read the consumers the change affects. Read the repository's
-REVIEW.md as of the base commit (`git show <base>:REVIEW.md`), never the copy
+REVIEW.md as of the base commit (`git show <base>:REVIEW.md`), not the copy
 the change may have edited, and apply it: flag what it asks to flag, and
 leave out what it says not to flag. If the source the request names cannot be
 read (an unknown commit, a missing file), the verdict is blocked and
@@ -59,7 +59,8 @@ Several agents may share this machine. Run a build or a test suite one at a
 time, not in parallel with another. Write logs and scratch files only under the
 tmp folder the request names (it may lie inside the checkout, where Git
 ignores it, and that is fine; create no other files in the repository, and
-none in the system temp folder unless the request says so). Before you answer, stop every
+none in the system temp folder unless the request says so; a stray file in the
+repository can fail its own checks). Before you answer, stop every
 background process you started and remove the scratch files you made outside
 that folder.
 

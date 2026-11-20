@@ -46,7 +46,8 @@ export default function register({ scenario, ROOT, scratch }) {
     const calls = [];
     const sandbox = {
       args, phase: () => {}, log: () => {},
-      parallel: (thunks) => Promise.all(thunks.map((th) => th())),
+      // As the Workflow runtime: a thunk result reaches the script as plain data (JSON), and a thunk that throws comes back as null.
+      parallel: (thunks) => Promise.all(thunks.map(async (th) => { try { const v = await th(); return v === undefined ? null : JSON.parse(JSON.stringify(v)); } catch { return null; } })),
       agent: async (prompt, opts) => {
         const label = opts.label;
         calls.push({ label, prompt, opts });

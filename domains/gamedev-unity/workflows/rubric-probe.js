@@ -21,13 +21,15 @@ const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
 const gatewayCall = ({ role, key, args, attach = [], attachIfExists = [], out, totalMin, repo = a.repo }) => {
   const flags = [...attach, ...attachIfExists].map(f => `--attach ${q(f)}`).join(' ')
   const run = `zodchi run --role ${role} --key ${key} ${args}${flags ? ' ' + flags : ''} --wait-sec 540 --out ${q(out)}`
-  return `Gateway call, base key ${key}. Run it in the foreground from ${repo}: \`${run}\`. ` +
+  return `Gateway call, base key ${key}. ` +
+    `First look in the progress file for a submission of this call: if it records ${key}, ${key}-r2 or ${key}-r3, the latest of them is the active key, and a resumed run waits on it as below instead of submitting again. With none, submit under ${key}. ` +
+    `Run it in the foreground from ${repo}: \`${run}\`. ` +
     (attachIfExists.length ? `Before every submission, retries included, drop the --attach of each optional file that does not exist on disk: ${JSON.stringify(attachIfExists)}; keep every other --attach. ` : '') +
-    `The gateway refuses a request over 512 KB (prompt plus attachments). Before every submission, first remove a "Not attached for size" line left by an earlier attempt from the prompt file, then add up the size of the prompt file and of every file you attach. While the sum is over 500 KB and an optional file is still attached${attachIfExists.length ? ` (optional: ${JSON.stringify(attachIfExists)})` : ' (there are none here)'}, drop the largest optional one (never a required one) and add its name to one line at the end of the prompt file, "Not attached for size: <names>"; then count again, the prompt included. If the sum is still over 500 KB with no optional file left, do not submit: report that as the infrastructure failure. ` +
-    `Never in the background (no &, nohup or run_in_background), never through Monitor: the worker of the job ends with your shell. ` +
-    `The active key is the key of the latest submission: ${key} at first, then ${key}-r2, then ${key}-r3 (at most 2 retries in all). Every wait, \`zodchi job\` and request.json check below names the active key, never an earlier one, also after a resume (the progress file holds the latest key). ` +
-    `While it exits 3 (still running), repeat \`zodchi wait --key <active key> --wait-sec 540 --out ${q(out)}\` in the foreground, up to ${totalMin} minutes in all since the first command; ` +
-    `never return before the job is final (exit 0 or 2); if the ${totalMin} minutes run out, report failure (ok false; verdict "missing" for a review) and say the job still runs under its active key. ` +
+    `The gateway refuses a request over 512 KB (prompt plus attachments). Before every submission, first remove a "Not attached for size" line left by an earlier attempt from the prompt file, then add up the size of the prompt file and of every file you attach. While the sum is over 500 KB and an optional file is still attached${attachIfExists.length ? ` (optional: ${JSON.stringify(attachIfExists)})` : ' (there are none here)'}, drop the largest optional one (required files stay: the request is useless without them) and add its name to one line at the end of the prompt file, "Not attached for size: <names>"; then count again, the prompt included. If the sum is still over 500 KB with no optional file left, do not submit: report that as the infrastructure failure. ` +
+    `Never start it in the background (no &, nohup, run_in_background or Monitor): the worker of the job ends with your shell, and a dead worker can leave a paid job with an unknown outcome. ` +
+    `The active key is the key of the latest submission: ${key} at first, then ${key}-r2, then ${key}-r3 (at most 2 retries in all). Every wait, \`zodchi job\` and request.json check below uses the active key, after a resume too (the progress file holds the latest key). ` +
+    `Wait in the foreground with \`zodchi wait --key <active key> --wait-sec 540 --out ${q(out)}\`, repeated while it exits 3 (still running), until the job is final (exit 0 or 2) or ${totalMin} minutes have passed since the first command, whichever comes first. ` +
+    `If the time runs out, report failure (ok false; verdict "missing" for a review) and say the job still runs under its active key. Do not return earlier: nobody else waits on the job. ` +
     `A job gets a new key only with evidence that the request was never sent: it is final with status "failed" and \`zodchi job --key <active key>\` shows turnRequestedAt and turnStartedAt both null or missing (the gateway never asked for the model turn). ` +
     `Then run the same full command again with --key set to the next key, wait for it the same way, and write each new key into the progress file at once, with that evidence (the two fields and the job's error). ` +
     `A job that is final with status "unknown" never gets a new key and is never waited on again: the request may already have run and used the subscription. Stop at once: ` +
@@ -49,9 +51,7 @@ const progressFile = (o) => `${a.tmp}/progress/${String((o && (o.label || o.phas
 const step = (prompt, opts) => agent(prompt +
   `\n\nResume rule: this run may have been cut off and restarted. If ${progressFile(opts)} exists and its last line is not DONE, read it first and go on from its last line; ` +
   `if its last line is DONE, it is from an earlier finished run: rename it to .old and start fresh. ` +
-  `do not redo finished work or overwrite its outputs blindly. For a gateway call it records as submitted, wait on the latest key recorded for that call in the foreground (zodchi wait --key <key> --wait-sec 540 --out <file>, repeated while it exits 3) instead of submitting again; ` +
-  `if that job is final with status "failed" and \`zodchi job --key <key>\` shows turnRequestedAt and turnStartedAt both null or missing (the request was never sent), submit again under the next suffix of the base key (<base>-r2, then <base>-r3; at most 2 retries in all, those already recorded counted) and record the new key and that evidence in the progress file; ` +
-  `if it is final with status "unknown", never submit again and never wait on it: the request may already have run. Write "UNKNOWN: key <key>: <the job's error>" as the last line of the progress file instead of DONE and ${UNKNOWN_RETURN}. ` +
+  `Do not redo finished work or overwrite its outputs blindly. ` +
   `After each finished step append one line to it (create the folder if needed): what is done, the paths it produced, what comes next. When your whole task is finished, append a last line DONE.`, opts)
 
 // Which plugin copy ran. A workflow script cannot see its own file, so one cheap runner step runs the "plugin" command of the gate helper
@@ -78,7 +78,7 @@ function readHelper(r, what) {
 }
 
 const copyRead = readHelper(await agent(
-  `Run ONE command and return what it printed; change nothing and run nothing else. Run every command with bash (Git Bash on Windows, never PowerShell or cmd). In the foreground, once:
+  `Run ONE command and return what it printed; change nothing and run nothing else. Run every command with bash (Git Bash on Windows): the quoting is written for bash, and PowerShell or cmd would read it differently. In the foreground, once:
 ${helperRun('plugin', {})}
 ` +
   `Do not change, split or rerun it with other options. exitCode: its exit code, a number. stdout: everything it printed to standard output, exactly, as one string (it is one line of JSON): ` +

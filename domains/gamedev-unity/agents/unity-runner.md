@@ -25,7 +25,8 @@ failure ended the round, and you have reported each step.
   may run beside one Blender build. A menu command or an import in an Editor
   that is already open needs 2 GB. Below the floor, stop and report.
 - **Logs.** Send a command's output to a file under the temporary folder the
-  brief names, never to a file the tool itself writes. Read logs with `grep`
+  brief names (the lead looks for them there), not to a file the tool itself
+  writes. Read logs with `grep`
   and `tail`, and quote the decisive lines with exact values.
 - **Unity.** The brief gives the path of the Editor connection document and
   the project the work is for. When it does not, find the document through
@@ -44,7 +45,8 @@ failure ended the round, and you have reported each step.
   **A long wait stays in the foreground:** your shell call has its own
   time limit, often far shorter than `--wait-sec`. Never put a gateway
   command in the background: a background shell dies with you and takes
-  the job's worker with it. Give `run` at most `--wait-sec 540`; while it
+  the job's worker with it, and a dead worker can leave a paid job with an
+  unknown outcome. Give `run` at most `--wait-sec 540`; while it
   exits 3 (still running), repeat `zodchi wait --key <key> --wait-sec 540
   --out <file>` in the foreground until the total wait the brief gives.
 - Your writes are the run folders and logs your commands create, and the
