@@ -111,12 +111,13 @@ export default function register({ scenario, ROOT }) {
     const unknown = q.slice(q.indexOf('If that job is final with status "unknown"'), q.indexOf('If it is final with status "failed"'));
     t.ok(unknown.length > 0 && /never gets a new key/.test(unknown) && /do not run the submit command/.test(unknown) && /stop as the "unknown" rule below says/.test(unknown), "an earlier job that is unknown gets no new key, and the step stops as the unknown rule says");
     t.ok(!unknown.includes("submit under"), "and the unknown branch names no key to submit under");
-    t.ok(q.includes(`If it is final with status "failed", or there is none, that key is finished: run the submit command under ${key2}`), "only a failed job, or none, is finished and submitted over");
+    t.ok(q.includes(`If it is final with status "failed" and \`zodchi job --key <that key>\` shows turnRequestedAt and turnStartedAt both null or missing (the request was never sent), or there is none, that key is finished: run the submit command under ${key2}`), "only a failed job that never requested or started its turn, or none, is finished and submitted over");
+    t.ok(q.includes("Any other final status, a failed job with either of the two fields set included, is not submitted over: report it as the last rule below says."), "a failed job with turnRequestedAt or turnStartedAt set is not submitted over");
     t.ok(q.includes('A job that is final with status "unknown" never gets a new key and is never waited on again') && q.includes('"UNKNOWN: key <active key>: <the job\'s error>"'), "the unknown rule below is the one that stops: the UNKNOWN line, never submitted again");
     for (const rel of ["core/workflows/code-package.js", "core/workflows/design-brief.js"]) {
       const text = source(rel);
       t.ok(text.includes('If that job is final with status "unknown", it never gets a new key, here or in any attempt: do not run the submit command; stop as the "unknown" rule below says, with that key as the active key.') && !/whatever its status/.test(text), `${rel}: the attempt rule of the source reads the same`);
-      t.ok(text.includes('If it is final with status "failed", or there is none, that key is finished: run the submit command under ${key}.'), `${rel}: the finished-key rule is for a failed job`);
+      t.ok(text.includes('If it is final with status "failed" and \\`zodchi job --key <that key>\\` shows turnRequestedAt and turnStartedAt both null or missing (the request was never sent), or there is none, that key is finished: run the submit command under ${key}.') && text.includes('a failed job with either of the two fields set included, is not submitted over'), `${rel}: the finished-key rule is for a failed job that never requested or started its turn`);
     }
   });
 
