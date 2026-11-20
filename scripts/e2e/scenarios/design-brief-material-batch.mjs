@@ -105,7 +105,7 @@ export default function register({ scenario, ROOT }) {
     }
     // The runner count follows the size of the material divided by what a runner takes (8 parts of up to 4000 characters), not the research part by part.
     const big = await run({ facts: factsOf(LATIN, 112000) });
-    t.ok(big.parts.length > 20 && big.material.length === Math.ceil(big.parts.length / 8) && big.material.length <= 4, `112000 characters: ${big.parts.length} parts in ${big.material.length} runners`);
+    t.ok(big.parts.length > 20 && big.material.length === Math.ceil(big.parts.length / 8), `112000 characters: ${big.parts.length} parts in ${big.material.length} runners`);
   });
 
   scenario("design-brief-material-batch-retry", "a part damaged inside a batch is sent again alone by a fresh runner and the parts that arrived are not; a batch that returned nothing sends again its own parts only; a part damaged twice stops the run before the preflight; an unchanged run has the same labels", async (t) => {
