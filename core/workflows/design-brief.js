@@ -53,8 +53,9 @@ export const meta = {
 // copy (core/scripts/gate.mjs, which hands brief-inspect, brief-material, brief-preflight and review-read to core/scripts/io.mjs): the
 // brief's hash and headings, the screen of the brief, the cited lines, the review request (prompt, facts, excerpts, frame, schema, role)
 // and the review's answer. The workflow's own material for the request (goal, questions, facts, unknowns) grows with the research, so it
-// goes to the helper in parts of at most MATERIAL_PART characters, one brief-material command each: no command a runner types grows
-// without bound, and one runner sends a batch of up to MATERIAL_BATCH parts, so the runner count does not follow the research. A runner only runs
+// goes to the helper in parts of at most MATERIAL_PART characters, one brief-material command each, whose whole b64: argument is at most MATERIAL_ARG_MAX
+// characters: no command a runner types grows without bound or past what it copies reliably, and one runner sends a batch of up to MATERIAL_BATCH parts, so
+// the runner count does not follow the research. A runner only runs
 // the helper commands it is given, one after another, and returns the line each printed; the workflow checks each line (its lineSha256) and decides. No file content passes through a model but the brief the writer drafts and the review the gateway writes.
 const a = args || {}
 for (const k of ['label', 'goal', 'repos', 'out', 'tmp']) if (!a[k]) throw new Error(`design-brief needs args.${k}`)
@@ -240,6 +241,11 @@ const specArg = (spec) => {
   if (arg.length > B64_MAX) return json
   return arg
 }
+// A command of a material part is typed by a cheap runner, eight of them in one prompt, and a runner copies a long base64 word unreliably (a real run: the tail of a
+// 12000-character argument was lost, bash answered "unexpected EOF while looking for matching quote" and the batch stopped). So the whole b64: argument of a
+// brief-material command (prefix included) is at most this many characters, far under B64_MAX; the material is cut to fit (see the cut of materialParts).
+const MATERIAL_ARG_MAX = 4000
+const materialArgFits = (spec) => { const arg = specArg(spec); return arg.startsWith('b64:') && arg.length <= MATERIAL_ARG_MAX }
 // A helper copy older than this workflow reads plain JSON only: it answers a b64: spec with exit 2 and "the spec is not JSON: Unexpected token 'b'..." (the spec
 // starts with the b of b64:). Only the first helper call of the run (the gate: short, and always sent as b64:) is read that way: once a helper answered
 // a b64: spec, the copy reads b64:, and the same text later is a command the runner damaged (e.g. a dropped colon), which is retried or reported as
@@ -287,7 +293,8 @@ const ioRun = (command, spec, label, phaseName) => agent(
 const HELPER_ANSWERS = { type: 'object', required: ['answers'], properties: { answers: { type: 'array', items: HELPER_ANSWER } } }
 const ioRunMany = (command, specs, label, phaseName) => agent(
   `Run ${specs.length} command${specs.length === 1 ? '' : 's'} and return what each printed; change nothing and run nothing else. Run every command with bash (Git Bash on Windows, never PowerShell or cmd). ` +
-  `Run them one after another, in the order given, each in the foreground and exactly once; run the next even when one of them failed (a failure is an answer, not a stop):\n` +
+  `Run them one after another, in the order given, each in the foreground and exactly once. The commands are independent of one another: a command that failed (a shell error, a non-zero exit code, an error message) is an answer, not a stop. ` +
+  `Run the next one anyway, every one of the ${specs.length}, and return an answer for each, the failed ones too:\n` +
   specs.map((spec, k) => `Command ${k + 1} of ${specs.length}:\n${helperRun(command, spec)}`).join('\n') + '\n' +
   `Do not change, split, merge, reorder, skip or rerun any of them, do not run them with other options, and open none of the files they name yourself: the commands read and write them. ` +
   `answers: an array with exactly one element per command, in the order the commands were given. Each element: exitCode: the exit code of that command, a number. stdout: everything it printed to standard output, as one string (it is one line of JSON): ` +
@@ -501,23 +508,25 @@ const excerptsFile = `${reviewDir}/excerpts.md`
 // request: the review prompt, facts.json and excerpts.md (redacted; in a public repository without machine paths), the frame, the schema
 // and the role file. A brief that does not pass is not sent and nothing is written; the lead corrects it. The goal, the questions, the
 // facts and the unknowns are this workflow's (already redacted). They grow with the research, so their JSON text is cut into parts of at
-// most MATERIAL_PART characters (whole code points; fewer when the folder name leaves less room, see below); a runner hands a batch of up to MATERIAL_BATCH parts to the helper
+// most MATERIAL_PART characters and whose b64: argument is at most MATERIAL_ARG_MAX (whole code points; fewer when the text or the folder name leaves less room, see below);
+// a runner hands a batch of up to MATERIAL_BATCH parts to the helper
 // (one brief-material command each, one after another), which writes each into the review folder and answers its hash. The preflight joins the parts and checks the whole hash; its inputSha256 shows they arrived exactly.
 const material = { goal: goalText, questions: questions.map(x => x.question), facts: factList, unknowns }
 const materialText = JSON.stringify(material)
 // The most the helper takes in one part (core/scripts/io.mjs: spec.text of 1 to 4000 characters, counted as JavaScript counts them). The parts are as large as the b64: argument
-// allows, up to that; the runner count follows the size of the material divided by this, and by MATERIAL_BATCH, not the research part by part.
+// allows (MATERIAL_ARG_MAX), up to that, so in practice they are about 2700 characters of Latin and fewer of Cyrillic or escaped text; the runner count follows the number of parts
+// divided by MATERIAL_BATCH, not the research part by part.
 const MATERIAL_PART = 4000
-// The parts one runner sends: eight b64: arguments of at most 12000 characters stay a prompt a runner types reliably, and a material of about 56000 characters is 14 to 16 parts, two runners.
+// The parts one runner sends: eight b64: arguments of at most MATERIAL_ARG_MAX characters each are a prompt a runner types reliably.
 const MATERIAL_BATCH = 8
 const materialParts = []
 // A part is cut so that the whole brief-material spec (api, the actual review folder, the part counters at their largest, and the part's text, which
-// the spec escapes once more) stays within the JSON that B64_MAX allows, so every part goes as b64:, whatever the folder name is. MATERIAL_PART is only
+// the spec escapes once more) stays within the JSON that MATERIAL_ARG_MAX allows, so every part goes as b64: of at most that length, whatever the folder name is. MATERIAL_PART is only
 // the upper bound. The counters are taken at 200 (the most parts there may be), so the room is never more than the real spec has.
 const u8len = (s) => { let n = 0; for (const ch of s) { const c = ch.codePointAt(0); n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4 } return n }
 const stopPre = (why, next) => stop(`review (${why})`, `${next} The brief ${outPath} is written and was not sent to the review.`)
 {
-  const room = Math.floor((B64_MAX - 4) / 4) * 3 - u8len(JSON.stringify({ api: GATE_API, dir: reviewDir, part: 200, of: 200, text: '' }))
+  const room = Math.floor((MATERIAL_ARG_MAX - 4) / 4) * 3 - u8len(JSON.stringify({ api: GATE_API, dir: reviewDir, part: 200, of: 200, text: '' }))
   if (room < 12) return stopPre(`the review folder name is too long to send the facts of the research (${reviewDir.length} characters)`, 'Name a shorter args.tmp and run again.')
   let part = [], used = 0, units = 0
   for (const ch of Array.from(materialText)) {
@@ -528,10 +537,10 @@ const stopPre = (why, next) => stop(`review (${why})`, `${next} The brief ${outP
   if (part.length) materialParts.push(part.join(''))
 }
 if (materialParts.length > 200) return stopPre(`the facts of the research are too many to send (${materialText.length} characters in ${materialParts.length} parts, at most 200)`, 'Narrow the questions (args.questions) and run again.')
-// A part that arrives damaged (no JSON line, not ok, or a hash that is not its text's) is sent once more by a fresh runner under a label of its
-// own (the journal keeps the first answer under the first label); the parts of a batch that were damaged go together in that one fresh runner, the
-// ones that arrived exactly are not sent again, and a batch whose runner returned nothing sends all its parts again. brief-material rewrites the
-// part file, so a second send is safe. A part that fails twice stops the run, with the stop text of the second failure. No other helper command is repeated: they write state.
+// A part that arrives damaged, failed or unanswered (no JSON line, not ok, a hash that is not its text's, or no receipt) is sent once more ALONE by a fresh
+// runner, one runner per part, under a label of its own (the journal keeps the first answer under the first label): a runner that lost the tail of one
+// command or stopped its batch must not take the others of a second batch with it. The parts that arrived exactly are not sent again, and a batch whose
+// runner returned nothing sends all its parts again, each alone. brief-material rewrites the part file, so a second send is safe. A part that fails twice stops the run, with the stop text of the second failure. No other helper command is repeated: they write state.
 const partProblem = (r, i) => {
   const read = readIo(r, `the material helper (part ${i + 1})`)
   if (read.error) return { text: `part ${i + 1} of the material was not written: ${read.error}`, stale: Boolean(read.stale) }
@@ -549,7 +558,7 @@ const partsLabel = (idx, again) => {
 const sendParts = async (idx, again) => {
   const specs = idx.map(i => ({ dir: reviewDir, part: i + 1, of: materialParts.length, text: materialParts[i] }))
   const problems = new Map()
-  idx.forEach((i, k) => { if (!specArg(specs[k]).startsWith('b64:')) problems.set(i, { text: `part ${i + 1} of the material does not fit the base64 form of a command`, stale: true }) })
+  idx.forEach((i, k) => { if (!materialArgFits(specs[k])) problems.set(i, { text: `part ${i + 1} of the material does not fit the base64 form of a command (at most ${MATERIAL_ARG_MAX} characters)`, stale: true }) })
   if (problems.size) { for (const i of idx) if (!problems.has(i)) problems.set(i, null); return problems }
   const r = await ioRunMany('brief-material', specs, partsLabel(idx, again), 'Review').catch(() => null)
   const answers = r && Array.isArray(r.answers) ? r.answers : []
@@ -575,9 +584,9 @@ const partProblems = await parallel(batches.map((idx) => async () => {
   if (!damaged.length) return ''
   const stale = damaged.find(i => first.get(i).stale)
   if (stale !== undefined) return first.get(stale).text
-  const second = await sendParts(damaged, true)
-  const still = damaged.find(i => second.get(i))
-  return still === undefined ? '' : second.get(still).text
+  const second = await parallel(damaged.map((i) => () => sendParts([i], true)))
+  const still = damaged.findIndex((_, k) => second[k].get(damaged[k]))
+  return still < 0 ? '' : second[still].get(damaged[still]).text
 }))
 for (const problem of partProblems) if (problem) return stopPre(problem, 'Run again.')
 const preRead = readIo(await ioRun('brief-preflight', {

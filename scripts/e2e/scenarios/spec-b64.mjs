@@ -5,9 +5,9 @@
 // quote, backslash or brace to "repair". Here: the real helper with both forms (same answer byte for byte, every kind of damage named,
 // text with quotes, backslashes, apostrophes, Russian and emoji round-tripping exactly), the encoder and the helperRun of each workflow
 // (taken from the source and run in a context without Buffer), the cap on the length of the argument (b64: only up to B64_MAX characters,
-// a longer spec as plain JSON exactly as before; a material part of the worst text always fits), and design-brief run for real over a fake
-// agent whose runner damages the end of the argument of a material part: once (the run reaches the review) and twice (the run stops with
-// its stop text).
+// a longer spec as plain JSON exactly as before; a material part of the worst text always fits the 4000 characters a runner-typed material argument is held to), and design-brief run for real over a fake
+// agent whose runner damages the end of the argument of a material part: once (the part is sent again alone and the run reaches the review) and twice
+// (the run stops with its stop text).
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -153,7 +153,7 @@ export default function register({ scenario, ROOT }) {
     }
   });
 
-  scenario("spec-b64-material-part-fits", "a material part of the worst text (4-byte, 3-byte, escaped or Cyrillic characters, with a long folder name) goes as b64:, within the cap, in design-brief, and no part is over the 4000 characters the helper takes", async (t) => {
+  scenario("spec-b64-material-part-fits", "a material part of the worst text (4-byte, 3-byte, escaped or Cyrillic characters, with a long folder name) goes as b64:, within the 4000-character cap of a runner-typed argument, in design-brief, and no part is over the 4000 characters the helper takes", async (t) => {
     const src = SRC();
     t.eq(Number(src.match(/^const MATERIAL_PART = (\d+)$/m)[1]), 4000, "a part is at most 4000 characters, what brief-material takes");
     // The parts are cut from JSON.stringify of the material, so a part never holds a control character or a lone surrogate (JSON writes those
@@ -165,10 +165,10 @@ export default function register({ scenario, ROOT }) {
       const calls = r.of(/^material /);
       const parts = partsIn(calls);
       t.ok(parts.length >= 3, `${what}: the material is several parts (${parts.length})`);
-      t.ok(parts.every((c) => /^b64:[A-Za-z0-9+/]+={0,2}$/.test(c.arg) && c.arg.length <= 12000), `${what}: every part goes as b64: within the 12000-character cap (largest ${Math.max(...parts.map((c) => c.arg.length))}, a folder name of ${(parts[0] ? parts[0].spec.dir : "").length} characters)`);
+      t.ok(parts.every((c) => /^b64:[A-Za-z0-9+/]+={0,2}$/.test(c.arg) && c.arg.length <= 4000), `${what}: every part goes as b64: within the 4000-character cap of a runner-typed argument (largest ${Math.max(...parts.map((c) => c.arg.length))}, a folder name of ${(parts[0] ? parts[0].spec.dir : "").length} characters)`);
       const lens = parts.map((c) => c.spec.text.length);
       t.ok(lens.every((n) => n <= 4000), `${what}: no part is over 4000 characters (largest ${Math.max(...lens)})`);
-      if (whole) t.eq(lens[0], 4000, `${what}: the part is as large as the helper takes, not cut at 2000`);
+      t.ok(parts[0].arg.length >= 3980, `${what}: the first part uses what the cap allows, not less (${parts[0].arg.length} of 4000 characters, ${lens[0]} characters of text${whole ? "" : ", fewer because each character is heavy"})`);
       t.eq(calls.length, Math.ceil(parts.length / 8), `${what}: one runner for every 8 parts`);
       t.ok(/^review \(the fake stops here\)/.test(r.out.stoppedAt || "") && r.of(/^material .* again /).length === 0, `${what}: the run reaches the review with no part sent again (${r.out.stoppedAt})`);
     }
@@ -314,15 +314,15 @@ export default function register({ scenario, ROOT }) {
     const both = await run((_label, arg, _attempt, part) => (part <= 2 ? arg.slice(0, -3) : undefined));
     everyPromptB64(t, both, "two parts damaged");
     t.ok(/^review \(part 1 of the material was not written/.test(both.out.stoppedAt || ""), "when several parts fail twice, the first is named");
-    t.eq(both.of(/^material /).map((c) => c.label), [`material 1-${n}/${n} db`, `material 1-2/${n} again db`], "the damaged parts of a batch go together in one fresh runner, the part that arrived is not sent again");
-    // A runner that returned nothing at all (the whole batch failed): every part of it is sent again, by one fresh runner, and the run goes on.
+    t.eq(both.of(/^material /).map((c) => c.label), [`material 1-${n}/${n} db`, `material 1/${n} again db`, `material 2/${n} again db`], "the damaged parts of a batch are sent again one runner each, the part that arrived is not sent again");
+    // A runner that returned nothing at all (the whole batch failed): every part of it is sent again, each alone by a fresh runner of its own, and the run goes on.
     const lost = await run(() => undefined, { lose: (label) => label === `material 1-${n}/${n} db` });
-    everyPromptB64(t, lost, "a batch that returned nothing, sent again whole");
-    // The whole-batch resend is checked as a prompt of its own: one plain-JSON command in it fails the check, as in the first batch.
-    const resend = lost.of(/^material .* again /)[0].prompt, resendCmd = partsIn(lost.of(/^material .* again /))[1];
+    everyPromptB64(t, lost, "a batch that returned nothing, sent again part by part");
+    // A resend is checked as a prompt of its own: its one command as plain JSON fails the check, as in the first batch.
+    const resend = lost.of(/^material .* again /)[0].prompt, resendCmd = partsIn(lost.of(/^material .* again /))[0];
     const resendPlain = commandsB64(resend.replace(` '${resendCmd.arg}'`, () => ` ${quoted(JSON.stringify(resendCmd.spec))}`));
-    t.ok(resendPlain.total > 0 && resendPlain.plain.length === 1, `a whole-batch resend with one plain-JSON command fails the check (plain: ${JSON.stringify(resendPlain.plain.map((p) => p.command))})`);
-    t.ok(/^review \(the fake stops here\)/.test(lost.out.stoppedAt || "") && lost.of(/^material /).map((c) => c.label).join() === `material 1-${n}/${n} db,material 1-${n}/${n} again db`, `a batch that returned no result is sent again whole and the run reaches the review (${lost.out.stoppedAt}; ${lost.of(/^material /).map((c) => c.label)})`);
+    t.ok(resendPlain.total > 0 && resendPlain.plain.length === 1, `a resend with its command as plain JSON fails the check (plain: ${JSON.stringify(resendPlain.plain.map((p) => p.command))})`);
+    t.ok(/^review \(the fake stops here\)/.test(lost.out.stoppedAt || "") && lost.of(/^material /).map((c) => c.label).join() === [`material 1-${n}/${n} db`, ...Array.from({ length: n }, (_, k) => `material ${k + 1}/${n} again db`)].join(), `a batch that returned no result has each of its parts sent again alone and the run reaches the review (${lost.out.stoppedAt}; ${lost.of(/^material /).map((c) => c.label)})`);
   });
 
   scenario("spec-b64-material-long-folder", "the material is cut by the size of the whole spec: with a long review folder and the heaviest text the parts are smaller than 4000 characters, every one still goes as b64: within the cap, and they rejoin exactly", async (t) => {
@@ -346,7 +346,7 @@ export default function register({ scenario, ROOT }) {
     t.ok(parts.every((c) => /^b64:[A-Za-z0-9+/]+={0,2}$/.test(c.arg)), "every part goes as b64:, none as plain JSON");
     const lens = parts.map((c) => c.spec.text.length);
     t.ok(lens.every((n) => n <= 4000) && lens.some((n) => n < 4000), `no part is over 4000 characters and the folder made some smaller (largest ${Math.max(...lens)}, smallest ${Math.min(...lens)})`);
-    t.ok(parts.every((c) => c.arg.length <= 12000), "every argument is within the 12000-character cap");
+    t.ok(parts.every((c) => c.arg.length <= 4000), "every argument is within the 4000-character cap");
     const joined = parts.map((c) => c.spec).sort((x, y) => x.part - y.part);
     t.ok(joined.every((x, i) => x.part === i + 1 && x.of === parts.length), "the parts are numbered 1..n of n");
     const text = joined.map((x) => x.text).join("");
