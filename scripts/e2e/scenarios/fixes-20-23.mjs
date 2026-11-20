@@ -5,13 +5,13 @@
 // repositories, and the workflow (core/workflows/code-package.js) run the way Claude Code runs it, with scripted answers (and, where the claim
 // matters, the real helper answering the claim steps).
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
+import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { commandsIn, encodeSpec, specIn, seenIn } from "../spec-arg.mjs";
 
-export default function register({ scenario, ROOT }) {
+export default function register({ scenario, ROOT, scratch: suiteScratch }) {
   const GATE = path.join(ROOT, "core", "scripts", "gate.mjs");
   const WF = path.join(ROOT, "core", "workflows", "code-package.js");
   const SRC = fs.readFileSync(WF, "utf8");
@@ -19,8 +19,9 @@ export default function register({ scenario, ROOT }) {
   const BUILD = SRC.match(/^const WORKFLOW_BUILD = '([0-9a-f]*)'/m)[1];
   const PLUGIN = { root: "/plugin/core", commit: "c0ffee", version: "1.0.0-dev", via: "installed_plugins.json, scope user" };
 
+  // Under the suite's own scratch folder (scripts/e2e.mjs removes it at the end, also after a failure unless --keep): nothing is made in the system temp folder.
   const scratch = (t, name) => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `zodchi-f2023-${name}-`)).replace(/\\/g, "/");
+    const dir = fs.mkdtempSync(path.join(suiteScratch, `f2023-${name}-`)).replace(/\\/g, "/");
     t.cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
     return dir;
   };
@@ -189,8 +190,8 @@ export default function register({ scenario, ROOT }) {
       return { exitCode: r.status, stdout: r.stdout, error: (r.stderr || "").slice(0, 300) };
     };
     const onBranch = { "switch pkg": { ok: true, summary: "ok" }, "base pkg": { ok: true, head: "ccccccc", branch: "feat", verifySkill: false, reviewMd: false } };
-    // the first run: the claim is written for real, the claim-base step fails (a transient error), the workflow stops and closes the claim 'stopped'
-    const first = await run({ ...onBranch, "claim pkg": real, "claim base pkg": line({ ok: false, conflicts: [], error: "lock busy" }) }, { branch: "feat" });
+    // the first run: the claim is written for real, the claim-base step is refused (another package holds a file: a real answer, not a transient failure), the workflow stops and closes the claim 'stopped'
+    const first = await run({ ...onBranch, "claim pkg": real, "claim base pkg": line({ ok: false, conflicts: ["rival: src/a.js"], error: "" }) }, { branch: "feat" });
     t.ok(/^claim base/.test(String(first.out && first.out.stoppedAt)), `the first run stops at claim-base (${first.out && first.out.stoppedAt})`);
     t.eq([readClaim(dir, "pkg").status, readClaim(dir, "pkg").base], ["open", "abc1234"], "the claim was written at the base the gate saw");
     closeClaim(dir, "pkg", "stopped");
@@ -489,5 +490,135 @@ export default function register({ scenario, ROOT }) {
     t.eq(second, ["keep.js"], "narrowed again after the add, the abandoned addition is gone from the list");
     const round3 = git("commit", "-q", "-m", "round 3", "--", ...second);
     t.eq([round3.status, git("show", "--name-only", "--format=", "HEAD").stdout.split("\n").filter(Boolean)], [0, ["keep.js"]], "and the commit goes through");
+  });
+
+  // ------------------------------------------------------------------------------------------------------------- next-fixes 24, 27, 28
+
+  scenario("fixes-claim-base-transient-failure", "a claim-base step that fails on a transient error (the claims lock busy, a helper exit that is no refusal) is an infrastructure failure: the run stops with the claim open, an unchanged resume replays the stop, a resume with args.rerun for the step calls the helper live and goes on; a real refusal still stops as before", async (t) => {
+    const home = scratch(t, "cbtransient"), dir = `${home}/.zodchi/packages/-r`;
+    const repo = `${home}/repo`;
+    fs.mkdirSync(repo, { recursive: true });
+    spawnSync("git", ["-C", repo, "init", "-q"]);
+    let live = 0;
+    const real = (prompt) => {
+      const m = commandsIn(prompt, "claim|claim-more|claim-base")[0];
+      if (m.command === "claim-base") live++;
+      const spec = { ...m.spec, ...(m.spec.repo === "/r" ? { repo } : {}) };
+      const r = spawnSync(process.execPath, ["-e", BOOT, "--", home, m.command, encodeSpec(spec)], { encoding: "utf8", env: { ...process.env, HOME: home, USERPROFILE: home, ZODCHI_PLUGIN_ROOT: path.join(ROOT, "core"), CLAUDE_PLUGIN_ROOT: "" } });
+      t.log(`runner: gate.mjs ${m.command}: exit ${r.status}\n${r.stdout}${r.stderr}`);
+      return { exitCode: r.status, stdout: r.stdout, error: (r.stderr || "").slice(0, 300) };
+    };
+    const onBranch = { "switch pkg": { ok: true, summary: "ok" }, "base pkg": { ok: true, head: "ccccccc", branch: "feat", verifySkill: false, reviewMd: false }, "await claim pkg": { ok: true, summary: "marked" } };
+    const stopAt = (r) => (r.error ? (r.error.message.match(/^Infrastructure failure at step "[^"]*", attempt \d+/) || [r.error.message.slice(0, 80)])[0] : "no stop");
+    // the claim is written for real at the base the gate saw; a resume has that first answer back from the journal
+    const journaled = line({ ok: true, conflicts: [], branchConflicts: [], reused: false, files: ["src/a.js"], file: `${dir}/pkg.json`, base: "abc1234" });
+    const first = await run({ ...onBranch, "claim pkg": real, "claim base pkg": { exitCode: 0, stdout: "", error: "" } }, { branch: "feat" });
+    t.eq(stopAt(first), 'Infrastructure failure at step "claim base pkg", attempt 1', "an answer with no JSON line is an infrastructure failure at the step");
+    t.eq(readClaim(dir, "pkg").status, "open", "the claim stays open: the package goes on when resumed");
+    // the real helper's own answer for a claims lock that is held is what the claim-base step gets
+    fs.mkdirSync(`${dir}/.lock`);
+    const busy = gate(t, "claim-base", { dir, label: "pkg", base: "ccccccc", tmp: "/r/.agent-tmp/pkg", lockWaitSec: 1 }, home);
+    fs.rmdirSync(`${dir}/.lock`);
+    t.ok(busy.json && busy.json.ok === false && busy.json.conflicts.join() === "lock busy", `the real helper answers a held lock as ok false with the conflict "lock busy" (${JSON.stringify(busy.json && busy.json.conflicts)})`);
+    const busyAnswer = { exitCode: busy.code, stdout: JSON.stringify(busy.json) + "\n", error: "" };
+    const stopped = await run({ ...onBranch, "claim pkg": journaled, "claim base pkg": busyAnswer }, { branch: "feat" });
+    t.eq(stopAt(stopped), 'Infrastructure failure at step "claim base pkg", attempt 1', "a busy claims lock stops the run as an infrastructure failure (it was a plain stop that only a new label got past)");
+    t.ok(/args\.rerun \{"claim base pkg":2\}/.test(stopped.error.message.replace(/\\"/g, '"')) && /lock busy/.test(stopped.error.message), "the failure names the rerun that retries the step, and the cause");
+    t.eq([stopped.of(/^write pkg$/).length, stopped.of(/^close claim/).length, stopped.of(/^await claim/).length], [0, 0, 1], "nothing was written; the claim is marked as waiting for a person, not closed");
+    // the journal hands back the failed answer: an unchanged resume stops again, and the helper is not called
+    const before = live;
+    const replay = await run({ ...onBranch, "claim pkg": journaled, "claim base pkg": busyAnswer }, { branch: "feat" });
+    t.eq([stopAt(replay), live], ['Infrastructure failure at step "claim base pkg", attempt 1', before], "an unchanged resume replays the stop and calls the helper no more");
+    // the resume with rerun asks the helper live (the lock is free now) and the run goes on
+    const resumed = await run({ ...onBranch, "claim pkg": journaled, "claim base pkg": real, "claim more write pkg": real }, { branch: "feat", rerun: { "claim base pkg": 2 } });
+    t.eq([String(resumed.error), resumed.out && resumed.out.approved, live], ["null", true, before + 1], "a resume with args.rerun calls the helper live and goes on to approval");
+    t.ok(/attempt 2/.test(resumed.of(/^claim base pkg$/)[0].prompt), "the step's prompt carries the attempt, so its journaled answer is not found");
+    t.eq([readClaim(dir, "pkg").status, readClaim(dir, "pkg").base], ["open", "ccccccc"], "the claim records the base of the branch");
+    // a helper exit that is not a refusal (no JSON, exit 1) is transient too
+    const crashed = await run({ ...onBranch, "claim pkg": journaled, "claim base pkg": { exitCode: 1, stdout: "", error: "EBUSY" } }, { branch: "feat" });
+    t.eq(stopAt(crashed), 'Infrastructure failure at step "claim base pkg", attempt 1', "a helper that exits 1 without an answer is an infrastructure failure");
+    // real refusals keep stopping with a plain stoppedAt
+    for (const [what, answer] of [
+      ["files another package holds", line({ ok: false, conflicts: ["rival: src/a.js"], error: "" })],
+      ["no open claim of the label", line({ ok: false, conflicts: [], error: "pkg has no open claim at /h/.zodchi/packages/-r/pkg.json" })],
+    ]) {
+      const r = await run({ ...onBranch, "claim pkg": journaled, "claim base pkg": answer, "close claim pkg": { ok: true, summary: "closed" } }, { branch: "feat" });
+      t.ok(r.error === null && /^claim base \(/.test(String(r.out && r.out.stoppedAt)) && !r.out.infra && r.of(/^write pkg$/).length === 0, `${what}: a refusal stops the run as before, not as an infrastructure failure (${r.out && r.out.stoppedAt})`);
+    }
+  });
+
+  scenario("fixes-commit-staged-deletion", "the commit step takes a path whose deletion is already staged: it runs no git add for it (git add -A fails on it), keeps it in the commit list and commits the deletion; shown with the steps of the prompt run on a real repository", async (t) => {
+    const r = await run();
+    const prompt = r.of(/^commit 1$/)[0].prompt;
+    t.ok(/except a path that is gone from the work tree and that `git ls-files -- <path>` no longer prints \(its deletion is already staged\): run no `git add` for it/.test(prompt) && /it stays in "those paths"/.test(prompt), "the commit step says to skip git add for a path whose deletion is already staged, and to keep it in the list");
+    const home = scratch(t, "stageddel"), repo = `${home}/repo`;
+    fs.mkdirSync(repo);
+    const git = (...a) => spawnSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", ...a], { encoding: "utf8" });
+    git("init", "-q");
+    for (const f of ["a.js", "gone.js", "other.js"]) fs.writeFileSync(`${repo}/${f}`, `${f} line\n`.repeat(4));
+    git("add", "."); git("commit", "-q", "-m", "base");
+    // the round: a.js changed, gone.js deleted with the deletion already staged (git rm), other.js staged by another package (stays out)
+    fs.writeFileSync(`${repo}/a.js`, "round 1\n");
+    git("rm", "-q", "gone.js");
+    fs.writeFileSync(`${repo}/other.js`, "another package\n");
+    git("add", "other.js");
+    const paths = ["a.js", "gone.js"];
+    const inTree = (f) => fs.existsSync(`${repo}/${f}`);
+    const inIndex = (f) => git("ls-files", "--", f).stdout.trim() !== "";
+    const inHead = (f) => git("cat-file", "-e", `HEAD:${f}`).status === 0;
+    // the old instruction: git add -A -- <path> for every path
+    const old = git("add", "-A", "--", "gone.js");
+    t.ok(old.status !== 0 && /did not match any files/.test(old.stderr), `git add -A on the staged deletion fails (${old.stderr.trim()})`);
+    // the instruction now: step 1 narrows, runs git add for the paths that are not a staged deletion, step 2 narrows again, step 3 commits
+    const narrowed = paths.filter((f) => inTree(f) || inIndex(f) || inHead(f));
+    t.eq(narrowed, paths, "the staged deletion passes the first narrowing (it is in HEAD)");
+    for (const f of narrowed) if (inTree(f) || inIndex(f)) t.eq(git("add", "-A", "--", f).status, 0, `git add -A -- ${f}`);
+    const second = narrowed.filter((f) => inIndex(f) || inHead(f));
+    t.eq(second, paths, "the second narrowing keeps it too");
+    t.ok(git("diff", "--cached", "--quiet", "--", ...second).status !== 0, "there is something to commit");
+    const c = git("commit", "-q", "-m", "pkg: round 1", "-m", "Verified: x", "--", ...second);
+    t.eq(c.status, 0, `the commit goes through (${c.stderr.trim()})`);
+    t.eq(git("show", "--name-only", "--format=", "HEAD").stdout.split("\n").filter(Boolean).sort(), ["a.js", "gone.js"], "it commits the change and the deletion, nothing else");
+    t.eq(git("diff", "--cached", "--name-only").stdout.split("\n").filter(Boolean), ["other.js"], "the other package's staged file stays staged and out of the commit");
+    t.ok(!inHead("gone.js") && !inTree("gone.js"), "the file is deleted in HEAD");
+  });
+
+  scenario("fixes-run-id-collision-check", "the run id stays 8 hex characters (the gateway key budget), and every id the gate hands out is recorded per repository and label: an id handed out before is drawn again, so two runs of one label never share one", async (t) => {
+    const home = scratch(t, "runidcheck"), repo = `${home}/repo`;
+    fs.mkdirSync(repo);
+    spawnSync("git", ["-C", repo, "init", "-q"]);
+    fs.writeFileSync(`${home}/brief.md`, "# b\n");
+    // a random source that repeats itself, per process: deadbeef, deadbeef, cafef00d
+    const preload = `${home}/fake-random.mjs`;
+    fs.writeFileSync(preload, [
+      'import crypto from "node:crypto";',
+      'import { syncBuiltinESMExports } from "node:module";',
+      'const seq = ["deadbeef", "deadbeef", "cafef00d", "0badf00d"];',
+      "let i = 0;",
+      'crypto.randomBytes = (n) => Buffer.from(seq[Math.min(i++, seq.length - 1)], "hex").subarray(0, n);',
+      "syncBuiltinESMExports();",
+    ].join("\n"));
+    const spec = (label) => JSON.stringify({ api: 1, repo, brief: `${home}/brief.md`, label, claimsKey: "k", want: [] });
+    const ask = (label) => {
+      const r = spawnSync(process.execPath, ["--import", pathToFileURL(preload).href, GATE, "code-package", spec(label)], { encoding: "utf8", env: { ...process.env, HOME: home, USERPROFILE: home } });
+      t.log(`gate.mjs code-package (fake random): exit ${r.status}\n${r.stdout}${r.stderr}`);
+      return JSON.parse(r.stdout).runId;
+    };
+    t.eq(ask("mine"), "deadbeef", "the first run of the label gets the id the random source gave");
+    t.eq(ask("mine"), "cafef00d", "the same id again is refused: the second run of the label draws on and gets another");
+    t.eq(ask("other"), "deadbeef", "ids are per label: another label may have that id (the key holds the label)");
+    t.eq(fs.readdirSync(`${home}/.zodchi/run-ids/k`).sort(), ["mine.cafef00d", "mine.deadbeef", "other.deadbeef"], "each id handed out is recorded");
+    const open = gate(t, "claim", claimSpec(`${home}/.zodchi/packages/k`, "mine", ["a.js"], { repo }), home).json;
+    t.eq([open.ok, open.conflicts, fs.readdirSync(`${home}/.zodchi/packages/k`).sort()], [true, [], ["mine.json"]], "the records are not in the claims folder: the claim commands see none of them");
+    // the real random source: many runs, all different, 8 hex characters each
+    const ids = Array.from({ length: 4 }, () => gate(t, "code-package", { repo, brief: `${home}/brief.md`, label: "many", claimsKey: "k", want: [] }, home).json.runId);
+    t.ok(ids.every((id) => /^[0-9a-f]{8}$/.test(id)) && new Set(ids).size === ids.length, "4 runs of one label with the real random source: 8 hex characters each and no id twice");
+    // the longest key still fits: the id did not grow
+    const longest = `${"l".repeat(60)}-abc1234-${ids[0]}-review-99-a99-r9`;
+    t.ok(longest.length <= 96, `a gateway key with a 60-character label, the longest kind and the largest attempt and retry numbers is ${longest.length} characters (the gateway takes 96)`);
+    // a folder that cannot be created does not stop the gate
+    fs.writeFileSync(`${home}/blocked`, "a file where the home folder must be\n");
+    const blocked = spawnSync(process.execPath, [GATE, "code-package", spec("mine")], { encoding: "utf8", env: { ...process.env, HOME: `${home}/blocked`, USERPROFILE: `${home}/blocked` } });
+    t.ok(blocked.status === 0 && /^[0-9a-f]{8}$/.test(JSON.parse(blocked.stdout).runId), "a record folder that cannot be created still gives an id");
   });
 }
