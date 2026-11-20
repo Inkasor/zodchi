@@ -57,3 +57,8 @@ the owner stop a release for it?
   diff against the package base (a package's own commits are claimed when it writes them); the whole redacted report
   passed as one command argument (reports are short; the collector caps the excerpt); part limits counted in code
   points by the workflow and UTF-16 units by the helper, and an 803-character field cap.
+- nit for code-package resume and the workflow stamp (2026-11-20, owner decision after two rounds): the claim step
+  coming back from the journal on a resume, with the reopen done by the next live helper call (a workflow script cannot
+  force one step to run live; making it do so is a runtime change); the gate comparing the copy's file with a content
+  stamp embedded in the running script rather than a hash of the loaded source or its Git commit (the script cannot
+  read itself; the e2e check of a stale stamp is what keeps the stamp honest).
