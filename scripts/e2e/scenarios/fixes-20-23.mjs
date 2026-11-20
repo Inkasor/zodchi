@@ -537,6 +537,10 @@ export default function register({ scenario, ROOT, scratch: suiteScratch }) {
     // a helper exit that is not a refusal (no JSON, exit 1) is transient too
     const crashed = await run({ ...onBranch, "claim pkg": journaled, "claim base pkg": { exitCode: 1, stdout: "", error: "EBUSY" } }, { branch: "feat" });
     t.eq(stopAt(crashed), 'Infrastructure failure at step "claim base pkg", attempt 1', "a helper that exits 1 without an answer is an infrastructure failure");
+    // the lock could not be created for a reason other than a held lock: the helper answers "lock: <error>" with no conflicts; that is transient too
+    const noLock = await run({ ...onBranch, "claim pkg": journaled, "claim base pkg": line({ ok: false, conflicts: [], error: "lock: EACCES: permission denied, mkdir '/h/.zodchi/packages/-r/.lock'" }) }, { branch: "feat" });
+    t.eq(stopAt(noLock), 'Infrastructure failure at step "claim base pkg", attempt 1', "a lock that cannot be created (error \"lock: ...\", no conflicts) is an infrastructure failure, not a plain stop");
+    t.ok(/args.rerun {"claim base pkg":2}/.test(noLock.error.message.replace(/\\"/g, '"')) && /EACCES/.test(noLock.error.message), "and it names the rerun and the cause");
     // real refusals keep stopping with a plain stoppedAt
     for (const [what, answer] of [
       ["files another package holds", line({ ok: false, conflicts: ["rival: src/a.js"], error: "" })],
