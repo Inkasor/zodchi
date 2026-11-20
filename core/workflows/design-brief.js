@@ -145,8 +145,8 @@ function sha256(text) {
 }
 
 // ------------------------------------------------------------------ steps
-// A finished agent() comes back from the journal when the run is resumed (resumeFromRunId); an unfinished one starts over, so
-// writers and gateway steps keep progress files. Research resumes from the helper's verified slot receipts.
+// resumeFromRunId replays the longest unchanged prefix of agent() calls. Writers and gateway steps keep progress files.
+// A fresh run with the same args.tmp recovers research from the helper's verified slot receipts.
 const reruns = Array.isArray(a.rerun) || typeof a.rerun === 'string'
   ? Object.fromEntries([].concat(a.rerun).map(l => [l, 2]))
   : { ...(a.rerun || {}) }
@@ -277,11 +277,11 @@ function readIo(r, what) {
 // One helper command, run by a runner that only returns what it printed (no progress file: running it again writes the same files).
 // A helper step named in args.rerun runs again on resume: the attempt in its prompt makes it a new call, not one served from the journal.
 const attemptNote = (label) => (attempt(label) > 1 ? ` (Attempt ${attempt(label)} of this step.)` : '')
-const ioRun = (command, spec, label, phaseName, visit = '') => agent(
+const ioRun = (command, spec, label, phaseName) => agent(
   `Run ONE command and return what it printed; change nothing and run nothing else. Run every command with bash (Git Bash on Windows): the quoting is written for bash, and PowerShell or cmd would read it differently. In the foreground, once:\n${helperRun(command, spec)}\n` +
   `Do not change, split or rerun it with other options, and open none of the files it names yourself: the command reads and writes them. exitCode: its exit code, a number. stdout: everything it printed to standard output, as one string (it is one line of JSON): ` +
   `copy it unchanged; do not parse, summarize, reorder or shorten it. error: what it printed to standard error, at most 300 characters, "" when nothing. ` +
-  `If the command could not be started at all, exitCode is -1 and stdout is "".` + attemptNote(label) + (visit ? ` Verify the files for research visit ${visit}.` : ''),
+  `If the command could not be started at all, exitCode is -1 and stdout is "".` + attemptNote(label),
   { agentType: 'zodchi-core:runner', phase: phaseName, label, schema: HELPER_ANSWER })
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 const effortOf = (c) => { const e = String((c && c.effort) || '').toLowerCase(); return EFFORTS.includes(e) ? { effort: e } : {} }
@@ -369,11 +369,8 @@ const runSpec = { tmp, inputSha256 }
 const openSpec = { ...runSpec, input }
 if (!fitsResearchCommand(openSpec)) return stop('facts (the goal, questions and run paths exceed the 4000-character b64 argument limit)', 'Shorten the inputs and run again.')
 
-// The journal can replay a finished agent. Inspect live files on each invocation, including a resume.
-// Only missing slots receive a fresh researcher prompt. Writer and gateway calls keep their journal keys.
-const visit = `${Date.now()}-${Math.random()}`
 const manifest = async (spec, label) => {
-  const read = readIo(await ioRun('brief-manifest', spec, label, 'Facts', visit).catch(() => null), 'the manifest helper')
+  const read = readIo(await ioRun('brief-manifest', spec, label, 'Facts').catch(() => null), 'the manifest helper')
   if (read.error) return read
   const summary = read.facts
   if (summary.inputSha256 !== inputSha256 || !/^[0-9a-f]{64}$/.test(summary.manifestSha256) ||
@@ -385,7 +382,7 @@ const manifest = async (spec, label) => {
 }
 let summary = await manifest(openSpec, `open research ${a.label}`)
 if (summary.error) summary = await manifest(openSpec, `open research again ${a.label}`)
-const retryNext = 'Resume with the same args.tmp to reuse the verified slots. Restore the original bytes of any changed accepted slot or start with a fresh folder.'
+const retryNext = 'Start a fresh run with the same args.tmp and research inputs. The helper rechecks the files and only slots without an accepted receipt go back to research. Restore the original bytes of any changed accepted slot or use a fresh folder.'
 if (summary.error) return stop(`facts (${summary.error})`, retryNext)
 
 const RECEIPT = {
@@ -398,6 +395,7 @@ for (let round = 1; round <= 2; round++) {
   const reports = await parallel(pending.map(({ slot, reason }) => async () => {
     const x = questions[slot - 1]
     const path = `${tmp}/facts/${slot}.json`
+    const label = `facts ${slot}${round === 1 ? '' : ' again'}`
     const r = await agent(
       `You are a researcher for a design brief. Answer ONE question from the repository files. Read them with Read, Grep, Glob and read-only commands. Use git only as \`git --no-optional-locks log|show|diff|grep\`. ` +
       `Write only the assigned UTF-8 JSON file ${path}. Run no project program or test, call no product API, contact no server. Do not open secret files. For a secret, name the variable or the file and never print a secret value. ` +
@@ -405,8 +403,8 @@ for (let round = 1; round <= 2; round++) {
       `Repositories you may read: ${JSON.stringify(repos)}. ${contextLine}${DATA_RULE}\nBEGIN DATA\nGoal: ${goalText}\nQuestion: ${JSON.stringify(x)}\nEND DATA\n` +
       `Write { "facts": [{ "claim": "...", "source": "<absolute path>:<line>" }], "unknowns": ["..."] }. Cite a line you read or a line range. Put unsettled questions in unknowns. Write the complete file once. ` +
       `Compute SHA-256 over its exact bytes with a local file hashing tool. Return only its assigned path, count of facts before filtering and lowercase hexadecimal sha256. ` +
-      `Research visit ${visit}, attempt ${round}.${reason ? ' The helper rejected the previous file: ' + reason : ''}`,
-      { model: 'haiku', phase: 'Facts', label: `facts ${slot}${round === 1 ? '' : ' again'}`, schema: RECEIPT })
+      `Research attempt ${round}.${reason ? ' The helper rejected the previous file: ' + reason : ''}` + attemptNote(label),
+      { model: 'haiku', phase: 'Facts', label, schema: RECEIPT })
     // Project to metadata even if a researcher returns unexpected text. The helper checks the path again.
     return { slot, path: r && slash(r.path) === path ? path : '', count: r && Number.isSafeInteger(r.count) ? r.count : -1,
       sha256: r && typeof r.sha256 === 'string' && /^[0-9a-f]{64}$/.test(r.sha256) ? r.sha256 : '' }
@@ -523,7 +521,7 @@ const stopPre = (why, next) => stop(`review (${why})`, `${next} The brief ${outP
 const preRead = readIo(await ioRun('brief-preflight', {
   label: a.label, brief: outPath, expectSha256: reviewedSha, dir: reviewDir, tmp, repos, gatewayRepo, publicRepo: Boolean(a.publicRepo),
   reviewer: { model: reviewer.model, effort: reviewer.effort || 'high' }, inputSha256, manifestSha256: summary.manifestSha256, writerSha256: summary.writerSha256,
-}, `preflight ${a.label}`, 'Review', visit), 'the preflight helper')
+}, `preflight ${a.label}`, 'Review'), 'the preflight helper')
 if (preRead.error) return stopPre(`the preflight read no brief: ${preRead.error}`, 'Run again.')
 const pre = preRead.facts
 // The screening mode is the workflow's: a preflight that screened in another mode (a runner that dropped or changed publicRepo) is no screen.

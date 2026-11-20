@@ -1,10 +1,10 @@
-// Research slots, checked manifests and resume through the workflow and the real file helper.
+// Research slots and recovery from a checked manifest through the workflow and the real file helper.
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import vm from "node:vm";
 import { spawnSync } from "node:child_process";
 import { commandsIn } from "../spec-arg.mjs";
+import { runDesignBrief } from "./design-brief.mjs";
 
 const sha = (text) => crypto.createHash("sha256").update(text, "utf8").digest("hex");
 const MARK = "<!-- design-brief: db -->";
@@ -17,21 +17,18 @@ const ROLES = {
 
 export default function register({ scenario, ROOT, scratch }) {
   const gate = path.join(ROOT, "core", "scripts", "gate.mjs");
-  const src = fs.readFileSync(path.join(ROOT, "core", "workflows", "design-brief.js"), "utf8").replace(/^export const meta/, "const meta");
+  const src = fs.readFileSync(path.join(ROOT, "core", "workflows", "design-brief.js"), "utf8");
 
   function fixture() {
     const repo = fs.mkdtempSync(path.join(scratch, "slots-")).replace(/\\/g, "/");
     const tmp = `${repo}/run`;
     const questions = ["Where is state kept?", "What is written?", "How is it checked?"];
     const args = { label: "db", tmp, goal: "Resume the export", questions, repos: [repo], out: `${repo}/brief.md` };
-    const journal = new Map();
     const claims = questions.map((_, i) => `Research evidence ${i + 1} ${"recorded ".repeat(2400).trim()}`);
     fs.writeFileSync(`${repo}/source.md`, "first\nsecond\nthird\n");
     async function run({ receipt, changeCommand } = {}) {
       const calls = [], commands = [];
       const agent = async (prompt, opts) => {
-        const key = JSON.stringify([prompt, opts]);
-        if (journal.has(key)) return journal.get(key);
         const { label } = opts;
         calls.push({ label, prompt, opts });
         let result;
@@ -58,7 +55,6 @@ export default function register({ scenario, ROOT, scratch }) {
           const res = spawnSync(process.execPath, [gate, cmd.command, arg], { encoding: "utf8", windowsHide: true });
           result = { exitCode: res.status, stdout: res.stdout, error: res.stderr };
         }
-        journal.set(key, result);
         return result;
       };
       const sandbox = {
@@ -68,7 +64,7 @@ export default function register({ scenario, ROOT, scratch }) {
           catch { return null; }
         })),
       };
-      const out = await vm.runInNewContext(`(async () => {\n${src}\n})()`, sandbox, { filename: "design-brief.js" });
+      const out = await runDesignBrief(src, sandbox);
       return { out, calls, commands, researchers: calls.filter(c => c.label.startsWith("facts ")).map(c => c.label) };
     }
     return { run, args, tmp, claims };
@@ -115,17 +111,18 @@ export default function register({ scenario, ROOT, scratch }) {
     }
   });
 
-  scenario("design-brief-manifest-resume", "a resume checks live files and runs only missing researchers", async t => {
+  scenario("design-brief-manifest-recovery", "a fresh run checks live files and asks only researchers whose receipts are missing", async t => {
     const { run, args, tmp } = fixture();
     const first = await run({ receipt: (slot, label, report) => slot === 2 ? { ...report, count: 5 } : report });
     t.ok(first.out.stoppedAt.includes("incomplete") && !fs.existsSync(`${tmp}/review`), "a twice-rejected slot stops before the draft and review");
-    const resumed = await run();
-    t.eq(resumed.researchers, ["facts 2"], "resume reuses slots 1 and 3");
-    t.ok(resumed.calls.some(c => c.label === "review"), "the completed manifest reaches review");
+    t.ok(first.out.next.includes("fresh run with the same args.tmp"), "the stop explains how to reuse the manifest");
+    const fresh = await run();
+    t.eq(fresh.researchers, ["facts 2"], "the fresh run reuses slots 1 and 3");
+    t.ok(fresh.calls.some(c => c.label === "review"), "the completed manifest reaches review");
     const file = `${tmp}/facts/3.json`;
     fs.appendFileSync(file, " ");
     const changed = await run();
-    t.ok(changed.out.stoppedAt.includes("accepted slot 3 changed") && changed.researchers.length === 0, "changed accepted bytes stop even with journaled successes");
+    t.ok(changed.out.stoppedAt.includes("accepted slot 3 changed") && changed.researchers.length === 0, "changed accepted bytes stop before research");
     args.questions.reverse();
     const reordered = await run();
     t.ok(reordered.out.stoppedAt.includes("different inputs") && !reordered.researchers.length, "another question order cannot reuse the folder");
