@@ -255,7 +255,7 @@ export default function register({ scenario, ROOT }) {
   const printed = (facts, over = {}) => ({ exitCode: 0, stdout: JSON.stringify({ ok: true, api: 1, plugin: PLUGIN, ...facts }) + "\n", ...over });
   const CONNECTED = { connected: true, ordinaryUsageAllowed: true, primary: { usedPercent: 10 }, secondary: null };
   const CP_FACTS = {
-    roles: {}, modelsErrors: [], account: null, accountError: "none", git: true, head: "abc1234", branch: "main", dirty: [], ignoreExit: 0, ignoreLine: ".gitignore:3:.agent-tmp/\t.agent-tmp/gateway/x",
+    workflow: { name: "code-package", build: "b", copyBuild: "b", match: true }, roles: {}, modelsErrors: [], account: null, accountError: "none", git: true, head: "abc1234", branch: "main", dirty: [], ignoreExit: 0, ignoreLine: ".gitignore:3:.agent-tmp/\t.agent-tmp/gateway/x",
     verifySkill: false, reviewMd: false, config: {}, configError: "", boundary: "Important: x.\n",
     claims: { dir: "claims-dir/r", open: [], closed: [], kept: [], skipped: [], notes: [] },
   };
@@ -288,7 +288,7 @@ export default function register({ scenario, ROOT }) {
     t.eq((gate[0].prompt.match(/node -e /g) || []).length, 1, "its prompt holds one command");
     t.ok(gate[0].prompt.includes("do not parse, summarize, reorder or shorten it"), "and tells the runner to return the output as it is");
     const gateSpec = specIn(gate[0].prompt, "code-package") || {};
-    t.ok(Object.keys(gateSpec).join() === "api,repo,brief,label,claimsKey,want" && gateSpec.api === 1 && gateSpec.repo === "/r" && gateSpec.brief === "/r/brief.md" && gateSpec.label === "pkg" && typeof gateSpec.claimsKey === "string" && gateSpec.claimsKey.length > 0 && JSON.stringify(gateSpec.want) === '["writer","reviewer"]', "the command carries the spec: repo, brief, label, claims key, wanted roles");
+    t.ok(Object.keys(gateSpec).join() === "api,repo,brief,label,claimsKey,want,workflow" && gateSpec.api === 1 && gateSpec.repo === "/r" && gateSpec.brief === "/r/brief.md" && gateSpec.label === "pkg" && typeof gateSpec.claimsKey === "string" && gateSpec.claimsKey.length > 0 && JSON.stringify(gateSpec.want) === '["writer","reviewer"]', "the command carries the spec: repo, brief, label, claims key, wanted roles");
     t.ok(!/ZODCHI_PLUGIN_ROOT=/.test(gate[0].prompt), "without args.pluginRoot it does not set the folder");
     t.eq(r.out.pluginCopy, { path: "/plugin/core", commit: "c0ffee", version: "1.0.0-dev", via: "installed_plugins.json, scope user" }, "the result names the plugin copy: path and commit");
     const named = await runWorkflow("core/workflows/code-package.js", { ...CP_ARGS, pluginRoot: "/my/copy/core" }, cpAnswers());

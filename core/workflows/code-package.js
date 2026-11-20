@@ -12,7 +12,8 @@ export const meta = {
 }
 
 // args:
-//   label     short name, also the prefix of gateway keys and the name of the package claim, e.g. "export-csv"
+//   label     short name, also the prefix of gateway keys (<label>-<base7>-<kind>-<n>, with the package base commit in it: a new run of a used label never
+//             meets the keys of an earlier run) and the name of the package claim, e.g. "export-csv"
 //   brief     path of the brief file: goal, files that may change, what "done" means, checks
 //   repo      repository the change is in (absolute path); every command runs from it. It must be a Git work tree:
 //             the protected checks and REVIEW.md are read from the base commit
@@ -61,8 +62,10 @@ export const meta = {
 //
 // result: { label, mode, models, rounds[], write, verdict, approved, openFindings[], verifiedBy, verification, next,
 //           stoppedAt, refused, question, questions, conflicts, claimAdded, outsideRepo, claimLeftOpen, protectedChanged,
-//           checkChanges, notes, boundary, reviewLedger, pluginCopy, choice, effort, closedClaims, unknown }
+//           checkChanges, notes, boundary, reviewLedger, pluginCopy, workflow, choice, effort, closedClaims, unknown }
 //   pluginCopy    always present once the gate ran: { path, commit, version, via }, the plugin copy the helper came from
+//   workflow      always present once the gate ran: { build, copyBuild, copyCommit }, this script's build stamp next to the stamp of the code-package.js of the plugin
+//                 copy and the copy's commit; a script that is not the copy's own is refused at the gate (out.refused says what to do)
 //   choice        which candidate each role took and why: ["writer: claude/sonnet (effort high), the first candidate", ...]
 //   effort        the effort handed to each Claude step of the run ({ writer, reviewer }); a Codex step carries it in its command
 //   closedClaims  the stale claims of other packages the gate closed (a finished package's claim that was left open), each
@@ -166,6 +169,8 @@ const myKeys = [...new Set(myPaths.map(p => p.toLowerCase()))]
 // step's prompt then carries that attempt, its gateway call a base key of its own (<key>-a<attempt>), it runs live,
 // and every step after it too. A rerun that fails the same way names the next attempt, so every resume differs from
 // the one before. Its progress file ends with an "INFRA:" line, and it goes on from there.
+// The claim step comes back from the journal like any other finished step, so a resumed run never runs it again; the claim the stopped run closed
+// ("stopped") is opened again by the helper at its first live call (claim-more), and the base the claim recorded is the package's base.
 // args.rerun: { "<label>": <attempt> }, attempt 2 for the first rerun; a plain list of labels means attempt 2 for each.
 const reruns = Array.isArray(a.rerun) || typeof a.rerun === 'string'
   ? Object.fromEntries([].concat(a.rerun).map(l => [l, 2]))
@@ -296,6 +301,10 @@ let claimFile = `${claimsDir}/${a.label}.json`
 // It prints one line of JSON; its exit code is 0 when that line is the answer, 3 when the copy's api differs from GATE_API, 4 when the copy
 // the session loaded has no helper. The workflow reads the line and decides.
 const GATE_API = 1
+// The stamp of this script (see "The workflow build" in core/scripts/gate.mjs): the first 16 hex digits of the SHA-256 of this file with this
+// line's stamp emptied. The gate sends it to the helper, which stamps the code-package.js of its own plugin copy; a script that is not the copy's
+// own is refused at the gate. After every edit of this file: `node core/scripts/gate.mjs workflow-build core/workflows/code-package.js --write`.
+const WORKFLOW_BUILD = '0625744daf78738a'
 const GATE_BOOT = 'const fs=require(\"fs\"),os=require(\"os\"),path=require(\"path\"),cp=require(\"child_process\");const project=process.argv[1]||\"\";const rest=process.argv.slice(2);const out=(o,c)=>{fs.writeSync(1,JSON.stringify(o)+\"\\n\");process.exit(c)};const rd=f=>{try{return JSON.parse(fs.readFileSync(f,\"utf8\"))}catch(e){return null}};const nm=p=>{const s=path.resolve(p).split(path.sep).join(\"/\");return process.platform===\"linux\"?s:s.toLowerCase()};const pre=n=>n.endsWith(\"/\")?n:n+\"/\";const tried=[];let root=\"\",via=\"\";const fail=(why)=>out({ok:false,api:0,error:why,tried},4);for(const name of [\"ZODCHI_PLUGIN_ROOT\",\"CLAUDE_PLUGIN_ROOT\"]){const env=process.env[name];if(root||!env)continue;const m=rd(path.join(env,\".claude-plugin\",\"plugin.json\"));if(m&&m.name===\"zodchi-core\"){root=env;via=name}else if(name===\"ZODCHI_PLUGIN_ROOT\"){tried.push(env+\" (no zodchi-core manifest)\");fail(\"ZODCHI_PLUGIN_ROOT names no zodchi-core plugin copy: a checkout or another folder is never used instead\")}}if(!root){const reg=rd(path.join(process.env.CLAUDE_CONFIG_DIR||path.join(os.homedir(),\".claude\"),\"plugins\",\"installed_plugins.json\"));const list=(reg&&reg.plugins&&reg.plugins[\"zodchi-core@zodchi\"])||[];const here=pre(nm(project));const own=list.filter(e=>e.projectPath&&here.startsWith(pre(nm(e.projectPath)))).sort((a,b)=>nm(b.projectPath).length-nm(a.projectPath).length);const e=own[0]||list.find(e=>!e.projectPath);if(e&&e.installPath){root=e.installPath;via=\"installed_plugins.json, scope \"+e.scope}}if(!root)fail(\"no zodchi-core plugin copy is registered for the project this session runs in (not installed): update the plugin; a checkout is never used instead\");const ok=fs.existsSync(path.join(root,\"scripts\",\"gate.mjs\"));tried.push(root+(ok?\"\":\" (no scripts/gate.mjs)\"));if(!ok)fail(\"the zodchi-core plugin copy this session loaded (\"+root+\") has no scripts/gate.mjs (an older copy than this workflow): update the plugin; no other copy is tried and a checkout is never used\");const r=cp.spawnSync(process.execPath,[path.join(root,\"scripts\",\"gate.mjs\"),...rest],{stdio:\"inherit\",env:{...process.env,ZODCHI_GATE_VIA:via}});process.exit(r.status===null?5:r.status)'
 // The folder the runner starts in is the project the session runs in: it says which registered plugin copy the session loaded (the Windows form of the path on Git Bash).
 const SESSION_PROJECT = '"$(pwd -W 2>/dev/null || pwd)"'
@@ -365,7 +374,7 @@ phase('Gate')
 // The gate's facts come from one small script of the plugin copy the session loaded (core/scripts/gate.mjs), which prints
 // them as one line of JSON; the runner only runs the command and returns the printed line and the exit code. What the
 // workflow decides from (Git state, dirty list, ignore rule, role table, account, claims) is what the script printed.
-const gateRun = helperRun('code-package', { repo: a.repo, brief: a.brief, label: a.label, claimsKey: claimsName, want: [writerRole, 'reviewer'] })
+const gateRun = helperRun('code-package', { repo: a.repo, brief: a.brief, label: a.label, claimsKey: claimsName, want: [writerRole, 'reviewer'], workflow: { name: 'code-package', build: WORKFLOW_BUILD } })
 const gateAnswer = await step(
   `Run ONE command and return what it printed; change nothing and run nothing else. In the foreground, once:\n${gateRun}\n` +
   `Do not change, split or rerun it with other options. exitCode: its exit code, a number. stdout: everything it printed to standard output, exactly, as one string (it is one line of JSON): ` +
@@ -378,6 +387,19 @@ const gate = gateRead.facts
 // The gate answer must carry the Git state: a missing list is no answer, never a clean work tree.
 if (!Array.isArray(gate.dirty)) { out.stoppedAt = `gate (no dirty list: the Git state is unknown${gate.dirtyError ? `; ${gate.dirtyError}` : ''})`; return out }
 out.pluginCopy = { path: gate.plugin.root, commit: gate.plugin.commit || 'unknown', version: gate.plugin.version || '', via: gate.plugin.via || '' }
+// The script that runs must be the one of the plugin copy whose helper it talks to: a workflow started from a checkout (scriptPath) that is changed
+// on its branch is newer than the copy, and its commands meet a helper that does not know them. The helper stamps the copy's own code-package.js;
+// an older copy that does not report the stamp is a mismatch too.
+const wf = gate.workflow && typeof gate.workflow === 'object' ? gate.workflow : null
+out.workflow = { build: WORKFLOW_BUILD, copyBuild: wf ? String(wf.copyBuild || '') : '', copyCommit: out.pluginCopy.commit }
+if (!wf || wf.match !== true) {
+  out.refused = `This workflow (code-package, build ${WORKFLOW_BUILD}) is not the one of the zodchi-core copy it talks to (${out.pluginCopy.path}, commit ${out.pluginCopy.commit}; ` +
+    (wf ? (wf.copyBuild ? `the code-package.js of the copy is build ${wf.copyBuild}` : 'the copy has no code-package.js') : 'the copy reports no workflow build: it is older than this workflow') +
+    `). A workflow started from a checkout that is changed on its branch, or an old copy, sends commands the helper does not know. ` +
+    `Take the workflow from the copy: pass scriptPath ${out.pluginCopy.path}/workflows/code-package.js, or save \`git show main:core/workflows/code-package.js\` outside the checkout and start that; or run the installer (node install/install.mjs), reload plugins and start again. Nothing was claimed or changed.`
+  out.next = out.refused
+  return out
+}
 const note = (text) => { out.notes = out.notes || []; out.notes.push(text) }
 for (const e of gate.modelsErrors || []) log(`${e}; ignored`)
 if (gate.configError) log(`~/.zodchi/config.json: ${gate.configError}; ignored`)
@@ -438,6 +460,8 @@ const commit = a.commit !== false
 let base = String(gate.head).trim()
 let hasVerifySkill = gate.verifySkill === true
 let hasReviewMd = gate.reviewMd === true
+// The files of the package's earlier rounds (a package that goes on), read from Git between the recorded base and HEAD; body() adds them to the package.
+const earlierPaths = []
 
 // Checks: the cheap ones first (args.checks), then the slow run of the real program (args.verify, else the verify skill).
 // What verified the round is the slowest of these that ran and passed; with none of them, nothing did.
@@ -559,6 +583,12 @@ if (claim && !claim.ok && claim.conflicts.length && claim.conflicts[0] !== 'lock
   claimWritten = true
   claimFile = claim.file
   claimsDir = claim.file.replace(/\/[^/]+$/, '')
+  // A claim this label's earlier run left (open, or closed "stopped" and opened again by the helper) is the claim of the package that goes on: the base commit it
+  // recorded is the package's base, whatever HEAD is now (the earlier rounds' commits are on top of it), and its files are the package's files.
+  const adoptBase = claim.reused === true && /^[0-9a-f]{7,64}$/i.test(String(claim.base || '').trim()) ? String(claim.base).trim() : ''
+  const claimedKeys = new Set((Array.isArray(claim.files) ? claim.files : []).map(f => { try { return key(f) } catch { return '' } }))
+  const sentBase = base
+  if (claim.reopened) note(`The claim of ${a.label} had been closed "stopped" by the earlier run and was opened again; the package goes on from its recorded base ${adoptBase || '(not recorded)'}.`)
   if (claim.reused) log(`Claim of ${a.label}: its open claim from an earlier run is reused (${claim.file})${typeof claim.branchWas === 'string' ? `; its branch ${claim.branchWas || '(none)'} is now ${myBranch}` : ''}`)
   if (a.branch && !sharedBranch) {
     // The switch to args.branch, once the claim is written: a step of its own, so that the claim step only runs the helper.
@@ -578,20 +608,39 @@ if (claim && !claim.ok && claim.conflicts.length && claim.conflicts[0] !== 'lock
     if (!ignored || !ignored.ok) { out.stoppedAt = `ignore .agent-tmp (${ignored ? ignored.summary : 'no result'})`; return out }
     log(`Committed ".agent-tmp/" in .gitignore: ${ignored.summary}`)
   }
-  if (a.branch || needIgnore) {
+  if (a.branch || needIgnore || adoptBase) {
     // The gate read HEAD and the files before the switch to args.branch and before the ignore commit: read them again on the branch the package works on.
+    // A package that goes on takes the base its claim recorded, never HEAD: the earlier rounds' commits lie between them, and the review covers base..HEAD.
+    const at = adoptBase || 'HEAD'
     const now = await step(
       `Read the state of the branch the package works on in ${a.repo}; change nothing. head: \`git rev-parse HEAD\`. branch: \`git branch --show-current\`. ` +
-      `verifySkill: true when \`git cat-file -e HEAD:.claude/skills/verify/SKILL.md\` exits 0. reviewMd: true when \`git cat-file -e HEAD:REVIEW.md\` exits 0. ok is true when the commands ran${a.branch ? ` and branch is ${a.branch}` : ''}.`,
+      `verifySkill: true when \`git cat-file -e ${at}:.claude/skills/verify/SKILL.md\` exits 0. reviewMd: true when \`git cat-file -e ${at}:REVIEW.md\` exits 0. ` +
+      (adoptBase ? `ancestor: true when \`git merge-base --is-ancestor ${adoptBase} HEAD\` exits 0 (the base commit the package recorded is part of this branch). ` +
+        `paths: every path \`git -c core.quotepath=off diff --name-only ${adoptBase} HEAD\` lists, relative to the repository, one entry each ([] when none). ` : '') +
+      `ok is true when the commands ran${a.branch ? ` and branch is ${a.branch}` : ''}.`,
       {
         agentType: 'zodchi-core:runner', label: `base ${a.label}`,
-        schema: { type: 'object', required: ['ok', 'head', 'verifySkill', 'reviewMd'], properties: { ok: { type: 'boolean' }, head: { type: 'string' }, branch: { type: 'string' }, verifySkill: { type: 'boolean' }, reviewMd: { type: 'boolean' }, summary: { type: 'string' } } },
+        schema: { type: 'object', required: ['ok', 'head', 'verifySkill', 'reviewMd'], properties: { ok: { type: 'boolean' }, head: { type: 'string' }, branch: { type: 'string' }, verifySkill: { type: 'boolean' }, reviewMd: { type: 'boolean' }, ancestor: { type: 'boolean' }, paths: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' } } },
       })
     if (!now || !now.ok || !/^[0-9a-f]{7,64}$/i.test(String(now.head || '').trim())) { out.stoppedAt = `base (${now ? now.summary || 'no head' : 'no result'})`; return out }
     base = String(now.head).trim()
+    if (adoptBase) {
+      if (now.ancestor === true) {
+        base = adoptBase
+        // The files the package changed since its base: what Git lists between the base and HEAD, narrowed to the files the claim lists (another package's
+        // commits may lie in between in a shared checkout), in the case Git spells them.
+        for (const f of now.paths || []) { try { const r = rel(f); if (claimedKeys.has(r.toLowerCase()) && !/^\.agent-tmp(\/|$)/i.test(r)) earlierPaths.push(r) } catch {} }
+      } else note(`The base ${adoptBase} that the claim of ${a.label} recorded is not part of the branch now: the package base is its HEAD ${base}, so the review covers only what comes after it.`)
+    }
     hasVerifySkill = now.verifySkill === true
     hasReviewMd = now.reviewMd === true
     verifySource = pickSource()
+  }
+  // The base the claim records must be the one the package works from: read after a switch or an ignore commit it differs from the HEAD the gate saw.
+  const recordedBase = claim.reused === true && claim.base ? String(claim.base).trim() : sentBase
+  if (base !== recordedBase) {
+    const rb = readClaimHelper(await helperStep('claim-base', { dir: claimsSpecDir, label: a.label, base }, `claim base ${a.label}`), 'the claim-base helper')
+    if (!rb.facts || !rb.facts.ok) { out.stoppedAt = `claim base (${rb.facts ? rb.facts.error || rb.facts.conflicts.join(', ') || 'the helper recorded nothing' : rb.error})`; return out }
   }
   try { await body() } catch (e) { if (e && e.unknownStop) return out; throw e }
   if (out.openFindings.length && !out.next) out.next = `The last review left ${out.openFindings.length} finding(s) open (openFindings): close them with the writer, or decide on them.`
@@ -616,7 +665,7 @@ if (claim && !claim.ok && claim.conflicts.length && claim.conflicts[0] !== 'lock
 }
 
 async function body() {
-  const changed = new Set(myPaths.map(abs))
+  const changed = new Set([...myPaths, ...earlierPaths].map(abs))
   const questions = []
   const noteQuestions = (res) => { for (const x of (res && res.questions) || []) if (!questions.includes(x)) questions.push(x); if (questions.length) out.questions = questions }
   // A file the writer reports outside the repository (a smoke test, say) cannot be diffed, attached or committed:
@@ -632,10 +681,20 @@ async function body() {
     out.outsideRepo = outside
   })
   const HANDOVER = ` If your context is running out before the task is done, stop at a clean point (files consistent, the progress file says what is done and what remains, precisely enough for a stranger), and return done false with more true; a fresh agent will go on.`
+  // Where the writer's own output goes: a stray folder in the repository (a logs/ at its root) failed the repository's own checks.
+  const LOGS = `Logs, scratch files, notes and command outputs go only under ${a.tmp} (for example ${a.tmp}/logs), never into the repository: a file there that is not part of the change is not wanted and can fail the repository's own checks. Create no file or folder in ${a.repo} except the files of the change.`
   // One truth about commits, in every prompt that touches the writer's commit state.
   const COMMITS = commit
     ? `The runner commits the package files after passing checks as "${a.label}: round N"; the writer never commits.`
     : `Nothing is committed in this run; the writer never commits.`
+
+  // Every gateway key of this run is built from the label and a part that belongs to the run: the package base commit (short hash), and, when
+  // this run did not start at that base (it goes on after an earlier run of the label, whose commits lie on top of it), the HEAD it started at.
+  // A new run of a label an earlier run already used so gets keys of its own (the gateway refuses a key it knows for another request), and a
+  // resume of the same run gets the same keys (the gate and claim answers come back from the journal, and so do the base and the start).
+  const startHead = String(gate.head).trim()
+  const runPart = base.slice(0, 7) + (startHead.slice(0, 7) !== base.slice(0, 7) ? `-${startHead.slice(0, 7)}` : '')
+  const gwKey = (kind, n) => `${a.label}-${runPart}-${kind}-${n}`
 
   // A long package can outgrow one agent's context. The agent may hand over (more: true) at a clean point, or it may
   // end without a result; either way a fresh agent goes on from the same progress file, up to a.continuations times.
@@ -657,13 +716,13 @@ async function body() {
   let calls = 0
   async function write(job, tag, phaseName, evidence = []) {
     const n = ++calls
-    const task = `${job} ${COMMITS}${sharedBranch ? ` ${SHARED_NOTE}` : ''}${PROTECT}`
+    const task = `${job} ${COMMITS}${sharedBranch ? ` ${SHARED_NOTE}` : ''}${PROTECT} ${LOGS}`
     if (mode === 'expert') {
       const ask = await step(
         `Ask an expert for the code through the gateway. Work from ${a.repo}. Write ${a.tmp}/expert-${n}.md: ${task} ` +
         `The expert has no tools: everything it needs is attached. Then ` +
         gatewayCall({
-          role: 'code-patch', key: `${a.label}-expert-${n}`, label: `${tag} ask`, totalMin: 55, out: `${a.tmp}/expert-${n}.answer.md`,
+          role: 'code-patch', key: gwKey('expert', n), label: `${tag} ask`, totalMin: 55, out: `${a.tmp}/expert-${n}.answer.md`,
           args: `--model ${writer.model} --effort ${writer.effort} --prompt ${q(`${a.tmp}/expert-${n}.md`)}`,
           attach: [a.brief], attachIfExists: [...evidence, ...changed],
         }) + ` ` +
@@ -682,7 +741,7 @@ async function body() {
         `Have Codex do this through the gateway. Work from ${a.repo}. Write ${a.tmp}/work-${n}.md: ${task} ` +
         `Then ` +
         gatewayCall({
-          role: 'package-work', key: `${a.label}-work-${n}`, label: tag, totalMin: 60, out: `${a.tmp}/work-${n}.json`,
+          role: 'package-work', key: gwKey('work', n), label: tag, totalMin: 60, out: `${a.tmp}/work-${n}.json`,
           args: `--model ${writer.model} --effort ${writer.effort} --prompt ${q(`${a.tmp}/work-${n}.md`)}`,
           attach: [a.brief, ...evidence],
         }) + ` The answer is JSON with status, summary, criteria, questions, changedFiles, checks. Map it exactly: ` +
@@ -999,7 +1058,7 @@ async function body() {
         (hasReviewMd ? `Save REVIEW.md as of the base commit: \`git show ${base}:REVIEW.md > ${q(focusFile)}\`; if that fails, do not call the gateway: return gateway "failed" with infra "REVIEW.md export failed: <the error>". ` : '') +
         `Then ` +
         gatewayCall({
-          role: 'code-review', key: `${a.label}-review-${n}`, label: `review ${n}`, totalMin: 55, out: `${a.tmp}/review-${n}.json`,
+          role: 'code-review', key: gwKey('review', n), label: `review ${n}`, totalMin: 55, out: `${a.tmp}/review-${n}.json`,
           args: `--model ${reviewer.model} --effort ${reviewer.effort} --prompt ${q(`${a.tmp}/review-${n}.md`)}`,
           attach: [`${a.tmp}/change-${n}.diff`, a.brief, ...(n > 1 ? [`${a.tmp}/review-${n - 1}.json`] : []), ...(hasReviewMd ? [focusFile] : [])],
           attachIfExists: files,
