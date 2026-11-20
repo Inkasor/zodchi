@@ -7,6 +7,16 @@ checks that judge it.
 
 ## What the workflow does
 
+In agent mode, the workflow waits for each Codex writer job to reach a final
+status before handing its changes to another writer or to checks. A timeout
+or a successful `more` answer allows up to `args.continuations` extra jobs
+per writing step (default 2, or 0 to stop at the first handoff). Every work
+job keeps its thread. The next job uses a new key and resumes the previous
+job's thread. If a timeout left no thread ID, it starts from the uncommitted
+checkout and the previous prompt. The workflow combines the changed files
+reported by all turns. At the limit, `stoppedAt` names the last job. A
+`question` goes to the lead, and an `unknown` outcome waits for a human decision.
+
 1. **Cheap checks first, then the slow run.** After each write the runner
    runs `args.checks` (build, lint, fast tests), then the slow run of the
    real program: the commands in `args.verify`, else the repository's skill

@@ -35,7 +35,9 @@ export const meta = {
 //   allowCheckChanges  optional: the protected paths this package may change (a list, or { "<path>": "<reason>" })
 //   rounds    review rounds at most, default 3 (the stop rule: without approval the package returns to a human)
 //   fixes     how many times a check failure caused by the code goes back to the writer, default 1
-//   continuations  fresh writers that may go on after one ran out of context, default 2
+//   continuations  extra jobs per agent writing step, default 2. Claude hands off at its context limit.
+//             Codex continues a final timeout or a "more" answer under a new key, resuming its kept thread
+//             (from the uncommitted tree alone if the timeout preceded the thread). A question goes to the lead.
 //   branch    optional: Git branch for the package; created from the current HEAD when missing
 //   commit    default true in a Git repository: the runner commits the package's files after each passing
 //             checks run. Nothing is ever pushed
@@ -117,6 +119,11 @@ const gatewayCall = ({ role, key: baseKey, label, args, attach = [], attachIfExi
   const key = n > 1 ? `${baseKey}-a${n}` : baseKey
   const flags = [...attach, ...attachIfExists].map(f => `--attach ${q(f)}`).join(' ')
   const run = `zodchi run --role ${role} --key ${key} ${args}${flags ? ' ' + flags : ''} --wait-sec 540 --out ${q(out)}`
+  const wait = role === 'package-work' ?
+    `While the job is queued or running (exit 3), repeat \`zodchi wait --key <active key> --wait-sec 540 --out ${q(out)}\` in the foreground until final (exit 0 or 2). The gateway enforces the role timeout after queueing and publishes the final status after cleanup. ` :
+    `Wait in the foreground with \`zodchi wait --key <active key> --wait-sec 540 --out ${q(out)}\`, repeated while it exits 3 (still running), until the job is final (exit 0 or 2) or ${totalMin} minutes have passed since the first command, whichever comes first. ` +
+    `If the time runs out, report failure and say the job still runs under its active key. Do not return earlier: nobody else waits on the job. ` +
+    `In this workflow's result that failure is ok false (verdict "missing" for a review). `
   return `Gateway call, base key ${key}. ` +
     (runKeyPrefix ? `Keys of this run all start with ${runKeyPrefix}; count only those. A key without it, its retries and any "UNKNOWN:" line that names it belong to an earlier run of this label: leave them out of every wait, reuse and retry count. ` : '') +
     (n > 1 ? `This is attempt ${n} after an infrastructure failure; earlier attempts used other keys (${baseKey}${n > 2 ? `, ${baseKey}-a2` : ''}${n > 3 ? ' and on' : ''}, with their -r2 and -r3). ` +
@@ -131,9 +138,7 @@ const gatewayCall = ({ role, key: baseKey, label, args, attach = [], attachIfExi
     `The gateway refuses a request over 512 KB (prompt plus attachments). Before every submission, first remove a "Not attached for size" line left by an earlier attempt from the prompt file, then add up the size of the prompt file and of every file you attach. While the sum is over 500 KB and an optional file is still attached${attachIfExists.length ? ` (optional: ${JSON.stringify(attachIfExists)})` : ' (there are none here)'}, drop the largest optional one (required files stay: the request is useless without them) and add its name to one line at the end of the prompt file, "Not attached for size: <names>"; then count again, the prompt included. If the sum is still over 500 KB with no optional file left, do not submit: report that as the infrastructure failure. ` +
     `Never start it in the background (no &, nohup, run_in_background or Monitor): the worker of the job ends with your shell, and a dead worker can leave a paid job with an unknown outcome. ` +
     `The active key is the key of the latest submission: ${key} at first, then ${key}-r2, then ${key}-r3 (at most 2 retries in all). Every wait, \`zodchi job\` and request.json check below uses the active key, after a resume too (the progress file holds the latest key). ` +
-    `Wait in the foreground with \`zodchi wait --key <active key> --wait-sec 540 --out ${q(out)}\`, repeated while it exits 3 (still running), until the job is final (exit 0 or 2) or ${totalMin} minutes have passed since the first command, whichever comes first. ` +
-    `If the time runs out, report failure and say the job still runs under its active key. Do not return earlier: nobody else waits on the job. ` +
-    `In this workflow's result that failure is ok false (verdict "missing" for a review). ` +
+    wait +
     `A job gets a new key only with evidence that the request was never sent: it is final with status "failed" and \`zodchi job --key <active key>\` shows turnRequestedAt and turnStartedAt both null or missing (the gateway never asked for the model turn). ` +
     `Then run the same full command again with --key set to the next key, wait for it the same way, and write each new key into the progress file at once, with that evidence (the two fields and the job's error). ` +
     `A job that is final with status "unknown" never gets a new key and is never waited on again: the request may already have run and used the subscription. Stop at once: ` +
@@ -254,6 +259,12 @@ const REVIEW = {
 // infra is required: a gateway step without it, or without any result, is an infrastructure failure too.
 // gateway is a closed choice, so a note written into the free text can never turn a finished job into a failure.
 const withInfra = (s) => ({ ...s, required: [...s.required, 'gateway', 'infra'], properties: { ...s.properties, gateway: { type: 'string', enum: ['final', 'failed', 'unknown'] }, infra: { type: 'string' }, unknownKey: { type: 'string' } } })
+const WORK_JOB = withInfra({
+  ...WRITE,
+  required: [...WRITE.required, 'jobStatus', 'answerStatus', 'activeKey', 'hasThread'],
+  properties: { ...WRITE.properties, jobStatus: { type: 'string' }, activeKey: { type: 'string' },
+    hasThread: { type: 'boolean' }, answerStatus: { type: 'string', enum: ['', 'done', 'more', 'question', 'blocked'] } },
+})
 const infraBad = (r) => !r || r.gateway !== 'final'
 const INFRA = `gateway: "final" when the gateway created the job and it reached a final status other than "unknown" (any other status), and then infra is "". A job that is final with status "unknown" is gateway "unknown": unknownKey is its key, infra the job's error, and nothing is submitted again. Otherwise gateway is "failed" and infra says what happened, quoting the gateway: ` +
   `it created no job, it refused (for example the repository does not ignore .agent-tmp/, an unknown role, sign-in), every submission died before its turn started, ` +
@@ -317,7 +328,7 @@ const GATE_API = 1
 // The stamp of this script (see "The workflow build" in core/scripts/gate.mjs): the first 16 hex digits of the SHA-256 of this file with this
 // line's stamp emptied. The gate sends it to the helper, which stamps the code-package.js of its own plugin copy; a script that is not the copy's
 // own is refused at the gate. After every edit of this file: `node core/scripts/gate.mjs workflow-build core/workflows/code-package.js --write`.
-const WORKFLOW_BUILD = 'd6a635053e44ab44'
+const WORKFLOW_BUILD = 'f564e145662b32cd'
 const GATE_BOOT = 'const fs=require(\"fs\"),os=require(\"os\"),path=require(\"path\"),cp=require(\"child_process\");const project=process.argv[1]||\"\";const rest=process.argv.slice(2);const out=(o,c)=>{fs.writeSync(1,JSON.stringify(o)+\"\\n\");process.exit(c)};const rd=f=>{try{return JSON.parse(fs.readFileSync(f,\"utf8\"))}catch(e){return null}};const nm=p=>{const s=path.resolve(p).split(path.sep).join(\"/\");return process.platform===\"linux\"?s:s.toLowerCase()};const pre=n=>n.endsWith(\"/\")?n:n+\"/\";const tried=[];let root=\"\",via=\"\";const fail=(why)=>out({ok:false,api:0,error:why,tried},4);for(const name of [\"ZODCHI_PLUGIN_ROOT\",\"CLAUDE_PLUGIN_ROOT\"]){const env=process.env[name];if(root||!env)continue;const m=rd(path.join(env,\".claude-plugin\",\"plugin.json\"));if(m&&m.name===\"zodchi-core\"){root=env;via=name}else if(name===\"ZODCHI_PLUGIN_ROOT\"){tried.push(env+\" (no zodchi-core manifest)\");fail(\"ZODCHI_PLUGIN_ROOT names no zodchi-core plugin copy: a checkout or another folder is never used instead\")}}if(!root){const reg=rd(path.join(process.env.CLAUDE_CONFIG_DIR||path.join(os.homedir(),\".claude\"),\"plugins\",\"installed_plugins.json\"));const list=(reg&&reg.plugins&&reg.plugins[\"zodchi-core@zodchi\"])||[];const here=pre(nm(project));const own=list.filter(e=>e.projectPath&&here.startsWith(pre(nm(e.projectPath)))).sort((a,b)=>nm(b.projectPath).length-nm(a.projectPath).length);const e=own[0]||list.find(e=>!e.projectPath);if(e&&e.installPath){root=e.installPath;via=\"installed_plugins.json, scope \"+e.scope}}if(!root)fail(\"no zodchi-core plugin copy is registered for the project this session runs in (not installed): update the plugin; a checkout is never used instead\");const ok=fs.existsSync(path.join(root,\"scripts\",\"gate.mjs\"));tried.push(root+(ok?\"\":\" (no scripts/gate.mjs)\"));if(!ok)fail(\"the zodchi-core plugin copy this session loaded (\"+root+\") has no scripts/gate.mjs (an older copy than this workflow): update the plugin; no other copy is tried and a checkout is never used\");const r=cp.spawnSync(process.execPath,[path.join(root,\"scripts\",\"gate.mjs\"),...rest],{stdio:\"inherit\",env:{...process.env,ZODCHI_GATE_VIA:via}});process.exit(r.status===null?5:r.status)'
 // The folder the runner starts in is the project the session runs in: it says which registered plugin copy the session loaded (the Windows form of the path on Git Bash).
 const SESSION_PROJECT = '"$(pwd -W 2>/dev/null || pwd)"'
@@ -765,20 +776,44 @@ async function body() {
         { agentType: 'zodchi-core:applier', schema: WRITE, phase: phaseName, label: `${tag} apply` })
     }
     if (writer.provider === 'codex') {
-      const work = await step(
-        `Have Codex do this through the gateway. Work from ${a.repo}. Write ${a.tmp}/work-${n}.md: ${task} ` +
-        `Then ` +
-        gatewayCall({
-          role: 'package-work', key: gwKey('work', n), label: tag, totalMin: 60, out: `${a.tmp}/work-${n}.json`,
-          args: `--model ${writer.model} --effort ${writer.effort} --prompt ${q(`${a.tmp}/work-${n}.md`)}`,
-          attach: [a.brief, ...evidence],
-        }) + ` The answer is JSON with status, summary, criteria, questions, changedFiles, checks. Map it exactly: ` +
-        `done = (status is "done"); summary = its summary; changed = each entry of changedFiles prefixed with "${repoKey}/"; ` +
-        `unverified = every criterion that is not done, as one line each, plus every check with a non-zero exit code; questions = each entry of its questions as one readable line (the question, its options, the recommendation). ` +
-        `If the job did not succeed, done is false and summary says the job status. ${INFRA}`,
-        { agentType: 'zodchi-core:runner', schema: withInfra(WRITE), phase: phaseName, label: `${tag}` })
-      if (infraBad(work)) gatewayStop(tag, work, 'the gateway step returned no result')
-      return work
+      const changedSoFar = new Set()
+      let handoff = '', resume = ''
+      for (let c = 0; ; c++) {
+        const label = c ? `${tag} (cont ${c})` : tag
+        // Keep the continuation kind short enough for a long package label plus attempt and retry suffixes.
+        const key = gwKey(c ? `c${c.toString(36)}` : 'work', n)
+        const file = `${a.tmp}/work-${n}${c ? `-c${c}` : ''}`
+        const work = await step(
+          `Have Codex do this through the gateway. Work from ${a.repo}. Write ${file}.md: ${task} ${handoff}Then ` +
+          gatewayCall({
+            role: 'package-work', key, label, out: `${file}.json`,
+            args: `--keep-thread${resume} --model ${writer.model} --effort ${writer.effort} --prompt ${q(`${file}.md`)}`,
+            attach: [a.brief, ...evidence],
+          }) + ` Copy jobStatus and activeKey from the final job's status and key, and set hasThread from its nonempty threadId. ` +
+          `With no job use empty strings and false. Only a succeeded job delivers an answer. For it, answerStatus is the answer's status, ` +
+          `done = (status is "done"); summary = its summary; changed = each entry of changedFiles prefixed with "${repoKey}/"; ` +
+          `unverified = every criterion that is not done, as one line each, plus every check with a non-zero exit code; questions = each entry of its questions as one readable line (the question, its options, the recommendation). ` +
+          `Otherwise answerStatus is "", done is false, changed and questions are empty, and summary says the job status. ${INFRA}`,
+          { agentType: 'zodchi-core:runner', schema: WORK_JOB, phase: phaseName, label })
+        if (infraBad(work)) gatewayStop(label, work, 'the gateway step returned no result')
+        for (const path of work.changed || []) changedSoFar.add(path)
+        const result = { ...work, changed: [...changedSoFar] }
+        const timeout = work.jobStatus === 'timeout'
+        if (!timeout && !(work.jobStatus === 'succeeded' && work.answerStatus === 'more')) return result
+        if (!(c + 1 <= (a.continuations ?? 2))) {
+          out.stoppedAt = `${tag} (continuations exhausted after ${c}, last job ${work.activeKey}: ${timeout ? 'timeout' : 'more'})`
+          return { ...result, done: false }
+        }
+        // The active submission may be a pre-turn retry or a recovered attempt. Resume that exact job.
+        if (typeof work.activeKey !== 'string' || work.activeKey.replace(/(?:-a\d{1,2})?(?:-r[23])?$/, '') !== key ||
+            typeof work.hasThread !== 'boolean' || (!timeout && !work.hasThread)) {
+          infraFail(label, 'the runner did not identify the final work job and its thread for continuation')
+        }
+        resume = work.hasThread ? ` --resume ${q(work.activeKey)}` : ''
+        handoff = `The previous job ${work.activeKey} ended ${work.jobStatus}${timeout ? ' without an answer' : ` with status more in ${file}.json`}. ` +
+          `Its partial work is uncommitted in this checkout. Read ${a.brief}, the previous prompt ${file}.md${timeout ? '' : ` and answer ${file}.json`}, ` +
+          `inspect git status and git diff, and go on from the tree. Preserve completed work unless it is wrong. Report changedFiles for the whole package so far. `
+      }
     }
     out.effort = { ...out.effort, writer: effortOf(writer).effort || 'the agent default' }
     return continued(task + HANDOVER, { agentType: 'zodchi-core:coder', model: writer.model, ...effortOf(writer), schema: WRITE, phase: phaseName, label: tag })
@@ -867,7 +902,7 @@ async function body() {
 
   // After every write: the claim follows the change, then the protected checks are compared with the base commit.
   async function follow(res, tag, phaseName) {
-    return (await followClaim(res, tag, phaseName)) && (await guard(tag, phaseName))
+    return (await followClaim(res, tag, phaseName)) && (await guard(tag, phaseName)) && !out.stoppedAt
   }
   const GUARD = { type: 'object', required: ['ok', 'summary', 'results'], properties: { ok: { type: 'boolean' }, summary: { type: 'string' },
     results: { type: 'array', items: { type: 'object', required: ['path', 'existedExit', 'diffExit'], properties: { path: { type: 'string' }, existedExit: { type: 'number' }, diffExit: { type: 'number' } } } } } }

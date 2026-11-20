@@ -14,10 +14,11 @@
       "type": "string",
       "enum": [
         "done",
+        "more",
         "question",
         "blocked"
       ],
-      "description": "done: every criterion is done. question: an answer is needed and the work has stopped. blocked: the work cannot go on."
+      "description": "done: every criterion is done. more: a continuation can finish the remaining work without a decision. question: an answer is needed and the work has stopped. blocked: the work cannot go on."
     },
     "summary": {
       "type": "string",
