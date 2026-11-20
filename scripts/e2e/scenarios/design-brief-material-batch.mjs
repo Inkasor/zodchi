@@ -83,21 +83,31 @@ export default function register({ scenario, ROOT, scratch }) {
   const CYRILLIC = "Выгрузка пишет строки по одной и хранит контрольную точку после каждой группы, поэтому прерванный запуск продолжается с последней (см. файл состояния и цикл повторов). ";
   // The workflow takes only a source that is an absolute path inside the repository, so the source carries the scratch path, whose length differs from one machine to another.
   // The claim is cut so that a claim and its source together are always `each` characters: the size of the material does not depend on that length.
-  const factsOf = (sentence, total) => (repo) => {
-    const each = 1000;
-    return Array.from({ length: Math.ceil(total / each) }, (_, i) => {
-      const source = `${repo}/src/export.js:${String(i + 1).padStart(3, "0")}`;
-      const head = `Fact ${String(i).padStart(3, "0")}: `;
-      return { claim: `${head}${sentence.repeat(Math.ceil(each / sentence.length)).slice(0, Math.max(100, each - source.length - head.length))}`.trim(), source };
-    });
+  // On a scratch path longer than about 890 characters a claim keeps its 100-character floor, so a fact grows past `each`; `made.extra` holds that growth
+  // and the size bounds add it, so no assertion depends on the length of the scratch path.
+  const factsOf = (sentence, total) => {
+    const made = (repo) => {
+      const each = 1000;
+      made.extra = 0;
+      return Array.from({ length: Math.ceil(total / each) }, (_, i) => {
+        const source = `${repo}/src/export.js:${String(i + 1).padStart(3, "0")}`;
+        const head = `Fact ${String(i).padStart(3, "0")}: `;
+        const fact = { claim: `${head}${sentence.repeat(Math.ceil(each / sentence.length)).slice(0, Math.max(100, each - source.length - head.length))}`.trim(), source };
+        made.extra += Math.max(0, fact.claim.length + source.length - each);
+        return fact;
+      });
+    };
+    made.extra = 0;
+    return made;
   };
 
   scenario("design-brief-material-batch", "a material of about 56000 characters (Latin or Cyrillic) goes to the helper in at most 3 runners, up to 8 commands each, every part within the b64 cap, and the parts rejoin to the material exactly", async (t) => {
     for (const [what, sentence] of [["Latin", LATIN], ["Cyrillic", CYRILLIC]]) {
-      const r = await run({ facts: factsOf(sentence, 56000) });
+      const facts = factsOf(sentence, 56000);
+      const r = await run({ facts });
       const total = r.parts.reduce((n, c) => n + c.spec.text.length, 0);
-      // A claim and its source are 1000 characters together whatever the scratch path, so the bound does not depend on its length.
-      t.ok(total >= 56000 && total <= 60000, `${what}: the material is about 56000 characters (${total}) in ${r.parts.length} parts`);
+      // A claim and its source are 1000 characters together on any ordinary scratch path; facts.extra adds what a very long path forces past that.
+      t.ok(total >= 56000 && total <= 60000 + facts.extra, `${what}: the material is about 56000 characters (${total}) in ${r.parts.length} parts`);
       t.ok(r.material.length >= 1 && r.material.length <= 3, `${what}: it goes in at most 3 runners (${r.material.length}: ${r.material.map((c) => c.label).join(" | ")})`);
       t.ok(r.material.every((c) => c.opts.agentType === "zodchi-core:runner" && (c.prompt.match(/node -e /g) || []).length <= 8), `${what}: each runner is a Haiku-class runner with at most 8 commands`);
       t.eq(r.material.length, Math.ceil(r.parts.length / 8), `${what}: the runners are the parts divided by 8, rounded up`);
