@@ -242,6 +242,13 @@ export default function register({ scenario, ROOT }) {
   const cut = (n) => (_label, arg) => arg.slice(0, -n);
   const when = (pick, f) => (label, arg, attempt, part) => (pick(label, attempt, part) ? f(label, arg) : undefined);
 
+  /** Every helper command of a prompt (`node -e ... -- "$(pwd -W ...)" <command> '<arg>'`): how many there are, how many read as a command with one single-quoted argument, and those whose argument is not b64:. */
+  const commandsB64 = (prompt) => {
+    const total = (prompt.match(/ -- "\$\(pwd -W/g) || []).length;
+    const found = [...prompt.matchAll(/ -- "\$\(pwd -W 2>\/dev\/null \|\| pwd\)" ([a-z-]+) '((?:[^']|'\\'')*)'(?=\n|$)/gm)].map((m) => ({ command: m[1], arg: m[2] }));
+    return { total, matched: found.length, plain: found.filter((c) => !/^b64:[A-Za-z0-9+/]+={0,2}$/.test(c.arg)) };
+  };
+
   scenario("spec-b64-material-retry", "a material part that arrives damaged (the end of the argument dropped; valid base64 of another text) is sent once more on its own by a fresh runner under its own label while the parts that arrived are not, and the run reaches the review; a part damaged twice stops the run with the usual stop text", async (t) => {
     const clean = await run(() => undefined);
     const n = partsIn(clean.of(/^material /)).length;
@@ -249,7 +256,21 @@ export default function register({ scenario, ROOT }) {
     t.eq(clean.of(/^material /).map((c) => c.label), [`material 1-${n}/${n} db`], "without damage the parts go in one runner, once, under one label");
     t.ok(partsIn(clean.of(/^material /)).every((c) => c.spec.text.length <= 4000), "no part is over 4000 characters");
     t.ok(clean.out.stoppedAt && /^review \(the fake stops here\)/.test(clean.out.stoppedAt) && clean.of(/^review$/).length === 1, `an undamaged run reaches the review (${clean.out.stoppedAt})`);
-    for (const c of clean.calls.filter((x) => / -- "\$\(pwd -W/.test(x.prompt))) t.ok(/ (roles|brief-[a-z]+|review-read) 'b64:[A-Za-z0-9+/]+={0,2}'\n/.test(c.prompt), `${c.label}: the command carries its spec as b64:`);
+    // Every helper command of a prompt carries its spec as b64: a runner of a batch sends several, and one plain-JSON command among them must fail this check.
+    for (const c of clean.calls.filter((x) => / -- "\$\(pwd -W/.test(x.prompt))) {
+      const k = commandsB64(c.prompt);
+      t.ok(k.total > 0 && k.matched === k.total && k.plain.length === 0, `${c.label}: every one of its ${k.total} helper commands carries its spec as b64: (${k.matched} read, plain: ${JSON.stringify(k.plain.map((p) => p.command))})`);
+    }
+    // The check itself: the same batch with one command (the second) typed as plain JSON is not accepted, and neither is one that cannot be read as a command at all.
+    const batch = partsIn(clean.of(/^material /))[1];
+    const batchPrompt = clean.of(/^material /)[0].prompt;
+    const quoted = (text) => `'${text.replace(/'/g, "'\\''")}'`;
+    const oneJson = batchPrompt.replace(` '${batch.arg}'`, () => ` ${quoted(JSON.stringify(batch.spec))}`);
+    t.ok(oneJson !== batchPrompt, "the probe: one command of the batch is rewritten as plain JSON");
+    const probe = commandsB64(oneJson);
+    t.ok(probe.total > 0 && probe.matched === probe.total && probe.plain.length === 1, `a batch with one plain-JSON command fails the check: it is found (plain: ${JSON.stringify(probe.plain.map((p) => p.command))})`);
+    const probe2 = commandsB64(batchPrompt.replace(` '${batch.arg}'`, () => ` "${batch.arg}"`));
+    t.ok(probe2.matched !== probe2.total, "and so does a command whose argument is not one single-quoted word");
 
     // The last characters of the argument dropped, in two ways: a broken length, and a base64 that is valid but of a cut text.
     const second = 2;

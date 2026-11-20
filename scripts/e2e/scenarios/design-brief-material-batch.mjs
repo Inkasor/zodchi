@@ -8,7 +8,6 @@
 // the labels of an unchanged run are the same on every run (a resumed run finds its finished runners in the journal).
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import { spawnSync } from "node:child_process";
@@ -24,11 +23,11 @@ const ROLES = {
   architect: { candidates: [{ provider: "codex", model: "gpt-x", effort: "high" }] },
 };
 
-export default function register({ scenario, ROOT }) {
+export default function register({ scenario, ROOT, scratch }) {
   const GATE = path.join(ROOT, "core", "scripts", "gate.mjs");
   const SRC = fs.readFileSync(path.join(ROOT, "core", "workflows", "design-brief.js"), "utf8");
-  const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), "zodchi-batch-")).replace(/\\/g, "/");
-  process.on("exit", () => { try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch { /* best effort */ } });
+  // Under the suite's own scratch folder, which scripts/e2e.mjs removes at the end: nothing is made in the system temp folder.
+  const SCRATCH = fs.mkdtempSync(path.join(scratch, "batch-")).replace(/\\/g, "/");
   let runs = 0;
   const ioLine = (facts) => { const body = { ok: true, ...facts, api: 1, plugin: PLUGIN }; return { exitCode: 0, stdout: JSON.stringify({ ...body, lineSha256: sha(JSON.stringify(body)) }) + "\n" }; };
 

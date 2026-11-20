@@ -564,6 +564,30 @@ function workflowFacts(spec) {
 // ---------------------------------------------------------------------------------------------------------------
 // Commands
 
+// The id of a run: 8 hex characters (it is part of every gateway key of the run, and a key may hold 96 characters, so it cannot grow), made unique per repository (the claims key)
+// and label. Each id handed out is recorded as an empty file ~/.zodchi/run-ids/<claims key>/<label>.<id> (beside the claims folder, never in it: the claims folder holds claims only), created exclusively (wx: atomic, no lock needed), so an id that
+// was handed out before is drawn again, never repeated. Records older than a year are removed.
+// A folder that cannot be written falls back to an unchecked random id (32 bits).
+const RUN_ID_KEEP_MS = 365 * 24 * 3600 * 1000;
+function allocRunId(spec) {
+  const dir = path.join(claimsHome(), ".zodchi", "run-ids", String(spec.claimsKey || ""));
+  const label = String(spec.label || "").replace(/[^\w.-]/g, "_");
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    try {
+      for (const name of fs.readdirSync(dir)) {
+        const file = path.join(dir, name);
+        try { if (Date.now() - fs.statSync(file).mtimeMs > RUN_ID_KEEP_MS) fs.unlinkSync(file); } catch {}
+      }
+    } catch {}
+    for (let i = 0; i < 100; i++) {
+      const id = randomBytes(4).toString("hex");
+      try { fs.closeSync(fs.openSync(path.join(dir, `${label}.${id}`), "wx")); return id; } catch (e) { if (e.code !== "EEXIST") break; }
+    }
+  } catch {}
+  return randomBytes(4).toString("hex");
+}
+
 function codePackage(spec) {
   for (const k of ["repo", "brief", "label", "claimsKey"]) if (!spec[k]) print({ ok: false, api: API, error: `spec.${k} is missing` }, 2);
   const repo = String(spec.repo);
@@ -595,7 +619,7 @@ function codePackage(spec) {
     claims: claimFacts(spec, repo, dirtyKeys, Boolean(workflow && !workflow.match)),
     workflow,
     // One id per call of the gate, so per run: the workflow takes the gateway keys of the run from it. The gate answer is journaled, so a resume of the run has the same id; a new run asks again and gets another.
-    runId: randomBytes(4).toString("hex"),
+    runId: allocRunId(spec),
   };
 }
 

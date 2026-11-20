@@ -1371,7 +1371,7 @@ function build() {
 {
   const dir = path.join(ROOT, "scripts", "e2e", "scenarios");
   const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith(".mjs")).sort() : [];
-  const helpers = { scenario, world, repo, prompt, zodchi, run, ZODCHI, serve, admin, user, finished, flowWorld, gitOut, blobOf, samePath, ROOT, FAKE, FAKE_FLOW, STUB };
+  const helpers = { scenario, world, repo, prompt, zodchi, run, ZODCHI, serve, admin, user, finished, flowWorld, gitOut, blobOf, samePath, ROOT, FAKE, FAKE_FLOW, STUB, scratch };
   for (const f of files) (await import(pathToFileURL(path.join(dir, f)).href)).default(helpers);
 }
 
