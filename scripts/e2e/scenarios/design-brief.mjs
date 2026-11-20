@@ -299,7 +299,7 @@ export default function register({ scenario, ROOT }) {
     const writerless = await run({ gate: { roles: { ...ROLES, writer: { candidates: [{ provider: "codex", model: "gpt-y", effort: "high" }] } } } });
     t.ok(/^gate \(no writer\)/.test(writerless.out.stoppedAt) && writerless.calls.length === 1, "a writer role without a Claude candidate is refused");
     const other = await run({ args: { gatewayRepo: "/g" } });
-    t.ok(other.of(/^gate /)[0].prompt.includes('"repo":"/g"') && other.of(/^review$/)[0].prompt.includes(["run it in the foreground from /g", ","].join("")), "args.gatewayRepo moves the gateway to another repository");
+    t.ok(other.of(/^gate /)[0].prompt.includes('"repo":"/g"') && other.of(/^review$/)[0].prompt.includes("run it in the foreground from /g only when"), "args.gatewayRepo moves the gateway to another repository");
     const dflt = r.of(/^gate /)[0].prompt;
     t.ok(/ roles '\{"api":1,"want":\["writer","architect"\],"repo":"\/r"\}'/.test(dflt), "by default the gateway runs from the first repository");
   });

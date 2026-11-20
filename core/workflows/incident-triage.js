@@ -151,13 +151,13 @@ const gatewayCall = ({ role, key, args, attach = [], out, totalMin, repo }) => {
   const run = `zodchi run --role ${q(role)} --key ${key} ${args}${flags ? ' ' + flags : ''} --wait-sec 540 --out ${q(out)}`
   return `Gateway call, base key ${key}. ` +
     `First look in the progress file for a submission of this call: if it records ${key}, ${key}-r2 or ${key}-r3, the latest of them is the active key: wait on it as below and do not run the submit command. Only with none, submit under ${key}. ` +
-    `The submit command (run it in the foreground from ${repo}, and only when that check found no submission): \`${run}\`. ` +
+    `The submit command (run it in the foreground from ${repo} only when the rule above calls for a submission): \`${run}\`. ` +
     `Never start it in the background (no &, nohup, run_in_background or Monitor): the worker of the job ends with your shell, and a dead worker can leave a paid job with an unknown outcome. ` +
     `The active key is the key of the latest submission: ${key} at first, then ${key}-r2, then ${key}-r3 (at most 2 retries in all). Every wait, \`zodchi job\` and request.json check below uses the active key, after a resume too (the progress file holds the latest key). ` +
     `Wait in the foreground with \`zodchi wait --key <active key> --wait-sec 540 --out ${q(out)}\`, repeated while it exits 3 (still running), until the job is final (exit 0 or 2) or ${totalMin} minutes have passed since the first command, whichever comes first. ` +
     `If the time runs out, report failure and say the job still runs under its active key. Do not return earlier: nobody else waits on the job. ` +
     `In this workflow's result that failure is ok false. ` +
-    `A job gets a new key only with evidence that the request was never sent: it is final with status "failed" and \`zodchi job --key <active key>\` shows turnRequestedAt and turnStartedAt both null or missing (the gateway never asked for the model turn). ` +
+    `For retries within this step, including a plain resume, apply these rules to the active job. A job gets a new key only with evidence that the request was never sent: it is final with status "failed" and \`zodchi job --key <active key>\` shows turnRequestedAt and turnStartedAt both null or missing (the gateway never asked for the model turn). ` +
     `Then run the same full command again with --key set to the next key, wait for it the same way, and write each new key into the progress file at once, with that evidence (the two fields and the job's error). ` +
     `A job that is final with status "unknown" never gets a new key and is never waited on again: the request may already have run and used the subscription. Stop at once: ` +
     `write the line "UNKNOWN: key <active key>: <the job's error>" to the progress file as its last line instead of DONE, and ${UNKNOWN_RETURN}. ` +
