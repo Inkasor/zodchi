@@ -62,3 +62,6 @@ the owner stop a release for it?
   force one step to run live; making it do so is a runtime change); the gate comparing the copy's file with a content
   stamp embedded in the running script rather than a hash of the loaded source or its Git commit (the script cannot
   read itself; the e2e check of a stale stamp is what keeps the stamp honest).
+- nit for the code-package gate (2026-11-20, owner decision): a new workflow run against an older helper copy closing
+  stale claims of finished packages before it refuses the mismatch (that cleanup is the gate's normal work on every
+  run and touches only claims of finished packages).
