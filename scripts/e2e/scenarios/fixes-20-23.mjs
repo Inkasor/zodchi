@@ -84,8 +84,17 @@ export default function register({ scenario, ROOT }) {
     // claim-base records the base a package really starts from
     const cb = gate(t, "claim-base", { dir, label: "pkg", base: "5555555" }, home).json;
     t.eq([cb.ok, readClaim(dir, "pkg").base], [true, "5555555"], "claim-base sets the base of the open claim");
+    closeClaim(dir, "pkg", "done");
+    t.eq([gate(t, "claim-base", { dir, label: "pkg", base: "6666666" }, home).json.ok, readClaim(dir, "pkg").base], [false, "5555555"], "and changes nothing of a claim closed done");
+    // a claim closed 'stopped' (the run stopped at claim-base itself) is opened again by claim-base, under the rule claim-more uses
     closeClaim(dir, "pkg", "stopped");
-    t.eq(gate(t, "claim-base", { dir, label: "pkg", base: "6666666" }, home).json.ok, false, "and changes nothing of a closed one");
+    const re = gate(t, "claim-base", { dir, label: "pkg", base: "7777777" }, home).json;
+    t.eq([re.ok, re.reopened, readClaim(dir, "pkg").status, readClaim(dir, "pkg").base, "closedAt" in readClaim(dir, "pkg")], [true, true, "open", "7777777", false], "claim-base opens a stopped claim of the label again and records the base");
+    closeClaim(dir, "pkg", "stopped");
+    gate(t, "claim", claimSpec(dir, "rival", readClaim(dir, "pkg").files), home);
+    const no = gate(t, "claim-base", { dir, label: "pkg", base: "8888888" }, home).json;
+    t.ok(no.ok === false && no.conflicts.length === 1 && no.conflicts[0].startsWith("rival: "), `but not over another open claim's files (${JSON.stringify(no.conflicts)})`);
+    t.eq([readClaim(dir, "pkg").status, readClaim(dir, "pkg").base], ["stopped", "7777777"], "the claim stays closed and keeps its base");
   });
 
   // ---------------------------------------------------------------------------------------- the workflow, run as Claude Code runs it
@@ -157,6 +166,77 @@ export default function register({ scenario, ROOT }) {
     });
     t.eq([resumed.error, resumed.out && resumed.out.stoppedAt, resumed.out && resumed.out.approved], [null, undefined, true], "the resumed run goes on to approval (before: 'has no open claim')");
     t.eq([readClaim(dir, "pkg").status, readClaim(dir, "pkg").files.includes("src/b.js")], ["open", true], "its claim is open again and holds the new file");
+  });
+
+  scenario("fixes-resume-stopped-at-claim-base", "a run that stops at claim-base (after a switch to args.branch) and whose claim is closed 'stopped' for real resumes with its earlier claim answer replayed: claim-base opens the claim again and the run goes on", async (t) => {
+    const home = scratch(t, "claimbase"), dir = `${home}/.zodchi/packages/-r`;
+    const repo = `${home}/repo`;
+    fs.mkdirSync(repo, { recursive: true });
+    spawnSync("git", ["-C", repo, "init", "-q"]);
+    const real = (prompt) => {
+      const m = commandsIn(prompt, "claim|claim-more|claim-base")[0];
+      const spec = { ...m.spec, ...(m.spec.repo === "/r" ? { repo } : {}) };
+      const r = spawnSync(process.execPath, ["-e", BOOT, "--", home, m.command, encodeSpec(spec)], { encoding: "utf8", env: { ...process.env, HOME: home, USERPROFILE: home, ZODCHI_PLUGIN_ROOT: path.join(ROOT, "core"), CLAUDE_PLUGIN_ROOT: "" } });
+      t.log(`runner: gate.mjs ${m.command}: exit ${r.status}\n${r.stdout}${r.stderr}`);
+      return { exitCode: r.status, stdout: r.stdout, error: (r.stderr || "").slice(0, 300) };
+    };
+    const onBranch = { "switch pkg": { ok: true, summary: "ok" }, "base pkg": { ok: true, head: "ccccccc", branch: "feat", verifySkill: false, reviewMd: false } };
+    // the first run: the claim is written for real, the claim-base step fails (a transient error), the workflow stops and closes the claim 'stopped'
+    const first = await run({ ...onBranch, "claim pkg": real, "claim base pkg": line({ ok: false, conflicts: [], error: "lock busy" }) }, { branch: "feat" });
+    t.ok(/^claim base/.test(String(first.out && first.out.stoppedAt)), `the first run stops at claim-base (${first.out && first.out.stoppedAt})`);
+    t.eq([readClaim(dir, "pkg").status, readClaim(dir, "pkg").base], ["open", "abc1234"], "the claim was written at the base the gate saw");
+    closeClaim(dir, "pkg", "stopped");
+    // the resume: the claim step comes back from the journal (its old answer), claim-base is the first live helper call
+    const journaled = line({ ok: true, conflicts: [], branchConflicts: [], reused: false, files: ["src/a.js"], file: `${dir}/pkg.json`, base: "abc1234" });
+    const resumed = await run({ ...onBranch, "claim pkg": journaled, "claim base pkg": real, "claim more write pkg": real }, { branch: "feat" });
+    t.eq([resumed.error, resumed.out && resumed.out.stoppedAt, resumed.out && resumed.out.approved], [null, undefined, true], "the resumed run goes on to approval (before: 'has no open claim')");
+    t.eq([readClaim(dir, "pkg").status, readClaim(dir, "pkg").base], ["open", "ccccccc"], "its claim is open again and records the base of the branch");
+  });
+
+  scenario("fixes-continuation-needs-path-list", "a continuation that adopts a recorded base needs the base step's path list as an array: a missing or non-array list stops the run before the writer (infrastructure failure, with the reason), a valid empty array still means no earlier files", async (t) => {
+    const ORIGINAL = "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", HEAD = "2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const claimed = line({ ok: true, conflicts: [], branchConflicts: [], reused: true, reopened: true, files: ["src/a.js", "src/old.js"], file: "/h/.zodchi/packages/-r/pkg.json", base: ORIGINAL });
+    const go = (basePkg) => run({ "claim pkg": claimed, "base pkg": { ok: true, head: HEAD, branch: "main", verifySkill: false, reviewMd: false, ancestor: true, ...basePkg } }, { models: { writer: { candidates: [{ provider: "claude", model: "sonnet" }] }, reviewer: { candidates: [{ provider: "claude", model: "opus" }] } } }, { gate: { head: HEAD } });
+    for (const [what, given] of [["missing", {}], ["not an array", { paths: "src/old.js" }], ["null", { paths: null }]]) {
+      const r = await go(given);
+      const msg = String(r.error && r.error.message);
+      t.ok(r.error && /Infrastructure failure at step "base pkg"/.test(msg) && /"paths"/.test(msg) && msg.includes(ORIGINAL), `a ${what} list is an infrastructure failure at the base step that says so (${msg.slice(0, 200)})`);
+      t.eq([r.of(/^write pkg$/).length, r.of(/^review /).length, r.of(/^commit /).length], [0, 0, 0], `a ${what} list: nothing is written, reviewed or committed`);
+    }
+    const empty = await go({ paths: [] });
+    t.eq([String(empty.error), empty.out && empty.out.approved], ["null", true], "an empty array is valid: the run goes on");
+    t.ok(!JSON.parse(empty.of(/^review 1$/)[0].prompt.match(/for these paths: (\[.*?\])\./)[1]).includes("src/old.js"), "and the earlier files are none");
+    // a fresh run (no recorded base) never needs the list
+    const fresh = await run({ "base pkg": { ok: true, head: "ccccccc", branch: "feat", verifySkill: false, reviewMd: false }, "switch pkg": { ok: true, summary: "ok" } }, { branch: "feat" });
+    t.eq(fresh.out && fresh.out.approved, true, "a run that adopts no base needs no list");
+  });
+
+  scenario("fixes-mismatched-run-closes-no-claim", "a run refused as mismatched (another workflow build than the plugin copy's) closes no other package's stale claim; the same gate call with the matching build still closes it", async (t) => {
+    const home = scratch(t, "mismatch"), repo = `${home}/repo`;
+    fs.mkdirSync(repo);
+    const git = (...a) => spawnSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", ...a], { encoding: "utf8" });
+    git("init", "-q", "-b", "main");
+    fs.writeFileSync(`${repo}/f1.txt`, "base\n");
+    fs.writeFileSync(`${repo}/.gitignore`, ".agent-tmp/\n");
+    git("add", "-A"); git("commit", "-q", "-m", "base");
+    const base = git("rev-parse", "HEAD").stdout.trim();
+    fs.writeFileSync(`${repo}/f1.txt`, "done work\n");
+    git("commit", "-q", "-a", "-m", "done: round 1");
+    const dir = `${home}/.zodchi/packages/k`;
+    fs.mkdirSync(dir, { recursive: true });
+    const old = new Date(Date.now() - 10 * 3600 * 1000);
+    fs.writeFileSync(`${dir}/done.json`, JSON.stringify({ label: "done", status: "open", files: ["f1.txt"], branch: "main", base }));
+    fs.utimesSync(`${dir}/done.json`, old, old);
+    const brief = `${home}/brief.md`;
+    fs.writeFileSync(brief, "## Review boundary\nx\n");
+    const ask = (build) => gate(t, "code-package", { repo, brief, label: "mine", claimsKey: "k", want: [], workflow: { name: "code-package", build } }, home).json;
+    const bad = ask("0123456789abcdef");
+    t.eq([bad.workflow.match, bad.claims.closed, bad.claims.open.map((c) => c.label)], [false, [], ["done"]], "a mismatched run closes nothing and the claim is still listed open");
+    t.ok(bad.claims.notes.some((n) => /not examined for closing/.test(n) && /refused/.test(n)), `and the answer says why (${JSON.stringify(bad.claims.notes)})`);
+    t.eq(readClaim(dir, "done").status, "open", "the claim file is untouched");
+    const good = ask(BUILD);
+    t.eq([good.workflow.match, good.claims.closed.map((c) => c.label)], [true, ["done"]], "with the matching build the same stale claim is closed");
+    t.eq(readClaim(dir, "done").status, "closed", "on disk too");
   });
 
   scenario("fixes-gateway-keys-per-run", "the gateway keys carry the package base commit and an id of the run the helper allocates: two runs of one label never share a key, not even at one base and HEAD; a resume of one run builds the same keys", async (t) => {
