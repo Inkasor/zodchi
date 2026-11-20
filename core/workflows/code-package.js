@@ -90,6 +90,10 @@ export const meta = {
 const a = args || {}
 for (const k of ['label', 'brief', 'repo', 'files', 'tmp']) if (!a[k]) throw new Error(`code-package needs args.${k}`)
 if (!/^[\w.-]+$/.test(a.label)) throw new Error('args.label may hold letters, digits, ".", "_" and "-" only')
+// A gateway key is <label>-<base7>-<run8>-<kind>-<n>, with -a<attempt> and -r<retry> after it: at most 34 characters beside the label
+// (kind up to 6, n and attempt up to 2 digits). The gateway refuses a key over 96 characters, so a longer label is refused here, before anything starts.
+const MAX_LABEL = 60
+if (a.label.length > MAX_LABEL) throw new Error(`args.label is ${a.label.length} characters long, over the ${MAX_LABEL} the gateway keys allow (a key is the label plus about 34 characters and the gateway accepts 96): give the package a shorter label`)
 const mode = a.mode || 'agent'
 if (!['agent', 'expert'].includes(mode)) throw new Error('args.mode is "agent" or "expert"')
 const rounds = a.rounds || 3
@@ -103,12 +107,16 @@ const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`
 // label: the step's label. A rerun after an infrastructure failure (attempt 2 and on) submits under a base key of its
 // own, <key>-a<attempt>: its prompt differs, and the earlier keys end in a final job that gave no usable result. Only an
 // earlier job that is still running is waited on instead.
+// The key prefix of this run (<label>-<base7>-<run8>-), set once the gate has allocated the run id; a gateway call carries it so a progress file
+// left by an earlier run of the same label and tmp folder is not mistaken for this run's submission.
+let runKeyPrefix = ''
 const gatewayCall = ({ role, key: baseKey, label, args, attach = [], attachIfExists = [], out, totalMin, repo = a.repo }) => {
   const n = attempt(label)
   const key = n > 1 ? `${baseKey}-a${n}` : baseKey
   const flags = [...attach, ...attachIfExists].map(f => `--attach ${q(f)}`).join(' ')
   const run = `zodchi run --role ${role} --key ${key} ${args}${flags ? ' ' + flags : ''} --wait-sec 540 --out ${q(out)}`
   return `Gateway call, base key ${key}. ` +
+    (runKeyPrefix ? `Keys of this run all start with ${runKeyPrefix}. A key in the progress file that does not start with it (nor an "UNKNOWN:" line or retry that names such a key) belongs to an earlier run of this label: ignore it, never wait on it, reuse it or count its retries, and submit under ${key}. ` : '') +
     (n > 1 ? `This is attempt ${n} after an infrastructure failure; earlier attempts used other keys (${baseKey}${n > 2 ? `, ${baseKey}-a2` : ''}${n > 3 ? ' and on' : ''}, with their -r2 and -r3). ` +
       `Unless the progress file already records a key that starts with ${key}: take the latest key it records for this call; if \`zodchi job --key <that key>\` shows the job not final yet, it is the active key: wait on it as below instead of submitting; if it then dies before its turn (the rule below), the next submission is ${key}, not a suffix of that key. ` +
       `Otherwise (it is final, whatever its status, or there is none) never wait on it or reuse it: submit under ${key}. ` : '') +
@@ -304,7 +312,7 @@ const GATE_API = 1
 // The stamp of this script (see "The workflow build" in core/scripts/gate.mjs): the first 16 hex digits of the SHA-256 of this file with this
 // line's stamp emptied. The gate sends it to the helper, which stamps the code-package.js of its own plugin copy; a script that is not the copy's
 // own is refused at the gate. After every edit of this file: `node core/scripts/gate.mjs workflow-build core/workflows/code-package.js --write`.
-const WORKFLOW_BUILD = '835320ac6ef85af7'
+const WORKFLOW_BUILD = '10ed0c9681499228'
 const GATE_BOOT = 'const fs=require(\"fs\"),os=require(\"os\"),path=require(\"path\"),cp=require(\"child_process\");const project=process.argv[1]||\"\";const rest=process.argv.slice(2);const out=(o,c)=>{fs.writeSync(1,JSON.stringify(o)+\"\\n\");process.exit(c)};const rd=f=>{try{return JSON.parse(fs.readFileSync(f,\"utf8\"))}catch(e){return null}};const nm=p=>{const s=path.resolve(p).split(path.sep).join(\"/\");return process.platform===\"linux\"?s:s.toLowerCase()};const pre=n=>n.endsWith(\"/\")?n:n+\"/\";const tried=[];let root=\"\",via=\"\";const fail=(why)=>out({ok:false,api:0,error:why,tried},4);for(const name of [\"ZODCHI_PLUGIN_ROOT\",\"CLAUDE_PLUGIN_ROOT\"]){const env=process.env[name];if(root||!env)continue;const m=rd(path.join(env,\".claude-plugin\",\"plugin.json\"));if(m&&m.name===\"zodchi-core\"){root=env;via=name}else if(name===\"ZODCHI_PLUGIN_ROOT\"){tried.push(env+\" (no zodchi-core manifest)\");fail(\"ZODCHI_PLUGIN_ROOT names no zodchi-core plugin copy: a checkout or another folder is never used instead\")}}if(!root){const reg=rd(path.join(process.env.CLAUDE_CONFIG_DIR||path.join(os.homedir(),\".claude\"),\"plugins\",\"installed_plugins.json\"));const list=(reg&&reg.plugins&&reg.plugins[\"zodchi-core@zodchi\"])||[];const here=pre(nm(project));const own=list.filter(e=>e.projectPath&&here.startsWith(pre(nm(e.projectPath)))).sort((a,b)=>nm(b.projectPath).length-nm(a.projectPath).length);const e=own[0]||list.find(e=>!e.projectPath);if(e&&e.installPath){root=e.installPath;via=\"installed_plugins.json, scope \"+e.scope}}if(!root)fail(\"no zodchi-core plugin copy is registered for the project this session runs in (not installed): update the plugin; a checkout is never used instead\");const ok=fs.existsSync(path.join(root,\"scripts\",\"gate.mjs\"));tried.push(root+(ok?\"\":\" (no scripts/gate.mjs)\"));if(!ok)fail(\"the zodchi-core plugin copy this session loaded (\"+root+\") has no scripts/gate.mjs (an older copy than this workflow): update the plugin; no other copy is tried and a checkout is never used\");const r=cp.spawnSync(process.execPath,[path.join(root,\"scripts\",\"gate.mjs\"),...rest],{stdio:\"inherit\",env:{...process.env,ZODCHI_GATE_VIA:via}});process.exit(r.status===null?5:r.status)'
 // The folder the runner starts in is the project the session runs in: it says which registered plugin copy the session loaded (the Windows form of the path on Git Bash).
 const SESSION_PROJECT = '"$(pwd -W 2>/dev/null || pwd)"'
@@ -703,6 +711,7 @@ async function body() {
   // (the gateway refuses a key it knows for another request, or hands back the old job), even at the same base and HEAD; a resume of the same run gets the same keys
   // (the gate and claim answers come back from the journal, and so do the run id and the base).
   const runPart = `${base.slice(0, 7)}-${gate.runId}`
+  runKeyPrefix = `${a.label}-${runPart}-`
   const gwKey = (kind, n) => `${a.label}-${runPart}-${kind}-${n}`
 
   // A long package can outgrow one agent's context. The agent may hand over (more: true) at a clean point, or it may
@@ -946,7 +955,8 @@ async function body() {
     const paths = [...changed].map(rel)
     const res = await step(
       `Commit the package's files in ${a.repo}; never push. The package paths, relative to the repository: ${JSON.stringify(paths)}.\n` +
-      `1. For each path that exists, or that Git tracks and is now deleted, run \`git add -A -- <path>\`; skip a path that is neither.\n` +
+      `1. Narrow the package paths to "those paths": keep a path that exists in the work tree, or that \`git ls-files -- <path>\` prints (the index), or for which \`git cat-file -e HEAD:<path>\` exits 0 (tracked and now deleted). ` +
+      `Drop every other path (the old side of a rename, or a file deleted in an earlier round of a continuation, already committed): \`git commit\` rejects a pathspec that matches nothing. For each of those paths run \`git add -A -- <path>\`. If those paths are none, return ok true with summary "nothing to commit".\n` +
       `2. If \`git diff --cached --quiet -- <those paths>\` says nothing changed, return ok true with summary "nothing to commit".\n` +
       `3. Otherwise run \`git commit -m ${q(`${a.label}: round ${n}`)} -m ${q(out.verification.stamp)} -- <those paths>\` (the paths after -- limit the commit to them; other staged files stay staged and out of it).\n` +
       `4. Run \`git show --name-only --format= HEAD\`: every listed file must be one of the package paths. ok is true only then. summary: the commit hash. paths: the listed files.\n` +
