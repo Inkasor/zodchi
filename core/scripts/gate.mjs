@@ -258,7 +258,7 @@ function withLock(dir, fn, { waitMs = 120000, staleMs = 600000 } = {}) {
   try { return { locked: true, value: fn() }; } finally { try { fs.rmdirSync(lock); } catch {} }
 }
 
-function claimFacts(spec, repo, dirtyKeys) {
+function claimFacts(spec, repo, dirtyKeys, refused) {
   const dir = path.join(claimsHome(), ".zodchi", "packages", String(spec.claimsKey || ""));
   const answer = { dir: norm(dir), open: [], closed: [], kept: [], skipped: [], notes: [] };
   if (!spec.claimsKey) { answer.notes.push("no claims key given"); return answer; }
@@ -271,8 +271,10 @@ function claimFacts(spec, repo, dirtyKeys) {
   const others = first.claims.filter((e) => e.claim.status === "open" && e.label !== spec.label).map((e) => ({ ...e, dir }));
   const stale = [];
   // Without a dirty list nothing is known about anybody's files: no claim is closed, and the answer says so.
-  if (!dirtyKeys && others.length) answer.notes.push("open claims were not examined for closing: the dirty list of the repository is unknown");
-  for (const e of dirtyKeys ? others : []) {
+  // A run the workflow refuses as another build changes nothing: no claim is closed either.
+  if (refused && others.length) answer.notes.push("open claims were not examined for closing: the run is refused, its workflow is not the one of the plugin copy");
+  else if (!dirtyKeys && others.length) answer.notes.push("open claims were not examined for closing: the dirty list of the repository is unknown");
+  for (const e of dirtyKeys && !refused ? others : []) {
     const why = whyKept(repo, e, dirtyKeys, defBranch, staleMs);
     if (why) answer.kept.push(`${e.label}: ${why}`); else stale.push(e);
   }
@@ -464,6 +466,23 @@ function claimMoreCmd(spec) {
   return { ...base, conflicts: done.busy ? ["lock busy"] : [], error: done.why };
 }
 
+// The run that stopped closed its claim "stopped"; the package that goes on (a resume, where the claim step comes back from the journal and
+// is not run again) finds it closed here. The claim of this label, closed "stopped", is opened again once no other open claim lists one of its files.
+// Called under the lock of the claims folder, by claim-more and claim-base alike.
+function reopenStopped(spec, dir, file) {
+  let own = readJson(file).value;
+  const stopped = Boolean(own && typeof own === "object" && own.label === spec.label && own.status === "stopped");
+  if (!stopped) return { own, reopened: false };
+  const taken = new Map();
+  for (const o of [...othersOpen(dir, spec.label), ...(legacyDirOf(spec) ? othersOpen(legacyDirOf(spec), spec.label) : [])]) for (const f of o.files) if (!taken.has(f)) taken.set(f, o.label);
+  const clash = keysOf(own.files).filter((f) => taken.has(f)).map((f) => `${taken.get(f)}: ${f}`);
+  if (clash.length) return { refused: { conflicts: clash, error: `${spec.label} was closed "stopped" and another open claim now lists its files: ${clash.join(", ")}` } };
+  const { closedAt, awaiting, ...rest } = own;
+  own = { ...rest, status: "open", reopenedAt: stamp() };
+  writeClaim(file, own);
+  return { own, reopened: true };
+}
+
 function claimMoreFromGit(spec) {
   needFields(spec, ["dir", "label", "repo"], []);
   const dir = claimsDirOf(spec);
@@ -472,21 +491,9 @@ function claimMoreFromGit(spec) {
   const st = dirtyList(spec.repo);
   if (st.error) return { ...base, error: st.error, gitError: true };
   const done = withLock(dir, () => {
-    let own = readJson(file).value;
-    // The run that stopped closed its claim "stopped"; the package that goes on (a resume, where the claim step comes back from the journal and
-    // is not run again) finds it closed here. The claim of this label, closed "stopped", is opened again once no other open claim lists one of its files.
-    let reopened = false;
-    const stopped = Boolean(own && typeof own === "object" && own.label === spec.label && own.status === "stopped");
-    if (stopped) {
-      const taken = new Map();
-      for (const o of [...othersOpen(dir, spec.label), ...(legacyDirOf(spec) ? othersOpen(legacyDirOf(spec), spec.label) : [])]) for (const f of o.files) if (!taken.has(f)) taken.set(f, o.label);
-      const clash = keysOf(own.files).filter((f) => taken.has(f)).map((f) => `${taken.get(f)}: ${f}`);
-      if (clash.length) return { ...base, conflicts: clash, error: `${spec.label} was closed "stopped" and another open claim now lists its files: ${clash.join(", ")}` };
-      const { closedAt, awaiting, ...rest } = own;
-      own = { ...rest, status: "open", reopenedAt: stamp() };
-      writeClaim(file, own);
-      reopened = true;
-    }
+    const re = reopenStopped(spec, dir, file);
+    if (re.refused) return { ...base, ...re.refused };
+    const own = re.own, reopened = re.reopened;
     if (!own || typeof own !== "object" || own.label !== spec.label || own.status !== "open") return { ...base, error: `${spec.label} has no open claim at ${norm(file)}` };
     const atGate = new Set(keysOf(own.atGate));
     const seen = new Map();
@@ -512,7 +519,7 @@ function claimMoreFromGit(spec) {
 
 // claim-base: { dir, label, base }. Sets "base" of the open claim of label to base (a commit hash): the workflow reads the base of the branch
 // the package works on after the claim is written (a switch to args.branch, an ignore commit), and a continuation of the package takes it back
-// from the claim. Only an open claim of that label is changed.
+// from the claim. Only an open claim of that label is changed (a claim of that label closed "stopped" is opened again first, as claim-more does).
 function claimBaseCmd(spec) {
   needFields(spec, ["dir", "label", "base"], []);
   const dir = claimsDirOf(spec);
@@ -520,10 +527,13 @@ function claimBaseCmd(spec) {
   const base = { ok: false, api: API, plugin: pluginCopy(), conflicts: [], file: norm(file) };
   if (!/^[0-9a-f]{7,64}$/i.test(spec.base)) return { ...base, error: "spec.base is not a commit hash" };
   const done = withLock(dir, () => {
-    const own = readJson(file).value;
+    // A resume replays the claim answer and may reach this step with the claim closed "stopped": it is opened again as claim-more does.
+    const re = reopenStopped(spec, dir, file);
+    if (re.refused) return { ...base, ...re.refused };
+    const own = re.own;
     if (!own || typeof own !== "object" || own.label !== spec.label || own.status !== "open") return { ...base, error: `${spec.label} has no open claim at ${norm(file)}` };
     if (own.base !== spec.base) writeClaim(file, { ...own, base: spec.base });
-    return { ...base, ok: true, base: spec.base };
+    return { ...base, ok: true, base: spec.base, ...(re.reopened ? { reopened: true } : {}) };
   }, { waitMs: lockWait(spec), staleMs: null });
   if (done.locked) return done.value;
   return { ...base, conflicts: done.busy ? ["lock busy"] : [], error: done.why };
@@ -571,6 +581,8 @@ function codePackage(spec) {
   const cfgFile = path.join(os.homedir(), ".zodchi", "config.json");
   const cfg = readJson(cfgFile);
   const dirtyKeys = inside && dirty ? new Set(dirty.map((f) => norm(f).toLowerCase())) : null;
+  // The workflow match comes first: a run refused as mismatched closes no other package's claim.
+  const workflow = workflowFacts(spec);
   return {
     ok: true, api: API, plugin: pluginCopy(),
     roles: m.roles, modelsErrors: m.errors, account: acc.account, accountError: acc.accountError,
@@ -579,8 +591,8 @@ function codePackage(spec) {
     verifySkill: exists(".claude/skills/verify/SKILL.md"), reviewMd: exists("REVIEW.md"),
     config: cfg.value && typeof cfg.value === "object" ? cfg.value : {}, configError: cfg.error || "",
     boundary: boundaryOf(String(spec.brief)),
-    claims: claimFacts(spec, repo, dirtyKeys),
-    workflow: workflowFacts(spec),
+    claims: claimFacts(spec, repo, dirtyKeys, Boolean(workflow && !workflow.match)),
+    workflow,
     // One id per call of the gate, so per run: the workflow takes the gateway keys of the run from it. The gate answer is journaled, so a resume of the run has the same id; a new run asks again and gets another.
     runId: randomBytes(4).toString("hex"),
   };
