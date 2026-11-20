@@ -134,9 +134,12 @@ export default function register({ scenario, ROOT }) {
     t.eq(approvedBy(exp({ at: "x", old: [1], new: [2] }), childDiff), null, "(2) an expectation at x does not approve the diff of the element x[0]");
     t.eq(approvedBy(exp({ at: "x", old: [1], new: [1, 2] }), parentDiff), "e1", "(2) an expectation at x with both arrays approves the array diff");
 
-    const markerTracker = C.createTracker([{ id: "m1", scenario: "s", step: "s1", at: "x", oldAbsent: true, new: MARKER }], "s");
-    const m = [markerTracker.apply(diffs({}, { x: MARKER }), "s1"), markerTracker.apply(diffs({ x: MARKER }, {}), "s2"), markerTracker.apply(diffs({ x: MARKER }, { x: 1 }), "s3")].map((r) => r[0].approved);
+    // Each case on a fresh tracker at the expectation's own step, so only the presence flags and values can tell them apart.
+    const m1 = () => C.createTracker([{ id: "m1", scenario: "s", step: "s1", at: "x", oldAbsent: true, new: MARKER }], "s");
+    const m = [m1().apply(diffs({}, { x: MARKER }), "s1"), m1().apply(diffs({ x: MARKER }, {}), "s1"), m1().apply(diffs({ x: MARKER }, { x: 1 }), "s1")].map((r) => r[0].approved);
     t.eq(m, ["m1", null, null], "(3) { oldAbsent: true, new: marker } approves only absent-to-marker, not marker-to-absent nor marker-to-1");
+    const m2same = ["s1", "s1"].map((st, k) => C.createTracker([{ id: "m7", scenario: "s", step: "s1", at: "x", old: MARKER, new: 1 }], "s").apply(k ? diffs({ x: MARKER }, { x: 1 }) : diffs({}, { x: MARKER }), st)[0].approved);
+    t.eq(m2same, [null, "m7"], "(3) at the same step, marker-to-1 approves marker-to-1 and not absent-to-marker");
     const markerTracker2 = C.createTracker(
       [{ id: "m2", scenario: "s", step: "s2", at: "x", old: MARKER, new: 1 }, { id: "m3", scenario: "s", step: "s1", at: "x", old: MARKER, new: 1 }, { id: "m4", scenario: "s", step: "s3", at: "x", old: MARKER, new: 1 }],
       "s",
@@ -170,8 +173,9 @@ export default function register({ scenario, ROOT }) {
     t.eq(C.createTracker([], "s").apply([], "A"), [], "(5) a tracker with no expectation approves nothing and returns an empty list for an empty step");
     t.eq(C.createTracker(undefined, "s").unused(), [], "(5) no expectations at all is allowed");
 
-    const oldWide = { extra: 0 };
-    const newWide = { extra: 1 };
+    // The unapproved key sorts after every k.. key, so it is the 61st diff, past the display cap of 50.
+    const oldWide = { zz: 0 };
+    const newWide = { zz: 1 };
     const wideExp = [];
     for (let i = 0; i < 60; i++) {
       oldWide[`k${String(i).padStart(2, "0")}`] = 0;
@@ -182,7 +186,9 @@ export default function register({ scenario, ROOT }) {
     const wideAll = wideTracker.apply(diffs(oldWide, newWide), "A");
     const sum = C.summarizeDiffs(wideAll);
     t.eq([wideAll.length, sum.shown.length, sum.more], [61, 50, 11], "(6) 61 diffs: the display shows 50 and says 11 more");
-    t.eq(C.unapproved(wideAll).map((d) => d.path), ["extra"], "(6) the unapproved diff beyond the cap is still found in the full output");
+    t.eq(wideAll[60].path, "zz", "(6) the unapproved diff is the 61st, past the cap");
+    t.ok(!sum.shown.some((d) => d.path === "zz"), "(6) the display does not show it");
+    t.eq(C.unapproved(wideAll).map((d) => d.path), ["zz"], "(6) the unapproved diff beyond the cap is still found in the full output");
     t.eq(wideTracker.unused(), [], "(6) every expectation was used although the display cut the list");
     t.eq(C.summarizeDiffs(wideAll, 3).shown.length, 3, "(6) the cap is a parameter");
     const base = { path: "p", old: 1, new: 2, oldAbsent: false, newAbsent: false, step: "s1" };
