@@ -184,7 +184,7 @@ export default function register({ scenario, ROOT }) {
   async function run(damage, opts = {}) {
     const oldHelperLine = opts.oldHelperLine;
     const lose = opts.lose;
-    const disk = `${SCRATCH}/run-${++runs}`;
+    const disk = `${SCRATCH}/run-${String(++runs).padStart(3, "0")}`;
     const repo = `${disk}/repo`;
     fs.mkdirSync(repo, { recursive: true });
     const args = { label: "db", goal: "Make the export resumable, because a cut run loses an hour.", repos: [repo], questions: ["How is the export written?"], out: `${repo}/.agent-tmp/db/brief.md`, tmp: `${repo}/.agent-tmp/db${opts.tmpTail || ""}` };
@@ -404,7 +404,7 @@ export default function register({ scenario, ROOT }) {
   const errorLine = (error) => JSON.stringify({ ok: false, api: 1, error });
   /** One workflow run to its first helper answer: every agent call is answered with the given runner result. */
   async function runFirst(name, answer, extra = {}) {
-    const dir = `${SCRATCH}/first-${++runs}`;
+    const dir = `${SCRATCH}/first-${String(++runs).padStart(3, "0")}`;
     fs.mkdirSync(dir, { recursive: true });
     const ARGS = {
       "code-package": { label: "pkg", brief: `${dir}/brief.md`, repo: dir, files: ["src/a.js"], tmp: `${dir}/.agent-tmp/pkg`, checks: ["node t.js"], models: { writer: { candidates: [{ provider: "claude", model: "sonnet" }] }, reviewer: { candidates: [{ provider: "claude", model: "opus" }] } } },

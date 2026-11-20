@@ -54,7 +54,7 @@ export const meta = {
 // brief's hash and headings, the screen of the brief, the cited lines, the review request (prompt, facts, excerpts, frame, schema, role)
 // and the review's answer. The workflow's own material for the request (goal, questions, facts, unknowns) grows with the research, so it
 // goes to the helper in parts of at most MATERIAL_PART characters, one brief-material command each, whose whole b64: argument is at most MATERIAL_ARG_MAX
-// characters: no command a runner types grows without bound or past what it copies reliably, and one runner sends a batch of up to MATERIAL_BATCH parts, so
+// characters: no command a runner types grows without bound or past the size meant to keep its copy reliable, and one runner sends a batch of up to MATERIAL_BATCH parts, so
 // the runner count does not follow the research. A runner only runs
 // the helper commands it is given, one after another, and returns the line each printed; the workflow checks each line (its lineSha256) and decides. No file content passes through a model but the brief the writer drafts and the review the gateway writes.
 const a = args || {}
@@ -517,7 +517,7 @@ const materialText = JSON.stringify(material)
 // allows (MATERIAL_ARG_MAX), up to that, so in practice they are about 2700 characters of Latin and fewer of Cyrillic or escaped text; the runner count follows the number of parts
 // divided by MATERIAL_BATCH, not the research part by part.
 const MATERIAL_PART = 4000
-// The parts one runner sends: eight b64: arguments of at most MATERIAL_ARG_MAX characters each are a prompt a runner types reliably.
+// The parts one runner sends. The 4000-character cap on each argument is meant to keep a batch of eight short enough to copy; the e2e scenarios check the sizes, not how well a model copies.
 const MATERIAL_BATCH = 8
 const materialParts = []
 // A part is cut so that the whole brief-material spec (api, the actual review folder, the part counters at their largest, and the part's text, which
