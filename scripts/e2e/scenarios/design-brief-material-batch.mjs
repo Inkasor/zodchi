@@ -81,17 +81,23 @@ export default function register({ scenario, ROOT, scratch }) {
   // A fact of the research: a claim of a few sentences and a cited line. Latin, or Cyrillic (two bytes a letter, so a part of 4000 characters is the heaviest ordinary one).
   const LATIN = "The export writes the rows one by one and keeps a checkpoint after each group, so a cut run starts from the last one (see the state file and the retry loop). ";
   const CYRILLIC = "Выгрузка пишет строки по одной и хранит контрольную точку после каждой группы, поэтому прерванный запуск продолжается с последней (см. файл состояния и цикл повторов). ";
+  // The workflow takes only a source that is an absolute path inside the repository, so the source carries the scratch path, whose length differs from one machine to another.
+  // The claim is cut so that a claim and its source together are always `each` characters: the size of the material does not depend on that length.
   const factsOf = (sentence, total) => (repo) => {
     const each = 1000;
-    return Array.from({ length: Math.ceil(total / each) }, (_, i) => ({ claim: `Fact ${i}: ${sentence.repeat(Math.ceil(each / sentence.length)).slice(0, each)}`.trim(), source: `${repo}/src/export.js:${i + 1}` }));
+    return Array.from({ length: Math.ceil(total / each) }, (_, i) => {
+      const source = `${repo}/src/export.js:${String(i + 1).padStart(3, "0")}`;
+      const head = `Fact ${String(i).padStart(3, "0")}: `;
+      return { claim: `${head}${sentence.repeat(Math.ceil(each / sentence.length)).slice(0, Math.max(100, each - source.length - head.length))}`.trim(), source };
+    });
   };
 
   scenario("design-brief-material-batch", "a material of about 56000 characters (Latin or Cyrillic) goes to the helper in at most 3 runners, up to 8 commands each, every part within the b64 cap, and the parts rejoin to the material exactly", async (t) => {
     for (const [what, sentence] of [["Latin", LATIN], ["Cyrillic", CYRILLIC]]) {
       const r = await run({ facts: factsOf(sentence, 56000) });
       const total = r.parts.reduce((n, c) => n + c.spec.text.length, 0);
-      // The material carries the scratch paths, which are longer on CI runners: the upper bound leaves room for them.
-      t.ok(total >= 56000 && total <= 72000, `${what}: the material is about 56000 characters (${total}) in ${r.parts.length} parts`);
+      // A claim and its source are 1000 characters together whatever the scratch path, so the bound does not depend on its length.
+      t.ok(total >= 56000 && total <= 60000, `${what}: the material is about 56000 characters (${total}) in ${r.parts.length} parts`);
       t.ok(r.material.length >= 1 && r.material.length <= 3, `${what}: it goes in at most 3 runners (${r.material.length}: ${r.material.map((c) => c.label).join(" | ")})`);
       t.ok(r.material.every((c) => c.opts.agentType === "zodchi-core:runner" && (c.prompt.match(/node -e /g) || []).length <= 8), `${what}: each runner is a Haiku-class runner with at most 8 commands`);
       t.eq(r.material.length, Math.ceil(r.parts.length / 8), `${what}: the runners are the parts divided by 8, rounded up`);

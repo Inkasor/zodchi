@@ -189,6 +189,8 @@ export default function register({ scenario, ROOT }) {
     fs.mkdirSync(repo, { recursive: true });
     const args = { label: "db", goal: "Make the export resumable, because a cut run loses an hour.", repos: [repo], questions: ["How is the export written?"], out: `${repo}/.agent-tmp/db/brief.md`, tmp: `${repo}/.agent-tmp/db${opts.tmpTail || ""}` };
     const calls = [];
+    // How every material prompt is typed, checked before the fake damages an argument or loses the answer: a resend is a prompt like the first batch.
+    const encoding = [];
     const reviewDir = `${args.tmp}/review`;
     const ioLine = (facts) => { const body = { ok: true, ...facts, api: 1, plugin: PLUGIN }; return { exitCode: 0, stdout: JSON.stringify({ ...body, lineSha256: sha(JSON.stringify(body)) }) + "\n" }; };
     // Long claims, so that the material is several parts.
@@ -205,6 +207,7 @@ export default function register({ scenario, ROOT }) {
         if (label === "inspect draft db") return ioLine({ exists: true, sha256: sha(BRIEF), bytes: BRIEF.length, firstLine: MARK, headings: HEADINGS });
         if (/^material /.test(label)) {
           // One runner, several commands one after another: one answer for each, in order. damage(label, argument, attempt, part) types the argument of a part.
+          encoding.push({ label, ...commandsB64(prompt) });
           if (lose && lose(label)) return null;
           const cmds = commandsIn(prompt, "brief-material");
           if (!cmds.length) throw new Error(`${label}: no brief-material command in the prompt`);
@@ -230,7 +233,7 @@ export default function register({ scenario, ROOT }) {
     };
     const fn = vm.runInNewContext(`(async () => {\n${SRC().replace(/^export const meta/, "const meta")}\n})`, sandbox, { filename: "design-brief.js" });
     const out = await fn();
-    return { out, calls, of: (re) => calls.filter((c) => re.test(c.label)) };
+    return { out, calls, encoding, of: (re) => calls.filter((c) => re.test(c.label)) };
   }
   /** The spec a prompt's brief-material command carries, decoded. */
   const specOf = (arg) => JSON.parse(Buffer.from(arg.slice(4), "base64").toString("utf8"));
@@ -248,6 +251,9 @@ export default function register({ scenario, ROOT }) {
     const found = [...prompt.matchAll(/ -- "\$\(pwd -W 2>\/dev\/null \|\| pwd\)" ([a-z-]+) '((?:[^']|'\\'')*)'(?=\n|$)/gm)].map((m) => ({ command: m[1], arg: m[2] }));
     return { total, matched: found.length, plain: found.filter((c) => !/^b64:[A-Za-z0-9+/]+={0,2}$/.test(c.arg)) };
   };
+
+  /** Every material prompt of a run (the batches and the resends) has every helper command read as a command with a b64: argument. */
+  const everyPromptB64 = (t, r, what) => t.ok(r.encoding.length > 0 && r.encoding.every((k) => k.total > 0 && k.matched === k.total && k.plain.length === 0), `${what}: every helper command of every material prompt, resends included, carries its spec as b64: (${r.encoding.map((k) => `${k.label}: ${k.matched}/${k.total}, plain ${k.plain.length}`).join("; ")})`);
 
   scenario("spec-b64-material-retry", "a material part that arrives damaged (the end of the argument dropped; valid base64 of another text) is sent once more on its own by a fresh runner under its own label while the parts that arrived are not, and the run reaches the review; a part damaged twice stops the run with the usual stop text", async (t) => {
     const clean = await run(() => undefined);
@@ -283,6 +289,7 @@ export default function register({ scenario, ROOT }) {
     ]) {
       const r = await run(when(pickSecond, damage));
       const runners = r.of(/^material /);
+      everyPromptB64(t, r, name);
       t.ok(r.out.stoppedAt && /^review \(the fake stops here\)/.test(r.out.stoppedAt) && r.of(/^review$/).length === 1 && r.of(/^preflight /).length === 1, `${name}: the run reaches the review (${r.out.stoppedAt})`);
       t.eq(runners.map((c) => c.label), [`material 1-${n}/${n} db`, `material ${second}/${n} again db`], `${name}: one runner for the batch, then one more for the damaged part, under a label of its own`);
       t.eq(partsIn(runners.slice(1)).map((c) => c.spec.part), [second], `${name}: only the damaged part is sent again`);
@@ -290,22 +297,31 @@ export default function register({ scenario, ROOT }) {
     }
     // The text of a part changed but still a valid spec: the helper takes it, the hash of what it got is not the part's.
     const altered = await run(when(pickSecond, (_l, arg) => changed(arg)));
+    everyPromptB64(t, altered, "a part with another text");
     t.ok(/^review \(the fake stops here\)/.test(altered.out.stoppedAt || "") && altered.of(/^material .* again /).length === 1, `a part whose hash differs is sent again and the run reaches the review (${altered.out.stoppedAt})`);
 
     // Both attempts damaged: the run stops, with the stop text it had.
     const twice = await run((_label, arg, _attempt, part) => (part === second ? arg.slice(0, -3) : undefined));
+    everyPromptB64(t, twice, "a part damaged twice");
     t.ok(/^review \(part 2 of the material was not written: the material helper \(part 2\): /.test(twice.out.stoppedAt || ""), `a part damaged twice stops the run (${twice.out.stoppedAt})`);
     t.ok(twice.of(/^preflight /).length === 0 && twice.of(/^review$/).length === 0, "nothing was preflighted or sent to the gateway");
     t.eq(partsIn(twice.of(/^material /)).filter((c) => c.spec.part === second).length, 2, "the part was sent twice, not more");
     t.eq(twice.of(/^material /).length, 2, "two runners: the batch and the one that sent the damaged part again");
     const hash = await run((_label, arg, _attempt, part) => (part === second ? changed(arg) : undefined));
+    everyPromptB64(t, hash, "a part with a wrong hash twice");
     t.ok(/^review \(part 2 of the material did not reach the helper exactly \(its sha256 differs\)\)/.test(hash.out.stoppedAt || "") && hash.of(/^review$/).length === 0, `a part whose hash differs twice stops the run with the hash text (${hash.out.stoppedAt})`);
     // A fault in the first part is reported first, as before.
     const both = await run((_label, arg, _attempt, part) => (part <= 2 ? arg.slice(0, -3) : undefined));
+    everyPromptB64(t, both, "two parts damaged");
     t.ok(/^review \(part 1 of the material was not written/.test(both.out.stoppedAt || ""), "when several parts fail twice, the first is named");
     t.eq(both.of(/^material /).map((c) => c.label), [`material 1-${n}/${n} db`, `material 1-2/${n} again db`], "the damaged parts of a batch go together in one fresh runner, the part that arrived is not sent again");
     // A runner that returned nothing at all (the whole batch failed): every part of it is sent again, by one fresh runner, and the run goes on.
     const lost = await run(() => undefined, { lose: (label) => label === `material 1-${n}/${n} db` });
+    everyPromptB64(t, lost, "a batch that returned nothing, sent again whole");
+    // The whole-batch resend is checked as a prompt of its own: one plain-JSON command in it fails the check, as in the first batch.
+    const resend = lost.of(/^material .* again /)[0].prompt, resendCmd = partsIn(lost.of(/^material .* again /))[1];
+    const resendPlain = commandsB64(resend.replace(` '${resendCmd.arg}'`, () => ` ${quoted(JSON.stringify(resendCmd.spec))}`));
+    t.ok(resendPlain.total > 0 && resendPlain.plain.length === 1, `a whole-batch resend with one plain-JSON command fails the check (plain: ${JSON.stringify(resendPlain.plain.map((p) => p.command))})`);
     t.ok(/^review \(the fake stops here\)/.test(lost.out.stoppedAt || "") && lost.of(/^material /).map((c) => c.label).join() === `material 1-${n}/${n} db,material 1-${n}/${n} again db`, `a batch that returned no result is sent again whole and the run reaches the review (${lost.out.stoppedAt}; ${lost.of(/^material /).map((c) => c.label)})`);
   });
 
