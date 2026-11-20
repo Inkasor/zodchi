@@ -20,7 +20,7 @@
 //                  its open claim, so that a continuation of the package keeps that base
 //   workflow-build maintenance: `node gate.mjs workflow-build <workflow file> [--write]` prints the build stamp of a workflow file
 //                  (see "The workflow build" below); --write puts it into the file's WORKFLOW_BUILD line
-//   incident-open, incident-collect, incident-publish, incident-fail, incident-unlock, brief-inspect, brief-material, brief-preflight,
+//   incident-open, incident-collect, incident-publish, incident-fail, incident-unlock, brief-inspect, brief-manifest, brief-preflight,
 //   review-read
 //                  the file work of incident-triage and design-brief, in io.mjs beside this file (see its header): every file
 //                  those workflows read or write goes through these commands, never through a model. Their answers carry
@@ -683,7 +683,7 @@ function roles(spec) {
 }
 
 // The file commands live in io.mjs beside this file, loaded only for them: the gate commands need nothing but this file.
-const IO = ["incident-open", "incident-collect", "incident-publish", "incident-fail", "incident-unlock", "brief-inspect", "brief-material", "brief-preflight", "review-read"];
+const IO = ["incident-open", "incident-collect", "incident-publish", "incident-fail", "incident-unlock", "brief-inspect", "brief-manifest", "brief-preflight", "review-read"];
 const COMMANDS = { "code-package": codePackage, "branch-review": branchReview, ledger, plugin, roles, claim: claimCmd, "claim-more": claimMoreCmd, "claim-base": claimBaseCmd };
 const [command, specText] = process.argv.slice(2);
 if (command === "workflow-build") {

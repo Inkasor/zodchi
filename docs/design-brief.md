@@ -1,6 +1,6 @@
 # Design brief
 
-`design-brief` takes a goal to a brief that `code-package` can run. Researchers read the repositories and return facts
+`design-brief` takes a goal to a brief that `code-package` can run. Researchers read the repositories and record facts
 with their sources, one writer drafts the brief and checks every fact it relies on, an independent reviewer judges the
 brief through the gateway, and the writer fixes it once. Today a lead writes every brief by hand and reads the
 repositories itself; nobody checks the design before `code-package` spends a writer and up to three review rounds on it.
@@ -47,31 +47,24 @@ args: {
 
 ## What runs where
 
-The researchers, the writer and the reviewer are models; every other file step is a command of the helper of the loaded
-plugin copy (`core/scripts/gate.mjs` hands `brief-inspect`, `brief-material`, `brief-preflight` and `review-read` to
-`core/scripts/io.mjs`). A runner (the cheap model) only runs the helper commands it is given (one, or for the material a batch of them
-one after another) and returns the one JSON line each printed; the workflow checks each against the `lineSha256` printed with it
-and decides from its fields. No file content passes
-through a model: the brief is written by the writer and read back by the helper as its hash, size, first line and
-headings; the review request (prompt, facts, excerpts) is written by the helper; the review's answer is read by the
-helper as its hash and its parsed verdict and findings (at most 40 findings, each text capped at 800 characters; the
-writer of the fix reads the whole file). The workflow's own material for the request (the goal, the questions, the facts
-and the unknowns) grows with the research, so it never travels in one command: its JSON text is cut into parts of at most
-4000 characters (the most `brief-material` takes) and whose whole `b64:` argument is at most 4000 characters (`MATERIAL_ARG_MAX`; see
-below), each written by one `brief-material` command and checked by its hash, and
-`brief-preflight` joins the parts and checks the whole hash before it uses them. One runner sends a batch of up to 8 parts, one
-command after another, and returns each command's line, so the number of runners is the number of parts divided by 8, rounded up (a
-material of about 56000 characters of Latin text is about 20 to 24 parts and 3 runners; Cyrillic text makes more, smaller parts), not one runner per part. The commands of a batch
-are independent: the runner is told to run every one in order and to return an answer for each, also after one of them failed. Every helper command carries its spec as `b64:` and the base64 of the
-spec's UTF-8 JSON text (`gate.mjs` also takes plain JSON), so a runner that retypes the command has no quote, backslash or
-brace to "repair". The `b64:` argument is used up to 12000 characters (`B64_MAX`, the same in the four workflows); a longer spec
-(for instance a long Russian incident report, which base64 makes about 2.7 times longer) goes as the plain JSON it always was,
-so no command is longer than before. The `brief-material` argument is held to a much smaller cap, 4000 characters (`MATERIAL_ARG_MAX`, the whole `b64:` argument): a runner of the cheap model copies a 12000-character word unreliably (a real run lost the tail of one, and the batch stopped). A material part is cut by the size of its whole spec (the actual review folder, the part counters and the text, which the spec escapes once more), so it is at most 4000 characters and, to keep the argument within its cap, about 2700 characters of Latin text or fewer (Cyrillic, escaped or four-byte characters, and a long folder name, make a part shorter): every part goes as `b64:`, and a folder name so long that no room is left stops the run before anything is sent. A part that arrives damaged, failed or unanswered (no JSON line, an answer with `ok: false`, a hash that differs, or no receipt) is sent once more ALONE by a fresh runner, one runner per part, never as a batch again (the parts that arrived
-exactly are not sent again, and a batch whose runner returned nothing sends each of its parts again, alone); only a second failure stops the run.
+The workflow assigns one slot per question in question order, starting at 1. Each researcher writes its own
+UTF-8 JSON file at `<tmp>/facts/<slot>.json`. It reports the path, the number of facts and the SHA-256 of the
+exact file bytes. The file holds `{ facts: [{ claim, source }], unknowns: [string] }`.
 
-A zodchi-core copy older than the workflow (for instance one picked with `args.pluginRoot`) reads plain JSON only and answers a `b64:` spec with `the spec is not JSON` and exit 2. When the workflow sent `b64:`, every helper reader of the four workflows turns exactly that answer into a stop: "the zodchi-core copy at <path> is older than this workflow (it does not read b64: specs): rerun the installer, reload plugins, or pass args.pluginRoot of a current copy". There is no fallback to plain JSON. Without `args.pluginRoot` the old helper does not name its copy, so the stop says "the zodchi-core copy this session loaded".
+The helper in `core/scripts/io.mjs` owns the manifest under `<tmp>/manifest/`. Its header, `input/entry.json`, binds
+the goal, ordered questions and file hints, repositories and disclosure settings to a single SHA-256.
+The workflow sends those inputs to `brief-manifest` in one base64 argument of at most 4000 characters. It
+stops before research if the argument exceeds that limit and resends once if it cannot verify the response.
+The helper checks the input digest before creating the run folders.
+Runners carry receipt metadata and helper summaries. The workflow verifies the helper's `lineSha256`
+before using its slot statuses, reasons, totals and manifest hash.
 
-A zodchi-core copy older than the workflow (for instance one picked with `args.pluginRoot`) reads plain JSON only and answers a `b64:` spec with `the spec is not JSON` and exit 2. When the workflow sent `b64:`, every helper reader of the four workflows turns exactly that answer into a stop: "the zodchi-core copy at <path> is older than this workflow (it does not read b64: specs): rerun the installer, reload plugins, or pass args.pluginRoot of a current copy". There is no fallback to plain JSON. Without `args.pluginRoot` the old helper does not name its copy, so the stop says "the zodchi-core copy this session loaded".
+For each accepted slot the helper publishes an immutable `<slot>/entry.json` receipt in the manifest folder. The manifest
+hash covers the input digest and all receipts in question order, including empty positions in a partial run.
+On resume the helper hashes the live files. Accepted slots are reused. A missing or rejected receipt sends only
+that question back to research. A second rejection stops the invocation. If accepted bytes changed or vanished,
+restore the accepted bytes or choose a fresh run folder. Changing the questions or run settings also requires
+a fresh folder.
 
 ## The stages
 
@@ -80,15 +73,15 @@ A zodchi-core copy older than the workflow (for instance one picked with `args.p
    first Claude candidate of the role `writer`. The reviewer is the first Codex candidate of the role `architect`. When
    there is none (no limit left, not connected, a role table with Claude only) the run is refused before any agent is
    spent: a review that does not go through the gateway is not independent of the writer, so there is no fallback.
-2. **Facts.** One researcher per question, in parallel, on the cheap model, read-only. A researcher changes no file,
-   starts no program of the project, calls no product API, contacts no server and names a variable or a file instead of
-   printing a secret value. It uses git only as `git --no-optional-locks log|show|diff|grep` (a plain `git status` refreshes
-   and writes the index); the planner that proposes the questions is a plain read-only agent without a progress file.
-   Questions are redacted once, before any prompt, file or result. (The runtime has no read-only switch for an agent: the
-   limit is the prompt and the check of the facts.) It returns `{ facts: [{ claim, source }], unknowns }`, with `source` as
-   `<absolute path>:<line>`. The workflow keeps a fact only when its source is inside `repos` and is not a file that holds
-   secrets by its name (`.env`, key and credential files), redacts token-shaped values in the claims, and drops repeats.
-3. **Draft.** One writer writes the brief to `out`. It reads each repository's `AGENTS.md` or `CLAUDE.md`, verifies every
+2. **Facts.** A read-only planner proposes questions when none were supplied. The workflow redacts the goal and
+   questions before sharing them. Researchers work in parallel on the cheap model and write only their assigned
+   slot. Each reads the repository using read-only commands, including `git --no-optional-locks log|show|diff|grep`.
+   The helper checks the assigned path, file type, UTF-8 JSON schema, raw fact count and byte digest. It drops
+   citations outside the allowed repositories, citations without a line or line range, and secret-file references.
+   It reports the drop count, redacts secret-shaped values and deduplicates claims with the same source. When
+   every slot is accepted it writes `<tmp>/facts.json` with the original repository paths for local verification.
+3. **Draft.** One writer reads the assembled facts and unknowns from that file and writes the brief to `out`.
+   It reads each repository's `AGENTS.md` or `CLAUDE.md` and verifies every
    fact it relies on by reading the cited file (a fact that does not hold is not used and is reported), cuts the scope to
    one package and says what is left for later, and lists the **owner decisions** apart, each with a marked default,
    instead of inventing an answer. A runner then checks that the file exists, starts with the workflow's line and has a
@@ -99,9 +92,9 @@ A zodchi-core copy older than the workflow (for instance one picked with `args.p
    reads the brief and the lines the facts cite and screens the brief: a brief that holds a secret-shaped value (in a
    public repository also a machine path) is not sent and nothing is written for the gateway, and the run stops naming the
    lines (not the values) for you to correct. The screening mode is never defaulted: the helper refuses a command without
-   `publicRepo` (true or false) and names the mode it used, and the workflow stops when that is not its own. Its material
-   is written only into the review folder: a `material` folder that is a link or junction leading elsewhere is refused.
-   The brief, the facts
+   `publicRepo` (true or false) and names the mode it used, and the workflow stops when that is not its own. Preflight verifies the complete manifest hash, re-reads each slot against its
+   accepted receipt and checks that the assembled facts still match the digest given to the writer. Only then
+   does it produce the review request in `<tmp>/review/`. The brief, the screened facts
    file and one excerpts file are attached: the cited lines with three lines around them, redacted, never a whole source
    file. With `publicRepo` the facts, excerpts and prompt show `<repo1>/path` instead of machine paths (the attachment
    names are the paths of `out` and `tmp`: name them neutrally). Every attachment is required; the exact list is recorded
@@ -148,7 +141,7 @@ Unless `template` names another brief, the writer uses these sections:
 - `path`: the brief, `""` when none was written.
 - `ownerDecisions`: each `<question> (default: <default>)`. Read these first: the default is what the coder uses unless
   you say otherwise.
-- `facts`: how many facts passed the workflow's checks.
+- `facts`: how many facts passed the helper's checks.
 - `reviewFindings`: every finding of the review as `<id> <severity> <location>: <problem>`; `[]` when a review ran and
   found nothing, `null` when no review answered. A review that did not answer, was unreadable or ended `unknown` is never
   reported as a review.

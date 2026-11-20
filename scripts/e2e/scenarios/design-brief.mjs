@@ -4,8 +4,8 @@
 // `args`, `agent`, `parallel`, `phase` and `log` in scope. `agent` is a script of answers keyed by the step's label, so every
 // decision the workflow itself makes (which facts reach the writer and the review, which candidate reviews, what is reported as
 // fixed, what is left, what is never answered) is tested on those answers. What a prompt asks of a runner (the gateway call) is
-// checked as text of the prompt. The file steps are commands of the helper (core/scripts/gate.mjs brief-inspect, brief-material,
-// brief-preflight, review-read): the inspection is scripted (its answer is wrapped as the helper's line); the material, the preflight and
+// checked as text of the prompt. The file steps are commands of the helper (core/scripts/gate.mjs brief-inspect, brief-manifest,
+// brief-preflight, review-read): the inspection is scripted (its answer is wrapped as the helper's line); the manifest, the preflight and
 // the reading of the review run the real helper with the command exactly as the workflow typed it, and the workflow gets the helper's
 // line as printed. For that the run works on a scratch folder from the start: the paths of the args and of the scripted answers (/r, /g
 // and a drive path) are mapped onto it before the workflow sees them, and the prompts and the result are mapped back for the checks. The
@@ -71,10 +71,10 @@ export default function register({ scenario, ROOT }) {
       if (given !== undefined) return typeof given === "function" ? given(prompt, calls, opts) : given;
       if (label === "gate db") return printed(gateFacts(o.gate));
       if (label === "plan db") return { questions: [{ question: "How is the export written today?", repo: "/r", files: ["/r/src/export.js"] }, { question: "Where is the state kept?", repo: "/r", files: ["/r/src/state.js"] }] };
-      if (label.startsWith("facts ")) return { facts: [{ claim: `The export writes rows one by one (${label})`, source: `/r/src/export.js:${12 + Number(label.slice(6))}` }], unknowns: [] };
+      if (label.startsWith("facts ")) return { facts: [{ claim: `The export writes rows one by one (${label})`, source: `/r/src/export.js:${12 + parseInt(label.slice(6), 10)}` }], unknowns: [] };
       if (label === "draft db") return { done: true, summary: "wrote", ownerDecisions: [{ question: "Keep a copy of the old export?", default: "No" }], leftForLater: ["the UI"], wrongFacts: [], unverified: [] };
       if (label === "inspect draft db") return { ok: true, exists: true, sha256: HEX_A, bytes: 100, firstLine: MARK, headings: HEADINGS };
-      if (label.startsWith("material ")) return "real";
+      if (/^(open|check) research /.test(label)) return "real";
       if (label === "preflight db") return { ok: true, brief: BRIEF, excerpts: "default" };
       if (label === "review") return review({ verdict: "approved", findings: [] });
       if (label === "read review db") return "real";
@@ -97,15 +97,11 @@ export default function register({ scenario, ROOT }) {
       if (given === null || given === undefined) return given;
       if (typeof given === "object" && "exitCode" in given) return given;
       if (command === "brief-inspect") return ioLine({ exists: true, bytes: 0, firstLine: "", headings: [], ...given, ok: true });
-      // A part of the material: the real helper writes it as given.
-      if (command === "brief-material") return helper(command, spec);
+      if (command === "brief-manifest") return helper(command, spec);
       if (command === "brief-preflight") {
         fs.mkdirSync(path.dirname(spec.brief), { recursive: true });
         fs.writeFileSync(spec.brief, given.brief);
-        // The cited lines, written where the facts of the material (as the runs of brief-material wrote it) point; the parts stay as they are.
-        const n = spec.material && spec.material.parts;
-        let mat = { facts: [] };
-        try { mat = JSON.parse(Array.from({ length: n || 0 }, (_, i) => fs.readFileSync(`${spec.dir}/material/${i + 1}-of-${n}.part`, "utf8")).join("")); } catch { /* the helper says what is wrong */ }
+        const mat = JSON.parse(fs.readFileSync(`${spec.tmp}/facts.json`, "utf8"));
         const lines = new Map();
         for (const f of mat.facts || []) {
           const m = String(f.source).match(/^(.+):(\d+)(?:-(\d+))?$/);
@@ -139,10 +135,14 @@ export default function register({ scenario, ROOT }) {
         calls.push({ label: opts.label, prompt: shown, opts });
         const given = answer(opts.label, shown, opts);
         if (opts.label === "review") { reviewGiven = given; if (!given) return given; const { answer: _a, answerSha256: _s, ...gw } = given; return gw; }
-        // A runner sends a batch of material parts: one answer per command, in order (a scripted answer for the label is every command's answer).
-        if (opts.label.startsWith("material ")) return given === null || given === undefined ? given : { answers: commandsIn(prompt, "brief-material").map((c) => io(c.command, c.spec, given)) };
+        if (opts.label.startsWith("facts ") && given) {
+          const file = prompt.match(/Write only the assigned UTF-8 JSON file (.+?\.json)\./)[1];
+          const body = JSON.stringify(given);
+          fs.writeFileSync(file, body);
+          return { path: file, count: given.facts.length, sha256: sha(body) };
+        }
         // The command as the workflow typed it (paths on the scratch folder), not the mapped text.
-        const m = commandsIn(prompt, "brief-inspect|brief-material|brief-preflight|review-read")[0];
+        const m = commandsIn(prompt, "brief-inspect|brief-manifest|brief-preflight|review-read")[0];
         return m ? io(m.command, m.spec, given) : given;
       },
     };
@@ -182,7 +182,7 @@ export default function register({ scenario, ROOT }) {
     t.ok(!r.calls.some((c) => /^review \d|^review 2|^review again/.test(c.label)), "there is no second review round");
   });
 
-  scenario("design-brief-researchers-read-only", "researchers run on the cheap model, are told to change nothing, call no API and print no secret, and get no agent type", async (t) => {
+  scenario("design-brief-researchers-read-only", "researchers run on the cheap model, write only their assigned slot, call no API and print no secret, and get no agent type", async (t) => {
     const r = await run({ args: { questions: ["How is the export written?", { question: "Where is the state?", repo: "/r", files: ["/r/src/state.js"] }] } });
     const facts = r.of(/^facts /);
     t.eq(facts.length, 2, "one researcher per question");
@@ -190,9 +190,9 @@ export default function register({ scenario, ROOT }) {
     for (const c of facts) {
       t.eq(c.opts.model, "haiku", "a researcher runs on the cheap model");
       t.ok(c.opts.agentType === undefined, "a general agent, not the gateway researcher");
-      t.ok(/You change no file/.test(c.prompt) && /call no product API/.test(c.prompt) && /contact no server/.test(c.prompt), "it is told to change nothing, call no API and contact no server");
+      t.ok(/Write only the assigned UTF-8 JSON file \/r\/.agent-tmp\/db\/facts\/\d+\.json/.test(c.prompt) && /call no product API/.test(c.prompt) && /contact no server/.test(c.prompt), "it is confined to its slot, call no API and contact no server");
       t.ok(/never print a secret value/.test(c.prompt) && /name the variable or the file/.test(c.prompt), "it names a variable or a file, never the value");
-      t.ok(!/progress/.test(c.prompt), "it keeps no progress file: it writes nothing");
+      t.ok(!/progress/.test(c.prompt), "the researcher writes only its facts file");
     }
     t.ok(facts[1].prompt.includes('"/r/src/state.js"'), "the files a question names are in its prompt");
     const planned = await run();
@@ -223,7 +223,8 @@ export default function register({ scenario, ROOT }) {
       },
     });
     t.eq(r.out.facts, 2, "only the two good facts count (the repeated one once)");
-    const draft = r.of(/^draft /)[0].prompt;
+    t.ok(r.of(/^draft /)[0].prompt.includes("/r/.agent-tmp/db/facts.json"), "the writer reads the assembled file");
+    const draft = r.file("/r/.agent-tmp/db/facts.json");
     t.ok(!draft.includes(key) && draft.includes("[REDACTED key]"), "the secret in a claim is redacted before it reaches the writer");
     t.ok(!/\/other\/x\.js|\.env|server\.pem|src\/y\.js/.test(draft), "no dropped fact is in the draft prompt");
     t.ok(draft.includes("Which queue is used?"), "what the researchers could not settle is handed to the writer");
@@ -233,8 +234,6 @@ export default function register({ scenario, ROOT }) {
     const gw = r.of(/^review$/)[0].prompt;
     t.ok(!gw.includes("--attach '/r/src/client.js'") && !gw.includes("--attach '/r/src/z.js'"), "a cited source file is not attached whole");
     t.ok(gw.includes("--attach '/r/.agent-tmp/db/review/excerpts.md'"), "its cited lines are attached as one excerpts file");
-    const pre = r.of(/^material /).flatMap((c) => commandsIn(c.prompt, "brief-material")).map((c) => c.spec.text).join("");
-    t.ok(pre.includes('"source":"/r/src/client.js:7"') && !/\.env|server\.pem/.test(pre), "the helper is asked for the lines of the good facts only");
     t.ok(!/--attach '\/r\/\.env'|server\.pem/.test(gw), "a secret file is never attached");
     const none = await run({ args: { questions: ["q1"] }, answers: { "facts 1": { facts: [{ claim: "x", source: "/other/x.js:1" }], unknowns: [] } } });
     t.ok(/^facts /.test(none.out.stoppedAt) && none.of(/^draft /).length === 0, "no usable fact stops the run before the draft");
@@ -467,7 +466,7 @@ export default function register({ scenario, ROOT }) {
     const q = `Why does the client send password: hunter2xyz and ${KEY}?`;
     const r = await run({ args: { questions: [q] }, answers: { "facts 1": null } });
     t.ok(!r.calls.some((c) => c.prompt.includes("hunter2xyz") || c.prompt.includes(KEY)), "no prompt holds the secret of the question");
-    t.ok(r.out.notes.some((n) => n.includes("The researcher of question 1 returned no result")) && !JSON.stringify(r.out).includes("hunter2xyz") && !JSON.stringify(r.out).includes(KEY), "nor the notes or the result when the researcher fails");
+    t.ok(r.out.notes.some((n) => n.includes("Slot 1 rejected")) && !JSON.stringify(r.out).includes("hunter2xyz") && !JSON.stringify(r.out).includes(KEY), "nor the notes or the result when the researcher fails");
     const ok = await run({ args: { questions: [q] } });
     const factsFile = ok.file("/r/.agent-tmp/db/review/facts.json");
     t.ok(!factsFile.includes("hunter2xyz") && !factsFile.includes(KEY) && factsFile.includes("[REDACTED"), "the facts file of the review carries the redacted question");
@@ -548,32 +547,13 @@ another clean copy
     t.ok(ok.out.stoppedAt === undefined && /The review approved the brief/.test(ok.out.next), "approved with only a minor finding is an approval");
   });
 
-  scenario("design-brief-material-parts", "the workflow's material for the review (goal, questions, facts, unknowns) reaches the helper in parts of at most 4000 characters, one command each, sent by a few runners (up to 8 commands one after another), so no command a runner types grows with the research and the runner count does not follow it; a part that did not arrive exactly stops the run before the preflight", async (t) => {
-    const many = { facts: Array.from({ length: 60 }, (_, i) => ({ claim: `The export writes row group ${i} with its own checkpoint and a long explanation of why it matters here (fact ${i}).`, source: `/r/src/export.js:${i + 1}` })), unknowns: [] };
-    const r = await run({ answers: { "facts 1": many } });
-    const parts = r.of(/^material /);
-    const texts = parts.flatMap((c) => commandsIn(c.prompt, "brief-material").map((x) => x.spec));
-    t.ok(texts.length > 1 && texts.every((x) => x.text.length <= 4000 && x.of === texts.length), "the material is cut into several parts of at most 4000 characters");
-    t.ok(parts.length === 1 && parts.every((c) => c.opts.agentType === "zodchi-core:runner" && (c.prompt.match(/node -e /g) || []).length === texts.length), "the parts go in one runner, which runs one helper command for each, one after another");
-    t.ok(!/"facts":/.test(r.of(/^preflight /)[0].prompt) && r.out.stoppedAt === undefined && r.of(/^review$/).length === 1, "the preflight command carries no facts, only the parts' count and hash; the review was sent");
-    const doc = JSON.parse(r.file("/r/.agent-tmp/db/review/facts.json"));
-    t.eq(doc.facts.length, 61, "every fact reached the facts file of the review");
-    // A part whose answer is wrong is sent once more (under a label of its own); wrong both times, the run stops with the stop text of the second.
-    const wrong = ioLine({ part: 1, of: 1, sha256: "0".repeat(64), chars: 1 });
-    const bad = await run({ answers: { "material 1/1 db": wrong, "material 1/1 again db": wrong } });
-    t.ok(/^review \(part 1 of the material did not reach the helper exactly/.test(bad.out.stoppedAt) && bad.of(/^preflight /).length === 0 && bad.of(/^review$/).length === 0, "a part whose hash differs both times stops the run: no preflight, nothing sent");
-    t.eq(bad.of(/^material /).map((c) => c.label), ["material 1/1 db", "material 1/1 again db"], "the part was sent twice, the second time by a fresh runner under its own label, and no more");
-    const cmd = JSON.parse(r.of(/^preflight /)[0].prompt.match(/ brief-preflight '(.*)'$/m)[1].replace(/'\\''/g, "'"));
-    t.eq(cmd.material.parts, texts.length, "the preflight is given the workflow's own part count, and the real helper joined those parts");
-  });
-
   scenario("design-brief-screen-mode", "the screening mode is the workflow's: a preflight command whose publicRepo a runner dropped is refused by the helper, and one whose mode a runner changed is refused by the workflow; nothing goes to the gateway", async (t) => {
     const pathy = `${BRIEF}\nRun it in ${driveRoot}/app.\n`;
     const drop = (spec) => { const { publicRepo: _p, ...rest } = spec; return rest; };
     const dropped = await run({ args: { publicRepo: true }, answers: { "preflight db": preAnswer(pathy, { retype: drop }), "inspect draft db": inspected(pathy) } });
     t.ok(/^review \(the preflight read no brief: .*publicRepo must be true or false/.test(dropped.out.stoppedAt) && dropped.of(/^review$/).length === 0, `an omitted mode is refused, not screened as not public (${dropped.out.stoppedAt})`);
     const flipped = await run({ args: { publicRepo: true }, answers: { "preflight db": preAnswer(pathy, { retype: (spec) => ({ ...spec, publicRepo: false }) }), "inspect draft db": inspected(pathy) } });
-    t.ok(/^review \(the preflight screened the brief as not public, but the repository is public/.test(flipped.out.stoppedAt) && flipped.of(/^review$/).length === 0, `a changed mode stops the run before the gateway (${flipped.out.stoppedAt})`);
+    t.ok(/the review settings differ from the run manifest/.test(flipped.out.stoppedAt) && flipped.of(/^review$/).length === 0, `a changed mode stops the run before the gateway (${flipped.out.stoppedAt})`);
     const right = await run({ args: { publicRepo: true } });
     t.ok(right.out.stoppedAt === undefined && right.of(/^review$/).length === 1 && /"publicRepo":true/.test(right.of(/^preflight /)[0].prompt), "the command carries the mode, and a matching answer goes on");
   });
