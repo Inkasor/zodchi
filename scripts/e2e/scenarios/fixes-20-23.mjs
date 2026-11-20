@@ -121,11 +121,13 @@ export default function register({ scenario, ROOT }) {
       label: "pkg", brief: "/r/brief.md", repo: "/r", files: ["src/a.js"], tmp: "/r/.agent-tmp/pkg", checks: ["node t.js"],
       models: { writer: { candidates: [{ provider: "claude", model: "sonnet" }] }, reviewer: { candidates: [CODEX] } }, ...argsOver,
     };
-    const answer = (label, prompt) => {
+    const answer = (rawLabel, prompt) => {
+      // a long label in args.label: its steps are answered as those of "pkg"
+      const label = args.label === "pkg" ? rawLabel : rawLabel.split(args.label).join("pkg");
       const given = answers[label];
       if (given !== undefined) return typeof given === "function" ? given(prompt, calls) : given;
       if (label === "gate pkg") return line(gateFacts(o.gate));
-      if (label === "claim pkg") return line({ ok: true, conflicts: [], branchConflicts: [], reused: false, files: ["src/a.js"], file: "/h/.zodchi/packages/-r/pkg.json", base: "abc1234" });
+      if (label === "claim pkg") return line({ ok: true, conflicts: [], branchConflicts: [], reused: false, files: ["src/a.js"], file: `/h/.zodchi/packages/-r/${args.label}.json`, base: "abc1234" });
       if (label === "write pkg") return { done: true, summary: "wrote", changed: ["/r/src/a.js"], unverified: [] };
       if (label === "base pkg") return { ok: true, head: "abc1234", branch: "main", verifySkill: false, reviewMd: false };
       if (label.startsWith("status ")) return { ok: true, paths: ["src/a.js"] };
@@ -384,5 +386,82 @@ export default function register({ scenario, ROOT }) {
     for (const w of writes) {
       t.ok(seenIn(w.prompt).some((x) => x.includes("Logs, scratch files, notes and command outputs go only under /r/.agent-tmp/pkg") && x.includes("never into the repository")), `${w.label}: logs and scratch files go under the tmp folder only`);
     }
+  });
+
+  // ------------------------------------------------------------------------------------------------- continuation 4: keys, progress files, commit paths
+
+  const allKeys = (r) => r.calls.flatMap((c) => [...c.prompt.matchAll(/Gateway call, base key (\S+?)\. /g)].map((m) => m[1]));
+
+  scenario("fixes-gateway-key-within-limit", "a label the workflow accepts never builds a gateway key over the gateway's 96 characters, retries and attempt suffixes included; a label too long for the key format is refused at the start with a clear message", async (t) => {
+    const LIMIT = 96, label = "a".repeat(60);
+    const r = await run({}, { label, rerun: { "review 1": 99 } });
+    t.eq([String(r.error), r.out && r.out.approved], ["null", true], "a label of the longest accepted length runs");
+    const review = baseKey(r);
+    t.eq(review, `${label}-abc1234-a1b2c3d4-review-1-a99`, "the key is still <label>-<base7>-<run>-<kind>-<n>-a<attempt>");
+    t.ok(review.length + "-r3".length <= LIMIT, `the longest key of a rerun with two retries fits (${review.length + 3} <= ${LIMIT})`);
+    const work = await run({ "write pkg": { done: true, summary: "w", changed: ["/r/src/a.js"], unverified: [], gateway: "final", infra: "" } }, { label, models: { writer: { candidates: [CODEX] }, reviewer: { candidates: [{ provider: "claude", model: "opus" }] } } });
+    const expert = await run({
+      "write pkg ask": { ok: true, summary: "a", paths: ["/r/.agent-tmp/pkg/expert-1.answer.md"], gateway: "final", infra: "" },
+      "write pkg apply": { done: true, summary: "w", changed: ["/r/src/a.js"], unverified: [] },
+    }, { label, mode: "expert", models: { expertWriter: { candidates: [CODEX] }, reviewer: { candidates: [{ provider: "claude", model: "opus" }] } } }, { gate: { roles: { expertWriter: { candidates: [CODEX] }, reviewer: { candidates: [{ provider: "claude", model: "opus" }] } } } });
+    const keys = [...allKeys(await run({}, { label })), ...allKeys(work), ...allKeys(expert)];
+    t.ok(keys.length >= 3 && keys.some((k) => k.includes("-work-")) && keys.some((k) => k.includes("-expert-")), `review, work and expert keys were built (${keys.length})`);
+    t.ok(keys.every((k) => k.length + "-a99-r3".length <= LIMIT), `every key fits with the longest suffixes (${Math.max(...keys.map((k) => k.length))} + 7 <= ${LIMIT})`);
+    t.eq(baseKey(await run({}, { label }), 1), `${label}-abc1234-a1b2c3d4-review-1`, "no key is shortened: two labels never share one, and a resume builds the same key");
+
+    const long = await run({}, { label: "a".repeat(61) });
+    t.ok(long.error && /61 characters/.test(long.error.message) && /shorter label/.test(long.error.message) && long.calls.length === 0, `a label of 61 characters is refused before any step (${long.error && long.error.message})`);
+  });
+
+  scenario("fixes-gateway-progress-of-earlier-run", "a gateway call tells the step that a key in the progress file without this run's key prefix belongs to an earlier run of the label and is ignored; a resume of the same run (same prefix) is unchanged; another run has another prefix", async (t) => {
+    const r = await run();
+    const review = r.of(/^review 1$/)[0].prompt;
+    t.ok(review.includes("Keys of this run all start with pkg-abc1234-a1b2c3d4-."), "the call names the prefix of this run");
+    t.ok(/does not start with it[^]*belongs to an earlier run of this label: ignore it, never wait on it, reuse it or count its retries, and submit under pkg-abc1234-a1b2c3d4-review-1/.test(review), "a key without it is ignored and the step submits under its own key");
+    t.ok(review.includes("UNKNOWN:") && review.includes("nor an \"UNKNOWN:\" line"), "an UNKNOWN line that names such a key is ignored too");
+    t.ok(review.includes("The active key is the key of the latest submission: pkg-abc1234-a1b2c3d4-review-1 at first"), "the rest of the resume rules stay");
+    const again = await run();
+    t.eq(again.of(/^review 1$/)[0].prompt, review, "the same run again (a resume) gets the same prompt, so its own recorded keys are waited on");
+    const other = await run({}, {}, { gate: { runId: "b2c3d4e5" } });
+    const otherPrompt = other.of(/^review 1$/)[0].prompt;
+    t.ok(otherPrompt.includes("Keys of this run all start with pkg-abc1234-b2c3d4e5-.") && !otherPrompt.includes("pkg-abc1234-a1b2c3d4-"), "a fresh run of the same label and tmp has another prefix: the earlier run's keys do not match it");
+    const work = await run({ "write pkg": { done: true, summary: "w", changed: ["/r/src/a.js"], unverified: [], gateway: "final", infra: "" } }, { models: { writer: { candidates: [CODEX] }, reviewer: { candidates: [{ provider: "claude", model: "opus" }] } } });
+    t.ok(work.of(/^write pkg$/)[0].prompt.includes("Keys of this run all start with pkg-abc1234-a1b2c3d4-."), "the writer's gateway call carries it too");
+  });
+
+  scenario("fixes-continuation-commit-list", "the commit step of a continuation commits only paths that exist, are in the index or are tracked in HEAD: the old side of a rename and a file deleted in an earlier round are dropped from the pathspec, because git commit rejects a pathspec that matches nothing", async (t) => {
+    const ORIGINAL = "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", HEAD = "2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const claimed = line({ ok: true, conflicts: [], branchConflicts: [], reused: true, reopened: true, files: ["src/a.js", "src/old.js", "src/gone.js"], file: "/h/.zodchi/packages/-r/pkg.json", base: ORIGINAL });
+    const r = await run({
+      "claim pkg": claimed,
+      "base pkg": { ok: true, head: HEAD, branch: "main", verifySkill: false, reviewMd: false, ancestor: true, paths: ["src/a.js", "src/old.js", "src/new.js", "src/gone.js"] },
+    }, {}, { gate: { head: HEAD } });
+    t.eq(String(r.error), "null", "the continuation runs");
+    const commit = r.of(/^commit 1$/)[0].prompt;
+    const listed = JSON.parse(commit.match(/The package paths, relative to the repository: (\[.*?\])\./)[1]);
+    t.ok(listed.includes("src/old.js") && listed.includes("src/gone.js"), "the package paths still hold the earlier rounds' old paths (the review needs them)");
+    t.ok(/Narrow the package paths to "those paths"/.test(commit) && commit.includes("git ls-files -- <path>") && commit.includes("git cat-file -e HEAD:<path>") && /Drop every other path/.test(commit) && /rejects a pathspec that matches nothing/.test(commit), "the step narrows the paths: work tree, index or HEAD, the rest dropped");
+    t.ok(/For each of those paths run/.test(commit) && commit.includes("git diff --cached --quiet -- <those paths>") && commit.includes("-- <those paths>` (the paths after --") && !commit.includes("<the commit list>"), "add, the empty check and the commit all use the commit list, never the whole list");
+    t.ok(/If those paths are none, return ok true/.test(commit), "no path left is nothing to commit");
+
+    // Git itself: a pathspec with the old side of an earlier round's rename is rejected; the commit list the step describes is not
+    const home = scratch(t, "commitlist"), repo = `${home}/repo`;
+    fs.mkdirSync(repo);
+    const git = (...a) => spawnSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", ...a], { encoding: "utf8" });
+    git("init", "-q");
+    for (const f of ["old.js", "gone.js", "keep.js"]) fs.writeFileSync(`${repo}/${f}`, `${f} line\n`.repeat(4));
+    git("add", "."); git("commit", "-q", "-m", "base");
+    git("mv", "old.js", "new.js"); git("rm", "-q", "gone.js"); git("commit", "-q", "-m", "round 1");
+    fs.writeFileSync(`${repo}/keep.js`, "round 2\n");
+    fs.writeFileSync(`${repo}/new.js`, "round 2 new\n");
+    const all = ["old.js", "new.js", "gone.js", "keep.js"];
+    const known = (f) => fs.existsSync(`${repo}/${f}`) || git("ls-files", "--", f).stdout.trim() !== "" || git("cat-file", "-e", `HEAD:${f}`).status === 0;
+    const list = all.filter(known);
+    t.eq(list, ["new.js", "keep.js"], "the old side of the rename and the file deleted in round 1 are not in the commit list");
+    git("add", "-A", "--", ...list);
+    const bad = git("commit", "-q", "-m", "x", "--", ...all);
+    t.ok(bad.status !== 0 && /did not match any file/.test(bad.stderr), `the whole list is rejected by git commit (${bad.stderr.trim()})`);
+    const good = git("commit", "-q", "-m", "round 2", "--", ...list);
+    t.eq([good.status, git("show", "--name-only", "--format=", "HEAD").stdout.split("\n").filter(Boolean).sort()], [0, ["keep.js", "new.js"]], "the commit list commits");
   });
 }
