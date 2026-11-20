@@ -255,7 +255,7 @@ export default function register({ scenario, ROOT }) {
   const printed = (facts, over = {}) => ({ exitCode: 0, stdout: JSON.stringify({ ok: true, api: 1, plugin: PLUGIN, ...facts }) + "\n", ...over });
   const CONNECTED = { connected: true, ordinaryUsageAllowed: true, primary: { usedPercent: 10 }, secondary: null };
   const CP_FACTS = {
-    workflow: { name: "code-package", build: "b", copyBuild: "b", match: true }, roles: {}, modelsErrors: [], account: null, accountError: "none", git: true, head: "abc1234", branch: "main", dirty: [], ignoreExit: 0, ignoreLine: ".gitignore:3:.agent-tmp/\t.agent-tmp/gateway/x",
+    workflow: { name: "code-package", build: "b", copyBuild: "b", match: true }, roles: {}, modelsErrors: [], account: null, accountError: "none", git: true, head: "abc1234", runId: "a1b2c3d4", branch: "main", dirty: [], ignoreExit: 0, ignoreLine: ".gitignore:3:.agent-tmp/\t.agent-tmp/gateway/x",
     verifySkill: false, reviewMd: false, config: {}, configError: "", boundary: "Important: x.\n",
     claims: { dir: "claims-dir/r", open: [], closed: [], kept: [], skipped: [], notes: [] },
   };

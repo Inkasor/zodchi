@@ -12,8 +12,8 @@ export const meta = {
 }
 
 // args:
-//   label     short name, also the prefix of gateway keys (<label>-<base7>-<kind>-<n>, with the package base commit in it: a new run of a used label never
-//             meets the keys of an earlier run) and the name of the package claim, e.g. "export-csv"
+//   label     short name, also the prefix of gateway keys (<label>-<base7>-<run>-<kind>-<n>, with the package base commit and an id of the run in it: a new run of a used
+//             label never meets the keys of an earlier run) and the name of the package claim, e.g. "export-csv"
 //   brief     path of the brief file: goal, files that may change, what "done" means, checks
 //   repo      repository the change is in (absolute path); every command runs from it. It must be a Git work tree:
 //             the protected checks and REVIEW.md are read from the base commit
@@ -304,7 +304,7 @@ const GATE_API = 1
 // The stamp of this script (see "The workflow build" in core/scripts/gate.mjs): the first 16 hex digits of the SHA-256 of this file with this
 // line's stamp emptied. The gate sends it to the helper, which stamps the code-package.js of its own plugin copy; a script that is not the copy's
 // own is refused at the gate. After every edit of this file: `node core/scripts/gate.mjs workflow-build core/workflows/code-package.js --write`.
-const WORKFLOW_BUILD = '0625744daf78738a'
+const WORKFLOW_BUILD = 'c7042daadb2c5cfb'
 const GATE_BOOT = 'const fs=require(\"fs\"),os=require(\"os\"),path=require(\"path\"),cp=require(\"child_process\");const project=process.argv[1]||\"\";const rest=process.argv.slice(2);const out=(o,c)=>{fs.writeSync(1,JSON.stringify(o)+\"\\n\");process.exit(c)};const rd=f=>{try{return JSON.parse(fs.readFileSync(f,\"utf8\"))}catch(e){return null}};const nm=p=>{const s=path.resolve(p).split(path.sep).join(\"/\");return process.platform===\"linux\"?s:s.toLowerCase()};const pre=n=>n.endsWith(\"/\")?n:n+\"/\";const tried=[];let root=\"\",via=\"\";const fail=(why)=>out({ok:false,api:0,error:why,tried},4);for(const name of [\"ZODCHI_PLUGIN_ROOT\",\"CLAUDE_PLUGIN_ROOT\"]){const env=process.env[name];if(root||!env)continue;const m=rd(path.join(env,\".claude-plugin\",\"plugin.json\"));if(m&&m.name===\"zodchi-core\"){root=env;via=name}else if(name===\"ZODCHI_PLUGIN_ROOT\"){tried.push(env+\" (no zodchi-core manifest)\");fail(\"ZODCHI_PLUGIN_ROOT names no zodchi-core plugin copy: a checkout or another folder is never used instead\")}}if(!root){const reg=rd(path.join(process.env.CLAUDE_CONFIG_DIR||path.join(os.homedir(),\".claude\"),\"plugins\",\"installed_plugins.json\"));const list=(reg&&reg.plugins&&reg.plugins[\"zodchi-core@zodchi\"])||[];const here=pre(nm(project));const own=list.filter(e=>e.projectPath&&here.startsWith(pre(nm(e.projectPath)))).sort((a,b)=>nm(b.projectPath).length-nm(a.projectPath).length);const e=own[0]||list.find(e=>!e.projectPath);if(e&&e.installPath){root=e.installPath;via=\"installed_plugins.json, scope \"+e.scope}}if(!root)fail(\"no zodchi-core plugin copy is registered for the project this session runs in (not installed): update the plugin; a checkout is never used instead\");const ok=fs.existsSync(path.join(root,\"scripts\",\"gate.mjs\"));tried.push(root+(ok?\"\":\" (no scripts/gate.mjs)\"));if(!ok)fail(\"the zodchi-core plugin copy this session loaded (\"+root+\") has no scripts/gate.mjs (an older copy than this workflow): update the plugin; no other copy is tried and a checkout is never used\");const r=cp.spawnSync(process.execPath,[path.join(root,\"scripts\",\"gate.mjs\"),...rest],{stdio:\"inherit\",env:{...process.env,ZODCHI_GATE_VIA:via}});process.exit(r.status===null?5:r.status)'
 // The folder the runner starts in is the project the session runs in: it says which registered plugin copy the session loaded (the Windows form of the path on Git Bash).
 const SESSION_PROJECT = '"$(pwd -W 2>/dev/null || pwd)"'
@@ -400,6 +400,8 @@ if (!wf || wf.match !== true) {
   out.next = out.refused
   return out
 }
+// The id of this run, allocated by the helper at the gate (the gate answer comes back from the journal on a resume, so it is the same for the run and new for a new run).
+if (!/^[0-9a-f]{8}$/.test(String(gate.runId || ''))) { out.stoppedAt = `gate (no run id: the helper of the copy ${out.pluginCopy.path} did not allocate one)`; return out }
 const note = (text) => { out.notes = out.notes || []; out.notes.push(text) }
 for (const e of gate.modelsErrors || []) log(`${e}; ignored`)
 if (gate.configError) log(`~/.zodchi/config.json: ${gate.configError}; ignored`)
@@ -616,7 +618,7 @@ if (claim && !claim.ok && claim.conflicts.length && claim.conflicts[0] !== 'lock
       `Read the state of the branch the package works on in ${a.repo}; change nothing. head: \`git rev-parse HEAD\`. branch: \`git branch --show-current\`. ` +
       `verifySkill: true when \`git cat-file -e ${at}:.claude/skills/verify/SKILL.md\` exits 0. reviewMd: true when \`git cat-file -e ${at}:REVIEW.md\` exits 0. ` +
       (adoptBase ? `ancestor: true when \`git merge-base --is-ancestor ${adoptBase} HEAD\` exits 0 (the base commit the package recorded is part of this branch). ` +
-        `paths: every path \`git -c core.quotepath=off diff --name-only ${adoptBase} HEAD\` lists, relative to the repository, one entry each ([] when none). ` : '') +
+        `paths: every path \`git -c core.quotepath=off diff --name-only --no-renames ${adoptBase} HEAD\` lists, relative to the repository, one entry each ([] when none). ` : '') +
       `ok is true when the commands ran${a.branch ? ` and branch is ${a.branch}` : ''}.`,
       {
         agentType: 'zodchi-core:runner', label: `base ${a.label}`,
@@ -630,7 +632,14 @@ if (claim && !claim.ok && claim.conflicts.length && claim.conflicts[0] !== 'lock
         // The files the package changed since its base: what Git lists between the base and HEAD, narrowed to the files the claim lists (another package's
         // commits may lie in between in a shared checkout), in the case Git spells them.
         for (const f of now.paths || []) { try { const r = rel(f); if (claimedKeys.has(r.toLowerCase()) && !/^\.agent-tmp(\/|$)/i.test(r)) earlierPaths.push(r) } catch {} }
-      } else note(`The base ${adoptBase} that the claim of ${a.label} recorded is not part of the branch now: the package base is its HEAD ${base}, so the review covers only what comes after it.`)
+      } else {
+        // A base that is not on the branch (it was rebased, reset): HEAD is no stand-in, the review would miss the package's earlier commits and the claim would lose its base.
+        // Nothing is changed: the claim keeps its recorded base, and the person names the commit the package began at on the branch now.
+        out.stoppedAt = `base (the base ${adoptBase} that the claim of ${a.label} recorded is not part of the branch ${now.branch || myBranch} now; the claim still records it)`
+        out.next = `The package ${a.label} goes on from the base its claim recorded, ${adoptBase}, but that commit is not an ancestor of HEAD (the branch was rebased or reset). No work was done and the recorded base in the claim is unchanged. ` +
+          `Find the commit the package began at on the branch now (the parent of its first commit), set "base" of the claim ${claimFile} to it, and start the package again; or give the package another label.`
+        return out
+      }
     }
     hasVerifySkill = now.verifySkill === true
     hasReviewMd = now.reviewMd === true
@@ -688,12 +697,10 @@ async function body() {
     ? `The runner commits the package files after passing checks as "${a.label}: round N"; the writer never commits.`
     : `Nothing is committed in this run; the writer never commits.`
 
-  // Every gateway key of this run is built from the label and a part that belongs to the run: the package base commit (short hash), and, when
-  // this run did not start at that base (it goes on after an earlier run of the label, whose commits lie on top of it), the HEAD it started at.
-  // A new run of a label an earlier run already used so gets keys of its own (the gateway refuses a key it knows for another request), and a
-  // resume of the same run gets the same keys (the gate and claim answers come back from the journal, and so do the base and the start).
-  const startHead = String(gate.head).trim()
-  const runPart = base.slice(0, 7) + (startHead.slice(0, 7) !== base.slice(0, 7) ? `-${startHead.slice(0, 7)}` : '')
+  // Every gateway key of this run is built from the label, the package base commit (short hash) and the id of the run the gate allocated. Two runs of one label never share a key
+  // (the gateway refuses a key it knows for another request, or hands back the old job), even at the same base and HEAD; a resume of the same run gets the same keys
+  // (the gate and claim answers come back from the journal, and so do the run id and the base).
+  const runPart = `${base.slice(0, 7)}-${gate.runId}`
   const gwKey = (kind, n) => `${a.label}-${runPart}-${kind}-${n}`
 
   // A long package can outgrow one agent's context. The agent may hand over (more: true) at a clean point, or it may

@@ -93,7 +93,7 @@ export default function register({ scenario, ROOT }) {
   const gateFacts = (over = {}) => ({
     ok: true, api: 1, plugin: PLUGIN, workflow: { name: "code-package", build: BUILD, copyBuild: BUILD, match: true },
     roles: {}, modelsErrors: [], account: { connected: true, ordinaryUsageAllowed: true, primary: { usedPercent: 1 }, secondary: { usedPercent: 1 } }, accountError: "",
-    git: true, head: "abc1234", branch: "main", dirty: [], ignoreExit: 0, ignoreLine: ".gitignore:1:.agent-tmp/\t.agent-tmp/gateway/x", verifySkill: false, reviewMd: false,
+    git: true, head: "abc1234", branch: "main", dirty: [], ignoreExit: 0, ignoreLine: ".gitignore:1:.agent-tmp/\t.agent-tmp/gateway/x", verifySkill: false, reviewMd: false, runId: "a1b2c3d4",
     config: {}, configError: "", boundary: "Important: x.", claims: { dir: "d", open: [], closed: [], kept: [], skipped: [], notes: [] }, ...over,
   });
   const line = (facts) => ({ exitCode: 0, stdout: JSON.stringify({ api: 1, plugin: PLUGIN, ...facts }) + "\n" });
@@ -159,31 +159,42 @@ export default function register({ scenario, ROOT }) {
     t.eq([readClaim(dir, "pkg").status, readClaim(dir, "pkg").files.includes("src/b.js")], ["open", true], "its claim is open again and holds the new file");
   });
 
-  scenario("fixes-gateway-keys-per-run", "the gateway keys carry the package base commit: two runs of one label never share a key, a resume of one run builds the same keys, a run that goes on after an earlier run differs from both", async (t) => {
+  scenario("fixes-gateway-keys-per-run", "the gateway keys carry the package base commit and an id of the run the helper allocates: two runs of one label never share a key, not even at one base and HEAD; a resume of one run builds the same keys", async (t) => {
+    const home = scratch(t, "runid"), repo = `${home}/repo`;
+    fs.mkdirSync(repo);
+    spawnSync("git", ["-C", repo, "init", "-q"]);
+    fs.writeFileSync(`${home}/brief.md`, "# b\n");
+    const ask = () => gate(t, "code-package", { repo, brief: `${home}/brief.md`, label: "mine", claimsKey: "k", want: [] }, home).json;
+    const g1 = ask(), g2 = ask();
+    t.ok(/^[0-9a-f]{8}$/.test(g1.runId) && /^[0-9a-f]{8}$/.test(g2.runId) && g1.runId !== g2.runId, `the helper allocates an id for each gate call, so for each run (${g1.runId}, ${g2.runId})`);
+
     const a = await run();
-    t.eq(baseKey(a), "pkg-abc1234-review-1", "the review key is <label>-<base7>-review-<n>");
-    t.eq(baseKey(await run()), baseKey(a), "the same run again (a resume: same base) gets the same key");
-    const second = await run({}, {}, { gate: { head: "def5678" } });
-    t.eq(baseKey(second), "pkg-def5678-review-1", "a new run of the label at another commit (a finished run's commits are in it) has another key");
-    t.ok(baseKey(second) && baseKey(second) !== baseKey(a), `a new run of the label at another commit has another key (${baseKey(second)} against ${baseKey(a)})`);
+    t.eq(baseKey(a), "pkg-abc1234-a1b2c3d4-review-1", "the review key is <label>-<base7>-<run>-<kind>-<n>");
+    t.eq(baseKey(await run()), baseKey(a), "the same run again (a resume: the gate answer, with its run id, comes back from the journal) gets the same key");
+    const second = await run({}, {}, { gate: { runId: "b2c3d4e5" } });
+    t.eq(baseKey(second), "pkg-abc1234-b2c3d4e5-review-1", "a new run of the label at the same base and HEAD has another key");
+    const moved = await run({}, {}, { gate: { head: "def5678", runId: "c3d4e5f6" } });
+    t.eq(baseKey(moved), "pkg-def5678-c3d4e5f6-review-1", "and so has one at another commit");
     // a run that goes on: its claim is reused with the recorded base, HEAD has moved on
     const cont = await run({
       "claim pkg": line({ ok: true, conflicts: [], branchConflicts: [], reused: true, reopened: true, files: ["src/a.js"], file: "/h/.zodchi/packages/-r/pkg.json", base: "abc1234" }),
       "base pkg": { ok: true, head: "def5678", branch: "main", verifySkill: false, reviewMd: false, ancestor: true, paths: ["src/a.js"] },
-    }, {}, { gate: { head: "def5678" } });
-    t.eq(baseKey(cont), "pkg-abc1234-def5678-review-1", "a run that goes on from the recorded base names its start too");
-    t.ok(new Set([baseKey(a), baseKey(second), baseKey(cont)]).size === 3, "all three differ");
+    }, {}, { gate: { head: "def5678", runId: "d4e5f6a7" } });
+    t.eq(baseKey(cont), "pkg-abc1234-d4e5f6a7-review-1", "a run that goes on from the recorded base carries that base and its own run id");
+    t.ok(new Set([baseKey(a), baseKey(second), baseKey(moved), baseKey(cont)]).size === 4, "all four differ");
+    const none = await run({}, {}, { gate: { runId: undefined } });
+    t.ok(none.calls.length === 1 && /no run id/.test(String(none.out.stoppedAt)), `a gate answer without a run id stops the run before any claim (${none.out && none.out.stoppedAt})`);
     // the writer's and the expert's keys follow the same rule
     const work = await run({ "write pkg": { done: true, summary: "w", changed: ["/r/src/a.js"], unverified: [], gateway: "final", infra: "" } }, { models: { writer: { candidates: [CODEX] }, reviewer: { candidates: [{ provider: "claude", model: "opus" }] } } });
-    t.ok(/base key pkg-abc1234-work-1\./.test(work.of(/^write pkg$/)[0].prompt), "the Codex writer's key");
+    t.ok(/base key pkg-abc1234-a1b2c3d4-work-1\./.test(work.of(/^write pkg$/)[0].prompt), "the Codex writer's key");
     const expert = await run({
       "write pkg ask": { ok: true, summary: "a", paths: ["/r/.agent-tmp/pkg/expert-1.answer.md"], gateway: "final", infra: "" },
       "write pkg apply": { done: true, summary: "w", changed: ["/r/src/a.js"], unverified: [] },
     }, { mode: "expert", models: { expertWriter: { candidates: [CODEX] }, reviewer: { candidates: [{ provider: "claude", model: "opus" }] } } }, { gate: { roles: { expertWriter: { candidates: [CODEX] }, reviewer: { candidates: [{ provider: "claude", model: "opus" }] } } } });
-    t.ok(/base key pkg-abc1234-expert-1\./.test((expert.of(/^write pkg ask$/)[0] || { prompt: "" }).prompt), `the expert's key (${expert.error})`);
+    t.ok(/base key pkg-abc1234-a1b2c3d4-expert-1\./.test((expert.of(/^write pkg ask$/)[0] || { prompt: "" }).prompt), `the expert's key (${expert.error})`);
     // a rerun after an infrastructure failure keeps its own suffix on top of that
     const rr = await run({}, { rerun: { "review 1": 2 } });
-    t.eq(baseKey(rr), "pkg-abc1234-review-1-a2", "the attempt suffix follows the run part");
+    t.eq(baseKey(rr), "pkg-abc1234-a1b2c3d4-review-1-a2", "the attempt suffix follows the run part");
   });
 
   scenario("fixes-workflow-equals-its-copy", "the workflow sends its build to the helper, which stamps the code-package.js of its own copy; a different build or a copy that reports none refuses the run at the gate, naming both and what to do; the same build passes", async (t) => {
@@ -226,7 +237,7 @@ export default function register({ scenario, ROOT }) {
     t.ok(old.calls.length === 1 && /reports no workflow build: it is older/.test(String(old.out.refused)), `a copy that reports no build is refused too (${old.out.refused})`);
   });
 
-  scenario("fixes-continuation-reviews-whole-package", "a package that goes on keeps the base its claim recorded and reviews base..HEAD with every file of the package; a base that is no longer on the branch falls back to HEAD with a note; a base read after a switch is recorded in the claim", async (t) => {
+  scenario("fixes-continuation-reviews-whole-package", "a package that goes on keeps the base its claim recorded and reviews base..HEAD with every file of the package; a base that is no longer on the branch stops the run and leaves the claim as it was; a rename lists both paths; a base read after a switch is recorded in the claim", async (t) => {
     const ORIGINAL = "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", HEAD = "2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const claimed = line({ ok: true, conflicts: [], branchConflicts: [], reused: true, reopened: true, files: ["src/a.js", "src/old.js"], file: "/h/.zodchi/packages/-r/pkg.json", base: ORIGINAL });
     const answers = (over = {}) => ({
@@ -237,7 +248,7 @@ export default function register({ scenario, ROOT }) {
     const r = await run(answers(), { models: { writer: { candidates: [{ provider: "claude", model: "sonnet" }] }, reviewer: { candidates: [{ provider: "claude", model: "opus" }] } } }, { gate: { head: HEAD } });
     t.eq([String(r.error), r.out && r.out.approved], ["null", true], "the continuation runs to approval");
     const baseStep = r.of(/^base pkg$/)[0].prompt;
-    t.ok(baseStep.includes(`git merge-base --is-ancestor ${ORIGINAL} HEAD`) && baseStep.includes(`git cat-file -e ${ORIGINAL}:REVIEW.md`) && baseStep.includes(`diff --name-only ${ORIGINAL} HEAD`), "the base step reads the recorded base: ancestry, REVIEW.md and the files since it");
+    t.ok(baseStep.includes(`git merge-base --is-ancestor ${ORIGINAL} HEAD`) && baseStep.includes(`git cat-file -e ${ORIGINAL}:REVIEW.md`) && baseStep.includes(`diff --name-only --no-renames ${ORIGINAL} HEAD`), "the base step reads the recorded base: ancestry, REVIEW.md and the files since it");
     const review = r.of(/^review 1$/)[0].prompt;
     t.ok(review.includes(`git diff ${ORIGINAL} -- `) && !review.includes(`git diff ${HEAD} -- `), "the review diffs from the recorded base, not from HEAD (the earlier rounds' commits are in it)");
     t.ok(review.includes(`git show ${ORIGINAL}:REVIEW.md`), "and reads REVIEW.md as of that base");
@@ -247,16 +258,35 @@ export default function register({ scenario, ROOT }) {
     t.ok(r.of(/claim base/).length === 0, "the claim already records that base: no claim-base step");
     t.ok((r.out.notes || []).some((n) => n.includes("opened again") && n.includes(ORIGINAL)), "a note says the claim was opened again");
 
-    // the recorded base is not on the branch (it was reset): HEAD is the base, with a note
+    // the recorded base is not on the branch (rebased, reset): no fallback to HEAD, the run stops before the writer and the claim keeps its base
     const gone = await run(answers({ "base pkg": { ok: true, head: HEAD, branch: "main", verifySkill: false, reviewMd: false, ancestor: false, paths: [] } }), { models: { writer: { candidates: [{ provider: "claude", model: "sonnet" }] }, reviewer: { candidates: [{ provider: "claude", model: "opus" }] } } }, { gate: { head: HEAD } });
-    t.ok(gone.of(/^review 1$/)[0].prompt.includes(`git diff ${HEAD} -- `) && (gone.out.notes || []).some((n) => n.includes("is not part of the branch now")), "a base that is not an ancestor falls back to HEAD and says so");
+    t.ok(/^base \(/.test(String(gone.out.stoppedAt)) && String(gone.out.stoppedAt).includes(ORIGINAL), `a base that is not an ancestor stops the run (${gone.out.stoppedAt})`);
+    t.ok(String(gone.out.next).includes(ORIGINAL) && String(gone.out.next).includes("/h/.zodchi/packages/-r/pkg.json") && /ancestor/.test(String(gone.out.next)), "and says which base, which claim file to fix, and why");
+    t.eq([gone.of(/^write pkg$/).length, gone.of(/^review /).length, gone.of(/claim base/).length], [0, 0, 0], "no writer, no review and no claim-base step: the claim base is not overwritten with HEAD");
+    t.eq(gone.of(/^close claim/).length, 1, "the claim is closed stopped, as for any stop");
+
+    // a rename: the continuation's path list is read with --no-renames, so both the old and the new path are there (Git itself, on the command the workflow sends)
+    const cmd = (baseStep.match(/`(git -c core\.quotepath=off diff [^`]*)`/) || [])[1];
+    t.ok(cmd && cmd.includes("--no-renames"), `the command that lists the earlier rounds' files carries --no-renames (${cmd})`);
+    const home = scratch(t, "rename"), repo = `${home}/repo`;
+    fs.mkdirSync(repo);
+    const git = (...a) => spawnSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", ...a], { encoding: "utf8" });
+    git("init", "-q");
+    fs.writeFileSync(`${repo}/old.js`, "const a = 1;\nconst b = 2;\nconst c = 3;\nconst d = 4;\n");
+    git("add", "."); git("commit", "-q", "-m", "base");
+    const baseSha = git("rev-parse", "HEAD").stdout.trim();
+    git("mv", "old.js", "new.js"); git("commit", "-q", "-m", "round 1: a rename");
+    const listed = spawnSync("git", ["-C", repo, ...cmd.replace(/^git /, "").replace(ORIGINAL, baseSha).split(" ")], { encoding: "utf8" }).stdout.split("\n").filter(Boolean).sort();
+    t.eq(listed, ["new.js", "old.js"], "Git lists both sides of the rename");
+    const noFlag = spawnSync("git", ["-C", repo, "diff", "--name-only", baseSha, "HEAD"], { encoding: "utf8" }).stdout.split("\n").filter(Boolean);
+    t.eq(noFlag, ["new.js"], "(without the flag only the destination is listed: what the review found)");
 
     // a fresh run on args.branch: the base read after the switch is not the HEAD the gate saw, so it is written into the claim
     const fresh = await run({ "switch pkg": { ok: true, summary: "ok" }, "base pkg": { ok: true, head: "ccccccc", branch: "feat", verifySkill: false, reviewMd: false } }, { branch: "feat" });
     const cb = fresh.of(/^claim base pkg$/);
     t.eq(cb.length, 1, "a base that differs from the one the claim was written with is recorded");
     t.eq(specIn(cb[0].prompt, "claim-base"), { api: 1, dir: "~/.zodchi/packages/-r", label: "pkg", base: "ccccccc" }, "with the claim-base command and the base the package works from");
-    t.eq(baseKey(fresh), "pkg-ccccccc-abc1234-review-1", "and the keys carry it");
+    t.eq(baseKey(fresh), "pkg-ccccccc-a1b2c3d4-review-1", "and the keys carry it");
     const plain = await run();
     t.eq(plain.of(/claim base/).length, 0, "without a switch there is nothing to record");
   });
