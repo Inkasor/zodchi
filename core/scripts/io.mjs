@@ -1,4 +1,4 @@
-// The file work of the workflows incident-triage and design-brief: every file these workflows read or write goes through this
+// The file work of the workflows incident-triage and design-brief: the deterministic checks and request assembly live in this
 // module, never through a model. A runner only runs one command of gate.mjs and returns the one line it printed; the workflow
 // parses that line and decides. Reached the same way as the gate (gate.mjs dispatches these commands; the GATE_BOOT bootstrap
 // of the workflow finds gate.mjs in the plugin copy the session loaded): one entry point, one bootstrap text in every workflow.
@@ -13,20 +13,18 @@
 //   incident-fail     mark the revision failed in incident.json (the lock stays)
 //   incident-unlock   remove the lock, only when it holds this run's token
 //   brief-inspect     the brief's hash, size, first line and headings
-//   brief-material    write one part of the workflow's own material (the goal, the questions, the facts and the unknowns, as JSON
-//                     text cut into parts) into <dir>/material/; answers the part's hash
-//   brief-preflight   join the material parts and check their hash, read the brief and the cited lines, screen the brief, write
+//   brief-manifest    bind the ordered research questions, validate slot receipts and assemble the writer's facts
+//   brief-preflight   verify the complete manifest again, read the brief and cited lines, screen the brief, write
 //                     the review request (prompt, facts, excerpts, frame, schema, role) when the screen passes
 //   review-read       the review answer file: its hash and the parsed verdict and findings
 //
 // Every answer carries lineSha256: the SHA-256 of JSON.stringify of the answer without that field. The workflow computes it again
 // from the line the runner returned, so a line the runner did not copy exactly is refused. Inputs that only the workflow holds and
 // that a file is made from come in the spec, and the answer carries their hash so that the workflow sees that they arrived exactly:
-// the redacted report in the spec of incident-collect (reportSha256); the material of the review, which grows with the research, in
-// parts of a bounded size, one brief-material command each (sha256 per part), joined by brief-preflight (material.sha256, inputSha256).
+// the redacted report in the spec of incident-collect (reportSha256); the design brief's goal, questions and run settings (inputSha256).
 //
 // Writes: the incident commands write only inside spec.tmp (and its rev-<n> folders), only while <tmp>/.lock holds spec.token; the
-// brief commands write only inside spec.dir. A file of a revision is never overwritten; incident.json is replaced atomically
+// brief research and review files live under the run's tmp folder. A file of a revision is never overwritten; incident.json is replaced atomically
 // (<file>.tmp-<pid>, then rename).
 import fs from "node:fs";
 import path from "node:path";
@@ -986,7 +984,7 @@ function excerptOf(source, repos) {
   const from = Math.max(1, Number(m[2]) - EXCERPT_AROUND);
   const to = Math.min(Math.max(Number(m[2]), Number(m[3] || m[2])) + EXCERPT_AROUND, from + EXCERPT_LINES - 1);
   const range = { file, from, to };
-  if (!absOk(file) || !repos.some((r) => inside(file, r)) || SECRET_FILE.test(file)) return { range, text: "" };
+  if (!safeSource(file, repos)) return { range, text: "" };
   let buf;
   try { const st = fs.statSync(file); if (!st.isFile() || st.size > 1024 * 1024) return { range, text: "" }; buf = fs.readFileSync(file); } catch { return { range, text: "" }; }
   if (buf.includes(0)) return { range, text: "" };
@@ -1003,46 +1001,167 @@ function screenBrief(text, publicRepo) {
   return bad;
 }
 
-// The material of the review request (the goal, the questions, the facts and the unknowns of the workflow, already redacted) grows
-// with the research, so it never travels in one command: the workflow cuts its JSON text into parts of at most MATERIAL_PART
-// characters, and a runner hands each to brief-material, which writes <dir>/material/<part>-of-<of>.part and answers its hash.
-// brief-preflight joins the parts and checks the whole against spec.material.sha256 before it uses any of it.
-const MATERIAL_PART = 4000;
-const MATERIAL_PARTS = 200;
-const materialFile = (dir, part, of) => `${dir}/material/${part}-of-${of}.part`;
-// The folder a command writes into must resolve inside the folder it was given: a symlink or junction at <dir>/material that leads
-// elsewhere is refused before anything is written.
-function confined(root, sub) {
-  fs.mkdirSync(sub, { recursive: true });
+function confined(root, sub, create) {
+  if (create) fs.mkdirSync(sub, { recursive: true });
   let r = "", s = "";
   try { r = norm(fs.realpathSync.native(root)); s = norm(fs.realpathSync.native(sub)); } catch (e) { refuse(`${norm(sub)} cannot be resolved: ${e.message}`); }
-  if (fs.lstatSync(sub).isSymbolicLink() || !inside(s, r)) refuse(`${norm(sub)} is a link or resolves outside ${norm(root)}: nothing was written`);
+  if (!fs.lstatSync(sub).isDirectory() || !inside(s, r)) refuse(`${norm(sub)} is a link or resolves outside ${norm(root)}, or is not a directory`);
 }
-function briefMaterial(spec) {
-  need(spec, ["dir", "part", "of"]);
-  if (!absOk(spec.dir)) refuse("spec.dir must be an absolute path without \"..\"");
-  const { part, of } = spec;
-  if (!Number.isInteger(of) || of < 1 || of > MATERIAL_PARTS || !Number.isInteger(part) || part < 1 || part > of) refuse(`spec.part and spec.of must be whole numbers with 1 <= part <= of <= ${MATERIAL_PARTS}`);
-  if (typeof spec.text !== "string" || !spec.text || spec.text.length > MATERIAL_PART) refuse(`spec.text must be a string of 1 to ${MATERIAL_PART} characters`);
-  const dir = norm(spec.dir).replace(/\/+$/, "");
-  fs.mkdirSync(dir, { recursive: true });
-  confined(dir, `${dir}/material`);
-  const sha256 = writeNew(materialFile(dir, part, of), spec.text, true);
-  return { ok: true, part, of, sha256, chars: spec.text.length };
-}
-function readMaterial(dir, m) {
-  if (!m || typeof m !== "object" || !Number.isInteger(m.parts) || m.parts < 1 || m.parts > MATERIAL_PARTS || !/^[0-9a-f]{64}$/.test(String(m.sha256 || ""))) refuse(`spec.material must be { parts: 1..${MATERIAL_PARTS}, sha256 }`);
-  let text = "";
-  for (let i = 1; i <= m.parts; i++) {
-    const t = readText(materialFile(dir, i, m.parts));
-    if (t === null) refuse(`part ${i} of ${m.parts} of the material is missing (brief-material writes it)`);
-    text += t;
+// Publish a complete, nonempty directory. A rename cannot replace another nonempty directory, so
+// concurrent helpers either agree on identical bytes or refuse. An interrupted staging write is invisible.
+function manifestEntry(dir, name, value) {
+  const target = `${dir}/${name}`;
+  const file = `${target}/entry.json`;
+  const read = () => {
+    const st = fs.lstatSync(target, { throwIfNoEntry: false });
+    if (!st) return null;
+    if (!st.isDirectory() || st.isSymbolicLink() || !regularFile(file)) refuse("invalid manifest entry");
+    return fs.readFileSync(file, "utf8");
+  };
+  let existing = read();
+  if (value === undefined) return existing;
+  if (existing === null) {
+    const staging = fs.mkdtempSync(`${dir}/.pending-`);
+    try {
+      fs.writeFileSync(`${staging}/entry.json`, value);
+      fs.renameSync(staging, target);
+      return value;
+    } catch (e) {
+      existing = read();
+      if (existing === null) throw e;
+    } finally {
+      if (fs.existsSync(staging)) {
+        fs.rmSync(`${staging}/entry.json`, { force: true });
+        fs.rmdirSync(staging);
+      }
+    }
   }
-  if (sha(Buffer.from(text, "utf8")) !== m.sha256) refuse("the material parts do not join to spec.material.sha256: a part was not written exactly");
-  let doc = null;
-  try { doc = JSON.parse(text); } catch { refuse("the material is not JSON"); }
-  if (!doc || !Array.isArray(doc.facts) || !Array.isArray(doc.questions) || !Array.isArray(doc.unknowns) || typeof doc.goal !== "string") refuse("the material needs facts, questions, unknowns (lists) and goal (a string)");
+  if (existing !== value) refuse("the existing manifest entry belongs to different inputs or slot bytes");
+  return existing;
+}
+
+function regularFile(file) {
+  const st = fs.lstatSync(file, { throwIfNoEntry: false });
+  if (st && (!st.isFile() || st.nlink !== 1)) refuse("a slot or manifest path is a link or is not a regular file");
+  return Boolean(st);
+}
+
+function slotDocument(file, receipt) {
+  if (!regularFile(file)) refuse("the facts file is missing");
+  if (!receipt || receipt.path !== file) refuse("the report does not name the assigned slot path");
+  const bytes = fs.readFileSync(file);
+  if (sha(bytes) !== receipt.sha256) refuse("the file hash differs from the report");
+  let doc;
+  try { doc = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
+  catch { refuse("the file is not UTF-8 JSON"); }
+  if (!doc || !Array.isArray(doc.facts) || !Array.isArray(doc.unknowns) ||
+      !doc.unknowns.every(u => typeof u === "string") ||
+      !doc.facts.every(f => f && typeof f.claim === "string" && f.claim.trim() && typeof f.source === "string")) refuse("invalid facts schema");
+  if (doc.facts.length !== receipt.count) refuse("the fact count differs from the report");
   return doc;
+}
+
+// Follow existing source paths before reading them. For a missing excerpt, check its nearest existing
+// parent as well, so a missing file through a link outside the repository cannot become a citation.
+function safeSource(file, repos) {
+  if (!absOk(file) || !path.isAbsolute(file) || redact(file) !== file || SECRET_FILE.test(file) || /:/.test(file.replace(/^[a-z]:\//i, ""))) return false;
+  const root = repos.find(r => inside(file, r));
+  if (!root) return false;
+  let parent = norm(path.resolve(file));
+  try {
+    while (!fs.lstatSync(parent, { throwIfNoEntry: false })) {
+      if (sameCase(parent) === sameCase(norm(path.resolve(root)))) return false;
+      parent = norm(path.dirname(parent));
+    }
+    const real = norm(fs.realpathSync.native(parent));
+    return inside(real, norm(fs.realpathSync.native(root))) && !SECRET_FILE.test(real);
+  } catch { return false; }
+}
+
+function readResearch(spec, preflight = false) {
+  const { tmp, inputSha256 } = spec;
+  if (!absOk(tmp) || !/^[0-9a-f]{64}$/.test(inputSha256) ||
+      (spec.input && spec.input.tmp !== tmp)) refuse("the run folder or input digest is invalid");
+  const dir = `${tmp}/manifest`;
+  let text;
+  const opening = Boolean(spec.input) && !preflight;
+  if (opening) {
+    text = JSON.stringify(spec.input);
+    if (sha(text) !== inputSha256) refuse("the goal and questions did not arrive with their expected hash");
+    const { goal, questions, repos, publicRepo } = spec.input;
+    if (typeof goal !== "string" || typeof publicRepo !== "boolean" ||
+        !Array.isArray(repos) || !repos.length || !repos.every(absOk) ||
+        !Array.isArray(questions) || !questions.length || !questions.every(q => q && typeof q.question === "string")) refuse("invalid manifest inputs");
+  }
+  // Only a hash-verified opening command may initialize a run folder.
+  confined(tmp, dir, opening);
+  text = manifestEntry(dir, "input", text);
+  if (!text || sha(text) !== inputSha256) refuse("the run manifest does not match the goal, questions or run settings");
+  const input = JSON.parse(text);
+  if (input.tmp !== tmp) refuse("the manifest belongs to another folder");
+  confined(tmp, `${tmp}/facts`, opening);
+  const { questions, repos } = input;
+  const slots = [], entries = [], facts = [], unknowns = [], seen = new Set();
+  let dropped = 0;
+  const reports = preflight ? [] : spec.reports || [];
+  if (!Array.isArray(reports) || reports.some(r => !r || !Number.isInteger(r.slot) || r.slot < 1 || r.slot > questions.length) ||
+      (reports.length && sha(JSON.stringify(reports)) !== spec.reportsSha256)) refuse("invalid slot report digest or number");
+  for (let slot = 1; slot <= questions.length; slot++) {
+    const file = `${tmp}/facts/${slot}.json`;
+    const accepted = manifestEntry(dir, slot);
+    const report = reports.find(r => r.slot === slot);
+    let receipt = report;
+    if (accepted !== null) {
+      try { receipt = JSON.parse(accepted); } catch { refuse(`invalid manifest entry for accepted slot ${slot}`); }
+      if (!receipt || receipt.inputSha256 !== inputSha256 || receipt.slot !== slot) refuse(`invalid manifest entry for accepted slot ${slot}`);
+      if (report && (receipt.sha256 !== report.sha256 || receipt.count !== report.count || receipt.path !== report.path)) {
+        refuse(`slot ${slot} conflicts with an accepted manifest entry`);
+      }
+    }
+    regularFile(file); // also before assigning an unaccepted path to a researcher
+    if (!receipt) {
+      slots.push({ slot, status: "missing" });
+      entries.push(null);
+      continue;
+    }
+    let doc;
+    try {
+      doc = slotDocument(file, receipt);
+    } catch (e) {
+      if (!(e instanceof Refusal)) throw e;
+      if (accepted !== null) refuse(`accepted slot ${slot} changed: ${e.message}`);
+      slots.push({ slot, status: "rejected", reason: e.message });
+      entries.push(null);
+      continue;
+    }
+    const entry = { slot, path: file, count: receipt.count, sha256: receipt.sha256, inputSha256 };
+    if (accepted === null) manifestEntry(dir, slot, JSON.stringify(entry));
+    entries.push(entry);
+    slots.push({ slot, status: "accepted" });
+    for (const f of doc.facts) {
+      const source = norm(f.source.trim());
+      const m = source.match(/^(.+):(\d+)(?:-(\d+))?$/);
+      if (!m || Number(m[2]) < 1 || !Number.isSafeInteger(Number(m[3] || m[2])) || Number(m[3] || m[2]) < Number(m[2]) || !safeSource(m[1], repos)) { dropped++; continue; }
+      const claim = redact(f.claim).replace(/\s+/g, " ").trim();
+      const key = JSON.stringify([source, claim]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      facts.push({ id: `T${facts.length + 1}`, claim, source, question: slot });
+    }
+    for (const u of doc.unknowns) unknowns.push(redact(u).replace(/\s+/g, " ").trim());
+  }
+  const manifestSha256 = sha(JSON.stringify({ inputSha256, entries }));
+  const material = { goal: input.goal, questions: questions.map(q => q.question), facts, unknowns };
+  const writerText = JSON.stringify({ label: input.label, questions: material.questions, facts, unknowns }, null, 2) + "\n";
+  return { input, material, writerText, summary: { ok: true, inputSha256, manifestSha256, slots, total: facts.length, dropped } };
+}
+
+function briefManifest(spec) {
+  const { writerText, summary } = readResearch(spec);
+  if (summary.slots.every(s => s.status === "accepted")) {
+    summary.writerSha256 = writeNew(`${spec.tmp}/facts.json`, writerText, true);
+  }
+  return summary;
 }
 
 function briefPreflight(spec) {
@@ -1064,12 +1183,22 @@ function briefPreflight(spec) {
   const bad = screenBrief(text, publicRepo);
   if (bad.length) return { ...answer, problems: bad.slice(0, 20) };
   // The material only after the screen: a brief that does not pass is refused whatever the material holds.
-  const mat = readMaterial(dir, spec.material);
-  answer.inputSha256 = sha(Buffer.from(JSON.stringify({ goal: mat.goal, questions: mat.questions, facts: mat.facts, unknowns: mat.unknowns }), "utf8"));
+  const { input, material: mat, writerText, summary } = readResearch(spec, true);
+  if (summary.slots.some(s => s.status !== "accepted")) refuse("the research manifest is incomplete");
+  if (summary.manifestSha256 !== spec.manifestSha256) refuse("the accepted manifest hash changed");
+  const writerFile = `${spec.tmp}/facts.json`;
+  if (sha(writerText) !== spec.writerSha256 || !regularFile(writerFile) ||
+      sha(fs.readFileSync(writerFile)) !== spec.writerSha256) refuse("the verified facts differ from the writer's input");
+  if (input.publicRepo !== publicRepo || JSON.stringify(input.repos) !== JSON.stringify(repos) ||
+      input.label !== spec.label || input.brief !== spec.brief || input.gatewayRepo !== spec.gatewayRepo ||
+      dir !== `${spec.tmp}/review`) refuse("the review settings differ from the run manifest");
+  confined(spec.tmp, dir, true);
+  answer.manifestSha256 = summary.manifestSha256;
+  answer.inputSha256 = summary.inputSha256;
   const scrub = scrubber({ ...spec, publicRepo, repos });
   // The excerpts: the cited lines of each fact, redacted, in a public repository without machine paths; read here, never by a model.
   let excerptSize = 0, missing = 0;
-  const facts = mat.facts.map((f) => ({ id: String(f.id), claim: String(f.claim), source: String(f.source), question: f.question }));
+  const facts = mat.facts;
   const sections = facts.map((f) => {
     const ex = excerptOf(f.source, repos);
     const r = ex.range || { from: 0, to: 0 };
@@ -1081,7 +1210,6 @@ function briefPreflight(spec) {
   });
   const excerptDoc = ["# Excerpts of the cited files", "", "Each section is the cited lines of one fact with 3 lines around them (at most 40 in all), secret-shaped values redacted; the numbers are the file's line numbers.", ""].concat(sections).join("\n");
   const factsDoc = JSON.stringify({ label: String(spec.label), questions: mat.questions.map((q) => scrub(String(q))), facts: facts.map((f) => ({ ...f, claim: scrub(f.claim), source: scrub(f.source) })), unknowns: mat.unknowns.map((u) => scrub(String(u))) }, null, 2) + "\n";
-  fs.mkdirSync(dir, { recursive: true });
   const put = (name, body) => { answer.files[name] = writeNew(`${dir}/${name}`, body, true); };
   put("facts.json", factsDoc);
   put("excerpts.md", excerptDoc);
@@ -1140,7 +1268,7 @@ export const IO_COMMANDS = {
   "incident-fail": wrap(incidentFail),
   "incident-unlock": wrap(incidentUnlock),
   "brief-inspect": wrap(briefInspect),
-  "brief-material": wrap(briefMaterial),
+  "brief-manifest": wrap(briefManifest),
   "brief-preflight": wrap(briefPreflight),
   "review-read": wrap(reviewRead),
 };

@@ -233,8 +233,10 @@ export default function register({ scenario, ROOT }) {
     const reviewDir = `${repo}/.agent-tmp/b/review`;
     const facts = [{ id: "T1", claim: "The export keeps a token", source: `${repo}/src/export.js:10`, question: 1 }, { id: "T2", claim: "Gone", source: `${repo}/src/gone.js:3`, question: 1 }];
     const goal = `Resume the export in ${repo}/src.`;
-    const materialText = JSON.stringify({ goal, questions: ["How?"], facts, unknowns: [] });
-    const spec = { label: "b", brief, expectSha256: sha(clean), dir: reviewDir, tmp: `${repo}/.agent-tmp/b`, repos: [repo], gatewayRepo: repo, publicRepo: true, reviewer: { model: "gpt-x", effort: "high" }, material: { parts: 2, sha256: sha(materialText) } };
+    const tmp = `${repo}/.agent-tmp/b`;
+    const input = { goal, questions: [{ question: "How?" }], tmp, repos: [repo], gatewayRepo: repo, brief, label: "b", publicRepo: true };
+    const inputSha256 = sha(JSON.stringify(input));
+    const spec = { label: "b", brief, expectSha256: sha(clean), dir: reviewDir, tmp, repos: [repo], gatewayRepo: repo, publicRepo: true, reviewer: { model: "gpt-x", effort: "high" }, inputSha256 };
     const drive = ["C", ":"].join("");
     const key = ["sk", "A1b2C3d4E5f6G7h8I9j0K1l2"].join("-");
     const dirty = `${clean}Run it in ${drive}/work/app.\nThe client sends ${key}.\n`;
@@ -252,31 +254,36 @@ export default function register({ scenario, ROOT }) {
     const changed = io(t, "brief-preflight", { ...spec, expectSha256: sha(dirty) });
     t.ok(changed.changed === true && !changed.written && !fs.existsSync(reviewDir), "a brief that is not the one inspected is not screened or sent");
 
-    // The material arrives in parts: each is written as given and answered with its hash; the preflight joins them and checks the whole.
-    const cut = Math.floor(materialText.length / 2);
-    const parts = [materialText.slice(0, cut), materialText.slice(cut)];
-    const p2 = io(t, "brief-material", { dir: reviewDir, part: 2, of: 2, text: parts[1] });
-    t.eq([p2.ok, p2.part, p2.of, p2.sha256], [true, 2, 2, sha(parts[1])], "a part of the material is written and answered with its hash");
-    const lacking = io(t, "brief-preflight", spec);
-    t.ok(lacking.ok === false && /part 1 of 2 of the material is missing/.test(lacking.error) && !fs.existsSync(`${reviewDir}/facts.json`), "a missing part refuses the preflight before anything is written");
-    io(t, "brief-material", { dir: reviewDir, part: 1, of: 2, text: parts[0].replace("export", "exports") });
-    const wrong = io(t, "brief-preflight", spec);
-    t.ok(wrong.ok === false && /do not join to spec\.material\.sha256/.test(wrong.error) && !fs.existsSync(`${reviewDir}/facts.json`), "a part not written exactly refuses the preflight");
-    t.eq(io(t, "brief-material", { dir: reviewDir, part: 1, of: 2, text: "x".repeat(4001) }).ok, false, "a part longer than 4000 characters is refused");
-    t.eq(io(t, "brief-material", { dir: reviewDir, part: 3, of: 2, text: "x" }).ok, false, "a part number beyond its count is refused");
-    t.eq(io(t, "brief-material", { dir: reviewDir, part: 1, of: 2, text: parts[0] }).sha256, sha(parts[0]), "the part written again, exactly");
-    // A material folder that is a link (a junction on Windows) to a folder outside the review folder: refused, nothing written there.
-    const linked = `${repo}/.agent-tmp/b/linked`;
-    const away = `${dir}/away`;
-    fs.mkdirSync(linked, { recursive: true }); fs.mkdirSync(away, { recursive: true });
-    fs.symlinkSync(away, `${linked}/material`, "junction");
-    const viaLink = io(t, "brief-material", { dir: linked, part: 1, of: 1, text: "x" });
-    t.ok(viaLink.ok === false && /is a link or resolves outside/.test(viaLink.error) && listing(away).length === 0, "a material folder that is a link to elsewhere is refused and nothing is written outside the review folder");
-    fs.rmSync(`${linked}/material`, { recursive: true, force: true });
+    const init = io(t, "brief-manifest", { tmp, input, inputSha256 });
+    t.eq(init.slots, [{ slot: 1, status: "missing" }], "the expected slot is missing");
+    t.ok(/incomplete/.test(io(t, "brief-preflight", spec).error), "preflight refuses an incomplete manifest");
+    const file = `${tmp}/facts/1.json`;
+    const body = JSON.stringify({ facts: facts.map(({ claim, source }) => ({ claim, source })), unknowns: [] });
+    fs.writeFileSync(file, body);
+    const receipt = { slot: 1, count: 2, path: file, sha256: sha(body) };
+    const submit = (report) => io(t, "brief-manifest", { tmp, inputSha256, reports: [report], reportsSha256: sha(JSON.stringify([report])) });
+    for (const [field, value, reason] of [["count", 1, /count/], ["sha256", "0".repeat(64), /hash/], ["path", brief, /assigned slot path/]]) {
+      const [slot] = submit({ ...receipt, [field]: value }).slots;
+      t.ok(slot.status === "rejected" && reason.test(slot.reason), `a wrong ${field} is rejected with its reason`);
+    }
+    for (const [bytes, reason] of [[Buffer.from([0xff]), "UTF-8 JSON"], [JSON.stringify({ facts: [{}], unknowns: [] }), "schema"]]) {
+      fs.writeFileSync(file, bytes);
+      const [slot] = submit({ ...receipt, count: 1, sha256: sha(bytes) }).slots;
+      t.ok(slot.status === "rejected" && slot.reason.includes(reason), "even a matching digest needs a valid " + reason);
+    }
+    fs.writeFileSync(file, body);
+    const accepted = submit(receipt);
+    spec.manifestSha256 = accepted.manifestSha256;
+    spec.writerSha256 = accepted.writerSha256;
+    t.eq(accepted.slots, [{ slot: 1, status: "accepted" }], "the correct receipt pins the slot");
+    fs.appendFileSync(file, " ");
+    t.ok(/accepted slot 1 changed/.test(io(t, "brief-preflight", spec).error) && !fs.existsSync(reviewDir), "preflight hashes even parse-equivalent bytes before writing");
+    fs.writeFileSync(file, body);
+
     const before = listing(dir).filter((f) => !f.startsWith("repo/.agent-tmp/b/review/"));
     const ok = io(t, "brief-preflight", spec);
     t.eq([ok.written, ok.problems, ok.excerpts], [true, [], { total: 2, missing: 1 }], "a clean brief: the request is written; an excerpt that cannot be read is counted");
-    t.eq(ok.inputSha256, sha(Buffer.from(materialText, "utf8")), "inputSha256 is the hash of the material it got");
+    t.eq(ok.inputSha256, inputSha256, "the review uses the bound goal and questions");
     t.eq(Object.keys(ok.files).sort(), ["design-review.json", "design-review.md", "design-review.schema.json", "excerpts.md", "facts.json", "prompt.md"], "the six files of the request");
     for (const [name, hash] of Object.entries(ok.files)) t.eq(sha(fs.readFileSync(`${reviewDir}/${name}`)), hash, `${name}: written with the hash it reports`);
     const material = ["facts.json", "excerpts.md", "prompt.md"].map((n) => fs.readFileSync(`${reviewDir}/${n}`, "utf8")).join("\n");
@@ -312,5 +319,19 @@ export default function register({ scenario, ROOT }) {
       for (const s of ["exactly as read", "<<<FILE", "every character"]) t.ok(!src.includes(s), `${rel}: no "${s}"`);
       t.ok(!/sha256sum/.test(src), `${rel}: no runner is asked to hash a file`);
     }
+  });
+
+  scenario("io-helper-brief-linked-facts", "an assigned facts folder that links outside the run is refused before any slot is assigned", async (t) => {
+    const dir = scratch(t, "linked-facts");
+    const tmp = `${dir}/run`;
+    const away = `${dir}/away`;
+    fs.mkdirSync(tmp);
+    fs.mkdirSync(away);
+    fs.symlinkSync(away, `${tmp}/facts`, "junction");
+    const input = { tmp, goal: "Check the source", questions: [{ question: "Where?" }], repos: [dir], publicRepo: false };
+    const result = io(t, "brief-manifest", { tmp, input, inputSha256: sha(JSON.stringify(input)) });
+    t.ok(result.ok === false && /is a link or resolves outside/.test(result.error), "the linked facts folder is refused");
+    t.eq(listing(away), [], "nothing was written through the link");
+    fs.unlinkSync(`${tmp}/facts`);
   });
 }
