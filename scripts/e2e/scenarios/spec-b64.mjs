@@ -153,22 +153,25 @@ export default function register({ scenario, ROOT }) {
     }
   });
 
-  scenario("spec-b64-material-part-fits", "a material part of the worst text (2000 code points of 4-byte, 3-byte, escaped or Cyrillic characters, with a long folder name and the largest part numbers) always goes as b64:, within the cap, in design-brief", async (t) => {
+  scenario("spec-b64-material-part-fits", "a material part of the worst text (4-byte, 3-byte, escaped or Cyrillic characters, with a long folder name) goes as b64:, within the cap, in design-brief, and no part is over the 4000 characters the helper takes", async (t) => {
     const src = SRC();
-    const part = Number(src.match(/^const MATERIAL_PART = (\d+)$/m)[1]);
-    t.eq(part, 2000, "a part is 2000 code points");
-    const h = helperOf("design-brief");
+    t.eq(Number(src.match(/^const MATERIAL_PART = (\d+)$/m)[1]), 4000, "a part is at most 4000 characters, what brief-material takes");
     // The parts are cut from JSON.stringify of the material, so a part never holds a control character or a lone surrogate (JSON writes those
     // as ASCII escapes); each of its characters is then one of these, and the longest in the spec is the 4-byte emoji (a backslash and a quote double).
-    const dir = `/srv/Проекты/${"Очень длинное имя папки ".repeat(12)}.agent-tmp/db/review`;
-    for (const [what, ch] of [["4-byte emoji", "😀"], ["3-byte characters", "字"], ["Cyrillic", "ж"], ["backslashes (each doubled)", "\\"], ["quotes (each escaped)", "\""], ["ASCII", "a"]]) {
-      const text = ch.repeat(part);
-      const arg = h.specArg({ dir, part: 200, of: 200, text });
-      t.ok(arg.startsWith("b64:") && arg.length <= h.B64_MAX, `${what}: the part goes as b64: (${arg.length} of ${h.B64_MAX} characters, a folder name of ${dir.length} characters)`);
+    // A folder of 400 letters (the review folder is longer by the repository and the run name): the cut leaves room for it beside the heaviest part.
+    const tail = `/${"ж".repeat(200)}/${"f".repeat(200)}`;
+    for (const [what, ch, whole] of [["4-byte emoji", "😀", false], ["3-byte characters", "字", false], ["Cyrillic", "ж", true], ["backslashes (each doubled)", "\\", true], ["quotes (each escaped)", "\"", true], ["ASCII", "a", true]]) {
+      const r = await run(() => undefined, { tmpTail: tail, facts: (repo) => [{ claim: ch.repeat(9000), source: `${repo}/src/export.js:1` }] });
+      const calls = r.of(/^material /);
+      const parts = partsIn(calls);
+      t.ok(parts.length >= 3, `${what}: the material is several parts (${parts.length})`);
+      t.ok(parts.every((c) => /^b64:[A-Za-z0-9+/]+={0,2}$/.test(c.arg) && c.arg.length <= 12000), `${what}: every part goes as b64: within the 12000-character cap (largest ${Math.max(...parts.map((c) => c.arg.length))}, a folder name of ${(parts[0] ? parts[0].spec.dir : "").length} characters)`);
+      const lens = parts.map((c) => c.spec.text.length);
+      t.ok(lens.every((n) => n <= 4000), `${what}: no part is over 4000 characters (largest ${Math.max(...lens)})`);
+      if (whole) t.eq(lens[0], 4000, `${what}: the part is as large as the helper takes, not cut at 2000`);
+      t.eq(calls.length, Math.ceil(parts.length / 8), `${what}: one runner for every 8 parts`);
+      t.ok(/^review \(the fake stops here\)/.test(r.out.stoppedAt || "") && r.of(/^material .* again /).length === 0, `${what}: the run reaches the review with no part sent again (${r.out.stoppedAt})`);
     }
-    // The cap leaves room for a folder name of about 900 bytes beside the worst part.
-    const room = h.specArg({ dir: "ж".repeat(400), part: 200, of: 200, text: "😀".repeat(part) });
-    t.ok(room.startsWith("b64:"), "a folder name of 400 Cyrillic letters beside the worst part still goes as b64:");
   });
 
   /** design-brief for real, over a fake agent: the material parts run through the real helper with the argument as typed (and damaged on request). */
@@ -177,15 +180,15 @@ export default function register({ scenario, ROOT }) {
   process.on("exit", () => { try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch { /* best effort */ } });
   const SRC = () => fs.readFileSync(path.join(ROOT, "core", "workflows", "design-brief.js"), "utf8");
 
-  /** `damage(label, arg, attempt)` returns the argument the fake runner types, or undefined for a correct copy. */
+  /** `damage(label, arg, attempt, part)` returns the argument the fake runner types for that part, or undefined for a correct copy. */
   async function run(damage, opts = {}) {
     const oldHelperLine = opts.oldHelperLine;
+    const lose = opts.lose;
     const disk = `${SCRATCH}/run-${++runs}`;
     const repo = `${disk}/repo`;
     fs.mkdirSync(repo, { recursive: true });
     const args = { label: "db", goal: "Make the export resumable, because a cut run loses an hour.", repos: [repo], questions: ["How is the export written?"], out: `${repo}/.agent-tmp/db/brief.md`, tmp: `${repo}/.agent-tmp/db${opts.tmpTail || ""}` };
     const calls = [];
-    const attempts = new Map();
     const reviewDir = `${args.tmp}/review`;
     const ioLine = (facts) => { const body = { ok: true, ...facts, api: 1, plugin: PLUGIN }; return { exitCode: 0, stdout: JSON.stringify({ ...body, lineSha256: sha(JSON.stringify(body)) }) + "\n" }; };
     // Long claims, so that the material is several parts.
@@ -201,15 +204,19 @@ export default function register({ scenario, ROOT }) {
         if (label === "draft db") return { done: true, summary: "wrote", ownerDecisions: [], leftForLater: [], wrongFacts: [], unverified: [] };
         if (label === "inspect draft db") return ioLine({ exists: true, sha256: sha(BRIEF), bytes: BRIEF.length, firstLine: MARK, headings: HEADINGS });
         if (/^material /.test(label)) {
-          const m = prompt.match(/ -- "\$\(pwd -W 2>\/dev\/null \|\| pwd\)" brief-material '((?:[^']|'\\'')*)'\n/);
-          if (!m) throw new Error(`${label}: no brief-material command in the prompt`);
-          if (oldHelperLine) return { exitCode: 2, stdout: `${oldHelperLine}\n` };
-          const typed = m[1].replace(/'\\''/g, "'");
-          const n = (attempts.get(label) || 0) + 1;
-          attempts.set(label, n);
-          const arg = damage(label, typed, label.includes(" again ") ? 2 : 1) ?? typed;
-          const r = spawnSync(process.execPath, [GATE, "brief-material", arg], { encoding: "utf8", windowsHide: true });
-          return { exitCode: r.status ?? -1, stdout: r.stdout || "", error: (r.stderr || "").slice(0, 300) };
+          // One runner, several commands one after another: one answer for each, in order. damage(label, argument, attempt, part) types the argument of a part.
+          if (lose && lose(label)) return null;
+          const cmds = commandsIn(prompt, "brief-material");
+          if (!cmds.length) throw new Error(`${label}: no brief-material command in the prompt`);
+          if ((prompt.match(/node -e /g) || []).length !== cmds.length) throw new Error(`${label}: a command of the prompt is not a brief-material command`);
+          if (oldHelperLine) return { answers: cmds.map(() => ({ exitCode: 2, stdout: `${oldHelperLine}\n` })) };
+          return {
+            answers: cmds.map((c) => {
+              const arg = damage(label, c.arg, label.includes(" again ") ? 2 : 1, c.spec.part) ?? c.arg;
+              const r = spawnSync(process.execPath, [GATE, "brief-material", arg], { encoding: "utf8", windowsHide: true });
+              return { exitCode: r.status ?? -1, stdout: r.stdout || "", error: (r.stderr || "").slice(0, 300) };
+            }),
+          };
         }
         if (label === "preflight db") {
           // The parts as the real helper wrote them: the hash of their join is what the workflow compares with its own.
@@ -227,57 +234,62 @@ export default function register({ scenario, ROOT }) {
   }
   /** The spec a prompt's brief-material command carries, decoded. */
   const specOf = (arg) => JSON.parse(Buffer.from(arg.slice(4), "base64").toString("utf8"));
-  const partOf = (prompt) => specOf(prompt.match(/ brief-material '(b64:[A-Za-z0-9+/]+={0,2})'\n/)[1]);
+  /** The commands of the runner calls given (one runner sends several parts): { arg, spec } of each, in order. */
+  const partsIn = (calls) => calls.flatMap((c) => commandsIn(c.prompt, "brief-material"));
   /** Valid base64 of a spec whose text has another last character: the helper takes it, its hash is not the part's. */
   const changed = (arg) => { const o = specOf(arg); o.text = `${o.text.slice(0, -1)}#`; return enc(JSON.stringify(o)); };
   /** What the runner types is the argument cut short. */
   const cut = (n) => (_label, arg) => arg.slice(0, -n);
-  const when = (pick, f) => (label, arg, attempt) => (pick(label, attempt) ? f(label, arg) : undefined);
+  const when = (pick, f) => (label, arg, attempt, part) => (pick(label, attempt, part) ? f(label, arg) : undefined);
 
-  scenario("spec-b64-material-retry", "a material part that arrives damaged (the end of the argument dropped; valid base64 of another text) is sent once more by a fresh runner under its own label and the run reaches the review; a part damaged twice stops the run with the usual stop text", async (t) => {
+  scenario("spec-b64-material-retry", "a material part that arrives damaged (the end of the argument dropped; valid base64 of another text) is sent once more on its own by a fresh runner under its own label while the parts that arrived are not, and the run reaches the review; a part damaged twice stops the run with the usual stop text", async (t) => {
     const clean = await run(() => undefined);
-    const n = clean.of(/^material /).length;
+    const n = partsIn(clean.of(/^material /)).length;
     t.ok(n >= 3, `the material is several parts (${n})`);
-    t.ok(clean.of(/^material /).every((c) => /^material \d+\/\d+ db$/.test(c.label)), "without damage each part is sent once");
-    t.ok(clean.of(/^material /).every((c) => Array.from(partOf(c.prompt).text).length <= 2000), "no part is over 2000 characters");
+    t.eq(clean.of(/^material /).map((c) => c.label), [`material 1-${n}/${n} db`], "without damage the parts go in one runner, once, under one label");
+    t.ok(partsIn(clean.of(/^material /)).every((c) => c.spec.text.length <= 4000), "no part is over 4000 characters");
     t.ok(clean.out.stoppedAt && /^review \(the fake stops here\)/.test(clean.out.stoppedAt) && clean.of(/^review$/).length === 1, `an undamaged run reaches the review (${clean.out.stoppedAt})`);
     for (const c of clean.calls.filter((x) => / -- "\$\(pwd -W/.test(x.prompt))) t.ok(/ (roles|brief-[a-z]+|review-read) 'b64:[A-Za-z0-9+/]+={0,2}'\n/.test(c.prompt), `${c.label}: the command carries its spec as b64:`);
 
     // The last characters of the argument dropped, in two ways: a broken length, and a base64 that is valid but of a cut text.
     const second = 2;
-    const pickSecond = (label, attempt) => attempt === 1 && label.startsWith(`material ${second}/`);
+    const pickSecond = (_label, attempt, part) => attempt === 1 && part === second;
     for (const [name, damage] of [
       ["the last 3 characters dropped", cut(3)],
       ["the last 4 characters dropped (valid base64, cut JSON)", cut(4)],
       // The helper answers this one exactly as a copy that does not read b64: does ("Unexpected token 'b'"): after the gate answered, it is damage.
-      ["the colon of b64: dropped", (arg) => arg.replace(/^b64:/, "b64")],
+      ["the colon of b64: dropped", (_label, arg) => arg.replace(/^b64:/, "b64")],
     ]) {
       const r = await run(when(pickSecond, damage));
-      const parts = r.of(/^material /);
+      const runners = r.of(/^material /);
       t.ok(r.out.stoppedAt && /^review \(the fake stops here\)/.test(r.out.stoppedAt) && r.of(/^review$/).length === 1 && r.of(/^preflight /).length === 1, `${name}: the run reaches the review (${r.out.stoppedAt})`);
-      t.eq(parts.length, n + 1, `${name}: exactly one more command than parts`);
-      t.ok(parts.some((c) => c.label === `material ${second}/${n} again db`) && parts.filter((c) => c.label === `material ${second}/${n} db`).length === 1, `${name}: the second attempt has a label of its own`);
-      t.eq(new Set(parts.map((c) => c.label)).size, parts.length, `${name}: no two commands share a label, so the journal cannot hand back the bad answer`);
-      t.ok(!parts.some((c) => /again/.test(c.label) && !c.label.startsWith(`material ${second}/`)), `${name}: only the damaged part is sent again`);
+      t.eq(runners.map((c) => c.label), [`material 1-${n}/${n} db`, `material ${second}/${n} again db`], `${name}: one runner for the batch, then one more for the damaged part, under a label of its own`);
+      t.eq(partsIn(runners.slice(1)).map((c) => c.spec.part), [second], `${name}: only the damaged part is sent again`);
+      t.eq(new Set(runners.map((c) => c.label)).size, runners.length, `${name}: no two runners share a label, so the journal cannot hand back the bad answer`);
     }
     // The text of a part changed but still a valid spec: the helper takes it, the hash of what it got is not the part's.
     const altered = await run(when(pickSecond, (_l, arg) => changed(arg)));
     t.ok(/^review \(the fake stops here\)/.test(altered.out.stoppedAt || "") && altered.of(/^material .* again /).length === 1, `a part whose hash differs is sent again and the run reaches the review (${altered.out.stoppedAt})`);
 
     // Both attempts damaged: the run stops, with the stop text it had.
-    const twice = await run((label, arg) => (label.startsWith(`material ${second}/`) ? arg.slice(0, -3) : undefined));
+    const twice = await run((_label, arg, _attempt, part) => (part === second ? arg.slice(0, -3) : undefined));
     t.ok(/^review \(part 2 of the material was not written: the material helper \(part 2\): /.test(twice.out.stoppedAt || ""), `a part damaged twice stops the run (${twice.out.stoppedAt})`);
     t.ok(twice.of(/^preflight /).length === 0 && twice.of(/^review$/).length === 0, "nothing was preflighted or sent to the gateway");
-    t.eq(twice.of(/^material 2\//).length, 2, "the part was sent twice, not more");
-    const hash = await run((label, arg) => (label.startsWith(`material ${second}/`) ? changed(arg) : undefined));
+    t.eq(partsIn(twice.of(/^material /)).filter((c) => c.spec.part === second).length, 2, "the part was sent twice, not more");
+    t.eq(twice.of(/^material /).length, 2, "two runners: the batch and the one that sent the damaged part again");
+    const hash = await run((_label, arg, _attempt, part) => (part === second ? changed(arg) : undefined));
     t.ok(/^review \(part 2 of the material did not reach the helper exactly \(its sha256 differs\)\)/.test(hash.out.stoppedAt || "") && hash.of(/^review$/).length === 0, `a part whose hash differs twice stops the run with the hash text (${hash.out.stoppedAt})`);
     // A fault in the first part is reported first, as before.
-    const both = await run((label, arg) => (/^material [12]\//.test(label) ? arg.slice(0, -3) : undefined));
+    const both = await run((_label, arg, _attempt, part) => (part <= 2 ? arg.slice(0, -3) : undefined));
     t.ok(/^review \(part 1 of the material was not written/.test(both.out.stoppedAt || ""), "when several parts fail twice, the first is named");
+    t.eq(both.of(/^material /).map((c) => c.label), [`material 1-${n}/${n} db`, `material 1-2/${n} again db`], "the damaged parts of a batch go together in one fresh runner, the part that arrived is not sent again");
+    // A runner that returned nothing at all (the whole batch failed): every part of it is sent again, by one fresh runner, and the run goes on.
+    const lost = await run(() => undefined, { lose: (label) => label === `material 1-${n}/${n} db` });
+    t.ok(/^review \(the fake stops here\)/.test(lost.out.stoppedAt || "") && lost.of(/^material /).map((c) => c.label).join() === `material 1-${n}/${n} db,material 1-${n}/${n} again db`, `a batch that returned no result is sent again whole and the run reaches the review (${lost.out.stoppedAt}; ${lost.of(/^material /).map((c) => c.label)})`);
   });
 
-  scenario("spec-b64-material-long-folder", "the material is cut by the size of the whole spec: with a long review folder and the heaviest text the parts are smaller than 2000 code points, every one still goes as b64: within the cap, and they rejoin exactly", async (t) => {
-    // 5 folders of 200 letters: about 1000 bytes in every part's spec, so 2000 four-byte code points (8000 bytes) no longer fit beside it.
+  scenario("spec-b64-material-long-folder", "the material is cut by the size of the whole spec: with a long review folder and the heaviest text the parts are smaller than 4000 characters, every one still goes as b64: within the cap, and they rejoin exactly", async (t) => {
+    // 5 folders of 200 letters: about 1000 bytes in every part's spec, so 2000 four-byte code points (8000 bytes, the most a part of 4000 characters holds) no longer fit beside it.
     const tail = Array.from({ length: 5 }, (_, i) => `/${String.fromCharCode(97 + i).repeat(200)}`).join("");
     const emoji = (repo) => Array.from({ length: 4 }, (_, i) => ({ claim: "😀".repeat(2500), source: `${repo}/src/export.js:${i + 1}` }));
     // macOS refuses a path over 1024 bytes (PATH_MAX), so the helper cannot write into a 1000-character folder there and such a folder cannot occur.
@@ -288,15 +300,17 @@ export default function register({ scenario, ROOT }) {
       return { skip: "macOS: a review folder over 1024 bytes cannot be created (PATH_MAX); the long-folder cut runs on Windows and Linux" };
     }
     const r = await run(() => undefined, { tmpTail: tail, facts: emoji });
-    const parts = r.of(/^material /);
-    const dir = parts.length ? partOf(parts[0].prompt).dir : "";
+    const calls = r.of(/^material /);
+    const parts = partsIn(calls);
+    const dir = parts.length ? parts[0].spec.dir : "";
     t.ok(dir.length > 1000, `the review folder of the run is long (${dir.length} characters)`);
     t.ok(parts.length >= 6, `the material is several parts (${parts.length})`);
-    t.ok(parts.every((c) => / brief-material 'b64:[A-Za-z0-9+/]+={0,2}'\n/.test(c.prompt)), "every part goes as b64:, none as plain JSON");
-    const lens = parts.map((c) => Array.from(partOf(c.prompt).text).length);
-    t.ok(lens.every((n) => n <= 2000) && lens.some((n) => n < 2000), `no part is over 2000 code points and the folder made some smaller (largest ${Math.max(...lens)}, smallest ${Math.min(...lens)})`);
-    t.ok(parts.every((c) => c.prompt.match(/ brief-material '(b64:[A-Za-z0-9+/]+={0,2})'\n/)[1].length <= 12000), "every argument is within the 12000-character cap");
-    const joined = parts.map((c) => partOf(c.prompt)).sort((x, y) => x.part - y.part);
+    t.eq(calls.length, Math.ceil(parts.length / 8), "sent by one runner for every 8 parts");
+    t.ok(parts.every((c) => /^b64:[A-Za-z0-9+/]+={0,2}$/.test(c.arg)), "every part goes as b64:, none as plain JSON");
+    const lens = parts.map((c) => c.spec.text.length);
+    t.ok(lens.every((n) => n <= 4000) && lens.some((n) => n < 4000), `no part is over 4000 characters and the folder made some smaller (largest ${Math.max(...lens)}, smallest ${Math.min(...lens)})`);
+    t.ok(parts.every((c) => c.arg.length <= 12000), "every argument is within the 12000-character cap");
+    const joined = parts.map((c) => c.spec).sort((x, y) => x.part - y.part);
     t.ok(joined.every((x, i) => x.part === i + 1 && x.of === parts.length), "the parts are numbered 1..n of n");
     const text = joined.map((x) => x.text).join("");
     t.eq(JSON.parse(text).facts.length, 4, "the parts rejoin to the material JSON");
@@ -383,9 +397,9 @@ export default function register({ scenario, ROOT }) {
     t.ok(!/older than this workflow/.test(r.out.stoppedAt || "") && /^review \(part \d+ of the material was not written: /.test(r.out.stoppedAt || "") && r.of(/^material .* again /).length >= 1 && r.of(/^preflight /).length === 0 && r.of(/^review$/).length === 0, `design-brief: the old copy's text on a material part after the gate is damage: sent again, then the usual stop before the review (${String(r.out.stoppedAt).slice(0, 200)})`);
   });
 
-  scenario("spec-b64-too-many-parts", "the 200-part limit and its message are kept with the smaller parts", async (t) => {
+  scenario("spec-b64-too-many-parts", "the 200-part limit and its message are kept with the larger parts and the batches", async (t) => {
     const src = SRC();
-    t.ok(/const MATERIAL_PART = 2000\n/.test(src), "a part is 2000 code points");
+    t.ok(/const MATERIAL_PART = 4000\n/.test(src), "a part is 4000 characters");
     t.ok(/materialParts\.length > 200\) return stopPre\(`the facts of the research are too many to send \(\$\{materialText\.length\} characters in \$\{materialParts\.length\} parts, at most 200\)`/.test(src), "over 200 parts stops the run with the same text");
   });
 }
