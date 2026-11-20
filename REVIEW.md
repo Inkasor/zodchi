@@ -72,3 +72,9 @@ the owner stop a release for it?
   whole batch again on resume (brief-material rewrites a part file, so a resend is safe and costs a few runner
   commands); a wrong or conflicting receipt for a part (the preflight joins the parts and checks the whole hash, so a
   damaged part stops the run with "run again" before anything reaches a reviewer).
+- nit for code-package runs and later review rounds (2026-11-20, owner decision): a new run with a used label and tmp
+  folder not counting an earlier run's "unknown" record (starting a new run is the person's decision; its keys are its
+  own); a claim written by an older helper before a branch switch failing the base check on a continuation after the
+  upgrade (a transitional case that stops with its reason); later review rounds focused on the earlier findings and
+  regressions, with a new finding important only by the Review boundary or REVIEW.md (the owner's choice against
+  rounds that only go deeper); the 60-character label cap (it keeps every gateway key within the limit).
