@@ -49,20 +49,23 @@ args: {
 
 The researchers, the writer and the reviewer are models; every other file step is a command of the helper of the loaded
 plugin copy (`core/scripts/gate.mjs` hands `brief-inspect`, `brief-material`, `brief-preflight` and `review-read` to
-`core/scripts/io.mjs`). A runner (the cheap model) only runs one such command and returns the one JSON line it printed;
-the workflow checks it against the `lineSha256` printed with it and decides from its fields. No file content passes
+`core/scripts/io.mjs`). A runner (the cheap model) only runs the helper commands it is given (one, or for the material a batch of them
+one after another) and returns the one JSON line each printed; the workflow checks each against the `lineSha256` printed with it
+and decides from its fields. No file content passes
 through a model: the brief is written by the writer and read back by the helper as its hash, size, first line and
 headings; the review request (prompt, facts, excerpts) is written by the helper; the review's answer is read by the
 helper as its hash and its parsed verdict and findings (at most 40 findings, each text capped at 800 characters; the
 writer of the fix reads the whole file). The workflow's own material for the request (the goal, the questions, the facts
 and the unknowns) grows with the research, so it never travels in one command: its JSON text is cut into parts of at most
-2000 characters, each written by one `brief-material` command and checked by its hash, and `brief-preflight` joins the
-parts and checks the whole hash before it uses them. Every helper command carries its spec as `b64:` and the base64 of the
+4000 characters (the most `brief-material` takes), each written by one `brief-material` command and checked by its hash, and
+`brief-preflight` joins the parts and checks the whole hash before it uses them. One runner sends a batch of up to 8 parts, one
+command after another, and returns each command's line, so the number of runners is the number of parts divided by 8 (a
+material of about 56000 characters is 14 to 16 parts and 2 runners), not one runner per part. Every helper command carries its spec as `b64:` and the base64 of the
 spec's UTF-8 JSON text (`gate.mjs` also takes plain JSON), so a runner that retypes the command has no quote, backslash or
 brace to "repair". The `b64:` argument is used up to 12000 characters (`B64_MAX`, the same in the four workflows); a longer spec
 (for instance a long Russian incident report, which base64 makes about 2.7 times longer) goes as the plain JSON it always was,
-so no command is longer than before. A material part is cut by the size of its whole spec (the actual review folder, the part counters and the text, which the spec escapes once more), so it is at most 2000 characters and as many fewer as the folder name and the text need to stay under the cap: every part goes as `b64:`, and a folder name so long that no room is left stops the run before anything is sent. A part that arrives damaged (no JSON line, an answer with `ok: false`, or a hash that differs) is sent once more by a fresh runner;
-only a second failure stops the run.
+so no command is longer than before. A material part is cut by the size of its whole spec (the actual review folder, the part counters and the text, which the spec escapes once more), so it is at most 4000 characters and as many fewer as the folder name and the text need to stay under the cap (Cyrillic, escaped or four-byte characters make a part shorter): every part goes as `b64:`, and a folder name so long that no room is left stops the run before anything is sent. A part that arrives damaged (no JSON line, an answer with `ok: false`, or a hash that differs) is sent once more by a fresh runner (the damaged parts of one batch go together in one fresh runner, the parts that arrived
+exactly are not sent again, and a batch whose runner returned nothing sends all its parts again); only a second failure stops the run.
 
 A zodchi-core copy older than the workflow (for instance one picked with `args.pluginRoot`) reads plain JSON only and answers a `b64:` spec with `the spec is not JSON` and exit 2. When the workflow sent `b64:`, every helper reader of the four workflows turns exactly that answer into a stop: "the zodchi-core copy at <path> is older than this workflow (it does not read b64: specs): rerun the installer, reload plugins, or pass args.pluginRoot of a current copy". There is no fallback to plain JSON. Without `args.pluginRoot` the old helper does not name its copy, so the stop says "the zodchi-core copy this session loaded".
 

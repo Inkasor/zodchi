@@ -138,6 +138,8 @@ export default function register({ scenario, ROOT }) {
         calls.push({ label: opts.label, prompt: shown, opts });
         const given = answer(opts.label, shown, opts);
         if (opts.label === "review") { reviewGiven = given; if (!given) return given; const { answer: _a, answerSha256: _s, ...gw } = given; return gw; }
+        // A runner sends a batch of material parts: one answer per command, in order (a scripted answer for the label is every command's answer).
+        if (opts.label.startsWith("material ")) return given === null || given === undefined ? given : { answers: commandsIn(prompt, "brief-material").map((c) => io(c.command, c.spec, given)) };
         // The command as the workflow typed it (paths on the scratch folder), not the mapped text.
         const m = commandsIn(prompt, "brief-inspect|brief-material|brief-preflight|review-read")[0];
         return m ? io(m.command, m.spec, given) : given;
@@ -230,7 +232,7 @@ export default function register({ scenario, ROOT }) {
     const gw = r.of(/^review$/)[0].prompt;
     t.ok(!gw.includes("--attach '/r/src/client.js'") && !gw.includes("--attach '/r/src/z.js'"), "a cited source file is not attached whole");
     t.ok(gw.includes("--attach '/r/.agent-tmp/db/review/excerpts.md'"), "its cited lines are attached as one excerpts file");
-    const pre = r.of(/^material /).map((c) => JSON.parse(c.prompt.match(/ brief-material '(.*)'$/m)[1].replace(/'\\''/g, "'")).text).join("");
+    const pre = r.of(/^material /).flatMap((c) => commandsIn(c.prompt, "brief-material")).map((c) => c.spec.text).join("");
     t.ok(pre.includes('"source":"/r/src/client.js:7"') && !/\.env|server\.pem/.test(pre), "the helper is asked for the lines of the good facts only");
     t.ok(!/--attach '\/r\/\.env'|server\.pem/.test(gw), "a secret file is never attached");
     const none = await run({ args: { questions: ["q1"] }, answers: { "facts 1": { facts: [{ claim: "x", source: "/other/x.js:1" }], unknowns: [] } } });
@@ -538,13 +540,13 @@ another clean copy
     t.ok(ok.out.stoppedAt === undefined && /The review approved the brief/.test(ok.out.next), "approved with only a minor finding is an approval");
   });
 
-  scenario("design-brief-material-parts", "the workflow's material for the review (goal, questions, facts, unknowns) reaches the helper in parts of at most 2000 characters, one command each, so no command a runner types grows with the research; a part that did not arrive exactly stops the run before the preflight", async (t) => {
+  scenario("design-brief-material-parts", "the workflow's material for the review (goal, questions, facts, unknowns) reaches the helper in parts of at most 4000 characters, one command each, sent by a few runners (up to 8 commands one after another), so no command a runner types grows with the research and the runner count does not follow it; a part that did not arrive exactly stops the run before the preflight", async (t) => {
     const many = { facts: Array.from({ length: 60 }, (_, i) => ({ claim: `The export writes row group ${i} with its own checkpoint and a long explanation of why it matters here (fact ${i}).`, source: `/r/src/export.js:${i + 1}` })), unknowns: [] };
     const r = await run({ answers: { "facts 1": many } });
     const parts = r.of(/^material /);
-    const texts = parts.map((c) => JSON.parse(c.prompt.match(/ brief-material '(.*)'$/m)[1].replace(/'\\''/g, "'")));
-    t.ok(parts.length > 1 && texts.every((x) => x.text.length <= 2000 && x.of === parts.length), "the material is cut into several parts of at most 2000 characters");
-    t.ok(parts.every((c) => c.opts.agentType === "zodchi-core:runner" && (c.prompt.match(/node -e /g) || []).length === 1), "each part is one helper command a runner runs");
+    const texts = parts.flatMap((c) => commandsIn(c.prompt, "brief-material").map((x) => x.spec));
+    t.ok(texts.length > 1 && texts.every((x) => x.text.length <= 4000 && x.of === texts.length), "the material is cut into several parts of at most 4000 characters");
+    t.ok(parts.length === 1 && parts.every((c) => c.opts.agentType === "zodchi-core:runner" && (c.prompt.match(/node -e /g) || []).length === texts.length), "the parts go in one runner, which runs one helper command for each, one after another");
     t.ok(!/"facts":/.test(r.of(/^preflight /)[0].prompt) && r.out.stoppedAt === undefined && r.of(/^review$/).length === 1, "the preflight command carries no facts, only the parts' count and hash; the review was sent");
     const doc = JSON.parse(r.file("/r/.agent-tmp/db/review/facts.json"));
     t.eq(doc.facts.length, 61, "every fact reached the facts file of the review");
@@ -554,7 +556,7 @@ another clean copy
     t.ok(/^review \(part 1 of the material did not reach the helper exactly/.test(bad.out.stoppedAt) && bad.of(/^preflight /).length === 0 && bad.of(/^review$/).length === 0, "a part whose hash differs both times stops the run: no preflight, nothing sent");
     t.eq(bad.of(/^material /).map((c) => c.label), ["material 1/1 db", "material 1/1 again db"], "the part was sent twice, the second time by a fresh runner under its own label, and no more");
     const cmd = JSON.parse(r.of(/^preflight /)[0].prompt.match(/ brief-preflight '(.*)'$/m)[1].replace(/'\\''/g, "'"));
-    t.eq(cmd.material.parts, parts.length, "the preflight is given the workflow's own part count, and the real helper joined those parts");
+    t.eq(cmd.material.parts, texts.length, "the preflight is given the workflow's own part count, and the real helper joined those parts");
   });
 
   scenario("design-brief-screen-mode", "the screening mode is the workflow's: a preflight command whose publicRepo a runner dropped is refused by the helper, and one whose mode a runner changed is refused by the workflow; nothing goes to the gateway", async (t) => {
