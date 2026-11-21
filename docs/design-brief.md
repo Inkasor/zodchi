@@ -39,7 +39,7 @@ args: {
 | `repos` | absolute paths the researchers and the writer may read. The first one is also where the gateway runs from: it must be a Git work tree that ignores `.agent-tmp/` (`gatewayRepo` names another) |
 | `out` | absolute path of the brief. It starts with the line `<!-- design-brief: <label> -->`; a file that carries it is replaced, any other existing file is never overwritten |
 | `tmp` | absolute folder for progress files, the facts and the review |
-| `questions` | optional list of research questions (a string, or `{ question, repo, files }`). Without it a planner proposes 3 to 5, each naming the repository and the files to read |
+| `questions` | optional list of research questions (a string, or `{ question, repo, files }`). Relative files start at the question's `repo`, defaulting to `repos[0]`. Each resolved file must lie inside a listed repository. Without questions a planner proposes 3 to 5. |
 | `context` | optional documents the writer reads first (a plan, an earlier brief) |
 | `template` | optional brief to imitate. Default: the section list below |
 | `publicRepo` | `true` when the brief is for a public repository: the review also looks for company, product and person names and machine paths |
@@ -53,17 +53,28 @@ exact file bytes. The file holds `{ facts: [{ claim, source }], unknowns: [strin
 
 The helper in `core/scripts/io.mjs` owns the manifest under `<tmp>/manifest/`. Its header, `input/entry.json`, binds
 the goal, ordered questions and file hints, repositories and disclosure settings to a single SHA-256.
-The workflow sends those inputs to `brief-manifest` in one base64 argument of at most 4000 characters. It
-stops before research if the argument exceeds that limit and resends once if it cannot verify the response.
-The helper checks the input digest before creating the run folders.
-Runners carry receipt metadata and helper summaries. The workflow verifies the helper's `lineSha256`
-before using its slot statuses, reasons, totals and manifest hash.
+Helper commands encode their UTF-8 JSON arguments as `b64:` followed by base64 so quotes and backslashes
+survive shell transport. The general limit for this encoding is 12000 characters, after which the workflow
+uses plain JSON. Research commands use a smaller limit of 4000 characters including the prefix.
+Short research inputs travel inline. When planner questions would exceed the limit, the runner writes their
+ordered JSON array to a fresh file in `tmp` and redirects that file into `brief-manifest`. The helper checks
+the reconstructed input against the same SHA-256 before creating the manifest. If the opening response cannot
+be verified, the workflow resends once. An oversized goal or other supplied input stops research with a next step.
+
+If the first gate command exits 2 because the installed helper reads `b64:` as invalid JSON, the result names
+the old plugin copy when its path is known. Rerun the installer and reload plugins, or point `args.pluginRoot`
+at a current copy. A malformed command after a successful gate is reported as a command failure.
+
+Facts stay in the slot files. Runners send receipt lists with their own SHA-256, including the digest of
+the empty list when opening the manifest. The workflow verifies the helper's `lineSha256` before using its
+slot statuses, reasons, totals and manifest hash.
 
 For each accepted slot the helper publishes an immutable `<slot>/entry.json` receipt in the manifest folder. The manifest
 hash covers the input digest and all receipts in question order, including empty positions in a partial run.
 A second rejection stops the invocation. To recover, start a fresh run with the same `args.tmp` and research
 inputs. The helper hashes the live files, reuses accepted slots and asks only the questions whose receipts are
-missing or rejected. Using `resumeFromRunId` with unchanged calls would replay the same stop. If accepted bytes changed or vanished,
+missing or rejected. A named researcher rerun rechecks the live manifest first and records a note for an
+already accepted slot. Using `resumeFromRunId` with unchanged calls would replay the same stop. If accepted bytes changed or vanished,
 restore the accepted bytes or choose a fresh run folder. Changing the questions or run settings also requires
 a fresh folder.
 
