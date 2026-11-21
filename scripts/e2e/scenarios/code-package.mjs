@@ -166,6 +166,23 @@ export default function register({ scenario, ROOT }) {
       "checks 1": { ok: false, cause: "code", results: ["assertion failed"], evidence: [{ command, exitCode: 1, log: "check.log" }] },
     }, { fixes: 0 });
     t.eq([failed.out.stoppedAt, failed.out.verifiedBy, failed.of(/^commit /).length], ["checks (code)", "none", 0], "a failure outside the sandbox still stops the package");
+
+    const fixError = "process killed at the sandbox time limit";
+    const fixLine = `sandbox: ${command}: ${fixError}`;
+    const fixed = await runCodex({
+      "write pkg": write,
+      "checks 1": { ok: false, cause: "code", results: ["assertion failed"], evidence: [{ command, exitCode: 1, log: "check.log" }] },
+      "fix checks 1.1": workResult("pkg-abc1234-a1b2c3d4-work-2", "succeeded", "more", {
+        checks: [{ command, exitCode: null, result: `sandbox: ${fixError}` }],
+      }),
+      "fix checks 1.1 (cont 1)": workResult("pkg-abc1234-a1b2c3d4-c1-2", "succeeded", "done"),
+      "review 1": bad(imp("F1", "src/a.js", "handle the missing input")),
+      "close 1": workResult("pkg-abc1234-a1b2c3d4-work-3", "succeeded", "done"),
+    });
+    const review = fixed.of(/^review 1$/)[0].prompt;
+    t.ok(review.includes(fixLine) && !review.includes(line), "the checks fix keeps its continuation evidence and clears the earlier write's sandbox error");
+    t.ok(!fixed.of(/^review 2$/)[0].prompt.includes(fixLine), "the next review sees the clean close write");
+    t.eq([fixed.out.approved, fixed.out.write.unverified], [true, []], "the final result reports the latest write");
   });
 
   scenario("code-package-codex-unknown", "an unknown continuation leaves the claim awaiting a decision for that exact key", async (t) => {

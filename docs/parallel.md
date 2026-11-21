@@ -72,9 +72,10 @@ agent may not be allowed to do either. Nothing is shared, nothing is locked.
 - **Commits.** The commit step commits only the package's own paths
   (`git commit -- <paths>`); another package's staged or changed file stays out.
   After a write, `claim-more` gives open claims priority, including the calling
-  package's own claim. A stopped claim keeps its changed files for
-  `claimStaleHours` after it stopped (three hours by default) if no open claim
-  lists them. Clean paths in a stopped claim are ignored. When the writer reports
+  package's own claim. If no open claim lists a changed file, another package
+  owns it when its claim lists the file and closed `stopped` after the caller's
+  claim originally opened. Changes already present at the caller's gate stay
+  excluded through `atGate`. Clean paths in a stopped claim are ignored. When the writer reports
   a file owned by another package, the run stops with `claim conflict`. Other
   files owned by that package stay out of this package's claim, protected-check
   guard and commits. Only open claims can block opening or reopening a package.

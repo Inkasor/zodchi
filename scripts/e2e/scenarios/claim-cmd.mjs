@@ -283,17 +283,24 @@ export default function register({ scenario, ROOT }) {
   scenario("claim-cmd-stopped-owner", "claim-more leaves another stopped package's dirty test with its owner through the guard and commit", async (t) => {
     const { home, dir } = homeFor(t, "stopped");
     const dirty = "tests/Partial.js", clean = "tests/removed.js";
-    claim(t, dir, "earlier", [dirty, clean]);
-    const stopped = { ...read(dir, "earlier"), status: "stopped", closedAt: new Date().toISOString() };
-    fs.writeFileSync(`${dir}/earlier.json`, JSON.stringify(stopped));
-    // An untracked file removed by the earlier package no longer appears in Git status.
     const repo = `${home}/repo`;
-    fs.mkdirSync(`${repo}/tests`, { recursive: true });
-    fs.writeFileSync(`${repo}/${clean}`, "partial");
-    fs.unlinkSync(`${repo}/${clean}`);
-    const real = realRunner(t, home, undefined, {}, [dirty, "src/a.js"]);
+    const real = realRunner(t, home, undefined, {}, ["src/a.js"]);
+    let stopped;
     const run = await runBody({
-      "claim lm-release": real,
+      "claim lm-release": (prompt) => {
+        const reply = real(prompt);
+        // Replay two overlapping claims. The other package stopped four hours into this run.
+        const caller = { ...read(dir, "lm-release"), openedAt: "2026-01-01T08:00:00Z" };
+        fs.writeFileSync(`${dir}/lm-release.json`, JSON.stringify(caller));
+        t.eq(claim(t, dir, "earlier", [dirty, clean], { repo }).ok, true, "the other claim opens after the caller's gate");
+        fs.mkdirSync(`${repo}/tests`, { recursive: true });
+        fs.writeFileSync(`${repo}/${dirty}`, "partial");
+        fs.writeFileSync(`${repo}/${clean}`, "partial");
+        fs.unlinkSync(`${repo}/${clean}`);
+        stopped = { ...read(dir, "earlier"), openedAt: "2026-01-01T09:00:00Z", status: "stopped", closedAt: "2026-01-01T12:00:00Z" };
+        fs.writeFileSync(`${dir}/earlier.json`, JSON.stringify(stopped));
+        return reply;
+      },
       "claim more write lm-release": (prompt) => {
         const reply = real(prompt);
         const facts = JSON.parse(reply.stdout);
@@ -310,18 +317,27 @@ export default function register({ scenario, ROOT }) {
     t.eq([hard.ok, hard.conflicts], [false, ["earlier: tests/partial.js"]], "reporting the test explicitly is a conflict");
     t.eq(read(dir, "lm-release").files, ["src/a.js"], "neither form took a file from the stopped claim");
     t.eq(read(dir, "earlier"), stopped, "the stopped claim stays as it was");
+    t.eq(claim(t, dir, "lm-release", [dirty]).ok, true, "the caller can explicitly claim the overlapping stopped path");
+    const ownGit = helper(t, "claim-more", { dir, repo, label: "lm-release" });
+    t.eq([ownGit.changed, ownGit.others], [["src/a.js", dirty], []], "Git keeps the caller's explicitly claimed file");
+    const ownListed = more(t, dir, "lm-release", [dirty], [dirty]);
+    t.eq([ownListed.ok, ownListed.conflicts, ownListed.others], [true, [], []], "explicit lists give the caller's claim priority too");
     const oldGit = "src/old.js", oldSoft = "src/soft.js";
     claim(t, dir, "old", [oldGit, oldSoft]);
-    const closedAt = new Date(Date.now() - 2 * 3600000).toISOString();
-    fs.writeFileSync(`${dir}/old.json`, JSON.stringify({ ...read(dir, "old"), status: "stopped", closedAt }));
+    const minuteAgo = Date.now() - 60000;
+    fs.writeFileSync(`${dir}/old.json`, JSON.stringify({
+      ...read(dir, "old"), openedAt: new Date(minuteAgo - 60000).toISOString(), status: "stopped", closedAt: new Date(minuteAgo).toISOString(),
+    }));
     t.eq(claim(t, dir, "next", [clean], { repo }).ok, true, "a stopped claim does not block an explicit new claim");
+    const atGate = read(dir, "next").atGate;
+    t.eq(atGate.includes(oldGit) || atGate.includes(oldSoft), false, "both files of the stopped claim were clean at the new gate");
     fs.writeFileSync(`${repo}/${clean}`, "new work");
     fs.writeFileSync(`${repo}/${oldGit}`, "new work");
-    const git = helper(t, "claim-more", { dir, repo, label: "next", staleHours: 1 });
-    t.eq([git.ok, git.changed, git.added], [true, [oldGit, clean], [oldGit]], "Git keeps the explicitly claimed edit and adds an edit listed only by an expired claim");
+    const git = helper(t, "claim-more", { dir, repo, label: "next" });
+    t.eq([git.ok, git.changed, git.added], [true, [oldGit, clean], [oldGit]], "Git adds a new edit to a file whose other claim stopped before this gate");
     fs.writeFileSync(`${repo}/${oldSoft}`, "new work");
-    const listed = more(t, dir, "next", [clean], [oldSoft], { staleHours: 1 });
-    t.eq([listed.ok, listed.conflicts, listed.others, listed.added], [true, [], [], [oldSoft]], "the explicit lists keep the claimed hard file and add the expired claim's soft file");
+    const listed = more(t, dir, "next", [clean], [oldSoft]);
+    t.eq([listed.ok, listed.conflicts, listed.others, listed.added], [true, [], [], [oldSoft]], "the explicit lists add the new edit after the other claim stopped");
     const next = read(dir, "next");
     fs.writeFileSync(`${dir}/next.json`, JSON.stringify({ ...next, status: "stopped" }));
     const resumed = helper(t, "claim-more", { dir, repo, label: "next" });
