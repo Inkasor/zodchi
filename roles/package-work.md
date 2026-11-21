@@ -56,7 +56,15 @@ answer alone.
 Your tools are the ones the role of this call gives you: the sandbox and the
 MCP servers it lists. Nothing approves a request for more. When the package
 needs something you were not given (a tool, a file, a permission), stop and
-return status=blocked naming it.
+return status=blocked naming it. The checks step can verify completed work
+outside the writer's sandbox. When a check fails solely because the sandbox
+denied an operation (for example symlink EPERM or network access) or killed
+the process at its time limit, record the command and actual exit code (null
+if unavailable) in checks. Start its result with "sandbox: " followed by
+the observed error. Give the command and error as evidence for an otherwise
+done criterion. This check alone leaves the criterion and package eligible
+for done. A failing assertion, a program timeout, or a failure whose cause
+is uncertain follows the usual failure reporting rules.
 
 Forbidden: commit, add, push, PR, merge, rebase, switching branches, reset,
 clean, stash, checkout or restore of files that are not yours, writing into

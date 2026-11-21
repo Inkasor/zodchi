@@ -117,6 +117,7 @@ export default function register({ scenario, ROOT }) {
       const r = await runCodex({
         "write pkg": workResult(workKey, "timeout", "", { hasThread: false }),
         "write pkg (cont 1)": workResult(cont1, "timeout", ""),
+        "await claim pkg": { ok: true, summary: "marked" },
       }, { continuations: limit });
       const writes = r.of(/^write pkg/);
       t.eq(writes.length, 1 + limit, "only the configured number of extra jobs ran");
@@ -125,14 +126,46 @@ export default function register({ scenario, ROOT }) {
         t.ok(writes[1].prompt.includes(workKey) && writes[1].prompt.includes("go on from the tree"), "the fresh job receives the checkout handoff");
       }
       t.eq(r.out.stoppedAt, `write pkg (continuations exhausted after ${limit}, last job ${limit ? cont1 : workKey}: timeout)`, "the stop names the exhausted budget and last job");
+      const label = writes.at(-1).label;
+      const rerun = JSON.parse(/args\.rerun (\{[^}]+\})/.exec(r.out.next)[1]);
+      t.eq(rerun, { [label]: 2 }, "the rerun targets the exhausted write job");
+      t.ok(r.out.next.includes("uncommitted tree") && r.out.next.includes("args.continuations"), "the lead gets both ways to resume");
+      const awaiting = r.of(/^await claim/);
+      t.eq([awaiting.length, r.of(/^close claim/).length], [1, 0], "the claim awaits a person with the partial work intact");
+      t.ok(awaiting[0].prompt.includes(JSON.stringify(r.out.stoppedAt)), "the claim records the reason for the stop");
       t.eq(r.of(/^checks /).length, 0, "an exhausted write stays out of checks");
+      const resumed = await runCodex({
+        "write pkg": workResult(workKey, "timeout", ""),
+        [label]: workResult(`${limit ? cont1 : workKey}-a2`, "succeeded", "done"),
+      }, { continuations: limit, rerun });
+      const prompt = resumed.calls.find(call => call.label === label).prompt;
+      t.ok(prompt.includes(`--key ${limit ? cont1 : workKey}-a2 `) && prompt.includes("tree"), "resuming schedules a fresh attempt from the tree");
+      t.eq(resumed.out.approved, true, "the resumed write reaches approval");
     }
   });
 
   scenario("code-package-codex-question", "a writer question returns to the lead with the option it needs", async (t) => {
     const question = "Which format? Use JSON (recommended), or CSV.";
-    const r = await runCodex({ "write pkg": workResult(workKey, "succeeded", "question", { questions: [question] }) });
-    t.eq([r.out.question, r.of(/^write pkg/).length, r.of(/^checks /).length], [question, 1, 0], "the lead receives the question immediately");
+    for (const status of ["question", "more"]) {
+      const r = await runCodex({ "write pkg": workResult(workKey, "succeeded", status, { questions: [question] }) });
+      t.eq([r.out.write.answerStatus, r.out.question, r.out.questions, r.of(/^write pkg/).length, r.of(/^checks /).length],
+        ["question", question, [question], 1, 0], `the lead receives the ${status} answer's question immediately`);
+    }
+  });
+
+  scenario("code-package-codex-sandbox-check", "a sandbox-only writer failure stays unverified and the runner's check decides the outcome", async (t) => {
+    const command = "node t.js";
+    const error = "symlink EPERM in writer sandbox";
+    const line = `sandbox: ${command}: ${error}`;
+    const write = workResult(workKey, "succeeded", "done", { checks: [{ command, exitCode: 1, result: `sandbox: ${error}` }] });
+    const passed = await runCodex({ "write pkg": write });
+    t.eq([passed.out.write.unverified, passed.of(/^checks /).length, passed.out.approved], [[line], 1, true], "the writer error reaches unverified and the checks step runs");
+    t.ok(passed.of(/^review 1$/)[0].prompt.includes(line), "the reviewer sees the writer's sandbox error");
+    const failed = await runCodex({
+      "write pkg": write,
+      "checks 1": { ok: false, cause: "code", results: ["assertion failed"], evidence: [{ command, exitCode: 1, log: "check.log" }] },
+    }, { fixes: 0 });
+    t.eq([failed.out.stoppedAt, failed.out.verifiedBy, failed.of(/^commit /).length], ["checks (code)", "none", 0], "a failure outside the sandbox still stops the package");
   });
 
   scenario("code-package-codex-unknown", "an unknown continuation leaves the claim awaiting a decision for that exact key", async (t) => {

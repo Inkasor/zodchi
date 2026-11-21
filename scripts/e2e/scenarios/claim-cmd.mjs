@@ -280,6 +280,43 @@ export default function register({ scenario, ROOT }) {
   /** The package paths a commit step was told to commit. */
   const commitPaths = (c) => JSON.parse(c.prompt.match(/The package paths, relative to the repository: (\[.*?\])\.\n/)[1]);
 
+  scenario("claim-cmd-stopped-owner", "claim-more leaves another stopped package's dirty test with its owner through the guard and commit", async (t) => {
+    const { home, dir } = homeFor(t, "stopped");
+    const dirty = "tests/Partial.js", clean = "tests/removed.js";
+    claim(t, dir, "earlier", [dirty, clean]);
+    const stopped = { ...read(dir, "earlier"), status: "stopped" };
+    fs.writeFileSync(`${dir}/earlier.json`, JSON.stringify(stopped));
+    // An untracked file removed by the earlier package no longer appears in Git status.
+    const repo = `${home}/repo`;
+    fs.mkdirSync(`${repo}/tests`, { recursive: true });
+    fs.writeFileSync(`${repo}/${clean}`, "partial");
+    fs.unlinkSync(`${repo}/${clean}`);
+    const real = realRunner(t, home, undefined, {}, [dirty, "src/a.js"]);
+    const run = await runBody({
+      "claim lm-release": real,
+      "claim more write lm-release": (prompt) => {
+        const reply = real(prompt);
+        const facts = JSON.parse(reply.stdout);
+        t.eq([facts.others, facts.owners, facts.changed, facts.added], [[dirty], [`earlier: ${dirty}`], ["src/a.js"], []], "Git lists only the dirty test as foreign");
+        return reply;
+      },
+      "status write lm-release": { ok: true, paths: [dirty, "src/a.js"] },
+    });
+    t.eq([run.error, run.out?.approved, run.of(/^protect /).length], [null, true, 0], "the foreign test stays out of the guard");
+    t.eq(commitPaths(run.of(/^commit /)[0]), ["src/a.js"], "only this package's file goes to the commit");
+    const soft = more(t, dir, "lm-release", [], [dirty]);
+    t.eq([soft.ok, soft.others, soft.owners, soft.added], [true, [dirty.toLowerCase()], ["earlier: tests/partial.js"], []], "the explicit soft list leaves the test with its owner");
+    const hard = more(t, dir, "lm-release", [dirty], []);
+    t.eq([hard.ok, hard.conflicts], [false, ["earlier: tests/partial.js"]], "reporting the test explicitly is a conflict");
+    t.eq(read(dir, "lm-release").files, ["src/a.js"], "neither form took a file from the stopped claim");
+    t.eq(read(dir, "earlier"), stopped, "the stopped claim stays as it was");
+    t.eq(claim(t, dir, "next", [clean]).ok, true, "a stopped claim does not block an explicit new claim");
+    const next = read(dir, "next");
+    fs.writeFileSync(`${dir}/next.json`, JSON.stringify({ ...next, status: "stopped" }));
+    const resumed = helper(t, "claim-more", { dir, repo, label: "next" });
+    t.eq([resumed.ok, resumed.reopened], [true, true], "the other stopped claim does not block reopening");
+  });
+
   scenario("claim-cmd-workflow", "code-package decides from the claim helper's own answers: with 45 changed paths of which 40 belong to two other open claims (the 2026-11-19 case) the commit holds only the package's files; conflicts refuse or stop the run; a busy lock or an unreadable answer stops it", async (t) => {
     const { home, dir } = homeFor(t, "wf");
     const range = (prefix, n) => Array.from({ length: n }, (_, i) => `${prefix}/f${String(i).padStart(2, "0")}.js`);

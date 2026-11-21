@@ -354,10 +354,23 @@ function writeClaim(file, value) {
   fs.writeFileSync(tmp, JSON.stringify(value) + "\n");
   fs.renameSync(tmp, file);
 }
-// The open claims of other labels, each with its files keyed.
-const othersOpen = (dir, label) => readClaims(dir).claims
-  .filter((e) => e.claim.status === "open" && e.label !== label)
-  .map((e) => ({ label: e.label, branch: typeof e.claim.branch === "string" ? e.claim.branch : "", files: keysOf(e.claim.files) }));
+const otherClaims = (dir, label, includeStopped = false) => readClaims(dir).claims
+  .filter((e) => e.label !== label && (e.claim.status === "open" || (includeStopped && e.claim.status === "stopped")))
+  .map((e) => ({ label: e.label, status: e.claim.status, branch: typeof e.claim.branch === "string" ? e.claim.branch : "", files: keysOf(e.claim.files) }));
+
+function otherFileOwners(spec, dir, includeStopped = false) {
+  const claims = otherClaims(dir, spec.label, includeStopped);
+  const legacy = legacyDirOf(spec);
+  if (legacy) claims.push(...otherClaims(legacy, spec.label, includeStopped));
+  // A later open claim can explicitly take a stopped claim's path. Name its current owner first.
+  const owners = new Map();
+  for (const status of ["open", "stopped"]) {
+    for (const claim of claims.filter((c) => c.status === status)) {
+      for (const file of claim.files) if (!owners.has(file)) owners.set(file, claim.label);
+    }
+  }
+  return owners;
+}
 function needFields(spec, strings, lists) {
   for (const k of strings) if (typeof spec[k] !== "string" || (["dir", "label"].includes(k) && !spec[k])) print({ ok: false, api: API, error: `spec.${k} is missing or not a string` }, 2);
   for (const k of lists) if (!Array.isArray(spec[k])) print({ ok: false, api: API, error: `spec.${k} is missing or not a list` }, 2);
@@ -394,7 +407,7 @@ function claimCmd(spec) {
     const resumable = ownIs("stopped") && own.tmp === spec.tmp;
     const mine = new Set([...files, ...(resumable && Array.isArray(own.files) ? keysOf(own.files) : [])]);
     const conflicts = [], branchConflicts = [];
-    for (const o of othersOpen(dir, spec.label)) {
+    for (const o of otherClaims(dir, spec.label)) {
       for (const f of o.files) if (mine.has(f)) conflicts.push(`${o.label}: ${f}`);
       if (o.branch && o.branch !== spec.branch) branchConflicts.push(`${o.label}: ${o.branch}`);
     }
@@ -430,37 +443,37 @@ function claimCmd(spec) {
 }
 
 // claim-more: { dir, label, repo }. The helper runs `git status --porcelain -z -uall` in repo itself: the changed files are every path it
-// lists, except the job folder .agent-tmp/ and the paths the claim recorded as changed before the package started (atGate). A changed file
-// that another open claim lists is that package's work: it goes to others (as Git spells it) and owners ("<label>: <path>"), and is never
+// lists, except the job folder .agent-tmp/. Unowned changes recorded before the package started (atGate) are left out. A changed file
+// that another open or stopped claim lists is that package's work: it goes to others (as Git spells it) and owners ("<label>: <path>"), and is never
 // added. Every other changed file is this package's: changed lists them as Git spells them, and those the claim lacks are added (keyed).
 // The workflow compares the files its writer reported with others: such a file is a conflict, decided there. No list of paths is in the
 // command, so it stays short however many files a round changes.
 // The older form { dir, label, hard, soft } (a workflow that hands the lists over): every hard file (the writer reported it) that another
-// open claim lists is a conflict "<label>: <file>"; every soft file (only Git shows it changed) that another open claim lists is that
+// open or stopped claim lists is a conflict "<label>: <file>"; every soft file (only Git shows it changed) that such a claim lists is that
 // package's work and goes to others. Without conflicts, every hard file and every soft file not in others that this label's open claim
 // lacks is added to it (added).
-// In both, the open claims of other labels in the folder under Node's home folder (legacyDirOf) count as other claims too.
+// Both forms look in the legacy folder too. Stopped claims count only for this ownership decision. Opening or reopening
+// a claim still checks for conflicts with open claims only.
 function claimMoreCmd(spec) {
   if (spec.repo !== undefined && spec.hard === undefined && spec.soft === undefined) return claimMoreFromGit(spec);
   needFields(spec, ["dir", "label"], ["hard", "soft"]);
   const dir = claimsDirOf(spec);
   const hard = keysOf(spec.hard), soft = keysOf(spec.soft);
   const file = path.join(dir, `${spec.label}.json`);
-  const base = { ok: false, api: API, plugin: pluginCopy(), conflicts: [], others: [], added: [], file: norm(file) };
+  const base = { ok: false, api: API, plugin: pluginCopy(), conflicts: [], others: [], owners: [], added: [], file: norm(file) };
   const done = withLock(dir, () => {
-    const owner = new Map();
-    const legacyDir = legacyDirOf(spec);
-    for (const o of [...othersOpen(dir, spec.label), ...(legacyDir ? othersOpen(legacyDir, spec.label) : [])]) for (const f of o.files) if (!owner.has(f)) owner.set(f, o.label);
+    const owner = otherFileOwners(spec, dir, true);
     const conflicts = hard.filter((f) => owner.has(f)).map((f) => `${owner.get(f)}: ${f}`);
     const others = soft.filter((f) => owner.has(f));
-    if (conflicts.length) return { ...base, conflicts, others };
+    const owners = others.map((f) => `${owner.get(f)}: ${f}`);
+    if (conflicts.length) return { ...base, conflicts, others, owners };
     const own = readJson(file).value;
-    if (!own || typeof own !== "object" || own.label !== spec.label || own.status !== "open") return { ...base, others, error: `${spec.label} has no open claim at ${norm(file)}` };
+    if (!own || typeof own !== "object" || own.label !== spec.label || own.status !== "open") return { ...base, others, owners, error: `${spec.label} has no open claim at ${norm(file)}` };
     const have = Array.isArray(own.files) ? own.files.map(String) : [];
     const haveKeys = new Set(have.map(pathKey));
     const added = [...new Set([...hard, ...soft.filter((f) => !others.includes(f))])].filter((f) => !haveKeys.has(f));
     if (added.length) writeClaim(file, { ...own, files: [...have, ...added] });
-    return { ...base, ok: true, others, added };
+    return { ...base, ok: true, others, owners, added };
   }, { waitMs: lockWait(spec), staleMs: null });
   if (done.locked) return done.value;
   return { ...base, conflicts: done.busy ? ["lock busy"] : [], error: done.why };
@@ -474,8 +487,7 @@ function reopenStopped(spec, dir, file) {
   let own = readJson(file).value;
   const stopped = Boolean(own && typeof own === "object" && own.label === spec.label && own.status === "stopped" && (spec.tmp === undefined || own.tmp === spec.tmp));
   if (!stopped) return { own, reopened: false };
-  const taken = new Map();
-  for (const o of [...othersOpen(dir, spec.label), ...(legacyDirOf(spec) ? othersOpen(legacyDirOf(spec), spec.label) : [])]) for (const f of o.files) if (!taken.has(f)) taken.set(f, o.label);
+  const taken = otherFileOwners(spec, dir);
   const clash = keysOf(own.files).filter((f) => taken.has(f)).map((f) => `${taken.get(f)}: ${f}`);
   if (clash.length) return { refused: { conflicts: clash, error: `${spec.label} was closed "stopped" and another open claim now lists its files: ${clash.join(", ")}` } };
   const { closedAt, awaiting, ...rest } = own;
@@ -500,14 +512,12 @@ function claimMoreFromGit(spec) {
     const seen = new Map();
     for (const p of st.paths) {
       const k = pathKey(p);
-      if (!k || /^\.agent-tmp(\/|$)/.test(k) || atGate.has(k) || seen.has(k)) continue;
+      if (!k || /^\.agent-tmp(\/|$)/.test(k) || seen.has(k)) continue;
       seen.set(k, norm(p));
     }
-    const owner = new Map();
-    const legacyDir = legacyDirOf(spec);
-    for (const o of [...othersOpen(dir, spec.label), ...(legacyDir ? othersOpen(legacyDir, spec.label) : [])]) for (const f of o.files) if (!owner.has(f)) owner.set(f, o.label);
+    const owner = otherFileOwners(spec, dir, true);
     const others = [...seen].filter(([k]) => owner.has(k));
-    const mine = [...seen].filter(([k]) => !owner.has(k));
+    const mine = [...seen].filter(([k]) => !owner.has(k) && !atGate.has(k));
     const have = Array.isArray(own.files) ? own.files.map(String) : [];
     const haveKeys = new Set(have.map(pathKey));
     const added = mine.map(([k]) => k).filter((k) => !haveKeys.has(k));

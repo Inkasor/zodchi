@@ -112,7 +112,7 @@
           },
           "result": {
             "type": "string",
-            "description": "One line of outcome."
+            "description": "One line of outcome. For a check prevented solely by a confirmed writer sandbox restriction, use 'sandbox: <observed error>' and keep the actual exit code or null. The runner verifies an otherwise done criterion outside the sandbox."
           }
         }
       }

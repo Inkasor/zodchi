@@ -259,8 +259,11 @@ const REVIEW = {
 const withInfra = (s) => ({ ...s, required: [...s.required, 'gateway', 'infra'], properties: { ...s.properties, gateway: { type: 'string', enum: ['final', 'failed', 'unknown'] }, infra: { type: 'string' }, unknownKey: { type: 'string' } } })
 const WORK_JOB = withInfra({
   ...WRITE,
-  required: [...WRITE.required, 'jobStatus', 'answerStatus', 'activeKey', 'hasThread'],
+  required: [...WRITE.required, 'jobStatus', 'answerStatus', 'activeKey', 'hasThread', 'checks'],
   properties: { ...WRITE.properties, jobStatus: { type: 'string' }, activeKey: { type: 'string' },
+    checks: { type: 'array', items: { type: 'object', required: ['command', 'exitCode', 'result'], properties: {
+      command: { type: 'string' }, exitCode: { type: ['integer', 'null'] }, result: { type: 'string' },
+    } } },
     hasThread: { type: 'boolean' }, answerStatus: { type: 'string', enum: ['', 'done', 'more', 'question', 'blocked'] } },
 })
 const infraBad = (r) => !r || r.gateway !== 'final'
@@ -275,7 +278,7 @@ const severity = (f) => SEVERITY.get((String(f).trim().split(/\s+/)[1] || '').to
 const normFinding = (f) => String(f).trim().replace(/^(\S+\s+)(\S+)/, (m, id, word) => id + (SEVERITY.get(word.toLowerCase()) || word))
 
 const out = { label: a.label, mode, rounds: [], openFindings: [], verifiedBy: 'none' }
-// Set by an infrastructure failure: the claim stays open, because the package goes on when the run is resumed.
+// A resumable stop leaves the claim open and marks it as awaiting a person.
 let keepClaim = false
 // A gateway job that ended "unknown" may already have run and used the subscription: the workflow never submits it again under
 // a new key. The run stops with the key, the reason and the decision that belongs to the person; the claim stays open.
@@ -326,7 +329,7 @@ const GATE_API = 1
 // The stamp of this script (see "The workflow build" in core/scripts/gate.mjs): the first 16 hex digits of the SHA-256 of this file with this
 // line's stamp emptied. The gate sends it to the helper, which stamps the code-package.js of its own plugin copy; a script that is not the copy's
 // own is refused at the gate. After every edit of this file: `node core/scripts/gate.mjs workflow-build core/workflows/code-package.js --write`.
-const WORKFLOW_BUILD = '217b6c423082ef03'
+const WORKFLOW_BUILD = '60aa98295800ec99'
 const GATE_BOOT = 'const fs=require(\"fs\"),os=require(\"os\"),path=require(\"path\"),cp=require(\"child_process\");const project=process.argv[1]||\"\";const rest=process.argv.slice(2);const out=(o,c)=>{fs.writeSync(1,JSON.stringify(o)+\"\\n\");process.exit(c)};const rd=f=>{try{return JSON.parse(fs.readFileSync(f,\"utf8\"))}catch(e){return null}};const nm=p=>{const s=path.resolve(p).split(path.sep).join(\"/\");return process.platform===\"linux\"?s:s.toLowerCase()};const pre=n=>n.endsWith(\"/\")?n:n+\"/\";const tried=[];let root=\"\",via=\"\";const fail=(why)=>out({ok:false,api:0,error:why,tried},4);for(const name of [\"ZODCHI_PLUGIN_ROOT\",\"CLAUDE_PLUGIN_ROOT\"]){const env=process.env[name];if(root||!env)continue;const m=rd(path.join(env,\".claude-plugin\",\"plugin.json\"));if(m&&m.name===\"zodchi-core\"){root=env;via=name}else if(name===\"ZODCHI_PLUGIN_ROOT\"){tried.push(env+\" (no zodchi-core manifest)\");fail(\"ZODCHI_PLUGIN_ROOT names no zodchi-core plugin copy: a checkout or another folder is never used instead\")}}if(!root){const reg=rd(path.join(process.env.CLAUDE_CONFIG_DIR||path.join(os.homedir(),\".claude\"),\"plugins\",\"installed_plugins.json\"));const list=(reg&&reg.plugins&&reg.plugins[\"zodchi-core@zodchi\"])||[];const here=pre(nm(project));const own=list.filter(e=>e.projectPath&&here.startsWith(pre(nm(e.projectPath)))).sort((a,b)=>nm(b.projectPath).length-nm(a.projectPath).length);const e=own[0]||list.find(e=>!e.projectPath);if(e&&e.installPath){root=e.installPath;via=\"installed_plugins.json, scope \"+e.scope}}if(!root)fail(\"no zodchi-core plugin copy is registered for the project this session runs in (not installed): update the plugin; a checkout is never used instead\");const ok=fs.existsSync(path.join(root,\"scripts\",\"gate.mjs\"));tried.push(root+(ok?\"\":\" (no scripts/gate.mjs)\"));if(!ok)fail(\"the zodchi-core plugin copy this session loaded (\"+root+\") has no scripts/gate.mjs (an older copy than this workflow): update the plugin; no other copy is tried and a checkout is never used\");const r=cp.spawnSync(process.execPath,[path.join(root,\"scripts\",\"gate.mjs\"),...rest],{stdio:\"inherit\",env:{...process.env,ZODCHI_GATE_VIA:via}});process.exit(r.status===null?5:r.status)'
 // The folder the runner starts in is the project the session runs in: it says which registered plugin copy the session loaded (the Windows form of the path on Git Bash).
 const SESSION_PROJECT = '"$(pwd -W 2>/dev/null || pwd)"'
@@ -751,6 +754,7 @@ async function body() {
   // One writing turn by the resolved writer: a Claude coder, a Codex work call, or an expert answer applied by the
   // applier. evidence: files the task refers to (review, logs); a tool-free expert gets them attached.
   let calls = 0
+  const sandboxChecks = new Set()
   async function write(job, tag, phaseName, evidence = []) {
     const n = ++calls
     const task = `${job} ${COMMITS}${sharedBranch ? ` ${SHARED_NOTE}` : ''}${PROTECT} ${LOGS}`
@@ -775,7 +779,8 @@ async function body() {
     }
     if (writer.provider === 'codex') {
       const changedSoFar = new Set()
-      let handoff = '', resume = ''
+      let handoff = attempt(tag) > 1 ? 'Inspect git status and git diff and go on from the uncommitted work in the tree. ' : ''
+      let resume = ''
       for (let c = 0; ; c++) {
         const label = c ? `${tag} (cont ${c})` : tag
         // Keep the continuation kind short enough for a long package label plus attempt and retry suffixes.
@@ -790,16 +795,38 @@ async function body() {
           }) + ` Copy jobStatus and activeKey from the final job's status and key, and set hasThread from its nonempty threadId. ` +
           `With no job use empty strings and false. Only a succeeded job delivers an answer. For it, answerStatus is the answer's status, ` +
           `done = (status is "done"); summary = its summary; changed = each entry of changedFiles prefixed with "${repoKey}/"; ` +
-          `unverified = every criterion that is not done, as one line each, plus every check with a non-zero exit code; questions = each entry of its questions as one readable line (the question, its options, the recommendation). ` +
-          `Otherwise answerStatus is "", done is false, changed and questions are empty, and summary says the job status. ${INFRA}`,
+          `unverified = every criterion that is not done, as one line each. Copy checks verbatim from the answer, including each command, exitCode and result. questions = each entry of its questions as one readable line (the question, its options, the recommendation). ` +
+          `Otherwise answerStatus is "", done is false, changed, questions and checks are empty, and summary says the job status. ${INFRA}`,
           { agentType: 'zodchi-core:runner', schema: WORK_JOB, phase: phaseName, label })
         if (infraBad(work)) gatewayStop(label, work, 'the gateway step returned no result')
         for (const path of work.changed || []) changedSoFar.add(path)
-        const result = { ...work, changed: [...changedSoFar] }
+        const { checks = [], ...report } = work
+        const unverified = new Set(work.unverified || [])
+        for (const check of checks) {
+          if (check.exitCode === 0) continue
+          const sandbox = /^sandbox: (\S.*)$/.exec(check.result)
+          if (sandbox) {
+            sandboxChecks.add(`sandbox: ${check.command}: ${sandbox[1]}`)
+          } else {
+            unverified.add(`${check.command} (exit ${check.exitCode}): ${check.result}`)
+          }
+        }
+        if (out.write && sandboxChecks.size) out.write.unverified = [...new Set([...(out.write.unverified || []), ...sandboxChecks])]
+        const result = { ...report, changed: [...changedSoFar], unverified: [...new Set([...unverified, ...sandboxChecks])] }
+        if (work.jobStatus === 'succeeded' && work.answerStatus === 'more' && work.questions?.length) {
+          return { ...result, answerStatus: 'question', done: false }
+        }
         const timeout = work.jobStatus === 'timeout'
         if (!timeout && !(work.jobStatus === 'succeeded' && work.answerStatus === 'more')) return result
         if (!(c + 1 <= (a.continuations ?? 2))) {
           out.stoppedAt = `${tag} (continuations exhausted after ${c}, last job ${work.activeKey}: ${timeout ? 'timeout' : 'more'})`
+          keepClaim = true
+          const nextAttempt = attempt(label) + 1
+          const rerun = { ...reruns, [label]: nextAttempt }
+          out.next = 'The writer used its continuation budget. ' +
+            (nextAttempt <= 99 ? `Resume with args.rerun ${JSON.stringify(rerun)} to start attempt ${nextAttempt} of "${label}" from the uncommitted tree, or raise args.continuations and resume.` :
+              `Step "${label}" reached attempt 99. Raise args.continuations and resume from the uncommitted tree.`) +
+            ' The claim awaits your decision.'
           return { ...result, done: false }
         }
         // The active submission may be a pre-turn retry or a recovered attempt. Resume that exact job.
@@ -820,9 +847,9 @@ async function body() {
   // The claim follows the real change: after every Write and Close, the files the writer reports and the files Git
   // sees changed join the claim and the package. Neither source brings in the job folder .agent-tmp/ or a file already
   // dirty at the gate; a reported file of that second kind stops the run, because committing it would commit somebody
-  // else's changes. A reported file another open package claims stops the run too. Either way the work stays uncommitted for a human.
+  // else's changes. A reported file another package claims stops the run too. Either way the work stays uncommitted for a human.
   // Several packages may share one checkout: a file that only Git's status lists (the writer did not report it) and that
-  // another open package claims is that package's work, not ours: it stays out of the claim and out of every commit.
+  // another open or stopped package claims stays out of this claim and every commit.
   const atGate = new Set(gate.dirty.map(f => { try { return key(f) } catch { return '' } }))
   const jobFolder = (r) => /^\.agent-tmp(\/|$)/i.test(r)
   const claimed = new Set(claimKeys)
@@ -856,10 +883,10 @@ async function body() {
       if (!atGate.has(r.toLowerCase()) && !jobFolder(r) && !foreign.has(r.toLowerCase())) listed.push(r)
     }
     if (!uniqueNew([...found, ...listed]).length) { noteChanged([...found, ...listed]); return true }
-    // Something is new: the helper runs `git status --porcelain -uall` in the repository itself and compares what it lists with the open
+    // Something is new: the helper runs `git status --porcelain -uall` in the repository itself and compares what it lists with the open and stopped
     // claims under the lock. The command names no file, so it stays short however many files a round changes, and the list it decides from
     // is Git's, not the runner's retelling above. changed: the files Git lists that are this package's (not dirty before it started, not the
-    // job folder, in no other open claim); the ones the claim lacked are added. others: the files Git lists that another open package
+    // job folder, in no other open or stopped claim); the ones the claim lacked are added. others: the files Git lists that another package
     // claims, its own work in the shared checkout; owners names the package of each.
     const moreRead = readClaimHelper(await helperStep('claim-more', { dir: claimsSpecDir, label: a.label, repo: repoKey }, `claim more ${tag}`, phaseName), 'the claim-more helper')
     const more = moreRead.facts
@@ -868,13 +895,13 @@ async function body() {
     if (!more || !more.ok) { out.stoppedAt = `claim more (${more ? more.error || more.conflicts.join(', ') || 'the helper added nothing' : moreRead.error})`; return false }
     // An answer without the others, the changed or the added list cannot tell which files are another package's: nothing is recorded or committed.
     for (const k of ['others', 'changed', 'added']) if (!Array.isArray(more[k])) { out.stoppedAt = `claim more (the answer has no ${k} list)`; return false }
-    // A file the writer reported that another open package claims is a conflict: the work stays uncommitted for a human.
+    // A file the writer reported that another package claims is a conflict: the work stays uncommitted for a human.
     const otherKeys = new Map(more.others.map((o, i) => [String(o).toLowerCase(), Array.isArray(more.owners) && more.owners[i] ? String(more.owners[i]) : `another package: ${o}`]))
     const clash = [...new Set(found.map(r => r.toLowerCase()))].filter(k => otherKeys.has(k))
     if (clash.length) {
       out.conflicts = clash.map(k => otherKeys.get(k))
       out.stoppedAt = 'claim conflict'
-      out.next = `The work changed files that another open package claims: ${out.conflicts.join('; ')}. This round's work is not committed: it stays in ${a.repo} for a human to settle with that package.`
+      out.next = `The work changed files that another package claims: ${out.conflicts.join('; ')}. This round's work is not committed: it stays in ${a.repo} for a human to settle with that package.`
       return false
     }
     for (const k of otherKeys.keys()) foreign.add(k)
@@ -894,7 +921,7 @@ async function body() {
       out.claimAdded = [...(out.claimAdded || []), ...added]
       log(`Claim of ${a.label} extended by ${added.join(', ')}`)
     }
-    if (otherKeys.size) log(`Left out of ${a.label}: ${more.others.join(', ')} (claimed by another open package, changed in the shared checkout)`)
+    if (otherKeys.size) log(`Left out of ${a.label}: ${more.others.join(', ')} (claimed by another package, changed in the shared checkout)`)
     return true
   }
 
@@ -933,14 +960,13 @@ async function body() {
     `Implement the package described in ${a.brief}. Read it first; it is the whole task. ` +
     `done is true only when everything the brief calls "done" holds and you ran what it tells you to run. changed: every file you changed, absolute paths. unverified: what you could not verify, in the order to check it; a flaky check as "flaky: <command>: <its log>".`,
     `write ${a.label}`, 'Write')
+  noteQuestions(out.write)
   if (out.write && !(await follow(out.write, `write ${a.label}`, 'Write'))) return
   if (!out.write || !out.write.done) {
     out.stoppedAt = 'write'
-    noteQuestions(out.write)
     if (questions.length) out.question = questions.join(' | ')
     return
   }
-  noteQuestions(out.write)
 
   const CAUSE = `cause: "none" when ok; otherwise the first failure's cause - "code" when the changed code is wrong (traceback, compile error, failed assertion, a gate of the change), ` +
     `"check" when the command or its pass rule is wrong although the code works, ` +

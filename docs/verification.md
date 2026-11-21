@@ -14,8 +14,17 @@ per writing step (default 2, or 0 to stop at the first handoff). Every work
 job keeps its thread. The next job uses a new key and resumes the previous
 job's thread. If a timeout left no thread ID, it starts from the uncommitted
 checkout and the previous prompt. The workflow combines the changed files
-reported by all turns. At the limit, `stoppedAt` names the last job. A
-`question` goes to the lead, and an `unknown` outcome waits for a human decision.
+reported by all turns. A `question` or a `more` answer containing questions
+goes to the lead. At the continuation limit the claim is marked `awaiting`.
+`stoppedAt` names the last job and `next` gives the write step and attempt
+for `args.rerun`. Raising `args.continuations` also lets the run continue.
+An `unknown` outcome waits for a human decision.
+
+When a sandbox restriction is the sole reason a Codex writer's check failed,
+the writer records the command, exit code and observed error. An otherwise
+completed criterion can stay `done`. The workflow keeps
+`sandbox: <command>: <error>` in `write.unverified`. The checks step runs
+outside the writer sandbox and supplies the verification evidence.
 
 1. **Cheap checks first, then the slow run.** After each write the runner
    runs `args.checks` (build, lint, fast tests), then the slow run of the

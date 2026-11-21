@@ -71,10 +71,12 @@ agent may not be allowed to do either. Nothing is shared, nothing is locked.
   with `dirty: null` and `dirtyError`, the workflow stops, and no claim is examined.
 - **Commits.** The commit step commits only the package's own paths
   (`git commit -- <paths>`); another package's staged or changed file stays out.
-  A file that Git shows changed, that the writer did not report and that another
-  open package claims, is left out of this package's claim and commits (the log says
-  so). A file the writer itself reports and another package claims stops the run
-  (`claim conflict`).
+  After a write, `claim-more` leaves changed files listed by another label's
+  open or stopped claim with that package. Its unreported files stay out of
+  this package's claim, protected-check guard and commits. A file reported by
+  both the writer and another package's claim stops the run (`claim conflict`).
+  Clean paths in a stopped claim are ignored. Only open claims can block
+  opening or reopening a package.
 - **index.lock.** Git takes `.git/index.lock` for a moment while it works. A Git
   command of the commit step that meets a held lock waits 3 seconds and tries again,
   at most 10 times, and never deletes the lock; a lock still held ends the run with
