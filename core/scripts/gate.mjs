@@ -359,22 +359,22 @@ function writeClaim(file, value) {
   fs.writeFileSync(tmp, JSON.stringify(value) + "\n");
   fs.renameSync(tmp, file);
 }
-const otherClaims = (dir, label, stoppedSince = null) => readClaims(dir).claims
+const otherClaims = (dir, label, callerOpenedAt) => readClaims(dir).claims
   .filter((e) => {
     if (e.label === label) return false;
     if (e.claim.status === "open") return true;
-    if (e.claim.status !== "stopped" || stoppedSince === null) return false;
+    if (e.claim.status !== "stopped" || !Number.isFinite(callerOpenedAt)) return false;
     const closedAt = Date.parse(e.claim.closedAt);
     const stoppedAt = Number.isFinite(closedAt) ? closedAt : newestWrite(path.join(dir, e.name));
-    return stoppedAt > stoppedSince;
+    return stoppedAt > callerOpenedAt;
   })
   .map((e) => ({ label: e.label, status: e.claim.status, branch: typeof e.claim.branch === "string" ? e.claim.branch : "", files: keysOf(e.claim.files) }));
 
-function otherFileOwners(spec, dir, ownKeys) {
-  const stoppedSince = ownKeys ? Date.now() - claimStaleHours(spec) * 3600000 : null;
-  const claims = otherClaims(dir, spec.label, stoppedSince);
+function otherFileOwners(spec, dir, ownKeys, openedAt) {
+  const callerOpenedAt = Date.parse(openedAt);
+  const claims = otherClaims(dir, spec.label, callerOpenedAt);
   const legacy = legacyDirOf(spec);
-  if (legacy) claims.push(...otherClaims(legacy, spec.label, stoppedSince));
+  if (legacy) claims.push(...otherClaims(legacy, spec.label, callerOpenedAt));
   // A later open claim can explicitly take a stopped claim's path. Name its current owner first.
   const owners = new Map();
   for (const status of ["open", "stopped"]) {
@@ -468,8 +468,8 @@ function claimCmd(spec) {
 // open or stopped claim lists is a conflict "<label>: <file>"; every soft file (only Git shows it changed) that such a claim lists is that
 // package's work and goes to others. Without conflicts, every hard file and every soft file not in others that this label's open claim
 // lacks is added to it (added).
-// Both forms look in the legacy folder too. A stopped claim counts only within claimStaleHours of its closedAt
-// (file modification time for older records without a timestamp). Any open claim, including the caller's, takes precedence.
+// Both forms look in the legacy folder too. A stopped claim counts only if it closed after the caller's original openedAt
+// (using the claim file's modification time for older records without closedAt). Any open claim, including the caller's, takes precedence.
 // Opening or reopening a claim still checks for conflicts with open claims only.
 function claimMoreCmd(spec) {
   if (spec.repo !== undefined && spec.hard === undefined && spec.soft === undefined) return claimMoreFromGit(spec);
@@ -483,7 +483,7 @@ function claimMoreCmd(spec) {
     const ownIsOpen = own?.label === spec.label && own.status === "open";
     const have = ownIsOpen && Array.isArray(own.files) ? own.files.map(String) : [];
     const haveKeys = new Set(have.map(pathKey));
-    const owner = otherFileOwners(spec, dir, haveKeys);
+    const owner = otherFileOwners(spec, dir, haveKeys, ownIsOpen ? own.openedAt : undefined);
     const conflicts = hard.filter((f) => owner.has(f)).map((f) => `${owner.get(f)}: ${f}`);
     const others = soft.filter((f) => owner.has(f));
     const owners = others.map((f) => `${owner.get(f)}: ${f}`);
@@ -535,7 +535,7 @@ function claimMoreFromGit(spec) {
     }
     const have = Array.isArray(own.files) ? own.files.map(String) : [];
     const haveKeys = new Set(have.map(pathKey));
-    const owner = otherFileOwners(spec, dir, haveKeys);
+    const owner = otherFileOwners(spec, dir, haveKeys, own.openedAt);
     const others = [...seen].filter(([k]) => owner.has(k));
     const mine = [...seen].filter(([k]) => !owner.has(k) && !atGate.has(k));
     const added = mine.map(([k]) => k).filter((k) => !haveKeys.has(k));

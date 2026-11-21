@@ -329,7 +329,7 @@ const GATE_API = 1
 // The stamp of this script (see "The workflow build" in core/scripts/gate.mjs): the first 16 hex digits of the SHA-256 of this file with this
 // line's stamp emptied. The gate sends it to the helper, which stamps the code-package.js of its own plugin copy; a script that is not the copy's
 // own is refused at the gate. After every edit of this file: `node core/scripts/gate.mjs workflow-build core/workflows/code-package.js --write`.
-const WORKFLOW_BUILD = '60aa98295800ec99'
+const WORKFLOW_BUILD = '86a28b9798a88d6d'
 const GATE_BOOT = 'const fs=require(\"fs\"),os=require(\"os\"),path=require(\"path\"),cp=require(\"child_process\");const project=process.argv[1]||\"\";const rest=process.argv.slice(2);const out=(o,c)=>{fs.writeSync(1,JSON.stringify(o)+\"\\n\");process.exit(c)};const rd=f=>{try{return JSON.parse(fs.readFileSync(f,\"utf8\"))}catch(e){return null}};const nm=p=>{const s=path.resolve(p).split(path.sep).join(\"/\");return process.platform===\"linux\"?s:s.toLowerCase()};const pre=n=>n.endsWith(\"/\")?n:n+\"/\";const tried=[];let root=\"\",via=\"\";const fail=(why)=>out({ok:false,api:0,error:why,tried},4);for(const name of [\"ZODCHI_PLUGIN_ROOT\",\"CLAUDE_PLUGIN_ROOT\"]){const env=process.env[name];if(root||!env)continue;const m=rd(path.join(env,\".claude-plugin\",\"plugin.json\"));if(m&&m.name===\"zodchi-core\"){root=env;via=name}else if(name===\"ZODCHI_PLUGIN_ROOT\"){tried.push(env+\" (no zodchi-core manifest)\");fail(\"ZODCHI_PLUGIN_ROOT names no zodchi-core plugin copy: a checkout or another folder is never used instead\")}}if(!root){const reg=rd(path.join(process.env.CLAUDE_CONFIG_DIR||path.join(os.homedir(),\".claude\"),\"plugins\",\"installed_plugins.json\"));const list=(reg&&reg.plugins&&reg.plugins[\"zodchi-core@zodchi\"])||[];const here=pre(nm(project));const own=list.filter(e=>e.projectPath&&here.startsWith(pre(nm(e.projectPath)))).sort((a,b)=>nm(b.projectPath).length-nm(a.projectPath).length);const e=own[0]||list.find(e=>!e.projectPath);if(e&&e.installPath){root=e.installPath;via=\"installed_plugins.json, scope \"+e.scope}}if(!root)fail(\"no zodchi-core plugin copy is registered for the project this session runs in (not installed): update the plugin; a checkout is never used instead\");const ok=fs.existsSync(path.join(root,\"scripts\",\"gate.mjs\"));tried.push(root+(ok?\"\":\" (no scripts/gate.mjs)\"));if(!ok)fail(\"the zodchi-core plugin copy this session loaded (\"+root+\") has no scripts/gate.mjs (an older copy than this workflow): update the plugin; no other copy is tried and a checkout is never used\");const r=cp.spawnSync(process.execPath,[path.join(root,\"scripts\",\"gate.mjs\"),...rest],{stdio:\"inherit\",env:{...process.env,ZODCHI_GATE_VIA:via}});process.exit(r.status===null?5:r.status)'
 // The folder the runner starts in is the project the session runs in: it says which registered plugin copy the session loaded (the Windows form of the path on Git Bash).
 const SESSION_PROJECT = '"$(pwd -W 2>/dev/null || pwd)"'
@@ -754,7 +754,6 @@ async function body() {
   // One writing turn by the resolved writer: a Claude coder, a Codex work call, or an expert answer applied by the
   // applier. evidence: files the task refers to (review, logs); a tool-free expert gets them attached.
   let calls = 0
-  const sandboxChecks = new Set()
   async function write(job, tag, phaseName, evidence = []) {
     const n = ++calls
     const task = `${job} ${COMMITS}${sharedBranch ? ` ${SHARED_NOTE}` : ''}${PROTECT} ${LOGS}`
@@ -779,6 +778,7 @@ async function body() {
     }
     if (writer.provider === 'codex') {
       const changedSoFar = new Set()
+      const sandboxChecks = new Set()
       let handoff = attempt(tag) > 1 ? 'Inspect git status and git diff and go on from the uncommitted work in the tree. ' : ''
       let resume = ''
       for (let c = 0; ; c++) {
@@ -811,7 +811,10 @@ async function body() {
             unverified.add(`${check.command} (exit ${check.exitCode}): ${check.result}`)
           }
         }
-        if (out.write && sandboxChecks.size) out.write.unverified = [...new Set([...(out.write.unverified || []), ...sandboxChecks])]
+        if (out.write) {
+          const otherUnverified = (out.write.unverified || []).filter(line => !line.startsWith('sandbox: '))
+          out.write.unverified = [...otherUnverified, ...sandboxChecks]
+        }
         const result = { ...report, changed: [...changedSoFar], unverified: [...new Set([...unverified, ...sandboxChecks])] }
         if (work.jobStatus === 'succeeded' && work.answerStatus === 'more' && work.questions?.length) {
           return { ...result, answerStatus: 'question', done: false }
