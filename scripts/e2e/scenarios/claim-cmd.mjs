@@ -284,7 +284,7 @@ export default function register({ scenario, ROOT }) {
     const { home, dir } = homeFor(t, "stopped");
     const dirty = "tests/Partial.js", clean = "tests/removed.js";
     claim(t, dir, "earlier", [dirty, clean]);
-    const stopped = { ...read(dir, "earlier"), status: "stopped" };
+    const stopped = { ...read(dir, "earlier"), status: "stopped", closedAt: new Date().toISOString() };
     fs.writeFileSync(`${dir}/earlier.json`, JSON.stringify(stopped));
     // An untracked file removed by the earlier package no longer appears in Git status.
     const repo = `${home}/repo`;
@@ -310,7 +310,18 @@ export default function register({ scenario, ROOT }) {
     t.eq([hard.ok, hard.conflicts], [false, ["earlier: tests/partial.js"]], "reporting the test explicitly is a conflict");
     t.eq(read(dir, "lm-release").files, ["src/a.js"], "neither form took a file from the stopped claim");
     t.eq(read(dir, "earlier"), stopped, "the stopped claim stays as it was");
-    t.eq(claim(t, dir, "next", [clean]).ok, true, "a stopped claim does not block an explicit new claim");
+    const oldGit = "src/old.js", oldSoft = "src/soft.js";
+    claim(t, dir, "old", [oldGit, oldSoft]);
+    const closedAt = new Date(Date.now() - 2 * 3600000).toISOString();
+    fs.writeFileSync(`${dir}/old.json`, JSON.stringify({ ...read(dir, "old"), status: "stopped", closedAt }));
+    t.eq(claim(t, dir, "next", [clean], { repo }).ok, true, "a stopped claim does not block an explicit new claim");
+    fs.writeFileSync(`${repo}/${clean}`, "new work");
+    fs.writeFileSync(`${repo}/${oldGit}`, "new work");
+    const git = helper(t, "claim-more", { dir, repo, label: "next", staleHours: 1 });
+    t.eq([git.ok, git.changed, git.added], [true, [oldGit, clean], [oldGit]], "Git keeps the explicitly claimed edit and adds an edit listed only by an expired claim");
+    fs.writeFileSync(`${repo}/${oldSoft}`, "new work");
+    const listed = more(t, dir, "next", [clean], [oldSoft], { staleHours: 1 });
+    t.eq([listed.ok, listed.conflicts, listed.others, listed.added], [true, [], [], [oldSoft]], "the explicit lists keep the claimed hard file and add the expired claim's soft file");
     const next = read(dir, "next");
     fs.writeFileSync(`${dir}/next.json`, JSON.stringify({ ...next, status: "stopped" }));
     const resumed = helper(t, "claim-more", { dir, repo, label: "next" });

@@ -258,15 +258,20 @@ function withLock(dir, fn, { waitMs = 120000, staleMs = 600000 } = {}) {
   try { return { locked: true, value: fn() }; } finally { try { fs.rmdirSync(lock); } catch {} }
 }
 
+function claimStaleHours(spec) {
+  const cfg = readJson(path.join(os.homedir(), ".zodchi", "config.json")).value || {};
+  const hours = Number(spec.staleHours ?? cfg.claimStaleHours ?? 3);
+  return Number.isFinite(hours) && hours >= 0 ? hours : 3;
+}
+
 function claimFacts(spec, repo, dirtyKeys, refused) {
   const dir = path.join(claimsHome(), ".zodchi", "packages", String(spec.claimsKey || ""));
   const answer = { dir: norm(dir), open: [], closed: [], kept: [], skipped: [], notes: [] };
   if (!spec.claimsKey) { answer.notes.push("no claims key given"); return answer; }
   const first = readClaims(dir);
   answer.skipped = first.skipped;
-  const cfg = readJson(path.join(os.homedir(), ".zodchi", "config.json")).value || {};
-  const staleHours = Number(spec.staleHours ?? cfg.claimStaleHours ?? 3);
-  const staleMs = (Number.isFinite(staleHours) && staleHours >= 0 ? staleHours : 3) * 3600000;
+  const staleHours = claimStaleHours(spec);
+  const staleMs = staleHours * 3600000;
   const defBranch = defaultBranch(repo);
   const others = first.claims.filter((e) => e.claim.status === "open" && e.label !== spec.label).map((e) => ({ ...e, dir }));
   const stale = [];
@@ -354,19 +359,30 @@ function writeClaim(file, value) {
   fs.writeFileSync(tmp, JSON.stringify(value) + "\n");
   fs.renameSync(tmp, file);
 }
-const otherClaims = (dir, label, includeStopped = false) => readClaims(dir).claims
-  .filter((e) => e.label !== label && (e.claim.status === "open" || (includeStopped && e.claim.status === "stopped")))
+const otherClaims = (dir, label, stoppedSince = null) => readClaims(dir).claims
+  .filter((e) => {
+    if (e.label === label) return false;
+    if (e.claim.status === "open") return true;
+    if (e.claim.status !== "stopped" || stoppedSince === null) return false;
+    const closedAt = Date.parse(e.claim.closedAt);
+    const stoppedAt = Number.isFinite(closedAt) ? closedAt : newestWrite(path.join(dir, e.name));
+    return stoppedAt > stoppedSince;
+  })
   .map((e) => ({ label: e.label, status: e.claim.status, branch: typeof e.claim.branch === "string" ? e.claim.branch : "", files: keysOf(e.claim.files) }));
 
-function otherFileOwners(spec, dir, includeStopped = false) {
-  const claims = otherClaims(dir, spec.label, includeStopped);
+function otherFileOwners(spec, dir, ownKeys) {
+  const stoppedSince = ownKeys ? Date.now() - claimStaleHours(spec) * 3600000 : null;
+  const claims = otherClaims(dir, spec.label, stoppedSince);
   const legacy = legacyDirOf(spec);
-  if (legacy) claims.push(...otherClaims(legacy, spec.label, includeStopped));
+  if (legacy) claims.push(...otherClaims(legacy, spec.label, stoppedSince));
   // A later open claim can explicitly take a stopped claim's path. Name its current owner first.
   const owners = new Map();
   for (const status of ["open", "stopped"]) {
     for (const claim of claims.filter((c) => c.status === status)) {
-      for (const file of claim.files) if (!owners.has(file)) owners.set(file, claim.label);
+      for (const file of claim.files) {
+        if (status === "stopped" && ownKeys.has(file)) continue;
+        if (!owners.has(file)) owners.set(file, claim.label);
+      }
     }
   }
   return owners;
@@ -452,8 +468,9 @@ function claimCmd(spec) {
 // open or stopped claim lists is a conflict "<label>: <file>"; every soft file (only Git shows it changed) that such a claim lists is that
 // package's work and goes to others. Without conflicts, every hard file and every soft file not in others that this label's open claim
 // lacks is added to it (added).
-// Both forms look in the legacy folder too. Stopped claims count only for this ownership decision. Opening or reopening
-// a claim still checks for conflicts with open claims only.
+// Both forms look in the legacy folder too. A stopped claim counts only within claimStaleHours of its closedAt
+// (file modification time for older records without a timestamp). Any open claim, including the caller's, takes precedence.
+// Opening or reopening a claim still checks for conflicts with open claims only.
 function claimMoreCmd(spec) {
   if (spec.repo !== undefined && spec.hard === undefined && spec.soft === undefined) return claimMoreFromGit(spec);
   needFields(spec, ["dir", "label"], ["hard", "soft"]);
@@ -462,15 +479,16 @@ function claimMoreCmd(spec) {
   const file = path.join(dir, `${spec.label}.json`);
   const base = { ok: false, api: API, plugin: pluginCopy(), conflicts: [], others: [], owners: [], added: [], file: norm(file) };
   const done = withLock(dir, () => {
-    const owner = otherFileOwners(spec, dir, true);
+    const own = readJson(file).value;
+    const ownIsOpen = own?.label === spec.label && own.status === "open";
+    const have = ownIsOpen && Array.isArray(own.files) ? own.files.map(String) : [];
+    const haveKeys = new Set(have.map(pathKey));
+    const owner = otherFileOwners(spec, dir, haveKeys);
     const conflicts = hard.filter((f) => owner.has(f)).map((f) => `${owner.get(f)}: ${f}`);
     const others = soft.filter((f) => owner.has(f));
     const owners = others.map((f) => `${owner.get(f)}: ${f}`);
     if (conflicts.length) return { ...base, conflicts, others, owners };
-    const own = readJson(file).value;
-    if (!own || typeof own !== "object" || own.label !== spec.label || own.status !== "open") return { ...base, others, owners, error: `${spec.label} has no open claim at ${norm(file)}` };
-    const have = Array.isArray(own.files) ? own.files.map(String) : [];
-    const haveKeys = new Set(have.map(pathKey));
+    if (!ownIsOpen) return { ...base, others, owners, error: `${spec.label} has no open claim at ${norm(file)}` };
     const added = [...new Set([...hard, ...soft.filter((f) => !others.includes(f))])].filter((f) => !haveKeys.has(f));
     if (added.length) writeClaim(file, { ...own, files: [...have, ...added] });
     return { ...base, ok: true, others, owners, added };
@@ -515,11 +533,11 @@ function claimMoreFromGit(spec) {
       if (!k || /^\.agent-tmp(\/|$)/.test(k) || seen.has(k)) continue;
       seen.set(k, norm(p));
     }
-    const owner = otherFileOwners(spec, dir, true);
-    const others = [...seen].filter(([k]) => owner.has(k));
-    const mine = [...seen].filter(([k]) => !owner.has(k) && !atGate.has(k));
     const have = Array.isArray(own.files) ? own.files.map(String) : [];
     const haveKeys = new Set(have.map(pathKey));
+    const owner = otherFileOwners(spec, dir, haveKeys);
+    const others = [...seen].filter(([k]) => owner.has(k));
+    const mine = [...seen].filter(([k]) => !owner.has(k) && !atGate.has(k));
     const added = mine.map(([k]) => k).filter((k) => !haveKeys.has(k));
     if (added.length) writeClaim(file, { ...own, files: [...have, ...added] });
     return { ...base, ok: true, others: others.map(([, p]) => p), owners: others.map(([k, p]) => `${owner.get(k)}: ${p}`), changed: mine.map(([, p]) => p), added, atGate: Array.isArray(own.atGate), ...(reopened ? { reopened } : {}) };
