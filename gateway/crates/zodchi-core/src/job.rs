@@ -391,6 +391,35 @@ pub const WORKER_FLAGS: u32 = 0x0000_0008 /* DETACHED_PROCESS */ | 0x0000_0200 /
 #[cfg(windows)]
 pub const WORKER_BREAKAWAY: u32 = 0x0100_0000;
 
+/// Stdio::null gives the child its own streams, but CreateProcess can also pass the caller's
+/// redirected streams as extra, unused handles. Those copies keep a shell's pipe or file open.
+#[cfg(windows)]
+fn clear_redirected_handle_inheritance() -> std::io::Result<()> {
+    use std::ffi::c_void;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetStdHandle(which: u32) -> *mut c_void;
+        fn GetFileType(handle: *mut c_void) -> u32;
+        fn SetHandleInformation(handle: *mut c_void, mask: u32, flags: u32) -> i32;
+    }
+    const FILE_TYPE_DISK: u32 = 1;
+    const FILE_TYPE_PIPE: u32 = 3;
+    const HANDLE_FLAG_INHERIT: u32 = 1;
+    // STD_INPUT_HANDLE, STD_OUTPUT_HANDLE and STD_ERROR_HANDLE. Leave console and absent handles alone.
+    for which in [-10_i32, -11, -12] {
+        // SAFETY: these calls inspect a process-owned handle and update only its inheritance flag.
+        unsafe {
+            let handle = GetStdHandle(which as u32);
+            if matches!(GetFileType(handle), FILE_TYPE_DISK | FILE_TYPE_PIPE)
+                && SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Starts this program again with `args`, detached from the caller (its own session or process group, no console, no
 /// stdio, out of the caller's job object on Windows). The OpenAI API key of the caller's environment reaches it only
 /// with `keep_api_key`. A long-lived caller waits on the returned child (on a thread of its own) so that a finished
@@ -407,6 +436,7 @@ pub fn spawn_detached(args: &[std::ffi::OsString], keep_api_key: bool) -> Result
     {
         use std::os::windows::process::CommandExt;
         const ERROR_ACCESS_DENIED: i32 = 5;
+        clear_redirected_handle_inheritance()?;
         command.creation_flags(WORKER_FLAGS);
         match command.spawn() {
             // The job object of the caller forbids breakaway: the worker then starts inside it, as before.
@@ -433,17 +463,9 @@ pub fn spawn_detached(args: &[std::ffi::OsString], keep_api_key: bool) -> Result
     }
 }
 
-/// The other jobs that hold a place. With `settle_them`, jobs without a worker are settled first.
-fn running_elsewhere(cfg: &Config, own: &Path, settle_them: bool, beat: &dyn Fn()) -> Vec<Value> {
-    all_job_dirs(cfg).into_iter().filter(|d| d != own).filter_map(|d| {
-        if settle_them {
-            beat();
-            // A job that could not be settled keeps its place, as it reads now.
-            settle(&d, read_job(&d)).unwrap_or_else(|_| read_job(&d))
-        } else {
-            read_job(&d)
-        }
-    }).filter(|j| status_of(j) == "running").collect()
+/// createdAt is UTC ISO time with a fixed millisecond field, including in older job records.
+fn queue_order(job: &Value) -> (&str, &str) {
+    (job["createdAt"].as_str().unwrap_or(""), job["key"].as_str().unwrap_or(""))
 }
 
 /// Two calls run at once at most, and only one of them writes into the checkout. Counting the running jobs and
@@ -455,8 +477,20 @@ fn claim(cfg: &Config, dir: &Path, current: &Value, interval_ms: u64, beat: &dyn
     let holder = || fs::read_to_string(&lock).unwrap_or_default();
     let writes = current.get("writes") == Some(&json!(true));
     let room = || {
-        let others = running_elsewhere(cfg, dir, false, beat);
-        others.len() < MAX_PARALLEL && !(writes && others.iter().any(|o| o.get("writes") == Some(&json!(true))))
+        let mut running = 0;
+        for other in all_job_dirs(cfg).into_iter().filter(|d| d != dir).filter_map(|d| read_job(&d)) {
+            match status_of(&other) {
+                "queued" if queue_order(&other) < queue_order(current) => return false,
+                "running" => {
+                    running += 1;
+                    if running >= MAX_PARALLEL || (writes && other["writes"].as_bool() == Some(true)) {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+        }
+        true
     };
     let take = || -> Result<bool> {
         match fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
@@ -479,7 +513,11 @@ fn claim(cfg: &Config, dir: &Path, current: &Value, interval_ms: u64, beat: &dyn
         }
     };
     loop {
-        running_elsewhere(cfg, dir, true, beat);
+        // A queued predecessor with a dead worker must also be settled before the next job can start.
+        for other in all_job_dirs(cfg).into_iter().filter(|d| d != dir) {
+            beat();
+            let _ = settle(&other, read_job(&other));
+        }
         while !take()? {
             pause(20 + rand::random::<u64>() % 40);
         }
