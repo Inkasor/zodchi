@@ -436,7 +436,9 @@ pub fn spawn_detached(args: &[std::ffi::OsString], keep_api_key: bool) -> Result
     {
         use std::os::windows::process::CommandExt;
         const ERROR_ACCESS_DENIED: i32 = 5;
-        clear_redirected_handle_inheritance()?;
+        // Best effort: a handle that stays inheritable only delays the end of the caller's output; the job is already
+        // stored, so the worker must start anyway.
+        let _ = clear_redirected_handle_inheritance();
         command.creation_flags(WORKER_FLAGS);
         match command.spawn() {
             // The job object of the caller forbids breakaway: the worker then starts inside it, as before.
