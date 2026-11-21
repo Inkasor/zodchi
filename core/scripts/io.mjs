@@ -1086,9 +1086,17 @@ function readResearch(spec, preflight = false) {
   let text;
   const opening = Boolean(spec.input) && !preflight;
   if (opening) {
-    text = JSON.stringify(spec.input);
+    let input = spec.input;
+    if (spec.questionsFromFile === true) {
+      if (input.questions !== null || !fs.fstatSync(0).isFile()) refuse("the planner questions must come from a redirected file");
+      let questions;
+      try { questions = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(fs.readFileSync(0))); }
+      catch { refuse("the planner questions file is not UTF-8 JSON"); }
+      input = { ...input, questions };
+    }
+    text = JSON.stringify(input);
     if (sha(text) !== inputSha256) refuse("the goal and questions did not arrive with their expected hash");
-    const { goal, questions, repos, publicRepo } = spec.input;
+    const { goal, questions, repos, publicRepo } = input;
     if (typeof goal !== "string" || typeof publicRepo !== "boolean" ||
         !Array.isArray(repos) || !repos.length || !repos.every(absOk) ||
         !Array.isArray(questions) || !questions.length || !questions.every(q => q && typeof q.question === "string")) refuse("invalid manifest inputs");
@@ -1103,9 +1111,12 @@ function readResearch(spec, preflight = false) {
   const { questions, repos } = input;
   const slots = [], entries = [], facts = [], unknowns = [], seen = new Set();
   let dropped = 0;
-  const reports = preflight ? [] : spec.reports || [];
+  // Older callers opened a manifest without receipt fields. Every receipt submission, even an empty
+  // one, must carry both fields so dropping the reports cannot look like a successful check.
+  const checkingReports = !preflight && (!opening || 'reports' in spec || 'reportsSha256' in spec);
+  const reports = checkingReports ? spec.reports : [];
   if (!Array.isArray(reports) || reports.some(r => !r || !Number.isInteger(r.slot) || r.slot < 1 || r.slot > questions.length) ||
-      (reports.length && sha(JSON.stringify(reports)) !== spec.reportsSha256)) refuse("invalid slot report digest or number");
+      (checkingReports && sha(JSON.stringify(reports)) !== spec.reportsSha256)) refuse("invalid slot report digest or number");
   for (let slot = 1; slot <= questions.length; slot++) {
     const file = `${tmp}/facts/${slot}.json`;
     const accepted = manifestEntry(dir, slot);

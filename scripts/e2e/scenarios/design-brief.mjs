@@ -414,13 +414,23 @@ export default function register({ scenario, ROOT }) {
     t.ok(p.opts.agentType === "zodchi-core:runner" && /change nothing/.test(p.prompt), "the file is looked at by a runner that changes nothing");
   });
 
-  scenario("design-brief-args-and-gate", "bad args throw before any agent runs; a missing or stale helper stops at the gate; the bootstrap is the same text as in code-package", async (t) => {
+  scenario("design-brief-args-and-gate", "bad args stop before any agent runs; a missing or stale helper stops at the gate; the bootstrap is the same text as in code-package", async (t) => {
     for (const [name, args] of [["goal", { goal: "" }], ["repos", { repos: undefined }], ["out", { out: undefined }], ["label", { label: "bad label" }], ["a relative repo", { repos: ["src"] }], ["a dotdot path", { out: "/r/../x/brief.md" }], ["a relative tmp", { tmp: "tmp" }]]) {
       const x = await run({ args });
-      t.ok(x.error && x.calls.length === 0, `${name}: throws before any agent runs (${x.error && x.error.message})`);
+      t.ok(!x.error && x.out.refused && /refused/i.test(x.out.next) && x.calls.length === 0, `${name}: refusal names the next step before any agent runs`);
     }
     const q = await run({ args: { questions: [{ question: "q", repo: "/elsewhere" }] } });
-    t.ok(q.error && /not inside args\.repos/.test(q.error.message), "a question about a repository outside args.repos throws");
+    t.ok(!q.error && /not inside args\.repos/.test(q.out.refused) && /refused/i.test(q.out.next), "an outside question repository returns a refusal");
+    for (const file of ["/elsewhere/file.js", "../outside/file.js", "/r/src/../../outside/file.js"]) {
+      const outside = await run({ args: { questions: [{ question: "q", repo: "/r", files: [file] }] } });
+      t.ok(!outside.error && outside.out.stoppedAt && /outside args\.repos/.test(outside.out.refused) && /refused/i.test(outside.out.next) && !outside.calls.length, "an outside file stops before any agent runs");
+    }
+    const relative = await run({ args: { repos: ["/r", "/g"], questions: [
+      { question: "first", files: ["src/./export.js"] },
+      { question: "second", repo: "/g", files: ["docs/../src/state.js"] },
+    ] } });
+    t.ok(relative.out.review && relative.of(/^facts 1$/)[0].prompt.includes('"/r/src/export.js"') &&
+      relative.of(/^facts 2$/)[0].prompt.includes('"/g/src/state.js"'), "relative hints resolve against the default and the question's repository and reach review");
     const drive = ["C", ":"].join(""), back = (p) => drive + p.split("/").join("\\");
     const win = await run({ args: { repos: [back("/work/r")], out: back("/work/r/b.md"), tmp: back("/work/r/t") } });
     t.ok(win.error === null && win.of(/^gate /)[0].prompt.includes(`"repo":"${drive}/work/r"`), "backslash paths are taken as slash paths");
