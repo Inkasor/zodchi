@@ -366,7 +366,7 @@ const otherClaims = (dir, label, callerOpenedAt) => readClaims(dir).claims
     if (e.claim.status !== "stopped" || !Number.isFinite(callerOpenedAt)) return false;
     const closedAt = Date.parse(e.claim.closedAt);
     const stoppedAt = Number.isFinite(closedAt) ? closedAt : newestWrite(path.join(dir, e.name));
-    return stoppedAt > callerOpenedAt;
+    return stoppedAt >= callerOpenedAt; // second-precision stamps: a stop in the opening second counts (an earlier one only names files already in atGate)
   })
   .map((e) => ({ label: e.label, status: e.claim.status, branch: typeof e.claim.branch === "string" ? e.claim.branch : "", files: keysOf(e.claim.files) }));
 
