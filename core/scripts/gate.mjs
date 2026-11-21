@@ -25,6 +25,8 @@
 //                  the file work of incident-triage and design-brief, in io.mjs beside this file (see its header): every file
 //                  those workflows read or write goes through these commands, never through a model. Their answers carry
 //                  lineSha256, the SHA-256 of the answer without that field, so the workflow sees whether the runner copied the line
+//   list-build     number an expert's proposals and assumptions for the owner, showing any earlier decision each would replace
+//   list-reply     apply the owner's closed batch of verdicts to the decisions ledger. Both commands live in blocks.mjs and sign their answers.
 //
 // It prints ONE line of compact JSON to stdout and nothing else. The workflow reads that line and decides; the exit
 // code is 0 when the line is the answer, 2 for a bad call (no spec, a spec that is not JSON or not valid base64 after b64:, a field missing), 3 when the
@@ -710,8 +712,9 @@ function roles(spec) {
   return { ok: true, api: API, plugin: pluginCopy(), roles: m.roles, modelsErrors: m.errors, account: acc.account, accountError: acc.accountError, ignoreExit: ignore };
 }
 
-// The file commands live in io.mjs beside this file, loaded only for them: the gate commands need nothing but this file.
+// Load the file helper that owns the requested command. The other gate commands need only this file.
 const IO = ["incident-open", "incident-collect", "incident-publish", "incident-fail", "incident-unlock", "brief-inspect", "brief-manifest", "brief-preflight", "review-read"];
+const BLOCKS = ["list-build", "list-reply"];
 const COMMANDS = { "code-package": codePackage, "branch-review": branchReview, ledger, plugin, roles, claim: claimCmd, "claim-more": claimMoreCmd, "claim-base": claimBaseCmd };
 const [command, specText] = process.argv.slice(2);
 if (command === "workflow-build") {
@@ -724,16 +727,18 @@ if (command === "workflow-build") {
   if (process.argv[4] === "--write" && have[1] !== build) fs.writeFileSync(file, withBuild(text, build));
   print({ ok: true, api: API, build, current: have[1] === build || process.argv[4] === "--write" });
 }
-if (IO.includes(command)) {
-  let io;
-  try { io = await import("./io.mjs"); } catch (e) { print({ ok: false, api: API, error: `the plugin copy at ${norm(path.resolve(HERE, ".."))} has no usable scripts/io.mjs (${String(e.message).slice(0, 200)}); reinstall the plugin` }, 2); }
+if (IO.includes(command) || BLOCKS.includes(command)) {
+  const file = BLOCKS.includes(command) ? "blocks.mjs" : "io.mjs";
+  let helper;
+  try { helper = await import(`./${file}`); } catch (e) { print({ ok: false, api: API, error: `the plugin copy at ${norm(path.resolve(HERE, ".."))} has no usable scripts/${file} (${String(e.message).slice(0, 200)}); reinstall the plugin` }, 2); }
+  const commands = helper.BLOCK_COMMANDS || helper.IO_COMMANDS;
   // The answer with api and the plugin copy, and lineSha256 over all of it: the workflow checks that the runner copied the line exactly.
   COMMANDS[command] = (spec) => {
-    const answer = { ...io.IO_COMMANDS[command](spec), api: API, plugin: pluginCopy() };
-    return { ...answer, lineSha256: io.lineSha(answer) };
+    const answer = { ...commands[command](spec), api: API, plugin: pluginCopy() };
+    return { ...answer, lineSha256: helper.lineSha(answer) };
   };
 }
-if (!COMMANDS[command]) print({ ok: false, api: API, error: `unknown command ${JSON.stringify(command)}; one of ${[...new Set([...Object.keys(COMMANDS), ...IO])].join(", ")}` }, 2);
+if (!Object.hasOwn(COMMANDS, command)) print({ ok: false, api: API, error: `unknown command ${JSON.stringify(command)}; one of ${[...Object.keys(COMMANDS), ...IO, ...BLOCKS].join(", ")}` }, 2);
 // The spec comes in two forms: plain JSON, or "b64:" and the standard base64 of the UTF-8 JSON text. The workflows send the second
 // (up to 12000 characters of argument; a longer spec goes as plain JSON, so that no command is longer than it was): it holds no quote, backslash or brace, so a runner that retypes the command has nothing to "repair" (a cut tail that looks like an
 // unfinished escape was repaired into another text). Each failure of the second form says which step failed.
