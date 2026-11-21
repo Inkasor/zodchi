@@ -8,13 +8,14 @@ use std::time::Duration;
 use zodchi_core::config::Config;
 use zodchi_core::job::{self, compose_prompt, deliver, is_terminal, Request};
 use zodchi_core::role::{load_role, roles, Overrides};
-use zodchi_core::util::{fail, GatewayError, Result};
+use zodchi_core::util::{fail, now_ms, parse_iso_ms, GatewayError, Result};
 
 const USAGE: &str = "Usage: zodchi <command> [options]
 Run it inside the repository the call is for: jobs are stored in its .agent-tmp/gateway/<key>/.
 
   run      submit a job and wait for it        submit   submit and return at once
   wait     wait for a submitted job            job      print a job as it is now
+  status <key> [<key>...] [--json]             print status and elapsed time in seconds for each key
   roles    the roles a call from this repository can name
   check    open the thread of a role and print its sandbox and MCP servers (no model call)
   account  every subscription in ~/.zodchi/accounts.json: sign-in, limits, credits (no model call)
@@ -33,6 +34,7 @@ Job options (run, submit):
   --credits                let the call spend ChatGPT credits when every subscription's limit is used up
   --questions <file.json>  the questions of a decisions call; they replace those of the role
   --paid                   let a decisions call spend from the OpenAI API key
+  --quiet                  submit only: print one line, <key> <status>
 Result options (run, wait):
   --out <file>             copy the answer there: the image, the JSON by the schema of the role, or the text
   --wait-sec <n>           how long this command waits, default 540; the job goes on after that
@@ -40,7 +42,8 @@ Anywhere:
   --root <dir>             the repository, when the command is not run inside it
 
 Exit code of run, wait and job: 0 succeeded, 2 another final status, 3 still running, 1 a wrong call.
-submit exits 0 once the job is stored or already exists; read its status from the JSON.";
+submit exits 0 once the job is stored or already exists.
+status exits 0 when every key was read, 2 for an unknown key or a bad call.";
 
 #[derive(Default)]
 struct Options {
@@ -59,12 +62,12 @@ impl Options {
     }
 }
 
-fn parse(args: &[String]) -> Result<Options> {
+fn parse(command: &str, args: &[String]) -> Result<Options> {
     let mut o = Options::default();
     let mut i = 0;
     while i < args.len() {
         let Some(name) = args[i].strip_prefix("--") else { return fail(format!("Unexpected argument: {}", args[i])) };
-        if ["credits", "paid", "keep-thread", "no-keep-thread"].contains(&name) {
+        if ["credits", "paid", "keep-thread", "no-keep-thread"].contains(&name) || (name == "quiet" && command == "submit") {
             o.switches.insert(name.to_string());
             i += 1;
             continue;
@@ -151,6 +154,58 @@ fn wait_and_report(cfg: &Config, o: &Options, key: &str, mut extra: Value) -> Re
     Ok(report(&done, extra))
 }
 
+fn status(args: &[String]) -> Result<u8> {
+    let mut root = None;
+    let mut json_output = false;
+    let mut keys = Vec::new();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--json" if !json_output => json_output = true,
+            "--root" if root.is_none() => {
+                let Some(path) = args.next().filter(|p| !p.is_empty() && !p.starts_with("--")) else {
+                    return fail("--root needs a directory");
+                };
+                root = Some(Path::new(path));
+            }
+            key if zodchi_core::util::is_key(key) => keys.push(key),
+            _ => return fail(format!("Unexpected status argument: {arg}")),
+        }
+    }
+    if keys.is_empty() {
+        return fail("Usage: zodchi status <key> [<key>...] [--json]");
+    }
+    let cfg = Config::new(root)?;
+    let mut rows = Vec::new();
+    let mut code = 0;
+    for key in keys {
+        let current = match job::job(&cfg, key) {
+            Ok(current) => current,
+            Err(error) => {
+                eprintln!("{error}");
+                code = 2;
+                continue;
+            }
+        };
+        let state = current["status"].as_str().unwrap_or("");
+        let elapsed = current["createdAt"].as_str().and_then(parse_iso_ms).map(|created| {
+            let end = current["finishedAt"].as_str().and_then(parse_iso_ms).unwrap_or_else(now_ms);
+            ((end - created).max(0) / 1000) as u64
+        });
+        if json_output {
+            rows.push(json!({ "key": key, "status": state, "elapsedSeconds": elapsed }));
+        } else if let Some(seconds) = elapsed {
+            println!("{key} {state} {seconds}s");
+        } else {
+            println!("{key} {state}");
+        }
+    }
+    if json_output {
+        print(&Value::Array(rows));
+    }
+    Ok(code)
+}
+
 fn main_inner(args: Vec<String>) -> Result<u8> {
     let Some(command) = args.first().cloned() else {
         println!("{USAGE}");
@@ -161,7 +216,13 @@ fn main_inner(args: Vec<String>) -> Result<u8> {
         print(&exit.result);
         return Ok(exit.code);
     }
-    let o = parse(&args[1..])?;
+    if command == "status" {
+        return status(&args[1..]).or_else(|error| {
+            eprintln!("{error}");
+            Ok(2)
+        });
+    }
+    let o = parse(&command, &args[1..])?;
     let root = o.get("root").map(PathBuf::from);
     let cfg = Config::new(root.as_deref())?;
     match command.as_str() {
@@ -173,7 +234,11 @@ fn main_inner(args: Vec<String>) -> Result<u8> {
         "submit" => {
             let req = request(&cfg, &o)?;
             let (current, created) = job::submit(&cfg, &req, true)?;
-            report(&current, json!({ "created": created }));
+            if o.has("quiet") {
+                println!("{} {}", req.key, current["status"].as_str().unwrap_or(""));
+            } else {
+                report(&current, json!({ "created": created }));
+            }
             Ok(0)
         }
         "wait" => wait_and_report(&cfg, &o, o.get("key").unwrap_or(""), json!({})),

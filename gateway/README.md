@@ -10,6 +10,25 @@ zodchi account                 # every subscription: sign-in, limits, credits (n
 zodchi run --role code-review --key my-review-1 --prompt review.md --attach change.diff --out review.json
 ```
 
+Use `submit` to return as soon as the job is stored. The worker continues after the command exits, including when
+stdout goes to a pipe or a file. Add `--quiet` to print one line containing the key and status. Repeating the same
+request under the same key returns the existing job.
+
+```
+zodchi submit --quiet --role code-review --key my-review-2 --prompt review.md
+zodchi status my-review-1 my-review-2
+zodchi status --json my-review-2
+```
+
+`status` prints each readable key in argument order as `<key> <status> [<seconds>s]`. Elapsed time runs from
+submission to completion or the current time. With `--json` the output is one array of objects with `key`,
+`status` and `elapsedSeconds`. A successful read of every key exits 0 even for running or failed jobs. An unknown
+key or bad call exits 2. An unreadable key is reported on stderr, and other readable keys still appear on stdout.
+`job` and `wait` exit 3 for a pending job, 0 for success and 2 for any other final state.
+
+The queue starts jobs by submission time, breaking ties by key. At most two jobs run per repository and only
+one can write at a time. If the next job needs the writer slot, later jobs wait for it to start.
+
 ## Subscriptions
 
 List your Codex homes in `~/.zodchi/accounts.json`, in the order you want them used:
