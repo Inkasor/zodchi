@@ -31,7 +31,7 @@ export default function register({ scenario, ROOT }) {
   const helper = path.join(ROOT, "scripts/e2e/fixtures/video-manifest-v1.mjs");
 
   function fixture(t) {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "video-manifest-"));
+    const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "video-manifest-"));
     t.cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
     const dir = path.join(root, "video");
     fs.mkdirSync(dir);

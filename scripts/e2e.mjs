@@ -46,7 +46,8 @@ const ZODCHI = path.join(binDir, "zodchi" + EXE);
 const SERVER = path.join(binDir, "zodchi-server" + EXE);
 const wanted = argv;
 
-const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "zodchi-e2e-"));
+const tempDirectory = fs.realpathSync(os.tmpdir());
+const scratch = fs.mkdtempSync(path.join(tempDirectory, "zodchi-e2e-"));
 const traces = path.resolve(outOption || path.join(ROOT, ".agent-tmp", "e2e-traces"));
 if (!outOption) fs.rmSync(traces, { recursive: true, force: true });
 fs.mkdirSync(traces, { recursive: true });
@@ -1374,8 +1375,8 @@ scenario("flow-private-checks", "check evidence removes private commands, folder
   const fix = (turns[1].prompt.match(/checks #1 exit 1\n```\n([\s\S]*?)\n```/) || [])[1] || "";
   t.ok(fix.includes("clamp is wrong"), "the fixing writer gets the failed check and its output");
   t.ok(!fix.includes("PRIVKEY") && fix.includes("[source line withheld]"), "a line that may hold a credential is left out");
-  t.ok(!fix.toLowerCase().includes(os.tmpdir().toLowerCase()) && fix.includes("<tmp>"), "the export folder is named <tmp>, not by its path");
-  t.ok(!turns[1].prompt.toLowerCase().includes(os.tmpdir().toLowerCase()), "no private folder anywhere in the fix request");
+  t.ok(!fix.toLowerCase().includes(tempDirectory.toLowerCase()) && fix.includes("<tmp>"), "the export folder is named <tmp>, not by its path");
+  t.ok(!turns[1].prompt.toLowerCase().includes(tempDirectory.toLowerCase()), "no private folder anywhere in the fix request");
   const proof = JSON.parse(turns[2].prompt.match(/<attachment path="verification\.json">\n([\s\S]*?)\n<\/attachment>/)[1]);
   t.eq(proof.commands.map(e => [e.check, e.exitCode, e.command]), [
     ["checks #1", 0, "[private text removed]"], ["args.verify #1", 0, "[private text removed]"],
