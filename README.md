@@ -22,6 +22,7 @@ Run `zodchi flow list` to see the workflows available to your project. The same 
 | Implement and review a code change | [Code package](docs/flow.md) |
 | Test a web app or a game player | [Acceptance](docs/acceptance.md) |
 | Prepare and verify a video | [Video](docs/flow-video.md) |
+| Speak timed cues and export a dubbing track | [Voiceover](docs/voiceover.md) |
 | Upload an approved video privately | [YouTube upload](docs/youtube-publish.md) |
 
 The [shared workflow catalog](workflows/catalog.json) includes the other workflows. Use [model roles](docs/model-roles.md) to choose the models that run them.
@@ -36,6 +37,10 @@ The [shared workflow catalog](workflows/catalog.json) includes the other workflo
 | [skills](skills) | Shared instructions packaged for both clients |
 | [roles](roles) and [models.json](models.json) | Model prompts, response schemas and default picks |
 | [plugins](plugins) | Client skills and additional agents for Claude Code |
+
+## Contributors
+
+[Inkasor](https://github.com/Inkasor), [Codex](https://github.com/codex), and [Claude](https://github.com/claude).
 | [install](install) | Commands to build a portable distribution from source |
 | [scripts/e2e](scripts/e2e) | End-to-end checks and fixtures |
 

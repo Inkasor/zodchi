@@ -22,6 +22,7 @@ Zodchi запускает общие рабочие процессы для Code
 | Сделать и проверить правку кода | [Пакет кода](docs/flow.md) |
 | Протестировать веб-приложение или игру | [Приёмка](docs/acceptance.md) |
 | Собрать и проверить ролик | [Видео](docs/flow-video.md) |
+| Озвучить таймлайн и записать дубляж | [Озвучка](docs/voiceover.md) |
 | Загрузить принятый ролик приватно | [Загрузка на YouTube](docs/youtube-publish.md) |
 
 Остальные процессы есть в [общем каталоге](workflows/catalog.json). Модели выбираются через [настройки ролей](docs/model-roles.md).
@@ -36,6 +37,10 @@ Zodchi запускает общие рабочие процессы для Code
 | [skills](skills) | Общие инструкции для обоих клиентов |
 | [roles](roles) и [models.json](models.json) | Промпты ролей, схемы ответов и модели по умолчанию |
 | [plugins](plugins) | Навыки для клиентов и дополнительные агенты Claude Code |
+
+## Участники
+
+[Inkasor](https://github.com/Inkasor), [Codex](https://github.com/codex) и [Claude](https://github.com/claude).
 | [install](install) | Команды сборки переносимого пакета из исходников |
 | [scripts/e2e](scripts/e2e) | Сквозные проверки и тестовые данные |
 

@@ -35,6 +35,7 @@ mod video_manifest;
 mod video_media;
 mod video_metrics;
 mod video_research;
+mod voiceover;
 mod workspace_audit;
 mod youtube_publish;
 
@@ -55,6 +56,8 @@ pub const USAGE: &str = "Usage: zodchi flow <workflow> --args <file.json> [--det
        zodchi flow video research --args <file.json>
        zodchi flow video publish <run-id> --file <file.json>
        zodchi flow video stats <run-id> --file <file.json>
+       zodchi flow voiceover voices
+       zodchi flow voiceover plan --args <file.json>
        zodchi flow youtube-publish connect --args <file.json>
        zodchi flow youtube-publish whoami --profile <name>
        zodchi flow list [--repo <directory>]
@@ -87,6 +90,10 @@ pub fn cli(args: &[String]) -> Result<Exit> {
             let payload = video_media::read_json(std::path::Path::new(file))?;
             return if command == "publish" { video::record_publication(id, &payload) } else { video::record_stats(id, &payload) };
         }
+        [workflow, command] if workflow == voiceover::NAME && command == "voices" => return Ok(voiceover::voices()),
+        [workflow, command, flag, file] if workflow == voiceover::NAME && command == "plan" && flag == "--args" => {
+            return voiceover::preview(&video_media::read_json(std::path::Path::new(file))?);
+        }
         [workflow, command, flag, file] if workflow == youtube_publish::NAME && command == "connect" && flag == "--args" => {
             return youtube_publish::connect(&video_media::read_json(std::path::Path::new(file))?);
         }
@@ -95,7 +102,7 @@ pub fn cli(args: &[String]) -> Result<Exit> {
         }
         _ => {}
     }
-    if ![code_package::WORKFLOW, branch_review::NAME, design_brief::NAME, method_question::NAME, rubric_probe::NAME, unity_check::NAME, workspace_audit::NAME, asset_round::NAME, video::NAME, acceptance::RELEASE, acceptance::PLAYER, youtube_publish::NAME].contains(&workflow.as_str()) {
+    if ![code_package::WORKFLOW, branch_review::NAME, design_brief::NAME, method_question::NAME, rubric_probe::NAME, unity_check::NAME, workspace_audit::NAME, asset_round::NAME, video::NAME, voiceover::NAME, acceptance::RELEASE, acceptance::PLAYER, youtube_publish::NAME].contains(&workflow.as_str()) {
         return fail(format!("No workflow {workflow:?} in zodchi flow. Run zodchi flow list for the catalog.\n{USAGE}"));
     }
     let mut file = None;
@@ -147,6 +154,8 @@ pub fn cli(args: &[String]) -> Result<Exit> {
                 asset_round::start(&given, detach)
             } else if workflow == video::NAME {
                 video::start(&given, detach)
+            } else if workflow == voiceover::NAME {
+                voiceover::start(&given, detach)
             } else if workflow == youtube_publish::NAME {
                 youtube_publish::start(&given)
             } else if [acceptance::RELEASE, acceptance::PLAYER].contains(&workflow.as_str()) {

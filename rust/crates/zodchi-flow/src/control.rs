@@ -1,4 +1,4 @@
-use crate::{acceptance, asset_round, branch_review, code_package, design_brief, input, journal::{last_state_event, Journal}, method_question, rubric_probe, unity_check, video, workspace_audit, youtube_publish, Exit};
+use crate::{acceptance, asset_round, branch_review, code_package, design_brief, input, journal::{last_state_event, Journal}, method_question, rubric_probe, unity_check, video, voiceover, workspace_audit, youtube_publish, Exit};
 use serde_json::{json, Value};
 use std::ffi::OsString;
 use zodchi_core::config::Config;
@@ -77,6 +77,10 @@ pub fn status(id: &str) -> Result<Exit> {
     if last["kind"] == "stop" && !active {
         result["stoppedAt"] = last["stoppedAt"].clone();
         result["infra"] = last["what"].clone();
+        if run["workflow"] == voiceover::NAME {
+            result["errorKind"] = last["errorKind"].clone();
+            result["mayHaveBeenCharged"] = last["mayHaveBeenCharged"].clone();
+        }
     }
     if let Some(final_result) = final_result {
         result["result"] = final_result;
@@ -162,7 +166,8 @@ pub fn launch(journal: &Journal, id: &str, rerun: Option<&str>) -> Result<Exit> 
         args.push(step.into());
     }
     let keep_api_key = journal.read_value("run.json").is_some_and(|run|
-        (run["workflow"] == rubric_probe::NAME || run["workflow"] == asset_round::NAME)
+        (run["workflow"] == rubric_probe::NAME || run["workflow"] == asset_round::NAME
+            || run["workflow"] == voiceover::NAME)
             && run["policy"]["paid"] == true);
     match spawn_flow_worker(&args, keep_api_key) {
         Ok(child) => {
@@ -230,6 +235,7 @@ fn resume_workflow(workflow: &str, id: &str, given: Option<&Value>, rerun: Optio
         workspace_audit::NAME => workspace_audit::resume(id, given, rerun),
         asset_round::NAME => asset_round::resume(id, given, rerun),
         video::NAME => video::resume(id, given, rerun),
+        voiceover::NAME => voiceover::resume(id, rerun),
         youtube_publish::NAME => youtube_publish::resume(id, given, rerun),
         acceptance::RELEASE | acceptance::PLAYER => acceptance::resume(id, rerun),
         _ => zodchi_core::util::fail(format!("Workflow {workflow:?} is not available in this installation.")),
