@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["crates/zodchi-core", "crates/zodchi-cli", "crates/zodchi-server", "crates/zodchi-flow"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/Inkasor/zodchi"
+
+[workspace.dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+rand = "0.8"
+ureq = { version = "3.5", default-features = false }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

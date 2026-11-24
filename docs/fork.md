@@ -20,9 +20,7 @@ so that updates merge cleanly. A practice that turns out to be useful outside
 the company can come back upstream as a pull request, without the company's
 names, hosts or paths.
 
-The company's own installer can call `install/install.mjs` of the fork with
-`--domains` and `--gateway-cli` (later: the gateway binary), so that its
-people get the same setup in one step.
+Build the fork's [portable package](install-from-source.md) from its checkout. It carries the fork's role table and the shared plugin. Use the company deployment procedure to decide when to replace that package.
 
 ## The publish guard in a fork
 
@@ -31,3 +29,7 @@ company's own name and hosts. List them in `.zodchi/allowed-words.txt` (one per 
 skips just those words and says how many it skipped. The list counts only in a checkout with a remote named
 `upstream`; in the public repository and its CI clone (no such remote) the file itself is reported as a problem, so
 it cannot switch the guard off there. Keys, tokens, e-mail addresses and machine paths are still refused.
+
+Flow keeps the `upstream` name as a local marker in the isolated writer and verification copies of a fork.
+The marker has no URL or fetch configuration. Run `node scripts/check.mjs` in the package checks to verify the
+candidate tree with the fork's committed allow-list.

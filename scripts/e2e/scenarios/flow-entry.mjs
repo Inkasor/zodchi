@@ -1,13 +1,12 @@
 // The three entry points of `zodchi flow code-package` (docs/flow.md, "Three ways to start it"): the Codex skill
-// (codex/skills/zodchi-flow), the Claude Code skill of the zodchi-core plugin (core/skills/zodchi-flow) and the installer
-// that puts them where the two programs read them.
+// (plugins/codex/skills/zodchi-flow) and the Claude Code skill (plugins/claude-code/core/skills/zodchi-flow).
+// The portable shared plugin and native installation are covered by flow-client-plugin.mjs.
 //
 // The skills are followed as written, not paraphrased: the brief is made from the skill's own brief template, the args
 // file from its own JSON example, and every command line of its `sh` blocks is run, with its placeholders filled, against
 // the real `zodchi` and the fakes of the other scenarios (fake Codex, a real zodchi-server, fake Claude). A real run
 // with real Codex and Claude sessions belongs to the before-release run, not to CI.
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -16,7 +15,7 @@ const FIXED = "export const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x))
 const KEY = "not-a-real-key-for-the-flow-entry-scenarios";
 const readJsonl = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 
-const SKILLS = { codex: "codex/skills/zodchi-flow/SKILL.md", claude: "core/skills/zodchi-flow/SKILL.md" };
+const SKILLS = { codex: "plugins/codex/skills/zodchi-flow/SKILL.md", claude: "plugins/claude-code/core/skills/zodchi-flow/SKILL.md" };
 // The only commands a skill tells an agent to run, in the order of its steps.
 const COMMANDS = [
   'zodchi flow code-package --args "<args-file>"',
@@ -218,153 +217,6 @@ export default function register(h) {
     t.eq(Object.keys(codex.argsExample).sort(), ["brief", "checks", "files", "label", "repo", "verify"], "the example holds the six fields of a package");
   });
 
-  scenario("flow-entry-install", "the installer puts the Codex skill where Codex reads skills and the Claude Code skill in the zodchi-core plugin it installs, never over a file it did not write, and removes both on uninstall", async (t) => {
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "zodchi-entry-"));
-    t.cleanups.push(() => { try { fs.rmSync(scratch, { recursive: true, force: true, maxRetries: 5 }); } catch { /* left in the temp folder */ } });
-    const env = (name) => {
-      const dir = path.join(scratch, name);
-      const e = { ...process.env, ZODCHI_HOME: path.join(dir, "zodchi-home"), CODEX_HOME: path.join(dir, "codex-home"), HOME: path.join(dir, "home"), USERPROFILE: path.join(dir, "home"), CLAUDE_CONFIG_DIR: path.join(dir, "claude-config") };
-      delete e.ZODCHI_DENYLIST;
-      fs.mkdirSync(e.HOME, { recursive: true });
-      return e;
-    };
-    const install = (e, args) => {
-      const r = spawnSync(process.execPath, [path.join(ROOT, "install", "install.mjs"), ...args], { env: e, encoding: "utf8", windowsHide: true, cwd: scratch });
-      t.log(`$ node install/install.mjs ${args.join(" ")}\n  exit ${r.status}\n  stdout: ${(r.stdout || "").trim().replace(/\n/g, "\n          ")}${r.stderr ? `\n  stderr: ${r.stderr.trim()}` : ""}`);
-      return { code: r.status, out: r.stdout || "", err: r.stderr || "" };
-    };
-    const skillSource = fs.readFileSync(path.join(ROOT, SKILLS.codex), "utf8");
-    const base = ["--no-plugins", "--no-build"];
-
-    // Codex skill: dry run, install, rerun, a change of yours, --force, uninstall.
-    const a = env("codex-skill");
-    const skillFile = path.join(a.CODEX_HOME, "skills", "zodchi-flow", "SKILL.md");
-    const dry = install(a, [...base, "--dry-run"]);
-    t.ok(dry.code === 0 && dry.out.includes(skillFile) && !fs.existsSync(path.join(a.CODEX_HOME)), "a dry run names the skill file and writes nothing");
-    const first = install(a, base);
-    t.eq([first.code, fs.existsSync(skillFile) && fs.readFileSync(skillFile, "utf8") === skillSource], [0, true], "the Codex skill is installed in $CODEX_HOME/skills/zodchi-flow, as the repository has it");
-    t.ok(JSON.parse(fs.readFileSync(path.join(a.ZODCHI_HOME, "installed.json"), "utf8")).files[skillFile], "it is recorded as installed by zodchi");
-    const again = install(a, base);
-    t.ok(again.code === 0 && !again.out.includes("update ") && fs.readFileSync(skillFile, "utf8") === skillSource, "a rerun changes nothing");
-    fs.writeFileSync(skillFile, `${skillSource}\nMy own line.\n`);
-    const mine = install(a, base);
-    t.ok(mine.code === 0 && mine.out.includes(`skip (not installed by zodchi or changed by you): ${skillFile}`) && fs.readFileSync(skillFile, "utf8").endsWith("My own line.\n"), "a skill changed by you is not overwritten");
-    t.ok(mine.out.includes("left as they are") && !mine.out.includes(`Codex skill zodchi-flow: ${skillFile}`), "and the summary does not claim it installed it");
-    const kept = install(a, ["--no-plugins", "--uninstall"]);
-    t.ok(kept.code === 0 && fs.existsSync(skillFile) && kept.out.includes(`keep (changed by you): ${skillFile}`), "uninstall leaves a skill you changed");
-    const forced = install(a, [...base, "--force"]);
-    t.eq([forced.code, fs.readFileSync(skillFile, "utf8") === skillSource], [0, true], "--force puts the repository's skill back");
-    const other = path.join(a.CODEX_HOME, "skills", "my-skill", "SKILL.md");
-    fs.mkdirSync(path.dirname(other), { recursive: true });
-    fs.writeFileSync(other, "---\nname: my-skill\n---\n");
-    const gone = install(a, ["--no-plugins", "--uninstall"]);
-    t.ok(gone.code === 0 && !fs.existsSync(skillFile) && !fs.existsSync(path.dirname(skillFile)), "uninstall removes the skill and its folder");
-    t.ok(fs.existsSync(other), "and nothing else in the skills folder of Codex");
-
-    // A file of the same path that zodchi did not write is never overwritten, and never removed.
-    const b = env("foreign-skill");
-    const foreign = path.join(b.CODEX_HOME, "skills", "zodchi-flow", "SKILL.md");
-    fs.mkdirSync(path.dirname(foreign), { recursive: true });
-    fs.writeFileSync(foreign, "a skill of my own with this name\n");
-    const skipped = install(b, base);
-    t.ok(skipped.code === 0 && fs.readFileSync(foreign, "utf8") === "a skill of my own with this name\n" && skipped.out.includes("skip (not installed by zodchi"), "a skill of that name that zodchi did not write is left alone");
-    install(b, ["--no-plugins", "--uninstall"]);
-    t.eq(fs.readFileSync(foreign, "utf8"), "a skill of my own with this name\n", "and uninstall does not remove it");
-
-    // The default folder when CODEX_HOME is not set.
-    const d = env("default-home");
-    delete d.CODEX_HOME;
-    install(d, base);
-    t.ok(fs.existsSync(path.join(d.HOME, ".codex", "skills", "zodchi-flow", "SKILL.md")), "without $CODEX_HOME the skill goes to ~/.codex/skills");
-    install(d, ["--no-plugins", "--uninstall"]);
-    t.ok(!fs.existsSync(path.join(d.HOME, ".codex", "skills", "zodchi-flow")), "and comes out again");
-
-    // --no-codex-skill: nothing written; an earlier copy is left alone by install and by uninstall.
-    const c = env("no-codex-skill");
-    const skip = install(c, [...base, "--no-codex-skill"]);
-    t.ok(skip.code === 0 && !fs.existsSync(c.CODEX_HOME) && /Codex skill: skipped/.test(skip.out), "--no-codex-skill writes no skill");
-    install(c, base);
-    const cFile = path.join(c.CODEX_HOME, "skills", "zodchi-flow", "SKILL.md");
-    install(c, ["--no-plugins", "--uninstall", "--no-codex-skill"]);
-    t.ok(fs.existsSync(cFile), "--no-codex-skill on uninstall leaves the installed skill");
-    install(c, ["--no-plugins", "--uninstall"]);
-    t.ok(!fs.existsSync(cFile), "a plain uninstall afterwards removes it: it is still recorded");
-
-    // The opt-out knows the skill from the manifest, not from the $CODEX_HOME of the day.
-    for (const [name, change] of [["other-root", (e) => { e.CODEX_HOME = path.join(path.dirname(e.CODEX_HOME), "codex-home-2"); }], ["root-unset", (e) => { delete e.CODEX_HOME; }]]) {
-      const m = env("moved-" + name);
-      install(m, base);
-      const mFile = path.join(m.CODEX_HOME, "skills", "zodchi-flow", "SKILL.md");
-      const recorded = JSON.parse(fs.readFileSync(path.join(m.ZODCHI_HOME, "installed.json"), "utf8"));
-      t.eq(recorded.codexSkills, [mFile], "the manifest records which of its files are Codex skill files");
-      const moved = { ...m };
-      change(moved);
-      install(moved, ["--no-plugins", "--uninstall", "--no-codex-skill"]);
-      t.ok(fs.existsSync(mFile), `--no-codex-skill on uninstall leaves a skill installed under an earlier $CODEX_HOME (${name})`);
-      const left = JSON.parse(fs.readFileSync(path.join(m.ZODCHI_HOME, "installed.json"), "utf8"));
-      t.ok(left.files[mFile] && left.codexSkills && left.codexSkills.includes(mFile), "and keeps its record, as a skill file");
-      install(moved, ["--no-plugins", "--no-build", "--no-codex-skill"]);
-      t.ok(fs.existsSync(mFile) && JSON.parse(fs.readFileSync(path.join(m.ZODCHI_HOME, "installed.json"), "utf8")).files[mFile], `an install with --no-codex-skill under the other root leaves it and its record too (${name})`);
-      install(m, ["--no-plugins", "--uninstall"]);
-      t.ok(!fs.existsSync(mFile), "a plain uninstall under the root it was installed in removes it");
-    }
-
-    // The Claude Code skill rides in the zodchi-core plugin. The installer runs against a fake `claude` that keeps the
-    // marketplaces and plugins it is told about, so what Claude Code would read is the folder the plugin is installed from.
-    const p = env("plugin");
-    const bin = path.join(scratch, "plugin", "bin");
-    const stateFile = path.join(scratch, "plugin", "plugin-state.json");
-    const cli = WIN ? path.join(bin, "node_modules", "@anthropic-ai", "claude-code", "cli.js") : path.join(bin, "cli.js");
-    fs.mkdirSync(path.dirname(cli), { recursive: true });
-    fs.writeFileSync(cli, `const fs = require("fs"), path = require("path");
-const args = process.argv.slice(2);
-const file = process.env.FAKE_PLUGIN_STATE;
-const s = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : { marketplaces: [], installed: [], calls: [] };
-s.calls.push(args);
-const save = () => fs.writeFileSync(file, JSON.stringify(s));
-const done = (text, code = 0) => { save(); if (text) console.log(text); process.exit(code); };
-if (args[0] === "--version") done("9.9.9 (fake)");
-if (args[0] === "plugin" && args[1] === "marketplace") {
-  if (args[2] === "list") done(JSON.stringify(s.marketplaces));
-  if (args[2] === "add") {
-    const dir = path.resolve(args[3]);
-    const name = JSON.parse(fs.readFileSync(path.join(dir, ".claude-plugin", "marketplace.json"), "utf8")).name;
-    s.marketplaces = s.marketplaces.filter((m) => m.name !== name).concat({ name, source: "directory", path: dir });
-  }
-  if (args[2] === "remove") s.marketplaces = s.marketplaces.filter((m) => m.name !== args[3]);
-  done("");
-}
-if (args[0] === "plugin" && ["install", "update", "uninstall"].includes(args[1])) {
-  const [plugin, market] = args[2].split("@");
-  const entry = s.marketplaces.find((m) => m.name === market);
-  if (!entry) done("no such marketplace", 1);
-  const source = JSON.parse(fs.readFileSync(path.join(entry.path, ".claude-plugin", "marketplace.json"), "utf8")).plugins.find((x) => x.name === plugin).source;
-  s.installed = s.installed.filter((x) => x.plugin !== plugin);
-  if (args[1] !== "uninstall") s.installed.push({ plugin, from: path.join(entry.path, source) });
-  done("");
-}
-done("fake claude: not supported", 2);
-`);
-    if (WIN) fs.writeFileSync(path.join(bin, "claude.cmd"), "@echo off\r\n");
-    else fs.writeFileSync(path.join(bin, "claude"), `#!/bin/sh\nexec '${process.execPath}' '${cli}' "$@"\n`, { mode: 0o755 });
-    const pathKey = Object.keys(p).find((k) => k.toUpperCase() === "PATH") || "PATH";
-    const holds = (dir) => ["claude", "claude.exe", "claude.cmd"].some((n) => fs.existsSync(path.join(dir, n)));
-    // On Windows only a claude.exe is found by name, so a real one on PATH must not answer first; elsewhere the fake is first.
-    p[pathKey] = [bin, ...(p[pathKey] || "").split(path.delimiter).filter((x) => x && !(WIN && holds(x)))].join(path.delimiter);
-    p.FAKE_PLUGIN_STATE = stateFile;
-    const plug = install(p, ["--dev", "--no-build"]);
-    t.eq(plug.code, 0, "the installer runs against the fake Claude Code");
-    const state = () => JSON.parse(fs.readFileSync(stateFile, "utf8"));
-    const core = state().installed.find((x) => x.plugin === "zodchi-core");
-    t.ok(core, "zodchi-core is installed from the marketplace");
-    const inPlugin = path.join(core.from, "skills", "zodchi-flow", "SKILL.md");
-    t.ok(fs.existsSync(path.join(core.from, ".claude-plugin", "plugin.json")) && fs.existsSync(inPlugin), "the folder it is installed from is a plugin and holds skills/zodchi-flow/SKILL.md");
-    t.eq(fs.readFileSync(inPlugin, "utf8"), fs.readFileSync(path.join(ROOT, SKILLS.claude), "utf8"), "the Claude Code skill is the repository's");
-    t.ok(fs.existsSync(path.join(p.CODEX_HOME, "skills", "zodchi-flow", "SKILL.md")), "the same run put the Codex skill in place");
-    const out = install(p, ["--uninstall"]);
-    t.ok(out.code === 0 && state().calls.some((c) => c[0] === "plugin" && c[1] === "uninstall" && c[2] === "zodchi-core@zodchi"), "uninstall takes zodchi-core, and with it the Claude Code skill, out of Claude Code");
-    t.ok(!state().installed.some((x) => x.plugin === "zodchi-core") && !fs.existsSync(path.join(p.CODEX_HOME, "skills", "zodchi-flow")), "and removes the Codex skill");
-  });
 
   scenario("flow-entry-local", "from a Codex session on the local gateway: the Codex skill's steps as written (brief from its template, args from its example, the run command from another folder, the result read, the finished run resumed) reach the engine and end approved", async (t) => {
     const skill = readSkill(SKILLS.codex);
@@ -425,9 +277,11 @@ done("fake claude: not supported", 2);
     t.ok(/did not establish that the change is verified, not that nothing ran/.test(skill.body.replace(/\s+/g, " ")) && /`evidence`/.test(skill.body) && /exitCode/.test(skill.body), "the skill says none is not 'nothing ran' and points to the evidence");
     const f = flowWorld(t, "flow-entry-failing-verify");
     f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
-    const res = await startBySkill(t, f, skill, { args: { verify: ["node smoke.mjs --fail"], fixes: 0 } });
+    const res = await startBySkill(t, f, skill, { args: { verify: ["node -e 'console.log(JSON.stringify({ok:true,exitCode:0})); process.exit(4)'"], fixes: 0 } });
     t.eq([res.code, res.json.verifiedBy], [2, "none"], "the run did not end approved and verifiedBy is none");
-    t.eq(res.json.verification.evidence.map((e) => [e.source, e.exitCode]), [["checks", 0], ["args.verify", 1]], "and yet commands ran: the evidence holds the exit codes, the last one failed");
+    const evidence = res.json.verification.evidence;
+    t.eq(evidence.map((e) => [e.source, e.exitCode]), [["checks", 0], ["args.verify", 4]], "a success claim in stdout does not override the real process exit code");
+    t.ok(fs.readFileSync(evidence[1].log, "utf8").includes('{"ok":true,"exitCode":0}'), "the misleading output remains available for diagnosis");
     t.eq([f.commits().length, f.steps()], [0, ["write"]], "no commit, no review");
   });
 

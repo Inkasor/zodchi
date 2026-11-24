@@ -2,7 +2,7 @@
   "description": "One question answered from public sources with the web search of Codex, each claim with the page it rests on. Reads the checkout and the installed tools, changes nothing.",
   "mode": "work",
   "model": "gpt-6-luna",
-  "effort": "medium",
+  "effort": "max",
   "timeoutMin": 30,
   "sandbox": "read-only",
   "mcpServers": [],

@@ -47,7 +47,11 @@ if (!args.includes("-p")) {
 }
 
 const result = (text, isError = false, code = isError ? 1 : 0) => {
-  process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_error: isError, result: text, session_id: "fake-session", num_turns: 1 }) + "\n");
+  if (after("--output-format") === "stream-json") {
+    process.stdout.write(JSON.stringify({ type: "assistant", message: { model: after("--model") } }) + "\n");
+  }
+  process.stdout.write(JSON.stringify({ type: "result", subtype: "success", is_error: isError, result: text, session_id: "fake-session",
+    num_turns: 1, modelUsage: { [after("--model")]: {} } }) + "\n");
   process.exit(code);
 };
 
@@ -55,13 +59,19 @@ let input = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => { input += chunk; });
 process.stdin.on("end", () => {
-  const step = (input.match(/^Step: (.+?) \(/m) || [])[1] || "";
+  const streamed = after("--input-format") === "stream-json";
+  const content = streamed ? JSON.parse(input).message.content : [{ type: "text", text: input }];
+  const text = content.find((part) => part.type === "text")?.text ?? "";
+  const images = content.filter((part) => part.type === "image").map((part) => [part.source.media_type, part.source.data]);
+  const step = (text.match(/^Step: (.+?) \(/m) || [])[1] || "";
   log({ kind: "call", step, model: after("--model"), effort: after("--effort"),
-    apiKey: Object.keys(process.env).some((k) => k.toUpperCase().startsWith("ANTHROPIC_")), cwd: process.cwd(), prompt: input });
+    apiKey: Object.keys(process.env).some((k) => k.toUpperCase().startsWith("ANTHROPIC_")), cwd: process.cwd(), prompt: text, images });
   // The flags of a call without tools, MCP servers, hooks or a kept session, and a JSON result.
   const tools = after("--tools");
   const required = ["--strict-mcp-config", "--safe-mode", "--no-session-persistence", "--disable-slash-commands"];
-  if (tools !== "" || after("--output-format") !== "json" || !required.every((f) => args.includes(f)) || !after("--model")) {
+  const formatOK = streamed ? after("--output-format") === "stream-json" && args.includes("--verbose") && images.length > 0
+    : after("--output-format") === "json";
+  if (tools !== "" || !formatOK || !required.every((f) => args.includes(f)) || !after("--model")) {
     return result(`fake claude: a call needs --tools "", ${required.join(", ")}, --model and --output-format json`, true);
   }
   const answer = file(path.join("answers", `${step.replace(/ /g, "-")}.json`));

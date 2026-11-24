@@ -1,0 +1,7 @@
+{
+  "name": "zodchi-core",
+  "version": "1.0.0",
+  "description": "Common Claude Code agents and skills for the Zodchi CLI.",
+  "license": "MIT",
+  "repository": "https://github.com/Inkasor/zodchi"
+}

@@ -1,0 +1,11 @@
+{
+  "description": "The agent writer of a Flow code package. Works in an isolated export with scoped edits and an ephemeral Codex thread.",
+  "mode": "work",
+  "model": "gpt-6.1-terra",
+  "effort": "xhigh",
+  "timeoutMin": 20,
+  "sandbox": "workspace-write",
+  "mcpServers": [],
+  "frame": "flow-work.md",
+  "schema": "package-result.schema.json"
+}

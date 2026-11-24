@@ -1,14 +1,16 @@
 # Owner acceptance lists and decisions
 
+This is the version 1 data contract for decision lists. The current Rust workflows accept owner input through `zodchi flow reply` and `zodchi flow remark`. See [the Flow guide](flow.md).
+
 One run covers one round. Give the expert the current `decisions.md` and ask for proposals and assumptions in Russian. Run `list-build` and give the resulting `list.md` to the owner. A proposal that would cancel an earlier decision shows its id, current wording and state directly below the numbered line.
 
 The owner answers between runs. Collect **everything** the owner says, including verdicts on assumptions, and submit it once with `list-reply`. Submitting even an empty batch closes the round. Nothing is accepted by silence. Unnamed lines stay open. A second, different reply for the same round is refused. The next round can decide an earlier open line by id. To change an earlier accepted decision, ask the expert for a new line whose `replaces` includes the old id. The owner sees the proposed cancellation before deciding.
 
 ## Files and gate protocol
 
-Run `node core/scripts/gate.mjs <command> '<spec JSON>'` with `api: 1` in the spec. Each valid call prints one JSON line and exits 0. The gate adds `api: 1`, `plugin` (the running plugin copy), then `lineSha256`, the lowercase SHA-256 hex digest of the UTF-8 `JSON.stringify` of the entire preceding object. A refused call returns `{ok: false, error: string}` with the same envelope and changes no files. Usage, import and unexpected execution errors exit 2, and an API mismatch exits 3. These errors are unsigned.
+The version 1 protocol used `api: 1` in each request. It returned one JSON line with `api`, `plugin` and `lineSha256`. The digest covered the UTF-8 serialization of the fields before it. A refusal returned `{ok: false, error: string}` in the same envelope and preserved the files. Usage and execution errors used exit 2. An API mismatch used exit 3.
 
-Both commands take an existing absolute directory `tmp`. The expert's `answerFile` must be an absolute path to a regular file and can be outside the run. Neither path may have a `..` component with either slash style. The layout under `tmp` is:
+`list-build` and `list-reply` take an existing absolute directory `tmp`; the remarks commands take it too (see "Owner remarks"). The expert's `answerFile` must be an absolute path to a regular file and can be outside the run. Neither path may have a `..` component with either slash style. The layout under `tmp` is:
 
 ```text
 rounds/<round>/list.json    numbered list with build-time replacement snapshots
@@ -16,6 +18,7 @@ rounds/<round>/list.md      Russian list given to the owner
 rounds/<round>/reply.json   immutable receipt of the closed batch
 decisions.json             current ledger
 decisions.md               Russian ledger attached to the next request
+remarks.md                 owner remarks, created by the first remarks-add
 ```
 
 Before writing, the helper checks the real path of the deepest existing ancestor of every destination, including each `<file>.tmp-<pid>`. All must be within the real `tmp`. An existing temporary destination refuses the call. Writes open the temporary exclusively, clean it up on write failure and rename it into place. Each round has one writer. The JSON authorities determine their Markdown renderings, with LF separators and one final newline. Invalid JSON, a different version and invalid fields in a required record cause refusal with its path and field.
@@ -130,16 +133,56 @@ Reply answer (plus gate envelope)
 | Receipt exists, round applied | Require the same batch. Return its recorded outcome and the current ledger, with `already: true`. Regenerate missing or stale `decisions.md` and name it in `repaired`. A matching rendering receives no write. |
 | Round applied, receipt missing | Refuse the inconsistent history. |
 
+## Owner remarks
+
+The owner can say something while a round waits. A remark is a thought, never a verdict: it accepts, fixes or drops nothing, and it never touches a list, a reply or the ledger. The verdicts go only through `list-reply`. `remarks-add` appends one remark to `remarks.md` in `tmp`; `remarks-read` returns the remarks the caller has not used yet. Neither calls a model.
+
+`remarks.md` is UTF-8 with LF line ends and no BOM. It holds zero or more records of exactly three lines, and the file ends with the line break of the last text line:
+
+```text
+---
+<n>
+<text>
+```
+
+`n` is the decimal number of the remark: 1, 2, 3 and so on, without gaps, in file order. A dash line is a line made only of three or more `-`; the read splits the file on dash lines. A text is never a dash line, and the helper refuses such a remark instead of escaping it, because escaping would change the owner's words. The check looks at the original text before trimming or folding: if any line of it (split on CRLF, CR, LF, U+2028 or U+2029, spaces and tabs around it removed) is three or more dashes and nothing else, the add is refused. A dash run inside a sentence is fine.
+
+The stored text is the canonical text of the owner's words, as for the list texts (trimmed, a whitespace run with a line break becomes one space, control characters other than tab refused, length in code points after that), then with every secret-shaped value replaced by the redaction token. A quoted or unquoted assignment (`label=value`) is redacted before the shared token rule, so a label such as `token KEY="..."` cannot hide its value. The `text` an add answers is the text every later read returns. The text is one line of 1 to 500 code points (`MAX_REMARK_CHARS`). The original may hold up to 2000 code points (`MAX_RAW_CHARS`, counted before trimming and folding) and must be well-formed Unicode. A run holds at most 100 remarks (`MAX_REMARKS`), and the file at most 262144 bytes (`MAX_REMARKS_BYTES`); an add that would pass either limit is refused and writes nothing. A file that is not valid (not UTF-8, a BOM, a carriage return, no final line break, a line count that is not a multiple of three, too many records or bytes, or a record that is not as above) is refused by both commands, with its first bad record number when the problem is in a record, and is never repaired or appended to. A valid file with a record that still holds a secret-shaped value (written by hand) is refused by `remarks-add` with `remarks.md record <k>: text: holds a secret-shaped value; remove it by hand before adding`, the text not quoted and nothing written, because the add copies the old bytes; `remarks-read` still returns that record redacted and never changes the file.
+
+```text
+remarks-add   {api: 1, tmp: string, text: string}
+  -> {ok: true, n, text, redacted: bool, count, remarksFile, previousSha256, fileSha256}
+
+remarks-read  {api: 1, tmp: string, after?: integer, limit?: integer}
+  -> {ok: true, exists: bool, remarksFile, fileSha256, count, after, through, more: bool,
+      remarks: [{n, text}]}
+```
+
+`tmp`, `text`, `after` and `limit` are the command's own fields. For an add, `count` is the number of remarks in the file now, `redacted` is true when a secret-shaped value was replaced, and the two digests are the SHA-256 of the file bytes before and after. A retried `remarks-add` appends again: it has no idempotency key, so after a lost answer read the file with `remarks-read` before retrying.
+
+A `tmp` path that holds a secret-shaped value is refused (`tmp: the path holds a secret-shaped value`) before anything touches the path, and neither the path nor the value appears in the answer. Like the list commands, the remarks commands refuse a `remarks.md` that is a link pointing outside `tmp`, and write nothing outside it.
+
+`after` is the number of the last remark the caller has used (0 to 100, default 0) and `limit` is how many to return (1 to 20, default 20; `DEFAULT_READ_LIMIT`, `MAX_READ_LIMIT`). A read writes nothing, not even a cursor. It returns the first `limit` remarks with `n` above `after`, in order, none twice and none skipped. `through` is the `n` of the last remark returned, or `after` when none is returned; `more` is true when remarks above `through` exist, and the next call takes `after: through`. An `after` above the number of remarks in the file is refused, because remarks are only ever appended and such a file was replaced or lost. `fileSha256` is the SHA-256 of the file bytes; a missing file reads as `exists: false`, `count: 0`, no remarks and the digest of zero bytes (`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`), which is also the digest of an existing empty file.
+
+Replay: on an unchanged file, the same `tmp`, `after` and `limit` return a byte-identical answer, so a step that runs again after a cut sees what it saw, not an empty list. When remarks were appended in between, `count`, `fileSha256` and possibly `more` change, but the records returned are still the first `limit` above `after`: a page with room gains the new ones after the old ones, and a full page keeps its records and sets `more` so that the next call reaches the new ones.
+
+For the lead and the callers:
+
+- Add a remark as soon as the owner says it. Do not hold it in memory.
+- Read with the `after` of the last step that used remarks, and remember the `through` of the step that used them.
+- Measure your complete serialized spec against the transport you use; the helper's limits count code points and do not bound the spec's size.
+- The helper's redaction removes secret-shaped values only. It does not know the owner's private words. Send a remark on to a model only through a path that scrubs them.
+
 ## Shared workflow blocks
 
 | Block | Implementation | Package |
 |---|---|---|
 | 3. Numbered Russian acceptance list | `list-build`, `list-reply` | 1 · Lists and decisions |
 | 4. Decisions and open assumptions | `list-reply` | 1 · Lists and decisions |
-| 1. Ask independent questions and collect answers | Research workflow, at most two concurrent jobs | 2 · Research |
+| 1. Ask independent questions and collect answers | Research workflow, as many concurrent jobs as the gateway allows (no limit by default) | 2 · Research |
 | 2. Check each fact against its source | Cited line excerpts and a verifier verdict per fact | 2 · Research |
 | 6. Check the assumptions in a request | Compare constraints with owner-confirmed decisions before asking the expert | 2 · Research |
-| 5. Owner remarks between steps | File-backed add and read commands | 3 · Remarks |
+| 5. Owner remarks between steps | `remarks-add`, `remarks-read` | 3 · Remarks |
 
 Marketing mode and caller integration follow remarks. Game design and video follow those callers.
 

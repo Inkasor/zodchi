@@ -3,7 +3,7 @@
   "mode": "work",
   "model": "gpt-6.2-sol",
   "effort": "medium",
-  "timeoutMin": 60,
+  "timeoutMin": 20,
   "sandbox": "workspace-write",
   "mcpServers": [],
   "frame": "package-work.md",

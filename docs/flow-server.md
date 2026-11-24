@@ -1,7 +1,7 @@
 # zodchi flow: model steps through a zodchi-server
 
 **Experimental, like [zodchi flow](flow.md).** A person who has no Codex sign-in on their own machine, but an
-account on a [zodchi-server](../gateway/README.md#server), runs `zodchi flow code-package` on their machine as
+account on a [zodchi-server](../rust/README.md#server), runs `zodchi flow code-package` on their machine as
 usual. The engine, Git, the claim, the checks, the commit and the journal stay on that machine; only the model steps
 (the writer's patch and the review) go to the server, and each runs there on that person's own ChatGPT subscription.
 

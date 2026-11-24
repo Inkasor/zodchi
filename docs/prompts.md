@@ -1,7 +1,7 @@
 # Writing a prompt for an agent or a role
 
 Write it the way you would brief a capable colleague who has not seen the
-conversation. The files this covers: `core/agents/`, `domains/*/agents/`,
+conversation. The files this covers: `plugins/claude-code/core/agents/`, `plugins/claude-code/domains/*/agents/`,
 `roles/*.md` and the skills.
 
 1. **The task.** One paragraph: what the agent is, what it receives, what it

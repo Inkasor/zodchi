@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "A structured patch of one code package with exact replacements",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "changes", "unverified", "questions"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["done", "blocked"],
+      "description": "done: the changes do the task; blocked: the request lacks something necessary (say what in summary and questions)"
+    },
+    "summary": { "type": "string", "description": "What the changes do and why" },
+    "changes": {
+      "type": "array",
+      "description": "Every file change, each path once",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["op", "path", "from", "baseBlob", "content", "edits"],
+        "properties": {
+          "op": { "type": "string", "enum": ["create", "modify", "delete", "rename"] },
+          "path": { "type": "string", "description": "Path relative to the repository root, with forward slashes" },
+          "from": { "type": ["string", "null"], "description": "rename: the old path; null otherwise" },
+          "baseBlob": { "type": ["string", "null"], "description": "The given blob id for modify, delete and the source of rename; null for create" },
+          "content": { "type": ["string", "null"], "description": "Full new text for create or a full replacement; null for exact edits, delete, or rename that keeps the original text" },
+          "edits": {
+            "type": ["array", "null"],
+            "description": "For a localized modify, provide exact nonoverlapping replacements against the original text and set content to null. Null for all other changes.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["old", "new"],
+              "properties": {
+                "old": { "type": "string", "description": "A nonempty excerpt found exactly once in the original file" },
+                "new": { "type": "string", "description": "The text that replaces old; empty to remove it" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "unverified": { "type": "array", "items": { "type": "string" }, "description": "What still needs verification" },
+    "questions": { "type": "array", "items": { "type": "string" }, "description": "Open decisions for the lead" }
+  }
+}

@@ -3,9 +3,10 @@
 // It builds the release binaries once, then runs the `zodchi` command and `zodchi-server` the way a user does, against
 // scripts/e2e/fake-codex.mjs in place of Codex: no model, no network beyond 127.0.0.1, nothing spent.
 //
-//   node scripts/e2e.mjs [--no-build] [--keep] [--out <dir>] [scenario ...]
+//   node scripts/e2e.mjs [--no-build] [--bin-dir <dir>] [--keep] [--out <dir>] [scenario ...]
 //
-//   --no-build   use the binaries already in gateway/target/release (CI builds them in the step before)
+//   --no-build   use the binaries already in rust/target/release (CI builds them in the step before)
+//   --bin-dir    with --no-build, test a separate candidate without replacing the active release binaries
 //   --keep       keep the scratch folder (fixture repositories, data folders, Codex homes) after a pass too
 //   --out <dir>  where the traces go; default .agent-tmp/e2e-traces/ of this repository, emptied at the start
 //   scenario     run only these (names as printed); default all
@@ -30,8 +31,6 @@ const FAKE = path.join(ROOT, "scripts", "e2e", "fake-codex.mjs");
 const FAKE_FLOW = path.join(ROOT, "scripts", "e2e", "fake-codex-flow.mjs");
 const WIN = process.platform === "win32";
 const EXE = WIN ? ".exe" : "";
-const ZODCHI = path.join(ROOT, "gateway", "target", "release", "zodchi" + EXE);
-const SERVER = path.join(ROOT, "gateway", "target", "release", "zodchi-server" + EXE);
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489", "hex");
 
 const argv = process.argv.slice(2);
@@ -40,6 +39,11 @@ const option = (name) => { const i = argv.indexOf(name); if (i < 0) return null;
 const noBuild = flag("--no-build");
 const keep = flag("--keep");
 const outOption = option("--out");
+const binOption = option("--bin-dir");
+if (binOption && !noBuild) throw new Error("--bin-dir requires --no-build");
+const binDir = binOption ? path.resolve(binOption) : path.join(ROOT, "rust", "target", "release");
+const ZODCHI = path.join(binDir, "zodchi" + EXE);
+const SERVER = path.join(binDir, "zodchi-server" + EXE);
 const wanted = argv;
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "zodchi-e2e-"));
@@ -64,6 +68,13 @@ const alive = (pid) => {
 const readJsonl = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 
 class Failure extends Error {}
+class StartupFailure extends Error {}
+
+function checkStartup(code, program) {
+  if (WIN && [-1073741502, 3221225794].includes(code)) {
+    throw new StartupFailure(`${path.basename(program)} could not initialize (0xC0000142, exit ${code})`);
+  }
+}
 
 /** The trace of one scenario and its assertions. */
 class Trace {
@@ -113,7 +124,7 @@ let outputs = 0;
 /** Runs a program to its end. Returns {code, out, err, json}. Its stdout and stderr go to files, not pipes: a worker
  *  it starts may inherit them, and a pipe would then stay open until the worker ends. */
 function run(t, program, args, { cwd, env, input, label, timeoutMs = 120000 } = {}) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const base = path.join(scratch, "outputs", String(++outputs));
     fs.mkdirSync(path.dirname(base), { recursive: true });
     const [outFd, errFd] = [fs.openSync(`${base}.out`, "w"), fs.openSync(`${base}.err`, "w")];
@@ -133,6 +144,7 @@ function run(t, program, args, { cwd, env, input, label, timeoutMs = 120000 } = 
       try { json = JSON.parse(out); } catch { /* not JSON */ }
       t.log(`$ ${label || path.basename(program)} ${args.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(" ")}${cwd ? `   (in ${cwd})` : ""}`);
       t.log(`  exit ${code}${out.trim() ? `\n  stdout: ${clip(out.trim()).replace(/\n/g, "\n          ")}` : ""}${err.trim() ? `\n  stderr: ${clip(err.trim()).replace(/\n/g, "\n          ")}` : ""}`);
+      try { checkStartup(code, program); } catch (error) { reject(error); return; }
       resolve({ code, out, err, json });
     };
     child.on("error", (e) => { spawnError = String(e); end(null); });
@@ -142,13 +154,14 @@ function run(t, program, args, { cwd, env, input, label, timeoutMs = 120000 } = 
 }
 
 /** A scratch world for one scenario: its own home, zodchi home, Codex home (signed in for the fake) and roles. */
-function world(name, { signedIn = true } = {}) {
+function world(name, { signedIn = true, maxParallelJobs } = {}) {
   const dir = path.join(scratch, name);
   const home = path.join(dir, "home");
   const zhome = path.join(dir, "zodchi-home");
   const codex = path.join(dir, "codex-home");
   const roles = path.join(dir, "roles");
   for (const d of [home, zhome, codex, roles]) fs.mkdirSync(d, { recursive: true });
+  if (maxParallelJobs !== undefined) fs.writeFileSync(path.join(zhome, "config.json"), JSON.stringify({ maxParallelJobs }));
   if (signedIn) fs.writeFileSync(path.join(codex, "fake-auth.json"), "{}");
   const write = (file, value) => fs.writeFileSync(path.join(roles, file), JSON.stringify(value));
   write("ask.json", { description: "plain text", mode: "expert", model: "fake-model", effort: "low" });
@@ -167,7 +180,8 @@ function world(name, { signedIn = true } = {}) {
 function repo(t, w, name = "repo", { ignore = true } = {}) {
   const dir = path.join(w.dir, name);
   fs.mkdirSync(dir, { recursive: true });
-  const r = spawnSync("git", ["-c", "init.defaultBranch=main", "init", "-q", dir], { env: w.env, encoding: "utf8" });
+  const r = spawnSync("git", ["-c", "init.defaultBranch=main", "init", "-q", dir], { env: w.env, encoding: "utf8", windowsHide: true });
+  checkStartup(r.status, "git");
   t.ok(r.status === 0, `git init ${name}`);
   if (ignore) fs.writeFileSync(path.join(dir, ".gitignore"), ".agent-tmp/\n");
   return dir;
@@ -392,7 +406,7 @@ scenario("cli-image-job", "an image job through the CLI: an input image goes in,
 });
 
 scenario("cli-dead-worker", "a worker killed after its turn entered: a fresh look-up settles the job as unknown, the same for every reader at once, and never reruns it", async (t) => {
-  const w = world("cli-dead-worker");
+  const w = world("cli-dead-worker", { maxParallelJobs: 2 });
   const r = repo(t, w);
   const sub = await zodchi(t, w, ["submit", "--role", "ask", "--key", "dead1", "--prompt", prompt(w, "dead.md", `${hold(t, w.codex, "dead")}\n`)], { cwd: r });
   t.eq(sub.code, 0, "submitted");
@@ -435,7 +449,7 @@ scenario("cli-dead-worker", "a worker killed after its turn entered: a fresh loo
 });
 
 scenario("cli-three-jobs", "three jobs at once in one repository: two run, the third waits in the queue until a place is free; each ends with its own result", async (t) => {
-  const w = world("cli-three-jobs");
+  const w = world("cli-three-jobs", { maxParallelJobs: 2 });
   const r = repo(t, w);
   const names = ["q1", "q2", "q3"];
   const subs = await Promise.all(names.map((n) => zodchi(t, w, ["submit", "--role", "ask", "--key", n, "--prompt", prompt(w, `${n}.md`, `job ${n} ${hold(t, w.codex, n)}\n`)], { cwd: r })));
@@ -1074,7 +1088,8 @@ scenario("server-stop", "POSIX: SIGTERM stops the server: a sign-in whose start 
 // REVIEW.md). The roles are those of this repository; the role table names two distinct fake Codex models.
 
 const gitOut = (r, args, input) => {
-  const res = spawnSync("git", ["-C", r, ...args], { encoding: "utf8", input });
+  const res = spawnSync("git", ["-C", r, ...args], { encoding: "utf8", input, windowsHide: true });
+  checkStartup(res.status, "git");
   return (res.stdout || "").trim();
 };
 const STUB = "export const clamp = (x, lo, hi) => x;\n";
@@ -1090,6 +1105,7 @@ function flowWorld(t, name) {
   // (skipped: not independent).
   fs.writeFileSync(path.join(w.zhome, "models.json"), JSON.stringify({ version: 1, roles: {
     expertWriter: { candidates: [{ provider: "claude", model: "opus", effort: "high" }, { provider: "codex", model: "fake-writer", effort: "medium" }] },
+    writer: { candidates: [{ provider: "claude", model: "sonnet", effort: "high" }, { provider: "codex", model: "fake-writer", effort: "xhigh" }] },
     reviewer: { candidates: [{ provider: "codex", model: "fake-writer", effort: "medium" }, { provider: "codex", model: "fake-reviewer", effort: "high" }] },
   } }));
   const r = repo(t, w);
@@ -1108,7 +1124,9 @@ function flowWorld(t, name) {
     fs.mkdirSync(path.join(w.codex, "fake-flow"), { recursive: true });
     fs.writeFileSync(path.join(w.codex, "fake-flow", `${step.replace(/ /g, "-")}.json`), JSON.stringify(value));
   };
-  const patch = (changes, summary = "clamp keeps x in range") => ({ status: "done", summary, changes, unverified: [], questions: [] });
+  const patch = (changes, summary = "clamp keeps x in range") => ({
+    status: "done", summary, changes: changes.map((change) => ({ edits: null, ...change })), unverified: [], questions: [],
+  });
   const modify = (rel, from, content) => ({ op: "modify", path: rel, from: null, baseBlob: blobOf(r, from), content });
   const review = (verdict, findings = []) => ({ verdict, summary: `review: ${verdict}`, findings, notVerified: [] });
   const finding = (id) => ({ id, severity: "important", location: "src/math.mjs:1", problem: "no comment says what clamp keeps", consequence: "a reader guesses", fix: "add one line" });
@@ -1194,7 +1212,7 @@ scenario("flow-round-exhaustion", "important findings in every review: the run s
   t.eq(f.steps().filter((s) => s.startsWith("close")), ["close 1"], "no close after the last round");
 });
 
-scenario("flow-outside-claim", "unsupported options are refused before any claim; a patch that touches a file outside the claim is refused whole: nothing applied, committed or reviewed", async (t) => {
+scenario("flow-outside-claim", "a patch waits before touching unclaimed paths, then applies the recorded patch after approval", async (t) => {
   const f = flowWorld(t, "flow-outside-claim");
   const branch = await f.flow(["--args", f.args({ branch: "elsewhere" })]);
   t.ok(branch.code === 2 && /args\.branch is not supported/.test(branch.json.refused), "an unsupported option is refused");
@@ -1203,11 +1221,21 @@ scenario("flow-outside-claim", "unsupported options are refused before any claim
   t.ok(f.claim() === null && f.steps().length === 0, "neither claimed anything nor called a model");
   f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED), f.modify("src/other.mjs", "export const other = 1;\n", "export const other = 2;\n")]));
   const res = await f.flow(["--args", f.args()]);
-  t.eq([res.code, res.json.stoppedAt], [2, "patch outside the claim at apply write"], "the patch is refused");
+  t.eq([res.code, res.json.stoppedAt, res.json.status], [2, "patch outside the claim at apply write", "waiting"], "the patch waits for a scope decision");
   t.eq(res.json.outsideClaim, ["src/other.mjs"], "the result names the file outside the claim");
   t.eq([fs.readFileSync(path.join(f.r, "src", "math.mjs"), "utf8"), fs.readFileSync(path.join(f.r, "src", "other.mjs"), "utf8")], [STUB, "export const other = 1;\n"], "nothing of it was applied");
   t.eq([f.commits().length, f.steps()], [0, ["write"]], "no commit, no review");
-  t.eq(f.claim().status, "stopped", "the claim is closed as stopped");
+  t.eq(f.claim().status, "open", "the same run retains its initial claim");
+  const approved = path.join(f.w.dir, "approve.json");
+  const reply = () => zodchi(t, f.w, ["flow", "reply", res.json.runId, "--allow-files", approved], { cwd: f.w.dir, env: f.w.env });
+  fs.writeFileSync(approved, JSON.stringify(["src/other.mjs", "wrong.mjs"]));
+  t.eq((await reply()).code, 1, "a scope decision cannot add arbitrary files");
+  fs.writeFileSync(approved, JSON.stringify(["src/other.mjs"]));
+  t.eq((await reply()).code, 0, "the exact scope expansion is recorded");
+  f.answer("review 1", f.review("approved"));
+  const final = await f.flow(["--resume", res.json.runId]);
+  t.eq([final.code, final.json.runId, final.json.claimAdded, f.steps()], [0, res.json.runId, ["src/other.mjs"], ["write", "review 1"]],
+    "the engine publishes the expanded patch without sending the write request again");
 });
 
 scenario("flow-protected", "a patch that edits an existing test stops the package before review; nothing applied", async (t) => {
@@ -1329,8 +1357,9 @@ scenario("flow-staged-after-commit", "a cut right after the commit, then the par
   t.eq([f.commits().length, f.steps()], [1, ["write", "review 1"]], "one commit, each model turn once");
 });
 
-scenario("flow-private-checks", "the command lines of the checks never reach a model, and a failed check's log reaches the fixing writer without private folders or lines that may hold a credential", async (t) => {
+scenario("flow-private-checks", "check evidence removes private commands, folders and credential lines before reaching a model", async (t) => {
   const f = flowWorld(t, "flow-private-checks");
+  fs.writeFileSync(path.join(f.w.zhome, "private-words.txt"), "PRIVMARK\n");
   const BAD = 'console.log("at", process.cwd());\nconsole.log("api_key=PRIVKEY-1");\nexport const clamp = (x, lo, hi) => x;\n';
   f.answer("write", f.patch([f.modify("src/math.mjs", STUB, BAD)], "first try"));
   f.answer("fix 1.1", f.patch([f.modify("src/math.mjs", BAD, FIXED)], "clamp fixed"));
@@ -1339,15 +1368,18 @@ scenario("flow-private-checks", "the command lines of the checks never reach a m
   t.eq([res.code, res.json.verdict], [0, "approved"], "the fix makes the checks pass and the run ends approved");
   const turns = readJsonl(path.join(f.w.codex, "fake-turns.jsonl"));
   t.eq(turns.map((x) => x.step), ["write", "fix 1.1", "review 1"], "write, one fix, one review");
-  t.ok(turns.every((x) => !x.prompt.includes("PRIVMARK")), "no command line reaches a model");
+  t.ok(turns.every((x) => !x.prompt.includes("PRIVMARK")), "raw private commands do not reach a model");
   t.ok(turns[0].prompt.includes("checks #1, args.verify #1"), "the writer learns the checks by source and number");
   // The failure as the fixing writer sees it (the claimed file itself is attached as it is, with its own text).
   const fix = (turns[1].prompt.match(/checks #1 exit 1\n```\n([\s\S]*?)\n```/) || [])[1] || "";
   t.ok(fix.includes("clamp is wrong"), "the fixing writer gets the failed check and its output");
-  t.ok(!fix.includes("PRIVKEY") && fix.includes("[a line that may hold a credential is left out]"), "a line that may hold a credential is left out");
+  t.ok(!fix.includes("PRIVKEY") && fix.includes("[source line withheld]"), "a line that may hold a credential is left out");
   t.ok(!fix.toLowerCase().includes(os.tmpdir().toLowerCase()) && fix.includes("<tmp>"), "the export folder is named <tmp>, not by its path");
   t.ok(!turns[1].prompt.toLowerCase().includes(os.tmpdir().toLowerCase()), "no private folder anywhere in the fix request");
-  t.ok(turns[2].prompt.includes("checks #1 exit 0") && turns[2].prompt.includes("args.verify #1 exit 0"), "the review names the checks by source and number");
+  const proof = JSON.parse(turns[2].prompt.match(/<attachment path="verification\.json">\n([\s\S]*?)\n<\/attachment>/)[1]);
+  t.eq(proof.commands.map(e => [e.check, e.exitCode, e.command]), [
+    ["checks #1", 0, "[private text removed]"], ["args.verify #1", 0, "[private text removed]"],
+  ], "the review evidence names the checks and redacts both private commands");
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1356,9 +1388,13 @@ scenario("flow-private-checks", "the command lines of the checks never reach a m
 function build() {
   const started = Date.now();
   const log = path.join(traces, "build.log");
-  const r = spawnSync("cargo", ["build", "--release", "--locked", "--manifest-path", path.join(ROOT, "gateway", "Cargo.toml")], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const r = spawnSync("cargo", ["build", "--release", "--locked", "--manifest-path", path.join(ROOT, "rust", "Cargo.toml")], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, windowsHide: true });
   fs.writeFileSync(log, `${r.stdout || ""}${r.stderr || ""}${r.error ? String(r.error) : ""}`);
   const ms = Date.now() - started;
+  try { checkStartup(r.status, "cargo"); } catch (error) {
+    console.error(`BLOCKED build (${ms} ms): ${error.message}; log ${log}`);
+    process.exit(2);
+  }
   if (r.status !== 0) {
     console.log(`FAIL build (${ms} ms): cargo build --release exited ${r.status}; log ${log}`);
     process.exit(1);
@@ -1371,7 +1407,7 @@ function build() {
 {
   const dir = path.join(ROOT, "scripts", "e2e", "scenarios");
   const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith(".mjs")).sort() : [];
-  const helpers = { scenario, world, repo, prompt, zodchi, run, ZODCHI, serve, admin, user, finished, flowWorld, gitOut, blobOf, samePath, ROOT, FAKE, FAKE_FLOW, STUB, scratch };
+  const helpers = { scenario, world, repo, prompt, zodchi, run, ZODCHI, serve, admin, user, finished, flowWorld, gitOut, blobOf, samePath, ROOT, FAKE, FAKE_FLOW, STUB, FIXED, scratch };
   for (const f of files) (await import(pathToFileURL(path.join(dir, f)).href)).default(helpers);
 }
 
@@ -1393,8 +1429,10 @@ const suiteStarted = Date.now();
 let failed = 0;
 let passed = 0;
 let skipped = 0;
+let blocked = 0;
+const selectedScenarios = scenarios.filter((x) => !wanted.length || wanted.includes(x.name));
 
-for (const s of scenarios.filter((x) => !wanted.length || wanted.includes(x.name))) {
+for (const s of selectedScenarios) {
   const t = new Trace(s.name);
   t.log(`# ${s.name}: ${s.about}`);
   const started = Date.now();
@@ -1405,17 +1443,26 @@ for (const s of scenarios.filter((x) => !wanted.length || wanted.includes(x.name
     try {
       outcome = (await s.fn(t)) || {};
     } catch (e) {
-      outcome = { error: e instanceof Failure ? e.message : e.stack || String(e) };
-      if (!(e instanceof Failure)) t.log(`THREW: ${e.stack || e}`);
+      if (e instanceof StartupFailure) outcome = { blocked: e.message, stop: true };
+      else if (WIN && e.code === "EPERM" && e.syscall === "symlink") outcome = { blocked: "Windows denied creation of a fixture link." };
+      else {
+        outcome = { error: e instanceof Failure ? e.message : e.stack || String(e) };
+        if (!(e instanceof Failure)) t.log(`THREW: ${e.stack || e}`);
+      }
     }
   }
   for (const clean of t.cleanups.reverse()) { try { clean(); } catch { /* best effort */ } }
   const ms = Date.now() - started;
   if (outcome.skip) t.log(`SKIP: ${outcome.skip}`);
+  if (outcome.blocked) t.log(`BLOCKED: ${outcome.blocked}`);
   t.write();
   if (outcome.error) {
     failed++;
     console.log(`FAIL ${s.name} (${ms} ms): ${redact(outcome.error)}\n     trace ${t.file}`);
+  } else if (outcome.blocked) {
+    blocked++;
+    console.log(`BLOCKED ${s.name} (${ms} ms): ${outcome.blocked}\n        trace ${t.file}`);
+    if (outcome.stop) break;
   } else if (outcome.skip) {
     skipped++;
     console.log(`SKIP ${s.name}: ${outcome.skip}`);
@@ -1425,11 +1472,12 @@ for (const s of scenarios.filter((x) => !wanted.length || wanted.includes(x.name
   }
 }
 const total = Date.now() - suiteStarted;
-console.log(`\nscenarios ${(total / 1000).toFixed(1)} s: ${passed} passed, ${failed} failed, ${skipped} skipped; traces in ${traces}`);
-if (!failed && !keep) {
+const notRun = selectedScenarios.length - passed - failed - skipped - blocked;
+console.log(`\nscenarios ${(total / 1000).toFixed(1)} s: ${passed} passed, ${failed} failed, ${skipped} skipped, ${blocked} blocked, ${notRun} not run; traces in ${traces}`);
+if (!failed && !blocked && !keep) {
   // Workers may hold a file for a moment after their job ended; what stays behind is in the temp folder.
   try { fs.rmSync(scratch, { recursive: true, force: true, maxRetries: 5 }); } catch { /* left in the temp folder */ }
-} else if (failed) {
+} else if (failed || blocked) {
   console.log(`kept for inspection: ${scratch}`);
 }
-process.exit(failed ? 1 : 0);
+process.exit(failed ? 1 : blocked ? 2 : 0);

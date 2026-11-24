@@ -1,0 +1,25 @@
+[package]
+name = "zodchi-flow"
+description = "Workflows of zodchi run as code: the code-package state machine, its journal, claims, patches and checks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+base64.workspace = true
+form_urlencoded = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+zodchi-core = { path = "../zodchi-core" }
+serde_json.workspace = true
+rand.workspace = true
+sha2.workspace = true
+
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+ureq = { workspace = true, features = ["native-tls"] }
+
+[target.'cfg(not(any(windows, target_os = "macos")))'.dependencies]
+ureq = { workspace = true, features = ["rustls"] }
+
+[target.'cfg(any(windows, target_os = "macos", target_os = "linux"))'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native", "apple-native", "async-secret-service", "async-io", "crypto-rust"] }

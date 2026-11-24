@@ -1,0 +1,8 @@
+{
+  "description": "Produces a traceable method options sheet from the completed research questions.",
+  "mode": "expert",
+  "model": "gpt-6.2-sol",
+  "effort": "medium",
+  "frame": "method-synthesis.md",
+  "schema": "method-synthesis.schema.json"
+}

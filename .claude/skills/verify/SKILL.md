@@ -30,7 +30,7 @@ and nothing leaves 127.0.0.1. A warm build takes seconds; the scenarios take abo
 ## Options
 
 - `node scripts/e2e.mjs <scenario> ...` runs only those scenarios (names as printed).
-- `--no-build` uses the binaries already in `gateway/target/release` (CI builds them in the step before).
+- `--no-build` uses the binaries already in `rust/target/release` (CI builds them in the step before).
 - `--keep` keeps the scratch folder after a pass too.
 
 ## Not part of this skill
