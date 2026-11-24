@@ -33,6 +33,8 @@ A start receipt confirms submission. Report the final verdict, actual models, co
 
 For video, follow the project's media index and [the video workflow](../../docs/flow-video.md). Run native video Flow from the directory chosen for the video, including a directory outside Git. Show the owner each pending scenario, probe or final file from status. Record their actual decision for the displayed variant or render. Use the same run ID for follow-ups, publication receipts and measured statistics.
 
+For narration or dubbing, use [voiceover](../../docs/voiceover.md). Prepare the wording on the target language's timeline and review the voice and cue count before authorizing paid speech. Present the WAV and any cues that need timing or script review.
+
 For a private YouTube upload after acceptance, use [`youtube-publish`](../../docs/youtube-publish.md). Show the plan and record the owner's approval before resuming the upload run.
 
 To re-review a committed correction, use [branch-review](../../docs/flow.md#branch-review) with the finished code package's `sourceRun` and an explicit `head`. Follow a completed branch review with `previousReview` set to its run ID. Use the same tree for the review and its verification evidence. To write corrections on a retained private candidate, start an isolated `code-package` with `sourceRun`, the same target base and a claim covering the inherited changes.

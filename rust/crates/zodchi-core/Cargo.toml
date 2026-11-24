@@ -13,3 +13,10 @@ hex.workspace = true
 base64.workspace = true
 time.workspace = true
 rand.workspace = true
+
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+tungstenite = { version = "0.30", features = ["native-tls"] }
+
+[target.'cfg(not(any(windows, target_os = "macos")))'.dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }

@@ -50,6 +50,11 @@
       "domain": "video"
     },
     {
+      "name": "voiceover",
+      "version": "1",
+      "domain": "video"
+    },
+    {
       "name": "youtube-publish",
       "version": "1",
       "domain": "video"
