@@ -52,7 +52,7 @@ export default function (h) {
     return { ...f, data, u, o, server, tokenFile, jobsDir, answer, steps, turn, jobs, request, runId, events, noToken };
   }
 
-  const schemaOf = (name) => JSON.parse(fs.readFileSync(path.join(ROOT, "gateway", "crates", "zodchi-flow", "flows", "code-package", "v1", name), "utf8"));
+  const schemaOf = (name, version = "v1") => JSON.parse(fs.readFileSync(path.join(ROOT, "rust", "crates", "zodchi-flow", "flows", "code-package", version, name), "utf8"));
 
   scenario("flow-server-approve", "zodchi flow code-package with its model steps on a zodchi-server: the writer and the reviewer run on the server under the user's subscription, with the flow's own schemas; apply, checks, commit and journal stay local; the token reaches no journal, output or commit", async (t) => {
     const s = await serverWorld(t, "flow-server-approve");
@@ -67,7 +67,7 @@ export default function (h) {
     const write = s.request(`flow-${id}-write`);
     const review = s.request(`flow-${id}-review-1`);
     t.eq([write.role.name, write.role.model, write.role.effort], ["flow-patch", "fake-writer", "medium"], "the write job: the installed role with the pinned model and effort");
-    t.eq(write.role.outputSchema, schemaOf("patch.schema.json"), "the write job answers by the patch schema of this flow version, sent with the request");
+    t.eq(write.role.outputSchema, schemaOf("patch.schema.json", "v2"), "the write job answers by the pinned exact-edit schema sent with the request");
     t.eq([review.role.name, review.role.model], ["code-review", "fake-reviewer"], "the review job: the installed role with the reviewer of the pair");
     t.eq(review.role.outputSchema, schemaOf("review.schema.json"), "the review job answers by the flow's review schema, not the installed role's");
     const reviewTurn = s.turn("review 1");

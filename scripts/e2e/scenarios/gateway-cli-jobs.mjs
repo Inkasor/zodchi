@@ -45,7 +45,7 @@ export default function ({ scenario, world, repo, prompt, zodchi, ZODCHI }) {
   });
 
   scenario("cli-queue-fifo", "three queued jobs claim a single available slot in submission order", async (t) => {
-    const w = world("cli-queue-fifo");
+    const w = world("cli-queue-fifo", { maxParallelJobs: 2 });
     const cwd = repo(t, w);
     const queued = ["z-first", "m-second", "a-third"];
     const keys = ["busy-one", "busy-two", ...queued];

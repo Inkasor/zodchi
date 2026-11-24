@@ -1,59 +1,58 @@
 {
-  "$comment": "Role table. Workflows ask for a role, never for a model. Each role lists candidates in order of preference; the Gate step of a workflow takes the first one whose subscription has limit left. provider 'claude' runs as a Claude Code subagent with that model; provider 'codex' goes through the zodchi gateway. Override per repository in .zodchi/models.json (same shape, roles you list replace these) or per run in the workflow args (models).",
+  "$comment": "Default role table. The normal Flow roles select Codex. Supported steps can run a Claude candidate through the opted-in Claude CLI executor. Override whole roles in the user or repository models.json, or per run in args.models.",
   "version": 1,
   "roles": {
     "writer": {
       "use": "Ordinary code from a finished brief",
       "candidates": [
-        { "provider": "claude", "model": "sonnet", "effort": "high" },
-        { "provider": "codex", "model": "gpt-6.1-terra", "effort": "high" }
+        { "provider": "codex", "model": "gpt-6.1-terra", "effort": "xhigh" }
       ]
     },
     "hardWriter": {
       "use": "A package the lead marked hard: no reference to follow, silent failure modes, or two blocked reviews",
       "candidates": [
-        { "provider": "claude", "model": "opus", "effort": "high" },
-        { "provider": "codex", "model": "gpt-6.2-sol", "effort": "medium" }
+        { "provider": "codex", "model": "gpt-6.2-astra", "effort": "high" }
       ]
     },
     "expertWriter": {
-      "use": "One-pass code from a strong model, no tools; the applier puts it into the files",
+      "use": "Scoped code patch from a brief, without tools. Override explicitly for a one-off expert task.",
       "candidates": [
-        { "provider": "codex", "model": "gpt-6.2-sol", "effort": "medium" },
         { "provider": "codex", "model": "gpt-6.2-astra", "effort": "high" }
       ]
     },
     "reviewer": {
       "use": "Independent code review. Never the author of the change",
       "candidates": [
-        { "provider": "codex", "model": "gpt-6.2-sol", "effort": "medium" },
-        { "provider": "claude", "model": "opus", "effort": "high" }
+        { "provider": "codex", "model": "gpt-6.2-sol", "effort": "medium" }
       ]
     },
     "architect": {
       "use": "Review of a plan or of a change that moves boundaries, contracts, storage or authority",
       "candidates": [
-        { "provider": "codex", "model": "gpt-6.2-astra", "effort": "high" },
-        { "provider": "claude", "model": "fable", "effort": "high" }
+        { "provider": "codex", "model": "gpt-6.2-astra", "effort": "high" }
       ]
     },
     "applier": {
       "use": "Applies an expert answer verbatim and proves every edit landed",
-      "candidates": [{ "provider": "claude", "model": "haiku", "effort": "medium" }]
+      "candidates": [{ "provider": "claude", "model": "haiku", "effort": "high" }]
     },
     "runner": {
       "use": "Runs commands and checks, returns evidence, changes no code",
-      "candidates": [{ "provider": "claude", "model": "haiku", "effort": "medium" }]
+      "candidates": [{ "provider": "claude", "model": "haiku", "effort": "high" }]
     },
     "researcher": {
       "use": "One question answered from public sources, each claim with its page",
       "candidates": [
-        { "provider": "codex", "model": "gpt-6-luna", "effort": "medium" },
-        { "provider": "codex", "model": "gpt-6.1-terra", "effort": "medium" }
+        { "provider": "codex", "model": "gpt-6-luna", "effort": "max" },
+        { "provider": "codex", "model": "gpt-6.1-terra", "effort": "xhigh" }
       ]
     },
     "text": {
       "use": "Texts: documentation, copy, dialogue",
+      "candidates": [{ "provider": "codex", "model": "gpt-6.1-terra", "effort": "medium" }]
+    },
+    "acceptor": {
+      "use": "Select prepared acceptance scenarios and assess recorded frames",
       "candidates": [{ "provider": "codex", "model": "gpt-6.1-terra", "effort": "medium" }]
     },
     "image": {
@@ -70,7 +69,7 @@
     },
     "modeller": {
       "use": "Bulk procedural asset work: builds, number tuning, renders",
-      "candidates": [{ "provider": "claude", "model": "haiku", "effort": "medium" }]
+      "candidates": [{ "provider": "claude", "model": "haiku", "effort": "high" }]
     }
   }
 }

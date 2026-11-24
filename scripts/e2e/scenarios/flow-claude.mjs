@@ -60,23 +60,26 @@ export default function register({ scenario, flowWorld, gitOut, ROOT, STUB }) {
   scenario("flow-claude-writer", "Claude enabled: a Claude writer (preflight at the gate, one tool-free call without the API key) with the fake-Codex reviewer to approval; the call is journaled with its raw message", async (t) => {
     const c = claudeWorld(t, "flow-claude-writer");
     const { f } = c;
+    const models = { expertWriter: { candidates: [{ provider: "claude", model: "haiku" }] } };
     c.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
     f.answer("review 1", f.review("approved"));
-    const res = await f.flow(["--args", f.args()]);
+    const res = await f.flow(["--args", f.args({ models })]);
     t.eq([res.code, res.json && res.json.verdict], [0, "approved"], "the run ends approved, exit 0");
     const bound = res.json.models.expertWriter.account;
     t.ok(/^claude-[0-9a-f]{16}$/.test(bound || ""), "the Claude writer is bound to the account of its sign-in at the gate, as a digest");
-    t.eq(res.json.models, { expertWriter: { provider: "claude", model: "opus", effort: "high", account: bound }, reviewer: { provider: "codex", model: "fake-writer", effort: "medium" } }, "the pair: the Claude writer and a distinct Codex reviewer, pinned");
+    t.eq(res.json.models, { expertWriter: { provider: "claude", model: "haiku", effort: "high", account: bound }, reviewer: { provider: "codex", model: "fake-writer", effort: "medium" } }, "the pair uses the default Haiku effort and a distinct Codex reviewer");
     t.eq(c.calls().map((x) => x.step), ["preflight", "write"], "Claude ran the preflight at the gate and the write step once");
     t.eq([c.calls("version").length, c.calls("auth").length], [1, 2], "the program was checked once; its sign-in at the gate and again right before the call");
     const write = c.calls()[1];
-    t.eq([write.model, write.effort, write.apiKey], ["opus", "high", false], "the call has the pinned model and effort, and no ANTHROPIC_ variable");
+    t.eq([write.model, write.effort, write.apiKey], ["haiku", "high", false], "the call has the pinned model and effort, and no ANTHROPIC_ variable");
+    t.eq(JSON.parse(fs.readFileSync(write.args[write.args.indexOf("--settings") + 1], "utf8")), { disableAllHooks: true },
+      "the tool-free Haiku call lets Claude Code choose its default auto-compaction window");
     t.ok(write.args[write.args.indexOf("--tools") + 1] === "" && write.args.includes("--safe-mode") && write.args.includes("--strict-mcp-config"), "the call has no tools, no MCP servers, no hooks or plugins");
     t.ok(write.prompt.includes("Make clamp(x, lo, hi) keep x") && write.prompt.includes("A structured patch of one code package"), "the message carries the brief and the step's schema");
     t.eq(f.steps(), ["review 1"], "Codex ran the review only");
     t.eq([f.commits().length, fs.readFileSync(path.join(f.r, "src", "math.mjs"), "utf8")], [1, FIXED], "the patch of the Claude writer is committed");
     const intent = c.events(res).find((e) => e.kind === "intent" && e.step === "write");
-    t.eq([intent.executor, intent.model], ["claude", "opus"], "the intent names the Claude executor before the call");
+    t.eq([intent.executor, intent.model], ["claude", "haiku"], "the intent names the Claude executor before the call");
     const done = c.events(res).find((e) => e.kind === "done" && e.step === "write");
     t.ok(done && JSON.stringify(done).includes("Math.max(lo, x)"), "the validated answer is journaled as done");
     const job = path.join(res.json.journal, "claude", intent.key);
@@ -85,7 +88,7 @@ export default function register({ scenario, flowWorld, gitOut, ROOT, STUB }) {
     t.ok(!allText(res.json.journal).includes(KEY), "the API key of the caller reaches no file of the journal");
     t.ok(!allText(res.json.journal).includes("org-fake-one") && fin.account === bound, "the job names the bound account by its digest, never by its name");
     const cache = JSON.parse(fs.readFileSync(path.join(f.w.zhome, "claude-preflight.json"), "utf8"));
-    t.ok(Object.keys(cache).some((k) => k.endsWith("|opus|high")), "the passed preflight is cached for this CLI version, model and effort");
+    t.ok(Object.keys(cache).some((k) => k.endsWith("|haiku|high")), "the passed preflight is cached for this CLI version, model and effort");
     t.eq(f.claim().status, "done", "the claim is closed as done");
     const again = await f.flow(["--resume", res.json.runId]);
     t.eq([again.code, c.calls().length, f.steps().length], [0, 2, 1], "resuming the finished run calls nothing");

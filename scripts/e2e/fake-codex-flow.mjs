@@ -21,6 +21,7 @@ if (args[0] !== "app-server") process.exit(2);
 
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\n");
 const file = (name) => path.join(home, name);
+let threadRequest;
 
 const lines = readline.createInterface({ input: process.stdin });
 lines.on("line", (line) => {
@@ -36,20 +37,46 @@ lines.on("line", (line) => {
     case "account/rateLimits/read":
       return reply({ ordinaryUsageAllowed: true, rateLimits: { primary: { usedPercent: 1 }, credits: { hasCredits: false, balance: "0" } } });
     case "config/read": return reply({ config: {} });
-    case "thread/start": return reply({ thread: { id: "thread-1" }, sandbox: "read-only", approvalPolicy: "never", instructionSources: [] });
+    case "thread/start":
+    case "thread/resume":
+      threadRequest = p;
+      return reply({ thread: { id: p.threadId || "thread-1" }, sandbox: p.sandbox, approvalPolicy: "never", instructionSources: [] });
     case "mcpServerStatus/list": return reply({ data: [], nextCursor: null });
     case "turn/start": {
       reply({ turn: { id: "turn-1" } });
       const prompt = (p.input || []).map((i) => i.text || "").join("\n");
-      const step = (prompt.match(/^Step: (.+?) \(code-package/m) || [])[1] || "";
-      fs.appendFileSync(file("fake-turns.jsonl"), JSON.stringify({ pid: process.pid, at: new Date().toISOString(), step, prompt }) + "\n");
+      const step = (prompt.match(/^Step: (.+?) \([a-z][a-z0-9-]* v/m) || [])[1] || "";
+      fs.appendFileSync(file("fake-turns.jsonl"), JSON.stringify({
+        pid: process.pid, at: new Date().toISOString(), step, prompt,
+        cwd: threadRequest?.cwd, resumed: threadRequest?.threadId, ephemeral: threadRequest?.ephemeral,
+        config: threadRequest?.config,
+      }) + "\n");
       const answer = file(path.join("fake-flow", `${step.replace(/ /g, "-")}.json`));
       setTimeout(() => {
         if (!step || !fs.existsSync(answer)) {
           send({ method: "turn/completed", params: { threadId: p.threadId, turn: { id: "turn-1", status: "failed", error: { message: `fake codex: no scripted answer for step "${step}"` } } } });
           return;
         }
-        const text = fs.readFileSync(answer, "utf8").trim();
+        const result = JSON.parse(fs.readFileSync(answer, "utf8"));
+        if (result.flowError) {
+          send({ method: "turn/completed", params: { threadId: p.threadId, turn: {
+            id: "turn-1", status: "failed", error: result.flowError
+          } } });
+          return;
+        }
+        if (result.flowWrites) {
+          if (threadRequest?.sandbox !== "workspace-write") throw new Error("Expected a writable writer fixture workspace");
+          for (const [relative, data] of Object.entries(result.flowWrites)) {
+            const target = path.resolve(threadRequest.cwd, relative);
+            if (!target.startsWith(threadRequest.cwd + path.sep)) throw new Error("Fixture path lies outside its workspace");
+            fs.mkdirSync(path.dirname(target), { recursive: true });
+            if (data === null) fs.rmSync(target, { force: true });
+            else fs.writeFileSync(target, typeof data === "string" ? data : Buffer.from(data.bytes));
+          }
+          delete result.flowWrites;
+        }
+        if (result.flowHang) return;
+        const text = JSON.stringify(result);
         send({ method: "item/completed", params: { threadId: p.threadId, item: { id: "msg-1", type: "agentMessage", text } } });
         send({ method: "turn/completed", params: { threadId: p.threadId, turn: { id: "turn-1", status: "completed", durationMs: 5 } } });
       }, 10);

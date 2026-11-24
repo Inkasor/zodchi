@@ -1,0 +1,148 @@
+{
+  "type": "object",
+  "required": [
+    "realFacts",
+    "constructions",
+    "follows",
+    "unsettled",
+    "constructionGap"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "realFacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "text",
+          "kind",
+          "findings"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "documented",
+              "inferred"
+            ]
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "constructions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "text",
+          "kind",
+          "findings",
+          "cost",
+          "strength",
+          "limit"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "documented",
+              "inferred"
+            ]
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cost": {
+            "type": "string"
+          },
+          "strength": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "follows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "text",
+          "kind",
+          "findings"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "documented",
+              "inferred"
+            ]
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "unsettled": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "text",
+          "kind",
+          "findings"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "documented",
+              "inferred"
+            ]
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "constructionGap": {
+      "type": "string"
+    }
+  }
+}

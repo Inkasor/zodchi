@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["markdown", "ownerDecisions", "unverified"],
+  "properties": {
+    "markdown": { "type": "string" },
+    "ownerDecisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["question", "options", "default"],
+        "properties": {
+          "question": { "type": "string" },
+          "options": { "type": "array", "items": { "type": "string" } },
+          "default": { "type": "string" }
+        }
+      }
+    },
+    "unverified": { "type": "array", "items": { "type": "string" } }
+  }
+}

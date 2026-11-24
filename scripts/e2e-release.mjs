@@ -123,12 +123,12 @@ for (const needed of ["--max-budget-usd", "--plugin-dir", "--model", "--output-f
 
 // 2. The candidate gateway, built once and put first on PATH as `zodchi`.
 const started = Date.now();
-const build = sh("cargo", ["build", "--release", "--locked", "--manifest-path", path.join(ROOT, "gateway", "Cargo.toml")], { timeoutMin: 30 });
+const build = sh("cargo", ["build", "--release", "--locked", "--manifest-path", path.join(ROOT, "rust", "Cargo.toml")], { timeoutMin: 30 });
 if (build.status !== 0) stop("cargo build --release failed");
 log(`build ${((Date.now() - started) / 1000).toFixed(1)} s`);
 const bin = path.join(scratch, "bin");
 fs.mkdirSync(bin, { recursive: true });
-fs.copyFileSync(path.join(ROOT, "gateway", "target", "release", "zodchi" + EXE), path.join(bin, "zodchi" + EXE));
+fs.copyFileSync(path.join(ROOT, "rust", "target", "release", "zodchi" + EXE), path.join(bin, "zodchi" + EXE));
 
 // 3. A clean home, the candidate plugin and roles read-only, a Codex home for the fake with a scripted review.
 const home = path.join(scratch, "home");
@@ -138,7 +138,7 @@ const plugins = path.join(scratch, "plugins");
 const roles = path.join(scratch, "roles");
 const fakeDir = path.join(scratch, "fake");
 for (const d of [home, codex, tmp, plugins, fakeDir, path.join(home, ".zodchi")]) fs.mkdirSync(d, { recursive: true });
-fs.cpSync(path.join(ROOT, "core"), path.join(plugins, "zodchi-core"), { recursive: true });
+fs.cpSync(path.join(ROOT, "plugins/claude-code/core"), path.join(plugins, "zodchi-core"), { recursive: true });
 fs.cpSync(path.join(ROOT, "roles"), roles, { recursive: true });
 // The session runs the staged copy of the fake, not the one in this checkout.
 const fake = path.join(fakeDir, "fake-codex.mjs");

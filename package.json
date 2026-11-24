@@ -1,8 +1,8 @@
 {
   "name": "zodchi",
-  "version": "1.0.0-dev",
+  "version": "1.0.0",
   "private": true,
-  "description": "Tuned Claude Code agents and workflows by domain, and a gateway to Codex models by role",
+  "description": "Shared Rust workflows and model roles for Codex and Claude Code",
   "license": "MIT",
   "type": "module",
   "engines": { "node": ">=20" },

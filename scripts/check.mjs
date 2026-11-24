@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Repository checks, run before every commit and push: `npm run check`.
-//   1. every workflow parses as a Workflow script body and its meta has name and description;
+//   1. JavaScript is limited to tests and the Playwright browser adapter;
 //   2. every agent has frontmatter with name and description, and names are unique per install;
 //   3. every JSON file parses, every role's frame and schema exist;
 //   4. publish guard: no machine paths, e-mail addresses, keys or tokens, and none of the words in the
@@ -10,7 +10,6 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import vm from "node:vm";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -18,23 +17,19 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const problems = [];
 const bad = (file, msg) => problems.push(`${path.relative(ROOT, file).replace(/\\/g, "/")}: ${msg}`);
 // -z: NUL-separated and unquoted, so names with spaces or non-ASCII letters come through as they are.
-const tracked = execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { cwd: ROOT, encoding: "utf8" })
+const tracked = execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { cwd: ROOT, encoding: "utf8", windowsHide: true })
   .split("\0").filter(Boolean).map(f => path.join(ROOT, f));
 for (const f of tracked.filter(f => !fs.existsSync(f))) problems.push(`${path.relative(ROOT, f)}: listed by git but not on disk (commit or restore the deletion)`);
 tracked.splice(0, tracked.length, ...tracked.filter(f => fs.existsSync(f)));
 
-// 1. workflows
-for (const f of tracked.filter(f => /[\\/]workflows[\\/][^\\/]+\.js$/.test(f))) {
-  const src = fs.readFileSync(f, "utf8");
-  const m = src.match(/^export const meta = (\{[\s\S]*?\n\})\n/);
-  if (!m) { bad(f, "does not start with `export const meta = {...}`"); continue; }
-  try {
-    const meta = vm.runInNewContext(`(${m[1]})`);
-    if (!meta.name || !meta.description) bad(f, "meta needs name and description");
-    if (meta.name !== path.basename(f, ".js")) bad(f, `meta.name "${meta.name}" differs from the file name`);
-  } catch (e) { bad(f, `meta is not a pure literal: ${e.message}`); }
-  try { new vm.Script(`(async () => {\n${src.replace(/^export const meta/, "const meta")}\n})`, { filename: f }); }
-  catch (e) { bad(f, `syntax: ${e.message}`); }
+// 1. Keep the CLI and plugins free of JavaScript outside the Playwright adapter.
+const browserDriver = "rust/crates/zodchi-flow/src/acceptance/browser_driver.mjs";
+for (const file of tracked.filter(file => /\.[cm]?js$/i.test(file))) {
+  const relative = path.relative(ROOT, file).replace(/\\/g, "/");
+  const test = relative.startsWith("scripts/e2e/") || ["scripts/check.mjs", "scripts/e2e.mjs", "scripts/e2e-release.mjs"].includes(relative);
+  if (relative !== browserDriver && !test) {
+    bad(file, "JavaScript is limited to tests and the Playwright adapter");
+  }
 }
 
 // 2. agents
@@ -64,34 +59,19 @@ for (const [name, r] of Object.entries(models.roles || {})) {
   for (const c of r.candidates || []) if (!["claude", "codex"].includes(c.provider) || !c.model) bad(path.join(ROOT, "models.json"), `role ${name}: bad candidate ${JSON.stringify(c)}`);
 }
 
-// 5. plugins: every marketplace entry is a plugin folder with a matching plugin.json, and every agentType a workflow
-//    names is "<plugin>:<agent>" of an agent that exists (plugin agents answer only to the namespaced name).
+// 5. Every marketplace entry is a plugin folder with a matching manifest.
 const market = JSON.parse(fs.readFileSync(path.join(ROOT, ".claude-plugin", "marketplace.json"), "utf8"));
-const pluginAgents = new Set();
 for (const p of market.plugins || []) {
   const dir = path.join(ROOT, p.source);
   const manifestFile = path.join(dir, ".claude-plugin", "plugin.json");
   if (!fs.existsSync(manifestFile)) { bad(path.join(ROOT, ".claude-plugin", "marketplace.json"), `plugin ${p.name}: no ${p.source}/.claude-plugin/plugin.json`); continue; }
   const own = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
   if (own.name !== p.name) bad(manifestFile, `name "${own.name}" differs from the marketplace entry "${p.name}"`);
-  const agentsDir = path.join(dir, "agents");
-  if (fs.existsSync(agentsDir)) for (const f of fs.readdirSync(agentsDir).filter(n => n.endsWith(".md"))) pluginAgents.add(`${p.name}:${f.slice(0, -3)}`);
-}
-for (const f of tracked.filter(f => /[\\/]workflows[\\/][^\\/]+\.js$/.test(f))) {
-  // Every mention of agentType, quoted or not, must be a key with a string literal value: anything computed cannot
-  // be checked here and is refused.
-  const text = fs.readFileSync(f, "utf8");
-  for (const m of text.matchAll(/(["'`]?)agentType\1\s*:\s*(?:(["'])([^"'\n]*)\2(?=\s*[,}])|(.{0,40}))/g)) {
-    if (m[3] === undefined) { bad(f, `agentType must be a plain string literal, found: ${(m[4] || "").trim()}`); continue; }
-    if (!pluginAgents.has(m[3])) bad(f, `agentType '${m[3]}' is not "<plugin>:<agent>" of an agent in this marketplace`);
-  }
-  const mentions = (text.match(/agentType/g) || []).length;
-  const keyed = [...text.matchAll(/(["'`]?)agentType\1\s*:/g)].length;
-  if (mentions !== keyed) bad(f, "agentType appears other than as an object key with a literal value; keep it checkable");
 }
 
-// 6. skills: every SKILL.md has frontmatter whose name is its folder's and a description; the two zodchi-flow skills (Codex
-//    and Claude Code) carry one shared body, so they cannot drift apart.
+// 6. Skills have matching frontmatter. The two legacy installers still ship the same foreground instructions.
+const legacyFlowSkills = ["plugins/codex/skills/zodchi-flow/SKILL.md", "plugins/claude-code/core/skills/zodchi-flow/SKILL.md"]
+  .map(rel => path.join(ROOT, rel));
 const skillBodies = new Map();
 for (const f of tracked.filter(f => /[\\/]skills[\\/][^\\/]+[\\/]SKILL\.md$/.test(f))) {
   const m = fs.readFileSync(f, "utf8").match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
@@ -99,12 +79,12 @@ for (const f of tracked.filter(f => /[\\/]skills[\\/][^\\/]+[\\/]SKILL\.md$/.tes
   const name = (m[1].match(/^name:\s*(.+)$/m) || [])[1]?.trim();
   if (!name || !/^description:\s*\S/m.test(m[1])) bad(f, "frontmatter needs name and description");
   if (name && name !== path.basename(path.dirname(f))) bad(f, `name "${name}" differs from the folder name`);
-  if (name === "zodchi-flow") skillBodies.set(f, m[2].replace(/\r\n/g, "\n"));
+  if (legacyFlowSkills.includes(f)) skillBodies.set(f, m[2].replace(/\r\n/g, "\n"));
 }
-for (const rel of ["codex/skills/zodchi-flow/SKILL.md", "core/skills/zodchi-flow/SKILL.md"]) {
-  if (!skillBodies.has(path.join(ROOT, rel))) bad(path.join(ROOT, rel), "the zodchi-flow skill is missing");
+for (const file of legacyFlowSkills) {
+  if (!skillBodies.has(file)) bad(file, "the legacy zodchi-flow skill is missing");
 }
-if (new Set(skillBodies.values()).size > 1) bad(path.join(ROOT, "core", "skills", "zodchi-flow", "SKILL.md"), "the body differs from the other zodchi-flow skill's: they share one body");
+if (new Set(skillBodies.values()).size > 1) bad(legacyFlowSkills[1], "the legacy Codex and Claude Code skills share one body");
 
 // 4. publish guard
 const PATTERNS = [
@@ -123,7 +103,7 @@ const allowFile = path.join(ROOT, ".zodchi", "allowed-words.txt");
 let allowed = [];
 if (fs.existsSync(allowFile)) {
   let remotes = [];
-  try { remotes = execFileSync("git", ["remote"], { cwd: ROOT, encoding: "utf8" }).split(/\r?\n/).map(s => s.trim()); } catch { /* no git: not a fork */ }
+  try { remotes = execFileSync("git", ["remote"], { cwd: ROOT, encoding: "utf8", windowsHide: true }).split(/\r?\n/).map(s => s.trim()); } catch { /* no git: not a fork */ }
   // Only a fork (a checkout that pulls from `upstream`) may name its own words; in the public repository or its CI
   // clone the file would silently switch the deny-list off, so there it is a problem of its own.
   if (remotes.includes("upstream")) allowed = words(allowFile).map(w => w.toLowerCase());

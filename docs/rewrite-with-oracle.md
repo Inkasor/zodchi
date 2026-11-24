@@ -1,6 +1,6 @@
 # Rewriting a service with a differential oracle
 
-This note is for a developer who wants to rewrite a service and prove that the new engine behaves like the old one. It describes the part that exists now, the comparison module `domains/web-apps/scripts/oracle/compare.mjs`, and says what comes with the next packages. The CLI, the file formats and the adapter contract are NOT in this package: they arrive with packages 2 and 3, and nothing here is a promise about their final shape beyond what is written in the last section.
+This note is for a developer who wants to rewrite a service and prove that the new engine behaves like the old one. The [test prototype](../scripts/e2e/fixtures/oracle-compare.mjs) records the comparison rules for the next packages. Packages 2 and 3 cover the CLI, file formats and adapter contract.
 
 ## Why
 
@@ -74,7 +74,7 @@ Why nothing else is replaced: a string that equals or contains a bound value at 
 ## Constraints on the later packages
 
 - `approver` is free text naming a role, with no expiry and a free-text review condition. It is a record, not proof. A hash pin only shows which bytes CI used. Until the service names one role that alone may change the accepted pin, through a review outside the port author's control, the approvals are not an approval gate, and the docs of package 2 must say so.
-- The reusable CLI lives in `domains/web-apps/scripts/`, in the web-apps plugin. Before its invocation is published as a service CI contract, package 3 or later must prove that an installed copy finds the CLI of the matching revision.
+- The reusable CLI lives in `plugins/claude-code/domains/web-apps/scripts/`, in the web-apps plugin. Before its invocation is published as a service CI contract, package 3 or later must prove that an installed copy finds the CLI of the matching revision.
 - A service's CI runs the CLI from a zodchi checkout pinned to an exact commit; the commit and the CLI call stay in one CI step.
 - A service keeps its oracle files in an `oracle/` folder of its own repository, relocatable as a unit. A separate repository is promised only after adapter and fixture resolution is checked too.
 

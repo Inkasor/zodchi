@@ -1,6 +1,6 @@
 # zodchi flow: Claude as an executor
 
-**Experimental, opt-in.** A step of `zodchi flow code-package` (the writer or the reviewer) may be played by Claude
+**Experimental, opt-in.** An expert step of `zodchi flow code-package` or `design-brief` may be played by Claude
 through the Claude Code CLI installed on this machine, signed in with the person's own Claude subscription: for
 example an Opus writer with a Codex reviewer. Codex only stays the default. The engine, its journal, its checks and
 its commits are the same as in [flow.md](flow.md); only who answers a model step changes.
@@ -18,7 +18,7 @@ Claude candidate is skipped with the reason `Claude is not an executor of this r
 again right before every Claude call: a run that was started with Claude and resumed after it was turned off sends
 nothing more to Claude (see [Outcomes](#outcomes)).
 
-Then put Claude candidates in the role table, as for any provider:
+Use [the model table](model-roles.md) or per-run `models` to select Claude candidates. For example:
 
 ```json
 {
@@ -32,6 +32,8 @@ Then put Claude candidates in the role table, as for any provider:
 
 `model` is what `claude --model` takes (an alias such as `opus` or a full model name); `effort` is what
 `claude --effort` takes (`low`, `medium`, `high`, `xhigh`, `max`).
+
+Flow defaults a Haiku candidate's effort to `high` when the candidate omits it. For one-shot CLI calls, Claude Code resolves the context and auto-compaction settings. The Haiku subagents in the Claude Code plugin set their auto-compaction window to 100,000 tokens.
 
 The program is the native `claude` on PATH (`claude.exe` on Windows; an npm `claude.cmd` shim is a shell script and
 is never run), or the one named by `ZODCHI_CLAUDE_BIN` (a `.js` or `.mjs` file runs with the Node on PATH).

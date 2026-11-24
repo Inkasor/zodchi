@@ -1,0 +1,8 @@
+{
+  "description": "Select prepared scenario IDs or assess captured acceptance frames",
+  "kind": "text",
+  "mode": "expert",
+  "model": "gpt-6.1-terra",
+  "effort": "medium",
+  "timeoutMin": 8
+}

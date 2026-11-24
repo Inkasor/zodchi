@@ -1,4 +1,6 @@
-# Incident triage
+# Incident triage design
+
+The old Claude workflow has been retired. This document records the adapter and evidence contract for a future Rust workflow. `incident-triage` and `ops-script` are pending in the shared catalog.
 
 `incident-triage` takes a user's error report ("the job stopped", "the form asks me something I cannot answer", "a
 release is blocked by a process nobody can identify") to a draft: a saved evidence bundle, a classification, the reply
@@ -13,11 +15,10 @@ Write the product's adapter: what the workflow may read about the product, who o
 skill and allow-lists live. See [incident-adapter.md](incident-adapter.md). Keep it in the company's fork or a private
 folder, not in this repository.
 
-## Run it
+## Version 1 inputs
 
-```
-/zodchi-core:incident-triage
-args: {
+```json
+{
   "incident": "catalog-2026-11-17-export",
   "tmp": "/path/to/incidents/catalog-2026-11-17-export",
   "adapter": "/path/to/adapters/catalog.json",
@@ -35,10 +36,9 @@ args: {
 
 ## What runs where
 
-Every file of the incident folder is read and written by the helper of the loaded plugin copy: `core/scripts/gate.mjs`
-hands the commands `incident-open`, `incident-collect`, `incident-publish`, `incident-fail` and `incident-unlock` to
-`core/scripts/io.mjs`, found by the same bootstrap as the gate itself. A runner (the cheap model) only runs one such
-command per step and returns the one JSON line it printed; the workflow checks that line against the `lineSha256` the
+Version 1 used a helper for the commands `incident-open`, `incident-collect`, `incident-publish`,
+`incident-fail` and `incident-unlock`. Its runner called the helper once per step and returned its JSON line.
+The workflow compared that line against the `lineSha256` the
 helper printed with it, so a line that was not copied exactly is no answer, and decides from its parsed fields. No file
 content passes through a model in either direction: the adapter, `incident.json`, the collector's output, the evidence
 bundle and the classifier's answer stay on disk and come back as hashes and small, capped fields. The only text a model
@@ -61,8 +61,7 @@ incident whose state and every history entry's state is one of `collecting`, `cl
 
 ## What happens
 
-1. **Open** (runner). Before it, one command of the loaded plugin copy (`core/scripts/gate.mjs roles`) prints the role
-   table, the account and whether the repository ignores `.agent-tmp/`; the result names that copy (`pluginCopy`).
+1. **Open** (runner). The gate reads the role table, the account and whether the repository ignores `.agent-tmp/`.
    Then the helper takes the lock `<tmp>/.lock` (one run per incident) and reads the adapter and its SHA-256 and
    `incident.json`. It says whether `incident.json` exists apart from what it holds: an existing file that is not a
    record of this incident (an empty string included) is refused, never taken for a new incident. The helper checks the
@@ -157,15 +156,14 @@ the result says so (`persistError`, `lockLeft`): set the state by hand, then rem
 
 ## After the draft: phases 4-6 by hand
 
-**4. Fix** (`fix-brief`). Save the draft's fix brief as a brief file and run `/zodchi-core:code-package` with it. When
+**4. Fix** (`fix-brief`). Save the draft's fix brief as a brief file and use `zodchi flow code-package` with it. When
 the draft has the section "Agent skill: a second package", the change alters what the product's agents can do or are
 told: put the skill into the same package when it lives in the same repository, otherwise run a second package for it
 and treat both as one change set: neither is released without the other, and the skill never before the capability
 exists.
 
 **5. Release.** Only with an explicit OK of the product's owner, for the exact reviewed revision. Hand the release
-command from the adapter (`releaseCommand`) to whoever runs it; a step that needs root goes through
-`/zodchi-core:ops-script` with `fixes: 0`, so a reviewed script is not edited on the way. A prepared release is not a
+command from the adapter (`releaseCommand`) to whoever runs it and collect the operator's verification and execution receipt. A prepared release is not a
 done one: wait for its receipt before you tell anyone it is out.
 
 **6. Close.** Send the reporter the draft's reply, in their language, with what was done since. Never "I have no
@@ -186,16 +184,6 @@ reply meanwhile.
 - An allow-list refusal names what is allowed ([patterns.md](patterns.md)); a product that refuses without saying so
   is a `product-bug` of its own.
 
-## Checks
+## Helper checks
 
-`node scripts/e2e.mjs --no-build incident-triage-kinds incident-triage-adapter-refused incident-triage-answer-refused incident-triage-reply incident-triage-stale-unknown incident-triage-untrusted-input incident-triage-runs incident-triage-cases-covered`
-runs the real workflow body over the synthetic cases in `scripts/e2e/fixtures/incident-triage/cases/` with a fake agent
-(`scripts/e2e/scenarios/incident-triage.mjs`): every file step runs the helper for real in a scratch incident folder
-and the facts are collected for real from a made-up product (`scripts/e2e/fixtures/incident-triage/product.mjs`); only
-the model's answer is the case's `classification.json` and the `roles` line of the gate is scripted. The helper's
-commands on their own (lock taken and busy, a missing `incident.json`, the adapter's hash, a collector run with a failing
-and a refusing operation, the answer file's hash) are `io-helper-incident-lock` and `io-helper-incident-collect-publish`
-(`scripts/e2e/scenarios/io-helper.mjs`). The four kinds of the plan are the first scenario (`incident-triage-kinds`): an
-error older than the release (`stale`), a skill the allow-list contradicts (`skill-allowlist`), a question about access
-answered by a better tool report (`blocked-release`) and a product fix with a second package for the agent skill (`agent-capability`).
-`npm run e2e` runs them with the rest of the suite; `--no-build` skips the Rust build when the binaries exist.
+`node scripts/e2e.mjs --no-build io-helper-incident-lock io-helper-incident-link io-helper-incident-collect-publish` exercises the helper in a test directory.

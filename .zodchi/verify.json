@@ -1,0 +1,5 @@
+{
+  "checks": ["node --check scripts/e2e.mjs"],
+  "verify": ["node scripts/e2e.mjs flow-entry-local"],
+  "full": { "run": "ci" }
+}

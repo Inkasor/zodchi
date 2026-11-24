@@ -1,0 +1,7 @@
+{
+  "description": "Plans sourced research or drafts a design brief from prepared material.",
+  "mode": "expert",
+  "model": "gpt-6.1-terra",
+  "effort": "xhigh",
+  "frame": "flow-brief.md"
+}

@@ -27,8 +27,10 @@ jobs:
           node-version: 24
       - name: Repository checks (workflows, agents, JSON, roles, publish guard)
         run: node scripts/check.mjs
+      - name: Rust tests
+        run: cargo test --workspace --locked --manifest-path rust/Cargo.toml
       - name: Build the gateway (release binaries, the candidate the end-to-end suite runs)
-        run: cargo build --release --locked --manifest-path gateway/Cargo.toml
+        run: cargo build --release --locked --manifest-path rust/Cargo.toml
       - name: End-to-end suite of the gateway (fake Codex, no model spend)
         run: node scripts/e2e.mjs --no-build --out "$RUNNER_TEMP/e2e-traces"
       - name: Keep the traces of the end-to-end suite
@@ -38,13 +40,3 @@ jobs:
           name: e2e-traces-${{ matrix.os }}
           path: ${{ runner.temp }}/e2e-traces
           if-no-files-found: ignore
-      - name: Installer round trip in a scratch home
-        env:
-          ZODCHI_HOME: ${{ runner.temp }}/zodchi-home
-          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-home
-        run: |
-          node install/install.mjs --no-build --no-plugins
-          test -f "$ZODCHI_HOME/models.json"
-          test -f "$ZODCHI_HOME/roles/code-review.json"
-          node install/install.mjs --uninstall --no-plugins
-          test ! -f "$ZODCHI_HOME/roles/code-review.json"

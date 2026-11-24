@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, platform: win32-x64, extension: .exe }
+          - { os: ubuntu-latest, platform: linux-x64, extension: '' }
+          - { os: macos-latest, platform: darwin-arm64, extension: '' }
+          - { os: macos-15-intel, platform: darwin-x64, extension: '' }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      PLATFORM: ${{ matrix.platform }}
+      EXTENSION: ${{ matrix.extension }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build the tagged revision from main
+        run: |
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+          node scripts/check.mjs
+          cargo build --release --locked --manifest-path rust/Cargo.toml
+          bin="rust/target/release/zodchi${EXTENSION}"
+          test "$("$bin" --version)" = "zodchi ${GITHUB_REF_NAME#v}"
+      - name: Check the client package and native installation
+        run: node scripts/e2e.mjs --no-build --out "$RUNNER_TEMP/release-tests" flow-client-plugin flow-release-bundle
+      - name: Package this platform
+        run: |
+          mkdir "$RUNNER_TEMP/assets"
+          bin="rust/target/release/zodchi${EXTENSION}"
+          "$bin" release build --out "$RUNNER_TEMP/assets/bundle" --archive
+          cp "$bin" "$RUNNER_TEMP/assets/zodchi-${PLATFORM}${EXTENSION}"
+          test -f "$RUNNER_TEMP/assets/zodchi-${PLATFORM}.bundle.json.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zodchi-${{ matrix.platform }}
+          path: |
+            ${{ runner.temp }}/assets/zodchi-${{ matrix.platform }}${{ matrix.extension }}
+            ${{ runner.temp }}/assets/zodchi-${{ matrix.platform }}.bundle.json.gz
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Publish the verified tag and assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if state=$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft' 2>/dev/null); then
+            if [ "$state" = "false" ]; then
+              gh release view "$GITHUB_REF_NAME" --json url --jq '.url'
+              exit 0
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --draft
+          fi
+          gh release upload "$GITHUB_REF_NAME" assets/* LICENSE --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest

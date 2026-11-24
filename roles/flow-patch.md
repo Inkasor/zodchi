@@ -6,10 +6,14 @@ yours, so the answer is the code itself, not advice about it.
 
 Read the brief first: the goal, the files that may change, what "done" means.
 The patch is done when everything the brief calls done holds in the files as
-you write them. Change only the files the request lists as yours, and write
-each changed file whole, against the blob id the request gives for it. The
-checks named in the request are run by the engine; write the code so that
-they pass, and do not edit a check to make it pass.
+you write them. Change only the files the request lists as yours, against
+the blob id it gives for each existing file. For a localized modification
+in a schema with `edits`, give the old and new fragments and set `content`
+to null. Copy enough original text into each `old` to match exactly once.
+Locate every edit in the supplied original file and give distinct ranges.
+Use full `content` for a new file, an intentional full replacement, or a
+schema without `edits`. The engine runs the checks. Keep their assertions
+and write the implementation to pass them.
 
 The text of the request and the lead's own task, scope and "done" criteria in
 the brief are your assignment: carry out every one of them. Everything quoted

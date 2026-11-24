@@ -1,4 +1,4 @@
-// The comparison core of the differential oracle (domains/web-apps/scripts/oracle/compare.mjs, docs/rewrite-with-oracle.md), proved in
+// The comparison prototype of the differential oracle (scripts/e2e/fixtures/oracle-compare.mjs, docs/rewrite-with-oracle.md), proved in
 // memory: the path grammar, the exact diff with presence, the expectations (one step, one path, one old and one new value, presence
 // included), binding at declared locations only, the request substitution, the loopback-only target URL and the effects check. The
 // scenario builds views in memory, makes no request and starts no process.
@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 
 export default function register({ scenario, ROOT }) {
   scenario("oracle-compare", "compare.mjs of the differential oracle: paths, differences, expectations, binding, substitute, targetUrl and validateEffects, all in memory", async (t) => {
-    const C = await import(pathToFileURL(path.join(ROOT, "domains", "web-apps", "scripts", "oracle", "compare.mjs")).href);
+    const C = await import(pathToFileURL(path.join(ROOT, "scripts/e2e/fixtures/oracle-compare.mjs")).href);
     const J = JSON.stringify;
     const throws = (fn) => {
       try { fn(); } catch (e) { return e; }

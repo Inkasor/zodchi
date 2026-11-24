@@ -1,0 +1,68 @@
+{
+  "workflows": [
+    {
+      "name": "code-package",
+      "version": "1",
+      "domain": "core",
+      "modes": [
+        "expert",
+        "agent"
+      ]
+    },
+    {
+      "name": "design-brief",
+      "version": "2",
+      "domain": "core"
+    },
+    {
+      "name": "branch-review",
+      "version": "2",
+      "domain": "web-apps"
+    },
+    {
+      "name": "method-question",
+      "version": "1",
+      "domain": "gamedev-unity"
+    },
+    {
+      "name": "rubric-probe",
+      "version": "1",
+      "domain": "gamedev-unity"
+    },
+    {
+      "name": "asset-round",
+      "version": "1",
+      "domain": "gamedev-unity"
+    },
+    {
+      "name": "unity-check",
+      "version": "1",
+      "domain": "gamedev-unity"
+    },
+    {
+      "name": "workspace-audit",
+      "version": "1",
+      "domain": "core"
+    },
+    {
+      "name": "video",
+      "version": "1",
+      "domain": "video"
+    },
+    {
+      "name": "youtube-publish",
+      "version": "1",
+      "domain": "video"
+    },
+    {
+      "name": "release-acceptance",
+      "version": "1",
+      "domain": "web-apps"
+    },
+    {
+      "name": "player-acceptance",
+      "version": "1",
+      "domain": "gamedev-unity"
+    }
+  ]
+}
