@@ -8,7 +8,7 @@ Zodchi runs shared workflows for Codex and Claude Code. The Rust engine prepares
 
 ## Install
 
-Get a build for your system from [GitHub Releases](https://github.com/Inkasor/zodchi/releases). Each 1.x package brings the native CLI, workflow catalog, model roles and plugins for both clients together. See [installation and updates](docs/flow.md#client-packages).
+Give this repository link to Codex or Claude Code and ask it to **install and connect Zodchi**. The guide specifies how to select a build, verify it, register the clients and confirm the installation. [Installation guide](docs/install.md) · [Download a release](https://github.com/Inkasor/zodchi/releases/latest)
 
 Use the [source installation guide](docs/install-from-source.md) to build and run the current checkout.
 

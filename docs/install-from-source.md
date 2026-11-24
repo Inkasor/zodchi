@@ -18,7 +18,7 @@ On Windows, run this from the root in PowerShell.
 
 The output directory contains the CLI, model roles, workflow catalog and both client manifests. Add its `bin` to your PATH and run `zodchi --version` and `zodchi flow list`.
 
-To register the shared plugin in your installed clients, run `zodchi release register --clients codex,claude` using that bundle's executable. You can name just one client. Restart your client to load the plugin.
+To register the shared plugin in your installed clients, run `zodchi release register --clients codex,claude` using that bundle's executable. You can name just one client. Follow the [steps to load the plugin](install.md#load-the-plugin-in-your-client).
 
 For Codex model roles, sign in to [Codex CLI](https://learn.chatgpt.com/docs). To enable Claude model roles, follow [Claude executor configuration](flow-claude.md). Manage project domains through [the workflow catalog](flow.md#running-it) and choose models in [the role table](model-roles.md).
 

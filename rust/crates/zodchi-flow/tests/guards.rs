@@ -16,6 +16,32 @@ fn temp(tag: &str) -> PathBuf {
     dir
 }
 
+#[test]
+fn verification_output_screens_extended_and_git_spellings_of_a_windows_path() {
+    let drive = 'C';
+    let suffix = "Profile/Fixture/AppData/Local/Temp/candidate/checkout";
+    let place = format!("//?/{drive}:/{suffix}");
+    let places = [(place, "<candidate>")];
+    let text = format!("{drive}:/{suffix}\n/c/{suffix}");
+    assert_eq!(checks::sanitize(&text, &places), "<candidate>\n<candidate>");
+}
+
+#[cfg(unix)]
+#[test]
+fn verification_output_resolves_the_parent_of_a_removed_checkout() {
+    let dir = temp("checkout-alias");
+    let real = dir.join("temp");
+    let alias = dir.join("alias");
+    std::fs::create_dir(&real).unwrap();
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+    let relative = "removed/checkout";
+    let places = [(alias.join(relative).display().to_string(), "<candidate>")];
+    let git_path = std::fs::canonicalize(&real).unwrap().join(relative);
+    let result = checks::sanitize(&git_path.display().to_string(), &places);
+    std::fs::remove_dir_all(dir).unwrap();
+    assert_eq!(result, "<candidate>");
+}
+
 fn git(dir: &Path, args: &[&str], input: Option<&str>) -> String {
     let mut c = Command::new("git");
     c.arg("-C").arg(dir).args(args).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());

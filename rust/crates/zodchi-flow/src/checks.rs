@@ -242,18 +242,29 @@ pub(crate) fn credential_line(line: &str) -> bool {
 pub(crate) fn screen_paths<'a>(text: impl Iterator<Item = &'a str>, places: &[(String, &str)]) -> String {
     let mut spellings: Vec<(String, &str)> = Vec::new();
     for (path, word) in places {
-        let fwd = path.replace('\\', "/").trim_end_matches('/').to_string();
-        if fwd.len() < 2 {
-            continue;
-        }
-        let mut forms = vec![fwd.clone(), fwd.replace('/', "\\")];
-        // The MSYS spelling of a drive path: the drive letter as the first folder, lower case.
-        let b = fwd.as_bytes();
-        if b.len() > 2 && b[1] == b':' && b[0].is_ascii_alphabetic() {
-            forms.push(format!("/{}{}", (b[0] as char).to_ascii_lowercase(), &fwd[2..]));
-        }
-        for f in forms {
-            spellings.push((f, word));
+        let mut add = |fwd: &str| {
+            if fwd.len() < 2 {
+                return;
+            }
+            spellings.push((fwd.to_string(), *word));
+            spellings.push((fwd.replace('/', "\\"), *word));
+            // Git for Windows may use the drive letter as the first folder.
+            let bytes = fwd.as_bytes();
+            if bytes.len() > 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+                spellings.push((format!("/{}{}", (bytes[0] as char).to_ascii_lowercase(), &fwd[2..]), *word));
+            }
+        };
+        for path in [Some(path.clone()), resolved_spelling(Path::new(path))].into_iter().flatten() {
+            let forward = path.replace('\\', "/");
+            let forward = forward.trim_end_matches('/');
+            add(forward);
+            if let Some(path) = forward.strip_prefix("//?/") {
+                if let Some(unc) = path.strip_prefix("UNC/") {
+                    add(&format!("//{unc}"));
+                } else {
+                    add(path);
+                }
+            }
         }
     }
     // The longest first: a folder inside another is named by its own word.
@@ -267,6 +278,19 @@ pub(crate) fn screen_paths<'a>(text: impl Iterator<Item = &'a str>, places: &[(S
         lines.push(out);
     }
     lines.join("\n")
+}
+
+/// Checkouts may already be removed when their logs reach the reviewer. Their existing parent still resolves
+/// aliases such as a Windows short directory name or the macOS system temporary directory.
+fn resolved_spelling(path: &Path) -> Option<String> {
+    if !path.is_absolute() {
+        return None;
+    }
+    path.ancestors().find_map(|ancestor| {
+        let base = fs::canonicalize(ancestor).ok()?;
+        let suffix = path.strip_prefix(ancestor).ok()?;
+        Some(base.join(suffix).to_string_lossy().into_owned())
+    })
 }
 
 /// Replaces every occurrence of `needle` in `text`, ignoring ASCII case (paths on Windows and macOS).

@@ -209,15 +209,7 @@ Use `release-acceptance` for a deployed web version and `player-acceptance` for 
 
 ## Client packages
 
-Download the native executable and the matching `.bundle.json.gz` from [GitHub Releases](https://github.com/Inkasor/zodchi/releases). Select the operating system and architecture for your machine. Match each download to the SHA-256 published by GitHub. Then run the executable with:
-
-```text
-zodchi release install --archive <bundle.json.gz> --sha256 <published-archive-digest> --clients codex,claude
-```
-
-Use `./zodchi-linux-x64` (or the matching download name) in place of `zodchi` on the first run. On macOS and Linux make the downloaded executable executable with `chmod +x`. On Windows use the downloaded `.exe`. You can name one installed client or omit `--clients` to install the CLI alone.
-
-Add the directory of the reported launcher to PATH and restart the clients. Its default location is `~/.zodchi/bin` (`$ZODCHI_HOME/bin` when set). In workflows, both clients use this CLI and the same local journal. Playwright still needs Node.js for the [browser acceptance driver](acceptance.md).
+Follow the [installation guide](install.md) to set up the CLI and the plugin in both clients. Browser acceptance uses Node.js for its [Playwright driver](acceptance.md).
 
 When upgrading a local development install, save its existing `bin/zodchi` (Windows `bin/zodchi.exe`) under another name after its active processes finish. Reuse the same Zodchi home for your project settings and journals. The installer preserves an existing launcher when its bytes differ from the new one.
 

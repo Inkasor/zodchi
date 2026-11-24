@@ -195,7 +195,10 @@ pub(super) fn build_marketplace(root: &Path, source: &Path) -> Result<Value> {
         "verification.md",
         "flow-server.md",
         "subscriptions.md",
+        "install.md",
+        "install.ru.md",
         "install-from-source.md",
+        "install-from-source.ru.md",
     ] {
         let file = Path::new("docs").join(doc);
         write_new(&plugin.join(&file), &regular(&source.join(file))?, false)?;
