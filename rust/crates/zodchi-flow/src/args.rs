@@ -21,6 +21,7 @@ pub struct Args {
     pub continuations: u32,
     pub rounds: u32,
     pub fixes: u32,
+    pub setup: Vec<String>,
     pub checks: Vec<String>,
     pub verify: Vec<String>,
     pub protect: Vec<String>,
@@ -31,7 +32,7 @@ pub struct Args {
 }
 
 const SUPPORTED: &[&str] = &[
-    "label", "brief", "repo", "files", "tmp", "mode", "rounds", "fixes", "checks", "verify", "protect", "allowCheckChanges",
+    "label", "brief", "repo", "files", "tmp", "mode", "rounds", "fixes", "setup", "checks", "verify", "protect", "allowCheckChanges",
     "models", "commit", "extendClaim", "checkTimeoutMin", "continuations", "isolated", "budget", "sourceRun", "reviewContext",
 ];
 
@@ -134,6 +135,10 @@ pub fn parse(a: &Value) -> Result<Args, String> {
     if !agent && o.get("continuations").is_some_and(|v| !v.is_null() && v != &json!(false)) {
         return Err("args.continuations applies to agent mode".into());
     }
+    let setup = commands(o.get("setup"), "setup")?;
+    if !agent && !setup.is_empty() {
+        return Err("args.setup applies to agent mode".into());
+    }
     if o.get("commit").is_some_and(|v| v != &json!(true)) {
         return Err("args.commit: only true is supported; the engine commits each checked round (it never pushes)".into());
     }
@@ -199,6 +204,7 @@ pub fn parse(a: &Value) -> Result<Args, String> {
         continuations: if agent { count(o.get("continuations"), "continuations", 2, 0, 32)? } else { 0 },
         rounds: count(o.get("rounds"), "rounds", 3, 1, 10)?,
         fixes: count(o.get("fixes"), "fixes", 1, 0, 5)?,
+        setup,
         checks: commands(o.get("checks"), "checks")?,
         verify: commands(o.get("verify"), "verify")?,
         protect,

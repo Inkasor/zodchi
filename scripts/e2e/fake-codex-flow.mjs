@@ -10,6 +10,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+import { spawnSync } from "node:child_process";
 
 const home = process.env.CODEX_HOME || "";
 const args = process.argv.slice(2);
@@ -74,6 +75,16 @@ lines.on("line", (line) => {
             else fs.writeFileSync(target, typeof data === "string" ? data : Buffer.from(data.bytes));
           }
           delete result.flowWrites;
+        }
+        if (result.flowNodeTest) {
+          if (threadRequest?.sandbox !== "workspace-write") throw new Error("Expected a writable writer fixture workspace");
+          const argv = ["--test", result.flowNodeTest];
+          const test = spawnSync(process.execPath, argv, {
+            cwd: threadRequest.cwd, encoding: "utf8", timeout: 15000, windowsHide: true,
+          });
+          result.checks.push({ command: `node ${argv.join(" ")}`, exitCode: test.status,
+            result: (test.stdout + test.stderr).trim() });
+          delete result.flowNodeTest;
         }
         if (result.flowHang) return;
         const text = JSON.stringify(result);

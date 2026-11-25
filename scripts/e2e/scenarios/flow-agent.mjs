@@ -7,6 +7,107 @@ const report = (status, flowWrites, questions = []) => ({
 const turns = (f) => fs.readFileSync(path.join(f.w.codex, "fake-turns.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
 
 export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FIXED, samePath }) {
+  scenario("flow-agent-setup", "write, continuation, fix and close can start a server with a dependency in the writer copy", async (t) => {
+    const f = flowWorld(t, "flow-agent-setup");
+    const test = "test/server.test.mjs";
+    const setup = "node install-fixture.mjs";
+    const config = path.join(f.r, ".zodchi", "verify.json");
+    fs.mkdirSync(path.dirname(config), { recursive: true });
+    fs.writeFileSync(config, JSON.stringify({ setup: [setup] }));
+    fs.appendFileSync(path.join(f.r, ".gitignore"), "\nnode_modules/\n");
+    fs.writeFileSync(path.join(f.r, "install-fixture.mjs"), `import fs from "node:fs";
+      fs.mkdirSync("node_modules/fixture-runtime", { recursive: true });
+      fs.writeFileSync("node_modules/fixture-runtime/index.js", 'module.exports = "ready";');
+      fs.appendFileSync("node_modules/install-count", "1");
+    `);
+    fs.writeFileSync(path.join(f.r, "server.mjs"), `import { createServer } from "node:http";
+      import body from "fixture-runtime";
+      const server = createServer((_req, res) => res.end(body));
+      server.listen(0, "127.0.0.1", async () => {
+        try { console.log(await (await fetch("http://127.0.0.1:" + server.address().port)).text()); }
+        finally { server.close(); }
+      });
+    `);
+    fs.writeFileSync(path.join(f.r, test), `import { execFileSync } from "node:child_process";
+      import fs from "node:fs";
+      import assert from "node:assert/strict";
+      import test from "node:test";
+      test("server resolves a workspace dependency", () => {
+        const result = execFileSync(process.execPath, ["server.mjs"], { encoding: "utf8", timeout: 8000, windowsHide: true });
+        assert.equal(result.trim(), "ready");
+        assert.equal(fs.readFileSync("node_modules/install-count", "utf8"), "1");
+      });
+    `);
+    gitOut(f.r, ["add", "--", ".zodchi/verify.json", ".gitignore", "server.mjs", "install-fixture.mjs", test]);
+    gitOut(f.r, ["commit", "-qm", "Add server and an offline dependency fixture"]);
+    f.answer("write", { ...report("more", { "src/math.mjs": "// The range still needs to be enforced.\n" + STUB }), flowNodeTest: test });
+    f.answer("write continue 1", { ...report("done", {}), flowNodeTest: test });
+    f.answer("fix 1.1", { ...report("done", { "src/math.mjs": FIXED }), flowNodeTest: test });
+    f.answer("review 1", f.review("changes_requested", [f.finding("F1")]));
+    f.answer("close 1", { ...report("done", { "src/math.mjs": "// clamp keeps x in range.\n" + FIXED }), flowNodeTest: test });
+    f.answer("review 2", f.review("approved"));
+    const cut = await f.flow(["--args", f.args({ mode: "agent", checks: [setup, "node test/math.test.mjs"], verify: [`node --test ${test}`] })],
+      { ZODCHI_FLOW_CUT: "submit write continue 1" });
+    t.eq(cut.code, 75, "the run is cut after submitting the continuation");
+    fs.writeFileSync(config, JSON.stringify({ setup: ["exit 93"] }));
+    const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
+    const res = await f.flow(["--resume", id]);
+    t.eq([res.code, res.json?.approved], [0, true], "the separate engine checks pass and the package is approved");
+    const events = fs.readFileSync(path.join(res.json.journal, "events.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    const authorChecks = events.filter(e => e.kind === "done" && e.result?.checks?.length).map(e => [e.step, e.result.checks[0]]);
+    t.eq(authorChecks.map(([step, check]) => [step, check.exitCode, check.result.includes("ERR_MODULE_NOT_FOUND")]),
+      [["write", 0, false], ["write continue 1", 0, false], ["fix 1.1", 0, false], ["close 1", 0, false]],
+      "the writer runs the server test before handing off each step");
+    const preparations = events.filter(e => e.kind === "writer prepared");
+    t.eq(preparations.map(e => [e.step, ...e.setup.evidence.map(command => [command.source, command.command, command.exitCode])]),
+      ["write", "fix 1.1", "close 1"].map(step => [step, ["project.setup", setup, 0]]),
+      "each fresh writer copy is prepared once from the recorded base plan, even across resume");
+    t.eq(res.json.verification.evidence.map(e => e.source), ["checks", "checks", "args.verify"],
+      "writer setup never counts as candidate verification");
+    t.ok(!fs.existsSync(path.join(f.r, "node_modules")), "setup leaves the source checkout untouched");
+  });
+
+  scenario("flow-agent-setup-failure", "a failed setup stops before the writer and an explicit retry prepares a fresh copy", async (t) => {
+    const f = flowWorld(t, "flow-agent-setup-failure");
+    const config = path.join(f.r, ".zodchi", "verify.json");
+    fs.mkdirSync(path.dirname(config), { recursive: true });
+    fs.writeFileSync(config, JSON.stringify({ setup: ["exit 93"] }));
+    fs.writeFileSync(path.join(f.r, "setup.mjs"), `import fs from "node:fs";
+      import os from "node:os";
+      import path from "node:path";
+      const flag = path.join(os.homedir(), "tool-ready");
+      if (!fs.existsSync(flag)) {
+        console.error("fixture tool missing");
+        process.exit(23);
+      }
+      if (fs.readFileSync(flag, "utf8") === "dirty") fs.appendFileSync("src/math.mjs", "// setup touched source\\n");
+    `);
+    gitOut(f.r, ["add", "--", ".zodchi/verify.json", "setup.mjs"]);
+    gitOut(f.r, ["commit", "-qm", "Add setup required by the fixture"]);
+    const setup = ["node setup.mjs", "node --version"];
+    const expert = await f.flow(["--args", f.args({ setup })]);
+    t.ok(expert.code === 2 && /args.setup applies to agent mode/.test(expert.json?.refused ?? ""), "setup requires agent mode");
+    const failed = await f.flow(["--args", f.args({ mode: "agent", setup })]);
+    const id = failed.json?.runId;
+    const expected = [2, "setup write", [["args.setup", 23]], []];
+    const state = result => [result.code, result.json?.setupFailure?.step,
+      result.json?.setupFailure?.evidence.map(e => [e.source, e.exitCode]), f.steps()];
+    t.eq(state(failed), expected, "the first failure records its real exit code and stops before any later command or model turn");
+    t.ok(fs.readFileSync(failed.json.setupFailure.evidence[0].log, "utf8").includes("fixture tool missing"), "the log explains the failure");
+    const flag = path.join(f.w.home, "tool-ready");
+    fs.writeFileSync(flag, "dirty");
+    t.eq(state(await f.flow(["--resume", id])), expected, "a plain resume retains the failure");
+    const dirty = await f.flow(["--resume", id, "--rerun", "setup write"]);
+    t.ok(dirty.code === 2 && dirty.json?.setupFailure?.why.includes("src/math.mjs") && !f.steps().length,
+      "even a zero exit code cannot admit a setup that changed source files");
+    fs.writeFileSync(flag, "ready");
+    f.answer("write", report("done", { "src/math.mjs": FIXED }));
+    f.answer("review 1", f.review("approved"));
+    const result = await f.flow(["--resume", id, "--rerun", "setup write"]);
+    t.eq([result.code, result.json?.runId, result.json?.approved, f.steps()], [0, id, true, ["write", "review 1"]],
+      "the same run succeeds with the explicit args setup and a clean writer copy");
+  });
+
   scenario("flow-agent-continue", "a cut during the next ephemeral writer turn preserves the working copy and handoff summary", async (t) => {
     const f = flowWorld(t, "flow-agent-continue");
     const binary = [8, 0, 255];

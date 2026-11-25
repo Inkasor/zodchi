@@ -51,6 +51,7 @@ The engine validates arguments before claiming files.
 |---|---|
 | `label`, `brief`, `repo`, `files` | as in `code-package`: the package name, its brief, the repository (the top of a Git work tree) and the files it may change, each by itself (a folder is refused) |
 | `reviewContext` | Optional list of relative paths to committed UTF-8 source files the reviewer needs. Flow screens them and reads their copies from each candidate commit. The write claim is controlled by `files`. The context files together can use up to half the gateway prompt limit. |
+| `setup` | commands to prepare each fresh writer workspace in agent mode. A nonempty list overrides project `setup` |
 | `checks` | cheap checks, run in order after each write; a command string or `{ "cmd": ... }`. A command passes on exit code 0 and nothing else: a `pass` rule in words is refused |
 | `verify` | the slow run of the real program, the same way, run only when every cheap check passed |
 | `rounds` | review rounds at most, default 3 |
@@ -63,7 +64,7 @@ The engine validates arguments before claiming files.
 | `sourceRun` | a finished isolated code package whose retained candidate seeds a correction on the same target branch and base. Declare every inherited changed path in `files` |
 | `models` | role table entries for this run (`expertWriter` in expert mode, `writer` in agent mode, `reviewer` in either) |
 | `extendClaim` | `true`: legacy preauthorization in expert mode. The default waits for an explicit scope decision before application |
-| `checkTimeoutMin` | time limit of one check command, default 60 |
+| `checkTimeoutMin` | time limit in minutes of one setup or check command, default 60 |
 | `tmp`, `commit: true` | accepted for compatibility; the journal replaces `tmp` |
 
 Refused in version 1, each with its reason: `hard`, `branch` (check out the
@@ -118,6 +119,18 @@ in the source checkout. Run commands and write generated files in the exported c
 private parent folder for materializing fixtures or pinned sibling sources. An optional
 `full: { "run": "local", "commands": [...] }` runs once on the reviewed candidate tree before the final result.
 With `full: { "run": "ci" }`, the result records pending CI.
+
+In agent mode, declare `setup` in the committed `.zodchi/verify.json` or run args. For a pnpm project, use
+`"setup": ["CI=true corepack pnpm install --frozen-lockfile"]` and ignore `node_modules/` in Git. Flow pins this
+list and runs it before the first writer turn in each private `write`, `fix` and `close` workspace. Continuations
+and owner replies reuse the prepared workspace. Keep the install command in `checks` or `full.commands` as needed
+for their separate exports.
+
+The local engine runs setup with the same reduced environment and timeout as checks, with the host account's
+network and filesystem access. Supply trusted commands that write generated files only to Git-ignored paths.
+Every command's exit code and log are in the journal. A setup failure stops before the writer, leaves its claim
+open and reports the failing command's log. After fixing the environment, retry the named step, for example
+`zodchi flow code-package --resume <run-id> --rerun "setup write"`. The run retains its pinned commands.
 
 ### Check command environment
 
@@ -289,7 +302,9 @@ is pointed at:
   file (under the lock) before it writes; a record that does not read anywhere else stops the resume.
 - `requests/` (the exact request of each gateway job), `plans/` (each applied patch with its blobs before and after,
   written and synced before its intent),
-  `reviews/`, `logs/` (one log per check command), `result.json` once the run has finished.
+  `reviews/`, `logs/` (one log per setup or check command), `result.json` once the run has finished. An agent
+  `writer prepared` event records the workspace and its successful `setup.evidence`, when configured. The writer's
+  own `checks` are in its model receipt.
 - `lock/`: the process working on the run (pid and start time). One at a time; a lock whose process is gone is taken
   over.
 
@@ -318,6 +333,8 @@ it). Each step comes back from the journal when it has a `done`; otherwise:
   and no `check ended` line, whatever step or attempt started it (by pid and start time; on Unix the whole process
   group), then run again (they change nothing but their export). One that cannot be stopped, or a start or end the
   journal cannot record, stops the run.
+- writer setup without a `writer prepared` or failure receipt stops any recorded commands still running and retries
+  in a fresh export. A prepared workspace is reused. A recorded failure waits for `--rerun "setup <step>"`.
 - a run with a saved `result.json` returns it; when the cut came after the `closing` line, the claim of this run is
   closed as the result says first.
 

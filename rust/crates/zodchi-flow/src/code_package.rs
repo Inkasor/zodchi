@@ -26,7 +26,6 @@ use zodchi_core::config::Config;
 use zodchi_core::job::{self, compose_prompt, LIMIT_PROMPT};
 use zodchi_core::role::load_role;
 use zodchi_core::role::Overrides;
-use zodchi_core::process::process_start;
 use zodchi_core::util::{fail, iso, sha256_hex, GatewayError, Result};
 
 pub const WORKFLOW: &str = "code-package";
@@ -282,7 +281,7 @@ fn start_run(raw: &Value, detach: bool, id: Option<&str>) -> Result<Exit> {
         Ok(plan) => plan,
         Err(error) => return Ok(refused(&label, error.0)),
     };
-    if !verify_plan.checks.is_empty() || !verify_plan.verify.is_empty() || !verify_plan.full_local.is_empty() {
+    if !verify_plan.setup.is_empty() || !verify_plan.checks.is_empty() || !verify_plan.verify.is_empty() || !verify_plan.full_local.is_empty() {
         if let Err(error) = checks::preflight() {
             return Ok(refused(&label, error.0));
         }
@@ -863,22 +862,90 @@ impl Run {
         Ok(p)
     }
 
+    fn writer_snapshot(&mut self, step: &str, round: u32) -> Step<Value> {
+        if let Some(saved) = self.journal.last("writer prepared", step, 1) {
+            return Ok(saved["snapshot"].clone());
+        }
+        self.owns(step)?;
+        let setup_step = format!("setup {step}");
+        let has_setup = !self.verify_plan.setup.is_empty();
+        if has_setup {
+            if let Some(failure) = self.done(&setup_step) {
+                return self.stop_writer_setup(&setup_step, failure);
+            }
+            self.reap_checks(&setup_step)?;
+        }
+        let id = format!("{}-{:08x}", gateway::slug(step), rand::random::<u32>());
+        let workspace = self.cfg.home.join("flow-writers").join(&self.id).join(id);
+        let scratch = self.journal.file("tmp");
+        let prepared = agent::prepare(&self.git, &workspace, &self.head, &self.claimed, &self.exec, &scratch);
+        let prepared = self.infra(step, prepared)?;
+        let mut event = json!({ "kind": "writer prepared", "step": step, "round": round, "attempt": 1, "snapshot": prepared });
+        if has_setup {
+            // One receipt admits both the snapshot and the setup. A continuation only reuses a prepared workspace.
+            event["setup"] = self.run_writer_setup(&setup_step, round, &workspace, &prepared["tree"])?;
+        }
+        let recorded = self.journal.append(event);
+        self.infra(step, recorded)?;
+        Ok(prepared)
+    }
+
+    fn run_writer_setup(&mut self, step: &str, round: u32, workspace: &Path, tree: &Value) -> Step<Value> {
+        let git = Git::new(workspace);
+        let baseline = self.infra(step, git.rev("HEAD"))?;
+        let attempt = self.attempt(step);
+        let start = self.journal.events().iter().filter(|e| e["kind"] == "intent" && e["step"] == step).count() + 1;
+        let logs = self.journal.file(&format!("logs/{}-{start}", gateway::slug(step)));
+        let intended = self.record_intent(step, round, "run writer setup", &sha256_hex(tree.to_string()),
+            json!({ "tree": tree, "workspace": workspace, "logs": logs }));
+        self.infra(step, intended)?;
+        let limit = Duration::from_secs_f64(self.args.check_timeout_min * 60.0);
+        let journal = &mut self.journal;
+        let mut on = |phase, pid| checks::record_process(journal, step, attempt, phase, pid);
+        let (evidence, recorded) = checks::run_setup(&self.verify_plan.setup, self.verify_plan.setup_source, workspace, &logs, limit, &mut on);
+        if !recorded {
+            return self.infra(step, fail("The journal could not record the start or the end of a writer setup command."));
+        }
+        let workspace_clean = || -> Result<()> {
+            if git.rev("HEAD")? != baseline {
+                return fail("Writer setup moved the workspace HEAD.");
+            }
+            let paths = git.dirty()?;
+            if !paths.is_empty() {
+                return fail(format!("Writer setup must leave tracked files unchanged and write generated files to ignored paths. Git reports {} changed or unignored path(s), including {}.",
+                    paths.len(), paths.iter().take(5).cloned().collect::<Vec<_>>().join(", ")));
+            }
+            Ok(())
+        };
+        let why = if let Some((i, failed)) = evidence.iter().enumerate().find(|(_, e)| e["exitCode"] != 0) {
+            let exit = failed["exitCode"].as_i64().map(|code| format!("exit {code}")).unwrap_or_else(|| {
+                failed["note"].as_str().filter(|s| !s.is_empty()).unwrap_or("no exit status").to_string()
+            });
+            Some(format!("{} failed ({exit}). See {}.", checks::name(&evidence, i), failed["log"].as_str().unwrap_or("the setup log")))
+        } else {
+            workspace_clean().err().map(|error| error.0)
+        };
+        let result = json!({ "ok": why.is_none(), "step": step, "attempt": attempt, "evidence": evidence, "why": why });
+        if why.is_some() {
+            let saved = self.record_done(step, round, result.clone());
+            self.infra(step, saved)?;
+            return self.stop_writer_setup(step, result);
+        }
+        Ok(result)
+    }
+
+    fn stop_writer_setup(&mut self, step: &str, failure: Value) -> Step<Value> {
+        let why = failure["why"].as_str().unwrap_or("See the writer setup evidence.").to_string();
+        self.halt_infra(step, format!("writer {step} failed"), why);
+        self.out.insert("setupFailure".into(), failure);
+        self.out.insert("next".into(), json!(format!("Fix the environment, then run zodchi flow code-package --resume {} --rerun \"{step}\". Start a new run to change its pinned commands.", self.id)));
+        Err(Halt)
+    }
+
     fn agent_turn(&mut self, step: &str, round: u32, vars: Vec<(&str, String)>, extra: Vec<(String, Vec<u8>)>) -> Step<Patch> {
         let apply_step = format!("apply {step}");
         let applied = self.done(&apply_step).is_some();
-        let snapshot = if let Some(saved) = self.journal.last("writer prepared", step, 1) {
-            saved["snapshot"].clone()
-        } else {
-            self.owns(step)?;
-            let id = format!("{}-{:08x}", gateway::slug(step), rand::random::<u32>());
-            let workspace = self.cfg.home.join("flow-writers").join(&self.id).join(id);
-            let scratch = self.journal.file("tmp");
-            let prepared = agent::prepare(&self.git, &workspace, &self.head, &self.claimed, &self.exec, &scratch);
-            let prepared = self.infra(step, prepared)?;
-            let event = self.journal.append(json!({ "kind": "writer prepared", "step": step, "attempt": 1, "snapshot": prepared }));
-            self.infra(step, event)?;
-            prepared
-        };
+        let snapshot = self.writer_snapshot(step, round)?;
         let root = if applied {
             PathBuf::new()
         } else {
@@ -910,6 +977,9 @@ impl Run {
                 }
                 let mut preamble = format!("Step: {turn} (code-package v1, run {})\n\n{AGENT_RULES}\nAllowed files:\n{boundary}\n\n{}\n\n{notes}",
                     self.id, self.check_rules());
+                if !self.verify_plan.setup.is_empty() {
+                    preamble.push_str("\n\nThe engine completed the configured setup in this workspace. Use the prepared dependencies for your checks.");
+                }
                 if n > 0 || attempt > 1 {
                     preamble.push_str("\n\nContinue the writer's work in this same private workspace. Inspect its current files and preserve edits that are already complete.");
                 }
@@ -1265,13 +1335,7 @@ impl Run {
         let logs = self.journal.file(&format!("logs/{name}"));
         let limit = Duration::from_secs_f64(self.args.check_timeout_min * 60.0);
         let journal = &mut self.journal;
-        let mut on = |phase: checks::Phase, pid: u32| -> bool {
-            let e = match phase {
-                checks::Phase::Started => json!({ "kind": "check started", "step": step, "attempt": attempt, "pid": pid, "start": process_start(pid) }),
-                checks::Phase::Ended => json!({ "kind": "check ended", "step": step, "attempt": attempt, "pid": pid }),
-            };
-            journal.append(e).is_ok()
-        };
+        let mut on = |phase, pid| checks::record_process(journal, step, attempt, phase, pid);
         let (first, source) = if full_tree.is_some() { (&self.verify_plan.full_local, "project.full") } else {
             (&self.verify_plan.checks, self.verify_plan.check_source)
         };

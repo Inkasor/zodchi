@@ -9,6 +9,8 @@ pub const PROJECT_SKILL: &str = ".agents/skills/verify/SKILL.md";
 
 #[derive(Clone, Debug)]
 pub struct Plan {
+    pub setup: Vec<String>,
+    pub setup_source: &'static str,
     pub checks: Vec<String>,
     pub verify: Vec<String>,
     pub tools: Vec<String>,
@@ -21,6 +23,7 @@ pub struct Plan {
 impl Plan {
     pub fn legacy(args: &Args) -> Self {
         Self {
+            setup: args.setup.clone(), setup_source: "args.setup",
             checks: args.checks.clone(), verify: args.verify.clone(), tools: vec![],
             check_source: "checks", verify_source: "args.verify",
             full_local: vec![], full_in_ci: false,
@@ -46,13 +49,18 @@ impl Plan {
         let Some(fields) = value.as_object() else {
             return fail(format!("{CONFIG} must be an object"));
         };
-        if let Some(key) = fields.keys().find(|key| !["checks", "verify", "full", "tools"].contains(&key.as_str())) {
+        if let Some(key) = fields.keys().find(|key| !["setup", "checks", "verify", "full", "tools"].contains(&key.as_str())) {
             return fail(format!("{CONFIG}: unexpected field {key:?}"));
         }
         let commands = |value, name| args::commands(value, name).map_err(|why| GatewayError(format!("{CONFIG}: {why}")));
+        let setup = commands(value.get("setup"), "setup")?;
         let checks = commands(value.get("checks"), "checks")?;
         let verify = commands(value.get("verify"), "verify")?;
         plan.tools = tools(value.get("tools"))?;
+        if args.agent && plan.setup.is_empty() && !setup.is_empty() {
+            plan.setup = setup;
+            plan.setup_source = "project.setup";
+        }
         if plan.checks.is_empty() && !checks.is_empty() {
             plan.checks = checks;
             plan.check_source = "project.checks";
@@ -77,6 +85,7 @@ impl Plan {
 
     pub fn to_json(&self) -> Value {
         json!({
+            "setup": self.setup, "setupSource": self.setup_source,
             "checks": self.checks, "verify": self.verify, "tools": self.tools,
             "checkSource": self.check_source, "verifySource": self.verify_source,
             "fullLocal": self.full_local, "fullInCi": self.full_in_ci
@@ -93,6 +102,14 @@ impl Plan {
                     .ok_or_else(|| GatewayError(format!("The pinned verification plan has an invalid {key} command.")))
             }).collect::<Result<Vec<_>>>()
         };
+        // Runs created before writer setup was introduced have neither of these fields.
+        let setup = if plan.get("setup").is_some() { commands("setup")? } else { vec![] };
+        let setup_source = match plan["setupSource"].as_str() {
+            Some("project.setup") => "project.setup",
+            Some("args.setup") => "args.setup",
+            None if setup.is_empty() => "args.setup",
+            _ => return fail("The pinned verification plan has no valid setup source."),
+        };
         let check_source = match plan["checkSource"].as_str() {
             Some("checks") => "checks",
             Some("project.checks") => "project.checks",
@@ -105,6 +122,7 @@ impl Plan {
         };
         let full_in_ci = plan["fullInCi"].as_bool().ok_or_else(|| GatewayError("The pinned verification plan has no CI policy.".into()))?;
         Ok(Self {
+            setup, setup_source,
             checks: commands("checks")?, verify: commands("verify")?, tools: tools(plan.get("tools"))?, check_source, verify_source,
             full_local: commands("fullLocal")?, full_in_ci,
         })

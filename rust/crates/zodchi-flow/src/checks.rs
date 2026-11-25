@@ -12,7 +12,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
-use zodchi_core::process::{command_without_window, kill_tree, stop_process};
+use zodchi_core::process::{command_without_window, kill_tree, process_start, stop_process};
 use zodchi_core::util::{fail, pause, Result};
 
 /// What a check command may see of the caller's environment: where programs and the user's tool chains are, the
@@ -77,6 +77,14 @@ pub fn preflight_tools(tools: &[String]) -> Result<()> {
 pub enum Phase {
     Started,
     Ended,
+}
+
+pub(crate) fn record_process(journal: &mut crate::journal::Journal, step: &str, attempt: u32, phase: Phase, pid: u32) -> bool {
+    let event = match phase {
+        Phase::Started => json!({ "kind": "check started", "step": step, "attempt": attempt, "pid": pid, "start": process_start(pid) }),
+        Phase::Ended => json!({ "kind": "check ended", "step": step, "attempt": attempt, "pid": pid }),
+    };
+    journal.append(event).is_ok()
 }
 
 /// The gate every check command passes: bash waits for the engine's word on stdin and only then runs the command
@@ -196,6 +204,15 @@ pub fn run_list(cmds: &[String], source: &str, cwd: &Path, logs: &Path, limit: D
 }
 
 pub(crate) fn run_project_list(cmds: &[String], source: &str, cwd: &Path, logs: &Path, limit: Duration, repo: Option<&Path>, on: &mut dyn FnMut(Phase, u32) -> bool) -> (Vec<Value>, bool) {
+    run_commands(cmds, source, cwd, logs, limit, repo, false, on)
+}
+
+pub(crate) fn run_setup(cmds: &[String], source: &str, cwd: &Path, logs: &Path, limit: Duration, on: &mut dyn FnMut(Phase, u32) -> bool) -> (Vec<Value>, bool) {
+    run_commands(cmds, source, cwd, logs, limit, None, true, on)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_commands(cmds: &[String], source: &str, cwd: &Path, logs: &Path, limit: Duration, repo: Option<&Path>, stop_on_failure: bool, on: &mut dyn FnMut(Phase, u32) -> bool) -> (Vec<Value>, bool) {
     let bash = find_bash();
     let _ = fs::create_dir_all(logs);
     let mut out = Vec::new();
@@ -206,6 +223,9 @@ pub(crate) fn run_project_list(cmds: &[String], source: &str, cwd: &Path, logs: 
         out.push(json!({ "command": cmd, "source": source, "exitCode": code, "log": log.display().to_string(), "ms": ms as u64, "note": note }));
         if !recorded {
             return (out, false);
+        }
+        if stop_on_failure && code != Some(0) {
+            break;
         }
     }
     (out, true)
