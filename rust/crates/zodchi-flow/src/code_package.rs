@@ -155,6 +155,7 @@ struct Run {
     review_md: Option<String>,
     patch_schema: &'static str,
     verify_plan: crate::verify::Plan,
+    browser: Value,
     writer: Pick,
     reviewer: Pick,
     claims_dir: PathBuf,
@@ -327,6 +328,13 @@ fn start_run(raw: &Value, detach: bool, id: Option<&str>) -> Result<Exit> {
     }
     let executors = if server.is_some() { "codex via server" } else { "codex only" };
     let id = id.map(String::from).unwrap_or_else(crate::journal::new_run_id);
+    let browser = match &args.browser {
+        Some((variable, path)) => match gateway::pin_browser(variable, Path::new(path)) {
+            Ok(pin) => pin,
+            Err(why) => return Ok(refused(&label, why)),
+        },
+        None => Value::Null,
+    };
     let run = json!({
         "runId": id, "workflow": WORKFLOW, "version": VERSION, "mode": args.mode(), "patchSchema": 2,
         "release": env!("CARGO_PKG_VERSION"), "createdAt": iso(),
@@ -334,7 +342,7 @@ fn start_run(raw: &Value, detach: bool, id: Option<&str>) -> Result<Exit> {
         "seed": seed, "history": history, "priorWriters": prior_writers,
         "inputs": { "args": raw, "brief": args.brief, "briefSha256": sha256_hex(&brief), "reviewMd": review_md.is_some() },
         "pair": { (args.writer_role()): writer.to_json(), "reviewer": reviewer.to_json(), "skipped": skipped },
-        "verificationPlan": verify_plan.to_json(), "reviewContext": args.review_context,
+        "verificationPlan": verify_plan.to_json(), "reviewContext": args.review_context, "browser": browser,
         "policy": { "rounds": args.rounds, "fixes": args.fixes, "protected": [
             "test/", "tests/", "e2e/", ".claude/skills/verify/", ".agents/skills/verify/", "skills/verify/", crate::verify::CONFIG, "REVIEW.md"],
             "protect": args.protect, "allowCheckChanges": args.allow_check_changes, "extendClaim": args.extend_claim,
@@ -453,6 +461,7 @@ impl Run {
             branch,
             patch_schema: if run["patchSchema"] == json!(2) { PATCH_SCHEMA_V2 } else { PATCH_SCHEMA_V1 },
             verify_plan,
+            browser: run["browser"].clone(),
             id, args, cfg, git, project, journal, base, seed, history, brief, review_md, writer, reviewer, out,
             keep_claim: false,
             claim_status: "stopped",
@@ -647,6 +656,25 @@ impl Run {
         self.out.insert("stoppedAt".into(), json!(if step == "write" { "write".to_string() } else { step.split(' ').next().unwrap_or(step).to_string() }));
         let q = if patch.questions.is_empty() { patch.summary.clone() } else { patch.questions.join(" | ") };
         self.out.insert("question".into(), json!(q));
+        if self.args.agent {
+            let checks = self.journal.events().iter().filter(|event| event["kind"] == "done" && event["step"] == self.step
+                && event["attempt"].as_u64() == Some(u64::from(self.attempt(&self.step))))
+                .flat_map(|event| event["result"]["checks"].as_array().into_iter().flatten())
+                .filter(|check| check["exitCode"].as_i64().is_some_and(|code| code != 0));
+            for check in checks {
+                let result = check["result"].as_str().unwrap_or("");
+                let hint = if result.contains("ERR_MODULE_NOT_FOUND") {
+                    Some("A recorded writer check reported ERR_MODULE_NOT_FOUND. Install the project's Node dependencies using its configured setup, then reply to the blocked writer before resuming, or use the candidate acceptance runner.")
+                } else if result.lines().any(|line| line.split_once("browserType.launch:")
+                    .is_some_and(|(_, diagnostic)| diagnostic.trim_start().starts_with("Executable doesn't exist at "))) {
+                    Some("A recorded writer check reports a missing browser executable. Restore the configured executable, then reply to the blocked writer before resuming, or use the candidate acceptance runner.")
+                } else { None };
+                if let Some(hint) = hint {
+                    self.out.insert("prerequisiteHint".into(), json!(hint));
+                    break;
+                }
+            }
+        }
         self.out.insert("status".into(), json!("waiting"));
         self.keep_claim = true;
         let waiting_step = if self.args.agent { self.step.clone() } else { step.to_string() };
@@ -804,6 +832,11 @@ impl Run {
             (self.cfg.home.display().to_string(), "<zodchi-home>"),
             (self.args.repo_norm.clone(), "<repo>"),
         ];
+        for key in ["configuredPath", "path"] {
+            if let Some(path) = self.browser[key].as_str().filter(|s| !s.is_empty()) {
+                v.push((path.to_string(), "<browser>"));
+            }
+        }
         for k in ["HOME", "USERPROFILE"] {
             if let Some(h) = std::env::var_os(k).filter(|h| !h.is_empty()) {
                 v.push((h.to_string_lossy().into_owned(), "~"));
@@ -980,11 +1013,14 @@ impl Run {
                 if !self.verify_plan.setup.is_empty() {
                     preamble.push_str("\n\nThe engine completed the configured setup in this workspace. Use the prepared dependencies for your checks.");
                 }
+                if let Some(variable) = self.browser["variable"].as_str() {
+                    preamble.push_str(&format!("\n\nThe pinned browser executable is available in the shell variable {variable}. Project tests choose headless mode."));
+                }
                 if n > 0 || attempt > 1 {
                     preamble.push_str("\n\nContinue the writer's work in this same private workspace. Inspect its current files and preserve edits that are already complete.");
                 }
                 if let Some(summary) = &previous_summary {
-                    let scrubbed = input::scrub(&self.cfg, summary, &[]);
+                    let scrubbed = input::scrub(&self.cfg, summary, &self.private_places());
                     let scrubbed = self.infra(&turn, scrubbed)?;
                     preamble.push_str("\n\nPrevious writer summary (work status):\n");
                     preamble.push_str(&scrubbed);
@@ -1034,7 +1070,12 @@ impl Run {
     fn ask(&mut self, step: &str, round: u32, role: &str, pick: &Pick, schema: &Value, prompt: String, writer_workspace: Option<&Path>, validate: impl Fn(&Value) -> std::result::Result<(), String>) -> Step<Value> {
         self.step = step.to_string();
         let call = gateway::Call { id: &self.id, step, round, role, pick, schema, prompt, writer_workspace };
-        match gateway::ask_budgeted(&mut self.journal, &self.cfg, call, self.args.budget, validate) {
+        let browser = if writer_workspace.is_some() { Some(&self.browser) } else { None };
+        let owner_private_places: Vec<_> = ["configuredPath", "path"].into_iter()
+            .filter_map(|key| self.browser[key].as_str().filter(|path| !path.is_empty()))
+            .map(|path| (path.to_string(), "<browser>"))
+            .collect();
+        match gateway::ask_budgeted(&mut self.journal, &self.cfg, call, self.args.budget, browser, &owner_private_places, validate) {
             Ok(data) => Ok(data),
             Err(gateway::CallError::Stop { at, reason }) if at == format!("budget at {step}") => {
                 self.keep_claim = true;
@@ -1684,8 +1725,10 @@ impl Run {
         } else {
             "The base commit has no REVIEW.md: judge by the brief."
         };
+        let scrubber = Scrubber::new(&self.cfg)?;
+        let summary = scrubber.text(summary, &self.private_places());
         let text = render(REVIEW, &[
-            ("step", step.to_string()), ("run", self.id.clone()), ("base", self.base.clone()), ("summary", summary.to_string()),
+            ("step", step.to_string()), ("run", self.id.clone()), ("base", self.base.clone()), ("summary", summary),
             ("unverified", if unverified.is_empty() { "nothing named".into() } else { unverified.join("; ") }),
             ("verification", how), ("history", history), ("focus", focus.to_string()),
         ]);

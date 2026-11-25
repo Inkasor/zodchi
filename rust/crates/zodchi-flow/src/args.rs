@@ -15,6 +15,7 @@ pub struct Args {
     pub files: Vec<String>,
     pub review_context: Vec<String>,
     pub agent: bool,
+    pub browser: Option<(String, String)>,
     pub isolated: bool,
     pub(crate) budget: Option<crate::budget::Budget>,
     pub source_run: Option<String>,
@@ -33,7 +34,7 @@ pub struct Args {
 
 const SUPPORTED: &[&str] = &[
     "label", "brief", "repo", "files", "tmp", "mode", "rounds", "fixes", "setup", "checks", "verify", "protect", "allowCheckChanges",
-    "models", "commit", "extendClaim", "checkTimeoutMin", "continuations", "isolated", "budget", "sourceRun", "reviewContext",
+    "models", "commit", "extendClaim", "checkTimeoutMin", "continuations", "isolated", "budget", "sourceRun", "reviewContext", "browser",
 ];
 
 const UNSUPPORTED: [(&str, &str); 5] = [
@@ -132,6 +133,18 @@ pub fn parse(a: &Value) -> Result<Args, String> {
         Some(mode) if mode == "agent" => true,
         Some(_) => return Err("args.mode is \"expert\" or \"agent\"".into()),
     };
+    let browser = match o.get("browser") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(b)) if agent && b.keys().all(|k| k == "variable" || k == "executable") => {
+            let variable = b.get("variable").map_or(Some("ZODCHI_ACCEPTANCE_CHROMIUM"), Value::as_str).unwrap_or("");
+            let path = b.get("executable").and_then(Value::as_str).unwrap_or("");
+            if !["ZODCHI_ACCEPTANCE_CHROMIUM", "WB_TEST_CHROME"].contains(&variable) || !std::path::Path::new(path).is_absolute() {
+                return Err("args.browser needs an absolute executable and variable ZODCHI_ACCEPTANCE_CHROMIUM or WB_TEST_CHROME".into());
+            }
+            Some((variable.to_string(), path.to_string()))
+        }
+        _ => return Err("args.browser is an agent-mode object with executable and optional variable".into()),
+    };
     if !agent && o.get("continuations").is_some_and(|v| !v.is_null() && v != &json!(false)) {
         return Err("args.continuations applies to agent mode".into());
     }
@@ -198,6 +211,7 @@ pub fn parse(a: &Value) -> Result<Args, String> {
         files,
         review_context,
         agent,
+        browser,
         isolated,
         budget: o.get("budget").map(crate::budget::Budget::parse).transpose()?,
         source_run,

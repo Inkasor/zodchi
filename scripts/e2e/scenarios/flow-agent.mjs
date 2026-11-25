@@ -7,6 +7,127 @@ const report = (status, flowWrites, questions = []) => ({
 const turns = (f) => fs.readFileSync(path.join(f.w.codex, "fake-turns.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
 
 export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FIXED, samePath }) {
+  scenario("flow-agent-browser-input", "the writer browser input is pinned across continuation and resume", async (t) => {
+    const f = flowWorld(t, "flow-agent-browser-input");
+    const browser = path.join(f.w.dir, "chromium-fixture");
+    fs.writeFileSync(browser, "browser fixture");
+    const input = { executable: browser };
+    const variable = "ZODCHI_ACCEPTANCE_CHROMIUM";
+    const invalid = await f.flow(["--args", f.args({ mode: "agent", browser: { ...input, variable: "PATH" } })]);
+    t.eq(invalid.code, 2, "protected environment variables are refused");
+    const expert = await f.flow(["--args", f.args({ browser: input })]);
+    t.eq(expert.code, 2, "expert mode refuses the browser input");
+    const relative = await f.flow(["--args", f.args({ mode: "agent", browser: { ...input, executable: "chromium" } })]);
+    t.eq(relative.code, 2, "relative browser paths are refused");
+    const directory = await f.flow(["--args", f.args({ mode: "agent", browser: { ...input, executable: f.w.zhome } })]);
+    t.eq(directory.code, 2, "a directory is not a browser file");
+    const role = path.join(f.r, ".zodchi", "roles", "flow-work.json");
+    fs.mkdirSync(path.dirname(role), { recursive: true });
+    fs.writeFileSync(role, JSON.stringify({ extends: "flow-work", config: {
+      model_context_window: 272000, "shell_environment_policy.set": { EXISTING_FIXTURE: "kept", [variable]: "old" },
+      "shell_environment_policy.set.OTHER_FIXTURE": "also kept", "shell_environment_policy.set.zodchi_acceptance_chromium": "wrong browser",
+    } }));
+    f.answer("write", { ...report("more", { "src/math.mjs": FIXED }), summary: `launch failed at ${browser}` });
+    f.answer("write continue 1", report("more", {}));
+    f.answer("write continue 2", { ...report("done", {}), summary: `failed at ${browser}`, checks: [{ command: "test", exitCode: 1, result: `browserType.launch: ${browser}` }] });
+    f.answer("review 1", f.review("approved"));
+    const cut = await f.flow(["--args", f.args({ mode: "agent", browser: input })], { ZODCHI_FLOW_CUT: "submit write continue 1" });
+    t.eq(cut.code, 75, "cut after submitting the continuation");
+    const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
+    fs.writeFileSync(browser, "changed browser fixture");
+    const changed = await f.flow(["--resume", id]);
+    t.eq(changed.json?.stoppedAt, "browser prerequisite at write continue 2", "submitted continuation replays, then changed bytes stop the next writer");
+    const changedEvents = fs.readFileSync(path.join(changed.json.journal, "events.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+    t.ok(changedEvents.some(e => e.kind === "done" && e.step === "write continue 1"), "submitted continuation has a done receipt before the stop");
+    t.ok(changedEvents.some(e => e.kind === "stop" && e.step === "write continue 2" && /browser prerequisite/.test(e.stoppedAt)), "the changed pin stops write continue 2");
+    const remarkFile = path.join(f.w.dir, "browser-remark.txt");
+    const canonicalBrowser = fs.realpathSync(browser);
+    const remarkText = `Keep the output integer. Browser paths: ${browser} and ${canonicalBrowser}`;
+    fs.writeFileSync(remarkFile, remarkText);
+    const remark = await zodchi(t, f.w, ["flow", "remark", id, "--file", remarkFile], { cwd: f.w.dir, env: f.w.env });
+    t.eq(remark.code, 0, "the owner remark is recorded before review");
+    const receipt = JSON.parse(fs.readFileSync(path.join(f.w.zhome, "flows", id, "remarks", remark.json.remarkId + ".json"), "utf8"));
+    t.eq(receipt.text, remarkText, "the local remark receipt remains unchanged");
+    fs.writeFileSync(browser, "browser fixture");
+    const res = await f.flow(["--resume", id]);
+    t.eq([res.code, res.json?.approved], [0, true], "resume completes");
+    const calls = turns(f);
+    for (const step of ["write", "write continue 1", "write continue 2"]) {
+      const call = calls.find(c => c.step === step);
+      t.ok(samePath(call.config["shell_environment_policy.set"][variable], fs.realpathSync(browser)), `${step} receives the pinned path`);
+      t.eq([call.config.model_context_window, call.config["shell_environment_policy.set"].EXISTING_FIXTURE], [272000, "kept"], "writer role settings survive the override");
+      t.eq(call.config["shell_environment_policy.set"].OTHER_FIXTURE, "also kept", "dotted leaf survives the merge");
+      if (process.platform === "win32") t.ok(!Object.hasOwn(call.config["shell_environment_policy.set"], "zodchi_acceptance_chromium"), "Windows removes a differently cased competing variable");
+      t.ok(call.prompt.includes(variable), "writer instructions name the available variable");
+      t.eq(calls.filter(c => c.step === step).length, 1, `${step} runs only once`);
+    }
+    t.ok(!calls.find(c => c.step === "write continue 1").prompt.includes(browser), "continuation handoff redacts the browser path");
+    t.ok(!calls.find(c => c.step === "review 1").config["shell_environment_policy.set"], "review does not receive the browser");
+    const reviewPrompt = calls.find(c => c.step === "review 1").prompt;
+    t.ok(reviewPrompt.includes("Keep the output integer.") && reviewPrompt.includes("<browser>")
+      && !reviewPrompt.includes(browser) && !reviewPrompt.includes(canonicalBrowser), "review receives the owner remark with both browser paths sanitized");
+    const attached = reviewPrompt.match(/<attachment path="writer-checks.json">\n([\s\S]*?)\n<\/attachment>/)?.[1];
+    t.ok(attached, "review receives writer check receipts");
+    const { checks } = JSON.parse(attached);
+    t.ok(checks.some(check => check.result.includes("browserType.launch") && !check.result.includes(browser)), "review check attachment redacts the browser path");
+  });
+  scenario("flow-agent-browser-reply-redaction", "an owner reply receives a redacted writer handoff", async (t) => {
+    const f = flowWorld(t, "flow-agent-browser-reply-redaction");
+    const browser = path.join(f.w.zhome, "chromium-fixture");
+    fs.writeFileSync(browser, "browser fixture");
+    const summary = `Launch failed at ${browser}`;
+    f.answer("write", { ...report("blocked", {}), summary });
+    const first = await f.flow(["--args", f.args({ mode: "agent", browser: { executable: browser } })]);
+    t.eq(first.json?.status, "waiting", "the writer waits for a reply");
+    const events = fs.readFileSync(path.join(first.json.journal, "events.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+    t.eq(events.find(e => e.kind === "done" && e.step === "write").result.summary, summary, "the original journal receipt is preserved");
+    const input = path.join(f.w.dir, "reply.txt");
+    fs.writeFileSync(input, "Continue the work.");
+    const reply = await zodchi(t, f.w, ["flow", "reply", first.json.runId, "--file", input], { cwd: f.w.dir, env: f.w.env });
+    t.eq(reply.code, 0, "the owner reply is recorded");
+    f.answer("write", report("done", { "src/math.mjs": FIXED }));
+    f.answer("review 1", f.review("approved"));
+    const resumed = await f.flow(["--resume", first.json.runId]);
+    t.eq([resumed.code, resumed.json?.approved], [0, true], "the reply resumes the writer");
+    const prompt = turns(f)[1].prompt;
+    t.ok(prompt.includes("Launch failed at") && !prompt.includes(browser), "the reply handoff redacts the browser path");
+  });
+  scenario("flow-agent-browser-alternate", "the Dashboard browser variable is passed to the writer", async (t) => {
+    const f = flowWorld(t, "flow-agent-browser-alternate");
+    const browser = path.join(f.w.zhome, "chromium-fixture");
+    fs.writeFileSync(browser, "browser fixture");
+    f.answer("write", report("done", { "src/math.mjs": FIXED }));
+    f.answer("review 1", f.review("approved"));
+    const res = await f.flow(["--args", f.args({ mode: "agent", browser: { executable: browser, variable: "WB_TEST_CHROME" } })]);
+    t.eq([res.code, res.json?.approved], [0, true], "alternate variable is accepted");
+    t.ok(samePath(turns(f).find(c => c.step === "write").config["shell_environment_policy.set"].WB_TEST_CHROME, fs.realpathSync(browser)), "writer receives the alternate variable");
+  });
+  scenario("flow-agent-prerequisite-superseded", "earlier prerequisite evidence does not explain a later block", async (t) => {
+    const f = flowWorld(t, "flow-agent-prerequisite-superseded");
+    f.answer("write", { ...report("more", {}), checks: [{ command: "node test.mjs", exitCode: 1, result: "ERR_MODULE_NOT_FOUND" }] });
+    f.answer("write continue 1", { ...report("blocked", {}), summary: "junction refused", checks: [{ command: "test", exitCode: 1, result: "Executable doesn't exist at /unrelated" }] });
+    const res = await f.flow(["--args", f.args({ mode: "agent" })]);
+    t.eq([res.json?.status, Boolean(res.json?.prerequisiteHint)], ["waiting", false], "only the blocked turn's browser-specific evidence counts");
+  });
+  for (const [name, output, hint] of [
+    ["module", "Error [ERR_MODULE_NOT_FOUND]: missing package", "ERR_MODULE_NOT_FOUND"],
+    ["browser", "browserType.launch: Executable doesn't exist at /missing/chromium", "missing browser executable"],
+    ["junction", "EPERM: junction creation refused", null],
+    ["separate-errors", "browserType.launch: Permission denied\nOther tool: Executable doesn't exist at /unrelated", null],
+  ]) {
+    scenario(`flow-agent-prerequisite-${name}`, "a blocked writer reports only explicit prerequisite evidence", async (t) => {
+      const f = flowWorld(t, `flow-agent-prerequisite-${name}`);
+      const check = { command: "node test.mjs", exitCode: 1, result: output };
+      f.answer("write", { ...report("blocked", {}), summary: "Unable to continue", checks: [check] });
+      const res = await f.flow(["--args", f.args({ mode: "agent" })]);
+      t.eq([res.code, res.json?.status], [2, "waiting"], "the original blocked outcome is retained");
+      t.eq(Boolean(res.json?.prerequisiteHint), Boolean(hint), "only explicit prerequisite evidence gets a hint");
+      if (hint) t.ok(res.json.prerequisiteHint.includes(hint), "the hint identifies the prerequisite");
+      const events = fs.readFileSync(path.join(res.json.journal, "events.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+      t.eq(events.find(e => e.kind === "done" && e.step === "write").result.checks[0], check, "the check receipt remains unchanged");
+      t.eq(turns(f).length, 1, "the failed check does not trigger another model turn");
+    });
+  }
   scenario("flow-agent-setup", "write, continuation, fix and close can start a server with a dependency in the writer copy", async (t) => {
     const f = flowWorld(t, "flow-agent-setup");
     const test = "test/server.test.mjs";

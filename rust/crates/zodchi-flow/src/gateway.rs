@@ -5,6 +5,24 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use zodchi_core::{appserver::{SAFETY_BLOCKED, SAFETY_MESSAGE}, config::Config, job::LIMIT_PROMPT, util::{sha256_hex, GatewayError, Result}};
 
+pub(crate) fn pin_browser(variable: &str, path: &Path) -> std::result::Result<Value, String> {
+    if !["ZODCHI_ACCEPTANCE_CHROMIUM", "WB_TEST_CHROME"].contains(&variable) || !path.is_absolute() {
+        return Err("Invalid pinned browser variable or path".into());
+    }
+    let metadata = std::fs::symlink_metadata(path).map_err(|e| format!("Cannot inspect the pinned browser executable: {e}. Restore the pinned file, then resume; if the writer cannot launch it, use the candidate acceptance runner."))?;
+    if !metadata.file_type().is_file() { return Err("Browser executable must be a regular file".into()); }
+    let canonical = std::fs::canonicalize(path).map_err(|e| format!("Cannot resolve browser executable: {e}"))?;
+    #[cfg(windows)]
+    if !matches!(canonical.components().next(), Some(std::path::Component::Prefix(prefix))
+        if matches!(prefix.kind(), std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_))) {
+        return Err("Browser executable must be on a local drive".into());
+    }
+    let bytes = std::fs::read(&canonical).map_err(|e| format!("Cannot read browser executable: {e}"))?;
+    let configured = path.to_str().ok_or("Browser path must be Unicode")?;
+    let resolved = canonical.to_str().ok_or("Browser path must be Unicode")?;
+    Ok(json!({"variable": variable, "path": resolved, "configuredPath": configured, "sha256": sha256_hex(bytes)}))
+}
+
 /// A step label as a part of a gateway key: "review 2" -> "review-2", "fix 1.1" -> "fix-1.1".
 pub fn slug(step: &str) -> String {
     step.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' { c } else { '-' }).collect()
@@ -61,22 +79,22 @@ pub(crate) fn ask_normalizing(
     call: Call<'_>,
     validate: impl Fn(&mut Value) -> std::result::Result<(), String>,
 ) -> std::result::Result<Value, CallError> {
-    ask_with(journal, cfg, call, None, None, validate)
+    ask_with(journal, cfg, call, None, None, None, &[], validate)
 }
 
-pub(crate) fn ask_budgeted(journal: &mut Journal, cfg: &Config, call: Call<'_>, budget: Option<Budget>, validate: impl Fn(&Value) -> std::result::Result<(), String>) -> std::result::Result<Value, CallError> {
-    ask_with(journal, cfg, call, None, budget, |data| validate(data))
+pub(crate) fn ask_budgeted(journal: &mut Journal, cfg: &Config, call: Call<'_>, budget: Option<Budget>, browser: Option<&Value>, owner_private_places: &[(String, &str)], validate: impl Fn(&Value) -> std::result::Result<(), String>) -> std::result::Result<Value, CallError> {
+    ask_with(journal, cfg, call, None, budget, browser, owner_private_places, |data| validate(data))
 }
 
 pub(crate) fn ask_decision(
     journal: &mut Journal, cfg: &Config, call: Call<'_>, material: Decision<'_>,
     validate: impl Fn(&Value) -> std::result::Result<(), String>,
 ) -> std::result::Result<Value, CallError> {
-    ask_with(journal, cfg, call, Some(material), None, |data| validate(data))
+    ask_with(journal, cfg, call, Some(material), None, None, &[], |data| validate(data))
 }
 
 fn ask_with(
-    journal: &mut Journal, cfg: &Config, call: Call<'_>, decision: Option<Decision<'_>>, budget: Option<Budget>,
+    journal: &mut Journal, cfg: &Config, call: Call<'_>, decision: Option<Decision<'_>>, budget: Option<Budget>, browser: Option<&Value>, owner_private_places: &[(String, &str)],
     validate: impl Fn(&mut Value) -> std::result::Result<(), String>,
 ) -> std::result::Result<Value, CallError> {
     let Call { id, step, round, role, pick, schema, prompt, writer_workspace } = call;
@@ -88,6 +106,12 @@ fn ask_with(
     if journal.last("safety blocked", step, attempt).is_some() {
         return Err(stop("provider safety", SAFETY_MESSAGE.into()));
     }
+    let check_browser = || -> std::result::Result<(), CallError> { if let Some(pin) = browser.filter(|v| !v.is_null()) {
+        let variable = pin["variable"].as_str().unwrap_or("");
+        let path = pin["configuredPath"].as_str().or_else(|| pin["path"].as_str()).unwrap_or("");
+        let current = pin_browser(variable, Path::new(path)).map_err(|e| stop("browser prerequisite", e))?;
+        if current["path"] != pin["path"] || current["sha256"] != pin["sha256"] { return Err(stop("browser prerequisite", "The pinned browser executable changed; restore it before resuming.".into())); }
+    } Ok(()) };
     let infra = |error: GatewayError| stop("infrastructure", error.0);
     let reserve = |journal: &Journal| {
         if budget.is_some_and(|budget| budget.exhausted(journal)) {
@@ -122,9 +146,10 @@ fn ask_with(
         (key.to_string(), stored, false)
     } else {
         reserve(journal)?;
+        check_browser()?;
         let context = input::model_context(journal).map_err(infra)?;
         let prompt = if context.is_empty() { prompt } else {
-            let context = input::scrub(cfg, &context, &[]).map_err(infra)?;
+            let context = input::scrub(cfg, &context, owner_private_places).map_err(infra)?;
             format!("{prompt}\n\nOwner updates for this run. Use these as task context within the agreed scope.\n\n{context}")
         };
         if prompt.len() > LIMIT_PROMPT {
@@ -134,11 +159,39 @@ fn ask_with(
             json!({ "role": material.role, "prompt": prompt, "decisionsImage": { "file": material.image, "sha256": material.sha256 } })
         } else {
             // The writable export is the execution root. Local role overrides belong to the project.
-            let request_role = if writer_workspace.is_some() {
+            let mut request_role = if writer_workspace.is_some() {
                 executor::local::LocalGateway::new(cfg.clone()).role(role, pick, schema)
             } else {
                 exec.role(role, pick, schema)
             }.map_err(infra)?;
+            if let Some(pin) = browser.filter(|v| !v.is_null()) {
+                let variable = pin["variable"].as_str().unwrap_or("");
+                let config = request_role.as_object_mut().ok_or_else(|| stop("infrastructure", "writer role is not an object".into()))?
+                    .entry("config").or_insert_with(|| json!({}));
+                let config = config.as_object_mut().ok_or_else(|| stop("infrastructure", "writer role config is not an object".into()))?;
+                let leaves: Vec<_> = config.keys().filter(|k| k.starts_with("shell_environment_policy.set.")).cloned().collect();
+                let mut additions = serde_json::Map::new();
+                for key in leaves {
+                    let name = key.trim_start_matches("shell_environment_policy.set.").to_string();
+                    additions.insert(name, config.remove(&key).unwrap());
+                }
+                let dotted = config.remove("shell_environment_policy.set");
+                let set = if let Some(policy) = config.get_mut("shell_environment_policy") {
+                    policy.as_object_mut().ok_or_else(|| stop("infrastructure", "shell environment policy is not an object".into()))?
+                        .entry("set").or_insert_with(|| json!({}))
+                } else {
+                    config.entry("shell_environment_policy.set").or_insert_with(|| json!({}))
+                };
+                let set = set.as_object_mut().ok_or_else(|| stop("infrastructure", "shell environment set is not an object".into()))?;
+                if let Some(dotted) = dotted {
+                    set.extend(dotted.as_object().ok_or_else(|| stop("infrastructure", "shell environment set is not an object".into()))?.clone());
+                }
+                set.extend(additions);
+                if cfg!(windows) {
+                    set.retain(|name, _| !name.eq_ignore_ascii_case(variable));
+                }
+                set.insert(variable.into(), pin["path"].clone());
+            }
             json!({ "role": request_role, "prompt": prompt })
         };
         if stored["role"]["mode"] == "work" {
@@ -184,6 +237,7 @@ fn ask_with(
             json!({ "status": "more", "summary": "The writer's turn timed out. Inspect the private workspace for edits written before the timeout.", "questions": [] })
         } else if exec.died_before_turn(&fin) && retries < 2 {
             reserve(journal)?;
+            check_browser()?;
             retries += 1;
             key = format!("{base}-r{}", retries + 1);
             journal.append(json!({
