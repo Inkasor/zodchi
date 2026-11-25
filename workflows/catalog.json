@@ -85,7 +85,16 @@
         "repo",
         "label"
       ],
-      "anyOf": [["base", "author"], ["sourceRun", "head"]],
+      "anyOf": [
+        [
+          "base",
+          "author"
+        ],
+        [
+          "sourceRun",
+          "head"
+        ]
+      ],
       "docs": "docs/flow.md#branch-review",
       "example": {
         "repo": "/project",
@@ -108,7 +117,14 @@
         "label",
         "context"
       ],
-      "anyOf": [["realLife"], ["games"]],
+      "anyOf": [
+        [
+          "realLife"
+        ],
+        [
+          "games"
+        ]
+      ],
       "docs": "docs/method-question.md",
       "example": {
         "repo": "/project",
@@ -150,7 +166,23 @@
         "ledger",
         "summary"
       ],
-      "anyOf": [["package"], ["check"], ["export"], ["unity"], ["rubric"]],
+      "anyOf": [
+        [
+          "package"
+        ],
+        [
+          "check"
+        ],
+        [
+          "export"
+        ],
+        [
+          "unity"
+        ],
+        [
+          "rubric"
+        ]
+      ],
       "docs": "docs/asset-round.md",
       "example": {
         "repo": "/project",
@@ -211,7 +243,15 @@
         "ffmpeg",
         "ffprobe"
       ],
-      "anyOf": [["brief", "variants"], ["adopt"]],
+      "anyOf": [
+        [
+          "brief",
+          "variants"
+        ],
+        [
+          "adopt"
+        ]
+      ],
       "docs": "docs/flow-video.md"
     },
     {
@@ -271,8 +311,23 @@
         "scenarios"
       ],
       "conditional": [
-        { "when": { "fixture": "absent" }, "required": ["scenarios[].test"] },
-        { "when": { "fixture": "present" }, "required": ["fixture.script", "scenarios[].steps"] }
+        {
+          "when": {
+            "fixture": "absent"
+          },
+          "required": [
+            "scenarios[].test"
+          ]
+        },
+        {
+          "when": {
+            "fixture": "present"
+          },
+          "required": [
+            "fixture.script",
+            "scenarios[].steps"
+          ]
+        }
       ],
       "docs": "docs/acceptance.md#local-candidate",
       "example": {
@@ -383,6 +438,25 @@
             ]
           }
         ]
+      }
+    },
+    {
+      "name": "ops-script",
+      "version": "1",
+      "domain": "core",
+      "purpose": "Check a local operator-owned script and prepare a command for the operator.",
+      "limits": "Local Linux and Windows only; no remote action or execution of the operator command. Checks run unprivileged.",
+      "required": [
+        "script",
+        "tmp",
+        "sudo"
+      ],
+      "docs": "docs/ops-script.md",
+      "example": {
+        "script": "/srv/ops/deploy.py",
+        "tmp": "/srv/ops/tmp",
+        "check": ["python3", "{copy}", "--check"],
+        "sudo": ["sudo", "python3", "{script}", "--apply"]
       }
     }
   ]
