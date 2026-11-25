@@ -84,6 +84,12 @@ fixed arguments and takes the value only as data.
 that read (show, status, list, a report), never ones that retry, restart or repair. Operations run from the adapter's
 folder, with the caller's environment and rights.
 
+On Windows a bare executable name is resolved in Rust's order: the launching executable's directory, the system
+directory, the Windows directory, then the caller's `PATH`. An omitted `.exe` is supported. The launcher's current
+directory is not searched implicitly; use an explicit path or include that directory in `PATH` to select a program
+there. Relative executable paths and relative or empty `PATH` entries are resolved against the launcher's current directory,
+while the operation itself still runs from the adapter's folder. Batch entry points remain prohibited.
+
 **Provides.** The classifier may call an error `stale` only with evidence from a `release` or `changelog` operation
 that a specific release fixes this error, and from a `release` operation that the affected environment runs it, both
 ended `ok`. An adapter without a `release` operation can never produce `stale`.

@@ -80,8 +80,8 @@ fn contain_unix(command: &mut std::process::Command, timeout: u64) -> std::io::R
 #[cfg(windows)]
 mod process_group {
     use std::ffi::c_void;
-    use std::os::windows::{ffi::OsStrExt, io::FromRawHandle};
-    use std::path::Path;
+    use std::os::windows::{ffi::{OsStrExt, OsStringExt}, io::FromRawHandle};
+    use std::path::{Path, PathBuf};
     use std::os::windows::process::ExitStatusExt;
     use std::process::ExitStatus;
 
@@ -118,6 +118,8 @@ mod process_group {
         fn TerminateJobObject(job: *mut c_void, code: u32) -> i32;
         fn TerminateProcess(process: *mut c_void, code: u32) -> i32;
         fn ResumeThread(thread: *mut c_void) -> u32;
+        fn GetSystemDirectoryW(buffer: *mut u16, size: u32) -> u32;
+        fn GetWindowsDirectoryW(buffer: *mut u16, size: u32) -> u32;
     }
     #[repr(C)]
     struct Security { size: u32, descriptor: *mut c_void, inherit: i32 }
@@ -140,7 +142,7 @@ mod process_group {
         if unsafe { SetHandleInformation(read.0, 1, 0) } == 0 { return Err(error("Cannot protect output pipe")); }
         Ok((read, write))
     }
-    // Microsoft CRT argument quoting, including argv[0] for executable search.
+    // Microsoft CRT argument quoting, including argv[0].
     fn quote_arg(arg: &std::ffi::OsStr, output: &mut Vec<u16>) {
         output.push(b'"' as u16);
         let mut slashes = 0;
@@ -180,8 +182,74 @@ mod process_group {
             if unsafe { TerminateProcess(self.process.0, 1) } == 0 { return Err(std::io::Error::last_os_error()); } Ok(())
         }
     }
+    // CreateProcessW needs a verbatim path for long names. absolute() normalizes
+    // ordinary paths first, so that `.` and `..` retain their Win32 meaning.
+    pub(super) fn application_path(path: &Path) -> std::io::Result<PathBuf> {
+        use std::path::{Component, Prefix};
+        let absolute = std::path::absolute(path)?;
+        let units: Vec<u16> = absolute.as_os_str().encode_wide().collect();
+        // Leave room for Win32's legacy directory limit as well as MAX_PATH.
+        if units.len() < 248 { return Ok(absolute); }
+        let mut extended: Vec<u16> = match absolute.components().next() {
+            Some(Component::Prefix(prefix)) => match prefix.kind() {
+                Prefix::Disk(_) => r"\\?\".encode_utf16().collect(),
+                Prefix::UNC(_, _) => r"\\?\UNC\".encode_utf16().collect(),
+                _ => return Ok(absolute),
+            },
+            _ => return Ok(absolute),
+        };
+        let skip = if matches!(absolute.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::UNC(_, _))) { 2 } else { 0 };
+        extended.extend_from_slice(&units[skip..]);
+        Ok(PathBuf::from(std::ffi::OsString::from_wide(&extended)))
+    }
+    // Match Command's Windows lookup for the inherited environment. Relative paths,
+    // including relative PATH entries, are resolved against the launcher's directory.
+    fn resolve_executable(program: &Path) -> std::io::Result<PathBuf> {
+        use std::io::{Error, ErrorKind};
+        let name = program.as_os_str();
+        let units: Vec<u16> = name.encode_wide().collect();
+        if units.is_empty() || matches!(units.last(), Some(47 | 92)) {
+            return Err(Error::new(ErrorKind::InvalidInput, "program path has no file name"));
+        }
+        let has_exe = name.to_string_lossy().to_ascii_lowercase().ends_with(".exe");
+        let exists = |path: &Path| std::fs::symlink_metadata(path).is_ok();
+        // A prefix or separator makes this an explicit path, not a PATH search.
+        if program.components().count() != 1 || program.has_root() || units.contains(&(b':' as u16)) || units.contains(&(b'/' as u16)) || units.contains(&(b'\\' as u16)) {
+            let mut candidate = program.as_os_str().to_os_string();
+            if !has_exe {
+                candidate.push(".exe");
+                if exists(Path::new(&candidate)) { return application_path(Path::new(&candidate)); }
+            }
+            return application_path(program);
+        }
+        let mut filename = name.to_os_string();
+        if !units.contains(&(b'.' as u16)) { filename.push(".exe"); }
+        let mut dirs = Vec::new();
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() { dirs.push(dir.to_path_buf()); }
+        }
+        for get_dir in [GetSystemDirectoryW as unsafe extern "system" fn(*mut u16, u32) -> u32, GetWindowsDirectoryW] {
+            let mut buffer = vec![0u16; 260];
+            loop {
+                let len = unsafe { get_dir(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+                if len == 0 { break; }
+                if len >= buffer.len() { buffer.resize(len + 1, 0); continue; }
+                dirs.push(PathBuf::from(std::ffi::OsString::from_wide(&buffer[..len])));
+                break;
+            }
+        }
+        if let Some(paths) = std::env::var_os("PATH") {
+            dirs.extend(std::env::split_paths(&paths));
+        }
+        for dir in dirs {
+            let candidate = dir.join(&filename);
+            if exists(&candidate) { return application_path(&candidate); }
+        }
+        Err(Error::new(ErrorKind::NotFound, "program not found"))
+    }
     pub fn spawn(program: &Path, args: &[std::ffi::OsString], cwd: &Path) -> Result<(Child, Group), String> {
         if program.as_os_str().encode_wide().chain(cwd.as_os_str().encode_wide()).chain(args.iter().flat_map(|a| a.encode_wide())).any(|c| c == 0) { return Err("Invalid NUL in command".into()); }
+        let application = resolve_executable(program).map_err(|e| format!("Cannot resolve executable: {e}"))?;
         let raw = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
         if raw.is_null() { return Err(format!("Cannot create process job: {}", std::io::Error::last_os_error())); }
         let job = Handle(raw);
@@ -219,8 +287,7 @@ mod process_group {
         for arg in args { command.push(b' ' as u16); quote_arg(arg, &mut command); }
         command.push(0);
         let mut info: ProcessInfo = unsafe { std::mem::zeroed() };
-        // Null application name retains the normal Windows executable search for argv[0].
-        if unsafe { CreateProcessW(std::ptr::null(), command.as_mut_ptr(), std::ptr::null(), std::ptr::null(), 1, 0x0808_0004, std::ptr::null(), wide(cwd.as_os_str()).as_ptr(), &mut startup.startup, &mut info) } == 0 { return Err(error("Cannot start contained process")); }
+        if unsafe { CreateProcessW(wide(application.as_os_str()).as_ptr(), command.as_mut_ptr(), std::ptr::null(), std::ptr::null(), 1, 0x0808_0004, std::ptr::null(), wide(cwd.as_os_str()).as_ptr(), &mut startup.startup, &mut info) } == 0 { return Err(error("Cannot start contained process")); }
         let process = Handle(info.process);
         let thread = Handle(info.thread);
         drop(out_write); drop(err_write); drop(input);
@@ -1060,6 +1127,103 @@ pub(super) fn collect(item: &Value, cwd: &Path, outcomes: &Value, scrubber: &Scr
 mod tests {
     use super::*;
     use serde_json::json;
+    #[cfg(windows)]
+    use std::path::PathBuf;
+    #[cfg(windows)]
+    #[test]
+    fn executable_lookup_probe() {
+        if std::env::var_os("ZODCHI_LOOKUP_LAUNCHER").is_some() {
+            println!("LOOKUP_EXECUTABLE={}", std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap().display());
+            println!("LOOKUP_CWD={}", std::env::current_dir().unwrap().display());
+        }
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_executable_lookup_ignores_implicit_launcher_directory() {
+        use std::process::Command;
+        const MARKER: &str = "ZODCHI_LOOKUP_LAUNCHER";
+        const NAME: &str = "zodchi-lookup-fixture";
+        if std::env::var_os(MARKER).is_some() {
+            let cwd = std::env::current_dir().unwrap();
+            let path_dir = cwd.parent().unwrap().join("path");
+            let run = |program: &Path, expected: &Path| {
+                let args = ["--exact", "incident_adapter::tests::executable_lookup_probe", "--nocapture"].map(std::ffi::OsString::from);
+                let (mut child, group) = process_group::spawn(program, &args, &path_dir).unwrap();
+                group.resume(&child).unwrap();
+                let status = child.wait().unwrap();
+                let mut output = String::new();
+                child.stdout.take().unwrap().read_to_string(&mut output).unwrap();
+                assert!(status.success(), "{output}");
+                assert!(output.contains(&format!("LOOKUP_EXECUTABLE={}", std::fs::canonicalize(expected).unwrap().display())), "{output}");
+                assert!(output.contains(&format!("LOOKUP_CWD={}", path_dir.display())), "{output}");
+            };
+            if std::env::var(MARKER).unwrap() == "local-path" {
+                run(Path::new(NAME), &cwd.join(format!("{NAME}.exe")));
+                return;
+            }
+            if std::env::var(MARKER).unwrap() == "long-path" {
+                let long_dir = PathBuf::from(std::env::var_os("ZODCHI_LOOKUP_LONG_DIR").unwrap());
+                let expected = long_dir.join(format!("{NAME}.exe"));
+                run(Path::new(NAME), &expected);
+                run(&long_dir.join(NAME), &expected);
+                run(&expected, &expected);
+                return;
+            }
+            run(Path::new(NAME), &path_dir.join(format!("{NAME}.exe")));
+            run(Path::new(&format!("{NAME}.exe")), &path_dir.join(format!("{NAME}.exe")));
+            run(Path::new(&format!(".\\{NAME}")), &cwd.join(format!("{NAME}.exe")));
+            run(&cwd.join(NAME), &cwd.join(format!("{NAME}.exe")));
+            run(Path::new("zodchi-fixture.data"), &path_dir.join("zodchi-fixture.data"));
+            run(&cwd.join("zodchi-fixture.data"), &cwd.join("zodchi-fixture.data"));
+            assert!(process_group::spawn(Path::new("zodchi-only-local"), &[], &cwd).is_err(), "a name found only in the launcher's directory must not run");
+            return;
+        }
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.agent-tmp").join(format!("lookup-{}", std::process::id()));
+        let launcher = root.join("launcher");
+        let search = root.join("path");
+        std::fs::create_dir_all(&launcher).unwrap();
+        std::fs::create_dir_all(&search).unwrap();
+        let executable = std::env::current_exe().unwrap();
+        for dir in [&launcher, &search] { std::fs::copy(&executable, dir.join(format!("{NAME}.exe"))).unwrap(); }
+        for dir in [&launcher, &search] { std::fs::copy(&executable, dir.join("zodchi-fixture.data")).unwrap(); }
+        std::fs::copy(&executable, launcher.join("zodchi-only-local.exe")).unwrap();
+        let result = Command::new(&executable)
+            .args(["--exact", "incident_adapter::tests::windows_executable_lookup_ignores_implicit_launcher_directory", "--nocapture"])
+            .current_dir(&launcher).env(MARKER, "1").env("PATH", &search).output().unwrap();
+        assert!(result.status.success(), "stdout: {}\nstderr: {}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
+        let result = Command::new(&executable)
+            .args(["--exact", "incident_adapter::tests::windows_executable_lookup_ignores_implicit_launcher_directory", "--nocapture"])
+            .current_dir(&launcher).env(MARKER, "local-path").env("PATH", ".").output().unwrap();
+        assert!(result.status.success(), "stdout: {}\nstderr: {}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
+        let empty_then_search = std::env::join_paths([Path::new(""), search.as_path()]).unwrap();
+        let result = Command::new(&executable)
+            .args(["--exact", "incident_adapter::tests::windows_executable_lookup_ignores_implicit_launcher_directory", "--nocapture"])
+            .current_dir(&launcher).env(MARKER, "local-path").env("PATH", empty_then_search).output().unwrap();
+        assert!(result.status.success(), "stdout: {}\nstderr: {}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
+        let mut long_dir = root.join("long");
+        while std::path::absolute(&long_dir).unwrap().as_os_str().len() < 280 {
+            long_dir.push("nested-directory-for-executable-lookup");
+        }
+        std::fs::create_dir_all(&long_dir).unwrap();
+        std::fs::copy(&executable, long_dir.join(format!("{NAME}.exe"))).unwrap();
+        let result = Command::new(&executable)
+            .args(["--exact", "incident_adapter::tests::windows_executable_lookup_ignores_implicit_launcher_directory", "--nocapture"])
+            .current_dir(&launcher).env(MARKER, "long-path").env("PATH", &long_dir)
+            .env("ZODCHI_LOOKUP_LONG_DIR", &long_dir).output().unwrap();
+        assert!(result.status.success(), "stdout: {}\nstderr: {}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_application_path_preserves_and_extends_prefixes() {
+        let tail = "long-directory\\".repeat(20);
+        let disk = format!(r"{}\{tail}program.exe", "C:");
+        let unc = format!(r"\\server\share\{tail}program.exe");
+        let verbatim = format!(r"\\?\{}\{tail}program.exe", "C:");
+        assert_eq!(process_group::application_path(Path::new(&disk)).unwrap(), PathBuf::from(format!(r"\\?\{disk}")));
+        assert_eq!(process_group::application_path(Path::new(&unc)).unwrap(), PathBuf::from(format!(r"\\?\UNC\{}", &unc[2..])));
+        assert_eq!(process_group::application_path(Path::new(&verbatim)).unwrap(), PathBuf::from(verbatim));
+    }
     #[cfg(windows)]
     #[test]
     fn suspended_read_is_contained_when_workflow_dies_at_launch() {
