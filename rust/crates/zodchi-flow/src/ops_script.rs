@@ -1796,11 +1796,14 @@ mod tests {
             let upper = repo.join("Config.py");
             let lower = repo.join("config.py");
             fs::write(&upper, b"print('ok')\n").unwrap();
-            fs::write(&lower, b"invalid syntax!\n").unwrap();
-            let collision = json!({ "script": upper, "files": [lower], "repairFiles": [lower],
-                "tmp": base, "repo": repo, "sudo": ["sudo", "python3", "{script}"] });
-            let collision_args = Args::parse(&collision).unwrap();
-            assert!(repair_scope(&collision_args).is_none());
+            // Case-insensitive filesystems already resolve the lowercase path to the first file.
+            if !lower.exists() {
+                fs::write(&lower, b"invalid syntax!\n").unwrap();
+                let collision = json!({ "script": upper, "files": [lower], "repairFiles": [lower],
+                    "tmp": base, "repo": repo, "sudo": ["sudo", "python3", "{script}"] });
+                let collision_args = Args::parse(&collision).unwrap();
+                assert!(repair_scope(&collision_args).is_none());
+            }
 
             let literal = repo.join("literal\\name.sh");
             fs::write(&literal, b"#!/bin/bash\n").unwrap();
