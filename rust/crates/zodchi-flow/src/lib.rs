@@ -68,6 +68,14 @@ Exit code: 0 approved, 2 any other end (refused, stopped, changes requested), 1 
 pub fn cli(args: &[String]) -> Result<Exit> {
     let Some(workflow) = args.first() else { return fail(USAGE) };
     match args {
+        [flag] if flag == "--help" || flag == "-h" => return Ok(Exit { code: 0, result: serde_json::json!({ "usage": USAGE, "catalog": catalog::all() }) }),
+        [name, flag] if flag == "--help" || flag == "-h" => {
+            let catalog = catalog::all();
+            let entry = catalog["workflows"].as_array().expect("workflows").iter()
+                .find(|item| item["name"] == name.as_str())
+                .ok_or_else(|| GatewayError(format!("No workflow {name:?} in zodchi flow. Run zodchi flow list for the catalog.")))?;
+            return Ok(Exit { code: 0, result: entry.clone() });
+        }
         [command] if command == "list" => return Ok(Exit { code: 0, result: catalog::all() }),
         [command, flag, root] if command == "list" && flag == "--repo" => {
             return Ok(Exit { code: 0, result: catalog::project(std::path::Path::new(root))? });

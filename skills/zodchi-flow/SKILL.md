@@ -1,11 +1,15 @@
 ---
 name: zodchi-flow
-description: Start, continue or inspect a task using the shared Zodchi CLI and journal.
+description: Use Zodchi Flow for code and review, fact-based briefs, browser or game acceptance, and media work; discover workflows with CLI help and follow project-specific setup.
 ---
 
 # Run a Zodchi workflow
 
 Run `zodchi` from PATH so both clients share the selected build. Use `zodchi release current` to inspect the local executable and its revision. A DEV run records its `buildCommit` in `flow status` and continues on that build.
+
+Choose the selected project repository first when working in a multi-project root. Discover installed capabilities with `zodchi flow --help`, `zodchi flow list --repo "<project>"`, and `zodchi flow <workflow> --help`; use `zodchi flow list` for all domains. Project instructions supply setup and permitted inputs.
+
+Task map: use `design-brief` to collect facts and prepare a brief, `code-package` for changes, and `branch-review` for committed review. Use existing one-shot expert entry points such as `method-question` or `rubric-probe` when appropriate. Prepare dependencies using `setup`, for example `["npm ci", "npm run build"]` before candidate UI acceptance. Use `candidate-acceptance` for a pinned local candidate, `release-acceptance` for deployed browser checks, and `player-acceptance` for a locally prepared player. Candidate fixture steps and committed Node tests are alternative scenario forms. Browser acceptance requires `browser.executable` explicitly. For video, narration and publishing use `video`, `voiceover` and `youtube-publish` respectively. Consult each workflow's help and documentation for required inputs and limits.
 
 Use `zodchi flow list --repo "<project>"` to find a workflow for a Git project. Use `zodchi flow list` for the full installed catalog. Tell the user which workflow and roles the task will use. Collect its input from the project and write an arguments JSON file.
 

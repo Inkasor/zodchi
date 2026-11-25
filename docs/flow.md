@@ -217,9 +217,11 @@ the pinned tree and attaches it with `provenance: "coordinator"`. The result rec
 The Rust implementations of `branch-review` and `design-brief` can resume version 1 journals from
 the original shared CLI. They verify the original definition digest and reuse the recorded steps.
 
+Discover the catalog with `zodchi flow list` (or `list --repo <directory>` for enabled domains), `zodchi flow --help`, and `zodchi flow <workflow> --help`. These commands return JSON without starting a run.
+
 ## UI acceptance
 
-Use `release-acceptance` for a deployed web version and `player-acceptance` for a prepared Windows player. Both journal the approved scenario, real process receipts and captured frames. The browser supports headless and a private Windows desktop. Optional scenario selection and visual review use Terra 6.1 `medium` by default. See [UI acceptance](acceptance.md).
+Use `candidate-acceptance` for a local candidate, `release-acceptance` for a deployed web version and `player-acceptance` for a prepared Windows player. Browser acceptance requires an explicit `browser.executable`; candidate acceptance supports either managed fixture steps or committed Node tests. Both journal the approved scenario, real process receipts and captured frames. The browser supports headless and a private Windows desktop. Optional scenario selection and visual review use Terra 6.1 `medium` by default. See [UI acceptance](acceptance.md).
 
 ## Client packages
 
