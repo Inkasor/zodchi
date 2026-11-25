@@ -204,7 +204,7 @@ export default function register({ scenario, flowWorld, zodchi, FAKE_FLOW }) {
       return { ...x, id, key, events };
     }
     const unknown = await cutWithFinal("flow-research-unknown-outcome", "unknown");
-    fs.appendFileSync(path.join(unknown.f.w.zhome, "private-words.txt"), "Second\n");
+    fs.appendFileSync(path.join(unknown.f.w.zhome, "private-words.txt"), "Second\n1-tools.txt\n");
     const stopped = await unknown.run(["research", "--resume", unknown.id]);
     t.eq([stopped.code, stopped.json?.jobKey], [2, unknown.key], "the unknown outcome retains its key");
     t.ok(stopped.json.reason.includes("unknown"), "the recorded result identifies the unknown outcome");
@@ -216,6 +216,25 @@ export default function register({ scenario, flowWorld, zodchi, FAKE_FLOW }) {
     t.ok((await unknown.run(["research", "--resume", unknown.id, "--rerun", "ask q1"])).code !== 0, "rerun is refused");
     t.eq(unknown.events(), receipt, "resume and rerun leave the stopped journal intact");
     t.eq(unknown.f.steps().sort(), ["ask q1", "ask q2", "constraints"], "neither expert is asked again");
+    const denied = await cutWithFinal("flow-research-private-retry", "failed");
+    fs.appendFileSync(path.join(denied.f.w.zhome, "private-words.txt"), "1-tools.txt\n");
+    const blocked = await denied.run(["research", "--resume", denied.id]);
+    t.eq([blocked.code, blocked.json?.jobKey], [2, denied.key], "the failed expert keeps its original key");
+    t.ok(blocked.json.reason.includes("privacy at ask q1"), "the new rule blocks retrying the saved prompt");
+    t.ok(denied.events().some(e => e.kind === "done" && e.step === "ask q2"), "the peer is collected before the retry decision");
+    t.eq(denied.events().filter(e => e.kind === "intent").map(e => e.step),
+      ["constraints", "ask q1", "ask q2"], "no retry or later wave is submitted");
+    t.eq(denied.f.steps().sort(), ["ask q2", "constraints"], "no model receives the denied retry");
+    const fresh = fixture(t, "flow-research-private-submission");
+    const cut = await fresh.run(["research", "--args", fresh.args], { ZODCHI_FLOW_CUT: "submit constraints" });
+    t.eq(cut.code, 75, "cut before the first expert submission");
+    const [id] = fs.readdirSync(path.join(fresh.f.w.zhome, "flows"));
+    fs.appendFileSync(path.join(fresh.f.w.zhome, "private-words.txt"), "1-tools.txt\n");
+    const refused = await fresh.run(["research", "--resume", id]);
+    t.eq([refused.code, refused.json?.stoppedAt, refused.json?.jobKey], [2, "ask q1", null],
+      "a newly private attachment alias blocks the first expert intent");
+    t.ok(refused.json.reason.includes("attachment alias"), "the refusal identifies the private alias");
+    t.eq(fresh.f.steps(), ["constraints"], "only the previously submitted turn runs");
     const retry = await cutWithFinal("flow-research-before-turn", "failed");
     retry.f.answer("ask q3", { items: [{ text: "Use a level.", group: "Supports", replaces: [] }], assumptions: [], facts: [] });
     const ready = await retry.run(["research", "--resume", retry.id]);

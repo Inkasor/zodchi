@@ -342,11 +342,27 @@ impl Research<'_> {
             })?;
         let header = format!("Step: {step} ({NAME} v{VERSION}, run {id})");
         let attempt = self.journal.attempt(step);
-        if self.journal.last("intent", step, attempt).is_none() && fresh.text(&header) != header {
-            return Err(gateway::CallError::Stop {
-                at: format!("privacy at {step}"),
-                reason: "A structural label is private.".into(),
-            });
+        // An existing intent uses its saved request. The gateway screens that
+        // request before a retry, while reattachment itself sends no material.
+        if self.journal.last("intent", step, attempt).is_none() {
+            if fresh.text(&header) != header {
+                return Err(gateway::CallError::Stop {
+                    at: format!("privacy at {step}"),
+                    reason: "A structural label is private.".into(),
+                });
+            }
+            if gateway_role == "research-expert"
+                && self.run["inputs"]["pin"]["material"]["attachments"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|file| !public(&file["name"], &fresh))
+            {
+                return Err(gateway::CallError::Stop {
+                    at: format!("privacy at {step}"),
+                    reason: "An attachment alias is now private.".into(),
+                });
+            }
         }
         self.privacy = fresh;
         if self.journal.last("done", step, attempt).is_none() {
@@ -621,9 +637,6 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
     let mut attachments: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for file in staged["attachments"].as_array().into_iter().flatten() {
         let alias = file["name"].as_str().expect("safe attachment name");
-        if research.privacy.text(alias) != alias {
-            return research.stopped("prompts", "An attachment alias is now private.");
-        }
         let text = research.privacy.text(file["text"].as_str().unwrap_or(""));
         attachments.insert(alias.into(), text.lines().map(String::from).collect());
     }
