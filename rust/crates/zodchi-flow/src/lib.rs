@@ -20,6 +20,9 @@ mod control;
 mod design_brief;
 mod design_material;
 mod input;
+mod incident_adapter;
+mod incident_draft;
+mod incident_triage;
 mod method_question;
 mod research;
 mod research_lists;
@@ -113,7 +116,7 @@ pub fn cli(args: &[String]) -> Result<Exit> {
         }
         _ => {}
     }
-    if ![code_package::WORKFLOW, branch_review::NAME, design_brief::NAME, method_question::NAME, research::NAME, rubric_probe::NAME, unity_check::NAME, workspace_audit::NAME, asset_round::NAME, video::NAME, voiceover::NAME, acceptance::RELEASE, acceptance::PLAYER, acceptance::CANDIDATE, youtube_publish::NAME].contains(&workflow.as_str()) {
+    if ![code_package::WORKFLOW, branch_review::NAME, design_brief::NAME, incident_triage::NAME, method_question::NAME, research::NAME, rubric_probe::NAME, unity_check::NAME, workspace_audit::NAME, asset_round::NAME, video::NAME, voiceover::NAME, acceptance::RELEASE, acceptance::PLAYER, acceptance::CANDIDATE, youtube_publish::NAME].contains(&workflow.as_str()) {
         return fail(format!("No workflow {workflow:?} in zodchi flow. Run zodchi flow list for the catalog.\n{USAGE}"));
     }
     let mut file = None;
@@ -155,6 +158,8 @@ pub fn cli(args: &[String]) -> Result<Exit> {
                 branch_review::start(&given, detach)
             } else if workflow == design_brief::NAME {
                 design_brief::start(&given, detach)
+            } else if workflow == incident_triage::NAME {
+                incident_triage::start(&given, detach)
             } else if workflow == method_question::NAME {
                 method_question::start(&given, detach)
             } else if workflow == rubric_probe::NAME {
