@@ -193,6 +193,12 @@ try {
   require(!base.username && !base.password && !base.search && !base.hash && base.pathname === "/", "baseUrl must be one product origin.");
   require(base.protocol === "https:" || (base.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(base.hostname)),
     "Use HTTPS for the product or HTTP on loopback.");
+  if (plan.managedFixture === true) {
+    const fixtureOrigin = /^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):([0-9]+)$/.exec(plan.baseUrl);
+    require(base.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(base.hostname) &&
+      fixtureOrigin && Number(fixtureOrigin[1]) > 0 && Number(fixtureOrigin[1]) <= 65535 &&
+      plan.isolation === "headless", "A managed fixture needs a headless loopback origin with an explicit port.");
+  }
   activity = "loading Playwright";
   const sdk = createRequire(import.meta.url)(nodePath(plan.module));
   require(sdk.chromium, "The configured Playwright module does not export Chromium.");
@@ -242,8 +248,10 @@ try {
     }
   });
 
-  activity = "checking the deployed commit";
-  evidence.healthBefore = await checkHead(context, base);
+  if (plan.managedFixture !== true) {
+    activity = "checking the deployed commit";
+    evidence.healthBefore = await checkHead(context, base);
+  }
   page = await context.newPage();
   page.on("pageerror", error => consoleError(error.message));
   page.on("console", message => {
@@ -271,8 +279,10 @@ try {
     Object.assign(comparison, { ui: webValue, api: apiValue, difference });
     require(difference !== null && difference <= comparison.tolerance, "The displayed number differs from the API for these filters.", "fail");
   }
-  activity = "rechecking the deployed commit";
-  evidence.healthAfter = await checkHead(context, base);
+  if (plan.managedFixture !== true) {
+    activity = "rechecking the deployed commit";
+    evidence.healthAfter = await checkHead(context, base);
+  }
   evidence.status = "pass";
 } catch (error) {
   evidence.status = error instanceof Outcome ? error.status : (error.name === "TimeoutError" && page ? "fail" : "blocked");

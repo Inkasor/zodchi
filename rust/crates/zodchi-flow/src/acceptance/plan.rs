@@ -1,4 +1,4 @@
-use super::{candidate, CANDIDATE, PLAYER, RELEASE};
+use super::{candidate, fixture, CANDIDATE, PLAYER, RELEASE};
 use crate::{catalog, git::Git, input, journal, models, video_media as media};
 use serde_json::{json, Map, Value};
 use std::{
@@ -105,7 +105,7 @@ pub(super) fn from_path(name: &str) -> Result<PathBuf> {
         .ok_or_else(|| GatewayError(format!("The acceptance runner needs {name} on PATH.")))
 }
 
-fn browser_plan(raw: &Value, cfg: &Config, repo: &Path) -> Result<Value> {
+fn browser_plan(raw: &Value, cfg: &Config, repo: &Path, managed: bool) -> Result<Value> {
     let browser = &raw["browser"];
     media::fields(
         browser,
@@ -115,14 +115,15 @@ fn browser_plan(raw: &Value, cfg: &Config, repo: &Path) -> Result<Value> {
     let isolation = browser["isolation"].as_str().unwrap_or("headless");
     if !["headless", "private-desktop"].contains(&isolation)
         || (!cfg!(windows) && isolation == "private-desktop")
+        || (managed && isolation != "headless")
     {
         return fail("Choose headless, or private-desktop on Windows.");
     }
-    let base_url = media::text(&raw["baseUrl"], "baseUrl")?;
+    let base_url = if managed { "" } else { media::text(&raw["baseUrl"], "baseUrl")? };
     let host = base_url
         .strip_prefix("https://")
         .or_else(|| base_url.strip_prefix("http://"));
-    if !host.is_some_and(|h| {
+    if !managed && !host.is_some_and(|h| {
         let h = h.strip_suffix('/').unwrap_or(h);
         !h.is_empty()
             && !h.contains(['@', '/', '\\', '?', '#'])
@@ -139,9 +140,11 @@ fn browser_plan(raw: &Value, cfg: &Config, repo: &Path) -> Result<Value> {
         return fail("baseUrl needs an HTTPS product origin, or HTTP on loopback.");
     }
     let health = &raw["health"];
-    media::fields(health, &["path", "pointer"], "health")?;
-    url_path(&health["path"], "health.path")?;
-    pointer(&health["pointer"], "health.pointer")?;
+    if !managed {
+        media::fields(health, &["path", "pointer"], "health")?;
+        url_path(&health["path"], "health.path")?;
+        pointer(&health["pointer"], "health.pointer")?;
+    }
     let node = if browser.get("node").is_some() {
         pin(repo, &browser["node"], "browser.node")?
     } else {
@@ -397,7 +400,7 @@ pub(super) fn prepare(workflow: &str, raw: &Value) -> Result<(Config, Value)> {
     let extras: &[&str] = if workflow == RELEASE {
         &["baseUrl", "health", "browser", "storageState"]
     } else if workflow == CANDIDATE {
-        &["browser", "setup"]
+        &["browser", "setup", "fixture"]
     } else {
         &[]
     };
@@ -424,8 +427,9 @@ pub(super) fn prepare(workflow: &str, raw: &Value) -> Result<(Config, Value)> {
         return fail("player-acceptance needs a Windows host with a private desktop.");
     }
     let cfg = Config::new(Some(&repo))?;
-    let browser = if workflow == RELEASE {
-        browser_plan(raw, &cfg, &repo)?
+    let managed = workflow == CANDIDATE && raw.get("fixture").is_some();
+    let browser = if workflow == RELEASE || managed {
+        browser_plan(raw, &cfg, &repo, managed)?
     } else if workflow == CANDIDATE {
         candidate::browser_plan(raw, &repo)?
     } else {
@@ -436,7 +440,7 @@ pub(super) fn prepare(workflow: &str, raw: &Value) -> Result<(Config, Value)> {
     ids(sources, "scenario id")?;
     let mut scenarios = Vec::with_capacity(sources.len());
     for scenario in sources {
-        let fields: &[&str] = if workflow == RELEASE {
+        let fields: &[&str] = if workflow == RELEASE || managed {
             &["id", "label", "steps", "ready", "apiCheck"]
         } else if workflow == CANDIDATE {
             &["id", "label", "test", "timeoutSeconds", "frames"]
@@ -447,13 +451,13 @@ pub(super) fn prepare(workflow: &str, raw: &Value) -> Result<(Config, Value)> {
         if let Some(label) = scenario.get("label") {
             media::owner_words(label)?;
         }
-        if workflow == CANDIDATE {
+        if workflow == CANDIDATE && !managed {
             scenarios.push(candidate::scenario(&git, &head, scenario)?);
             continue;
         }
         let steps = list(&scenario["steps"], "steps", 1, 64)?;
         let names = ids(steps, "step id")?;
-        scenarios.push(if workflow == RELEASE {
+        scenarios.push(if workflow == RELEASE || managed {
             browser_scenario(scenario, steps)?
         } else {
             player_scenario(&repo, scenario, steps, &names)?
@@ -466,6 +470,9 @@ pub(super) fn prepare(workflow: &str, raw: &Value) -> Result<(Config, Value)> {
     if workflow == CANDIDATE {
         plan["setup"] = setup;
         plan["tree"] = tree;
+        if managed {
+            plan["fixture"] = fixture::plan(&raw["fixture"], &repo, &git, &head)?;
+        }
     }
     let pair = if role.is_null() {
         Value::Null

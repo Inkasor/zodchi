@@ -3,6 +3,7 @@
 mod plan;
 mod process;
 mod candidate;
+mod fixture;
 
 use crate::{
     checks, control, executor::local::pinned_image, input, journal::Journal, video_media as media,
@@ -43,12 +44,12 @@ pub fn start(workflow: &str, args: &Value, detach: bool) -> Result<Exit> {
             })
         }
     };
-    if workflow == RELEASE {
+    if workflow == RELEASE || (workflow == CANDIDATE && !run["inputs"]["plan"]["fixture"].is_null()) {
         run["browserDriverSha256"] = json!(sha256_hex(DRIVER));
     }
     let id = text(&run, "runId");
     let journal = Journal::create(&cfg.home, id, &run)?;
-    if workflow == RELEASE {
+    if workflow == RELEASE || (workflow == CANDIDATE && !run["inputs"]["plan"]["fixture"].is_null()) {
         journal.write_text("browser-driver.mjs", DRIVER)?;
     }
     if detach {
@@ -178,9 +179,9 @@ impl Engine {
                 continue;
             }
             let result = if self.run["workflow"] == RELEASE {
-                self.browser(scenario)?
+                self.browser(scenario, None)?
             } else if self.run["workflow"] == CANDIDATE {
-                self.candidate_test(scenario)?
+                if self.plan()["fixture"].is_null() { self.candidate_test(scenario)? } else { self.candidate_browser(scenario)? }
             } else {
                 self.player(scenario)?
             };
@@ -209,8 +210,14 @@ impl Engine {
                     self.candidate_frames(scenario, actual)?;
                 }
             }
+            if self.run["workflow"] == CANDIDATE && scenarios.iter().any(|s| items(&s["frames"]).next().is_none()) {
+                return fail("Visual review requires a verified frame for every selected candidate scenario.");
+            }
             let frames: Vec<_> = if self.run["workflow"] == CANDIDATE {
-                scenarios.iter().map(|s| s["frames"][0].clone()).collect()
+                scenarios.iter().map(|s| {
+                    let frames = s["frames"].as_array().unwrap();
+                    if self.plan()["fixture"].is_null() { frames[0].clone() } else { frames.last().unwrap().clone() }
+                }).collect()
             } else { scenarios
                 .iter()
                 .flat_map(|scenario| {
@@ -245,6 +252,12 @@ impl Engine {
 
     fn candidate_frames(&self, scenario: &Value, result: &Value) -> Result<()> {
         if result["status"] != "pass" { return Ok(()); }
+        if !self.plan()["fixture"].is_null() {
+            if !self.plan()["fixture"]["pin"].is_null() { media::checked(&self.plan()["fixture"]["pin"])?; }
+            for frame in items(&result["frames"]) { media::checked(frame)?; }
+            if !result["fixtureStorageState"].is_null() { media::checked(&result["fixtureStorageState"])?; }
+            return Ok(());
+        }
         let dir = self.journal.file(&format!("acceptance/{}/frames", text(scenario, "id")));
         for name in items(&scenario["frames"]) {
             media::owned(&self.journal.dir, &format!("acceptance/{}/frames/{}", text(scenario, "id"), name.as_str().unwrap()))?;
@@ -503,7 +516,54 @@ impl Engine {
         Ok(result)
     }
 
-    fn browser(&mut self, scenario: &Value) -> Result<Value> {
+    fn candidate_browser(&mut self, scenario: &Value) -> Result<Value> {
+        let id = text(scenario, "id");
+        let step = format!("browser:{id}");
+        let receipt = format!("receipts/{id}/browser.json");
+        self.candidate_check()?;
+        let spec = self.plan()["fixture"].clone();
+        if !spec["pin"].is_null() { media::checked(&spec["pin"])?; }
+        if let Some(result) = self.stored(&step, &receipt)? {
+            self.candidate_frames(scenario, &result)?;
+            return Ok(result);
+        }
+        let node_pin = self.plan()["browser"]["node"].clone();
+        let node = media::checked(&node_pin)?;
+        let attempts = self.journal.file(&format!("acceptance/{id}/fixture-attempts"));
+        fs::create_dir_all(&attempts)?;
+        let mut number = 1u64;
+        let attempt = loop {
+            let path = attempts.join(number.to_string());
+            match fs::create_dir(&path) {
+                Ok(()) => break path,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => number += 1,
+                Err(error) => return Err(error.into()),
+            }
+        };
+        let output = attempt.join("fixture-output");
+        fs::create_dir(&output)?;
+        let log = attempt.join("fixture.log");
+        let fixture_step = format!("fixture:{id}");
+        let (mut fixture, origin) = fixture::start(&spec, node, &self.candidate_checkout(), &output, &log, &mut self.journal, &fixture_step)?;
+        let state = fixture::storage_state(&spec, &output);
+        let result = match &state {
+            Ok(state) => self.candidate_check().and_then(|_| self.browser(scenario, Some((&origin, state.as_ref())))),
+            Err(error) => Err(GatewayError(error.0.clone())),
+        };
+        let alive = fixture.running();
+        fixture.stop(&mut self.journal, &fixture_step)?;
+        alive?;
+        let state = state?;
+        if let Some(state) = &state { media::checked(state)?; }
+        self.candidate_check()?;
+        let mut result = result?;
+        result["fixtureStorageState"] = json!(state);
+        result["head"] = self.run["head"].clone();
+        result["tree"] = self.plan()["tree"].clone();
+        self.persist(&step, &receipt, result)
+    }
+
+    fn browser(&mut self, scenario: &Value, fixture: Option<(&str, Option<&Value>)>) -> Result<Value> {
         let id = text(scenario, "id");
         let step = format!("browser:{id}");
         let receipt = format!("receipts/{id}/browser.json");
@@ -514,7 +574,9 @@ impl Engine {
         let node = media::checked(&browser["node"])?;
         let module = media::checked(&browser["module"])?;
         let executable = media::checked(&browser["executable"])?;
-        let storage = if browser["storageState"].is_null() {
+        let storage = if let Some((_, state)) = fixture {
+            state.map(media::checked).transpose()?
+        } else if browser["storageState"].is_null() {
             None
         } else {
             Some(media::checked(&browser["storageState"])?)
@@ -533,7 +595,7 @@ impl Engine {
             return fail("The saved browser adapter does not match the journal's version.");
         }
         let config = self.journal.write_value(&format!("acceptance/{id}/browser/input.json"), &json!({
-            "baseUrl": browser["baseUrl"], "health": browser["health"], "head": self.run["head"], "scenario": scenario,
+            "baseUrl": fixture.map(|(origin, _)| json!(origin)).unwrap_or_else(|| browser["baseUrl"].clone()), "managedFixture": fixture.is_some(), "health": browser["health"], "head": self.run["head"], "scenario": scenario,
             "output": dir, "module": module, "executable": executable, "storageState": storage, "isolation": browser["isolation"] }))?;
         self.journal.append(
             json!({ "kind": "intent", "step": step, "attempt": 1, "effect": "browser scenario" }),
@@ -606,7 +668,8 @@ impl Engine {
         if tool["inputDesktopPreserved"] == false {
             status = json!("blocked");
         }
-        self.persist(&step, &receipt, json!({ "id": id, "status": status, "observed": observed, "tool": tool, "frames": frames }))
+        let result = json!({ "id": id, "status": status, "observed": observed, "tool": tool, "frames": frames });
+        if fixture.is_some() { Ok(result) } else { self.persist(&step, &receipt, result) }
     }
 
     fn screen_browser_receipt(&self, data: &mut Value) -> Result<()> {

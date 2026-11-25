@@ -35,6 +35,21 @@ The required `head` identifies the exact commit; tests must be regular files com
 
 These are trusted project programs: they start their own headless browser and local fixture server. They are not network or filesystem sandboxes. Do not use a production browser profile or an external production site. This local candidate evidence does not establish which commit is deployed; use release acceptance for that check.
 
+## Managed local browser fixture
+
+For declarative browser steps against a local candidate, commit a Node fixture which listens on loopback and writes exactly one readiness line to stdout, for example `ZODCHI_FIXTURE_READY http://127.0.0.1:4321`. The port must be explicit and nonzero; it may be allocated dynamically. A fresh fixture starts for each scenario in the pinned checkout and is stopped after the browser completes. Fixture scripts are trusted programs, not sandboxes.
+
+```json
+{
+  "repo": "/projects/dashboard", "head": "<candidate-commit>", "label": "Local browser candidate",
+  "browser": { "executable": "/tools/chromium", "module": "/tools/playwright/index.js" },
+  "fixture": { "script": "tests/fixture.mjs", "timeoutSeconds": 30 },
+  "scenarios": [{ "id": "overview", "steps": [{ "id": "open", "open": "/", "expect": { "selector": "#summary" } }] }]
+}
+```
+
+Save this as `candidate.json`, replace the paths and commit SHA, then run `zodchi flow candidate-acceptance --args candidate.json`. The fixture may instead name an absolute caller-owned regular script, pinned by digest before and after execution. Optional `args` is an array of strings; `readyPrefix` replaces the default `ZODCHI_FIXTURE_READY ` prefix, and `timeoutSeconds` is 1 to 120 seconds. `ZODCHI_FIXTURE_OUTPUT` names a unique owned output directory. Optional `storageState` is a direct filename that the fixture writes there before readiness; the browser screens its contents as described below. Do not supply `baseUrl` or `health` in fixture mode. The browser is headless and applies the same origin, redirect and write restrictions as release acceptance. Local checkout evidence does not prove deployment; release acceptance still requires its health SHA checks.
+
 ## Browser
 
 Set `baseUrl`, `health` and optional `storageState` at the top level of the arguments file. The top-level `choose` and `review` each take one string. Keep Chromium settings in `browser`.

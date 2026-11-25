@@ -109,7 +109,7 @@ test('${name}', async () => {
                 async isVisible(){return selector !== '#hidden';},
                 async innerText(){return selector === '#amount' ? 'Сумма −1 234,50 ₽ (за период)' : selector === '#result' ? '—' : String(checked);},
                 async setChecked(state){checked=state;fs.appendFileSync(${JSON.stringify(controls)}, JSON.stringify({selector,state}) + '\\n');},
-              }), screenshot:async ({path})=>fs.writeFileSync(path,png) };
+              }), screenshot:async ({path})=>fs.writeFileSync(path,Buffer.concat([png, Buffer.from(url)])) };
           }};
         }};
       }};
@@ -124,6 +124,92 @@ test('${name}', async () => {
     const invoke = (argv, env = {}) => zodchi(t, f.w, ["flow", ...argv], { cwd: f.r, env: { ...f.w.env, ...env } });
     return { f, args, write, plan, calls, controls, invoke };
   }
+
+  scenario("flow-candidate-acceptance-fixture", "run managed local fixtures with isolated browser scenarios", async t => {
+    const { f, args, write, plan, calls, invoke } = fixture(t, "flow-candidate-acceptance-fixture");
+    const script = path.join(f.r, "test/local-fixture.mjs");
+    fs.writeFileSync(script, `import fs from 'node:fs';
+import path from 'node:path';
+import { createServer } from 'node:http';
+const server = createServer((req, res) => res.end('local'));
+server.listen(0, '127.0.0.1', () => {
+  const origin = 'http://127.0.0.1:' + server.address().port;
+  fs.writeFileSync(path.join(process.env.ZODCHI_FIXTURE_OUTPUT, 'pid'), String(process.pid));
+  fs.writeFileSync(path.join(process.env.ZODCHI_FIXTURE_OUTPUT, 'state.json'), JSON.stringify({cookies: [], origins: [{origin}]}));
+  console.log('baseUrl ' + origin);
+});`);
+    gitOut(f.r, ["add", "--", "test/local-fixture.mjs"]);
+    gitOut(f.r, ["commit", "-qm", "Add local fixture"]);
+    plan.head = gitOut(f.r, ["rev-parse", "HEAD"]).trim();
+    delete plan.baseUrl; delete plan.health;
+    plan.fixture = { script: "test/local-fixture.mjs", readyPrefix: "baseUrl ", storageState: "state.json" };
+    plan.scenarios[0].steps.push({ id: "final", open: "/final", expect: { selector: "#summary" } });
+    plan.review = "Confirm both frames";
+    f.answer("visual-review", { verdict: "pass", reason: "Both frames" });
+    write();
+    const cut = await invoke(["candidate-acceptance", "--args", args], { ZODCHI_FLOW_CUT: "acceptance receipt browser:first" });
+    t.eq(cut.code, 75, "stop after the first browser receipt");
+    const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
+    const result = await invoke(["candidate-acceptance", "--resume", id]);
+    t.eq([result.code, result.json?.verdict, result.json?.scenarios?.length], [0, "pass", 2], "both managed scenarios pass");
+    t.eq(fs.readFileSync(calls, "utf8").trim().split("\n").length, 2, "each scenario launches a browser");
+    t.ok(result.json.scenarios.every(s => s.head === plan.head && s.tree === result.json.tree && s.frames.length), "receipts pin checkout and frames");
+    t.ok(result.json.scenarios.every(s => s.fixtureStorageState?.sha256), "generated storage state is pinned in each receipt");
+    const output = (run, name, attempt = 1) => path.join(f.w.zhome, "flows", run, "acceptance", name, "fixture-attempts", String(attempt), "fixture-output");
+    const stopped = pid => { try { process.kill(pid, 0); return false; } catch (error) { return error.code === "ESRCH"; } };
+    const pids = ["first", "second"].map(name => Number(fs.readFileSync(path.join(output(id, name), "pid"), "utf8")));
+    t.ok(pids.every(stopped), "both fixture processes terminate after use");
+    t.eq(f.steps(), ["visual-review"], "visual review runs once after replay");
+    const events = fs.readFileSync(path.join(f.w.zhome, "flows", id, "events.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+    const reviewFrames = events.find(e => e.kind === "intent" && e.step === "visual-review").frames;
+    t.ok(result.json.scenarios[0].frames[0].sha256 !== result.json.scenarios[0].frames.at(-1).sha256, "opening and final screenshots differ");
+    t.eq(reviewFrames[0], result.json.scenarios[0].frames.at(-1), "visual review receives the final managed frame");
+    const gateCut = await invoke(["candidate-acceptance", "--args", args], { ZODCHI_FLOW_CUT: "fixture recorded before start" });
+    t.eq(gateCut.code, 75, "cut before releasing the startup gate");
+    const gateId = fs.readdirSync(path.join(f.w.zhome, "flows")).find(value => value !== id);
+    t.ok(!fs.existsSync(path.join(output(gateId, "first"), "pid")), "fixture code cannot run before the startup signal");
+    t.eq((await invoke(["candidate-acceptance", "--resume", gateId])).json?.verdict, "pass", "resume after the closed gate succeeds");
+    const readinessCut = await invoke(["candidate-acceptance", "--args", args], { ZODCHI_FLOW_CUT: "fixture started before readiness" });
+    t.eq(readinessCut.code, 75, "cut fixture startup before readiness");
+    const readinessId = fs.readdirSync(path.join(f.w.zhome, "flows")).find(value => ![id, gateId].includes(value));
+    const beforeCalls = fs.readFileSync(calls, "utf8").trim().split("\n").length;
+    const resumed = await invoke(["candidate-acceptance", "--resume", readinessId]);
+    t.eq([resumed.code, resumed.json?.verdict], [0, "pass"], "readiness interruption resumes with a fresh fixture");
+    t.eq(fs.readFileSync(calls, "utf8").trim().split("\n").length - beforeCalls, 2, "each browser runs exactly once after startup interruption");
+    t.ok(fs.existsSync(output(readinessId, "first", 2)), "retry uses a separate output directory");
+    // A cut run must validate its checkout on resume.
+    const changedCut = await invoke(["candidate-acceptance", "--args", args], { ZODCHI_FLOW_CUT: "acceptance receipt browser:first" });
+    t.eq(changedCut.code, 75, "create a second interrupted run");
+    const ids = fs.readdirSync(path.join(f.w.zhome, "flows"));
+    const changedId = ids.find(value => ![id, gateId, readinessId].includes(value));
+    fs.appendFileSync(path.join(f.w.zhome, "flows", changedId, "candidate-checkout", "test", "local-fixture.mjs"), "\n// changed checkout\n");
+    t.eq((await invoke(["candidate-acceptance", "--resume", changedId])).json?.verdict, "blocked", "changed checkout blocks replay");
+    plan.baseUrl = "https://example.test"; write();
+    t.eq((await invoke(["candidate-acceptance", "--args", args])).json?.status, "refused", "caller supplied origin is refused");
+    delete plan.baseUrl;
+    const external = path.join(f.w.dir, "remote-fixture.mjs");
+    fs.writeFileSync(external, "import fs from 'node:fs'; import path from 'node:path'; fs.writeFileSync(path.join(process.env.ZODCHI_FIXTURE_OUTPUT, 'pid'), String(process.pid)); console.log('baseUrl http://example.test:80'); setInterval(() => {}, 1000);");
+    plan.fixture.script = external; write();
+    const invalid = await invoke(["candidate-acceptance", "--args", args]);
+    t.eq(invalid.json?.verdict, "blocked", "remote readiness origin is rejected");
+    const invalidPid = Number(fs.readFileSync(path.join(output(invalid.json.runId, "first"), "pid"), "utf8"));
+    t.ok(stopped(invalidPid), "fixture terminates after invalid readiness");
+    fs.writeFileSync(external, "throw new Error('fixture-private-secret ' + process.cwd());");
+    write();
+    const callsBeforeException = fs.readFileSync(calls, "utf8");
+    const exception = await invoke(["candidate-acceptance", "--args", args]);
+    t.eq(exception.json?.verdict, "blocked", "uncaught fixture exception blocks browser startup");
+    t.eq(fs.readFileSync(calls, "utf8"), callsBeforeException, "fixture exception never launches the browser");
+    const exceptionLog = fs.readFileSync(path.join(output(exception.json.runId, "first"), "..", "fixture.log"), "utf8");
+    t.ok(!exceptionLog.includes(external) && !exceptionLog.includes("candidate-checkout") && !exceptionLog.includes("fixture-private-secret"), "fixture log excludes exception paths and secrets");
+    fs.copyFileSync(script, external);
+    write();
+    const stateCut = await invoke(["candidate-acceptance", "--args", args], { ZODCHI_FLOW_CUT: "acceptance receipt browser:first" });
+    t.eq(stateCut.code, 75, "absolute pinned fixture produces a browser receipt");
+    const stateId = fs.readdirSync(path.join(f.w.zhome, "flows")).find(value => ![id, gateId, readinessId, changedId, invalid.json.runId, exception.json.runId].includes(value));
+    fs.appendFileSync(path.join(output(stateId, "first"), "state.json"), " ");
+    t.eq((await invoke(["candidate-acceptance", "--resume", stateId])).json?.verdict, "blocked", "changed generated state blocks replay");
+  });
 
   scenario("flow-release-acceptance-resume", "resume a selected browser scenario without replaying the script or model selection", async t => {
     const { f, args, write, plan, calls, invoke } = fixture(t, "flow-release-acceptance-resume");
