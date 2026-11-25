@@ -125,6 +125,11 @@ export default function register({ scenario, flowWorld, zodchi, ROOT, FAKE_FLOW 
     const foreign = JSON.stringify({ token: "0123456789abcdef0123456789abcdef" });
     fs.mkdirSync(foreignDir);
     fs.writeFileSync(path.join(foreignDir, "owner"), foreign);
+    const synced = await cli(["--resume", id], { ZODCHI_FLOW_CUT: "incident lock release synced" });
+    t.eq(synced.code, 75, "resume syncs the incident directory before finishing");
+    const events = fs.readFileSync(path.join(f.w.zhome, "flows", id, "events.jsonl"), "utf8");
+    t.ok(!events.split("\n").filter(Boolean).some((line) => JSON.parse(line).kind === "finished"), "the journal is unfinished at the sync boundary");
+    t.eq(fs.readFileSync(path.join(foreignDir, "owner"), "utf8"), foreign, "sync preserves a later run's lock");
     const cleanup = await cli(["--resume", id], { ZODCHI_FLOW_CUT: "incident lock cleanup" });
     t.eq(cleanup.code, 75, "the run stops while cleaning its released lock");
     const result = await cli(["--resume", id]);
@@ -153,11 +158,14 @@ export default function register({ scenario, flowWorld, zodchi, ROOT, FAKE_FLOW 
       architect: { candidates: [{ provider: "codex", model: "fake-architect", effort: "high" }] },
     } }));
     const cli = (argv, extra = {}) => zodchi(t, f.w, ["flow", "incident-triage", ...argv], { cwd: f.w.dir, env: { ...f.w.env, ...extra } });
-    const cut = await cli(["--args", args], { ZODCHI_FLOW_CUT: "incident intent E2" });
-    t.eq(cut.code, 75, "cut follows the read intent");
+    const boundary = process.platform === "win32" ? "incident read contained" : "incident intent E2";
+    const cut = await cli(["--args", args], { ZODCHI_FLOW_CUT: boundary });
+    t.eq(cut.code, 75, "cut follows the read intent at the earliest contained launch boundary");
     const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
+    const reportReceipt = fs.readFileSync(path.join(f.w.zhome, "flows", id, "reads", "E1.json"));
     const resumed = await cli(["--resume", id]);
     t.eq([resumed.code, resumed.json?.stoppedAt], [2, "unresolved read"], "resume reports the unresolved read");
+    t.ok(fs.readFileSync(path.join(f.w.zhome, "flows", id, "reads", "E1.json")).equals(reportReceipt), "the earlier receipt is retained unchanged");
     t.ok(!fs.existsSync(path.join(f.w.zhome, "flows", id, "reads", "E2.json")), "there is no receipt from a repeated read");
     t.eq(f.steps(), [], "no classifier was submitted");
     t.ok(fs.existsSync(path.join(tmp, ".lock")), "the unresolved revision stays locked");

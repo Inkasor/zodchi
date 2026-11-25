@@ -8,13 +8,16 @@ use serde_json::json;
 use serde_json::Value;
 use std::io::Read;
 use std::path::Path;
+#[cfg(any(not(windows), test))]
 use std::process::Stdio;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
 use std::time::{Duration, Instant};
-use zodchi_core::process::{command_without_window, kill_tree};
+#[cfg(not(windows))]
+use zodchi_core::process::command_without_window;
+use zodchi_core::process::kill_tree;
 use zodchi_core::util::iso;
 
 // The watchdog is forked in pre_exec, after the operation's process group is
@@ -76,110 +79,159 @@ fn contain_unix(command: &mut std::process::Command, timeout: u64) -> std::io::R
 
 #[cfg(windows)]
 mod process_group {
-    use std::os::windows::io::AsRawHandle;
-    use std::process::Child;
-    type Handle = *mut core::ffi::c_void;
+    use std::ffi::c_void;
+    use std::os::windows::{ffi::OsStrExt, io::FromRawHandle};
+    use std::path::Path;
+    use std::os::windows::process::ExitStatusExt;
+    use std::process::ExitStatus;
+
     #[repr(C)]
+    #[derive(Default)]
     struct BasicLimits {
-        process_user_time: i64,
-        job_user_time: i64,
-        flags: u32,
-        min_working_set: usize,
-        max_working_set: usize,
-        active_process_limit: u32,
-        affinity: usize,
-        priority_class: u32,
-        scheduling_class: u32,
+        process_time: i64, job_time: i64, flags: u32, min_working_set: usize,
+        max_working_set: usize, active_process_limit: u32, affinity: usize,
+        priority: u32, scheduling: u32,
     }
     #[repr(C)]
-    struct IoCounters {
-        read_ops: u64,
-        write_ops: u64,
-        other_ops: u64,
-        read_bytes: u64,
-        write_bytes: u64,
-        other_bytes: u64,
-    }
+    #[derive(Default)]
+    struct IoCounters { read_ops: u64, write_ops: u64, other_ops: u64, read_bytes: u64, write_bytes: u64, other_bytes: u64 }
     #[repr(C)]
+    #[derive(Default)]
     struct ExtendedLimits {
-        basic: BasicLimits,
-        io: IoCounters,
-        process_memory: usize,
-        job_memory: usize,
-        peak_process_memory: usize,
-        peak_job_memory: usize,
+        basic: BasicLimits, io: IoCounters, process_memory: usize, job_memory: usize,
+        peak_process_memory: usize, peak_job_memory: usize,
     }
     #[link(name = "kernel32")]
     extern "system" {
-        fn CreateJobObjectW(attributes: *mut core::ffi::c_void, name: *const u16) -> Handle;
-        fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
-        fn SetInformationJobObject(
-            job: Handle,
-            class: u32,
-            info: *const core::ffi::c_void,
-            size: u32,
-        ) -> i32;
-        fn TerminateJobObject(job: Handle, code: u32) -> i32;
-        fn CloseHandle(handle: Handle) -> i32;
+        fn CreateJobObjectW(attributes: *mut c_void, name: *const u16) -> *mut c_void;
+        fn SetInformationJobObject(job: *mut c_void, class: i32, info: *const c_void, size: u32) -> i32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+        fn CreatePipe(read: *mut *mut c_void, write: *mut *mut c_void, security: *mut Security, size: u32) -> i32;
+        fn SetHandleInformation(handle: *mut c_void, mask: u32, flags: u32) -> i32;
+        fn CreateFileW(name: *const u16, access: u32, share: u32, security: *mut Security, disposition: u32, flags: u32, template: *mut c_void) -> *mut c_void;
+        fn InitializeProcThreadAttributeList(list: *mut c_void, count: u32, flags: u32, size: *mut usize) -> i32;
+        fn UpdateProcThreadAttribute(list: *mut c_void, flags: u32, attribute: usize, value: *mut c_void, size: usize, previous: *mut c_void, returned: *mut usize) -> i32;
+        fn DeleteProcThreadAttributeList(list: *mut c_void);
+        fn CreateProcessW(app: *const u16, command: *mut u16, process_security: *const c_void, thread_security: *const c_void, inherit: i32, flags: u32, env: *const c_void, cwd: *const u16, startup: *mut Startup, info: *mut ProcessInfo) -> i32;
+        fn WaitForSingleObject(handle: *mut c_void, millis: u32) -> u32;
+        fn GetExitCodeProcess(handle: *mut c_void, code: *mut u32) -> i32;
+        fn TerminateJobObject(job: *mut c_void, code: u32) -> i32;
+        fn TerminateProcess(process: *mut c_void, code: u32) -> i32;
+        fn ResumeThread(thread: *mut c_void) -> u32;
     }
-    #[link(name = "ntdll")]
-    extern "system" {
-        fn NtResumeProcess(process: Handle) -> i32;
+    #[repr(C)]
+    struct Security { size: u32, descriptor: *mut c_void, inherit: i32 }
+    #[repr(C)]
+    struct Startup { size: u32, reserved: *mut u16, desktop: *mut u16, title: *mut u16, geometry: [u32; 7], flags: u32, show: u16, reserved2_size: u16, reserved2: *mut u8, stdin: *mut c_void, stdout: *mut c_void, stderr: *mut c_void }
+    #[repr(C)]
+    struct StartupEx { startup: Startup, attributes: *mut c_void }
+    #[repr(C)]
+    struct ProcessInfo { process: *mut c_void, thread: *mut c_void, pid: u32, tid: u32 }
+    struct Handle(*mut c_void);
+    impl Drop for Handle { fn drop(&mut self) { unsafe { CloseHandle(self.0); } } }
+    struct Attributes(*mut c_void);
+    impl Drop for Attributes { fn drop(&mut self) { unsafe { DeleteProcThreadAttributeList(self.0); } } }
+    fn wide(s: &std::ffi::OsStr) -> Vec<u16> { s.encode_wide().chain(std::iter::once(0)).collect() }
+    fn error(context: &str) -> String { format!("{context}: {}", std::io::Error::last_os_error()) }
+    fn pipe(security: &mut Security) -> Result<(Handle, Handle), String> {
+        let (mut read, mut write) = (std::ptr::null_mut(), std::ptr::null_mut());
+        if unsafe { CreatePipe(&mut read, &mut write, security, 0) } == 0 { return Err(error("Cannot create output pipe")); }
+        let (read, write) = (Handle(read), Handle(write));
+        if unsafe { SetHandleInformation(read.0, 1, 0) } == 0 { return Err(error("Cannot protect output pipe")); }
+        Ok((read, write))
+    }
+    // Microsoft CRT argument quoting, including argv[0] for executable search.
+    fn quote_arg(arg: &std::ffi::OsStr, output: &mut Vec<u16>) {
+        output.push(b'"' as u16);
+        let mut slashes = 0;
+        for c in arg.encode_wide() {
+            if c == b'\\' as u16 { slashes += 1; continue; }
+            let count = if c == b'"' as u16 { slashes * 2 + 1 } else { slashes };
+            output.extend(std::iter::repeat(b'\\' as u16).take(count));
+            output.push(c);
+            slashes = 0;
+        }
+        output.extend(std::iter::repeat(b'\\' as u16).take(slashes * 2));
+        output.push(b'"' as u16);
     }
     pub struct Group(Handle);
     impl Group {
-        pub fn new(child: &Child) -> std::io::Result<Self> {
-            let job = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
-            if job.is_null() {
-                return Err(std::io::Error::last_os_error());
-            }
-            let mut limits: ExtendedLimits = unsafe { std::mem::zeroed() };
-            limits.basic.flags = 0x0000_2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-            if unsafe {
-                SetInformationJobObject(
-                    job,
-                    9,
-                    (&limits as *const ExtendedLimits).cast(),
-                    std::mem::size_of::<ExtendedLimits>() as u32,
-                )
-            } == 0
-            {
-                let error = std::io::Error::last_os_error();
-                unsafe {
-                    CloseHandle(job);
-                }
-                return Err(error);
-            }
-            if unsafe { AssignProcessToJobObject(job, child.as_raw_handle().cast()) } == 0 {
-                let error = std::io::Error::last_os_error();
-                unsafe {
-                    CloseHandle(job);
-                }
-                return Err(error);
-            }
-            Ok(Self(job))
-        }
-        pub fn stop(&self) {
-            unsafe {
-                TerminateJobObject(self.0, 1);
-            }
-        }
+        pub fn stop(&self) { unsafe { TerminateJobObject(self.0.0, 1); } }
         pub fn resume(&self, child: &Child) -> std::io::Result<()> {
-            if unsafe { NtResumeProcess(child.as_raw_handle().cast()) } < 0 {
-                return Err(std::io::Error::other("Could not resume contained read"));
-            }
+            if unsafe { ResumeThread(child.thread.0) } == u32::MAX { return Err(std::io::Error::last_os_error()); }
             Ok(())
         }
     }
-    impl Drop for Group {
-        fn drop(&mut self) {
-            self.stop();
-            unsafe {
-                CloseHandle(self.0);
+    pub struct Child { process: Handle, thread: Handle, pid: u32, pub stdout: Option<std::fs::File>, pub stderr: Option<std::fs::File> }
+    impl Child {
+        pub fn id(&self) -> u32 { self.pid }
+        pub fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+            match unsafe { WaitForSingleObject(self.process.0, 0) } {
+                258 => Ok(None),
+                0 => { let mut code = 0; if unsafe { GetExitCodeProcess(self.process.0, &mut code) } == 0 { return Err(std::io::Error::last_os_error()); } Ok(Some(ExitStatus::from_raw(code))) },
+                _ => Err(std::io::Error::last_os_error()),
             }
         }
+        pub fn wait(&mut self) -> std::io::Result<ExitStatus> {
+            if unsafe { WaitForSingleObject(self.process.0, u32::MAX) } != 0 { return Err(std::io::Error::last_os_error()); }
+            self.try_wait()?.ok_or_else(|| std::io::Error::other("Process did not exit"))
+        }
+        pub fn kill(&mut self) -> std::io::Result<()> {
+            if unsafe { TerminateProcess(self.process.0, 1) } == 0 { return Err(std::io::Error::last_os_error()); } Ok(())
+        }
+    }
+    pub fn spawn(program: &Path, args: &[std::ffi::OsString], cwd: &Path) -> Result<(Child, Group), String> {
+        if program.as_os_str().encode_wide().chain(cwd.as_os_str().encode_wide()).chain(args.iter().flat_map(|a| a.encode_wide())).any(|c| c == 0) { return Err("Invalid NUL in command".into()); }
+        let raw = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
+        if raw.is_null() { return Err(format!("Cannot create process job: {}", std::io::Error::last_os_error())); }
+        let job = Handle(raw);
+        let mut limits = ExtendedLimits::default();
+        limits.basic.flags = 0x2000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if unsafe { SetInformationJobObject(job.0, 9, (&limits as *const ExtendedLimits).cast(), std::mem::size_of::<ExtendedLimits>() as u32) } == 0 {
+            return Err(format!("Cannot configure process job: {}", std::io::Error::last_os_error()));
+        }
+        let mut security = Security { size: std::mem::size_of::<Security>() as u32, descriptor: std::ptr::null_mut(), inherit: 1 };
+        let (out_read, out_write) = pipe(&mut security)?;
+        let (err_read, err_write) = pipe(&mut security)?;
+        let nul = wide(std::ffi::OsStr::new("NUL"));
+        let input = unsafe { CreateFileW(nul.as_ptr(), 0x8000_0000, 3, &mut security, 3, 0, std::ptr::null_mut()) };
+        if input as isize == -1 { return Err(error("Cannot open null input")); }
+        let input = Handle(input);
+        let mut size = 0usize;
+        unsafe { InitializeProcThreadAttributeList(std::ptr::null_mut(), 2, 0, &mut size); }
+        if size == 0 { return Err(error("Cannot size process attributes")); }
+        let mut storage = vec![0usize; (size + std::mem::size_of::<usize>() - 1) / std::mem::size_of::<usize>()];
+        let list = storage.as_mut_ptr().cast();
+        if unsafe { InitializeProcThreadAttributeList(list, 2, 0, &mut size) } == 0 { return Err(error("Cannot initialize process attributes")); }
+        let _attributes = Attributes(list);
+        let mut handles = [input.0, out_write.0, err_write.0];
+        let mut jobs = [job.0];
+        for (attribute, ptr, bytes) in [(0x0002_0002, handles.as_mut_ptr(), std::mem::size_of_val(&handles)), (0x0002_000d, jobs.as_mut_ptr(), std::mem::size_of_val(&jobs))] {
+            if unsafe { UpdateProcThreadAttribute(list, 0, attribute, ptr.cast(), bytes, std::ptr::null_mut(), std::ptr::null_mut()) } == 0 { return Err(error("Cannot set process attributes")); }
+        }
+        let mut startup: StartupEx = unsafe { std::mem::zeroed() };
+        startup.startup.size = std::mem::size_of::<StartupEx>() as u32;
+        startup.startup.flags = 0x100;
+        startup.startup.stdin = input.0; startup.startup.stdout = out_write.0; startup.startup.stderr = err_write.0;
+        startup.attributes = list;
+        let mut command = Vec::new();
+        quote_arg(program.as_os_str(), &mut command);
+        for arg in args { command.push(b' ' as u16); quote_arg(arg, &mut command); }
+        command.push(0);
+        let mut info: ProcessInfo = unsafe { std::mem::zeroed() };
+        // Null application name retains the normal Windows executable search for argv[0].
+        if unsafe { CreateProcessW(std::ptr::null(), command.as_mut_ptr(), std::ptr::null(), std::ptr::null(), 1, 0x0808_0004, std::ptr::null(), wide(cwd.as_os_str()).as_ptr(), &mut startup.startup, &mut info) } == 0 { return Err(error("Cannot start contained process")); }
+        let process = Handle(info.process);
+        let thread = Handle(info.thread);
+        drop(out_write); drop(err_write); drop(input);
+        let stdout = unsafe { std::fs::File::from_raw_handle(out_read.0) };
+        std::mem::forget(out_read);
+        let stderr = unsafe { std::fs::File::from_raw_handle(err_read.0) };
+        std::mem::forget(err_read);
+        Ok((Child { process, thread, pid: info.pid, stdout: Some(stdout), stderr: Some(stderr) }, Group(job)))
     }
 }
+
 use zodchi_core::util::{fail, GatewayError, Result};
 
 const PROVIDES: &[&str] = &[
@@ -838,19 +890,15 @@ pub(super) fn collect(item: &Value, cwd: &Path, outcomes: &Value, scrubber: &Scr
             });
         } else {
             let argv = item["argv"].as_array().expect("planned argv");
+            #[cfg(not(windows))]
             let mut command = command_without_window(argv[0].as_str().expect("program"));
+            #[cfg(not(windows))]
             command
                 .args(argv.iter().skip(1).filter_map(Value::as_str))
                 .current_dir(cwd)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                // No adapter code may execute until the kill-on-close job owns it.
-                command.creation_flags(0x0800_0000 | 0x0000_0004); // NO_WINDOW | SUSPENDED
-            }
             #[cfg(unix)]
             let _watchdog = match contain_unix(&mut command, item["timeoutSec"].as_u64().unwrap_or(30)) {
                 Ok(guard) => guard,
@@ -863,27 +911,20 @@ pub(super) fn collect(item: &Value, cwd: &Path, outcomes: &Value, scrubber: &Scr
                     return result;
                 }
             };
-            match command.spawn() {
+            #[cfg(windows)]
+            let spawned = process_group::spawn(Path::new(argv[0].as_str().expect("program")), &argv.iter().skip(1).filter_map(Value::as_str).map(std::ffi::OsString::from).collect::<Vec<_>>(), cwd);
+            #[cfg(not(windows))]
+            let spawned = command.spawn();
+            match spawned {
                 Err(_) => {
                     result["outcome"] = json!("failed");
                     result["error"] = json!("The read command could not start.");
                 }
-                Ok(mut child) => {
+                Ok(spawned) => {
                     #[cfg(windows)]
-                    let group = match process_group::Group::new(&child) {
-                        Ok(group) => group,
-                        Err(_) => {
-                            kill_tree(child.id());
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            result["outcome"] = json!("failed");
-                            result["error"] = json!("The read process could not be contained.");
-                            result["excerpt"] = json!("");
-                            result["truncated"] = json!(false);
-                            result["missing"] = json!(true);
-                            return result;
-                        }
-                    };
+                    let (mut child, group) = spawned;
+                    #[cfg(not(windows))]
+                    let mut child = spawned;
                     #[cfg(windows)]
                     {
                         crate::code_package::cut("incident read contained");
@@ -1022,7 +1063,6 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn suspended_read_is_contained_when_workflow_dies_at_launch() {
-        use std::os::windows::process::CommandExt;
         use std::process::Command;
         #[link(name = "kernel32")]
         extern "system" {
@@ -1032,10 +1072,7 @@ mod tests {
         }
         let marker = "ZODCHI_INCIDENT_WINDOWS_CONTAINMENT_TEST";
         if let Some(path) = std::env::var_os(marker) {
-            let mut child = Command::new(std::env::current_exe().unwrap())
-                .creation_flags(0x0800_0000 | 0x0000_0004)
-                .spawn().unwrap();
-            let _group = process_group::Group::new(&child).unwrap();
+            let (mut child, _group) = process_group::spawn(&std::env::current_exe().unwrap(), &[], &std::env::current_dir().unwrap()).unwrap();
             std::fs::write(path, child.id().to_string()).unwrap();
             let _ = child.wait();
             return;

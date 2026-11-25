@@ -575,6 +575,10 @@ pub fn resume(id: &str, given: Option<&Value>, rerun: Option<&str>) -> Result<Ex
             }
         }
         if !already_finished {
+            // A previous process may have died after the rename and before the
+            // directory was synced. Persist that namespace before the journal.
+            sync_incident_dir(&tmp)?;
+            crate::code_package::cut("incident lock release synced");
             journal.append(json!({"kind":"finished","step":"result"}))?;
         }
         IncidentLock::clean_tombstone(&tombstone, token)?;
@@ -980,6 +984,8 @@ impl IncidentLock {
         let tombstone = Self::tombstone(tmp, &self.token)?;
         rename_no_replace(&self.dir, &tombstone)?;
         crate::code_package::cut("incident lock released");
+        sync_incident_dir(tmp)?;
+        crate::code_package::cut("incident lock release synced");
         Ok(())
     }
 
@@ -995,6 +1001,14 @@ impl IncidentLock {
         fs::remove_dir(dir)?;
         Ok(())
     }
+}
+
+fn sync_incident_dir(tmp: &Path) -> Result<()> {
+    #[cfg(unix)]
+    fs::File::open(tmp)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = tmp;
+    Ok(())
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
