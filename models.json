@@ -47,6 +47,18 @@
         { "provider": "codex", "model": "gpt-6.1-terra", "effort": "xhigh" }
       ]
     },
+    "constraintChecker": {
+      "use": "Checks incoming constraints against recorded owner decisions.",
+      "candidates": [{ "provider": "codex", "model": "gpt-6.1-terra", "effort": "high" }]
+    },
+    "researchExpert": {
+      "use": "Answers one research question with proposals, assumptions and cited facts.",
+      "candidates": [{ "provider": "codex", "model": "gpt-6.2-sol", "effort": "high" }]
+    },
+    "factChecker": {
+      "use": "Checks claims against the cited lines.",
+      "candidates": [{ "provider": "codex", "model": "gpt-6.1-terra", "effort": "medium" }]
+    },
     "text": {
       "use": "Texts: documentation, copy, dialogue",
       "candidates": [{ "provider": "codex", "model": "gpt-6.1-terra", "effort": "medium" }]

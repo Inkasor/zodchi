@@ -174,7 +174,11 @@ fn record(id: &str, file: &str, reply: Option<Reply<'_>>) -> Result<Exit> {
             .and_then(|event| event["writerStep"].as_str().or_else(|| event["step"].as_str())).map(String::from) else {
             return fail(format!("Run {id} must be waiting or stopped to receive a reply."));
         };
-        let text = sanitized(&config, &run, file, true)?;
+        let text = if run["workflow"] == crate::research::NAME {
+            crate::research::reply_text(&journal, &config, &run, std::path::Path::new(file))?
+        } else {
+            sanitized(&config, &run, file, true)?
+        };
         if (reply.answered.is_some() || reply.no_new_decisions) && run["workflow"] != crate::design_brief::NAME {
             return fail("--answered and --no-new-decisions apply only to design-brief.");
         }

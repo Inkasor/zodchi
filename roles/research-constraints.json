@@ -1,0 +1,8 @@
+{
+  "description": "Check which stated constraints are already decided.",
+  "mode": "expert",
+  "model": "gpt-6.1-terra",
+  "effort": "high",
+  "frame": "research-constraints.md",
+  "schema": "research-constraints.schema.json"
+}

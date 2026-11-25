@@ -186,6 +186,7 @@ pub(super) fn build_marketplace(root: &Path, source: &Path) -> Result<Value> {
     for doc in [
         "acceptance.md",
         "method-question.md",
+        "research.md",
         "rubric-probe.md",
         "asset-round.md",
         "unity-check.md",

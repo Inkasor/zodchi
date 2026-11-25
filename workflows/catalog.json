@@ -1,6 +1,22 @@
 {
   "workflows": [
     {
+      "name": "research",
+      "version": "1",
+      "domain": "core",
+      "purpose": "Research questions and prepare proposals for owner decisions.",
+      "limits": "Up to five questions; 30 lines by default. Requires local Codex and private-word rules or explicit allowNoScrub.",
+      "required": ["repo", "tmp", "label", "request", "questions"],
+      "docs": "docs/research.md",
+      "example": {
+        "repo": "/project",
+        "tmp": "/tmp/research",
+        "label": "study",
+        "request": "/tmp/request.md",
+        "questions": [{"file": "/tmp/question.md", "title": "Question"}]
+      }
+    },
+    {
       "name": "code-package",
       "version": "1",
       "domain": "core",

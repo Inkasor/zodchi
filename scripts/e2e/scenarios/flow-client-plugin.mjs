@@ -2,12 +2,112 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
+import { pathToFileURL } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
 
-export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, run, FIXED, STUB }) {
+export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, run, FIXED, STUB, zodchi, FAKE_FLOW }) {
   const release = (args) => JSON.parse(execFileSync(ZODCHI, ["release", ...args], {
     cwd: ROOT, encoding: "utf8", windowsHide: true,
   }));
+
+  function researchFixture(t, name, count = 1) {
+    const f = flowWorld(t, name);
+    const file = name => path.join(f.w.dir, name);
+    const tmp = path.join(f.r, ".agent-tmp", "working-notes");
+    const args = file("research.json");
+    const attachment = file("source.txt");
+    fs.writeFileSync(attachment, "Both shelves are level.");
+    fs.writeFileSync(args, JSON.stringify({ repo: f.r, tmp, label: "shelves", request: f.brief,
+      questions: Array.from({ length: count }, (_, i) => ({ file: f.brief, title: `Shelf ${i + 1}` })),
+      attachments: [attachment], allowNoScrub: true }));
+    f.answer("constraints", { complete: true, constraints: [] });
+    const call = (argv, env = {}) => zodchi(t, f.w, ["flow", ...argv], { cwd: f.r, env: { ...f.w.env, ...env } });
+    const flows = path.join(f.w.zhome, "flows");
+    return { f, file, args, tmp, flows, attachment, call };
+  }
+
+  scenario("flow-research-drain-failed-peer", "an unknown expert drains a pre-turn failure without a retry", async t => {
+    const { f, file, args, flows, call } = researchFixture(t, "research-drain", 3);
+    const release = file("release");
+    t.cleanups.push(() => fs.writeFileSync(release, ""));
+    f.answer("ask q1", { flowHang: true });
+    f.w.env.ZODCHI_CODEX_BIN = file("disconnect.mjs");
+    fs.writeFileSync(f.w.env.ZODCHI_CODEX_BIN, `
+      import fs from "node:fs";
+      if (process.cwd().endsWith("-ask-q2")) process.exit(1);
+      if (process.cwd().endsWith("-ask-q1")) {
+        setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) process.exit(1); }, 25).unref();
+      }
+      await import(${JSON.stringify(pathToFileURL(FAKE_FLOW).href)});
+    `);
+    t.eq((await call(["research", "--args", args], { ZODCHI_FLOW_CUT: "submit ask q2" })).code, 75, "both experts were submitted");
+    const [id] = fs.readdirSync(flows);
+    const final = q => path.join(f.r, ".agent-tmp", "gateway", `flow-${id}-ask-q${q}`, "final.json");
+    await t.until("first expert received its turn", () => f.steps().includes("ask q1"));
+    await t.until("peer failed before requesting its turn", () => fs.existsSync(final(2)));
+    const peer = JSON.parse(fs.readFileSync(final(2), "utf8"));
+    t.eq([peer.status, peer.turnRequestedAt, peer.turnStartedAt], ["failed", null, null], "the peer alone qualifies for retry");
+    fs.writeFileSync(release, "");
+    await t.until("first transport closed", () => fs.existsSync(final(1)));
+    const result = await call(["research", "--resume", id]);
+    t.eq([result.code, result.json?.jobKey], [2, `flow-${id}-ask-q1`], "the unknown key stops the round");
+    const events = fs.readFileSync(path.join(flows, id, "events.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+    t.eq(events.filter(e => e.kind === "intent").map(e => e.step), ["constraints", "ask q1", "ask q2"], "no retry intent or later wave was started");
+  });
+
+  scenario("flow-research-mixed-batch", "split long excerpts and keep unique verdicts in a partial answer", async t => {
+    const { f, args, attachment, call } = researchFixture(t, "research-mixed");
+    fs.writeFileSync(attachment, "a".repeat(51000));
+    f.answer("ask q1", { items: [{ group: "Shelf", text: "Use two supports.", replaces: [] }], assumptions: [],
+      facts: Array.from({ length: 12 }, (_, i) => ({ claim: `Shelf ${i + 1} is level.`, source: "1-source.txt:1" })) });
+    const row = (n, verdict = "supported") => ({ id: `F1.${n}`, verdict, note: "Checked line one." });
+    f.answer("check f1", { verdicts: [row(1, "contradicted"), row(2), row(2), row(99), ...Array.from({ length: 7 }, (_, i) => row(i + 4))] });
+    f.answer("check f2", { verdicts: [row(11), row(12)] });
+    const result = await call(["research", "--args", args]);
+    t.eq([result.code, result.json?.stoppedAt], [2, "facts contradicted"], "a contradiction survives its mixed batch");
+    const report = JSON.parse(fs.readFileSync(result.json.facts, "utf8"));
+    t.eq(report.extraIds, ["F1.99"], "unexpected IDs are recorded separately");
+    t.eq(report.verdicts.filter(r => r.verdict === "unchecked").map(r => r.id), ["F1.2", "F1.3"], "only the duplicate and missing IDs are unchecked");
+    t.eq(report.verdicts.filter(r => r.verdict === "supported").length, 9, "both sized batches keep their supported facts");
+  });
+
+  scenario("flow-research-deferred-fixes", "apply long owner fixes and resolve an earlier open replacement", async t => {
+    const { f, file, args, tmp, flows, call } = researchFixture(t, "research-fixes");
+    fs.mkdirSync(tmp, { recursive: true });
+    const ledger = path.join(tmp, "decisions.json");
+    fs.writeFileSync(ledger, JSON.stringify({ version: 1, appliedRounds: [1], entries: [
+      { id: "1.1", n: 1, round: 1, kind: "proposal", state: "accepted", text: "Use one shelf.", decidedInRound: 1 },
+    ] }));
+    const deny = path.join(f.w.zhome, "private-words.txt");
+    fs.writeFileSync(deny, "opening-only-word");
+    const item = (n, replaces = []) => ({ text: `Shelf plan ${n}.`, group: "Shelves", replaces });
+    f.answer("ask q1", { items: [item(1), item(2), item(3), item(4), item(5, ["1.1"])], assumptions: [], facts: [] });
+    t.eq((await call(["research", "--args", args], { ZODCHI_FLOW_CUT: "submit constraints" })).code, 75, "cut before the fresh expert request");
+    const [id] = fs.readdirSync(flows);
+    fs.writeFileSync(deny, "");
+    fs.writeFileSync(file("note"), `Use oak.\nopening-only-word\n${tmp}`);
+    t.eq((await call(["remark", id, "--file", file("note")])).code, 0, "owner remark recorded after the cut");
+    t.eq((await call(["research", "--resume", id])).json?.status, "waiting", "owner list ready");
+    const request = JSON.parse(fs.readFileSync(path.join(flows, id, "requests", `flow-${id}-ask-q1.json`), "utf8"));
+    t.ok(request.prompt.includes("Use oak.") && !request.prompt.includes("opening-only-word") && !request.prompt.includes("working-notes"),
+      "the saved fresh request applies pinned privacy to remarks");
+    const reply = file("reply.json");
+    const fixes = Array.from({ length: 4 }, (_, i) => ({ n: i + 1, verdict: "fix", text: String(i).repeat(500) }));
+    fs.writeFileSync(reply, JSON.stringify(fixes));
+    t.eq((await call(["reply", id, "--file", reply])).code, 0, "all four long corrections fit one reply");
+    t.eq((await call(["research", "--resume", id])).code, 0, "corrections applied");
+    const entries = () => JSON.parse(fs.readFileSync(ledger, "utf8")).entries;
+    t.eq(entries().slice(1, 5).map(e => e.text), fixes.map(fix => fix.text), "all owner corrections persisted");
+    t.eq(entries()[5].state, "open", "replacement deferred");
+    f.answer("ask q1", { items: [item(6)], assumptions: [], facts: [] });
+    fs.writeFileSync(deny, "opening-only-word");
+    const next = await call(["research", "--args", args]);
+    t.eq(next.json?.status, "waiting", "next list ready");
+    fs.writeFileSync(reply, JSON.stringify([{ id: "2.5", verdict: "accept" }]));
+    t.eq((await call(["reply", next.json.runId, "--file", reply])).code, 0, "accept the earlier open proposal");
+    t.eq((await call(["research", "--resume", next.json.runId])).code, 0, "next round completed");
+    t.eq([entries()[0].state, entries()[0].supersededBy, entries()[5].state], ["superseded", "2.5", "accepted"], "deferred replacement supersedes the original");
+  });
 
   scenario("flow-workflow-help", "catalog help is read-only and exposes every installed workflow", async (t) => {
     const env = { ...process.env, ZODCHI_HOME: path.join(scratch, "help-empty-home") };
@@ -15,7 +115,7 @@ export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, r
     const list = call(["list"]);
     t.eq(list.status, 0, "catalog succeeds without an account");
     const catalog = JSON.parse(list.stdout);
-    t.eq(catalog.workflows.length, 14, "all workflows remain available");
+    t.eq(catalog.workflows.length, 15, "all workflows remain available");
     const help = call(["--help"]);
     t.eq(help.status, 0, "general help succeeds");
     t.eq(JSON.parse(help.stdout).catalog, catalog, "general help uses the shared catalog");

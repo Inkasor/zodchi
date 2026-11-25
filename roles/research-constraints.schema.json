@@ -1,0 +1,41 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "complete",
+    "constraints"
+  ],
+  "properties": {
+    "complete": {
+      "type": "boolean"
+    },
+    "constraints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "text",
+          "status",
+          "decision"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "confirmed",
+              "unconfirmed",
+              "contradicts"
+            ]
+          },
+          "decision": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
