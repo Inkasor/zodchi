@@ -119,7 +119,9 @@ export default function register({ scenario: registerScenario, world, zodchi, fl
       });
       t.ok(directId, "direct static compilation records the shebang interpreter");
       const directResume = await invoke(t, f, ["ops-script", "--resume", directId], alternate);
-      t.ok(directResume.json?.ready && directResume.json?.dry?.stdout.startsWith("first\n") && directResume.json?.forHuman.includes("'sudo'"), "direct dry run and operator command retain the shebang interpreter after PATH changes");
+      t.eq([directResume.code, directResume.json?.ready, directResume.json?.dry?.stdout], [0, true, "first"],
+        "direct dry run retains the shebang interpreter after PATH changes");
+      t.ok(directResume.json?.forHuman.includes("'sudo'"), "direct dry run still renders the operator command");
       const pinnedArgs = path.join(f.w.dir, "pinned.json");
       fs.writeFileSync(pinnedArgs, JSON.stringify({ script: f.script, tmp: f.tmp, files: [f.companion], check: ["python3", "{copy}", "--check"], sudo: ["sudo", "python3", "{script}"], fixes: 0 }));
       const pinned = await invoke(t, f, ["ops-script", "--args", pinnedArgs], { ...selected, ZODCHI_FLOW_CUT: "ops-done dry 0" });
