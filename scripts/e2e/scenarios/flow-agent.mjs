@@ -64,6 +64,15 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
       "each fresh writer copy is prepared once from the recorded base plan, even across resume");
     t.eq(res.json.verification.evidence.map(e => e.source), ["checks", "checks", "args.verify"],
       "writer setup never counts as candidate verification");
+    for (const [round, expected] of [[1, ["write", "write continue 1", "fix 1.1"]], [2, ["close 1"]]]) {
+      const reviewer = turns(f).find(turn => turn.step === `review ${round}`);
+      const attached = reviewer.prompt.match(/<attachment path="writer-checks.json">\n([\s\S]*?)\n<\/attachment>/)?.[1];
+      t.ok(attached, "review receives the writer's workspace checks");
+      const { checks } = JSON.parse(attached);
+      t.eq(checks.map(entry => [entry.step, entry.command, entry.exitCode]),
+        expected.map(step => [step, `node --test ${test}`, 0]),
+        "review receives the writer checks for this round, including their commands and exit codes");
+    }
     t.ok(!fs.existsSync(path.join(f.r, "node_modules")), "setup leaves the source checkout untouched");
   });
 

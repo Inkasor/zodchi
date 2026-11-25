@@ -279,7 +279,9 @@ For contributors, use the [source build](install-from-source.md). `zodchi releas
    brief, `REVIEW.md` of the base commit (never dropped), the previous review, and `verification.json`. That attachment
    maps each check to its command, exit code and a bounded log excerpt, and names the reviewed commit and matching
    checked tree. The engine removes private paths, private words and credential lines from the command and output
-   before sending them. The review also receives the claimed regular files as the reviewed commit holds them (never a link).
+   before sending them. In agent mode, `writer-checks.json` carries up to twelve recent workspace checks that the
+   writer reported in this round, screened before review. The review also receives the claimed regular files as
+   the reviewed commit holds them (never a link).
    These copies are dropped first, the largest first, when the request would pass the gateway's 512 KB, and named in a "Not attached
    for size" line. Severities and the verdict rule are those of `docs/verification.md`.
 9. **Close** the important findings with the same writer, then checks, commit and review again, until approval, a

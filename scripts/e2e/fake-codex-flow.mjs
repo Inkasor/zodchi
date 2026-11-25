@@ -83,7 +83,7 @@ lines.on("line", (line) => {
             cwd: threadRequest.cwd, encoding: "utf8", timeout: 15000, windowsHide: true,
           });
           result.checks.push({ command: `node ${argv.join(" ")}`, exitCode: test.status,
-            result: (test.stdout + test.stderr).trim() });
+            result: [test.stdout, test.stderr, test.error?.message].filter(Boolean).join("\n").trim() });
           delete result.flowNodeTest;
         }
         if (result.flowHang) return;

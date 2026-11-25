@@ -936,7 +936,7 @@ impl Run {
 
     fn stop_writer_setup(&mut self, step: &str, failure: Value) -> Step<Value> {
         let why = failure["why"].as_str().unwrap_or("See the writer setup evidence.").to_string();
-        self.halt_infra(step, format!("writer {step} failed"), why);
+        self.halt_infra(step, format!("writer setup failed ({step})"), why);
         self.out.insert("setupFailure".into(), failure);
         self.out.insert("next".into(), json!(format!("Fix the environment, then run zodchi flow code-package --resume {} --rerun \"{step}\". Start a new run to change its pinned commands.", self.id)));
         Err(Halt)
@@ -1632,6 +1632,37 @@ impl Run {
         })).map_err(|error| GatewayError(format!("Cannot encode the verification attachment: {error}")))
     }
 
+    fn review_writer_checks(&self, round: u32) -> Result<Option<Vec<u8>>> {
+        if !self.args.agent {
+            return Ok(None);
+        }
+        let previous_review = format!("review {}", round - 1);
+        let mut reported: Vec<_> = self.journal.events().iter().rev()
+            .filter(|event| event["kind"] == "done")
+            .take_while(|event| event["step"] != previous_review)
+            .filter_map(|event| {
+                let step = event["step"].as_str()?;
+                let checks = event["result"]["checks"].as_array()?;
+                (event["attempt"].as_u64() == Some(u64::from(self.attempt(step)))).then_some((step, checks))
+            })
+            .flat_map(|(step, checks)| checks.iter().rev().map(move |check| (step, check)))
+            .filter_map(|(step, check)| Some((step, check["command"].as_str()?, check["exitCode"].as_i64(), check["result"].as_str()?)))
+            .take(12).collect();
+        if reported.is_empty() {
+            return Ok(None);
+        }
+        let scrubber = Scrubber::new(&self.cfg)?;
+        let places = self.private_places();
+        reported.reverse();
+        let checks: Vec<_> = reported.into_iter().map(|(step, command, exit, result)| {
+            let command: String = scrubber.text(command, &places).chars().take(400).collect();
+            let result: String = scrubber.text(result, &places).chars().take(400).collect();
+            json!({ "step": step, "command": command, "exitCode": exit, "result": result })
+        }).collect();
+        serde_json::to_vec_pretty(&json!({ "source": "writer report from the private workspace", "checks": checks }))
+            .map(Some).map_err(|error| GatewayError(format!("Cannot encode the writer checks attachment: {error}")))
+    }
+
     fn review_prompt(&self, n: u32, candidate: &str, step: &str, summary: &str, unverified: &[String], verification: &Value) -> Result<String> {
         let mut paths = vec!["diff", "--no-renames", &self.base, candidate, "--"];
         paths.extend(self.claimed.iter().map(String::as_str));
@@ -1692,8 +1723,11 @@ impl Run {
                 required.push((label, scrubber.text(&text, &places).into_bytes()));
             }
         }
-        // The full copies of the claimed files are optional: the largest go first when the request is too large.
+        // Drop the largest optional attachments first when the request is too large.
         let mut optional: Vec<(String, Vec<u8>)> = Vec::new();
+        if let Some(checks) = self.review_writer_checks(n)? {
+            optional.push(("writer-checks.json".into(), checks));
+        }
         // Copies of the reviewed commit's blobs, never the live work tree.
         for p in &self.claimed {
             if patch::claimed_as(&self.args.review_context, p).is_some() {
