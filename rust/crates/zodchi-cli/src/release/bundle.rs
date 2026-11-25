@@ -185,6 +185,11 @@ pub(super) fn build_marketplace(root: &Path, source: &Path) -> Result<Value> {
     }
     for doc in [
         "acceptance.md",
+        "method-question.md",
+        "rubric-probe.md",
+        "asset-round.md",
+        "unity-check.md",
+        "workspace-audit.md",
         "design-brief.md",
         "flow.md",
         "flow-video.md",
@@ -207,6 +212,11 @@ pub(super) fn build_marketplace(root: &Path, source: &Path) -> Result<Value> {
     write_new(
         &plugin.join("assets/workflows/catalog.json"),
         &catalog,
+        false,
+    )?;
+    write_new(
+        &plugin.join("hooks/hooks.json"),
+        &regular(&source.join("install/session-start-hooks.json"))?,
         false,
     )?;
     write_new(

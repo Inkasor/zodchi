@@ -113,7 +113,7 @@ pub fn handoff(id: &str) -> Result<Exit> {
             "youtube": current["youtube"], "resultFile": (!result.is_null()).then_some(result_path),
             "verdict": result["verdict"], "observed": result["observed"] }) });
     }
-    if [acceptance::RELEASE, acceptance::PLAYER].iter().any(|name| current["workflow"] == *name) {
+    if [acceptance::RELEASE, acceptance::PLAYER, acceptance::CANDIDATE].iter().any(|name| current["workflow"] == *name) {
         let scenarios: Vec<_> = result["scenarios"].as_array().into_iter().flatten().map(|s| json!({ "id": s["id"], "status": s["status"] })).collect();
         return Ok(Exit { code: 0, result: json!({ "runId": id, "workflow": current["workflow"], "version": current["version"],
             "repo": current["repo"], "head": run["head"], "status": current["status"], "step": current["step"],
@@ -237,7 +237,7 @@ fn resume_workflow(workflow: &str, id: &str, given: Option<&Value>, rerun: Optio
         video::NAME => video::resume(id, given, rerun),
         voiceover::NAME => voiceover::resume(id, rerun),
         youtube_publish::NAME => youtube_publish::resume(id, given, rerun),
-        acceptance::RELEASE | acceptance::PLAYER => acceptance::resume(id, rerun),
+        acceptance::RELEASE | acceptance::PLAYER | acceptance::CANDIDATE => acceptance::resume(id, rerun),
         _ => zodchi_core::util::fail(format!("Workflow {workflow:?} is not available in this installation.")),
     }
 }

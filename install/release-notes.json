@@ -1,0 +1,6 @@
+{
+  "highlights": [
+    "Discover workflows with zodchi flow list and zodchi flow <workflow> --help; use candidate-acceptance for a candidate build and release-acceptance for a deployed release.",
+    "Local release selection and retained builds for workflow runs."
+  ]
+}

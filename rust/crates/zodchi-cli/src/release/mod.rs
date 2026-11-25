@@ -3,6 +3,7 @@
 mod bundle;
 mod dev;
 mod managed;
+mod notes;
 
 use serde_json::Value;
 use std::{collections::BTreeMap, env, path::Path};
@@ -13,6 +14,7 @@ const USAGE: &str =
        zodchi release marketplace --out <new-directory> [--source <checkout>]
        zodchi release install --archive <file> --sha256 <digest> [--clients codex,claude]
        zodchi release dev --archive <file> --sha256 <digest>
+       zodchi release notes [--hook]
        zodchi release current
        zodchi release register --clients codex,claude  (from a portable bundle)";
 
@@ -30,6 +32,7 @@ pub fn cli(args: &[String]) -> Result<Value> {
         "install" => (&["--archive", "--sha256", "--clients"], false),
         "dev" => (&["--archive", "--sha256"], false),
         "current" => (&[], false),
+        "notes" => (&["--hook"], true),
         "register" => (&["--clients"], false),
         _ => return fail(USAGE),
     };
@@ -39,7 +42,7 @@ pub fn cli(args: &[String]) -> Result<Value> {
         if !keys.contains(&key.as_str()) || options.contains_key(key.as_str()) {
             return fail(format!("Invalid or repeated option {key}.\n{USAGE}"));
         }
-        let value = if toggle && key == "--archive" {
+        let value = if toggle && (key == "--archive" || key == "--hook") {
             ""
         } else {
             items
@@ -75,6 +78,7 @@ pub fn cli(args: &[String]) -> Result<Value> {
         ),
         "dev" => dev::activate(Path::new(required("--archive")?), required("--sha256")?),
         "current" => dev::report(),
+        "notes" => notes::report(options.contains_key("--hook")),
         "register" => managed::register(required("--clients")?),
         _ => unreachable!(),
     }

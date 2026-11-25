@@ -26,7 +26,6 @@ use zodchi_core::config::Config;
 use zodchi_core::job::{self, compose_prompt, LIMIT_PROMPT};
 use zodchi_core::role::load_role;
 use zodchi_core::role::Overrides;
-use zodchi_core::process::process_start;
 use zodchi_core::util::{fail, iso, sha256_hex, GatewayError, Result};
 
 pub const WORKFLOW: &str = "code-package";
@@ -156,6 +155,7 @@ struct Run {
     review_md: Option<String>,
     patch_schema: &'static str,
     verify_plan: crate::verify::Plan,
+    browser: Value,
     writer: Pick,
     reviewer: Pick,
     claims_dir: PathBuf,
@@ -282,7 +282,7 @@ fn start_run(raw: &Value, detach: bool, id: Option<&str>) -> Result<Exit> {
         Ok(plan) => plan,
         Err(error) => return Ok(refused(&label, error.0)),
     };
-    if !verify_plan.checks.is_empty() || !verify_plan.verify.is_empty() || !verify_plan.full_local.is_empty() {
+    if !verify_plan.setup.is_empty() || !verify_plan.checks.is_empty() || !verify_plan.verify.is_empty() || !verify_plan.full_local.is_empty() {
         if let Err(error) = checks::preflight() {
             return Ok(refused(&label, error.0));
         }
@@ -328,6 +328,13 @@ fn start_run(raw: &Value, detach: bool, id: Option<&str>) -> Result<Exit> {
     }
     let executors = if server.is_some() { "codex via server" } else { "codex only" };
     let id = id.map(String::from).unwrap_or_else(crate::journal::new_run_id);
+    let browser = match &args.browser {
+        Some((variable, path)) => match gateway::pin_browser(variable, Path::new(path)) {
+            Ok(pin) => pin,
+            Err(why) => return Ok(refused(&label, why)),
+        },
+        None => Value::Null,
+    };
     let run = json!({
         "runId": id, "workflow": WORKFLOW, "version": VERSION, "mode": args.mode(), "patchSchema": 2,
         "release": env!("CARGO_PKG_VERSION"), "createdAt": iso(),
@@ -335,7 +342,7 @@ fn start_run(raw: &Value, detach: bool, id: Option<&str>) -> Result<Exit> {
         "seed": seed, "history": history, "priorWriters": prior_writers,
         "inputs": { "args": raw, "brief": args.brief, "briefSha256": sha256_hex(&brief), "reviewMd": review_md.is_some() },
         "pair": { (args.writer_role()): writer.to_json(), "reviewer": reviewer.to_json(), "skipped": skipped },
-        "verificationPlan": verify_plan.to_json(), "reviewContext": args.review_context,
+        "verificationPlan": verify_plan.to_json(), "reviewContext": args.review_context, "browser": browser,
         "policy": { "rounds": args.rounds, "fixes": args.fixes, "protected": [
             "test/", "tests/", "e2e/", ".claude/skills/verify/", ".agents/skills/verify/", "skills/verify/", crate::verify::CONFIG, "REVIEW.md"],
             "protect": args.protect, "allowCheckChanges": args.allow_check_changes, "extendClaim": args.extend_claim,
@@ -454,6 +461,7 @@ impl Run {
             branch,
             patch_schema: if run["patchSchema"] == json!(2) { PATCH_SCHEMA_V2 } else { PATCH_SCHEMA_V1 },
             verify_plan,
+            browser: run["browser"].clone(),
             id, args, cfg, git, project, journal, base, seed, history, brief, review_md, writer, reviewer, out,
             keep_claim: false,
             claim_status: "stopped",
@@ -648,6 +656,25 @@ impl Run {
         self.out.insert("stoppedAt".into(), json!(if step == "write" { "write".to_string() } else { step.split(' ').next().unwrap_or(step).to_string() }));
         let q = if patch.questions.is_empty() { patch.summary.clone() } else { patch.questions.join(" | ") };
         self.out.insert("question".into(), json!(q));
+        if self.args.agent {
+            let checks = self.journal.events().iter().filter(|event| event["kind"] == "done" && event["step"] == self.step
+                && event["attempt"].as_u64() == Some(u64::from(self.attempt(&self.step))))
+                .flat_map(|event| event["result"]["checks"].as_array().into_iter().flatten())
+                .filter(|check| check["exitCode"].as_i64().is_some_and(|code| code != 0));
+            for check in checks {
+                let result = check["result"].as_str().unwrap_or("");
+                let hint = if result.contains("ERR_MODULE_NOT_FOUND") {
+                    Some("A recorded writer check reported ERR_MODULE_NOT_FOUND. Install the project's Node dependencies using its configured setup, then reply to the blocked writer before resuming, or use the candidate acceptance runner.")
+                } else if result.lines().any(|line| line.split_once("browserType.launch:")
+                    .is_some_and(|(_, diagnostic)| diagnostic.trim_start().starts_with("Executable doesn't exist at "))) {
+                    Some("A recorded writer check reports a missing browser executable. Restore the configured executable, then reply to the blocked writer before resuming, or use the candidate acceptance runner.")
+                } else { None };
+                if let Some(hint) = hint {
+                    self.out.insert("prerequisiteHint".into(), json!(hint));
+                    break;
+                }
+            }
+        }
         self.out.insert("status".into(), json!("waiting"));
         self.keep_claim = true;
         let waiting_step = if self.args.agent { self.step.clone() } else { step.to_string() };
@@ -805,6 +832,11 @@ impl Run {
             (self.cfg.home.display().to_string(), "<zodchi-home>"),
             (self.args.repo_norm.clone(), "<repo>"),
         ];
+        for key in ["configuredPath", "path"] {
+            if let Some(path) = self.browser[key].as_str().filter(|s| !s.is_empty()) {
+                v.push((path.to_string(), "<browser>"));
+            }
+        }
         for k in ["HOME", "USERPROFILE"] {
             if let Some(h) = std::env::var_os(k).filter(|h| !h.is_empty()) {
                 v.push((h.to_string_lossy().into_owned(), "~"));
@@ -863,22 +895,90 @@ impl Run {
         Ok(p)
     }
 
+    fn writer_snapshot(&mut self, step: &str, round: u32) -> Step<Value> {
+        if let Some(saved) = self.journal.last("writer prepared", step, 1) {
+            return Ok(saved["snapshot"].clone());
+        }
+        self.owns(step)?;
+        let setup_step = format!("setup {step}");
+        let has_setup = !self.verify_plan.setup.is_empty();
+        if has_setup {
+            if let Some(failure) = self.done(&setup_step) {
+                return self.stop_writer_setup(&setup_step, failure);
+            }
+            self.reap_checks(&setup_step)?;
+        }
+        let id = format!("{}-{:08x}", gateway::slug(step), rand::random::<u32>());
+        let workspace = self.cfg.home.join("flow-writers").join(&self.id).join(id);
+        let scratch = self.journal.file("tmp");
+        let prepared = agent::prepare(&self.git, &workspace, &self.head, &self.claimed, &self.exec, &scratch);
+        let prepared = self.infra(step, prepared)?;
+        let mut event = json!({ "kind": "writer prepared", "step": step, "round": round, "attempt": 1, "snapshot": prepared });
+        if has_setup {
+            // One receipt admits both the snapshot and the setup. A continuation only reuses a prepared workspace.
+            event["setup"] = self.run_writer_setup(&setup_step, round, &workspace, &prepared["tree"])?;
+        }
+        let recorded = self.journal.append(event);
+        self.infra(step, recorded)?;
+        Ok(prepared)
+    }
+
+    fn run_writer_setup(&mut self, step: &str, round: u32, workspace: &Path, tree: &Value) -> Step<Value> {
+        let git = Git::new(workspace);
+        let baseline = self.infra(step, git.rev("HEAD"))?;
+        let attempt = self.attempt(step);
+        let start = self.journal.events().iter().filter(|e| e["kind"] == "intent" && e["step"] == step).count() + 1;
+        let logs = self.journal.file(&format!("logs/{}-{start}", gateway::slug(step)));
+        let intended = self.record_intent(step, round, "run writer setup", &sha256_hex(tree.to_string()),
+            json!({ "tree": tree, "workspace": workspace, "logs": logs }));
+        self.infra(step, intended)?;
+        let limit = Duration::from_secs_f64(self.args.check_timeout_min * 60.0);
+        let journal = &mut self.journal;
+        let mut on = |phase, pid| checks::record_process(journal, step, attempt, phase, pid);
+        let (evidence, recorded) = checks::run_setup(&self.verify_plan.setup, self.verify_plan.setup_source, workspace, &logs, limit, &mut on);
+        if !recorded {
+            return self.infra(step, fail("The journal could not record the start or the end of a writer setup command."));
+        }
+        let workspace_clean = || -> Result<()> {
+            if git.rev("HEAD")? != baseline {
+                return fail("Writer setup moved the workspace HEAD.");
+            }
+            let paths = git.dirty()?;
+            if !paths.is_empty() {
+                return fail(format!("Writer setup must leave tracked files unchanged and write generated files to ignored paths. Git reports {} changed or unignored path(s), including {}.",
+                    paths.len(), paths.iter().take(5).cloned().collect::<Vec<_>>().join(", ")));
+            }
+            Ok(())
+        };
+        let why = if let Some((i, failed)) = evidence.iter().enumerate().find(|(_, e)| e["exitCode"] != 0) {
+            let exit = failed["exitCode"].as_i64().map(|code| format!("exit {code}")).unwrap_or_else(|| {
+                failed["note"].as_str().filter(|s| !s.is_empty()).unwrap_or("no exit status").to_string()
+            });
+            Some(format!("{} failed ({exit}). See {}.", checks::name(&evidence, i), failed["log"].as_str().unwrap_or("the setup log")))
+        } else {
+            workspace_clean().err().map(|error| error.0)
+        };
+        let result = json!({ "ok": why.is_none(), "step": step, "attempt": attempt, "evidence": evidence, "why": why });
+        if why.is_some() {
+            let saved = self.record_done(step, round, result.clone());
+            self.infra(step, saved)?;
+            return self.stop_writer_setup(step, result);
+        }
+        Ok(result)
+    }
+
+    fn stop_writer_setup(&mut self, step: &str, failure: Value) -> Step<Value> {
+        let why = failure["why"].as_str().unwrap_or("See the writer setup evidence.").to_string();
+        self.halt_infra(step, format!("writer setup failed ({step})"), why);
+        self.out.insert("setupFailure".into(), failure);
+        self.out.insert("next".into(), json!(format!("Fix the environment, then run zodchi flow code-package --resume {} --rerun \"{step}\". Start a new run to change its pinned commands.", self.id)));
+        Err(Halt)
+    }
+
     fn agent_turn(&mut self, step: &str, round: u32, vars: Vec<(&str, String)>, extra: Vec<(String, Vec<u8>)>) -> Step<Patch> {
         let apply_step = format!("apply {step}");
         let applied = self.done(&apply_step).is_some();
-        let snapshot = if let Some(saved) = self.journal.last("writer prepared", step, 1) {
-            saved["snapshot"].clone()
-        } else {
-            self.owns(step)?;
-            let id = format!("{}-{:08x}", gateway::slug(step), rand::random::<u32>());
-            let workspace = self.cfg.home.join("flow-writers").join(&self.id).join(id);
-            let scratch = self.journal.file("tmp");
-            let prepared = agent::prepare(&self.git, &workspace, &self.head, &self.claimed, &self.exec, &scratch);
-            let prepared = self.infra(step, prepared)?;
-            let event = self.journal.append(json!({ "kind": "writer prepared", "step": step, "attempt": 1, "snapshot": prepared }));
-            self.infra(step, event)?;
-            prepared
-        };
+        let snapshot = self.writer_snapshot(step, round)?;
         let root = if applied {
             PathBuf::new()
         } else {
@@ -910,11 +1010,17 @@ impl Run {
                 }
                 let mut preamble = format!("Step: {turn} (code-package v1, run {})\n\n{AGENT_RULES}\nAllowed files:\n{boundary}\n\n{}\n\n{notes}",
                     self.id, self.check_rules());
+                if !self.verify_plan.setup.is_empty() {
+                    preamble.push_str("\n\nThe engine completed the configured setup in this workspace. Use the prepared dependencies for your checks.");
+                }
+                if let Some(variable) = self.browser["variable"].as_str() {
+                    preamble.push_str(&format!("\n\nThe pinned browser executable is available in the shell variable {variable}. Project tests choose headless mode."));
+                }
                 if n > 0 || attempt > 1 {
                     preamble.push_str("\n\nContinue the writer's work in this same private workspace. Inspect its current files and preserve edits that are already complete.");
                 }
                 if let Some(summary) = &previous_summary {
-                    let scrubbed = input::scrub(&self.cfg, summary, &[]);
+                    let scrubbed = input::scrub(&self.cfg, summary, &self.private_places());
                     let scrubbed = self.infra(&turn, scrubbed)?;
                     preamble.push_str("\n\nPrevious writer summary (work status):\n");
                     preamble.push_str(&scrubbed);
@@ -964,7 +1070,12 @@ impl Run {
     fn ask(&mut self, step: &str, round: u32, role: &str, pick: &Pick, schema: &Value, prompt: String, writer_workspace: Option<&Path>, validate: impl Fn(&Value) -> std::result::Result<(), String>) -> Step<Value> {
         self.step = step.to_string();
         let call = gateway::Call { id: &self.id, step, round, role, pick, schema, prompt, writer_workspace };
-        match gateway::ask_budgeted(&mut self.journal, &self.cfg, call, self.args.budget, validate) {
+        let browser = if writer_workspace.is_some() { Some(&self.browser) } else { None };
+        let owner_private_places: Vec<_> = ["configuredPath", "path"].into_iter()
+            .filter_map(|key| self.browser[key].as_str().filter(|path| !path.is_empty()))
+            .map(|path| (path.to_string(), "<browser>"))
+            .collect();
+        match gateway::ask_budgeted(&mut self.journal, &self.cfg, call, self.args.budget, browser, &owner_private_places, validate) {
             Ok(data) => Ok(data),
             Err(gateway::CallError::Stop { at, reason }) if at == format!("budget at {step}") => {
                 self.keep_claim = true;
@@ -1265,13 +1376,7 @@ impl Run {
         let logs = self.journal.file(&format!("logs/{name}"));
         let limit = Duration::from_secs_f64(self.args.check_timeout_min * 60.0);
         let journal = &mut self.journal;
-        let mut on = |phase: checks::Phase, pid: u32| -> bool {
-            let e = match phase {
-                checks::Phase::Started => json!({ "kind": "check started", "step": step, "attempt": attempt, "pid": pid, "start": process_start(pid) }),
-                checks::Phase::Ended => json!({ "kind": "check ended", "step": step, "attempt": attempt, "pid": pid }),
-            };
-            journal.append(e).is_ok()
-        };
+        let mut on = |phase, pid| checks::record_process(journal, step, attempt, phase, pid);
         let (first, source) = if full_tree.is_some() { (&self.verify_plan.full_local, "project.full") } else {
             (&self.verify_plan.checks, self.verify_plan.check_source)
         };
@@ -1568,6 +1673,37 @@ impl Run {
         })).map_err(|error| GatewayError(format!("Cannot encode the verification attachment: {error}")))
     }
 
+    fn review_writer_checks(&self, round: u32) -> Result<Option<Vec<u8>>> {
+        if !self.args.agent {
+            return Ok(None);
+        }
+        let previous_review = format!("review {}", round - 1);
+        let mut reported: Vec<_> = self.journal.events().iter().rev()
+            .filter(|event| event["kind"] == "done")
+            .take_while(|event| event["step"] != previous_review)
+            .filter_map(|event| {
+                let step = event["step"].as_str()?;
+                let checks = event["result"]["checks"].as_array()?;
+                (event["attempt"].as_u64() == Some(u64::from(self.attempt(step)))).then_some((step, checks))
+            })
+            .flat_map(|(step, checks)| checks.iter().rev().map(move |check| (step, check)))
+            .filter_map(|(step, check)| Some((step, check["command"].as_str()?, check["exitCode"].as_i64(), check["result"].as_str()?)))
+            .take(12).collect();
+        if reported.is_empty() {
+            return Ok(None);
+        }
+        let scrubber = Scrubber::new(&self.cfg)?;
+        let places = self.private_places();
+        reported.reverse();
+        let checks: Vec<_> = reported.into_iter().map(|(step, command, exit, result)| {
+            let command: String = scrubber.text(command, &places).chars().take(400).collect();
+            let result: String = scrubber.text(result, &places).chars().take(400).collect();
+            json!({ "step": step, "command": command, "exitCode": exit, "result": result })
+        }).collect();
+        serde_json::to_vec_pretty(&json!({ "source": "writer report from the private workspace", "checks": checks }))
+            .map(Some).map_err(|error| GatewayError(format!("Cannot encode the writer checks attachment: {error}")))
+    }
+
     fn review_prompt(&self, n: u32, candidate: &str, step: &str, summary: &str, unverified: &[String], verification: &Value) -> Result<String> {
         let mut paths = vec!["diff", "--no-renames", &self.base, candidate, "--"];
         paths.extend(self.claimed.iter().map(String::as_str));
@@ -1589,8 +1725,10 @@ impl Run {
         } else {
             "The base commit has no REVIEW.md: judge by the brief."
         };
+        let scrubber = Scrubber::new(&self.cfg)?;
+        let summary = scrubber.text(summary, &self.private_places());
         let text = render(REVIEW, &[
-            ("step", step.to_string()), ("run", self.id.clone()), ("base", self.base.clone()), ("summary", summary.to_string()),
+            ("step", step.to_string()), ("run", self.id.clone()), ("base", self.base.clone()), ("summary", summary),
             ("unverified", if unverified.is_empty() { "nothing named".into() } else { unverified.join("; ") }),
             ("verification", how), ("history", history), ("focus", focus.to_string()),
         ]);
@@ -1628,8 +1766,11 @@ impl Run {
                 required.push((label, scrubber.text(&text, &places).into_bytes()));
             }
         }
-        // The full copies of the claimed files are optional: the largest go first when the request is too large.
+        // Drop the largest optional attachments first when the request is too large.
         let mut optional: Vec<(String, Vec<u8>)> = Vec::new();
+        if let Some(checks) = self.review_writer_checks(n)? {
+            optional.push(("writer-checks.json".into(), checks));
+        }
         // Copies of the reviewed commit's blobs, never the live work tree.
         for p in &self.claimed {
             if patch::claimed_as(&self.args.review_context, p).is_some() {

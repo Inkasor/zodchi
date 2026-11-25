@@ -1,6 +1,6 @@
 {
   "name": "zodchi",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Shared Rust workflows and model roles for Codex and Claude Code",
   "license": "MIT",

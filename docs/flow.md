@@ -51,6 +51,7 @@ The engine validates arguments before claiming files.
 |---|---|
 | `label`, `brief`, `repo`, `files` | as in `code-package`: the package name, its brief, the repository (the top of a Git work tree) and the files it may change, each by itself (a folder is refused) |
 | `reviewContext` | Optional list of relative paths to committed UTF-8 source files the reviewer needs. Flow screens them and reads their copies from each candidate commit. The write claim is controlled by `files`. The context files together can use up to half the gateway prompt limit. |
+| `setup` | commands to prepare each fresh writer workspace in agent mode. A nonempty list overrides project `setup` |
 | `checks` | cheap checks, run in order after each write; a command string or `{ "cmd": ... }`. A command passes on exit code 0 and nothing else: a `pass` rule in words is refused |
 | `verify` | the slow run of the real program, the same way, run only when every cheap check passed |
 | `rounds` | review rounds at most, default 3 |
@@ -58,12 +59,13 @@ The engine validates arguments before claiming files.
 | `protect`, `allowCheckChanges` | more protected paths and the exact approved paths the package may change. For example, `"allowCheckChanges": ["tests/math.mjs"]` |
 | `mode` | `expert` (default), or `agent` for a local Codex work role with a private workspace |
 | `continuations` | extra writer turns for each agent writing step, default 2, range 0 to 32. Use `"continuations": 16` for a step expected to need many turns |
+| `browser` | Agent mode opt-in: `{"executable":"/absolute/path/to/chromium"}` pins the browser for writer shells. Optional `variable` defaults to `ZODCHI_ACCEPTANCE_CHROMIUM`; `WB_TEST_CHROME` is also allowed. |
 | `isolated` | `true` keeps writes, checks, and review on a private candidate. Apply the approved commit explicitly with `zodchi flow apply <run-id>` |
 | `budget` | `{ "calls": N, "minutes": M }` limits new model submissions, including review and gateway retries. `minutes` is optional. In agent mode the budget replaces the per-step continuation limit |
 | `sourceRun` | a finished isolated code package whose retained candidate seeds a correction on the same target branch and base. Declare every inherited changed path in `files` |
 | `models` | role table entries for this run (`expertWriter` in expert mode, `writer` in agent mode, `reviewer` in either) |
 | `extendClaim` | `true`: legacy preauthorization in expert mode. The default waits for an explicit scope decision before application |
-| `checkTimeoutMin` | time limit of one check command, default 60 |
+| `checkTimeoutMin` | time limit in minutes of one setup or check command, default 60 |
 | `tmp`, `commit: true` | accepted for compatibility; the journal replaces `tmp` |
 
 Refused in version 1, each with its reason: `hard`, `branch` (check out the
@@ -118,6 +120,18 @@ in the source checkout. Run commands and write generated files in the exported c
 private parent folder for materializing fixtures or pinned sibling sources. An optional
 `full: { "run": "local", "commands": [...] }` runs once on the reviewed candidate tree before the final result.
 With `full: { "run": "ci" }`, the result records pending CI.
+
+In agent mode, declare `setup` in the committed `.zodchi/verify.json` or run args. For a pnpm project, use
+`"setup": ["CI=true corepack pnpm install --frozen-lockfile"]` and ignore `node_modules/` in Git. Flow pins this
+list and runs it before the first writer turn in each private `write`, `fix` and `close` workspace. Continuations
+and owner replies reuse the prepared workspace. Keep the install command in `checks` or `full.commands` as needed
+for their separate exports.
+
+The local engine runs setup with the same reduced environment and timeout as checks, with the host account's
+network and filesystem access. Supply trusted commands that write generated files only to Git-ignored paths.
+Every command's exit code and log are in the journal. A setup failure stops before the writer, leaves its claim
+open and reports the failing command's log. After fixing the environment, retry the named step, for example
+`zodchi flow code-package --resume <run-id> --rerun "setup write"`. The run retains its pinned commands.
 
 ### Check command environment
 
@@ -203,9 +217,11 @@ the pinned tree and attaches it with `provenance: "coordinator"`. The result rec
 The Rust implementations of `branch-review` and `design-brief` can resume version 1 journals from
 the original shared CLI. They verify the original definition digest and reuse the recorded steps.
 
+Discover the catalog with `zodchi flow list` (or `list --repo <directory>` for enabled domains), `zodchi flow --help`, and `zodchi flow <workflow> --help`. These commands return JSON without starting a run.
+
 ## UI acceptance
 
-Use `release-acceptance` for a deployed web version and `player-acceptance` for a prepared Windows player. Both journal the approved scenario, real process receipts and captured frames. The browser supports headless and a private Windows desktop. Optional scenario selection and visual review use Terra 6.1 `medium` by default. See [UI acceptance](acceptance.md).
+Use `candidate-acceptance` for a local candidate, `release-acceptance` for a deployed web version and `player-acceptance` for a prepared Windows player. Browser acceptance requires an explicit `browser.executable`; candidate acceptance supports either managed fixture steps or committed Node tests. Both journal the approved scenario, real process receipts and captured frames. The browser supports headless and a private Windows desktop. Optional scenario selection and visual review use Terra 6.1 `medium` by default. See [UI acceptance](acceptance.md).
 
 ## Client packages
 
@@ -266,7 +282,9 @@ For contributors, use the [source build](install-from-source.md). `zodchi releas
    brief, `REVIEW.md` of the base commit (never dropped), the previous review, and `verification.json`. That attachment
    maps each check to its command, exit code and a bounded log excerpt, and names the reviewed commit and matching
    checked tree. The engine removes private paths, private words and credential lines from the command and output
-   before sending them. The review also receives the claimed regular files as the reviewed commit holds them (never a link).
+   before sending them. In agent mode, `writer-checks.json` carries up to twelve recent workspace checks that the
+   writer reported in this round, screened before review. The review also receives the claimed regular files as
+   the reviewed commit holds them (never a link).
    These copies are dropped first, the largest first, when the request would pass the gateway's 512 KB, and named in a "Not attached
    for size" line. Severities and the verdict rule are those of `docs/verification.md`.
 9. **Close** the important findings with the same writer, then checks, commit and review again, until approval, a
@@ -289,7 +307,9 @@ is pointed at:
   file (under the lock) before it writes; a record that does not read anywhere else stops the resume.
 - `requests/` (the exact request of each gateway job), `plans/` (each applied patch with its blobs before and after,
   written and synced before its intent),
-  `reviews/`, `logs/` (one log per check command), `result.json` once the run has finished.
+  `reviews/`, `logs/` (one log per setup or check command), `result.json` once the run has finished. An agent
+  `writer prepared` event records the workspace and its successful `setup.evidence`, when configured. The writer's
+  own `checks` are in its model receipt.
 - `lock/`: the process working on the run (pid and start time). One at a time; a lock whose process is gone is taken
   over.
 
@@ -318,6 +338,8 @@ it). Each step comes back from the journal when it has a `done`; otherwise:
   and no `check ended` line, whatever step or attempt started it (by pid and start time; on Unix the whole process
   group), then run again (they change nothing but their export). One that cannot be stopped, or a start or end the
   journal cannot record, stops the run.
+- writer setup without a `writer prepared` or failure receipt stops any recorded commands still running and retries
+  in a fresh export. A prepared workspace is reused. A recorded failure waits for `--rerun "setup <step>"`.
 - a run with a saved `result.json` returns it; when the cut came after the `closing` line, the claim of this run is
   closed as the result says first.
 
@@ -418,3 +440,8 @@ to CI.
 | `flow-entry-failing-verify` | the Codex skill's steps with a verify command that fails: `verifiedBy` is `none` while `verification.evidence` holds the command's exit code, as the skill says to tell it from a run in which nothing ran |
 | `flow-entry-server` | the Codex skill's steps with the model steps on a zodchi-server; nothing runs on this machine's Codex, the token is in no result or commit |
 | `flow-entry-claude` | the Codex skill's steps with a Claude writer (the fake `claude`): a failed write stops the run, the skill's rerun of the step named in `stoppedAt` goes on to approval |
+# Browser input for an agent writer
+
+An agent-mode package may opt in with `"browser": {"executable": "/absolute/path/to/chromium"}`. The default variable is `ZODCHI_ACCEPTANCE_CHROMIUM`; set `"variable": "WB_TEST_CHROME"` for projects using that convention. The engine pins the regular file's resolved path and SHA-256 in the run and checks it before new writer jobs, including on resume. The variable is available to the writer shell; review roles do not receive this override. Keep the executable installed at the same path and restore the same bytes if a resumed run reports a changed pin.
+
+Project setup should install the project's Node and Playwright dependencies in the isolated writer workspace. Tests must pass the configured variable as Playwright's `executablePath` and select `headless: true`. If the author's sandbox cannot launch the browser, record the actual failure and use the configured candidate-acceptance check on the project's runner; do not claim the writer smoke passed.

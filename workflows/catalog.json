@@ -7,67 +7,356 @@
       "modes": [
         "expert",
         "agent"
-      ]
+      ],
+      "purpose": "Implement and independently review a bounded code change.",
+      "limits": "Verification runs on a private export; set isolated: true to keep changes off the target branch until explicit application. Agent browser pin is optional.",
+      "required": [
+        "repo",
+        "brief",
+        "label",
+        "files"
+      ],
+      "docs": "docs/flow.md#running-it",
+      "example": {
+        "repo": "/project",
+        "brief": "/tmp/brief.md",
+        "label": "change",
+        "files": [
+          "src/app.js"
+        ]
+      }
     },
     {
       "name": "design-brief",
       "version": "2",
-      "domain": "core"
+      "domain": "core",
+      "purpose": "Collect source facts and produce a reviewed design brief.",
+      "limits": "Pins source repositories; may ask for decisions.",
+      "required": [
+        "label",
+        "goal",
+        "repos",
+        "out"
+      ],
+      "docs": "docs/design-brief.md#arguments",
+      "example": {
+        "label": "brief",
+        "goal": "Describe the change",
+        "repos": [
+          "/project"
+        ],
+        "out": "/tmp/brief.md"
+      }
     },
     {
       "name": "branch-review",
       "version": "2",
-      "domain": "web-apps"
+      "domain": "web-apps",
+      "purpose": "Review a committed change independently.",
+      "limits": "Reviews pinned trees, without writing the candidate. For repeat review, sourceRun supplies original authors; author may name additional authors.",
+      "required": [
+        "repo",
+        "label"
+      ],
+      "anyOf": [["base", "author"], ["sourceRun", "head"]],
+      "docs": "docs/flow.md#branch-review",
+      "example": {
+        "repo": "/project",
+        "label": "review",
+        "base": "<base-commit>",
+        "author": [
+          "codex/model"
+        ]
+      }
     },
     {
       "name": "method-question",
       "version": "1",
-      "domain": "gamedev-unity"
+      "domain": "gamedev-unity",
+      "purpose": "Investigate game design method questions.",
+      "limits": "Requires a local read-only research role.",
+      "required": [
+        "repo",
+        "tmp",
+        "label",
+        "context"
+      ],
+      "anyOf": [["realLife"], ["games"]],
+      "docs": "docs/method-question.md",
+      "example": {
+        "repo": "/project",
+        "tmp": "/tmp/method",
+        "label": "method",
+        "context": "Design a game asset",
+        "games": [
+          "How is it built?"
+        ]
+      }
     },
     {
       "name": "rubric-probe",
       "version": "1",
-      "domain": "gamedev-unity"
+      "domain": "gamedev-unity",
+      "purpose": "Evaluate game frames with a Decisions rubric.",
+      "limits": "Requires explicit paid approval.",
+      "required": [
+        "repo",
+        "tmp",
+        "label",
+        "role",
+        "frames",
+        "paid"
+      ],
+      "docs": "docs/rubric-probe.md"
     },
     {
       "name": "asset-round",
       "version": "1",
-      "domain": "gamedev-unity"
+      "domain": "gamedev-unity",
+      "purpose": "Run a staged game asset round.",
+      "limits": "Uses project ledger and staged inputs.",
+      "required": [
+        "repo",
+        "tmp",
+        "label",
+        "stage",
+        "ledger",
+        "summary"
+      ],
+      "anyOf": [["package"], ["check"], ["export"], ["unity"], ["rubric"]],
+      "docs": "docs/asset-round.md",
+      "example": {
+        "repo": "/project",
+        "tmp": "/tmp/asset",
+        "label": "round",
+        "stage": 1,
+        "ledger": "/project/ledger.json",
+        "summary": "Blockout",
+        "check": {
+          "command": "npm test",
+          "cwd": "/project"
+        }
+      }
     },
     {
       "name": "unity-check",
       "version": "1",
-      "domain": "gamedev-unity"
+      "domain": "gamedev-unity",
+      "purpose": "Run checks against a running Unity Editor.",
+      "limits": "Requires a locally available Editor and CLI.",
+      "required": [
+        "repo",
+        "tmp",
+        "steps"
+      ],
+      "docs": "docs/unity-check.md",
+      "example": {
+        "repo": "/project",
+        "tmp": "/tmp/check",
+        "steps": "/tmp/steps.json"
+      }
     },
     {
       "name": "workspace-audit",
       "version": "1",
-      "domain": "core"
+      "domain": "core",
+      "purpose": "Audit a workspace and propose cleanup.",
+      "limits": "Archive is optional and requires an owner decision.",
+      "required": [
+        "root"
+      ],
+      "docs": "docs/workspace-audit.md",
+      "example": {
+        "root": "/workspace"
+      }
     },
     {
       "name": "video",
       "version": "1",
-      "domain": "video"
+      "domain": "video",
+      "purpose": "Produce or adopt a video with review decisions.",
+      "limits": "Requires local media tools and prepared inputs.",
+      "required": [
+        "dir",
+        "id",
+        "format",
+        "title",
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "anyOf": [["brief", "variants"], ["adopt"]],
+      "docs": "docs/flow-video.md"
     },
     {
       "name": "voiceover",
       "version": "1",
-      "domain": "video"
+      "domain": "video",
+      "purpose": "Plan and produce timed narration.",
+      "limits": "Speech generation requires paid approval.",
+      "required": [
+        "dir",
+        "language",
+        "cues",
+        "paid"
+      ],
+      "docs": "docs/voiceover.md",
+      "example": {
+        "dir": "/video",
+        "language": "en-US",
+        "cues": [
+          {
+            "startMs": 0,
+            "endMs": 2000,
+            "text": "Hello."
+          }
+        ],
+        "paid": true
+      }
     },
     {
       "name": "youtube-publish",
       "version": "1",
-      "domain": "video"
+      "domain": "video",
+      "purpose": "Prepare an approved private YouTube upload.",
+      "limits": "Requires a connected profile and owner approval.",
+      "required": [
+        "profile",
+        "channelId",
+        "videoRun",
+        "title",
+        "description",
+        "categoryId",
+        "selfDeclaredMadeForKids"
+      ],
+      "docs": "docs/youtube-publish.md"
+    },
+    {
+      "name": "candidate-acceptance",
+      "version": "1",
+      "domain": "web-apps",
+      "purpose": "Check a local candidate with browser scenarios.",
+      "limits": "Uses a pinned checkout; fixture steps and committed Node tests are alternative forms.",
+      "required": [
+        "repo",
+        "head",
+        "label",
+        "browser.executable",
+        "scenarios"
+      ],
+      "conditional": [
+        { "when": { "fixture": "absent" }, "required": ["scenarios[].test"] },
+        { "when": { "fixture": "present" }, "required": ["fixture.script", "scenarios[].steps"] }
+      ],
+      "docs": "docs/acceptance.md#local-candidate",
+      "example": {
+        "repo": "/project",
+        "head": "<candidate-commit>",
+        "label": "candidate",
+        "browser": {
+          "executable": "/tools/chromium"
+        },
+        "setup": [
+          "npm ci",
+          "npm run build"
+        ],
+        "fixture": {
+          "script": "tests/fixture.mjs"
+        },
+        "scenarios": [
+          {
+            "id": "home",
+            "steps": [
+              {
+                "id": "open",
+                "open": "/",
+                "expect": {
+                  "selector": "#app"
+                }
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "name": "release-acceptance",
       "version": "1",
-      "domain": "web-apps"
+      "domain": "web-apps",
+      "purpose": "Check a deployed browser application.",
+      "limits": "Checks health SHA before and after each scenario; browser writes are blocked.",
+      "required": [
+        "repo",
+        "head",
+        "label",
+        "baseUrl",
+        "health",
+        "browser.executable",
+        "scenarios"
+      ],
+      "docs": "docs/acceptance.md#browser",
+      "example": {
+        "repo": "/project",
+        "head": "<deployed-commit>",
+        "label": "release",
+        "baseUrl": "https://app.example.test",
+        "health": {
+          "path": "/api/health",
+          "pointer": "/release/commit"
+        },
+        "browser": {
+          "executable": "/tools/chromium"
+        },
+        "scenarios": [
+          {
+            "id": "home",
+            "steps": [
+              {
+                "id": "open",
+                "open": "/",
+                "expect": {
+                  "selector": "#app"
+                }
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "name": "player-acceptance",
       "version": "1",
-      "domain": "gamedev-unity"
+      "domain": "gamedev-unity",
+      "purpose": "Check a locally prepared Windows player.",
+      "limits": "Runs a trusted player harness on an inactive desktop.",
+      "required": [
+        "repo",
+        "label",
+        "scenarios"
+      ],
+      "docs": "docs/acceptance.md#windows-player",
+      "example": {
+        "repo": "/project",
+        "label": "player",
+        "scenarios": [
+          {
+            "id": "smoke",
+            "steps": [
+              {
+                "id": "start",
+                "program": "/tools/player.exe",
+                "args": [
+                  "--receipt",
+                  "{stepDir}/result.json"
+                ],
+                "receipt": "result.json",
+                "expect": {
+                  "/ok": true
+                }
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }

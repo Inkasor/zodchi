@@ -15,12 +15,14 @@ pub struct Args {
     pub files: Vec<String>,
     pub review_context: Vec<String>,
     pub agent: bool,
+    pub browser: Option<(String, String)>,
     pub isolated: bool,
     pub(crate) budget: Option<crate::budget::Budget>,
     pub source_run: Option<String>,
     pub continuations: u32,
     pub rounds: u32,
     pub fixes: u32,
+    pub setup: Vec<String>,
     pub checks: Vec<String>,
     pub verify: Vec<String>,
     pub protect: Vec<String>,
@@ -31,8 +33,8 @@ pub struct Args {
 }
 
 const SUPPORTED: &[&str] = &[
-    "label", "brief", "repo", "files", "tmp", "mode", "rounds", "fixes", "checks", "verify", "protect", "allowCheckChanges",
-    "models", "commit", "extendClaim", "checkTimeoutMin", "continuations", "isolated", "budget", "sourceRun", "reviewContext",
+    "label", "brief", "repo", "files", "tmp", "mode", "rounds", "fixes", "setup", "checks", "verify", "protect", "allowCheckChanges",
+    "models", "commit", "extendClaim", "checkTimeoutMin", "continuations", "isolated", "budget", "sourceRun", "reviewContext", "browser",
 ];
 
 const UNSUPPORTED: [(&str, &str); 5] = [
@@ -131,8 +133,24 @@ pub fn parse(a: &Value) -> Result<Args, String> {
         Some(mode) if mode == "agent" => true,
         Some(_) => return Err("args.mode is \"expert\" or \"agent\"".into()),
     };
+    let browser = match o.get("browser") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(b)) if agent && b.keys().all(|k| k == "variable" || k == "executable") => {
+            let variable = b.get("variable").map_or(Some("ZODCHI_ACCEPTANCE_CHROMIUM"), Value::as_str).unwrap_or("");
+            let path = b.get("executable").and_then(Value::as_str).unwrap_or("");
+            if !["ZODCHI_ACCEPTANCE_CHROMIUM", "WB_TEST_CHROME"].contains(&variable) || !std::path::Path::new(path).is_absolute() {
+                return Err("args.browser needs an absolute executable and variable ZODCHI_ACCEPTANCE_CHROMIUM or WB_TEST_CHROME".into());
+            }
+            Some((variable.to_string(), path.to_string()))
+        }
+        _ => return Err("args.browser is an agent-mode object with executable and optional variable".into()),
+    };
     if !agent && o.get("continuations").is_some_and(|v| !v.is_null() && v != &json!(false)) {
         return Err("args.continuations applies to agent mode".into());
+    }
+    let setup = commands(o.get("setup"), "setup")?;
+    if !agent && !setup.is_empty() {
+        return Err("args.setup applies to agent mode".into());
     }
     if o.get("commit").is_some_and(|v| v != &json!(true)) {
         return Err("args.commit: only true is supported; the engine commits each checked round (it never pushes)".into());
@@ -193,12 +211,14 @@ pub fn parse(a: &Value) -> Result<Args, String> {
         files,
         review_context,
         agent,
+        browser,
         isolated,
         budget: o.get("budget").map(crate::budget::Budget::parse).transpose()?,
         source_run,
         continuations: if agent { count(o.get("continuations"), "continuations", 2, 0, 32)? } else { 0 },
         rounds: count(o.get("rounds"), "rounds", 3, 1, 10)?,
         fixes: count(o.get("fixes"), "fixes", 1, 0, 5)?,
+        setup,
         checks: commands(o.get("checks"), "checks")?,
         verify: commands(o.get("verify"), "verify")?,
         protect,
