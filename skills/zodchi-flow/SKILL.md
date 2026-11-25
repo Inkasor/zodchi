@@ -42,3 +42,5 @@ For narration or dubbing, use [voiceover](../../docs/voiceover.md). Prepare the 
 For a private YouTube upload after acceptance, use [`youtube-publish`](../../docs/youtube-publish.md). Show the plan and record the owner's approval before resuming the upload run.
 
 To re-review a committed correction, use [branch-review](../../docs/flow.md#branch-review) with the finished code package's `sourceRun` and an explicit `head`. Follow a completed branch review with `previousReview` set to its run ID. Use the same tree for the review and its verification evidence. To write corrections on a retained private candidate, start an isolated `code-package` with `sourceRun`, the same target base and a claim covering the inherited changes.
+
+The shared plugin supplies a short public build note at client startup through `zodchi release notes --hook`. Use `zodchi release current` to inspect the selected build. Hook trust follows the client settings.

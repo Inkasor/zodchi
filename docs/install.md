@@ -53,3 +53,7 @@ Use `zodchi flow status <run-id>` from either client to inspect an existing run.
 2. Read the latest release metadata and select the two assets named in the platform table. Download each `browser_download_url` from this repository and compare its bytes with the matching published `digest`. Run the executable after both checks pass. [Release metadata](https://api.github.com/repos/Inkasor/zodchi/releases/latest) · [GitHub release API](https://docs.github.com/en/rest/releases/releases#get-the-latest-release)
 3. Execute `release install` with the verified archive digest and only the installed clients requested by the user. Add the reported launcher directory to the user's PATH and preserve the current PATH entries.
 4. Verify the CLI with `zodchi release current` and `zodchi flow list`. Use the reported absolute launcher path if the current chat still has its startup environment. Confirm `zodchi@zodchi-local` with `codex plugin list --json` or `claude plugin list --json` for each connected client. Report the version, launcher path, connected clients and how to load the skills in the chat. Use the client's sign-in for any account step that needs the user.
+
+## Startup build note
+
+The shared plugin installs a `SessionStart` hook matching `startup`. It runs `zodchi release notes --hook` from PATH with a short timeout and provides a brief public build note. Client hook trust and approval follow the normal Codex or Claude Code settings. Run `zodchi release notes` for JSON, or `zodchi release current` for the selected build details.

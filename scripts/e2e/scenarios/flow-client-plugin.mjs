@@ -60,10 +60,37 @@ export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, r
     t.eq(JSON.parse(project.stdout).workflows, catalog.workflows.filter(entry => ["core", "video"].includes(entry.domain)), "repository catalog contains exactly core and configured video entries");
   });
 
+  scenario("flow-startup-release-note", "startup hook exposes only short public build notes", async (t) => {
+    const home = path.join(scratch, "notes-empty-home");
+    const env = { ...process.env, ZODCHI_HOME: home };
+    const invoke = (args) => spawnSync(ZODCHI, ["release", "notes", ...args], {
+      cwd: ROOT, env, input: JSON.stringify({ hook_event_name: "SessionStart", source: "startup", cwd: "private-marker" }),
+      encoding: "utf8", windowsHide: true,
+    });
+    const direct = invoke([]);
+    t.eq(direct.status, 0, "notes command succeeds");
+    const facts = JSON.parse(direct.stdout);
+    t.eq(facts.channel, "direct", "unmanaged binary reports direct");
+    t.ok(facts.highlights.length > 0, "public highlights are present");
+    const hook = invoke(["--hook"]);
+    t.eq(hook.status, 0, "hook command succeeds");
+    const output = JSON.parse(hook.stdout).hookSpecificOutput;
+    t.eq(output.hookEventName, "SessionStart", "hook event shape");
+    for (const hint of ["zodchi flow list", "zodchi flow <workflow> --help", "candidate-acceptance", "candidate build", "release-acceptance", "deployed release"]) {
+      t.ok(output.additionalContext.includes(hint), `startup note includes ${hint}`);
+    }
+    t.ok(output.additionalContext.length < 500 && !hook.stdout.includes("private-marker") && !hook.stdout.includes(home), "context is short and private input stays private");
+    t.ok(!fs.existsSync(home), "notes do not create a home");
+  });
+
   scenario("flow-client-plugin", "both client manifests share the same portable skills and release version", async (t) => {
     const output = path.join(scratch, "shared-client-plugin");
     const built = release(["marketplace", "--out", output]);
     const read = (file) => fs.readFileSync(path.join(built.root, file), "utf8");
+    const hookBytes = read("hooks/hooks.json");
+    t.eq(hookBytes, fs.readFileSync(path.join(ROOT, "install/session-start-hooks.json"), "utf8"), "both registrations share the source hook bytes");
+    const hook = JSON.parse(hookBytes).hooks.SessionStart[0];
+    t.eq([hook.matcher, hook.hooks[0].command, hook.hooks[0].timeout], ["startup", "zodchi release notes --hook", 5], "startup hook invokes the installed CLI");
     const portable = JSON.parse(read("plugin.json"));
     const codex = JSON.parse(read(".codex-plugin/plugin.json"));
     const claude = JSON.parse(read(".claude-plugin/plugin.json"));
@@ -84,6 +111,48 @@ export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, r
     const market = (file) => JSON.parse(fs.readFileSync(path.join(output, file), "utf8")).plugins[0];
     t.eq(market(".agents/plugins/marketplace.json").source.path, market(".claude-plugin/marketplace.json").source,
       "both local marketplaces point to the same installation payload");
+    // The fake clients implement marketplace add and plugin install in isolated directories.
+    // Each reads its own registration, so a missing or incorrect source cannot pass by
+    // inspecting only the builder's returned root.
+    const fixture = path.join(scratch, "plugin-client-fixture");
+    const bin = path.join(fixture, "bin");
+    fs.mkdirSync(bin, { recursive: true });
+    const clientScript = path.join(fixture, "client.cjs");
+    fs.writeFileSync(clientScript, `
+      const fs = require('node:fs'), path = require('node:path');
+      const client = path.basename(process.execPath).toLowerCase().startsWith('codex') ? 'codex' : 'claude';
+      const args = process.argv.slice(1), dir = path.join(process.env.FAKE_CLIENT_HOME, client);
+      args[0] = path.basename(args[0]); // Node resolves its would-be script argument to an absolute path.
+      fs.mkdirSync(dir, { recursive: true });
+      if (args[0] !== 'plugin') process.exit(2);
+      if (args[1] === 'marketplace' && args[2] === 'add') fs.writeFileSync(path.join(dir, 'market'), args[3]);
+      else if (args[1] === 'marketplace' && args[2] === 'remove') { /* no previous registration */ }
+      else if ((client === 'codex' && args[1] === 'add') || (client === 'claude' && args[1] === 'install')) {
+        if (args[2] !== 'zodchi@zodchi-local') process.exit(3);
+        const market = fs.readFileSync(path.join(dir, 'market'), 'utf8');
+        const manifest = client === 'codex' ? '.agents/plugins/marketplace.json' : '.claude-plugin/marketplace.json';
+        const entry = JSON.parse(fs.readFileSync(path.join(market, manifest), 'utf8')).plugins.find(p => p.name === 'zodchi');
+        const source = client === 'codex' ? entry.source.path : entry.source;
+        fs.cpSync(path.resolve(market, source), path.join(dir, 'installed'), { recursive: true });
+      } else process.exit(4);
+      process.exit(0);
+    `);
+    const ext = process.platform === "win32" ? ".exe" : "";
+    for (const client of ["codex", "claude"]) fs.copyFileSync(process.execPath, path.join(bin, client + ext));
+    const bundle = release(["build", "--out", path.join(fixture, "bundle"), "--archive"]);
+    const env = { ...process.env, ZODCHI_HOME: path.join(fixture, "home"), FAKE_CLIENT_HOME: fixture,
+      CODEX_HOME: path.join(fixture, "codex-config"), CLAUDE_CONFIG_DIR: path.join(fixture, "claude-config"),
+      ZODCHI_CODEX_BIN: path.join(bin, "codex" + ext), NODE_OPTIONS: `--require "${clientScript.replace(/\\/g, "/")}"` };
+    const pathKey = Object.keys(env).find(key => key.toUpperCase() === "PATH") || "PATH";
+    env[pathKey] = bin + path.delimiter + env[pathKey];
+    const installed = spawnSync(ZODCHI, ["release", "install", "--archive", bundle.archive, "--sha256", bundle.sha256, "--clients", "codex,claude"],
+      { cwd: fixture, env, encoding: "utf8", windowsHide: true });
+    t.log(installed.stderr);
+    t.eq(installed.status, 0, "installation registers both isolated clients");
+    for (const client of ["codex", "claude"]) {
+      t.eq(fs.readFileSync(path.join(fixture, client, "installed", "hooks", "hooks.json")).toString("hex"),
+        fs.readFileSync(path.join(ROOT, "install/session-start-hooks.json")).toString("hex"), `${client} installs the source hook bytes`);
+    }
     for (const name of built.skills) {
       const file = `skills/${name}/SKILL.md`;
       t.eq(read(file), fs.readFileSync(path.join(ROOT, file), "utf8"), `${name} is packaged from the common source`);
@@ -118,6 +187,10 @@ export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, r
     const { launcher, version, root } = JSON.parse(installed.stdout);
     t.eq([version, path.basename(root)], [built.version, built.version], "the installed release has an immutable version directory");
     const call = (args) => execFileSync(launcher, args, { env, cwd: scratch, encoding: "utf8", windowsHide: true });
+    const otherNotes = JSON.parse(execFileSync(ZODCHI, ["release", "notes"], { env, cwd: scratch, encoding: "utf8", windowsHide: true }));
+    t.eq(otherNotes.channel, "direct", "another executable does not claim the selected stable build");
+    const stableNotes = JSON.parse(call(["release", "notes"]));
+    t.eq([stableNotes.channel, stableNotes.version], ["stable", version], "selected stable child identifies itself");
     t.eq(call(["--version"]).trim(), "zodchi " + version, "the launcher starts the verified native binary");
     t.eq(JSON.parse(call(["flow", "list"])), JSON.parse(fs.readFileSync(path.join(ROOT, "workflows/catalog.json"), "utf8")), "the installed CLI uses the packaged catalog");
     t.ok(call(["roles"]).includes("code-review"), "installed roles travel with the executable");
@@ -162,6 +235,8 @@ export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, r
 
     const second = await activate(secondCommit);
     t.eq(second.launcher, first.launcher, "switching the DEV selection keeps the same launcher");
+    const notes = await invoke(second.launcher, ["release", "notes"]);
+    t.eq([notes.json.channel, notes.json.sourceCommit], ["dev", secondCommit], "notes identify the selected DEV child");
     const current = await invoke(second.launcher, ["release", "current"]);
     t.eq([current.json.channel, current.json.sourceCommit], ["dev", secondCommit], "new calls select the second build");
     const unavailable = first.cli + ".unavailable";

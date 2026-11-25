@@ -215,6 +215,11 @@ pub(super) fn build_marketplace(root: &Path, source: &Path) -> Result<Value> {
         false,
     )?;
     write_new(
+        &plugin.join("hooks/hooks.json"),
+        &regular(&source.join("install/session-start-hooks.json"))?,
+        false,
+    )?;
+    write_new(
         &plugin.join("LICENSE"),
         &regular(&source.join("LICENSE"))?,
         false,
