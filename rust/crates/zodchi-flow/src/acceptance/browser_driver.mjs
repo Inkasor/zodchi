@@ -1,15 +1,16 @@
 // Playwright adapter. Zodchi supplies one frozen scenario and reads its local receipt.
-import { readFile } from "node:fs/promises";
+import { readFile, lstat, mkdtemp, rename, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 
 const plan = JSON.parse(await readFile(process.argv[2], "utf8"));
 const [scenario, output] = [plan.scenario, plan.output];
-const evidence = { status: "blocked", steps: [], frames: [], network: [], console: [], consoleErrors: 0 };
+const evidence = { status: "blocked", steps: [], frames: [], downloads: [], network: [], console: [], consoleErrors: 0 };
 const adapterBlocked = new Set();
 let knownSessionValues = [];
 let browser;
 let page;
+let downloadDeadline;
 let activity = "validating the product origin";
 
 class Outcome extends Error {
@@ -106,11 +107,15 @@ async function unmet(rules, deadline) {
   const observations = await Promise.all(asRules(rules).map(async rule => {
     const locator = page.locator(rule.selector);
     const state = await locate(locator);
+    const expectedCount = rule.count ?? 1;
+    const normalize = text => text.replace(/[\s\u00a0]+/gu, " ").trim();
     const textMatched = rule.text === undefined ? null
-      : state.visible && (await locator.innerText({ timeout: left(deadline) })).trim() === rule.text;
-    return { selector: rule.selector, ...state, textMatched };
+      : state.visible && (rule.normalizeWhitespace
+        ? normalize(await locator.innerText({ timeout: left(deadline) })) === normalize(rule.text)
+        : (await locator.innerText({ timeout: left(deadline) })).trim() === rule.text);
+    return { selector: rule.selector, ...state, expectedCount, textMatched };
   }));
-  return observations.filter(row => !row.visible || row.textMatched === false);
+  return observations.filter(row => row.matches !== row.expectedCount || (row.expectedCount === 1 && !row.visible) || row.textMatched === false);
 }
 
 async function ready(expect, record, deadline) {
@@ -127,21 +132,85 @@ async function ready(expect, record, deadline) {
   }
 }
 
+async function withinDeadline(work, deadline, message, onTimeout) {
+  let timer;
+  try {
+    return await Promise.race([
+      work(),
+      new Promise((_, reject) => { timer = setTimeout(() => { onTimeout(); reject(new Outcome("fail", message)); }, left(deadline)); }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
+
 async function action(base, step, deadline, record) {
   if (step.open !== undefined) {
     const response = await page.goto(resolvePath(base, step.open).href, { waitUntil: "domcontentloaded", timeout: left(deadline) });
     require(response?.ok(), `The page returned HTTP ${response?.status() ?? "unknown"}.`, "fail");
     return;
   }
-  const selector = step.click ?? step.check?.selector ?? step.select.selector;
+  const selector = (typeof step.click === "string" ? step.click : step.click?.selector) ?? step.check?.selector ?? step.select?.selector ?? step.fill?.selector ?? step.hover ?? step.press?.selector;
   const target = page.locator(selector);
   try {
     if (step.click !== undefined) {
       const submits = await target.evaluate(element => Boolean(element.closest('button[type="submit"],input[type="submit"],input[type="image"],button:not([type])')?.form), {}, { timeout: left(deadline) });
-      require(!submits, "The requested click submits a form.");
-      await target.click({ timeout: left(deadline) });
+      require(!submits || plan.managedFixture === true, "The requested click submits a form.");
+      const click = typeof step.click === "string" ? {} : step.click;
+      if (click.popup) {
+        const event = page.waitForEvent("popup", { timeout: left(deadline) }).catch(error => { if (error.name === "TimeoutError") throw new Outcome("fail", "The click did not produce a popup within the time limit."); throw error; });
+        const [popup] = await Promise.all([event, target.click({ timeout: left(deadline) })]);
+        observePage(popup);
+        await popup.waitForLoadState("domcontentloaded", { timeout: left(deadline) }).catch(error => { if (error.name === "TimeoutError") throw new Outcome("fail", "The popup did not load within the time limit."); throw error; });
+        require(new URL(popup.url()).origin === base.origin, "The popup left the product origin.", "fail");
+        page = popup;
+      } else if (click.download) {
+        let download;
+        downloadDeadline = deadline;
+        try {
+          const event = page.waitForEvent("download", { timeout: left(deadline) }).catch(error => { if (error.name === "TimeoutError") throw new Outcome("fail", "The click did not produce a download within the time limit."); throw error; });
+          [download] = await Promise.all([event, target.click({ timeout: left(deadline) })]);
+        } finally { downloadDeadline = undefined; }
+        const destination = path.join(output, click.download);
+        const exists = await lstat(destination).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; });
+        require(!exists, "The download output already exists.", "fail");
+        const staging = await mkdtemp(path.join(output, ".download-"));
+        const stagedFile = path.join(staging, "file");
+        let timedOut = false;
+        const cleanup = () => rm(staging, { recursive: true, force: true }).catch(() => {});
+        const saving = (async () => {
+          try {
+            await download.saveAs(stagedFile);
+            const saved = await lstat(stagedFile).catch(() => null);
+            require(!(await download.failure()) && saved?.isFile(), "The download failed or did not create a regular output file.", "fail");
+          } catch (error) {
+            if (error instanceof Outcome) throw error;
+            throw new Outcome("fail", "The download failed while saving.");
+          } finally {
+            if (timedOut) await cleanup();
+          }
+        })();
+        try {
+          await withinDeadline(() => saving, deadline, "The download did not complete within the time limit.", () => {
+            timedOut = true;
+            Promise.resolve().then(() => download.cancel()).catch(() => {});
+          });
+          if (performance.now() >= deadline) {
+            Promise.resolve().then(() => download.cancel()).catch(() => {});
+            throw new Outcome("fail", "The download did not complete within the time limit.");
+          }
+          await rename(stagedFile, destination).catch(() => { throw new Outcome("fail", "The download failed while publishing."); });
+        } finally {
+          await cleanup();
+        }
+        evidence.downloads.push(click.download);
+      } else await target.click({ timeout: left(deadline) });
     } else if (step.check !== undefined) {
       await target.setChecked(step.check.checked, { timeout: left(deadline) });
+    } else if (step.fill !== undefined) {
+      await target.fill(step.fill.value, { timeout: left(deadline) });
+    } else if (step.hover !== undefined) {
+      await target.hover({ timeout: left(deadline) });
+    } else if (step.press !== undefined) {
+      await target.press(step.press.value, { timeout: left(deadline) });
     } else {
       await target.selectOption({ value: step.select.value }, { timeout: left(deadline) });
     }
@@ -157,13 +226,25 @@ async function action(base, step, deadline, record) {
   }
 }
 
+function observePage(target) {
+  target.on("pageerror", error => consoleError(error.message));
+  target.on("console", message => {
+    if (message.type() === "error") consoleError(message.text(), message.location().url);
+  });
+}
+
 async function view(base, step, index) {
   const record = { id: step.id, status: "fail", elapsedMs: null };
   evidence.steps.push(record);
   if (step.open === undefined) await frame(`${step.id}-before.png`);
   const began = performance.now();
   const timeout = timeoutOf(step);
-  await action(base, step, began + timeout, record);
+  try {
+    await action(base, step, began + timeout, record);
+  } catch (error) {
+    if (error instanceof Outcome) record.error = error.message;
+    throw error;
+  }
   await ready(step.expect, record, began + timeout);
   record.elapsedMs = Math.round(performance.now() - began);
   require(record.elapsedMs <= timeout, `The view needed ${record.elapsedMs} ms, above the ${timeout} ms limit.`, "fail");
@@ -214,7 +295,7 @@ try {
     };
     knownSessionValues = storageState.cookies.map(cookie => cookie.value).filter(value => value.length >= 8);
   }
-  const context = await browser.newContext({ storageState, serviceWorkers: "block", acceptDownloads: false, viewport: { width: 1280, height: 800 } });
+  const context = await browser.newContext({ storageState, serviceWorkers: "block", acceptDownloads: plan.managedFixture === true, viewport: { width: 1280, height: 800 } });
   require(typeof context.routeWebSocket === "function", "Playwright 1.48 or later is required for read-only browser routing.");
   await context.routeWebSocket(/.*/, socket => { network({ kind: "blocked websocket", path: pathname(socket.url()) }); return socket.close(); });
   await context.route(/.*/, async route => {
@@ -227,13 +308,14 @@ try {
       if (adapterBlocked.size < 128) adapterBlocked.add(url.href);
       return route.abort("blockedbyclient");
     };
-    if (!same || !["GET", "HEAD"].includes(method)) {
+    const allowedWrite = plan.managedFixture === true && (plan.allowedWrites ?? []).some(entry => entry.method === method && entry.path === url.pathname);
+    if (!same || (!["GET", "HEAD"].includes(method) && !allowedWrite)) {
       network({ kind: "blocked request", ...info });
       return block();
     }
     try {
       // Resolve the request here to gate redirects before any destination receives a request.
-      const response = await route.fetch({ maxRedirects: 0, timeout: 15000 });
+      const response = await route.fetch({ maxRedirects: 0, timeout: downloadDeadline === undefined ? 15000 : left(downloadDeadline) });
       try {
         if (response.status() >= 300 && response.status() < 400 && response.status() !== 304) {
           network({ kind: "blocked redirect", ...info, status: response.status() });
@@ -253,10 +335,7 @@ try {
     evidence.healthBefore = await checkHead(context, base);
   }
   page = await context.newPage();
-  page.on("pageerror", error => consoleError(error.message));
-  page.on("console", message => {
-    if (message.type() === "error") consoleError(message.text(), message.location().url);
-  });
+  observePage(page);
   for (const [index, step] of scenario.steps.entries()) {
     activity = `running step ${step.id}`;
     await view(base, step, index);

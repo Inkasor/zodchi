@@ -176,7 +176,10 @@ fn conditions(value: &Value, at: &str) -> Result<()> {
         std::slice::from_ref(value)
     };
     for rule in rules {
-        media::fields(rule, &["selector", "text"], at)?;
+        media::fields(rule, &["selector", "text", "count", "normalizeWhitespace"], at)?;
+        if rule.get("count").is_some() && !rule["count"].as_u64().is_some_and(|n| n <= 10000) { return fail(format!("{at}.count needs an integer from 0 to 10000.")); }
+        if rule.get("normalizeWhitespace").is_some() && !rule["normalizeWhitespace"].is_boolean() { return fail(format!("{at}.normalizeWhitespace must be boolean.")); }
+        if rule.get("text").is_some() && rule.get("count").is_some_and(|n| n != 1) { return fail(format!("{at}.text requires count 1.")); }
         media::text(&rule["selector"], &format!("{at}.selector"))?;
         if let Some(text) = rule.get("text") {
             media::text(text, &format!("{at}.text"))?;
@@ -185,14 +188,16 @@ fn conditions(value: &Value, at: &str) -> Result<()> {
     Ok(())
 }
 
-fn browser_scenario(scenario: &Value, steps: &[Value]) -> Result<Value> {
-    if steps[0].get("open").is_none() {
-        return fail("A browser scenario must start by opening a page.");
-    }
+fn browser_scenario(scenario: &Value, steps: &[Value], managed: bool) -> Result<Value> {
+    let mut downloads = Vec::new();
     if let Some(ready) = scenario.get("ready") {
-        conditions(ready, "scenario.ready")?;
+        conditions(ready, "scenario.ready").map_err(|error| GatewayError(format!("Scenario {}: {}", scenario["id"].as_str().unwrap_or("?"), error.0)))?;
     }
-    for step in steps {
+    for (index, step) in steps.iter().enumerate() {
+        (|| -> Result<()> {
+        if index == 0 && step.get("open").is_none() {
+            return fail("A browser scenario must start by opening a page.");
+        }
         media::fields(
             step,
             &[
@@ -201,12 +206,15 @@ fn browser_scenario(scenario: &Value, steps: &[Value]) -> Result<Value> {
                 "click",
                 "select",
                 "check",
+                "fill",
+                "hover",
+                "press",
                 "expect",
                 "maxSeconds",
             ],
             "browser step",
         )?;
-        if ["open", "click", "select", "check"]
+        if ["open", "click", "select", "check", "fill", "hover", "press"]
             .iter()
             .filter(|name| step.get(**name).is_some())
             .count()
@@ -220,8 +228,28 @@ fn browser_scenario(scenario: &Value, steps: &[Value]) -> Result<Value> {
             url_path(open, "open")?;
         }
         if let Some(click) = step.get("click") {
-            media::text(click, "click selector")?;
+            if click.is_string() { media::text(click, "click selector")?; } else {
+                media::fields(click, &["selector", "popup", "download"], "click")?;
+                media::text(&click["selector"], "click.selector")?;
+                if !managed && (click.get("popup").is_some() || click.get("download").is_some()) { return fail("Popup and download clicks require a managed fixture."); }
+                if click.get("popup").is_some() && click["popup"] != true { return fail("click.popup must be true."); }
+                if let Some(name) = click.get("download") {
+                    let name = media::text(name, "click.download")?;
+                    if !name.starts_with("download-") || name.len() > 100 || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)) || name.ends_with('.') { return fail("click.download needs a safe direct filename starting with download-."); }
+                    if downloads.iter().any(|existing: &&str| existing.eq_ignore_ascii_case(name)) || steps.iter().any(|s| { let id = s["id"].as_str().unwrap_or(""); name.eq_ignore_ascii_case(&format!("{id}-before.png")) || name.eq_ignore_ascii_case(&format!("{id}-after.png")) }) { return fail("Download filename conflicts with another artifact."); }
+                    downloads.push(name);
+                }
+                if click.get("popup").is_some() && click.get("download").is_some() { return fail("A click cannot declare both popup and download."); }
+            }
         }
+        for action in ["fill", "press"] {
+            if let Some(value) = step.get(action) {
+                media::fields(value, &["selector", "value"], action)?;
+                media::text(&value["selector"], &format!("{action}.selector"))?;
+                if !value["value"].as_str().is_some_and(|s| s.len() <= 4096 && !s.contains('\0')) { return fail(format!("{action}.value needs a bounded string.")); }
+            }
+        }
+        if let Some(hover) = step.get("hover") { media::text(hover, "hover selector")?; }
         if let Some(select) = step.get("select") {
             media::fields(select, &["selector", "value"], "select")?;
             media::text(&select["selector"], "select.selector")?;
@@ -236,6 +264,8 @@ fn browser_scenario(scenario: &Value, steps: &[Value]) -> Result<Value> {
         }
         conditions(&step["expect"], "expect")?;
         seconds(&step["maxSeconds"], 5, 60, "maxSeconds")?;
+        Ok(())
+        })().map_err(|error| GatewayError(format!("Scenario {} step {}: {}", scenario["id"].as_str().unwrap_or("?"), step["id"].as_str().unwrap_or("?"), error.0)))?;
     }
     if let Some(check) = scenario.get("apiCheck") {
         media::fields(
@@ -458,7 +488,7 @@ pub(super) fn prepare(workflow: &str, raw: &Value) -> Result<(Config, Value)> {
         let steps = list(&scenario["steps"], "steps", 1, 64)?;
         let names = ids(steps, "step id")?;
         scenarios.push(if workflow == RELEASE || managed {
-            browser_scenario(scenario, steps)?
+            browser_scenario(scenario, steps, managed)?
         } else {
             player_scenario(&repo, scenario, steps, &names)?
         });
@@ -471,7 +501,17 @@ pub(super) fn prepare(workflow: &str, raw: &Value) -> Result<(Config, Value)> {
         plan["setup"] = setup;
         plan["tree"] = tree;
         if managed {
-            plan["fixture"] = fixture::plan(&raw["fixture"], &repo, &git, &head)?;
+            let mut fixture_raw = raw["fixture"].clone();
+            let writes = fixture_raw.as_object_mut().and_then(|o| o.remove("allowedWrites")).unwrap_or(json!([]));
+            for write in list(&writes, "fixture.allowedWrites", 0, 32)? {
+                media::fields(write, &["method", "path"], "fixture.allowedWrites entry")?;
+                let method = media::text(&write["method"], "fixture.allowedWrites.method")?;
+                if !["POST", "PUT", "PATCH", "DELETE"].contains(&method) { return fail("fixture.allowedWrites.method must be POST, PUT, PATCH or DELETE."); }
+                url_path(&write["path"], "fixture.allowedWrites.path")?;
+                if write["path"].as_str().unwrap().split('/').any(|part| part == "." || part == "..") || write["path"].as_str().unwrap().contains(['?', '%', '*']) { return fail("fixture.allowedWrites.path must be an exact unescaped pathname."); }
+            }
+            plan["fixture"] = fixture::plan(&fixture_raw, &repo, &git, &head)?;
+            plan["fixture"]["allowedWrites"] = writes;
         }
     }
     let pair = if role.is_null() {

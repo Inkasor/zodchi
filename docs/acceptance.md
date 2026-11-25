@@ -43,12 +43,14 @@ For declarative browser steps against a local candidate, commit a Node fixture w
 {
   "repo": "/projects/dashboard", "head": "<candidate-commit>", "label": "Local browser candidate",
   "browser": { "executable": "/tools/chromium", "module": "/tools/playwright/index.js" },
-  "fixture": { "script": "tests/fixture.mjs", "timeoutSeconds": 30 },
+  "setup": ["npm ci", "npm run build"],
+  "fixture": { "script": "tests/fixture.mjs", "timeoutSeconds": 30,
+    "allowedWrites": [{ "method": "POST", "path": "/api/dashboard-runtime" }] },
   "scenarios": [{ "id": "overview", "steps": [{ "id": "open", "open": "/", "expect": { "selector": "#summary" } }] }]
 }
 ```
 
-Save this as `candidate.json`, replace the paths and commit SHA, then run `zodchi flow candidate-acceptance --args candidate.json`. The fixture may instead name an absolute caller-owned regular script, pinned by digest before and after execution. Optional `args` is an array of strings; `readyPrefix` replaces the default `ZODCHI_FIXTURE_READY ` prefix, and `timeoutSeconds` is 1 to 120 seconds. `ZODCHI_FIXTURE_OUTPUT` names a unique owned output directory. Optional `storageState` is a direct filename that the fixture writes there before readiness; the browser screens its contents as described below. Do not supply `baseUrl` or `health` in fixture mode. The browser is headless and applies the same origin, redirect and write restrictions as release acceptance. Local checkout evidence does not prove deployment; release acceptance still requires its health SHA checks.
+Save this as `candidate.json`, replace the paths and commit SHA, then run `zodchi flow candidate-acceptance --args candidate.json`. The fixture may instead name an absolute caller-owned regular script, pinned by digest before and after execution. Optional `args` is an array of strings; `readyPrefix` replaces the default `ZODCHI_FIXTURE_READY ` prefix, and `timeoutSeconds` is 1 to 120 seconds. `ZODCHI_FIXTURE_OUTPUT` names a unique owned output directory. Optional `storageState` is a direct filename that the fixture writes there before readiness; the browser screens its contents as described below. Do not supply `baseUrl` or `health` in fixture mode. The browser is headless and blocks writes by default. `allowedWrites` optionally lists up to 32 exact method and pathname pairs (POST, PUT, PATCH or DELETE); no query, percent escapes, dot segments or wildcards are allowed in the declaration. Only these same-origin requests are permitted, and redirects remain blocked. This allowance exists only for managed fixtures, never deployed or separately launched endpoints. Setup can install dependencies and build the UI: a healthy API alone does not guarantee `dist/index.html` exists. Local checkout evidence does not prove deployment; release acceptance still requires its health SHA checks.
 
 ## Browser
 
@@ -78,6 +80,10 @@ The product can publish its deployed revision at `GET /api/health` as `{"release
 `storageState` can point to a locally prepared Playwright state file for a read-only product identity. The adapter keeps site storage for the configured origin and cookies scoped to its host. This includes parent-domain cookies with a leading dot, such as `.example.test` for `dashboard.example.test`. A host-only cookie belongs to its exact host. Cookies, passwords, headers and full API payloads stay out of model requests. Screenshots and matched numeric values are local artifacts. The browser blocks write methods, WebSockets, redirects, cross-origin requests and service workers. Use the product's ordinary read-only permissions and a prepared session for pages that require authentication.
 
 Every scenario contains `id`, an optional `label`, and `steps`. Start with `open`, a path on the product origin. Later steps can use `click`, `select` with `{ "selector": "…", "value": "…" }`, or `check` with `{ "selector": "…", "checked": true }` or `false`. Each step has one action and an `expect`. A condition needs exactly one visible element matching `selector` and, if supplied, exact `text`.
+
+Additional actions use `"fill": {"selector":"#date", "value":"2026-11-25"}`, `"hover":"#menu"`, and `"press":{"selector":"#search", "value":"Enter"}`. Fill and press values are strings of at most 4096 bytes (fill can be empty). Action locators must identify one element. A managed fixture click can declare `"click":{"selector":"#open", "popup":true}` to continue in a same-origin popup, or `"click":{"selector":"#export", "download":"download-report.csv"}` to capture a download. Download names must start with `download-`, contain only ASCII letters, digits, dots, hyphens and underscores, be at most 100 bytes, and be unique without colliding with frames. A file must actually be saved and is pinned in the evidence. Popup and download are mutually exclusive.
+
+A condition can specify `"count":0` for absence or a bounded count up to 10000; the default is one visible element. `text` requires count one. `"normalizeWhitespace":true` collapses whitespace, including NBSP, before text comparison.
 
 Both `expect` and the optional scenario-level `ready` take one condition or an array of up to eight conditions, all required. Flow checks `ready` before evaluating a step's expectations and before reading the API comparison. Use a readiness selector that reflects the completion of the current load or filter change. `maxSeconds` measures from action to readiness and expectations. It accepts whole seconds from 1 to 60 and defaults to 5.
 

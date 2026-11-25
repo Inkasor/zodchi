@@ -89,12 +89,21 @@ test('${name}', async () => {
           if (storageState) fs.writeFileSync(${JSON.stringify(controls)}, JSON.stringify({
             cookies:storageState.cookies.map(cookie => cookie.name), origins:storageState.origins.map(row => row.origin),
           }) + '\\n');
+          const request = async (target, method) => route({request:()=>({url:()=>target, method:()=>method}),
+            abort:async()=>fs.appendFileSync(${JSON.stringify(controls)}, JSON.stringify({method,target,blocked:true}) + '\\n'),
+            fetch:async options=>{fs.appendFileSync(${JSON.stringify(controls)}, JSON.stringify({target,fetchTimeout:options.timeout}) + '\\n'); return {status:()=>200,dispose:async()=>{}};},
+            fulfill:async()=>fs.appendFileSync(${JSON.stringify(controls)}, JSON.stringify({method,target,allowed:true}) + '\\n')});
           return { async route(_, callback){route=callback;}, routeWebSocket:async()=>{}, request:{async get(endpoint) {
             const data = endpoint.endsWith('/amount') ? {spend:-1234.5} : {sha: endpoint.endsWith('/stale') ? 'b'.repeat(40) : ${JSON.stringify(f.base)}};
             return { ok:()=>true, status:()=>200, json:async()=>data, dispose:async()=>{} };
           }}, async newPage() {
             return { on:(event, handler)=>{events[event]=handler;}, url:()=>url, async goto(target){
               url=target;
+              if (url.endsWith('/writes')) {
+                await request(new URL('/api/dashboard-runtime?test=1', target).href, 'POST');
+                await request(new URL('/api/dashboard-runtime', target).href, 'PUT');
+                await request(new URL('/api/other', target).href, 'POST');
+              }
               if (url.endsWith('/diagnostics')) {
                 const blocked = new URL('/preferences?query_fixture=local-value#fragment', target).href;
                 const message = (text, source) => events.console({type:()=> 'error', text:()=>text, location:()=>({url:source})});
@@ -105,11 +114,21 @@ test('${name}', async () => {
               }
               return {ok:()=>true,status:()=>200};
             }, locator:selector=>({
-                async count(){return selector === '#missing' || (selector === '#ready' && url.endsWith('/loading')) ? 0 : 1;},
+                async count(){return selector === '#missing' || (selector === '#ready' && url.endsWith('/loading')) ? 0 : selector === '#multiple' ? 2 : 1;},
                 async isVisible(){return selector !== '#hidden';},
-                async innerText(){return selector === '#amount' ? 'Сумма −1 234,50 ₽ (за период)' : selector === '#result' ? '—' : String(checked);},
+                async innerText(){return selector === '#whitespace' ? 'alpha\u00a0  beta' : selector === '#amount' ? 'Сумма −1 234,50 ₽ (за период)' : selector === '#result' ? '—' : String(checked);},
+                async fill(value){fs.appendFileSync(${JSON.stringify(controls)}, JSON.stringify({selector,fill:value}) + '\\n');},
+                async hover(){fs.appendFileSync(${JSON.stringify(controls)}, JSON.stringify({selector,hover:true}) + '\\n');},
+                async press(value){fs.appendFileSync(${JSON.stringify(controls)}, JSON.stringify({selector,press:value}) + '\\n');},
+                async evaluate(){return false;},
+                async click(){if(selector === '#multiple') throw Object.assign(new Error('strict'), {name:'TimeoutError'}); if(url.endsWith('/budget-download')) await request(new URL(selector === '#button' ? '/export' : '/after-export', url).href, 'GET'); fs.appendFileSync(${JSON.stringify(controls)}, JSON.stringify({selector,click:true}) + '\\n');},
                 async setChecked(state){checked=state;fs.appendFileSync(${JSON.stringify(controls)}, JSON.stringify({selector,state}) + '\\n');},
-              }), screenshot:async ({path})=>fs.writeFileSync(path,Buffer.concat([png, Buffer.from(url)])) };
+              }), async waitForEvent(event) {
+                if (url.endsWith('/no-event')) throw Object.assign(new Error('event timeout'), {name:'TimeoutError'});
+                if (event === 'popup') return {on:()=>{}, url:()=>url.endsWith('/external-popup') ? 'https://outside.test/' : new URL('/popup', url).href,
+                  waitForLoadState:async()=>{}, locator:()=>({count:async()=>1,isVisible:async()=>true}), screenshot:async({path})=>fs.writeFileSync(path,png)};
+                return {saveAs:async destination=>{if(url.endsWith('/slow-download')) await new Promise(resolve=>setTimeout(resolve, 1500)); if(url.endsWith('/failed-download')) throw new Error('save failed'); if(!url.endsWith('/missing-download')) fs.writeFileSync(destination,'fixture download');}, failure:async()=>null, cancel:async()=>{fs.appendFileSync(${JSON.stringify(controls)}, JSON.stringify({cancelDownload:true}) + '\\n');}};
+              }, screenshot:async ({path})=>fs.writeFileSync(path,Buffer.concat([png, Buffer.from(url)])) };
           }};
         }};
       }};
@@ -124,6 +143,108 @@ test('${name}', async () => {
     const invoke = (argv, env = {}) => zodchi(t, f.w, ["flow", ...argv], { cwd: f.r, env: { ...f.w.env, ...env } });
     return { f, args, write, plan, calls, controls, invoke };
   }
+
+  scenario("flow-candidate-browser-actions", "validate managed browser actions and guards", async t => {
+    const { f, args, write, plan, controls, invoke } = fixture(t, "flow-candidate-browser-actions");
+    const script = path.join(f.r, "test/actions-fixture.mjs");
+    fs.writeFileSync(script, `import { createServer } from 'node:http';
+const server = createServer((req, res) => res.end('local'));
+server.listen(0, '127.0.0.1', () => console.log('baseUrl http://127.0.0.1:' + server.address().port));`);
+    gitOut(f.r, ["add", "--", "test/actions-fixture.mjs"]);
+    gitOut(f.r, ["commit", "-qm", "Add actions fixture"]);
+    plan.head = gitOut(f.r, ["rev-parse", "HEAD"]).trim();
+    delete plan.baseUrl; delete plan.health;
+    plan.fixture = { script: "test/actions-fixture.mjs", readyPrefix: "baseUrl ", allowedWrites: [{method:"POST", path:"/api/dashboard-runtime"}] };
+    plan.scenarios = [{ id:"actions", steps:[
+      {id:"open", open:"/", expect:[{selector:"#missing", count:0}, {selector:"#whitespace", text:"alpha beta", normalizeWhitespace:true}]},
+      {id:"fill", fill:{selector:"#date", value:"2026-11-25"}, expect:{selector:"#summary"}},
+      {id:"hover", hover:"#menu", expect:{selector:"#summary"}},
+      {id:"press", press:{selector:"#search", value:"Enter"}, expect:{selector:"#summary"}},
+      {id:"click", click:"#button", expect:{selector:"#summary"}}
+    ] }];
+    write();
+    const result = await invoke(["candidate-acceptance", "--args", args]);
+    t.eq(result.json?.verdict, "pass", "actions and normalized and zero-count assertions pass");
+    const actions = fs.readFileSync(controls, "utf8");
+    t.ok(actions.includes('2026-11-25') && actions.includes('hover') && actions.includes('Enter'), "actions reach the browser");
+    const opening = plan.scenarios[0].steps[0];
+    opening.expect = {selector:"#whitespace", text:" alpha\u00a0  beta "}; opening.maxSeconds = 1; write();
+    t.eq((await invoke(["candidate-acceptance", "--args", args])).json?.verdict, "fail", "exact text keeps expectation whitespace unless normalization is enabled");
+    opening.expect.normalizeWhitespace = true; write();
+    t.eq((await invoke(["candidate-acceptance", "--args", args])).json?.verdict, "pass", "normalization is opt-in");
+    opening.expect = [{selector:"#missing", count:0}, {selector:"#whitespace", text:"alpha beta", normalizeWhitespace:true}]; delete opening.maxSeconds;
+    const last = plan.scenarios[0].steps.at(-1);
+    last.click = {selector:"#button", popup:true}; write();
+    t.eq((await invoke(["candidate-acceptance", "--args", args])).json?.verdict, "pass", "same-origin popup is accepted");
+    plan.scenarios[0].steps[0].open = "/external-popup"; write();
+    const external = await invoke(["candidate-acceptance", "--args", args]);
+    t.eq([external.json?.verdict, external.json?.scenarios?.[0]?.observed?.steps?.at(-1)?.id], ["fail", "click"], "external popup fails at its click step");
+    plan.scenarios[0].steps[0].open = "/";
+    last.click = {selector:"#button", download:"download-report.csv"}; write();
+    const downloaded = await invoke(["candidate-acceptance", "--args", args]);
+    t.eq(downloaded.json?.verdict, "pass", "download succeeds");
+    t.eq(downloaded.json?.scenarios?.[0]?.downloads?.length, 1, "download has pinned evidence");
+    const pin = downloaded.json?.scenarios?.[0]?.downloads?.[0];
+    t.ok(pin && path.basename(pin.path) === "download-report.csv" && fs.readFileSync(pin.path, "utf8") === "fixture download" && /^[a-f0-9]{64}$/.test(pin.sha256), "download evidence identifies the saved output and digest");
+    plan.scenarios[0].steps[0].open = "/budget-download"; last.maxSeconds = 30;
+    plan.scenarios[0].steps.push({id:"after-export", click:"#after", expect:{selector:"#summary"}}); write();
+    const budgetDownload = await invoke(["candidate-acceptance", "--args", args]);
+    const budgetCalls = fs.readFileSync(controls, "utf8").trim().split('\n').map(line => JSON.parse(line));
+    t.eq(budgetDownload.json?.verdict, "pass", "download with a longer deadline succeeds");
+    t.ok(budgetCalls.some(row => row.target?.endsWith('/export') && row.fetchTimeout > 15000 && row.fetchTimeout <= 30000), "routed download uses the remaining click budget");
+    t.ok(budgetCalls.some(row => row.target?.endsWith('/after-export') && row.fetchTimeout === 15000), "later requests use the default fetch timeout");
+    plan.scenarios[0].steps.pop(); delete last.maxSeconds;
+    plan.scenarios[0].steps[0].open = "/missing-download"; write();
+    t.eq((await invoke(["candidate-acceptance", "--args", args])).json?.verdict, "fail", "missing download cannot pass");
+    plan.scenarios[0].steps[0].open = "/slow-download"; last.maxSeconds = 1; write();
+    const slow = await invoke(["candidate-acceptance", "--args", args]);
+    t.ok(slow.json?.verdict === "fail" && /download did not complete/i.test(JSON.stringify(slow.json)) && slow.json?.scenarios?.[0]?.observed?.steps?.at(-1)?.id === "click", "download completion respects the click deadline");
+    const slowOutput = path.join(f.w.zhome, "flows", slow.json.runId, "acceptance", "actions", "browser");
+    t.ok(!fs.existsSync(path.join(slowOutput, "download-report.csv")) && !fs.readdirSync(slowOutput).some(name => name.startsWith('.download-')) && fs.readFileSync(controls, 'utf8').includes('"cancelDownload":true'), "timed-out download is canceled and leaves no output or staging file");
+    plan.scenarios[0].steps[0].open = "/failed-download"; write();
+    const failedDownload = await invoke(["candidate-acceptance", "--args", args]);
+    t.ok(failedDownload.json?.verdict === "fail" && /download failed while saving/i.test(JSON.stringify(failedDownload.json?.scenarios?.[0]?.observed?.steps?.at(-1))) && failedDownload.json?.scenarios?.[0]?.observed?.steps?.at(-1)?.id === "click", "save rejection is reported on the click step");
+    plan.scenarios[0].steps[0].open = "/no-event"; write();
+    const noDownload = await invoke(["candidate-acceptance", "--args", args]);
+    t.ok(noDownload.json?.verdict === "fail" && /did not produce a download/i.test(JSON.stringify(noDownload.json)), "missing download event is reported");
+    last.click = {selector:"#button", popup:true}; write();
+    const noPopup = await invoke(["candidate-acceptance", "--args", args]);
+    t.ok(noPopup.json?.verdict === "fail" && /did not produce a popup/i.test(JSON.stringify(noPopup.json)), "missing popup event is reported");
+    delete last.maxSeconds;
+    plan.scenarios[0].steps[0].open = "/";
+    last.click = "#multiple"; write();
+    const multiple = await invoke(["candidate-acceptance", "--args", args]);
+    t.eq([multiple.json?.verdict, multiple.json?.scenarios?.[0]?.observed?.steps?.at(-1)?.target?.matches], ["fail", 2], "ambiguous action fails at its locator");
+    last.click = "#button"; plan.scenarios[0].steps[0].open = "/writes"; write();
+    const writes = await invoke(["candidate-acceptance", "--args", args]);
+    const writeControls = fs.readFileSync(controls, "utf8").trim().split('\n').map(line => JSON.parse(line));
+    t.eq(writes.json?.verdict, "pass", "fixture continues after routed writes");
+    for (const [method, pathname, decision] of [["POST", "/api/dashboard-runtime", "allowed"], ["PUT", "/api/dashboard-runtime", "blocked"], ["POST", "/api/other", "blocked"]]) {
+      t.ok(writeControls.some(row => row.method === method && row.target && new URL(row.target).pathname === pathname && row[decision] === true && !row[decision === "allowed" ? "blocked" : "allowed"]), `${method} ${pathname} is ${decision}`);
+    }
+    plan.scenarios[0].steps[0].open = "/";
+    last.id = "export-report"; last.click = {selector:"#button", download:"../escape"}; write();
+    const invalidDownload = await invoke(["candidate-acceptance", "--args", args]);
+    t.ok(invalidDownload.json?.status === "refused" && (invalidDownload.json?.reason ?? "").includes("Scenario actions step export-report:"), "download path refusal identifies scenario and step");
+    const originalOpen = plan.scenarios[0].steps[0];
+    plan.scenarios[0].steps[0] = {id:"first-input", fill:{selector:"#date", value:"test"}, expect:{selector:"#summary"}}; write();
+    const invalidFirst = await invoke(["candidate-acceptance", "--args", args]);
+    t.ok(invalidFirst.json?.status === "refused" && (invalidFirst.json?.reason ?? "").includes("Scenario actions step first-input:"), "first action refusal identifies scenario and step");
+    plan.scenarios[0].steps[0] = originalOpen;
+    plan.scenarios[0].ready = {selector:"#summary", count:-1}; write();
+    const invalidReady = await invoke(["candidate-acceptance", "--args", args]);
+    t.ok(invalidReady.json?.status === "refused" && (invalidReady.json?.reason ?? "").includes("Scenario actions:"), "readiness refusal identifies scenario");
+    delete plan.scenarios[0].ready;
+    last.click = {selector:"#button", popup:true, download:"download-report.csv"}; write();
+    t.eq((await invoke(["candidate-acceptance", "--args", args])).json?.status, "refused", "popup and download cannot be combined");
+    last.click = "#button"; plan.fixture.allowedWrites = [{method:"POST",path:"/api/../other"}]; write();
+    t.eq((await invoke(["candidate-acceptance", "--args", args])).json?.status, "refused", "non-exact write path is refused");
+    plan.fixture.allowedWrites = [{method:"POST",path:"/api/*"}]; write();
+    t.eq((await invoke(["candidate-acceptance", "--args", args])).json?.status, "refused", "wildcard write path is refused");
+    plan.fixture.allowedWrites = []; plan.scenarios[0].steps[0].open = "/diagnostics"; write();
+    const blocked = await invoke(["candidate-acceptance", "--args", args]);
+    t.ok(blocked.json?.scenarios?.[0]?.observed?.network?.some(row => row.kind === "blocked request" && row.method === "POST"), "undeclared write is blocked");
+  });
 
   scenario("flow-candidate-acceptance-fixture", "run managed local fixtures with isolated browser scenarios", async t => {
     const { f, args, write, plan, calls, invoke } = fixture(t, "flow-candidate-acceptance-fixture");

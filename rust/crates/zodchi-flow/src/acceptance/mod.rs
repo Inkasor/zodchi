@@ -255,6 +255,7 @@ impl Engine {
         if !self.plan()["fixture"].is_null() {
             if !self.plan()["fixture"]["pin"].is_null() { media::checked(&self.plan()["fixture"]["pin"])?; }
             for frame in items(&result["frames"]) { media::checked(frame)?; }
+            for file in items(&result["downloads"]) { media::checked(file)?; }
             if !result["fixtureStorageState"].is_null() { media::checked(&result["fixtureStorageState"])?; }
             return Ok(());
         }
@@ -596,6 +597,7 @@ impl Engine {
         }
         let config = self.journal.write_value(&format!("acceptance/{id}/browser/input.json"), &json!({
             "baseUrl": fixture.map(|(origin, _)| json!(origin)).unwrap_or_else(|| browser["baseUrl"].clone()), "managedFixture": fixture.is_some(), "health": browser["health"], "head": self.run["head"], "scenario": scenario,
+            "allowedWrites": if fixture.is_some() { self.plan()["fixture"]["allowedWrites"].clone() } else { json!([]) },
             "output": dir, "module": module, "executable": executable, "storageState": storage, "isolation": browser["isolation"] }))?;
         self.journal.append(
             json!({ "kind": "intent", "step": step, "attempt": 1, "effect": "browser scenario" }),
@@ -664,11 +666,18 @@ impl Engine {
             return fail("Invalid browser receipt status.");
         }
         let frames = frame_list(&dir, &observed["frames"])?;
+        let mut downloads = Vec::new();
+        for name in items(&observed["downloads"]) {
+            let name = media::text(name, "download name")?;
+            let file = media::owned(&dir, name)?;
+            if !fs::symlink_metadata(&file)?.is_file() { return fail("Download must be a regular output file."); }
+            downloads.push(media::pin(&file)?);
+        }
         let mut status = observed["status"].clone();
         if tool["inputDesktopPreserved"] == false {
             status = json!("blocked");
         }
-        let result = json!({ "id": id, "status": status, "observed": observed, "tool": tool, "frames": frames });
+        let result = json!({ "id": id, "status": status, "observed": observed, "tool": tool, "frames": frames, "downloads": downloads });
         if fixture.is_some() { Ok(result) } else { self.persist(&step, &receipt, result) }
     }
 
