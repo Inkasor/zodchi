@@ -192,6 +192,7 @@ pub(super) fn build_marketplace(root: &Path, source: &Path) -> Result<Value> {
         "workspace-audit.md",
         "design-brief.md",
         "flow.md",
+        "ops-script.md",
         "flow-video.md",
         "voiceover.md",
         "youtube-publish.md",

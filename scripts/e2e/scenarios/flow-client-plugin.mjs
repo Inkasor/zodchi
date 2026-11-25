@@ -15,7 +15,7 @@ export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, r
     const list = call(["list"]);
     t.eq(list.status, 0, "catalog succeeds without an account");
     const catalog = JSON.parse(list.stdout);
-    t.eq(catalog.workflows.length, 14, "all workflows remain available");
+    t.eq(catalog.workflows.length, 15, "all workflows remain available");
     const help = call(["--help"]);
     t.eq(help.status, 0, "general help succeeds");
     t.eq(JSON.parse(help.stdout).catalog, catalog, "general help uses the shared catalog");

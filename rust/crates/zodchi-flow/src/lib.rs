@@ -21,6 +21,7 @@ mod design_brief;
 mod design_material;
 mod input;
 mod method_question;
+mod ops_script;
 pub mod executor;
 pub mod gateway;
 pub mod git;
@@ -110,7 +111,7 @@ pub fn cli(args: &[String]) -> Result<Exit> {
         }
         _ => {}
     }
-    if ![code_package::WORKFLOW, branch_review::NAME, design_brief::NAME, method_question::NAME, rubric_probe::NAME, unity_check::NAME, workspace_audit::NAME, asset_round::NAME, video::NAME, voiceover::NAME, acceptance::RELEASE, acceptance::PLAYER, acceptance::CANDIDATE, youtube_publish::NAME].contains(&workflow.as_str()) {
+    if ![ops_script::NAME, code_package::WORKFLOW, branch_review::NAME, design_brief::NAME, method_question::NAME, rubric_probe::NAME, unity_check::NAME, workspace_audit::NAME, asset_round::NAME, video::NAME, voiceover::NAME, acceptance::RELEASE, acceptance::PLAYER, acceptance::CANDIDATE, youtube_publish::NAME].contains(&workflow.as_str()) {
         return fail(format!("No workflow {workflow:?} in zodchi flow. Run zodchi flow list for the catalog.\n{USAGE}"));
     }
     let mut file = None;
@@ -146,7 +147,9 @@ pub fn cli(args: &[String]) -> Result<Exit> {
             if rerun.is_some() {
                 return fail("--rerun goes with --resume <run-id>");
             }
-            if workflow == branch_review::NAME {
+            if workflow == ops_script::NAME {
+                ops_script::start(&given, detach)
+            } else if workflow == branch_review::NAME {
                 branch_review::start(&given, detach)
             } else if workflow == design_brief::NAME {
                 design_brief::start(&given, detach)

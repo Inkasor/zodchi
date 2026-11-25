@@ -327,6 +327,7 @@ fn start_run(raw: &Value, detach: bool, id: Option<&str>) -> Result<Exit> {
         }
     }
     let executors = if server.is_some() { "codex via server" } else { "codex only" };
+    let is_child = id.is_some();
     let id = id.map(String::from).unwrap_or_else(crate::journal::new_run_id);
     let browser = match &args.browser {
         Some((variable, path)) => match gateway::pin_browser(variable, Path::new(path)) {
@@ -350,10 +351,12 @@ fn start_run(raw: &Value, detach: bool, id: Option<&str>) -> Result<Exit> {
             "executors": executors, "checksEnvironment": "exported candidate tree, reduced environment" },
     });
     let journal = Journal::create(&cfg.home, &id, &run)?;
+    if is_child { cut("code-package context"); }
     journal.write_text("brief.md", &brief)?;
     if let Some(text) = &review_md {
         journal.write_text("REVIEW.base.md", text)?;
     }
+    if is_child { journal.write_text("initialized", "1\n")?; }
     if detach {
         return crate::control::launch(&journal, &id, None);
     }
