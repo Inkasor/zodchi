@@ -2117,7 +2117,7 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zodchi-cli"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "base64 0.22.1",
  "flate2",
@@ -2130,7 +2130,7 @@ dependencies = [
 
 [[package]]
 name = "zodchi-core"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -2144,7 +2144,7 @@ dependencies = [
 
 [[package]]
 name = "zodchi-flow"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "base64 0.22.1",
  "form_urlencoded",
@@ -2159,7 +2159,7 @@ dependencies = [
 
 [[package]]
 name = "zodchi-server"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "base64 0.22.1",
  "hex",
