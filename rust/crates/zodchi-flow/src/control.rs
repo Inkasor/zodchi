@@ -1,4 +1,4 @@
-use crate::{acceptance, asset_round, branch_review, code_package, design_brief, input, journal::{last_state_event, Journal}, method_question, rubric_probe, unity_check, video, voiceover, workspace_audit, youtube_publish, Exit};
+use crate::{acceptance, asset_round, branch_review, code_package, design_brief, incident_triage, input, journal::{last_state_event, Journal}, method_question, rubric_probe, unity_check, video, voiceover, workspace_audit, youtube_publish, Exit};
 use serde_json::{json, Value};
 use std::ffi::OsString;
 use zodchi_core::config::Config;
@@ -229,6 +229,7 @@ fn resume_workflow(workflow: &str, id: &str, given: Option<&Value>, rerun: Optio
         code_package::WORKFLOW => code_package::resume(id, given, rerun),
         branch_review::NAME => branch_review::resume(id, given, rerun),
         design_brief::NAME => design_brief::resume(id, given, rerun),
+        incident_triage::NAME => incident_triage::resume(id, given, rerun),
         method_question::NAME => method_question::resume(id, given, rerun),
         rubric_probe::NAME => rubric_probe::resume(id, given, rerun),
         unity_check::NAME => unity_check::resume(id, given, rerun),

@@ -91,7 +91,7 @@ ended `ok`. An adapter without a `release` operation can never produce `stale`.
 ## What the core makes of it
 
 For each run the workflow builds a plan: the report, every operation with its arguments checked, the agent skill and
-each allow-list. A generated collector runs the plan with node and writes `rev-<n>/evidence.json`. Every item has:
+each allow-list. The native collector runs the plan and writes `rev-<n>/evidence.json`. Every item has:
 
 | Field | What it is |
 | --- | --- |
@@ -165,4 +165,4 @@ Every name here is made up.
 }
 ```
 
-The fixtures in `scripts/e2e/fixtures/incident-triage/cases/` hold more adapters of the same made-up product; the cases run with `node scripts/e2e.mjs --no-build incident-triage-kinds incident-triage-adapter-refused` (and the other `incident-triage-*` scenarios), and `npm run e2e` runs them with the rest.
+The fixtures in `scripts/e2e/fixtures/incident-triage/cases/` hold more adapters of the same made-up product. Run their scenarios with `node scripts/e2e.mjs --no-build flow-incident-triage-fixture-bad-adapter flow-incident-triage-fixture-access-in-gap flow-incident-triage-fixture-agent-capability flow-incident-triage-fixture-stale-no-deploy`.

@@ -27,6 +27,17 @@
       }
     },
     {
+      "name": "incident-triage",
+      "version": "1",
+      "domain": "core",
+      "purpose": "Collect bounded local incident evidence and prepare a classified draft.",
+      "limits": "Read-only adapter operations and one classifier; no dispatch or publication.",
+      "required": ["repo", "incident", "adapter", "tmp"],
+      "anyOf": [["report"], ["reportFile"]],
+      "docs": "docs/incident-triage.md",
+      "example": {"repo": "/project", "incident": "case-1", "adapter": "/project/adapter.json", "tmp": "/tmp/case-1", "report": "Describe the incident"}
+    },
+    {
       "name": "design-brief",
       "version": "2",
       "domain": "core",

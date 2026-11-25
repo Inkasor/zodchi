@@ -73,28 +73,32 @@ pub fn ask(journal: &mut Journal, cfg: &Config, call: Call<'_>, validate: impl F
     ask_normalizing(journal, cfg, call, |data| validate(data))
 }
 
+pub(crate) fn ask_without_resubmission(journal: &mut Journal, cfg: &Config, call: Call<'_>, validate: impl Fn(&Value) -> std::result::Result<(), String>) -> std::result::Result<Value, CallError> {
+    ask_with(journal, cfg, call, None, None, None, &[], false, |data| validate(data))
+}
+
 pub(crate) fn ask_normalizing(
     journal: &mut Journal,
     cfg: &Config,
     call: Call<'_>,
     validate: impl Fn(&mut Value) -> std::result::Result<(), String>,
 ) -> std::result::Result<Value, CallError> {
-    ask_with(journal, cfg, call, None, None, None, &[], validate)
+    ask_with(journal, cfg, call, None, None, None, &[], true, validate)
 }
 
 pub(crate) fn ask_budgeted(journal: &mut Journal, cfg: &Config, call: Call<'_>, budget: Option<Budget>, browser: Option<&Value>, owner_private_places: &[(String, &str)], validate: impl Fn(&Value) -> std::result::Result<(), String>) -> std::result::Result<Value, CallError> {
-    ask_with(journal, cfg, call, None, budget, browser, owner_private_places, |data| validate(data))
+    ask_with(journal, cfg, call, None, budget, browser, owner_private_places, true, |data| validate(data))
 }
 
 pub(crate) fn ask_decision(
     journal: &mut Journal, cfg: &Config, call: Call<'_>, material: Decision<'_>,
     validate: impl Fn(&Value) -> std::result::Result<(), String>,
 ) -> std::result::Result<Value, CallError> {
-    ask_with(journal, cfg, call, Some(material), None, None, &[], |data| validate(data))
+    ask_with(journal, cfg, call, Some(material), None, None, &[], true, |data| validate(data))
 }
 
 fn ask_with(
-    journal: &mut Journal, cfg: &Config, call: Call<'_>, decision: Option<Decision<'_>>, budget: Option<Budget>, browser: Option<&Value>, owner_private_places: &[(String, &str)],
+    journal: &mut Journal, cfg: &Config, call: Call<'_>, decision: Option<Decision<'_>>, budget: Option<Budget>, browser: Option<&Value>, owner_private_places: &[(String, &str)], resubmit: bool,
     validate: impl Fn(&mut Value) -> std::result::Result<(), String>,
 ) -> std::result::Result<Value, CallError> {
     let Call { id, step, round, role, pick, schema, prompt, writer_workspace } = call;
@@ -235,7 +239,7 @@ fn ask_with(
             data
         } else if writer_workspace.is_some() && status == "timeout" && fin["turnStartedAt"].is_string() {
             json!({ "status": "more", "summary": "The writer's turn timed out. Inspect the private workspace for edits written before the timeout.", "questions": [] })
-        } else if exec.died_before_turn(&fin) && retries < 2 {
+        } else if resubmit && exec.died_before_turn(&fin) && retries < 2 {
             reserve(journal)?;
             check_browser()?;
             retries += 1;
