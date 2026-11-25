@@ -60,6 +60,11 @@
       "domain": "video"
     },
     {
+      "name": "candidate-acceptance",
+      "version": "1",
+      "domain": "web-apps"
+    },
+    {
       "name": "release-acceptance",
       "version": "1",
       "domain": "web-apps"

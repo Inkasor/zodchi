@@ -102,7 +102,7 @@ pub fn cli(args: &[String]) -> Result<Exit> {
         }
         _ => {}
     }
-    if ![code_package::WORKFLOW, branch_review::NAME, design_brief::NAME, method_question::NAME, rubric_probe::NAME, unity_check::NAME, workspace_audit::NAME, asset_round::NAME, video::NAME, voiceover::NAME, acceptance::RELEASE, acceptance::PLAYER, youtube_publish::NAME].contains(&workflow.as_str()) {
+    if ![code_package::WORKFLOW, branch_review::NAME, design_brief::NAME, method_question::NAME, rubric_probe::NAME, unity_check::NAME, workspace_audit::NAME, asset_round::NAME, video::NAME, voiceover::NAME, acceptance::RELEASE, acceptance::PLAYER, acceptance::CANDIDATE, youtube_publish::NAME].contains(&workflow.as_str()) {
         return fail(format!("No workflow {workflow:?} in zodchi flow. Run zodchi flow list for the catalog.\n{USAGE}"));
     }
     let mut file = None;
@@ -158,7 +158,7 @@ pub fn cli(args: &[String]) -> Result<Exit> {
                 voiceover::start(&given, detach)
             } else if workflow == youtube_publish::NAME {
                 youtube_publish::start(&given)
-            } else if [acceptance::RELEASE, acceptance::PLAYER].contains(&workflow.as_str()) {
+            } else if [acceptance::RELEASE, acceptance::PLAYER, acceptance::CANDIDATE].contains(&workflow.as_str()) {
                 acceptance::start(workflow, &given, detach)
             } else if detach {
                 code_package::start_detached(&given)

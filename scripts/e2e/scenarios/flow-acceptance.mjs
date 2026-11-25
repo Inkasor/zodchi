@@ -1,7 +1,76 @@
 import fs from "node:fs";
 import path from "node:path";
 
-export default function register({ scenario, flowWorld, zodchi }) {
+export default function register({ scenario, flowWorld, gitOut, zodchi }) {
+  scenario("flow-candidate-acceptance", "accept committed local candidate tests and resume receipts", async t => {
+    const f = flowWorld(t, "flow-candidate-acceptance");
+    fs.appendFileSync(path.join(f.r, ".gitignore"), "\nnode_modules/\n");
+    const png = "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c63e8a908f80f00053c02545f6c61f20000000049454e44ae426082";
+    for (const name of ["first", "second"]) {
+      fs.writeFileSync(path.join(f.r, `test/${name}.mjs`), `import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { createServer } from 'node:http';
+test('${name}', async () => {
+  assert.equal(fs.readFileSync('node_modules/prepared', 'utf8'), 'ready');
+  assert.equal(fs.realpathSync.native(process.env.WB_TEST_CHROME).toLowerCase(), fs.realpathSync.native(process.execPath).toLowerCase());
+  if (process.platform === 'win32') assert.ok(!process.env.WB_TEST_CHROME.startsWith('\\\\\\\\?\\\\'));
+  const frames = path.resolve(process.env.ZODCHI_ACCEPTANCE_FRAMES);
+  assert.equal(path.basename(frames), 'frames');
+  assert.equal(path.basename(path.dirname(frames)), '${name}');
+  const server = createServer((req,res) => res.end('local'));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try { assert.equal(await (await fetch('http://127.0.0.1:' + server.address().port)).text(), 'local'); }
+  finally { await new Promise(resolve => server.close(resolve)); }
+  fs.appendFileSync('node_modules/${name}-calls', '1');
+  fs.writeFileSync(path.join(frames, 'screen.png'), Buffer.from('${png}', 'hex'));
+});`);
+    }
+    fs.writeFileSync(path.join(f.r, "test/skip.mjs"), "import test from 'node:test'; process.stderr.write('# pass 1\\n'); test.skip('skipped', () => {});");
+    fs.writeFileSync(path.join(f.r, "test/missing.mjs"), "import test from 'node:test'; test('pass', () => {});");
+    fs.writeFileSync(path.join(f.r, "test/fail.mjs"), "import test from 'node:test'; process.stderr.write(Buffer.from([255])); test('fail', () => { throw new Error('fixture failure'); });");
+    fs.writeFileSync(path.join(f.r, "test/verbose.mjs"), "import test from 'node:test'; test('verbose', () => { console.log('x'.repeat(17 * 1024 * 1024)); });");
+    gitOut(f.r, ["add", "--", ".gitignore", "test/first.mjs", "test/second.mjs", "test/skip.mjs", "test/missing.mjs", "test/fail.mjs", "test/verbose.mjs"]);
+    gitOut(f.r, ["commit", "-qm", "Add candidate fixture tests"]);
+    const head = gitOut(f.r, ["rev-parse", "HEAD"]).trim();
+    fs.writeFileSync(path.join(f.r, "test/first.mjs"), "throw new Error('dirty live file');");
+    const plan = { repo: f.r, head, label: "Candidate", browser: { node: process.execPath, executable: process.execPath, variable: "WB_TEST_CHROME" },
+      setup: ["mkdir -p node_modules && printf ready > node_modules/prepared && printf 1 >> node_modules/setup-calls"], review: "Check both screens",
+      scenarios: ["first", "second"].map(id => ({ id, label: id, test: `test/${id}.mjs`, frames: ["screen.png"] })) };
+    const args = path.join(f.w.dir, "candidate.json");
+    const invoke = (argv, env = {}) => zodchi(t, f.w, ["flow", ...argv], { cwd: f.r, env: { ...f.w.env, ...env } });
+    const write = () => fs.writeFileSync(args, JSON.stringify(plan));
+    f.answer("visual-review", { verdict: "pass", reason: "Both frames" });
+    write();
+    const stagingCut = await invoke(["candidate-acceptance", "--args", args], { ZODCHI_FLOW_CUT: "acceptance checkout staging" });
+    t.eq(stagingCut.code, 75, "cut while checkout staging is incomplete");
+    const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
+    const cut = await invoke(["candidate-acceptance", "--resume", id], { ZODCHI_FLOW_CUT: "acceptance receipt candidate test:first" });
+    t.eq(cut.code, 75, "cut after the first test receipt");
+    const reviewCut = await invoke(["candidate-acceptance", "--resume", id], { ZODCHI_FLOW_CUT: "acceptance model visual-review" });
+    t.eq(reviewCut.code, 75, "cut after the visual review result is durable");
+    t.eq(f.steps(), ["visual-review"], "visual review ran once before the cut");
+    const completed = await invoke(["candidate-acceptance", "--resume", id]);
+    t.eq([completed.code, completed.json?.verdict, completed.json?.head], [0, "pass", head], "both committed tests and review pass");
+    t.eq(completed.json.scenarios.map(s => [s.id, s.tool.exitCode, s.frames.length]), [["first", 0, 1], ["second", 0, 1]], "real exit and image receipts");
+    const checkout = path.join(completed.json.journal, "candidate-checkout");
+    const tree = gitOut(f.r, ["rev-parse", `${head}^{tree}`]);
+    t.eq([gitOut(checkout, ["rev-parse", "HEAD"]).trim(), completed.json.tree, fs.readFileSync(path.join(checkout, "node_modules/setup-calls"), "utf8"), fs.readFileSync(path.join(checkout, "node_modules/first-calls"), "utf8"), fs.readFileSync(path.join(checkout, "node_modules/second-calls"), "utf8")], [head, tree, "1", "1", "1"], "pinned checkout, tree and no replay");
+    t.ok(completed.json.scenarios.every(s => s.head === head && s.tree === tree && /^[a-f0-9]{64}$/.test(s.frames[0].sha256)), "scenario receipts identify source and image digests");
+    t.eq([completed.json.review.answer.verdict, completed.json.review.answer.reason, f.steps()], ["pass", "Both frames", ["visual-review"]], "resume reuses the durable visual verdict without another model call");
+    plan.scenarios = [{ id: "bad", test: "../escape.mjs" }]; write();
+    t.eq((await invoke(["candidate-acceptance", "--args", args])).json?.status, "refused", "escaping test is refused");
+    plan.scenarios = [{ id: "skip", test: "test/skip.mjs" }]; delete plan.review; write();
+    t.eq((await invoke(["candidate-acceptance", "--args", args])).json?.verdict, "fail", "skip-only test cannot pass despite a positive stderr diagnostic");
+    plan.scenarios = [{ id: "verbose", test: "test/verbose.mjs" }]; write();
+    t.eq((await invoke(["candidate-acceptance", "--args", args])).json?.verdict, "pass", "the final TAP summary survives output larger than 16 MiB");
+    plan.review = "Check image"; plan.scenarios = [{ id: "missing", test: "test/missing.mjs", frames: ["missing.png"] }]; write();
+    t.eq((await invoke(["candidate-acceptance", "--args", args])).json?.verdict, "blocked", "missing image blocks review");
+    plan.scenarios = [{ id: "failed", test: "test/fail.mjs", frames: ["missing.png"] }]; write();
+    const failed = await invoke(["candidate-acceptance", "--args", args]);
+    t.eq([failed.json?.verdict, failed.json?.scenarios?.[0]?.status, failed.json?.scenarios?.[0]?.tool?.exitCode], ["fail", "fail", 1], "failed test exit is retained with invalid UTF-8 and a missing frame");
+  });
   function fixture(t, name) {
     const f = flowWorld(t, name);
     const calls = path.join(f.w.dir, "browser-calls");

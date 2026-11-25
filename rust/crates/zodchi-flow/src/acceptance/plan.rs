@@ -1,4 +1,4 @@
-use super::{PLAYER, RELEASE};
+use super::{candidate, CANDIDATE, PLAYER, RELEASE};
 use crate::{catalog, git::Git, input, journal, models, video_media as media};
 use serde_json::{json, Map, Value};
 use std::{
@@ -12,7 +12,7 @@ use zodchi_core::{
     util::{fail, iso, sha256_hex, GatewayError, Result},
 };
 
-fn list<'a>(value: &'a Value, at: &str, min: usize, max: usize) -> Result<&'a [Value]> {
+pub(super) fn list<'a>(value: &'a Value, at: &str, min: usize, max: usize) -> Result<&'a [Value]> {
     value
         .as_array()
         .filter(|items| (min..=max).contains(&items.len()))
@@ -57,7 +57,7 @@ fn pointer(value: &Value, at: &str) -> Result<()> {
     Ok(())
 }
 
-fn relative(value: &Value, at: &str) -> Result<()> {
+pub(super) fn relative(value: &Value, at: &str) -> Result<()> {
     let s = media::text(value, at)?;
     if !crate::patch::plain(s) || s.contains('\\') {
         return fail(format!("{at} needs a relative file path."));
@@ -77,7 +77,7 @@ fn url_path(value: &Value, at: &str) -> Result<()> {
     Ok(())
 }
 
-fn seconds(value: &Value, default: u64, max: u64, at: &str) -> Result<u64> {
+pub(super) fn seconds(value: &Value, default: u64, max: u64, at: &str) -> Result<u64> {
     if value.is_null() {
         return Ok(default);
     }
@@ -87,11 +87,11 @@ fn seconds(value: &Value, default: u64, max: u64, at: &str) -> Result<u64> {
         .ok_or_else(|| GatewayError(format!("{at} needs a duration from 1 to {max} seconds.")))
 }
 
-fn pin(repo: &Path, value: &Value, at: &str) -> Result<Value> {
+pub(super) fn pin(repo: &Path, value: &Value, at: &str) -> Result<Value> {
     media::pin(&media::file(repo, value, at)?)
 }
 
-fn from_path(name: &str) -> Result<PathBuf> {
+pub(super) fn from_path(name: &str) -> Result<PathBuf> {
     let name = if cfg!(windows) {
         format!("{name}.exe")
     } else {
@@ -396,6 +396,8 @@ pub(super) fn prepare(workflow: &str, raw: &Value) -> Result<(Config, Value)> {
     ];
     let extras: &[&str] = if workflow == RELEASE {
         &["baseUrl", "health", "browser", "storageState"]
+    } else if workflow == CANDIDATE {
+        &["browser", "setup"]
     } else {
         &[]
     };
@@ -415,7 +417,7 @@ pub(super) fn prepare(workflow: &str, raw: &Value) -> Result<(Config, Value)> {
     } else if workflow == PLAYER {
         git.rev("HEAD^{commit}")?
     } else {
-        return fail("release-acceptance requires the deployed commit in head.");
+        return fail(if workflow == RELEASE { "release-acceptance requires the deployed commit in head." } else { "candidate-acceptance requires an explicit commit in head." });
     };
     catalog::require(&git, &head, workflow)?;
     if workflow == PLAYER && !cfg!(windows) {
@@ -424,6 +426,8 @@ pub(super) fn prepare(workflow: &str, raw: &Value) -> Result<(Config, Value)> {
     let cfg = Config::new(Some(&repo))?;
     let browser = if workflow == RELEASE {
         browser_plan(raw, &cfg, &repo)?
+    } else if workflow == CANDIDATE {
+        candidate::browser_plan(raw, &repo)?
     } else {
         Value::Null
     };
@@ -434,12 +438,18 @@ pub(super) fn prepare(workflow: &str, raw: &Value) -> Result<(Config, Value)> {
     for scenario in sources {
         let fields: &[&str] = if workflow == RELEASE {
             &["id", "label", "steps", "ready", "apiCheck"]
+        } else if workflow == CANDIDATE {
+            &["id", "label", "test", "timeoutSeconds", "frames"]
         } else {
             &["id", "label", "steps"]
         };
         media::fields(scenario, fields, "scenario")?;
         if let Some(label) = scenario.get("label") {
             media::owner_words(label)?;
+        }
+        if workflow == CANDIDATE {
+            scenarios.push(candidate::scenario(&git, &head, scenario)?);
+            continue;
         }
         let steps = list(&scenario["steps"], "steps", 1, 64)?;
         let names = ids(steps, "step id")?;
@@ -450,7 +460,13 @@ pub(super) fn prepare(workflow: &str, raw: &Value) -> Result<(Config, Value)> {
         });
     }
     let role = role(raw, &cfg, &repo)?;
-    let plan = json!({ "scenarios": scenarios, "browser": browser, "choose": raw["choose"], "review": raw["review"], "role": role });
+    let setup = if workflow == CANDIDATE { candidate::setup(raw)? } else { Value::Null };
+    let tree = if workflow == CANDIDATE { json!(git.rev(&format!("{head}^{{tree}}"))?) } else { Value::Null };
+    let mut plan = json!({ "scenarios": scenarios, "browser": browser, "choose": raw["choose"], "review": raw["review"], "role": role });
+    if workflow == CANDIDATE {
+        plan["setup"] = setup;
+        plan["tree"] = tree;
+    }
     let pair = if role.is_null() {
         Value::Null
     } else {

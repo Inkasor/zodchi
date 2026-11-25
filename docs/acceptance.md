@@ -1,9 +1,10 @@
 # UI acceptance
 
-`release-acceptance` checks a deployed web application. `player-acceptance` runs a project's prepared Windows player scenario. Both use the local Rust executor and the same run journal from Codex, Claude Code or another terminal.
+`release-acceptance` checks a deployed web application. `candidate-acceptance` runs committed project tests against a local candidate. `player-acceptance` runs a project's prepared Windows player scenario. They use the local Rust executor and the same run journal from Codex, Claude Code or another terminal.
 
 ```text
 zodchi flow release-acceptance --args <file.json> --detach
+zodchi flow candidate-acceptance --args <file.json> --detach
 zodchi flow player-acceptance --args <file.json> --detach
 zodchi flow status <run-id> --handoff
 zodchi flow <workflow> --resume <run-id> --detach
@@ -11,7 +12,28 @@ zodchi flow <workflow> --resume <run-id> --detach
 
 Start the workflow on the machine that can run the browser or player. A Windows private desktop requires the local interactive user session. The executor records whether the input desktop stayed the same. A completed run exits 0 on `pass` and 2 on `fail`, `blocked` or `unclear`. Status displays the completed scenarios and evidence path. Resuming reuses recorded tool and model receipts. If a tool ran and lost its receipt, the run stops at the uncertain effect. Inspect its log and use a new run if a repeat is appropriate.
 
-Both workflows take an absolute Git `repo`, a `label` and a `scenarios` array. Supply `head` to pin a commit SHA. The player workflow uses the repository's HEAD when it is omitted. All scenarios run in order unless `choose` supplies a goal. In that case the `acceptor` chooses a subset of the declared IDs from their labels. The engine runs the selected scenarios in plan order. Add `review` with a visual criterion to let the `acceptor` assess the final frames after the scripted checks pass. Include only material that the project permits sending to the model. Selection and visual review default to Terra 6.1 `medium` via Codex. Use the usual `models.acceptor` role table to override it. Runs with neither `choose` nor `review` execute with zero model calls.
+All workflows take an absolute Git `repo`, a `label` and a `scenarios` array. Supply `head` to pin a commit SHA. The player workflow uses the repository's HEAD when it is omitted. All scenarios run in order unless `choose` supplies a goal. In that case the `acceptor` chooses a subset of the declared IDs from their labels. The engine runs the selected scenarios in plan order. Add `review` with a visual criterion to let the `acceptor` assess the final frames after the scripted checks pass. Include only material that the project permits sending to the model. Selection and visual review default to Terra 6.1 `medium` via Codex. Use the usual `models.acceptor` role table to override it. Runs with neither `choose` nor `review` execute with zero model calls.
+
+## Local candidate
+
+```json
+{
+  "repo": "/projects/dashboard", "head": "<candidate-commit>", "label": "Local candidate",
+  "setup": ["npm ci"],
+  "browser": { "executable": "/tools/chromium", "variable": "WB_TEST_CHROME" },
+  "review": "Check both screens",
+  "scenarios": [
+    { "id": "overview", "label": "Overview", "test": "tests/overview.mjs", "frames": ["overview.png"] },
+    { "id": "details", "test": "tests/details.mjs", "timeoutSeconds": 120, "frames": ["details.png"] }
+  ]
+}
+```
+
+The required `head` identifies the exact commit; tests must be regular files committed at explicit repo-relative paths. Flow creates a private checkout with that commit as HEAD and verifies its tree and tracked state before setup, each test and each result. Setup is an optional list of shell commands, run once in order with the bounded checks runner; dependencies and generated files must be ignored or written to the supplied output folder. A lost setup or test receipt after execution stops the run rather than replaying an uncertain effect.
+
+`browser.executable` names the dedicated Chromium executable; `browser.node` optionally names Node, otherwise Node is found on PATH. Tests receive the Chromium path in `ZODCHI_ACCEPTANCE_CHROMIUM`, or in the uppercase environment variable named by `browser.variable`, and a unique scenario output directory in `ZODCHI_ACCEPTANCE_FRAMES`. Only the reduced tool environment and these paths are passed. Flow invokes Node with `--test --test-reporter=tap`; a successful exit must include passed tests. Each `frames` entry is a distinct direct image filename in that output directory. Visual review requires at least one verified image per selected scenario, supports up to six selected scenarios and reports omitted frames.
+
+These are trusted project programs: they start their own headless browser and local fixture server. They are not network or filesystem sandboxes. Do not use a production browser profile or an external production site. This local candidate evidence does not establish which commit is deployed; use release acceptance for that check.
 
 ## Browser
 

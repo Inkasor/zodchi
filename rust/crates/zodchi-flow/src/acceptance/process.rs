@@ -31,6 +31,7 @@ pub(super) struct Tool<'a> {
     pub seconds: u64,
     pub private_desktop: bool,
     pub stdout: Option<PipeWriter>,
+    pub stdout_file: Option<File>,
 }
 
 pub(super) fn run(
@@ -38,6 +39,13 @@ pub(super) fn run(
     journal: &mut Journal,
     step: &str,
     attempt: u32,
+) -> Result<Value> {
+    run_with_env(tool, journal, step, attempt, &[])
+}
+
+pub(super) fn run_with_env(
+    tool: Tool<'_>, journal: &mut Journal, step: &str, attempt: u32,
+    extra: &[(&str, &Path)],
 ) -> Result<Value> {
     let began = Instant::now();
     let log = File::create_new(tool.log)?;
@@ -58,15 +66,17 @@ pub(super) fn run(
         return fail("A private Windows desktop requires a Windows host.");
     }
     let mut command = command_without_window(tool.program);
-    let stdout = match tool.stdout {
-        Some(pipe) => Stdio::from(pipe),
-        None => Stdio::from(log.try_clone()?),
+    let stdout = match (tool.stdout, tool.stdout_file) {
+        (_, Some(file)) => Stdio::from(file),
+        (Some(pipe), None) => Stdio::from(pipe),
+        (None, None) => Stdio::from(log.try_clone()?),
     };
     command
         .args(tool.args)
         .current_dir(tool.cwd)
         .env_clear()
         .envs(environment())
+        .envs(extra.iter().map(|(key, value)| (*key, *value)))
         .stdin(Stdio::null())
         .stdout(stdout)
         .stderr(Stdio::from(log));
