@@ -1,0 +1,8 @@
+{
+  "description": "Classify an incident from its supplied evidence bundle without tools.",
+  "mode": "expert",
+  "model": "gpt-6.2-sol",
+  "effort": "medium",
+  "frame": "incident-classify.md",
+  "schema": "incident-classify.schema.json"
+}

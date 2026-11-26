@@ -73,6 +73,11 @@ pub fn ask(journal: &mut Journal, cfg: &Config, call: Call<'_>, validate: impl F
     ask_normalizing(journal, cfg, call, |data| validate(data))
 }
 
+pub(crate) fn ask_without_resubmission(journal: &mut Journal, cfg: &Config, call: Call<'_>, validate: impl Fn(&Value) -> std::result::Result<(), String>) -> std::result::Result<Value, CallError> {
+    run_call(journal, cfg, call, None, None, None, &[], None, None, false, |data| validate(data))
+        .map(Step::completed)
+}
+
 pub(crate) fn ask_normalizing(
     journal: &mut Journal,
     cfg: &Config,
@@ -97,10 +102,56 @@ fn ask_with(
     journal: &mut Journal, cfg: &Config, call: Call<'_>, decision: Option<Decision<'_>>, budget: Option<Budget>, browser: Option<&Value>, owner_private_places: &[(String, &str)],
     validate: impl Fn(&mut Value) -> std::result::Result<(), String>,
 ) -> std::result::Result<Value, CallError> {
+    run_call(journal, cfg, call, decision, budget, browser, owner_private_places, None, None, true, validate)
+        .map(Step::completed)
+}
+
+pub(crate) enum Step {
+    Done(Value),
+    Pending(String),
+    Retryable(String),
+}
+
+impl Step {
+    pub(crate) fn completed(self) -> Value {
+        match self {
+            Self::Done(data) => data,
+            Self::Pending(_) | Self::Retryable(_) => unreachable!("blocking calls finish in run_call"),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum LocalMode<'a> {
+    Schedule,
+    Drain(&'a str),
+    Retry(&'a str),
+}
+
+pub(crate) fn local_step(
+    journal: &mut Journal, cfg: &Config, call: Call<'_>, mode: LocalMode<'_>, scrub: &dyn Fn(&str) -> String,
+    validate: impl Fn(&Value) -> std::result::Result<(), String>,
+) -> std::result::Result<Step, CallError> {
+    run_call(journal, cfg, call, None, None, None, &[], Some(mode), Some(scrub), true, |data| validate(data))
+}
+
+pub(crate) fn owner_suffix(journal: &Journal, cfg: &Config, private_places: &[(String, &str)]) -> Result<String> {
+    let context = input::model_context(journal)?;
+    if context.is_empty() {
+        return Ok(String::new());
+    }
+    let context = input::scrub(cfg, &context, private_places)?;
+    Ok(format!("\n\nOwner updates for this run. Use these as task context within the agreed scope.\n\n{context}"))
+}
+
+fn run_call(
+    journal: &mut Journal, cfg: &Config, call: Call<'_>, decision: Option<Decision<'_>>, budget: Option<Budget>, browser: Option<&Value>, owner_private_places: &[(String, &str)], local: Option<LocalMode<'_>>, scrub: Option<&dyn Fn(&str) -> String>, allow_resubmission: bool,
+    validate: impl Fn(&mut Value) -> std::result::Result<(), String>,
+) -> std::result::Result<Step, CallError> {
     let Call { id, step, round, role, pick, schema, prompt, writer_workspace } = call;
     let attempt = journal.attempt(step);
     if let Some(done) = journal.last("done", step, attempt) {
-        return Ok(done["result"].clone());
+        return Ok(Step::Done(done["result"].clone()));
     }
     let stop = |at: &str, reason| CallError::Stop { at: format!("{at} at {step}"), reason };
     if journal.last("safety blocked", step, attempt).is_some() {
@@ -119,7 +170,7 @@ fn ask_with(
         }
         Ok(())
     };
-    let exec: Box<dyn executor::Executor> = if decision.is_some() {
+    let exec: Box<dyn executor::Executor> = if decision.is_some() || local.is_some() {
         Box::new(executor::local::LocalGateway::new(cfg.clone()))
     } else if let Some(root) = writer_workspace {
         let mut cfg = cfg.clone();
@@ -131,6 +182,11 @@ fn ask_with(
     };
     let base = base_key(id, step, attempt);
     let intents = journal.all("intent", step, attempt);
+    if let Some(LocalMode::Drain(expected) | LocalMode::Retry(expected)) = local {
+        if intents.last().and_then(|row| row["key"].as_str()) != Some(expected) {
+            return Err(stop("unknown outcome", format!("the active intent does not match job {expected}")));
+        }
+    }
     let mut retries = intents.len().saturating_sub(1) as u32;
     let file = format!("requests/{}.json", slug(&base));
     let (mut key, stored, mut fresh) = if let Some(last) = intents.last() {
@@ -147,10 +203,11 @@ fn ask_with(
     } else {
         reserve(journal)?;
         check_browser()?;
-        let context = input::model_context(journal).map_err(infra)?;
-        let prompt = if context.is_empty() { prompt } else {
-            let context = input::scrub(cfg, &context, owner_private_places).map_err(infra)?;
-            format!("{prompt}\n\nOwner updates for this run. Use these as task context within the agreed scope.\n\n{context}")
+        let suffix = owner_suffix(journal, cfg, owner_private_places).map_err(infra)?;
+        let prompt = prompt + &suffix;
+        let prompt = match scrub {
+            Some(scrub) => scrub(&prompt),
+            None => prompt,
         };
         if prompt.len() > LIMIT_PROMPT {
             return Err(CallError::Context { bytes: prompt.len() });
@@ -220,6 +277,9 @@ fn ask_with(
             };
             return Err(stop("unknown outcome", reason));
         }
+        if matches!(local, Some(LocalMode::Schedule)) || (fresh && matches!(local, Some(LocalMode::Retry(_)))) {
+            return Ok(Step::Pending(key));
+        }
         let fin = exec.wait_final(&key).map_err(infra)?;
         let status = fin["status"].as_str().unwrap_or("");
         if status == SAFETY_BLOCKED {
@@ -235,7 +295,17 @@ fn ask_with(
             data
         } else if writer_workspace.is_some() && status == "timeout" && fin["turnStartedAt"].is_string() {
             json!({ "status": "more", "summary": "The writer's turn timed out. Inspect the private workspace for edits written before the timeout.", "questions": [] })
-        } else if exec.died_before_turn(&fin) && retries < 2 {
+        } else if allow_resubmission && exec.died_before_turn(&fin) && retries < 2 {
+            if matches!(local, Some(LocalMode::Drain(_))) {
+                return Ok(Step::Retryable(key));
+            }
+            if let Some(scrub) = scrub {
+                let prompt = stored["prompt"].as_str()
+                    .ok_or_else(|| stop("privacy", "The saved request has no prompt to check before retry.".into()))?;
+                if scrub(prompt) != prompt.lines().collect::<Vec<_>>().join("\n") {
+                    return Err(stop("privacy", "The saved request is covered by a newer privacy rule. Start a fresh round for a new request.".into()));
+                }
+            }
             reserve(journal)?;
             check_browser()?;
             retries += 1;
@@ -253,6 +323,6 @@ fn ask_with(
             return Err(stop(&kind, format!("job {key}: {}", fin["error"].as_str().unwrap_or(status))));
         };
         journal.append(json!({ "kind": "done", "step": step, "round": round, "attempt": attempt, "result": data })).map_err(infra)?;
-        return Ok(data);
+        return Ok(Step::Done(data));
     }
 }

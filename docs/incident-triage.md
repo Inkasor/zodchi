@@ -1,6 +1,6 @@
 # Incident triage design
 
-The old Claude workflow has been retired. This document records the adapter and evidence contract for a future Rust workflow. `incident-triage` and `ops-script` are pending in the shared catalog.
+The native `incident-triage` workflow is available in the shared catalog. `ops-script` is pending.
 
 `incident-triage` takes a user's error report ("the job stopped", "the form asks me something I cannot answer", "a
 release is blocked by a process nobody can identify") to a draft: a saved evidence bundle, a classification, the reply
@@ -30,57 +30,28 @@ folder, not in this repository.
 
 - `params` are the values the adapter's operations take, read off the report by the lead. Each is checked against
   its pattern and refused when it holds a character a shell gives meaning to.
-- `repo` is where the gateway runs when the classifier is a Codex model (the role `architect` by default; `role` picks
-  another). Without it, or without a Codex limit, the first Claude candidate of the role classifies.
+- `repo` is the Git checkout used by the local Codex gateway. The model is selected from the `architect` role by default; `role` selects another model role. The shipped expert classifier frame is required.
 - One folder per incident. A second run in the same folder is a new revision; it never edits an older one.
 
-## What runs where
+## Native invocation and recovery
 
-Version 1 used a helper for the commands `incident-open`, `incident-collect`, `incident-publish`,
-`incident-fail` and `incident-unlock`. Its runner called the helper once per step and returned its JSON line.
-The workflow compared that line against the `lineSha256` the
-helper printed with it, so a line that was not copied exactly is no answer, and decides from its parsed fields. No file
-content passes through a model in either direction: the adapter, `incident.json`, the collector's output, the evidence
-bundle and the classifier's answer stay on disk and come back as hashes and small, capped fields. The only text a model
-writes on purpose is the classifier's answer, which it writes into its own answer file. The redacted report is the
-one input of the workflow that travels in a command (the spec of `incident-collect`); the helper answers its hash
-(`reportSha256`) and the workflow refuses a report that did not arrive exactly. The other inputs the revision is made from
-(the operation values, the values the workflow withheld, the classifier and the revision) travel in the same command, so
-the workflow also sends `inputSha256`, the SHA-256 of the canonical JSON (sorted keys) of all of them with the report; the
-helper makes and runs nothing unless it computes the same digest. An existing `incident.json` must be a record of this
-incident whose state and every history entry's state is one of `collecting`, `classified`, `drafted`, `needs-evidence`,
-`failed`, with whole revision numbers from 1; anything else refuses the run and the file is left as it is.
+Save the inputs as JSON, then run:
 
-| Step | Who | What |
-| --- | --- | --- |
-| Open | runner runs `incident-open` | the lock with this run's token, `incident.json` (whether it exists apart from what it holds), the `rev-<n>` folders, the adapter: its hash and its check |
-| Facts | runner runs `incident-collect` | `rev-<n>` and its generated files, one run of the collector, the check of its output and of `evidence.json` |
-| Classify | the gateway (Codex) or a Claude subagent | the answer file `rev-<n>/classification.raw.json`; the runner only says how the job ended |
-| Draft | runner runs `incident-publish` | the answer file and its hash, the checks below, `classification.json`, `draft.md`, `incident.json` |
-| end | runner runs `incident-fail`, then `incident-unlock` | a revision that did not publish is marked failed (and that write checked) before the lock goes; the lock goes only with this run's token |
+```sh
+zodchi flow incident-triage --args incident.json
+zodchi flow incident-triage --args incident.json --detach
+zodchi flow status <run-id>
+zodchi flow incident-triage --resume <run-id>
+zodchi flow incident-triage --resume <run-id> --rerun classify
+```
 
-## What happens
+Supply exactly one of `report` and `reportFile`. A detached run returns its run ID; resume does not need the input file. A stopped classifier is rerun only when explicitly requested. Otherwise its recorded key is reused; an unknown job outcome is not submitted again. The selected classifier and local executor configuration are checked against the values pinned at preparation.
 
-1. **Open** (runner). The gate reads the role table, the account and whether the repository ignores `.agent-tmp/`.
-   Then the helper takes the lock `<tmp>/.lock` (one run per incident) and reads the adapter and its SHA-256 and
-   `incident.json`. It says whether `incident.json` exists apart from what it holds: an existing file that is not a
-   record of this incident (an empty string included) is refused, never taken for a new incident. The helper checks the
-   adapter's version and shape; a bad adapter stops the run before anything is executed.
-2. **Facts** (runner). The helper builds the plan: the report (its secrets redacted by the workflow before it reaches any
-   file or prompt), each operation with its arguments checked, the agent skill and the allow-lists. A generated collector
-   runs it with node, without a shell, each operation with its time limit
-   and output cap, from the adapter's folder, under your own permissions. A failed, refused or timed-out operation is
-   recorded and the others go on; one that depends on it is skipped with the reason. Nothing is retried or worked
-   around, and a refused read never turns into a request for access. The result is `rev-<n>/evidence.json`: one item
-   per source, each with an evidence id, its outcome, a bounded excerpt with secrets redacted, and the truncated and
-   missing marks.
-3. **Classify** (one call of a strong model, no tools). The request is built from the adapter and fixed text only; the
-   report and every product output reach the model as the attached bundle, marked as data. The answer: findings (each
-   with a kind, a confidence and the evidence ids it rests on, plus a summary in the model's own words), gaps (missing evidence and the operation that would supply it, or the
-   product report to build when none exists), one route, plain facts for the reporter, and the model's own wording (a
-   suggested reply, a line for the lead, the route's reason).
-4. **Draft** (a runner runs the helper, which reads the answer file and publishes). The answer is checked before
-   anything is written as a draft:
+The native runner validates the adapter and model before incident reads. It collects bounded local operations directly, without a shell, and redacts the report and outputs before storage or model input. The classifier receives the adapter and evidence as untrusted data. Each read is journaled before execution and has a receipt afterward. A read interrupted without a receipt remains unresolved and is never repeated. The incident lock prevents concurrent revisions; resume must retain its own lock. Published artifact bytes are reconciled against existing files and mismatches are refused.
+
+The runner prepares a complete owner record in a per-run staging directory before publishing `.lock`. After the final result it moves its lock to a per-run release directory and records completion before cleaning it up. Resume can finish either interrupted transition without removing a later run's lock. Existing legacy locks, including empty or malformed ones, are never adopted or cleared.
+
+The classifier answer is checked before a draft is written:
    - an evidence id that is not in the bundle refuses the answer;
    - a finding about what agents may do must cite both the agent skill and an allow-list;
    - a text the lead acts on (the question for the owner, each gap's what and proposal, every
@@ -148,11 +119,7 @@ is copied from them to the reporter as it stands.
 <tmp>/rev-<n>/adapterHash    the SHA-256 of the adapter this revision used
 ```
 
-`state` is `drafted`, `needs-evidence` or `failed` (`collecting` and `classified` only while a run works). A run that
-was cut off leaves its revision incomplete and its lock in place: make sure no run works on the incident, then run
-again with `breakLock: true`; the new run starts the next revision. A run that fails marks its revision `failed` in
-`incident.json` and checks that write before it removes the lock; when the write cannot be verified, the lock stays and
-the result says so (`persistError`, `lockLeft`): set the state by hand, then remove the lock.
+`state` is `drafted`, `needs-evidence` or `failed`; `collecting` and `classified` are intermediate states. Resume an interrupted run by its original ID. If a lock is lost, held by another run, or an external read has an unresolved outcome, the workflow stops rather than repeating the read or taking another run's lock.
 
 ## After the draft: phases 4-6 by hand
 
@@ -183,7 +150,3 @@ reply meanwhile.
 - Product decisions are marked for the owner, never taken silently.
 - An allow-list refusal names what is allowed ([patterns.md](patterns.md)); a product that refuses without saying so
   is a `product-bug` of its own.
-
-## Helper checks
-
-`node scripts/e2e.mjs --no-build io-helper-incident-lock io-helper-incident-link io-helper-incident-collect-publish` exercises the helper in a test directory.

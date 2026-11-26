@@ -1,0 +1,8 @@
+{
+  "description": "Answer one question for an owner's research round.",
+  "mode": "expert",
+  "model": "gpt-6.2-sol",
+  "effort": "high",
+  "frame": "research-expert.md",
+  "schema": "research-expert.schema.json"
+}

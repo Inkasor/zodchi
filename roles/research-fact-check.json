@@ -1,0 +1,8 @@
+{
+  "description": "Check the listed factual claims against the exact indexed excerpts.",
+  "mode": "expert",
+  "model": "gpt-6.1-terra",
+  "effort": "medium",
+  "frame": "research-fact-check.md",
+  "schema": "research-fact-check.schema.json"
+}

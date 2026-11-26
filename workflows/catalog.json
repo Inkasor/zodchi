@@ -1,6 +1,22 @@
 {
   "workflows": [
     {
+      "name": "research",
+      "version": "1",
+      "domain": "core",
+      "purpose": "Research questions and prepare proposals for owner decisions.",
+      "limits": "Up to five questions; 30 lines by default. Requires local Codex and private-word rules or explicit allowNoScrub.",
+      "required": ["repo", "tmp", "label", "request", "questions"],
+      "docs": "docs/research.md",
+      "example": {
+        "repo": "/project",
+        "tmp": "/tmp/research",
+        "label": "study",
+        "request": "/tmp/request.md",
+        "questions": [{"file": "/tmp/question.md", "title": "Question"}]
+      }
+    },
+    {
       "name": "code-package",
       "version": "1",
       "domain": "core",
@@ -25,6 +41,17 @@
           "src/app.js"
         ]
       }
+    },
+    {
+      "name": "incident-triage",
+      "version": "1",
+      "domain": "core",
+      "purpose": "Collect bounded local incident evidence and prepare a classified draft.",
+      "limits": "Read-only adapter operations and one classifier; no dispatch or publication.",
+      "required": ["repo", "incident", "adapter", "tmp"],
+      "anyOf": [["report"], ["reportFile"]],
+      "docs": "docs/incident-triage.md",
+      "example": {"repo": "/project", "incident": "case-1", "adapter": "/project/adapter.json", "tmp": "/tmp/case-1", "report": "Describe the incident"}
     },
     {
       "name": "design-brief",
@@ -58,7 +85,16 @@
         "repo",
         "label"
       ],
-      "anyOf": [["base", "author"], ["sourceRun", "head"]],
+      "anyOf": [
+        [
+          "base",
+          "author"
+        ],
+        [
+          "sourceRun",
+          "head"
+        ]
+      ],
       "docs": "docs/flow.md#branch-review",
       "example": {
         "repo": "/project",
@@ -81,7 +117,14 @@
         "label",
         "context"
       ],
-      "anyOf": [["realLife"], ["games"]],
+      "anyOf": [
+        [
+          "realLife"
+        ],
+        [
+          "games"
+        ]
+      ],
       "docs": "docs/method-question.md",
       "example": {
         "repo": "/project",
@@ -123,7 +166,23 @@
         "ledger",
         "summary"
       ],
-      "anyOf": [["package"], ["check"], ["export"], ["unity"], ["rubric"]],
+      "anyOf": [
+        [
+          "package"
+        ],
+        [
+          "check"
+        ],
+        [
+          "export"
+        ],
+        [
+          "unity"
+        ],
+        [
+          "rubric"
+        ]
+      ],
       "docs": "docs/asset-round.md",
       "example": {
         "repo": "/project",
@@ -184,7 +243,15 @@
         "ffmpeg",
         "ffprobe"
       ],
-      "anyOf": [["brief", "variants"], ["adopt"]],
+      "anyOf": [
+        [
+          "brief",
+          "variants"
+        ],
+        [
+          "adopt"
+        ]
+      ],
       "docs": "docs/flow-video.md"
     },
     {
@@ -244,8 +311,23 @@
         "scenarios"
       ],
       "conditional": [
-        { "when": { "fixture": "absent" }, "required": ["scenarios[].test"] },
-        { "when": { "fixture": "present" }, "required": ["fixture.script", "scenarios[].steps"] }
+        {
+          "when": {
+            "fixture": "absent"
+          },
+          "required": [
+            "scenarios[].test"
+          ]
+        },
+        {
+          "when": {
+            "fixture": "present"
+          },
+          "required": [
+            "fixture.script",
+            "scenarios[].steps"
+          ]
+        }
       ],
       "docs": "docs/acceptance.md#local-candidate",
       "example": {
@@ -356,6 +438,25 @@
             ]
           }
         ]
+      }
+    },
+    {
+      "name": "ops-script",
+      "version": "1",
+      "domain": "core",
+      "purpose": "Check a local operator-owned script and prepare a command for the operator.",
+      "limits": "Local Linux and Windows only; no remote action or execution of the operator command. Checks run unprivileged.",
+      "required": [
+        "script",
+        "tmp",
+        "sudo"
+      ],
+      "docs": "docs/ops-script.md",
+      "example": {
+        "script": "/srv/ops/deploy.py",
+        "tmp": "/srv/ops/tmp",
+        "check": ["python3", "{copy}", "--check"],
+        "sudo": ["sudo", "python3", "{script}", "--apply"]
       }
     }
   ]

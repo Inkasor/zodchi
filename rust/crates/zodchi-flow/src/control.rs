@@ -1,4 +1,4 @@
-use crate::{acceptance, asset_round, branch_review, code_package, design_brief, input, journal::{last_state_event, Journal}, method_question, rubric_probe, unity_check, video, voiceover, workspace_audit, youtube_publish, Exit};
+use crate::{acceptance, asset_round, branch_review, code_package, design_brief, incident_triage, input, journal::{last_state_event, Journal}, method_question, ops_script, research, rubric_probe, unity_check, video, voiceover, workspace_audit, youtube_publish, Exit};
 use serde_json::{json, Value};
 use std::ffi::OsString;
 use zodchi_core::config::Config;
@@ -20,7 +20,7 @@ pub fn status(id: &str) -> Result<Exit> {
         if let Some(applied) = crate::candidate::application_status(&events) {
             result["application"] = applied;
         }
-        result
+        if run["workflow"] == ops_script::NAME { ops_script::checked_result(&run, result) } else { result }
     });
     let active = journal.active();
     let receipt = journal.read_value("worker-result.json");
@@ -218,7 +218,7 @@ pub fn worker(id: &str, rerun: Option<&str>) -> Result<Exit> {
     }
     let exit = match resume_workflow(run["workflow"].as_str().unwrap_or(""), id, None, rerun) {
         Ok(exit) => exit,
-        Err(error) => Exit { result: json!({ "runId": id, "status": "stopped", "stoppedAt": "worker", "infra": error.0 }), code: 2 },
+        Err(error) => Exit { result: json!({ "runId": id, "status": "stopped", "stoppedAt": "worker", "infra": if run["workflow"] == ops_script::NAME { "ops-script worker failed; inspect the run locally".to_owned() } else { error.0 } }), code: 2 },
     };
     journal.write_value("worker-result.json", &exit.result)?;
     Ok(exit)
@@ -226,14 +226,17 @@ pub fn worker(id: &str, rerun: Option<&str>) -> Result<Exit> {
 
 fn resume_workflow(workflow: &str, id: &str, given: Option<&Value>, rerun: Option<&str>) -> Result<Exit> {
     match workflow {
+        ops_script::NAME => ops_script::resume(id, given, rerun),
         code_package::WORKFLOW => code_package::resume(id, given, rerun),
         branch_review::NAME => branch_review::resume(id, given, rerun),
         design_brief::NAME => design_brief::resume(id, given, rerun),
+        incident_triage::NAME => incident_triage::resume(id, given, rerun),
         method_question::NAME => method_question::resume(id, given, rerun),
         rubric_probe::NAME => rubric_probe::resume(id, given, rerun),
         unity_check::NAME => unity_check::resume(id, given, rerun),
         workspace_audit::NAME => workspace_audit::resume(id, given, rerun),
         asset_round::NAME => asset_round::resume(id, given, rerun),
+        research::NAME => research::resume(id, given, rerun),
         video::NAME => video::resume(id, given, rerun),
         voiceover::NAME => voiceover::resume(id, rerun),
         youtube_publish::NAME => youtube_publish::resume(id, given, rerun),

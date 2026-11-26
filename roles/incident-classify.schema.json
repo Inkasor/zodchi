@@ -1,0 +1,222 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Classification of one incident from its evidence bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "findings",
+    "gaps",
+    "next",
+    "facts",
+    "reply",
+    "leadLine",
+    "recommendRetry",
+    "fixBrief"
+  ],
+  "properties": {
+    "findings": {
+      "type": "array",
+      "description": "Contributing findings, the main one first; empty when the evidence supports none",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "hypothesis",
+          "about",
+          "confidence",
+          "summary",
+          "evidence",
+          "fixedBy",
+          "deployedIn"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "stale",
+              "user-action",
+              "product-bug",
+              "missing-tool",
+              "infra",
+              "owner-decision",
+              "unknown"
+            ]
+          },
+          "hypothesis": {
+            "type": "string",
+            "description": "For kind unknown: the kind it may be, or \"\"; otherwise \"\""
+          },
+          "about": {
+            "type": "string",
+            "enum": [
+              "code",
+              "capability",
+              "data",
+              "process",
+              "other"
+            ],
+            "description": "capability: what agents of the product are told to do or are allowed to do"
+          },
+          "confidence": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "summary": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Evidence ids of the bundle this finding rests on"
+          },
+          "fixedBy": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "stale only: ids showing that a specific release fixes this error signature; otherwise []"
+          },
+          "deployedIn": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "stale only: ids showing that the affected environment runs that release; otherwise []"
+          }
+        }
+      }
+    },
+    "gaps": {
+      "type": "array",
+      "description": "Evidence that is missing: each refused read is one",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "what",
+          "evidence",
+          "operation",
+          "proposal"
+        ],
+        "properties": {
+          "what": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "operation": {
+            "type": "string",
+            "description": "The adapter operation that would supply it, or \"\" when none exists"
+          },
+          "proposal": {
+            "type": "string",
+            "description": "When no operation exists: the safer product report that would answer it. Never wider access"
+          }
+        }
+      }
+    },
+    "next": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "route",
+        "role",
+        "question",
+        "reason"
+      ],
+      "properties": {
+        "route": {
+          "type": "string",
+          "enum": [
+            "reply",
+            "fix-brief",
+            "awaiting-owner",
+            "awaiting-operator",
+            "needs-evidence"
+          ]
+        },
+        "role": {
+          "type": "string",
+          "description": "awaiting-owner or awaiting-operator: the role that acts; otherwise \"\""
+        },
+        "question": {
+          "type": "string",
+          "description": "awaiting-owner: the question for the owner; otherwise \"\""
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "facts": {
+      "type": "string",
+      "description": "What the evidence shows, in plain confirmed facts, in the reporter's language: shown to the lead as unchecked text, never put into the reply to the reporter"
+    },
+    "reply": {
+      "type": "string",
+      "description": "Your wording of a reply to the reporter: shown to the lead as unchecked text, never sent as is"
+    },
+    "leadLine": {
+      "type": "string",
+      "description": "One line for the lead: shown as unchecked text"
+    },
+    "recommendRetry": {
+      "type": "boolean"
+    },
+    "fixBrief": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "goal",
+        "files",
+        "done",
+        "checks",
+        "agentsAffected",
+        "agentSkillChange"
+      ],
+      "properties": {
+        "goal": {
+          "type": "string",
+          "description": "\"\" unless the route is fix-brief"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "done": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "agentsAffected": {
+          "type": "boolean",
+          "description": "true when the change alters what agents of the product can do or are told"
+        },
+        "agentSkillChange": {
+          "type": "string",
+          "description": "When agentsAffected: what the agent skill must say after the change"
+        }
+      }
+    }
+  }
+}
