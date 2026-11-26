@@ -14,8 +14,8 @@ import path from 'node:path';
 import { createServer } from 'node:http';
 test('${name}', async () => {
   assert.equal(fs.readFileSync('node_modules/prepared', 'utf8'), 'ready');
-  assert.equal(fs.realpathSync.native(process.env.WB_TEST_CHROME).toLowerCase(), fs.realpathSync.native(process.execPath).toLowerCase());
-  if (process.platform === 'win32') assert.ok(!process.env.WB_TEST_CHROME.startsWith('\\\\\\\\?\\\\'));
+  assert.equal(fs.realpathSync.native(process.env.APP_TEST_CHROME).toLowerCase(), fs.realpathSync.native(process.execPath).toLowerCase());
+  if (process.platform === 'win32') assert.ok(!process.env.APP_TEST_CHROME.startsWith('\\\\\\\\?\\\\'));
   const frames = path.resolve(process.env.ZODCHI_ACCEPTANCE_FRAMES);
   assert.equal(path.basename(frames), 'frames');
   assert.equal(path.basename(path.dirname(frames)), '${name}');
@@ -35,7 +35,7 @@ test('${name}', async () => {
     gitOut(f.r, ["commit", "-qm", "Add candidate fixture tests"]);
     const head = gitOut(f.r, ["rev-parse", "HEAD"]).trim();
     fs.writeFileSync(path.join(f.r, "test/first.mjs"), "throw new Error('dirty live file');");
-    const plan = { repo: f.r, head, label: "Candidate", browser: { node: process.execPath, executable: process.execPath, variable: "WB_TEST_CHROME" },
+    const plan = { repo: f.r, head, label: "Candidate", browser: { node: process.execPath, executable: process.execPath, variable: "APP_TEST_CHROME" },
       setup: ["mkdir -p node_modules && printf ready > node_modules/prepared && printf 1 >> node_modules/setup-calls"], review: "Check both screens",
       scenarios: ["first", "second"].map(id => ({ id, label: id, test: `test/${id}.mjs`, frames: ["screen.png"] })) };
     const args = path.join(f.w.dir, "candidate.json");
@@ -100,8 +100,8 @@ test('${name}', async () => {
             return { on:(event, handler)=>{events[event]=handler;}, url:()=>url, async goto(target){
               url=target;
               if (url.endsWith('/writes')) {
-                await request(new URL('/api/dashboard-runtime?test=1', target).href, 'POST');
-                await request(new URL('/api/dashboard-runtime', target).href, 'PUT');
+                await request(new URL('/api/example-write?test=1', target).href, 'POST');
+                await request(new URL('/api/example-write', target).href, 'PUT');
                 await request(new URL('/api/other', target).href, 'POST');
               }
               if (url.endsWith('/diagnostics')) {
@@ -154,7 +154,7 @@ server.listen(0, '127.0.0.1', () => console.log('baseUrl http://127.0.0.1:' + se
     gitOut(f.r, ["commit", "-qm", "Add actions fixture"]);
     plan.head = gitOut(f.r, ["rev-parse", "HEAD"]).trim();
     delete plan.baseUrl; delete plan.health;
-    plan.fixture = { script: "test/actions-fixture.mjs", readyPrefix: "baseUrl ", allowedWrites: [{method:"POST", path:"/api/dashboard-runtime"}] };
+    plan.fixture = { script: "test/actions-fixture.mjs", readyPrefix: "baseUrl ", allowedWrites: [{method:"POST", path:"/api/example-write"}] };
     plan.scenarios = [{ id:"actions", steps:[
       {id:"open", open:"/", expect:[{selector:"#missing", count:0}, {selector:"#whitespace", text:"alpha beta", normalizeWhitespace:true}]},
       {id:"fill", fill:{selector:"#date", value:"2026-11-25"}, expect:{selector:"#summary"}},
@@ -219,7 +219,7 @@ server.listen(0, '127.0.0.1', () => console.log('baseUrl http://127.0.0.1:' + se
     const writes = await invoke(["candidate-acceptance", "--args", args]);
     const writeControls = fs.readFileSync(controls, "utf8").trim().split('\n').map(line => JSON.parse(line));
     t.eq(writes.json?.verdict, "pass", "fixture continues after routed writes");
-    for (const [method, pathname, decision] of [["POST", "/api/dashboard-runtime", "allowed"], ["PUT", "/api/dashboard-runtime", "blocked"], ["POST", "/api/other", "blocked"]]) {
+    for (const [method, pathname, decision] of [["POST", "/api/example-write", "allowed"], ["PUT", "/api/example-write", "blocked"], ["POST", "/api/other", "blocked"]]) {
       t.ok(writeControls.some(row => row.method === method && row.target && new URL(row.target).pathname === pathname && row[decision] === true && !row[decision === "allowed" ? "blocked" : "allowed"]), `${method} ${pathname} is ${decision}`);
     }
     plan.scenarios[0].steps[0].open = "/";

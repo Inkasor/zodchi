@@ -92,15 +92,18 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     const prompt = turns(f)[1].prompt;
     t.ok(prompt.includes("Launch failed at") && !prompt.includes(browser), "the reply handoff redacts the browser path");
   });
-  scenario("flow-agent-browser-alternate", "the Dashboard browser variable is passed to the writer", async (t) => {
+  scenario("flow-agent-browser-alternate", "an alternate browser variable is passed only to the writer", async (t) => {
     const f = flowWorld(t, "flow-agent-browser-alternate");
     const browser = path.join(f.w.zhome, "chromium-fixture");
+    const variable = "APP_TEST_CHROME";
     fs.writeFileSync(browser, "browser fixture");
     f.answer("write", report("done", { "src/math.mjs": FIXED }));
     f.answer("review 1", f.review("approved"));
-    const res = await f.flow(["--args", f.args({ mode: "agent", browser: { executable: browser, variable: "WB_TEST_CHROME" } })]);
+    const res = await f.flow(["--args", f.args({ mode: "agent", browser: { executable: browser, variable } })]);
     t.eq([res.code, res.json?.approved], [0, true], "alternate variable is accepted");
-    t.ok(samePath(turns(f).find(c => c.step === "write").config["shell_environment_policy.set"].WB_TEST_CHROME, fs.realpathSync(browser)), "writer receives the alternate variable");
+    const calls = turns(f);
+    t.ok(samePath(calls.find(c => c.step === "write").config["shell_environment_policy.set"][variable], fs.realpathSync(browser)), "writer receives the alternate variable");
+    t.ok(!JSON.stringify(calls.find(c => c.step === "review 1").config).includes(variable), "review does not receive the alternate variable");
   });
   scenario("flow-agent-prerequisite-superseded", "earlier prerequisite evidence does not explain a later block", async (t) => {
     const f = flowWorld(t, "flow-agent-prerequisite-superseded");

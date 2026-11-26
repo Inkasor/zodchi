@@ -1,12 +1,12 @@
 //! A model step records its exact request before submission, then reattaches to its recorded job by key.
 
-use crate::{budget::Budget, executor::{self, Executor}, input, journal::Journal, models::Pick};
+use crate::{budget::Budget, checks, executor::{self, Executor}, input, journal::Journal, models::Pick};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use zodchi_core::{appserver::{SAFETY_BLOCKED, SAFETY_MESSAGE}, config::Config, job::LIMIT_PROMPT, util::{sha256_hex, GatewayError, Result}};
 
 pub(crate) fn pin_browser(variable: &str, path: &Path) -> std::result::Result<Value, String> {
-    if !["ZODCHI_ACCEPTANCE_CHROMIUM", "WB_TEST_CHROME"].contains(&variable) || !path.is_absolute() {
+    if !checks::valid_browser_variable(variable) || !path.is_absolute() {
         return Err("Invalid pinned browser variable or path".into());
     }
     let metadata = std::fs::symlink_metadata(path).map_err(|e| format!("Cannot inspect the pinned browser executable: {e}. Restore the pinned file, then resume; if the writer cannot launch it, use the candidate acceptance runner."))?;
@@ -324,5 +324,22 @@ fn run_call(
         };
         journal.append(json!({ "kind": "done", "step": step, "round": round, "attempt": attempt, "result": data })).map_err(infra)?;
         return Ok(Step::Done(data));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pins_browser_variable_names() {
+        let executable = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        for (variable, accepted) in checks::browser_variable_cases() {
+            let result = pin_browser(&variable, &executable);
+            assert_eq!(result.is_ok(), accepted, "{variable:?}: {result:?}");
+            if let Ok(pin) = result {
+                assert_eq!(pin["variable"], variable);
+            }
+        }
     }
 }

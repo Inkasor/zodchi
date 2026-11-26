@@ -59,7 +59,7 @@ The engine validates arguments before claiming files.
 | `protect`, `allowCheckChanges` | more protected paths and the exact approved paths the package may change. For example, `"allowCheckChanges": ["tests/math.mjs"]` |
 | `mode` | `expert` (default), or `agent` for a local Codex work role with a private workspace |
 | `continuations` | extra writer turns for each agent writing step, default 2, range 0 to 32. Use `"continuations": 16` for a step expected to need many turns |
-| `browser` | Agent mode opt-in: `{"executable":"/absolute/path/to/chromium"}` pins the browser for writer shells. Optional `variable` defaults to `ZODCHI_ACCEPTANCE_CHROMIUM`; `WB_TEST_CHROME` is also allowed. |
+| `browser` | Agent mode opt-in. `{"executable":"/absolute/path/to/chromium"}` pins the browser for writer shells. Optional `variable` defaults to `ZODCHI_ACCEPTANCE_CHROMIUM`. See [Browser input for an agent writer](#browser-input-for-an-agent-writer). |
 | `isolated` | `true` keeps writes, checks, and review on a private candidate. Apply the approved commit explicitly with `zodchi flow apply <run-id>` |
 | `budget` | `{ "calls": N, "minutes": M }` limits new model submissions, including review and gateway retries. `minutes` is optional. In agent mode the budget replaces the per-step continuation limit |
 | `sourceRun` | a finished isolated code package whose retained candidate seeds a correction on the same target branch and base. Declare every inherited changed path in `files` |
@@ -73,6 +73,24 @@ branch first), `fixIgnore` (commit `.agent-tmp/` in `.gitignore` first), `closeS
 `--rerun`), `commit: false`. A repository with a verify skill (`.claude/skills/verify/SKILL.md`) and no
 `args.verify` or committed project verification configuration is refused. Pass the skill's commands or declare
 the plan in `.zodchi/verify.json`.
+
+## Browser input for an agent writer
+
+An agent-mode package may opt in with `"browser": {"executable": "/absolute/path/to/chromium"}`. The default
+variable is `ZODCHI_ACCEPTANCE_CHROMIUM`. To use a project-specific name, set `"variable": "APP_TEST_CHROME"`.
+The name must match `[A-Z_][A-Z0-9_]*` and have at most 128 characters. Names inherited by the reduced check
+environment, such as `PATH` and `TEMP`, are reserved along with `ZODCHI_ACCEPTANCE_FRAMES`.
+
+The engine pins the regular file's resolved path and SHA-256 in the run and checks it before new writer jobs,
+including on resume. Only writer shells receive the configured variable. Keep the executable installed at the
+same path and restore the same bytes if a resumed run reports a changed pin.
+
+Project setup should install the project's Node and Playwright dependencies in the isolated writer workspace. Tests
+must pass the configured variable as Playwright's `executablePath` and select `headless: true`. If the author's
+sandbox cannot launch the browser, report the writer check as failed with the launch error and use the configured
+candidate-acceptance check on the project's runner.
+
+## Managing a run
 
 `zodchi flow list` lists available workflows. Add `--detach` to start a worker and receive a run ID immediately.
 `zodchi flow list --repo <directory>` applies the project's committed
@@ -440,8 +458,3 @@ to CI.
 | `flow-entry-failing-verify` | the Codex skill's steps with a verify command that fails: `verifiedBy` is `none` while `verification.evidence` holds the command's exit code, as the skill says to tell it from a run in which nothing ran |
 | `flow-entry-server` | the Codex skill's steps with the model steps on a zodchi-server; nothing runs on this machine's Codex, the token is in no result or commit |
 | `flow-entry-claude` | the Codex skill's steps with a Claude writer (the fake `claude`): a failed write stops the run, the skill's rerun of the step named in `stoppedAt` goes on to approval |
-# Browser input for an agent writer
-
-An agent-mode package may opt in with `"browser": {"executable": "/absolute/path/to/chromium"}`. The default variable is `ZODCHI_ACCEPTANCE_CHROMIUM`; set `"variable": "WB_TEST_CHROME"` for projects using that convention. The engine pins the regular file's resolved path and SHA-256 in the run and checks it before new writer jobs, including on resume. The variable is available to the writer shell; review roles do not receive this override. Keep the executable installed at the same path and restore the same bytes if a resumed run reports a changed pin.
-
-Project setup should install the project's Node and Playwright dependencies in the isolated writer workspace. Tests must pass the configured variable as Playwright's `executablePath` and select `headless: true`. If the author's sandbox cannot launch the browser, record the actual failure and use the configured candidate-acceptance check on the project's runner; do not claim the writer smoke passed.

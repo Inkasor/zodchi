@@ -23,6 +23,45 @@ pub(crate) const KEEP: [&str; 30] = [
     "COMMONPROGRAMFILES", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS", "USER", "USERNAME", "LOGNAME", "CARGO_HOME", "RUSTUP_HOME",
 ];
 
+pub(crate) const DEFAULT_BROWSER_VARIABLE: &str = "ZODCHI_ACCEPTANCE_CHROMIUM";
+
+/// A browser override must leave inherited check variables and the frame output directory available.
+pub(crate) fn valid_browser_variable(variable: &str) -> bool {
+    !variable.is_empty()
+        && variable.len() <= 128
+        && variable.bytes().enumerate().all(|(i, b)| {
+            b == b'_' || b.is_ascii_uppercase() || (i > 0 && b.is_ascii_digit())
+        })
+        && !KEEP.iter().any(|key| key.eq_ignore_ascii_case(variable))
+        && variable != "ZODCHI_ACCEPTANCE_FRAMES"
+}
+
+#[cfg(test)]
+pub(crate) fn browser_variable_cases() -> Vec<(String, bool)> {
+    let mut cases = vec![
+        (DEFAULT_BROWSER_VARIABLE.into(), true),
+        ("APP_TEST_CHROME".into(), true),
+        ("_APP0".into(), true),
+        ("A".repeat(128), true),
+        ("PATH".into(), false),
+        ("path".into(), false),
+        ("TEMP".into(), false),
+        ("ZODCHI_ACCEPTANCE_FRAMES".into(), false),
+        ("1ABC".into(), false),
+        ("A-B".into(), false),
+        (String::new(), false),
+        ("A".repeat(129), false),
+    ];
+
+    // Cover two-letter project prefixes uniformly for compatibility with existing pins.
+    for first in 'A'..='Z' {
+        for second in 'A'..='Z' {
+            cases.push((format!("{first}{second}_TEST_CHROME"), true));
+        }
+    }
+    cases
+}
+
 /// bash: `ZODCHI_BASH`, else on Windows the bash of Git for Windows (never the WSL launcher in System32), else
 /// `bash` on PATH.
 pub fn find_bash() -> PathBuf {
