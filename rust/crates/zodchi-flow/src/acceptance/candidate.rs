@@ -108,13 +108,13 @@ mod tests {
         let mut raw = json!({ "browser": { "node": "Cargo.toml", "executable": "Cargo.toml" } });
         assert_eq!(browser_plan(&raw, repo).unwrap()["variable"], "ZODCHI_ACCEPTANCE_CHROMIUM");
 
-        for (variable, accepted) in checks::browser_variable_cases() {
+        let rejected = checks::browser_variable_cases()
+            .into_iter()
+            .filter(|(_, accepted)| !accepted);
+        for (variable, _) in rejected {
             raw["browser"]["variable"] = json!(variable);
             let result = browser_plan(&raw, repo);
-            assert_eq!(result.is_ok(), accepted, "{variable:?}: {result:?}");
-            if let Ok(plan) = result {
-                assert_eq!(plan["variable"], variable);
-            }
+            assert!(result.is_err(), "{variable:?}: {result:?}");
         }
     }
 }

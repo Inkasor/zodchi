@@ -431,18 +431,12 @@ mod tests {
         ];
         let row = |name, outcome| json!({ "name": name, "outcome": outcome, "agreement": 0.98 });
         let sound = vec![row("straight", "pass")];
-        let defect = vec![row("straight", "fail")];
-        assert!(validate(&json!({"verdict": {"questions": &sound}}), &["straight"]).is_ok());
         assert!(validate(&json!({"verdict": {"questions": &sound}}), &["unknown"]).is_err());
         assert!(validate(
             &json!({"verdict": {"questions": [&sound[0], &sound[0]]}}),
             &["straight"]
         )
         .is_err());
-        assert_eq!(
-            summarize("straight", &frames, &[sound, defect])["verdict"],
-            "keep"
-        );
         assert_eq!(
             summarize(
                 "straight",

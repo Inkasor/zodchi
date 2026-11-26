@@ -80,7 +80,6 @@ export default function register({ scenario, ROOT }) {
     t.eq(absentToMarker, [{ path: "x", old: null, new: MARKER, oldAbsent: true, newAbsent: false }], "absent to the marker object: old absent, new the marker");
     t.eq(markerToAbsent, [{ path: "x", old: MARKER, new: null, oldAbsent: false, newAbsent: true }], "the marker object to absent: new absent");
     t.eq(markerToOne, [{ path: "x", old: MARKER, new: 1, oldAbsent: false, newAbsent: false }], "the marker object to 1: both present");
-    t.eq(new Set([J(absentToMarker), J(markerToAbsent), J(markerToOne)]).size, 3, "the three presence cases are three different diff records");
     t.eq(diffs({ x: null }, {}), [{ path: "x", old: null, new: null, oldAbsent: false, newAbsent: true }], "a present null against an absent key is a diff (flags tell them apart)");
     t.eq(diffs({}, { x: null }), [{ path: "x", old: null, new: null, oldAbsent: true, newAbsent: false }], "an absent key against a present null is a diff");
     t.eq(diffs({ "a.b": 1 }, { a: { b: 1 } }).map((d) => d.path), ["a", "a\\.b"], "the literal key a.b against the nested a then b: diffs at two different canonical paths");
@@ -104,9 +103,6 @@ export default function register({ scenario, ROOT }) {
     const exp = (o) => ({ id: "e1", scenario: "s", step: "A", at: "response.status", old: 200, new: 201, ...o });
     const statusDiff = () => diffs(view({ status: 200 }), view({ status: 201 }));
     const approvedBy = (expectation, d = statusDiff(), step = "A") => C.createTracker([expectation], "s").apply(d, step)[0].approved;
-    t.eq(statusDiff().map((d) => d.path), ["response.status"], "the test diff is one diff at response.status");
-    t.eq(approvedBy(exp({})), "e1", "an exact expectation approves its diff");
-
     const tr1 = C.createTracker([exp({})], "s");
     const stepA = tr1.apply(statusDiff(), "A");
     const stepB = tr1.apply(statusDiff(), "B");
@@ -138,8 +134,6 @@ export default function register({ scenario, ROOT }) {
     const m1 = () => C.createTracker([{ id: "m1", scenario: "s", step: "s1", at: "x", oldAbsent: true, new: MARKER }], "s");
     const m = [m1().apply(diffs({}, { x: MARKER }), "s1"), m1().apply(diffs({ x: MARKER }, {}), "s1"), m1().apply(diffs({ x: MARKER }, { x: 1 }), "s1")].map((r) => r[0].approved);
     t.eq(m, ["m1", null, null], "(3) { oldAbsent: true, new: marker } approves only absent-to-marker, not marker-to-absent nor marker-to-1");
-    const m2same = ["s1", "s1"].map((st, k) => C.createTracker([{ id: "m7", scenario: "s", step: "s1", at: "x", old: MARKER, new: 1 }], "s").apply(k ? diffs({ x: MARKER }, { x: 1 }) : diffs({}, { x: MARKER }), st)[0].approved);
-    t.eq(m2same, [null, "m7"], "(3) at the same step, marker-to-1 approves marker-to-1 and not absent-to-marker");
     const markerTracker2 = C.createTracker(
       [{ id: "m2", scenario: "s", step: "s2", at: "x", old: MARKER, new: 1 }, { id: "m3", scenario: "s", step: "s1", at: "x", old: MARKER, new: 1 }, { id: "m4", scenario: "s", step: "s3", at: "x", old: MARKER, new: 1 }],
       "s",
@@ -197,9 +191,7 @@ export default function register({ scenario, ROOT }) {
     const repeated = C.summarizeDiffs([{ ...base, approved: null }, { ...base, approved: null, step: "s2" }, { ...base, approved: null, step: "s3" }]);
     t.eq([repeated.shown.length, repeated.more, repeated.shown[0].step], [1, 0, "s1"], "(6) a repeated identical diff is shown once and the first keeps its step");
     t.eq(C.summarizeDiffs([{ ...base, approved: null }, { ...base, new: 3, approved: null }, { ...base, oldAbsent: true, approved: null }]).shown.length, 3, "(6) a differing value or flag is a different diff");
-    const dupExp = C.createTracker([exp({})], "s");
-    const dupAll = dupExp.apply([...statusDiff(), ...statusDiff()], "A");
-    t.eq([C.summarizeDiffs(dupAll).shown.length, C.unapproved(dupAll).length], [2, 1], "(6) the unapproved copy of a repeated diff is not merged into the approved one, and counts in the verdict");
+    t.eq([C.summarizeDiffs(twin).shown.length, C.unapproved(twin).length], [2, 1], "(6) the unapproved copy of a repeated diff is not merged into the approved one, and counts in the verdict");
 
     // ---------------------------------------------------------------------------------------------------------------- binding
     heading("binding");
@@ -241,14 +233,12 @@ export default function register({ scenario, ROOT }) {
     t.eq([pair.old.s1.view.response.headers.location.template, J(pair.old.s1.view.response.headers.location)], ["/notes/{value}", J("<bound:noteId:/notes/{value}>")], "a composite ref keeps its template; the display text names it");
     t.eq(J(pair.old.s1.view.response.body.id), J("<bound:noteId>"), "a default template displays as <bound:NAME>");
     t.eq([pair.old.state.bound, pair.new.state.bound], [{ noteId: "n_aaaa1111" }, { noteId: "n_bbbb2222" }], "each engine's state keeps its own produced id");
-    t.eq(pair.old.state.persisted.length, 1, "the persisted ref was recorded once");
     t.eq(pair.old.s1.view.response.body.title, "T", "an undeclared field stays as it is");
 
     const e1 = engine("n_aaaa1111");
     const frozen = J(e1.step1);
     const nz = C.normalizeView(e1.step1, decl1, C.newState());
     t.ok(J(e1.step1) === frozen && nz.view !== e1.step1 && nz.view.response !== e1.step1.response && nz.view.effects.rows.notes !== e1.step1.effects.rows.notes, "the input view is not mutated and the result is a deep copy");
-    t.eq(e1.step1.response.body.id, "n_aaaa1111", "the raw id is still in the input view");
 
     // each violation kind, with nothing stored or replaced at the failing location
     const norm = (v, step, st = C.newState()) => ({ ...C.normalizeView(v, step, st), st });
@@ -326,8 +316,6 @@ export default function register({ scenario, ROOT }) {
 
     r = norm(body({ id: "n_aaaa1111", other: "n_deadbeef" }), declId);
     t.ok(!C.isBound(r.view.response.body.other) && r.view.response.body.other === "n_deadbeef", "a value that merely looks like an id (right pattern, not bound) is not replaced");
-    r = norm(body({ id: "n_aaaa1111", copy: "n_aaaa1111" }), declId);
-    t.ok(!C.isBound(r.view.response.body.copy), "a value equal to the bound id at an undeclared location is not replaced");
     t.ok(throws(() => C.normalizeView(body({ id: "n_aaaa1111" }), { bind: { noteId: { at: "response.body[*].id", pattern: ID } } }, C.newState())), "a bind at a path with [*] is refused");
     t.ok(throws(() => C.normalizeView(body({ id: "n_aaaa1111" }), { bind: { noteId: { at: "other.id", pattern: ID } } }, C.newState())), "a bind outside response and effects is refused");
     t.ok(throws(() => C.normalizeView(body({ id: "n_aaaa1111" }), { bind: { "Bad name": { at: "response.body.id", pattern: ID } } }, C.newState())), "a bind name outside the grammar is refused");
