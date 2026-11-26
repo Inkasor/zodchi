@@ -1,7 +1,6 @@
 {
   "highlights": [
-    "Package checks take one machine-wide check slot, reuse a stable checkout and the build cache declared in .zodchi/verify.json, and refuse before any model call when declared tools are missing. Agent writers get writerEnv and a shared writer cache.",
-    "Finished runs remove their writer workspaces; zodchi flow cleanup lists and removes old candidates, journals, claims and dev builds, keeping every journal a claim or pending application still uses.",
-    "Research and incident-triage refuse model answers only for real secrets, incident reads cut large output and can be retried with --rerun \"read <id>\", and ops-script repairs only script defects."
+    "Discover workflows with zodchi flow list and zodchi flow <workflow> --help. Use candidate-acceptance for a candidate build and release-acceptance for a deployed release.",
+    "Package checks run one at a time with a shared build cache, finished runs clean up after themselves (zodchi flow cleanup), and research, incident-triage and ops-script stop less often for reasons that are not real."
   ]
 }
