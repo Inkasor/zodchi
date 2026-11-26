@@ -49,15 +49,32 @@ export default function register({ scenario, flowWorld, zodchi, ROOT, FAKE_FLOW 
     });
   }
 
-  scenario("flow-incident-triage-oversized-failure", "an oversized failing read cannot authorize a dependent read", async (t) => {
+  scenario("flow-incident-triage-oversized-failure", "oversized output is truncated and dependencies follow the real exit status", async (t) => {
     const f = flowWorld(t, "flow-incident-triage-oversized-failure");
     const program = path.join(f.w.dir, "oversized.mjs");
     const secret = "opaqueSyntheticCredential123";
-    fs.writeFileSync(program, `process.stdout.write("permission denied\\nAuthorization: Bearer ${secret}\\n" + "x".repeat(32768)); process.exitCode = 1;`);
+    fs.writeFileSync(program, `
+const mode = process.argv[2];
+const noisy = "x".repeat(32768);
+if (mode === "fail") {
+  process.stdout.write("permission denied\\nAuthorization: Bearer ${secret}\\n" + noisy);
+  process.exitCode = 1;
+} else if (mode === "stdout") {
+  process.stdout.write("status\\n" + noisy);
+} else if (mode === "stderr") {
+  process.stdout.write("status\\n");
+  process.stderr.write("permission denied\\n" + noisy);
+} else {
+  process.stdout.write("dependent status\\n");
+}
+`);
     const adapter = path.join(f.w.dir, "adapter.json");
     fs.writeFileSync(adapter, JSON.stringify({ adapterVersion: 1, product: "Catalog", owner: "owner", operations: {
-      first: { description: "read status", argv: [process.execPath, program], maxBytes: 256 },
+      first: { description: "read status", argv: [process.execPath, program, "fail"], maxBytes: 256 },
       second: { description: "dependent read", argv: [process.execPath, program], after: ["first"] },
+      stdout: { description: "read noisy stdout", argv: [process.execPath, program, "stdout"], maxBytes: 256 },
+      stderr: { description: "read noisy stderr", argv: [process.execPath, program, "stderr"], maxBytes: 1024, after: ["stdout"] },
+      dependent: { description: "read after both successes", argv: [process.execPath, program], after: ["stdout", "stderr"] },
     } }));
     const fake = path.join(f.w.dir, "incident-fake-codex.mjs");
     fs.writeFileSync(fake, fs.readFileSync(FAKE_FLOW, "utf8").replace("(?:code-package|branch-review|design-brief)", "(?:code-package|branch-review|design-brief|incident-triage)"));
@@ -68,11 +85,20 @@ export default function register({ scenario, flowWorld, zodchi, ROOT, FAKE_FLOW 
     await zodchi(t, f.w, ["flow", "incident-triage", "--args", args], { cwd: f.w.dir, env: { ...f.w.env, ZODCHI_CODEX_BIN: fake } });
     const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
     const reads = path.join(f.w.zhome, "flows", id, "reads");
-    const first = JSON.parse(fs.readFileSync(path.join(reads, "E2.json"), "utf8")).result;
-    const second = JSON.parse(fs.readFileSync(path.join(reads, "E3.json"), "utf8")).result;
+    const receipt = id => JSON.parse(fs.readFileSync(path.join(reads, id + ".json"), "utf8")).result;
+    const first = receipt("E2");
+    const second = receipt("E3");
     t.ok(first.outcome === "refused" || first.outcome === "failed", "oversized failing output is not successful");
+    t.eq(first.exitCode, 1, "oversized output preserves the real nonzero exit code");
+    t.eq(first.outcome, "refused", "the permission denial is still recognized");
     t.eq(first.truncated, true, "capture limit is reported");
     t.eq(second.outcome, "skipped", "dependent read is not executed");
+    const stdout = receipt("E4");
+    const stderr = receipt("E5");
+    t.eq([stdout.outcome, stdout.exitCode, stdout.truncated], ["ok", 0, true], "large stdout is truncated and stays successful");
+    t.eq([stderr.outcome, stderr.exitCode, stderr.truncated], ["ok", 0, true], "large stderr is truncated and stays successful");
+    t.eq([Buffer.byteLength(stdout.excerpt), Buffer.byteLength(stderr.stderrExcerpt)], [256, 2000], "both excerpts are clipped to their byte limits");
+    t.eq(receipt("E6").outcome, "ok", "the read depending on both successes runs");
     const runDir = path.join(f.w.zhome, "flows", id);
     const requestFiles = fs.readdirSync(path.join(runDir, "requests"));
     t.ok(requestFiles.length > 0, "classifier request was recorded");
@@ -142,15 +168,23 @@ export default function register({ scenario, flowWorld, zodchi, ROOT, FAKE_FLOW 
     t.eq(f.steps(), ["classify"], "the classifier is not called again");
   });
 
-  scenario("flow-incident-triage-unresolved-read", "an interrupted read is surfaced without a second read or model call", async (t) => {
+  scenario("flow-incident-triage-unresolved-read", "only an explicit rerun repeats an interrupted read", async (t) => {
     const f = flowWorld(t, "flow-incident-triage-unresolved-read");
     const fixture = path.join(ROOT, "scripts", "e2e", "fixtures", "incident-triage");
+    const answer = JSON.parse(fs.readFileSync(path.join(fixture, "cases", "plain-wait", "classification.json"), "utf8"));
+    answer.gaps = [];
+    f.answer("classify", answer);
     const adapterDir = path.join(f.w.dir, "adapter");
     fs.mkdirSync(path.join(adapterDir, "data"), { recursive: true });
-    fs.writeFileSync(path.join(adapterDir, "data", "status.txt"), "status\n");
+    const statusFile = path.join(adapterDir, "data", "status.txt");
+    const logsFile = path.join(adapterDir, "data", "logs.txt");
+    fs.writeFileSync(statusFile, "original status\n");
+    fs.writeFileSync(logsFile, "original log\n");
+    const product = path.join(fixture, "product.mjs");
     const adapter = path.join(adapterDir, "adapter.json");
     fs.writeFileSync(adapter, JSON.stringify({ adapterVersion: 1, product: "Catalog", owner: "owner", operations: {
-      status: { description: "read status", argv: [process.execPath, path.join(fixture, "product.mjs"), "status"] },
+      status: { description: "read status", argv: [process.execPath, product, "status"] },
+      logs: { description: "read logs", argv: [process.execPath, product, "logs"], after: ["status"] },
     } }));
     const tmp = path.join(f.w.dir, "incident");
     const args = path.join(f.w.dir, "args.json");
@@ -158,17 +192,48 @@ export default function register({ scenario, flowWorld, zodchi, ROOT, FAKE_FLOW 
       architect: { candidates: [{ provider: "codex", model: "fake-architect", effort: "high" }] },
     } }));
     const cli = (argv, extra = {}) => zodchi(t, f.w, ["flow", "incident-triage", ...argv], { cwd: f.w.dir, env: { ...f.w.env, ...extra } });
-    const boundary = process.platform === "win32" ? "incident read contained" : "incident intent E2";
-    const cut = await cli(["--args", args], { ZODCHI_FLOW_CUT: boundary });
-    t.eq(cut.code, 75, "cut follows the read intent at the earliest contained launch boundary");
+    const saved = await cli(["--args", args], { ZODCHI_FLOW_CUT: "incident receipt E2" });
+    t.eq(saved.code, 75, "the first external read has a receipt");
     const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
-    const reportReceipt = fs.readFileSync(path.join(f.w.zhome, "flows", id, "reads", "E1.json"));
+    const runDir = path.join(f.w.zhome, "flows", id);
+    const reads = path.join(runDir, "reads");
+    const boundary = process.platform === "win32" ? "incident read contained" : "incident intent E3";
+    const cut = await cli(["--resume", id], { ZODCHI_FLOW_CUT: boundary });
+    t.eq(cut.code, 75, "cut follows the read intent at the earliest contained launch boundary");
+    const reportReceipt = fs.readFileSync(path.join(reads, "E1.json"));
+    const statusReceipt = fs.readFileSync(path.join(reads, "E2.json"));
+    const pending = path.join(reads, "E3.pending");
+    const tooEarly = await cli(["--resume", id, "--rerun", "read E3"]);
+    t.ok(tooEarly.code === 1 && tooEarly.err.includes("--rerun must name"), "the interrupted step must first be reported by a resume");
+    const missing = await cli(["--resume", id]);
+    t.eq([missing.code, missing.json?.reason, missing.json?.stoppedAt], [2, "unresolved read", "read E3"], "resume reports the unresolved read");
+    fs.writeFileSync(pending, '{"id":');
     const resumed = await cli(["--resume", id]);
-    t.eq([resumed.code, resumed.json?.stoppedAt], [2, "unresolved read"], "resume reports the unresolved read");
-    t.ok(fs.readFileSync(path.join(f.w.zhome, "flows", id, "reads", "E1.json")).equals(reportReceipt), "the earlier receipt is retained unchanged");
-    t.ok(!fs.existsSync(path.join(f.w.zhome, "flows", id, "reads", "E2.json")), "there is no receipt from a repeated read");
+    t.eq([resumed.code, resumed.json?.reason, resumed.json?.stoppedAt], [2, "unresolved read", "read E3"], "a partial receipt still stops the read");
+    t.ok(resumed.json?.next?.includes(`--resume ${id} --rerun "read E3"`), "the stop gives the exact rerun command");
+    t.ok(fs.readFileSync(path.join(reads, "E1.json")).equals(reportReceipt), "the earlier receipt is retained unchanged");
+    t.ok(!fs.existsSync(path.join(reads, "E3.json")), "there is no receipt from a repeated read");
+    t.eq(fs.readFileSync(pending, "utf8"), '{"id":', "plain resume preserves the partial receipt");
     t.eq(f.steps(), [], "no classifier was submitted");
     t.ok(fs.existsSync(path.join(tmp, ".lock")), "the unresolved revision stays locked");
+
+    const wrong = await cli(["--resume", id, "--rerun", "read E2"]);
+    t.ok(wrong.code === 1 && wrong.err.includes("--rerun must name"), "rerun refuses a different step");
+    fs.writeFileSync(statusFile, "changed status\n");
+    fs.writeFileSync(logsFile, "updated log\n");
+    const repeat = await cli(["--resume", id, "--rerun", "read E3"]);
+    t.eq([repeat.code, repeat.json?.revision, repeat.json?.accepted], [0, 1, true], "explicit rerun completes the same revision");
+    t.ok(!fs.existsSync(path.join(tmp, ".lock")), "completed rerun releases the incident lock");
+    t.ok(!fs.existsSync(pending), "the partial pending receipt was discarded");
+    t.ok(fs.readFileSync(path.join(reads, "E1.json")).equals(reportReceipt), "the report receipt is reused");
+    t.ok(fs.readFileSync(path.join(reads, "E2.json")).equals(statusReceipt), "the completed external read receipt is reused");
+    const evidence = JSON.parse(fs.readFileSync(repeat.json.files.evidence, "utf8"));
+    t.eq(evidence.items.map((item) => item.excerpt), ["waiting", "original status", "updated log"], "only the interrupted read collects new evidence");
+    const events = fs.readFileSync(path.join(runDir, "events.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    t.eq(events.filter(event => event.kind === "rerun").map(event => event.step), ["read E3"], "the journal records only the named rerun");
+    t.eq(events.filter(event => event.kind === "read intent").map(event => [event.step, event.attempt]),
+      [["read E1", 1], ["read E2", 1], ["read E3", 1], ["read E3", 2]], "only the interrupted read gets a second intent");
+    t.eq(f.steps(), ["classify"], "classification runs once after collection");
   });
 
   scenario("flow-incident-triage-foreign-lock", "a resumed run refuses a lock belonging to another run", async (t) => {
@@ -232,7 +297,7 @@ export default function register({ scenario, flowWorld, zodchi, ROOT, FAKE_FLOW 
     t.ok(!fs.existsSync(tmp) && f.steps().length === 0, "model preflight precedes external incident reads");
   });
 
-  scenario("flow-incident-triage-answer-refused", "an unknown evidence ID fails the revision without dispatching another workflow", async (t) => {
+  scenario("flow-incident-triage-answer-refused", "answers with unknown evidence IDs or actual credentials are refused", async (t) => {
     const f = flowWorld(t, "flow-incident-triage-answer-refused");
     const fixture = path.join(ROOT, "scripts", "e2e", "fixtures", "incident-triage");
     const fake = path.join(f.w.dir, "incident-fake-codex.mjs");
@@ -259,6 +324,55 @@ export default function register({ scenario, flowWorld, zodchi, ROOT, FAKE_FLOW 
     t.ok(classification.refused.length > 0, "the refused classification records the reason");
     t.eq(f.steps(), ["classify"], "the refusal starts no further model or workflow");
     t.ok(!fs.existsSync(path.join(tmp, ".lock")), "the failed final revision released its lock");
+
+    answer.findings[0].evidence = ["E2"];
+    answer.gaps = [];
+    answer.reply = "The log contains password=hunter2xyz.";
+    f.answer("classify", answer);
+    const secret = await zodchi(t, f.w, ["flow", "incident-triage", "--args", args], { cwd: f.w.dir, env });
+    t.eq([secret.code, secret.json?.stoppedAt, secret.json?.lockLeft], [2, "invalid answer at classify", true], "a real credential stops classification");
+    const privateRevision = path.join(tmp, "rev-2");
+    t.ok(!fs.existsSync(path.join(privateRevision, "classification.raw.json")) && !fs.existsSync(path.join(privateRevision, "draft.md")),
+      "the private answer is not published");
+    const resumed = await zodchi(t, f.w, ["flow", "incident-triage", "--resume", secret.json.runId], { cwd: f.w.dir, env });
+    t.eq([resumed.code, resumed.json?.stoppedAt, resumed.json?.jobKey],
+      [2, "invalid answer at classify", secret.json.jobKey], "resume rechecks the same private answer");
+    t.eq(f.steps(), ["classify", "classify"], "each run submits one classifier");
+  });
+
+  scenario("flow-incident-triage-ordinary-words", "ordinary privacy-related words and identifiers pass screening", async (t) => {
+    const f = flowWorld(t, "flow-incident-triage-ordinary-words");
+    const fixture = path.join(ROOT, "scripts", "e2e", "fixtures", "incident-triage");
+    const answer = JSON.parse(fs.readFileSync(path.join(fixture, "cases", "plain-wait", "classification.json"), "utf8"));
+    answer.gaps = [];
+    answer.facts = "The API token expired during a disk-full incident.";
+    answer.findings[0].summary = answer.facts;
+    answer.reply = "Run a basic check and never paste credentials.\r\n";
+    f.answer("classify", answer);
+    const adapterDir = path.join(f.w.dir, "adapter");
+    fs.mkdirSync(path.join(adapterDir, "data"), { recursive: true });
+    fs.writeFileSync(path.join(adapterDir, "data", "status-task-123.txt"), "status for task-123\n");
+    const adapter = path.join(adapterDir, "adapter.json");
+    fs.writeFileSync(adapter, JSON.stringify({ adapterVersion: 1, product: "Catalog", owner: "owner", operations: {
+      status: { description: "read status", argv: [process.execPath, path.join(fixture, "product.mjs"), "status", "{id}"], args: { id: "task-[0-9]+" } },
+    } }));
+    const tmp = path.join(f.w.dir, "token-service", "task-7");
+    const repo = path.join(f.w.dir, "task-7-repo");
+    fs.renameSync(f.r, repo);
+    const args = path.join(f.w.dir, "args.json");
+    fs.writeFileSync(args, JSON.stringify({ repo, incident: "disk-full-2026", adapter, tmp,
+      report: "Disk full. The API token expired.", params: { id: "task-123" }, models: {
+        architect: { candidates: [{ provider: "codex", model: "fake-architect", effort: "high" }] },
+      } }));
+    const run = await zodchi(t, f.w, ["flow", "incident-triage", "--args", args], { cwd: f.w.dir });
+    t.eq([run.code, run.json?.incident, run.json?.state], [0, "disk-full-2026", "drafted"], "ordinary words and paths do not stop the run");
+    const evidence = JSON.parse(fs.readFileSync(run.json.files.evidence, "utf8"));
+    t.eq(evidence.items[1].outcome, "ok", "a task identifier fills the operation's placeholder");
+    t.ok(!evidence.items[0].excerpt.includes("API token expired"), "the inbound report is still redacted");
+    const saved = JSON.parse(fs.readFileSync(path.join(tmp, "rev-1", "classification.raw.json"), "utf8"));
+    t.eq([saved.facts, saved.reply], [answer.facts, answer.reply], "classifier wording and trailing line ending are retained");
+    t.eq(f.steps(), ["classify"], "the classifier is called once");
+    t.ok(!fs.existsSync(path.join(tmp, ".lock")), "completion releases the incident lock");
   });
 
   scenario("flow-incident-triage-detached", "a detached incident collects bounded reads and resumes with one classifier call", async (t) => {

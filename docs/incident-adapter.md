@@ -24,7 +24,8 @@ or a model answers can add an operation or change one.
 | `incidentLog` | no | Where the closing note goes. Version 1 does not write it; the draft says what to log |
 | `$comment` | no | Free text |
 
-Any other field is refused. Paths are relative to the adapter's folder or absolute.
+Any other field is refused. The `agentSkill` and `allowLists` files use absolute paths or paths relative to the
+adapter's folder. Executable lookup follows the platform rules below.
 
 `agentSkill` and `allowLists` come together: a question about what agents may do always carries both excerpts, what
 the skill tells the model to do and what the product actually allows, so the classifier can compare them.
@@ -51,15 +52,18 @@ the skill tells the model to do and what the product actually allows, so the cla
 | `args` | when `argv` has placeholders | `{ name: pattern }`: each placeholder's regular expression |
 | `provides` | no | What the output is evidence of: `job`, `status`, `error`, `release`, `changelog`, `health`, `logs`, `config`, `other` (default `other`) |
 | `timeoutSec` | no | 1 to 300, default 30. The operation is killed after it and recorded as `timeout` |
-| `maxBytes` | no | 256 to 65536, default 8000. Output beyond it is cut and the item marked `truncated` |
+| `maxBytes` | no | 256 to 65536, default 8000. Caps the stdout excerpt in bytes |
 | `after` | no | Operations declared earlier that must end `ok` first; otherwise this one is `skipped`, with the reason |
+
+The collector keeps up to four times `maxBytes` per stream for redaction and refusal detection. It drains the rest
+until the command ends or reaches its time limit. The stderr excerpt is capped at 2,000 bytes. Cutting either
+stream sets `truncated`. A command that exits zero ends `ok` when the stdout excerpt has content and `empty` otherwise.
 
 **Arguments.** A placeholder `{name}` is always a whole argv item: `"{id}"` is allowed, `"job-{id}"` is refused. The
 value comes from `args.params` of the run (the lead takes it from the report), must match the whole pattern and may hold
 no line break; it is then passed as that one argv item, never into shell text. An operation whose argument is missing,
-does not match, or is secret-shaped (a value the redaction would change: a token, a key, a password) is `skipped`, with
-the reason, and nothing is run with the value; a secret-shaped value is dropped and reaches no generated file and no
-prompt. The program itself (`argv[0]`) is
+does not match, or contains a private word or recognizable credential value is `skipped`, with the reason. The
+rejected value is dropped from the plan. The program itself (`argv[0]`) is
 never a placeholder. After an interpreter (a shell, `node`, `python`, `perl`, `pwsh`, `cmd`, `awk`, `sed` and the like)
 a placeholder is allowed only when the interpreter's very next item is a script file (a path or a name with an
 extension, no flag before it): `["node", "read-job.mjs", "{id}"]` passes, while `["sh", "-c", "{id}"]`,
@@ -84,11 +88,15 @@ fixed arguments and takes the value only as data.
 that read (show, status, list, a report), never ones that retry, restart or repair. Operations run from the adapter's
 folder, with the caller's environment and rights.
 
-On Windows a bare executable name is resolved in Rust's order: the launching executable's directory, the system
-directory, the Windows directory, then the caller's `PATH`. An omitted `.exe` is supported. The launcher's current
-directory is not searched implicitly; use an explicit path or include that directory in `PATH` to select a program
-there. Relative executable paths and relative or empty `PATH` entries are resolved against the launcher's current directory,
-while the operation itself still runs from the adapter's folder. Batch entry points remain prohibited.
+On Unix the runner changes to the adapter's folder before starting the program. Explicit relative executable paths
+such as `./bin/read-status` resolve there. Bare names are searched on `PATH`, with relative and empty entries
+interpreted from that working directory.
+
+On Windows a bare executable name is searched in the launching executable's directory, the system directory,
+the Windows directory, then the caller's `PATH`. A bare name without a dot gets `.exe`. For an explicit path without
+`.exe`, an existing `.exe` variant is tried first. Relative executable paths and relative or empty `PATH` entries
+resolve from the launcher's current directory. To search that directory, include it in `PATH` or use an explicit
+path. The program still runs with the adapter's folder as its working directory. Batch entry points remain prohibited.
 
 **Provides.** The classifier may call an error `stale` only with evidence from a `release` or `changelog` operation
 that a specific release fixes this error, and from a `release` operation that the affected environment runs it, both
