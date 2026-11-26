@@ -149,6 +149,17 @@ verification files protected.
   Inherited names such as `PATH` and `CARGO_HOME`, `LOG_DIR` and the `ZODCHI_` prefix are reserved.
   Values must fit on one line. Flow expands `{cache}` to `<home>/flow-cache/<repo-slug>` and pins the
   resulting values in the journal.
+- `writerEnv` sets variables for the agent writer and its `setup` commands. It follows the `env` rules and also
+  reserves the configured browser variable. Setup receives both sets, with `writerEnv` taking precedence on shared
+  names. Checks and verification use `env`. Flow pins the effective writer variables in the journal.
+
+In `writerEnv` values, `{writerCache}` resolves to `<home>/flow-cache/<repo-slug>/writer`, using the same repository
+slug as `{cache}`. Flow creates the folder when used and adds it to the writer's Codex sandbox writable roots.
+For Cargo, `"writerEnv": { "CARGO_TARGET_DIR": "{writerCache}/target", "CARGO_BUILD_JOBS": "4" }` lets writers reuse
+compiled dependencies and limits each build to four jobs. Cargo coordinates concurrent builds in the shared target
+folder with its own lock. If the local Codex version or platform ignores the writable-root setting, builds that write
+there fail in the writer sandbox. Remove the variable that uses `{writerCache}` from the project configuration in
+that environment.
 
 Engine-run setup, checks and verify commands share one slot under the Zodchi home across repositories.
 `zodchi flow status <run-id>` shows `waiting for the check slot` in `event` and the holder's run ID in

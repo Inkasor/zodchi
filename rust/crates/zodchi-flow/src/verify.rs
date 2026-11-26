@@ -3,7 +3,7 @@ use crate::checks::{self, ProjectPaths};
 use crate::git::Git;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use zodchi_core::util::{fail, GatewayError, Result};
 
 pub const CONFIG: &str = ".zodchi/verify.json";
@@ -20,13 +20,7 @@ pub(crate) struct ProjectSettings {
 impl ProjectSettings {
     fn configured(value: &Value, cache: &Path) -> Result<Self> {
         let mut settings = Self::from_json(value)?;
-        let cache = cache.to_string_lossy();
-        for val in settings.env.values_mut() {
-            *val = val.replace("{cache}", &cache);
-            if !valid_env_value(val) {
-                return fail(format!("{CONFIG}.env expands to a value containing a newline or NUL."));
-            }
-        }
+        expand_environment(&mut settings.env, "env", "{cache}", &cache.to_string_lossy())?;
         Ok(settings)
     }
 
@@ -63,12 +57,42 @@ impl ProjectSettings {
         Ok(Self {
             tools: tools(value.get("tools"), std::env::consts::OS)?,
             cache: cache(value.get("cache"))?,
-            env: environment(value.get("env"))?,
+            env: environment(value.get("env"), "env", None)?,
         })
     }
 
     pub fn to_json(&self) -> Value {
         json!({ "tools": self.tools, "cache": self.cache, "env": self.env })
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct WriterSettings {
+    pub env: BTreeMap<String, String>,
+    pub cache: Option<PathBuf>,
+}
+
+impl WriterSettings {
+    fn configured(value: &Value, project_cache: &Path, browser: Option<&str>) -> Result<Self> {
+        let mut env = environment(value.get("writerEnv"), "writerEnv", browser)?;
+        let mut cache = None;
+        if env.values().any(|value| value.contains("{writerCache}")) {
+            let path = project_cache.join("writer");
+            let text = path.to_str().ok_or_else(|| GatewayError("The writer cache path must be Unicode.".into()))?;
+            expand_environment(&mut env, "writerEnv", "{writerCache}", text)?;
+            cache = Some(path);
+        }
+        Ok(Self { env, cache })
+    }
+
+    pub(crate) fn from_pin(plan: &Value, browser: Option<&str>) -> Result<Self> {
+        let env = environment(plan.get("writerEnv"), "writerEnv", browser)?;
+        let cache = plan.get("writerCache").map(|value| {
+            value.as_str().filter(|path| valid_env_value(path)).map(PathBuf::from)
+                .filter(|path| path.is_absolute() && path.file_name().is_some_and(|name| name == "writer"))
+                .ok_or_else(|| GatewayError("The pinned verification plan has an invalid writer cache path.".into()))
+        }).transpose()?;
+        Ok(Self { env, cache })
     }
 }
 
@@ -79,6 +103,7 @@ pub struct Plan {
     pub checks: Vec<String>,
     pub verify: Vec<String>,
     pub(crate) project: ProjectSettings,
+    pub(crate) writer: WriterSettings,
     pub check_source: &'static str,
     pub verify_source: &'static str,
     pub full_local: Vec<String>,
@@ -89,7 +114,7 @@ impl Plan {
     pub fn legacy(args: &Args) -> Self {
         Self {
             setup: args.setup.clone(), setup_source: "args.setup",
-            checks: args.checks.clone(), verify: args.verify.clone(), project: ProjectSettings::default(),
+            checks: args.checks.clone(), verify: args.verify.clone(), project: ProjectSettings::default(), writer: WriterSettings::default(),
             check_source: "checks", verify_source: "args.verify",
             full_local: vec![], full_in_ci: false,
         }
@@ -112,6 +137,10 @@ impl Plan {
         let checks = commands(value.get("checks"), "checks")?;
         let verify = commands(value.get("verify"), "verify")?;
         plan.project = ProjectSettings::configured(&value, &paths.cache)?;
+        let writer = WriterSettings::configured(&value, &paths.cache, args.browser.as_ref().map(|(name, _)| name.as_str()))?;
+        if args.agent {
+            plan.writer = writer;
+        }
         if args.agent && plan.setup.is_empty() && !setup.is_empty() {
             plan.setup = setup;
             plan.setup_source = "project.setup";
@@ -135,14 +164,39 @@ impl Plan {
                 _ => return fail(format!("{CONFIG}: full.run is local with commands, or ci with commands defined by CI")),
             }
         }
+        let setup_env = (!plan.setup.is_empty() && !plan.writer.env.is_empty()).then(|| plan.setup_environment());
         plan.project.select_tools(&value, std::env::consts::OS,
             plan.setup.iter().chain(&plan.checks).chain(&plan.verify).chain(&plan.full_local).map(String::as_str),
-            |env| rust_host(git, base, paths, env));
+            |env| {
+                // Setup can select a different Rust toolchain or target from the check commands.
+                let host = |env: &BTreeMap<String, String>| rust_host(git, base, paths, env);
+                if setup_env.as_ref().is_some_and(|setup| setup != env && !uses_msvc(setup, &host)) {
+                    return None;
+                }
+                host(env)
+            });
         Ok(plan)
+    }
+
+    pub(crate) fn setup_environment(&self) -> BTreeMap<String, String> {
+        let mut env = self.project.env.clone();
+        for (name, value) in &self.writer.env {
+            if cfg!(windows) {
+                env.retain(|existing, _| !existing.eq_ignore_ascii_case(name));
+            }
+            env.insert(name.clone(), value.clone());
+        }
+        env
     }
 
     pub fn to_json(&self) -> Value {
         let mut plan = self.project.to_json();
+        if !self.writer.env.is_empty() {
+            plan["writerEnv"] = json!(self.writer.env);
+        }
+        if let Some(cache) = &self.writer.cache {
+            plan["writerCache"] = json!(cache);
+        }
         plan["setup"] = json!(self.setup);
         plan["setupSource"] = json!(self.setup_source);
         plan["checks"] = json!(self.checks);
@@ -186,6 +240,7 @@ impl Plan {
         Ok(Self {
             setup, setup_source,
             checks: commands("checks")?, verify: commands("verify")?, project: ProjectSettings::from_json(plan)?, check_source, verify_source,
+            writer: WriterSettings::from_pin(plan, args.browser.as_ref().map(|(name, _)| name.as_str()))?,
             full_local: commands("fullLocal")?, full_in_ci,
         })
     }
@@ -202,7 +257,7 @@ fn config_at(git: &Git, base: &str) -> Result<Option<Value>> {
     let Some(fields) = value.as_object() else {
         return fail(format!("{CONFIG} must be an object"));
     };
-    if let Some(key) = fields.keys().find(|key| !["setup", "checks", "verify", "full", "tools", "cache", "env"].contains(&key.as_str())) {
+    if let Some(key) = fields.keys().find(|key| !["setup", "checks", "verify", "full", "tools", "cache", "env", "writerEnv"].contains(&key.as_str())) {
         return fail(format!("{CONFIG}: unexpected field {key:?}"));
     }
     Ok(Some(value))
@@ -345,20 +400,31 @@ fn valid_env_value(value: &str) -> bool {
     !value.contains(['\0', '\r', '\n', '\u{0085}', '\u{2028}', '\u{2029}'])
 }
 
-fn environment(value: Option<&Value>) -> Result<BTreeMap<String, String>> {
+fn expand_environment(env: &mut BTreeMap<String, String>, field: &str, placeholder: &str, path: &str) -> Result<()> {
+    for value in env.values_mut() {
+        *value = value.replace(placeholder, path);
+        if !valid_env_value(value) {
+            return fail(format!("{CONFIG}.{field} expands to a value containing a newline or NUL."));
+        }
+    }
+    Ok(())
+}
+
+fn environment(value: Option<&Value>, field: &str, reserved: Option<&str>) -> Result<BTreeMap<String, String>> {
     let Some(value) = value else { return Ok(BTreeMap::new()) };
-    let invalid = || GatewayError(format!("{CONFIG}.env must be an object with up to {MAX_ENTRIES} entries."));
+    let invalid = || GatewayError(format!("{CONFIG}.{field} must be an object with up to {MAX_ENTRIES} entries."));
     let object = value.as_object().filter(|object| object.len() <= MAX_ENTRIES).ok_or_else(invalid)?;
     let mut seen = BTreeSet::new();
     let mut env = BTreeMap::new();
     for (name, value) in object {
         let upper = name.to_ascii_uppercase();
         if name.is_empty() || !name.bytes().enumerate().all(|(i, b)| b == b'_' || b.is_ascii_alphabetic() || (i > 0 && b.is_ascii_digit()))
-            || checks::KEEP.contains(&upper.as_str()) || upper == "LOG_DIR" || upper.starts_with("ZODCHI_") || !seen.insert(upper) {
-            return fail(format!("{CONFIG}.env contains an invalid, reserved or duplicate name {name:?}."));
+            || checks::KEEP.contains(&upper.as_str()) || upper == "LOG_DIR" || upper.starts_with("ZODCHI_")
+            || reserved.is_some_and(|reserved| name.eq_ignore_ascii_case(reserved)) || !seen.insert(upper) {
+            return fail(format!("{CONFIG}.{field} contains an invalid, reserved or duplicate name {name:?}."));
         }
         let value = value.as_str().filter(|value| valid_env_value(value))
-            .ok_or_else(|| GatewayError(format!("{CONFIG}.env value for {name:?} must be text without newlines or NUL.")))?;
+            .ok_or_else(|| GatewayError(format!("{CONFIG}.{field} value for {name:?} must be text without newlines or NUL.")))?;
         env.insert(name.clone(), value.to_string());
     }
     Ok(env)
@@ -392,12 +458,12 @@ mod tests {
             Some(toolchain.trim_start_matches("stable-").to_string())
         };
         for (default, override_toolchain, waived) in [(MSVC, GNU, false), (GNU, MSVC, true)] {
-            let env = environment(Some(&json!({ "RUSTUP_TOOLCHAIN": format!("stable-{override_toolchain}") }))).unwrap();
+            let env = environment(Some(&json!({ "RUSTUP_TOOLCHAIN": format!("stable-{override_toolchain}") })), "env", None).unwrap();
             assert_eq!(uses_msvc(&env, probe(default)), waived);
         }
-        let env = environment(Some(&json!({ "cargo_build_target": GNU }))).unwrap();
+        let env = environment(Some(&json!({ "cargo_build_target": GNU })), "env", None).unwrap();
         assert!(!uses_msvc(&env, probe(MSVC)));
-        let env = environment(Some(&json!({ "CARGO_BUILD_TARGET": "aarch64-pc-windows-msvc" }))).unwrap();
+        let env = environment(Some(&json!({ "CARGO_BUILD_TARGET": "aarch64-pc-windows-msvc" })), "env", None).unwrap();
         assert!(uses_msvc(&env, probe(MSVC)));
         assert!(!uses_msvc(&env, probe(GNU)));
         assert!(selects_rust("cd rust && cargo test '--target=x86_64-pc-windows-gnu'"));
@@ -476,7 +542,57 @@ mod tests {
             json!({"A": "\r"}), json!({"A": "\n"}), json!({"A": "\0"}), json!({"A": "\u{2028}"}),
             json!((0..17).map(|i| (format!("V{i}"), "x")).collect::<BTreeMap<_, _>>()),
         ] {
-            assert!(environment(Some(&invalid)).is_err(), "{invalid}");
+            assert!(environment(Some(&invalid), "env", None).is_err(), "{invalid}");
+            assert!(WriterSettings::configured(&json!({ "writerEnv": invalid }), Path::new("cache"), None).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn writer_environment_reserves_the_configured_browser_name() {
+        for name in ["APP_TEST_CHROME", "app_test_chrome"] {
+            let value = json!({ "writerEnv": { (name): "other" } });
+            let cache = Path::new("cache");
+            assert!(WriterSettings::configured(&value, cache, Some("APP_TEST_CHROME")).is_err());
+            assert!(WriterSettings::from_pin(&value, Some("APP_TEST_CHROME")).is_err());
+            let settings = WriterSettings::configured(&value, cache, None).unwrap();
+            assert_eq!(settings.env[name], "other");
+            assert!(settings.cache.is_none());
+        }
+    }
+
+    #[test]
+    fn writer_environment_expands_and_pins_the_writer_cache() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let args = args::parse(&json!({ "label": "writer-env", "mode": "agent", "brief": "brief.md",
+            "repo": repo, "files": ["Cargo.toml"] })).unwrap();
+        let value = json!({
+            "env": { "CHECK_OUTPUT": "{cache}/build", "CARGO_BUILD_JOBS": "6" },
+            "writerEnv": { "CARGO_TARGET_DIR": "{writerCache}/target", "CARGO_BUILD_JOBS": "4" },
+        });
+        let home = repo.join("zodchi home");
+        let cache = home.join("flow-cache").join("repo-slug");
+        let writer_cache = cache.join("writer");
+        let mut plan = Plan::legacy(&args);
+        let old_run = json!({ "verificationPlan": plan.to_json() });
+        let older = Plan::from_run(&old_run, &args).unwrap();
+        assert!(older.writer.env.is_empty() && older.writer.cache.is_none());
+        plan.project = ProjectSettings::configured(&value, &cache).unwrap();
+        plan.writer = WriterSettings::configured(&value, &cache, None).unwrap();
+        let pinned = plan.to_json();
+        let replayed = Plan::from_run(&json!({ "verificationPlan": pinned }), &args).unwrap();
+        assert_eq!(replayed.to_json(), pinned);
+        assert_eq!(replayed.writer.cache.as_deref(), Some(writer_cache.as_path()));
+        assert_eq!(replayed.writer.env["CARGO_TARGET_DIR"], format!("{}/target", writer_cache.display()));
+        assert_eq!(replayed.writer.env["CARGO_BUILD_JOBS"], "4");
+        assert_eq!(replayed.project.env["CHECK_OUTPUT"], format!("{}/build", cache.display()));
+        assert_eq!(replayed.project.env["CARGO_BUILD_JOBS"], "6");
+        assert!(!replayed.project.env.contains_key("CARGO_TARGET_DIR"));
+        let setup_env = replayed.setup_environment();
+        assert_eq!(setup_env["CHECK_OUTPUT"], replayed.project.env["CHECK_OUTPUT"]);
+        assert_eq!(setup_env["CARGO_TARGET_DIR"], replayed.writer.env["CARGO_TARGET_DIR"]);
+        assert_eq!(setup_env["CARGO_BUILD_JOBS"], "4");
+
+        let bad_path = cache.join("with\nnewline");
+        assert!(WriterSettings::configured(&value, &bad_path, None).is_err());
     }
 }

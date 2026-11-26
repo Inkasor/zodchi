@@ -937,6 +937,8 @@ impl Run {
         self.reap_checks(step)?;
         let env_cache = self.check_paths.create_env_cache(&self.verify_plan.project.env);
         self.infra(step, env_cache)?;
+        let writer_cache = agent::create_writer_cache(&self.verify_plan.writer);
+        self.infra(step, writer_cache)?;
         let start = self.journal.events().iter().filter(|e| e["kind"] == "intent" && e["step"] == step).count() + 1;
         let logs = self.journal.file(&format!("logs/{}-{start}", gateway::slug(step)));
         let intended = self.record_intent(step, round, "run writer setup", &sha256_hex(tree.to_string()),
@@ -945,7 +947,8 @@ impl Run {
         let limit = Duration::from_secs_f64(self.args.check_timeout_min * 60.0);
         let journal = &mut self.journal;
         let mut on = |phase, pid, job: Option<&str>| slot.record(journal, step, attempt, phase, pid, job);
-        let environment = checks::CommandEnvironment { repo: None, extra: Some(&self.verify_plan.project.env) };
+        let setup_env = self.verify_plan.setup_environment();
+        let environment = checks::CommandEnvironment { repo: None, extra: Some(&setup_env) };
         let (evidence, recorded) = checks::run_commands(
             &self.verify_plan.setup, self.verify_plan.setup_source, workspace, &logs, limit, &environment, true, &mut on);
         if !recorded {

@@ -2,6 +2,8 @@
   "checks": ["node --check scripts/e2e.mjs"],
   "verify": ["node scripts/e2e.mjs --cargo-profile check flow-entry-local"],
   "cache": ["rust/target"],
+  "env": { "CARGO_BUILD_JOBS": "4" },
+  "writerEnv": { "CARGO_TARGET_DIR": "{writerCache}/target", "CARGO_BUILD_JOBS": "4" },
   "tools": ["cargo", "node", { "name": "dlltool", "os": "windows" }, { "name": "as", "os": "windows" }],
   "full": { "run": "ci" }
 }
