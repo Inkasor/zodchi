@@ -7,7 +7,7 @@ use crate::{
     journal::Journal,
     models::{self, Pick},
     package_source::Source,
-    patch, review_source, Exit,
+    patch, review_source, verify::ProjectSettings, Exit,
 };
 use serde_json::{json, Value};
 use std::{fs, io::Read};
@@ -16,7 +16,6 @@ use std::time::Duration;
 use zodchi_core::{
     config::Config,
     job::{self, compose_prompt, LIMIT_PROMPT},
-    process::process_start,
     role::{load_role, Overrides},
     util::{fail, iso, sha256_hex, GatewayError, Result},
 };
@@ -216,54 +215,38 @@ fn verify_candidate(journal: &mut Journal, run: &Value, cfg: &Config, available:
     if let Some(done) = journal.last("done", step, attempt) {
         return Ok(done["result"].clone());
     }
-    if journal.last("intent", step, attempt).is_some() {
-        return fail("The verification attempt has no final receipt. Inspect its logs before explicitly rerunning verify.");
-    }
-    checks::reap_unended(journal)?;
     let head = run["head"].as_str().ok_or_else(|| GatewayError("The review has no pinned head.".into()))?;
     let tree = run["tree"].as_str().ok_or_else(|| GatewayError("The review has no pinned tree.".into()))?;
     let git = Git::new(cfg.root.as_deref().ok_or_else(|| GatewayError("The review has no repository.".into()))?);
     let plan = &run["localVerification"];
     let fast = args::commands(plan.get("checks"), "checks").map_err(GatewayError)?;
     let verify = args::commands(plan.get("verify"), "verify").map_err(GatewayError)?;
-    journal.append(json!({ "kind": "intent", "step": step, "attempt": attempt, "effect": "run checks", "head": head, "tree": tree }))?;
-    let id = run["runId"].as_str().unwrap_or("review");
-    let container = checks::temp_dir(id, step)?;
-    let checkout = container.join("checkout");
-    let execution = (|| -> Result<Vec<Value>> {
-        fs::create_dir(&checkout)?;
-        let snapshot = git.init_snapshot(&checkout)?;
+    let project = ProjectSettings::from_json(plan)?;
+    let paths = checks::ProjectPaths::new(&cfg.home, &git)?;
+    let mut slot = checks::CheckSlot::acquire(&cfg.home, journal, step, attempt)?;
+    checks::reap_unended(journal)?;
+    let logs = journal.file(&format!("logs/verify-{attempt}"));
+    let batch = checks::CheckBatch {
+        step, round: 1, attempt, tree, head: Some(head), logs: &logs, limit: Duration::from_secs(3600),
+        environment: checks::CommandEnvironment { repo: Some(&git.root), extra: Some(&project.env) },
+        checks: ("args.checks", &fast),
+        verify: ("args.verify", &verify),
+    };
+    let outcome = batch.run(&mut slot, journal, &paths, &project.cache, |staging| {
+        let snapshot = git.init_snapshot(staging)?;
         snapshot.run(&["reset", "--hard", "--quiet", "--no-recurse-submodules", head])?;
-        if snapshot.rev("HEAD^{tree}")? != tree {
-            return fail("The verification checkout does not match the pinned candidate tree.");
-        }
-        let logs = journal.file(&format!("logs/verify-{attempt}"));
-        let mut record = |phase, pid| {
-            let event = match phase {
-                checks::Phase::Started => json!({ "kind": "check started", "step": step, "attempt": attempt, "pid": pid, "start": process_start(pid) }),
-                checks::Phase::Ended => json!({ "kind": "check ended", "step": step, "attempt": attempt, "pid": pid }),
-            };
-            journal.append(event).is_ok()
-        };
-        let limit = Duration::from_secs(3600);
-        let (mut evidence, mut recorded) = checks::run_list(&fast, "args.checks", &checkout, &logs, limit, &mut record);
-        if recorded && checks::passed(&evidence) && !verify.is_empty() {
-            let (results, ok) = checks::run_list(&verify, "args.verify", &checkout, &logs, limit, &mut record);
-            evidence.extend(results);
-            recorded = ok;
-        }
-        if !recorded {
-            return fail("The journal could not record the start or end of a verification command.");
-        }
-        Ok(evidence)
-    })();
-    checks::remove(&container);
-    let evidence = execution?;
-    let places = [
+        Ok(())
+    })?;
+    let (checkout, evidence) = match outcome {
+        checks::CheckOutcome::Finished { checkout, evidence } => (checkout, evidence),
+        checks::CheckOutcome::Unknown(why) => return fail(format!("{why}. Inspect the attempt before explicitly rerunning verify.")),
+    };
+    let mut places = vec![
         (checkout.to_string_lossy().into_owned(), "<verification-checkout>"),
         (git.root.to_string_lossy().into_owned(), "<repo>"),
         (cfg.home.to_string_lossy().into_owned(), "<zodchi-home>"),
     ];
+    places.extend(paths.private_places());
     let allowed: Vec<_> = run["reviewPolicy"]["forkWords"].as_array().into_iter().flatten()
         .filter_map(Value::as_str).map(String::from).collect();
     let scrubber = input::Scrubber::new(cfg)?.allow_words(&allowed);
@@ -428,8 +411,16 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
     }
     let checks = args::commands(raw.get("checks"), "checks").map_err(GatewayError)?;
     let verify = args::commands(raw.get("verify"), "verify").map_err(GatewayError)?;
-    let local_verification = (!checks.is_empty() || !verify.is_empty())
-        .then(|| json!({ "checks": checks, "verify": verify }));
+    let local_verification = if !checks.is_empty() || !verify.is_empty() {
+        let paths = checks::ProjectPaths::new(&cfg.home, &git)?;
+        let project = ProjectSettings::load(&git, &base, &head, &paths, checks.iter().chain(&verify))?;
+        checks::preflight()?;
+        checks::preflight_tools(&project.tools)?;
+        let mut plan = project.to_json();
+        plan["checks"] = json!(checks);
+        plan["verify"] = json!(verify);
+        Some(plan)
+    } else { None };
     let verification_run = read_text("verificationRun")?;
     let verification_file = read_text("verificationFile")?;
     if [local_verification.is_some(), verification_run.is_some(), verification_file.is_some()]
@@ -578,9 +569,6 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
         sizes.sort_by_key(|(_, bytes)| std::cmp::Reverse(*bytes));
         let largest = sizes.iter().take(3).map(|(name, bytes)| format!("{name} ({bytes} bytes)")).collect::<Vec<_>>().join(", ");
         return fail(format!("Review material needs {needed} bytes with its reserve (gateway limit {LIMIT_PROMPT} bytes). Largest contributions are {largest}. Use args.exclude for large data diffs or reduce the context."));
-    }
-    if local_verification.is_some() {
-        checks::preflight()?;
     }
     if server.is_none() {
         models::codex_usable(&job::account(&cfg)).map_err(GatewayError)?;

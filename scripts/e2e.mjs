@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // The end-to-end suite of the gateway, run on every pull request and by the `verify` skill: `npm run e2e`.
-// It builds the release binaries once, then runs the `zodchi` command and `zodchi-server` the way a user does, against
+// It builds the binaries once, then runs the `zodchi` command and `zodchi-server` the way a user does, against
 // scripts/e2e/fake-codex.mjs in place of Codex: no model, no network beyond 127.0.0.1, nothing spent.
 //
-//   node scripts/e2e.mjs [--no-build] [--bin-dir <dir>] [--keep] [--out <dir>] [scenario ...]
+//   node scripts/e2e.mjs [--cargo-profile <name>] [--no-build] [--bin-dir <dir>] [--keep] [--out <dir>] [scenario ...]
 //
-//   --no-build   use the binaries already in rust/target/release (CI builds them in the step before)
+//   --cargo-profile  Cargo profile and its rust/target subfolder, default release
+//   --no-build   use the binaries already built for that profile (CI builds them in the step before)
 //   --bin-dir    with --no-build, test a separate candidate without replacing the active release binaries
 //   --keep       keep the scratch folder (fixture repositories, data folders, Codex homes) after a pass too
 //   --out <dir>  where the traces go; default .agent-tmp/e2e-traces/ of this repository, emptied at the start
@@ -40,14 +41,24 @@ const noBuild = flag("--no-build");
 const keep = flag("--keep");
 const outOption = option("--out");
 const binOption = option("--bin-dir");
+const cargoProfile = option("--cargo-profile");
+const profile = cargoProfile === null ? "release" : cargoProfile;
+if (!/^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(profile ?? "")) throw new Error("--cargo-profile requires a Cargo profile name");
 if (binOption && !noBuild) throw new Error("--bin-dir requires --no-build");
-const binDir = binOption ? path.resolve(binOption) : path.join(ROOT, "rust", "target", "release");
-const ZODCHI = path.join(binDir, "zodchi" + EXE);
-const SERVER = path.join(binDir, "zodchi-server" + EXE);
+// Cargo reserves "check" as a profile name. Use it as the suite's name for the flow-check binaries.
+const buildProfile = profile === "check" ? "flow-check" : profile;
+const cargoDir = profile === "dev" || profile === "test" ? "debug" : profile === "bench" ? "release" : profile;
+const targetDir = path.resolve(process.env.CARGO_TARGET_DIR || path.join(ROOT, "rust", "target"));
+const binDir = binOption ? path.resolve(binOption) : path.join(targetDir, cargoDir);
+const binaries = ["zodchi" + EXE, "zodchi-server" + EXE];
 const wanted = argv;
 
 const tempDirectory = fs.realpathSync(os.tmpdir());
 const scratch = fs.mkdtempSync(path.join(tempDirectory, "zodchi-e2e-"));
+// Windows keeps the executable of a detached worker locked until it exits. Keep candidate test workers off the
+// build artifacts so the next package can rebuild into the same Cargo target directory.
+const runBinDir = WIN && (binOption || profile === "check") ? path.join(scratch, "bin") : binDir;
+const [ZODCHI, SERVER] = binaries.map((name) => path.join(runBinDir, name));
 const traces = path.resolve(outOption || path.join(ROOT, ".agent-tmp", "e2e-traces"));
 if (!outOption) fs.rmSync(traces, { recursive: true, force: true });
 fs.mkdirSync(traces, { recursive: true });
@@ -1389,7 +1400,9 @@ scenario("flow-private-checks", "check evidence removes private commands, folder
 function build() {
   const started = Date.now();
   const log = path.join(traces, "build.log");
-  const r = spawnSync("cargo", ["build", "--release", "--locked", "--manifest-path", path.join(ROOT, "rust", "Cargo.toml")], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+  const args = ["build", "--profile", buildProfile, "--locked", "--manifest-path", path.join(ROOT, "rust", "Cargo.toml")];
+  if (profile === "check") args.push("--message-format=json-render-diagnostics");
+  const r = spawnSync("cargo", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, windowsHide: true });
   fs.writeFileSync(log, `${r.stdout || ""}${r.stderr || ""}${r.error ? String(r.error) : ""}`);
   const ms = Date.now() - started;
   try { checkStartup(r.status, "cargo"); } catch (error) {
@@ -1397,8 +1410,29 @@ function build() {
     process.exit(2);
   }
   if (r.status !== 0) {
-    console.log(`FAIL build (${ms} ms): cargo build --release exited ${r.status}; log ${log}`);
+    console.log(`FAIL build (${ms} ms): cargo build --profile ${buildProfile} exited ${r.status}; log ${log}`);
     process.exit(1);
+  }
+  if (profile === "check") {
+    // An explicit build target adds a Cargo output subdirectory even when it matches the host.
+    const executables = new Map();
+    for (const line of r.stdout.split(/\r?\n/)) {
+      if (!line.startsWith("{")) continue;
+      const artifact = JSON.parse(line);
+      if (artifact.reason !== "compiler-artifact" || !artifact.executable || !artifact.target.kind.includes("bin")) continue;
+      const name = artifact.target.name + EXE;
+      if (!binaries.includes(name)) continue;
+      if (executables.has(name) && executables.get(name) !== artifact.executable) {
+        throw new Error(`Cargo reported multiple executables for ${name}; log ${log}`);
+      }
+      executables.set(name, artifact.executable);
+    }
+    const missing = binaries.filter((name) => !executables.has(name));
+    if (missing.length) throw new Error(`Cargo did not report executables for ${missing.join(", ")}; log ${log}`);
+    fs.mkdirSync(binDir, { recursive: true });
+    for (const name of binaries) {
+      fs.copyFileSync(executables.get(name), path.join(binDir, name));
+    }
   }
   console.log(`build ${(ms / 1000).toFixed(1)} s (log ${log})`);
 }
@@ -1419,10 +1453,17 @@ if (unknownNames.length) {
   process.exit(1);
 }
 if (!noBuild) build();
-for (const bin of [ZODCHI, SERVER]) {
+for (const name of binaries) {
+  const bin = path.join(binDir, name);
   if (!fs.existsSync(bin)) {
-    console.error(`${bin} is missing: build it (cargo build --release) or drop --no-build`);
+    console.error(`${bin} is missing: run the suite without --no-build or point --bin-dir at a build`);
     process.exit(1);
+  }
+}
+if (runBinDir !== binDir) {
+  fs.mkdirSync(runBinDir);
+  for (const name of binaries) {
+    fs.copyFileSync(path.join(binDir, name), path.join(runBinDir, name));
   }
 }
 

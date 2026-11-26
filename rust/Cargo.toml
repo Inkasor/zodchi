@@ -21,3 +21,10 @@ ureq = { version = "3.5", default-features = false }
 lto = true
 codegen-units = 1
 strip = true
+
+[profile.flow-check]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+strip = false

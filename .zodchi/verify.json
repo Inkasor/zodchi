@@ -1,5 +1,7 @@
 {
   "checks": ["node --check scripts/e2e.mjs"],
-  "verify": ["node scripts/e2e.mjs flow-entry-local"],
+  "verify": ["node scripts/e2e.mjs --cargo-profile check flow-entry-local"],
+  "cache": ["rust/target"],
+  "tools": ["cargo", "node", { "name": "dlltool", "os": "windows" }, { "name": "as", "os": "windows" }],
   "full": { "run": "ci" }
 }
