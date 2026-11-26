@@ -152,6 +152,11 @@ mod windows_job {
         output.extend(std::iter::repeat(b'\\' as u16).take(slashes * 2));
         output.push(b'"' as u16);
     }
+
+    pub(super) fn failed_to_initialize(code: u32) -> bool {
+        matches!(code, 0xc000007b | 0xc0000135 | 0xc0000138 | 0xc0000139 | 0xc0000142)
+    }
+
     pub fn run(program: &Path, args: &[std::ffi::OsString], cwd: &Path, extra_env: &[(&str, &Path)], limit: Duration) -> Result<CommandResult, String> {
         let raw = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
         if raw.is_null() { return Err(format!("Cannot create process job: {}", std::io::Error::last_os_error())); }
@@ -225,6 +230,10 @@ mod windows_job {
         let mut code = 0;
         if unsafe { GetExitCodeProcess(process.0, &mut code) } == 0 { return Err(error("Cannot read process exit code")); }
         drop(job);
+        // The Windows loader can fail after CreateProcessW succeeds, before the tool runs.
+        if !timed_out && failed_to_initialize(code) {
+            return Err(format!("The check process failed to initialize (0x{code:08X})"));
+        }
         Ok(CommandResult { check: None, input_index: None, code: Some(code as i32), timed_out,
             stdout: stdout.recv_timeout(Duration::from_secs(2)).map_err(|_| "The process output did not close")?,
             stderr: stderr.recv_timeout(Duration::from_secs(2)).map_err(|_| "The process error output did not close")? })
@@ -241,27 +250,60 @@ fn run_command(program: &Path, args: &[std::ffi::OsString], cwd: &Path, extra_en
 
 #[cfg(not(windows))]
 fn run_command(program: &Path, args: &[std::ffi::OsString], cwd: &Path, extra_env: &[(&str, &Path)], limit: Duration) -> Result<CommandResult, String> {
+    run_unix_command(program, program, args, cwd, extra_env, limit)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn linux_loader_diagnostic<'a>(executable: &Path, stderr: &'a str) -> Option<&'a str> {
+    let executable = executable.to_string_lossy();
+    let glibc_prefix = format!("{executable}: error while loading shared libraries: ");
+    stderr.lines().find(|line| {
+        if line.starts_with(&glibc_prefix) { return true; }
+        // musl names the object requesting the missing library. That object can
+        // be a shared library rather than the executable.
+        let Some((failure, requester)) = line.strip_prefix("Error loading shared library ")
+            .and_then(|message| message.strip_suffix(')'))
+            .and_then(|message| message.rsplit_once(" (needed by ")) else { return false; };
+        !requester.is_empty() && failure.split_once(": ")
+            .is_some_and(|(library, reason)| !library.is_empty() && !reason.is_empty())
+    })
+}
+
+#[cfg(not(windows))]
+fn run_unix_command(program: &Path, startup_executable: &Path, args: &[std::ffi::OsString], cwd: &Path, extra_env: &[(&str, &Path)], limit: Duration) -> Result<CommandResult, String> {
     // On Linux a pipe binds the process group to the worker. A small Bash
     // watcher owns the read end; only the worker owns the write end. If the
     // worker dies, EOF makes the watcher kill the group, even if the check's
     // leader has already exited. No untrusted argument is interpolated.
     #[cfg(target_os = "linux")]
+    let start_failure = format!("ops-watch startup failed {:016x}", rand::random::<u64>());
+    #[cfg(target_os = "linux")]
+    let bash = ["/bin/bash", "/usr/bin/bash"].into_iter().find(|path| Path::new(path).is_file())
+        .ok_or("Linux process containment requires a system Bash")?;
+    #[cfg(target_os = "linux")]
     let mut command = {
-        let bash = ["/bin/bash", "/usr/bin/bash"].into_iter().find(|path| Path::new(path).is_file())
-            .ok_or("Linux process containment requires a system Bash")?;
         let mut command = zodchi_core::process::command_without_window(bash);
         command.arg("-c").arg(concat!(
-            "set -e; exec 3<&0; exec </dev/null; ",
+            "set -e; start_failure=$1; shift; ",
+            // Report failures during watcher setup.
+            "trap 'printf \"\\n%s\\n\" \"$start_failure\" >&2' EXIT; ",
+            "shopt -s execfail; exec 3<&0; exec </dev/null; ",
             "( IFS= read -r _ <&3 || kill -KILL -- \"-$$\" ) >/dev/null 2>&1 & ",
             "kill -0 \"$!\"; ",
-            "exec 3<&-; exec \"$@\""
-        )).arg("ops-watch").arg(program).args(args);
+            "exec 3<&-; trap - EXIT; ",
+            // execfail makes a failed exec return; under errexit Bash still exits on a failed
+            // exec even inside an || list, so errexit is turned off for the final exec only.
+            "set +e; exec \"$@\" || { status=$?; printf '\\n%s\\n' \"$start_failure\" >&2; exit \"$status\"; }"
+        )).arg("ops-watch").arg(&start_failure).arg(program).args(args);
         command
     };
     #[cfg(not(target_os = "linux"))]
     let mut command = zodchi_core::process::command_without_window(program);
     #[cfg(not(target_os = "linux"))]
-    command.args(args);
+    {
+        let _ = startup_executable;
+        command.args(args);
+    }
     command.current_dir(cwd).stdout(Stdio::piped()).stderr(Stdio::piped()).env_clear();
     #[cfg(target_os = "linux")]
     command.stdin(Stdio::piped());
@@ -308,28 +350,45 @@ fn run_command(program: &Path, args: &[std::ffi::OsString], cwd: &Path, extra_en
     let stdout = collect(Box::new(child.stdout.take().ok_or("Missing stdout pipe")?));
     let stderr = collect(Box::new(child.stderr.take().ok_or("Missing stderr pipe")?));
     let started = Instant::now();
-    let mut timed_out = false;
-    let status = loop {
+    let wait = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
             Ok(None) if started.elapsed() < limit => std::thread::sleep(Duration::from_millis(25)),
-            _ => {
-                timed_out = true;
-                zodchi_core::process::kill_tree(pid);
-                let _ = child.kill();
-                break child.wait().ok();
-            }
+            result => break result,
+        }
+    };
+    let timed_out = matches!(wait, Ok(None));
+    let status = match wait {
+        Ok(Some(status)) => Ok(status),
+        other => {
+            zodchi_core::process::kill_tree(pid);
+            let _ = child.kill();
+            let reaped = child.wait();
+            other.and(reaped)
         }
     };
     // On Unix, also stop children that survived a successfully exited leader.
     #[cfg(unix)]
     crate::checks::end_group(pid)?;
+    let status = status.map_err(|error| format!("Cannot wait for the check process: {error}"))?;
     let stdout = stdout.recv_timeout(Duration::from_secs(2)).map_err(|_| "The process output did not close")?;
     let stderr = stderr.recv_timeout(Duration::from_secs(2)).map_err(|_| "The process error output did not close")?;
+    #[cfg(target_os = "linux")]
+    if let Some(diagnostic) = stderr.strip_suffix(&format!("\n{start_failure}\n")) {
+        return Err(format!("Cannot start the check process: {}", diagnostic.trim()));
+    }
+    // The dynamic loader can fail after exec replaces Bash, leaving no startup marker.
+    // Exit 127 also belongs to checks, so require a shared-library loader diagnostic.
+    #[cfg(target_os = "linux")]
+    if !timed_out && status.code() == Some(127) && stdout.is_empty() {
+        if let Some(diagnostic) = linux_loader_diagnostic(startup_executable, &stderr)
+            .or_else(|| linux_loader_diagnostic(Path::new(bash), &stderr)) {
+            return Err(format!("Cannot start the check process: {diagnostic}"));
+        }
+    }
     Ok(CommandResult {
         check: None,
         input_index: None,
-        code: status.and_then(|status| status.code()),
+        code: status.code(),
         stdout,
         stderr,
         timed_out,
@@ -454,15 +513,18 @@ fn preflight_tools(args: &Args) -> Result<Tools, String> {
             _ => &["python3", "python"],
         };
         let candidates: Vec<PathBuf> = if let Some(path) = direct_python { vec![path] } else { names.iter().filter_map(|name| find_tool(name)).collect() };
+        // Probe the available compiler with the same import isolation as the static check.
+        let probe = ["-I".into(), "-B".into(), "-c".into(),
+            "import py_compile, sys; print('Python', sys.version.split()[0])".into()];
         for candidate in candidates {
-                if run_command(&candidate, &["--version".into()], &args.tmp, &[], Duration::from_secs(10))
-                    .is_ok_and(|result| !result.timed_out && result.code == Some(0)
-                        && format!("{}{}", result.stdout, result.stderr).trim_start().starts_with("Python 3.")) {
-                    usable = Some(candidate);
-                    break;
-                }
+            if run_command(&candidate, &probe, &args.tmp, &[], Duration::from_secs(10))
+                .is_ok_and(|result| !result.timed_out && result.code == Some(0)
+                    && result.stdout.lines().any(|line| line.starts_with("Python 3."))) {
+                usable = Some(candidate);
+                break;
+            }
         }
-        Some(usable.ok_or("A working Python interpreter is required")?)
+        Some(usable.ok_or("A working Python 3 interpreter with isolated py_compile is required")?)
     } else { None };
     let shellcheck = find_tool("shellcheck");
     let programs = [(&bash, "GNU bash"), (&checksum, "sha256sum")].into_iter()
@@ -584,10 +646,9 @@ fn local_dry_run(snapshot: &Snapshot, args: &Args, tools: &Tools) -> Result<Comm
     };
     #[cfg(unix)]
     if direct {
-        let bytes = regular_bytes(&copy)?;
-        if !bytes.starts_with(b"#!") { return Err("Direct checks require a supported shebang".into()); }
+        let interpreter = direct_interpreter(&copy)?;
         let command_args: Vec<std::ffi::OsString> = args.check[1..].iter().map(std::ffi::OsString::from).collect();
-        let result = run_command(&copy, &command_args, &snapshot.dir, &[], Duration::from_secs(60));
+        let result = run_unix_command(&copy, &interpreter, &command_args, &snapshot.dir, &[], Duration::from_secs(60));
         verify_snapshot(snapshot)?;
         return result;
     }
@@ -766,11 +827,32 @@ fn failed_unselected_static(step: &str, detail: &Value, args: &Args) -> bool {
     }))
 }
 
+fn nonzero_check_exit(code: &Value) -> bool {
+    let Some(code) = code.as_i64().and_then(|code| i32::try_from(code).ok()) else { return false; };
+    // Older Windows receipts stored loader failures as signed exit codes.
+    #[cfg(windows)]
+    if windows_job::failed_to_initialize(code as u32) { return false; }
+    code != 0
+}
+
+// Use the recorded command results so a resume makes the same repair decision.
+fn repairable_failure(step: &str, detail: &Value) -> bool {
+    if detail.get("error").is_some() { return false; }
+    if step.starts_with("static ") {
+        return detail["checks"].as_array().is_some_and(|checks| checks.iter().any(|check| {
+            // A command killed by a signal records a null exit code on Unix.
+            check["timedOut"] == false
+                && check.get("code").is_some_and(|code| code.is_null() || nonzero_check_exit(code))
+        }));
+    }
+    step.starts_with("dry ") && (detail["timedOut"] == true || nonzero_check_exit(&detail["code"]))
+}
+
 fn failed(journal: &mut Journal, id: &str, args: &Args, attempt: u64, step: &str, detail: Value) -> zodchi_core::util::Result<Exit> {
-    if attempt >= args.fixes {
+    let prior = journal.events().iter().find(|event| event["kind"] == "ops-repair" && event["attempt"] == attempt).cloned();
+    if attempt >= args.fixes || (prior.is_none() && !repairable_failure(step, &detail)) {
         return finish(journal, json!({ "workflow": NAME, "runId": id, "ready": false, "status": "failed", "step": step, "detail": detail }));
     }
-    let prior = journal.events().iter().find(|event| event["kind"] == "ops-repair" && event["attempt"] == attempt).cloned();
     let scope = if prior.is_none() && !failed_unselected_static(step, &detail, args) { repair_scope(args) } else { None };
     if prior.is_some() || scope.is_some() {
         let first = prior.is_none();
@@ -895,7 +977,7 @@ fn resume_guarded(id: &str, given: Option<&Value>, retry: Option<&str>, cfg: &Co
     guard().map_err(GatewayError)?;
     let attempt = journal.events().iter().filter(|event| event["kind"] == "waiting" || event["kind"] == "ops-fix-done").count() as u64;
     let mut recorded_failure = None;
-    for step in [format!("static {attempt}"), format!("dry {attempt}")] {
+    for step in [format!("snapshot {attempt}"), format!("static {attempt}"), format!("dry {attempt}")] {
         match effect_state(journal.events(), &step).map_err(GatewayError)? {
             EffectState::Unresolved => return Ok(unresolved(id, &step)),
             EffectState::Complete(detail) if detail["ok"] != true => { recorded_failure = Some((step, detail)); break; },
@@ -919,38 +1001,38 @@ fn resume_guarded(id: &str, given: Option<&Value>, retry: Option<&str>, cfg: &Co
         }
     };
     if args.remote.is_some() { return fail("Remote mode is not available in this build."); }
+    // A recorded failure or interrupted effect must survive even if that effect
+    // damaged the snapshot. Never restore or run a new check before this audit.
+    if let Some((step, detail)) = recorded_failure { return failed(&mut journal, id, &args, attempt, &step, detail); }
     let scrubber = input::Scrubber::new(cfg)?;
     let mut places: Vec<(String, &str)> = args.inputs.iter().map(|path| (path.display().to_string(), "[input]")).collect();
     places.push((args.tmp.display().to_string(), "[tmp]"));
     if let Some(repo) = &args.repo { places.push((repo.display().to_string(), "[repo]")); }
     let clean = |text: &str| scrubber.text(text, &places);
-    // A recorded failure or interrupted effect must survive even if that effect
-    // damaged the snapshot. Never restore or run a new check before this audit.
-    if let Some((step, detail)) = recorded_failure { return failed(&mut journal, id, &args, attempt, &step, detail); }
+
     let step = format!("snapshot {attempt}");
     let Some(made) = effect(&mut journal, &step, || match Args::parse(&run["inputs"]["args"]).and_then(|_| capture_snapshot(&args.tmp, &args.inputs)).and_then(|snap| snap.receipt()) {
         Ok(receipt) => json!({ "ok": true, "snapshot": receipt }),
         Err(error) => json!({ "ok": false, "error": clean(&error) }),
     })? else { return Ok(unresolved(id, &step)); };
     if made["ok"] != true { return failed(&mut journal, id, &args, attempt, &step, made); }
-    let snapshot = Snapshot::restore(&made["snapshot"], &args.tmp, &args.inputs).map_err(GatewayError)?;
-    if run["inputs"]["args"].get("check").is_none() {
-        args.check = if script_kind(&snapshot.dir.join(&snapshot.files[0].name)).map_err(GatewayError)? == Some("python") {
-            vec!["python3".into(), "{copy}".into(), "--check".into()]
-        } else {
-            vec!["bash".into(), "{copy}".into(), "--check".into()]
-        };
-    }
-    validate_interpreter_parity(&args.check, &args.sudo).map_err(GatewayError)?;
+    let restored = Snapshot::restore(&made["snapshot"], &args.tmp, &args.inputs).and_then(|snapshot| {
+        if run["inputs"]["args"].get("check").is_none() {
+            let interpreter = if script_kind(&snapshot.dir.join(&snapshot.files[0].name))? == Some("python") { "python3" } else { "bash" };
+            args.check = vec![interpreter.into(), "{copy}".into(), "--check".into()];
+        }
+        validate_interpreter_parity(&args.check, &args.sudo)?;
+        Ok(snapshot)
+    });
+    let snapshot = match restored {
+        Ok(snapshot) => snapshot,
+        Err(error) => return failed(&mut journal, id, &args, attempt, &step, json!({ "ok": false, "error": clean(&error) })),
+    };
     let mut snapshot_args = args.clone();
     snapshot_args.inputs = snapshot.files.iter().map(|file| snapshot.dir.join(&file.name)).collect();
     let step = format!("static {attempt}");
-    let preflight = if args.check[0] == "{copy}" && matches!(effect_state(journal.events(), &step).map_err(GatewayError)?, EffectState::Pending) {
-        validate_direct(&args.check, &snapshot_args.inputs[0]).map_err(GatewayError)?;
-        Some(preflight_tools(&snapshot_args).map_err(GatewayError)?)
-    } else { None };
     let cache = journal.file(&format!("pycache-{attempt}"));
-    let Some(checked) = effect(&mut journal, &step, || match preflight.map(Ok).unwrap_or_else(|| preflight_tools(&snapshot_args)).and_then(|tools| {
+    let Some(checked) = effect(&mut journal, &step, || match preflight_tools(&snapshot_args).and_then(|tools| {
         let applicable = snapshot_args.inputs.iter().enumerate().filter(|(i, p)| script_kind(p).is_ok_and(|k| k == Some("shell") || *i == 0 && k != Some("python"))).count();
         let mut ran = 0;
         static_checks(&snapshot, &tools, &cache, &mut ran).map(|results| (results, tools, applicable, ran))
@@ -964,17 +1046,15 @@ fn resume_guarded(id: &str, given: Option<&Value>, retry: Option<&str>, cfg: &Co
     })? else { return Ok(unresolved(id, &step)); };
     if checked["ok"] != true { return failed(&mut journal, id, &args, attempt, &step, checked); }
     let step = format!("dry {attempt}");
-    if matches!(effect_state(journal.events(), &step).map_err(GatewayError)?, EffectState::Pending) {
-        validate_direct(&args.check, &snapshot_args.inputs[0]).map_err(GatewayError)?;
-        if checked["bash"].as_str().is_none() ||
-            (matches!(args.check[0].as_str(), "python" | "python3") && checked["python"].as_str().is_none()) {
-            return Ok(unresolved(id, "static receipt lacks the resolved interpreter"));
-        }
-    }
     let Some(dry) = effect(&mut journal, &step, || match (|| -> Result<_, String> {
+        validate_direct(&args.check, &snapshot_args.inputs[0])?;
         let bash = checked["bash"].as_str().ok_or("Static receipt lacks the resolved Bash executable")?;
         let tools = Tools { bash: PathBuf::from(bash), python: checked["python"].as_str().map(PathBuf::from), shellcheck: None };
-        let interpreter = match args.check[0].as_str() { "{copy}" => None, "bash" => Some(tools.bash.clone()), _ => tools.python.clone() };
+        let interpreter = match args.check[0].as_str() {
+            "{copy}" => None,
+            "bash" => Some(tools.bash.clone()),
+            _ => Some(tools.python.clone().ok_or("Static receipt lacks the resolved Python executable")?),
+        };
         local_dry_run(&snapshot, &args, &tools).map(|r| (r, interpreter))
     })() {
         Ok((r, interpreter)) => json!({ "ok": !r.timed_out && r.code == Some(0), "code": r.code, "timedOut": r.timed_out,
@@ -1599,6 +1679,179 @@ mod tests {
         assert_eq!(effect_state(&[started.clone(), done.clone()], "remote upload").unwrap(), EffectState::Complete(done["result"].clone()));
         assert!(effect_state(&[done], "remote upload").is_err());
         assert!(effect_state(&[started.clone(), started], "remote upload").is_err());
+    }
+
+    fn failure_cases() -> Vec<(&'static str, &'static str, Value, bool)> {
+        let static_failure = |code: Option<i32>, timed_out| json!({ "ok": false, "checks": [
+            { "check": "script.py: py_compile", "inputIndex": 0, "code": code, "timedOut": timed_out }
+        ] });
+        vec![
+            ("snapshot-error", "snapshot 0", json!({ "ok": false, "error": "Cannot copy [input]" }), false),
+            ("missing-python", "static 0", json!({ "ok": false, "error": "A working Python interpreter is required" }), false),
+            ("static-timeout", "static 0", static_failure(Some(1), true), false),
+            ("dry-error", "dry 0", json!({ "ok": false, "error": "The process output did not close" }), false),
+            ("dry-signal", "dry 0", json!({ "ok": false, "code": null, "timedOut": false }), false),
+            #[cfg(windows)]
+            ("static-loader-error", "static 0", static_failure(Some(0xc0000142_u32 as i32), false), false),
+            #[cfg(windows)]
+            ("dry-loader-error", "dry 0", json!({ "ok": false, "code": 0xc0000135_u32 as i32, "timedOut": false }), false),
+            ("static-exit", "static 0", static_failure(Some(1), false), true),
+            #[cfg(unix)]
+            ("static-signal", "static 0", static_failure(None, false), true),
+            ("dry-exit", "dry 0", json!({ "ok": false, "code": 127, "timedOut": false }), true),
+            ("dry-timeout", "dry 0", json!({ "ok": false, "code": null, "timedOut": true }), true),
+        ]
+    }
+
+    #[test]
+    fn only_script_defects_are_repairable() {
+        for (id, step, detail, expect_repair) in failure_cases() {
+            assert_eq!(repairable_failure(step, &detail), expect_repair, "{id}");
+        }
+    }
+
+    #[test]
+    fn recorded_failures_repair_only_script_defects() {
+        let base = std::env::current_dir().unwrap().join(".agent-tmp").join(format!("ops-failure-{:016x}", rand::random::<u64>()));
+        // The child gate refuses a folder that is not a Git work tree root.
+        let repo = base.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        let script = repo.join("script.py");
+        fs::write(&script, b"print('checked')\n").unwrap();
+        let run = json!({ "workflow": NAME, "version": VERSION, "inputs": { "args": {
+            "script": script, "tmp": base, "repo": repo, "fixes": 1,
+            "check": ["python3", "{copy}", "--check"], "sudo": ["sudo", "python3", "{script}"]
+        } } });
+        let record = |journal: &mut Journal, step: &str, result: Value| {
+            journal.append(json!({ "kind": "ops-start", "step": step })).unwrap();
+            journal.append(json!({ "kind": "ops-done", "step": step, "result": result })).unwrap();
+        };
+        let mut cfg = Config::new(None).unwrap();
+        for (id, step, detail, expect_repair) in failure_cases() {
+            cfg.home = base.join(id);
+            let mut journal = Journal::create(&cfg.home, id, &run).unwrap();
+            record(&mut journal, step, detail.clone());
+            let exit = resume_guarded(id, None, None, &cfg, || Ok(())).unwrap();
+            let events = journal.snapshot().unwrap();
+            let repairs: Vec<_> = events.iter().filter(|event| event["kind"] == "ops-repair").collect();
+            assert_eq!(exit.code, 2, "{id}");
+            assert_eq!(exit.result["ready"], false, "{id}");
+            assert_eq!(exit.result["step"], step, "{id}");
+            assert_eq!(exit.result["detail"], detail, "{id}");
+            assert_eq!(repairs.len(), usize::from(expect_repair), "{id}");
+            if expect_repair {
+                assert_eq!(exit.result["status"], "waiting", "{id}");
+                assert_eq!(exit.result["childRunId"], repairs[0]["child"], "{id}");
+            } else {
+                assert_eq!(exit.result["status"], "failed", "{id}");
+                assert_eq!(journal.read_value("result.json"), Some(exit.result), "{id}");
+                assert_eq!(fs::read_dir(journal::flows_dir(&cfg.home)).unwrap().count(), 1, "{id}");
+            }
+            assert_eq!(events.iter().filter(|event| event["kind"] == "ops-start").count(), 1, "{id}");
+        }
+
+        let id = "interrupted-snapshot";
+        cfg.home = base.join(id);
+        let mut journal = Journal::create(&cfg.home, id, &run).unwrap();
+        journal.append(json!({ "kind": "ops-start", "step": "snapshot 0" })).unwrap();
+        let before = journal.snapshot().unwrap();
+        let exit = resume_guarded(id, None, None, &cfg, || Ok(())).unwrap();
+        assert_eq!(exit.result["status"], "unresolved");
+        assert_eq!(exit.result["step"], "snapshot 0");
+        assert_eq!(journal.snapshot().unwrap(), before);
+
+        let id = "recorded-repair";
+        cfg.home = base.join(id);
+        let mut journal = Journal::create(&cfg.home, id, &run).unwrap();
+        record(&mut journal, "snapshot 0", json!({ "ok": false, "error": "Cannot copy [input]" }));
+        let child = journal::new_run_id();
+        journal.append(json!({ "kind": "ops-repair", "attempt": 0, "child": child, "args": {} })).unwrap();
+        let before = journal.snapshot().unwrap();
+        let exit = resume_guarded(id, None, None, &cfg, || Ok(())).unwrap();
+        assert_eq!(exit.result["status"], "unresolved");
+        assert_eq!(exit.result["step"], format!("repair 0 ({child})"));
+        assert_eq!(journal.snapshot().unwrap(), before);
+
+        let id = "missing-receipt-interpreter";
+        cfg.home = base.join(id);
+        let mut journal = Journal::create(&cfg.home, id, &run).unwrap();
+        let snapshot = capture_snapshot(&base, &[script]).unwrap().receipt().unwrap();
+        record(&mut journal, "snapshot 0", json!({ "ok": true, "snapshot": snapshot }));
+        record(&mut journal, "static 0", json!({ "ok": true, "bash": base.join("bash"), "python": null }));
+        let exit = resume_guarded(id, None, None, &cfg, || Ok(())).unwrap();
+        assert_eq!(exit.result["status"], "failed");
+        assert_eq!(exit.result["step"], "dry 0");
+        assert_eq!(exit.result["detail"]["error"], "Static receipt lacks the resolved Python executable");
+        assert!(!journal.snapshot().unwrap().iter().any(|event| event["kind"] == "ops-repair"));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_failure_is_distinct_from_a_check_exit() {
+        let cwd = std::env::current_dir().unwrap();
+        let absent = cwd.join(".agent-tmp").join(format!("missing-tool-{:016x}", rand::random::<u64>()));
+        let error = run_command(&absent, &[], &cwd, &[], Duration::from_secs(5)).unwrap_err();
+        assert!(error.starts_with("Cannot start the check process:"), "{error}");
+        let result = run_command(Path::new("/bin/sh"), &["-c".into(), "exit 127".into()], &cwd, &[], Duration::from_secs(5)).unwrap();
+        assert!(!result.timed_out);
+        assert_eq!(result.code, Some(127));
+    }
+
+    #[test]
+    fn musl_loader_diagnostic_names_the_requesting_object() {
+        let interpreter = Path::new("/opt/tools/python3");
+        let direct = "Error loading shared library liba.so: No such file or directory (needed by /opt/tools/python3)";
+        let transitive = "Error loading shared library libb.so: No such file or directory (needed by /opt/tools/lib a.so.1)";
+        for diagnostic in [direct, transitive] {
+            assert_eq!(linux_loader_diagnostic(interpreter, diagnostic), Some(diagnostic));
+        }
+        for stderr in [
+            "Error loading shared library libb.so: retry requested",
+            "Error loading shared library libb.so: No such file or directory (needed by )",
+            "check.sh: line 1: command not found",
+        ] {
+            assert_eq!(linux_loader_diagnostic(interpreter, stderr), None);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn missing_shared_library_is_a_tool_error() {
+        let dir = std::env::current_dir().unwrap().join(".agent-tmp").join(format!("ops-loader-{:016x}", rand::random::<u64>()));
+        fs::create_dir_all(&dir).unwrap();
+        let library = "libops_check_dependency.so";
+        let transitive = "libops_check_transitive.so";
+        fs::write(dir.join("transitive.c"), b"int check_transitive(void) { return 1; }\n").unwrap();
+        fs::write(dir.join("dependency.c"), b"int check_transitive(void);\n\
+            int check_dependency(void) { return check_transitive(); }\n").unwrap();
+        fs::write(dir.join("interpreter.c"), b"#include <unistd.h>\nint check_dependency(void);\n\
+            int main(int argc, char **argv) { if (check_dependency()) execv(\"/bin/sh\", argv); return 1; }\n").unwrap();
+        let compile = |args: &[&str]| {
+            let result = std::process::Command::new("cc").args(args).current_dir(&dir).output().unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        };
+        compile(&["-shared", "-fPIC", "-o", transitive, "transitive.c"]);
+        compile(&["-shared", "-fPIC", "-o", library, "dependency.c", "-L.", "-lops_check_transitive", "-Wl,-rpath,$ORIGIN"]);
+        compile(&["-o", "interpreter", "interpreter.c", "-L.", "-lops_check_dependency", "-Wl,-rpath,$ORIGIN", "-Wl,-rpath-link,."]);
+        fs::write(dir.join("check.sh"), b"echo 'check ran' >&2\nexit 127\n").unwrap();
+        let run = || run_command(&dir.join("interpreter"), &["check.sh".into(), "--check".into()], &dir, &[], Duration::from_secs(5));
+
+        let result = run().unwrap();
+        assert_eq!(result.code, Some(127));
+        assert_eq!(result.stderr.trim(), "check ran");
+        assert!(repairable_failure("dry 0", &json!({ "code": result.code, "timedOut": result.timed_out })));
+
+        for (missing, requester) in [(transitive, library), (library, "interpreter")] {
+            fs::remove_file(dir.join(missing)).unwrap();
+            let error = run().unwrap_err();
+            assert!(error.starts_with("Cannot start the check process:") && error.contains(missing), "{error}");
+            if error.contains(" (needed by ") {
+                assert!(error.ends_with(&format!("/{requester})")), "{error}");
+            }
+            assert!(!repairable_failure("dry 0", &json!({ "error": error })));
+        }
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

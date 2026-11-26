@@ -10,10 +10,6 @@ use std::io::Read;
 use std::path::Path;
 #[cfg(any(not(windows), test))]
 use std::process::Stdio;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
 use std::time::{Duration, Instant};
 #[cfg(not(windows))]
 use zodchi_core::process::command_without_window;
@@ -795,7 +791,7 @@ pub(super) fn plan(
                     Some("argument does not match its pattern")
                 } else if raw.chars().any(|c| "\0\r\n;&|$`<>(){}\\\"'*?!".contains(c)) {
                     Some("argument holds a prohibited character")
-                } else if is_private(&raw, scrubber) {
+                } else if scrubber.answer_is_private(&raw) {
                     Some("argument looks private or secret")
                 } else {
                     None
@@ -862,25 +858,24 @@ fn clip(raw: &[u8], limit: usize, cut: bool, scrubber: &Scrubber) -> (String, bo
 fn read_bounded<R: Read + Send + 'static>(
     mut reader: R,
     cap: usize,
-    exceeded: Arc<AtomicBool>,
-) -> std::thread::JoinHandle<Vec<u8>> {
+) -> std::thread::JoinHandle<(Vec<u8>, bool)> {
     std::thread::spawn(move || {
         let mut data = Vec::new();
+        let mut truncated = false;
         let mut buf = [0u8; 8192];
+        // Keep draining so a full pipe does not change the command's exit.
         loop {
             match reader.read(&mut buf) {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    let remaining = cap.saturating_sub(data.len());
+                    let remaining = cap - data.len();
                     data.extend_from_slice(&buf[..n.min(remaining)]);
-                    if n > remaining {
-                        exceeded.store(true, Ordering::SeqCst);
-                        break;
-                    }
+                    truncated |= n > remaining;
                 }
             }
         }
-        data
+        (data, truncated)
     })
 }
 
@@ -1003,27 +998,18 @@ pub(super) fn collect(item: &Value, cwd: &Path, outcomes: &Value, scrubber: &Scr
                             return result;
                         }
                     }
-                    let exceeded = Arc::new(AtomicBool::new(false));
-                    let out = read_bounded(
-                        child.stdout.take().expect("stdout"),
-                        limit * 4,
-                        exceeded.clone(),
-                    );
-                    let err = read_bounded(
-                        child.stderr.take().expect("stderr"),
-                        limit * 4,
-                        exceeded.clone(),
-                    );
+                    // Keep the same bounded prefix for redaction and refusal
+                    // diagnostics before clipping the two excerpts.
+                    let capture_limit = limit * 4;
+                    let out = read_bounded(child.stdout.take().expect("stdout"), capture_limit);
+                    let err = read_bounded(child.stderr.take().expect("stderr"), capture_limit);
                     let deadline = Instant::now()
                         + Duration::from_secs(item["timeoutSec"].as_u64().unwrap_or(30));
                     let mut timed_out = false;
                     let status = loop {
                         match child.try_wait() {
                             Ok(Some(status)) => break Some(status),
-                            Ok(None)
-                                if Instant::now() < deadline
-                                    && !exceeded.load(Ordering::SeqCst) =>
-                            {
+                            Ok(None) if Instant::now() < deadline => {
                                 std::thread::sleep(Duration::from_millis(25))
                             }
                             _ => {
@@ -1047,11 +1033,10 @@ pub(super) fn collect(item: &Value, cwd: &Path, outcomes: &Value, scrubber: &Scr
                     {
                         let _ = crate::checks::end_group(child.id());
                     }
-                    let stdout = out.join().unwrap_or_default();
-                    let stderr = err.join().unwrap_or_default();
-                    let over = exceeded.load(Ordering::SeqCst);
-                    let (excerpt, out_cut) = clip(&stdout, limit, over, scrubber);
-                    let (err_excerpt, err_cut) = clip(&stderr, 2000, over, scrubber);
+                    let (stdout, out_cut) = out.join().unwrap_or_default();
+                    let (stderr, err_cut) = err.join().unwrap_or_default();
+                    let (excerpt, out_cut) = clip(&stdout, limit, out_cut, scrubber);
+                    let (err_excerpt, err_cut) = clip(&stderr, 2000, err_cut, scrubber);
                     let combined = format!(
                         "{}\n{}",
                         String::from_utf8_lossy(&stdout),
@@ -1089,8 +1074,6 @@ pub(super) fn collect(item: &Value, cwd: &Path, outcomes: &Value, scrubber: &Scr
                         "timeout"
                     } else if policy && !ok {
                         "refused"
-                    } else if over {
-                        "failed"
                     } else if ok {
                         if excerpt.trim().is_empty() {
                             "empty"
@@ -1374,6 +1357,8 @@ mod tests {
             "pk-abcdefghijklmnop123456",
             "яgho_01234567890123456789",
             "password=hunter2-secret",
+            "PGPASSWORD=hunter2-secret",
+            "Token abc123def456ghi",
         ] {
             let result = plan(
                 &a,

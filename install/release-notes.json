@@ -1,6 +1,6 @@
 {
   "highlights": [
     "Discover workflows with zodchi flow list and zodchi flow <workflow> --help. Use candidate-acceptance for a candidate build and release-acceptance for a deployed release.",
-    "The research workflow checks cited facts. Incident-triage reads allowlisted evidence. Ops-script checks local snapshots on Windows and Linux before operator handoff."
+    "Package checks run one at a time with a shared build cache, finished runs clean up after themselves (zodchi flow cleanup), and research, incident-triage and ops-script stop less often for reasons that are not real."
   ]
 }

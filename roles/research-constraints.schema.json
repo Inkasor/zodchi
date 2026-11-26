@@ -11,6 +11,7 @@
     },
     "constraints": {
       "type": "array",
+      "maxItems": 20,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -21,7 +22,9 @@
         ],
         "properties": {
           "text": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
           },
           "status": {
             "type": "string",

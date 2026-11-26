@@ -40,6 +40,13 @@
 
 3. Добавьте папку указанного в результате `launcher` в пользовательский PATH. По умолчанию это `~/.zodchi/bin`, а при заданном `ZODCHI_HOME` — его папка `bin`. Выполните `zodchi release current` и `zodchi flow list`. При необходимости настройте вход и роли моделей. [Роли](model-roles.md) · [Исполнитель Claude](flow-claude.md)
 
+## Требования для Windows
+
+Для проверок проектов Flow использует Git Bash. Если вы собираете или проверяете Зодчи с набором инструментов
+Rust `x86_64-pc-windows-gnu`, добавьте папку GNU Binutils с `dlltool.exe` и `as.exe` в PATH, с которым
+запускается Зодчи. Также можно использовать `x86_64-pc-windows-msvc` с инструментами сборки MSVC.
+Готовый CLI запускает проверки проекта, когда перечисленные в проекте команды доступны в PATH.
+
 ## После установки плагина
 
 - В открытом Claude Code выполните `/reload-plugins`. [Команды Claude Code](https://code.claude.com/docs/en/commands)

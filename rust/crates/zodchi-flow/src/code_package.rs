@@ -124,8 +124,7 @@ fn schema(text: &str) -> Value {
     serde_json::from_str(text).expect("the schemas of this version are JSON")
 }
 
-/// A cut on purpose, for recovery tests: `ZODCHI_FLOW_CUT=<point>` ends the process right after that effect and
-/// before its receipt is journaled, as a crash would.
+/// A cut on purpose, for recovery tests: `ZODCHI_FLOW_CUT=<point>` exits without running destructors.
 pub(crate) fn cut(point: &str) {
     if std::env::var("ZODCHI_FLOW_CUT").ok().as_deref() == Some(point) {
         eprintln!("zodchi flow: cut after {point} (ZODCHI_FLOW_CUT)");
@@ -155,6 +154,7 @@ struct Run {
     review_md: Option<String>,
     patch_schema: &'static str,
     verify_plan: crate::verify::Plan,
+    check_paths: checks::ProjectPaths,
     browser: Value,
     writer: Pick,
     reviewer: Pick,
@@ -278,7 +278,8 @@ fn start_run(raw: &Value, detach: bool, id: Option<&str>) -> Result<Exit> {
             return Ok(refused(&label, format!("args.files names files only; {f} is a folder. List the files of the package one by one.")));
         }
     }
-    let verify_plan = match crate::verify::Plan::load(&git, &seed, &args) {
+    let check_paths = checks::ProjectPaths::new(&cfg.home, &git)?;
+    let verify_plan = match crate::verify::Plan::load(&git, &seed, &args, &check_paths) {
         Ok(plan) => plan,
         Err(error) => return Ok(refused(&label, error.0)),
     };
@@ -287,7 +288,7 @@ fn start_run(raw: &Value, detach: bool, id: Option<&str>) -> Result<Exit> {
             return Ok(refused(&label, error.0));
         }
     }
-    if let Err(error) = checks::preflight_tools(&verify_plan.tools) {
+    if let Err(error) = checks::preflight_tools(&verify_plan.project.tools) {
         return Ok(refused(&label, error.0));
     }
     let review_md = git.show(&base, "REVIEW.md")?.map(|b| String::from_utf8_lossy(&b).into_owned());
@@ -448,6 +449,7 @@ impl Run {
         out.insert("rounds".into(), json!([]));
         out.insert("openFindings".into(), json!([]));
         out.insert("verifiedBy".into(), json!("none"));
+        let check_paths = checks::ProjectPaths::new(&cfg.home, &git)?;
         let (git, project, branch) = if args.isolated {
             let stage = candidate::workspace(&cfg.home, &id);
             out.insert("workspace".into(), json!(stage));
@@ -463,7 +465,7 @@ impl Run {
             head: seed.clone(),
             branch,
             patch_schema: if run["patchSchema"] == json!(2) { PATCH_SCHEMA_V2 } else { PATCH_SCHEMA_V1 },
-            verify_plan,
+            verify_plan, check_paths,
             browser: run["browser"].clone(),
             id, args, cfg, git, project, journal, base, seed, history, brief, review_md, writer, reviewer, out,
             keep_claim: false,
@@ -835,6 +837,7 @@ impl Run {
             (self.cfg.home.display().to_string(), "<zodchi-home>"),
             (self.args.repo_norm.clone(), "<repo>"),
         ];
+        v.extend(self.check_paths.private_places());
         for key in ["configuredPath", "path"] {
             if let Some(path) = self.browser[key].as_str().filter(|s| !s.is_empty()) {
                 v.push((path.to_string(), "<browser>"));
@@ -909,7 +912,6 @@ impl Run {
             if let Some(failure) = self.done(&setup_step) {
                 return self.stop_writer_setup(&setup_step, failure);
             }
-            self.reap_checks(&setup_step)?;
         }
         let id = format!("{}-{:08x}", gateway::slug(step), rand::random::<u32>());
         let workspace = self.cfg.home.join("flow-writers").join(&self.id).join(id);
@@ -930,6 +932,13 @@ impl Run {
         let git = Git::new(workspace);
         let baseline = self.infra(step, git.rev("HEAD"))?;
         let attempt = self.attempt(step);
+        let slot = checks::CheckSlot::acquire(&self.cfg.home, &mut self.journal, step, attempt);
+        let mut slot = self.infra(step, slot)?;
+        self.reap_checks(step)?;
+        let env_cache = self.check_paths.create_env_cache(&self.verify_plan.project.env);
+        self.infra(step, env_cache)?;
+        let writer_cache = agent::create_writer_cache(&self.verify_plan.writer);
+        self.infra(step, writer_cache)?;
         let start = self.journal.events().iter().filter(|e| e["kind"] == "intent" && e["step"] == step).count() + 1;
         let logs = self.journal.file(&format!("logs/{}-{start}", gateway::slug(step)));
         let intended = self.record_intent(step, round, "run writer setup", &sha256_hex(tree.to_string()),
@@ -937,8 +946,11 @@ impl Run {
         self.infra(step, intended)?;
         let limit = Duration::from_secs_f64(self.args.check_timeout_min * 60.0);
         let journal = &mut self.journal;
-        let mut on = |phase, pid| checks::record_process(journal, step, attempt, phase, pid);
-        let (evidence, recorded) = checks::run_setup(&self.verify_plan.setup, self.verify_plan.setup_source, workspace, &logs, limit, &mut on);
+        let mut on = |phase, pid, job: Option<&str>| slot.record(journal, step, attempt, phase, pid, job);
+        let setup_env = self.verify_plan.setup_environment();
+        let environment = checks::CommandEnvironment { repo: None, extra: Some(&setup_env) };
+        let (evidence, recorded) = checks::run_commands(
+            &self.verify_plan.setup, self.verify_plan.setup_source, workspace, &logs, limit, &environment, true, &mut on);
         if !recorded {
             return self.infra(step, fail("The journal could not record the start or the end of a writer setup command."));
         }
@@ -1295,7 +1307,10 @@ impl Run {
             // The writer sees each failed command by its source and number, and the end of its log without the
             // private folders and without lines that may hold a credential; the raw logs stay in the journal.
             let evidence = res["evidence"].as_array().cloned().unwrap_or_default();
-            let places = self.private_places();
+            let mut places = self.private_places();
+            if let Some(export) = res["checkout"].as_str() {
+                places.push((export.to_string(), "<tmp>"));
+            }
             let failures: Vec<String> = evidence.iter().enumerate().filter(|(_, e)| e["exitCode"] != json!(0)).map(|(i, e)| {
                 format!("{} exit {}{}\n```\n{}\n```", checks::name(&evidence, i),
                     if e["exitCode"].is_null() { "none".into() } else { e["exitCode"].to_string() },
@@ -1311,6 +1326,10 @@ impl Run {
             self.set_changed();
             let next = self.run_checks(&format!("checks {n}.{f}"), n, None)?;
             let failure_shape = |result: &Value| -> Vec<_> {
+                let mut places = places.clone();
+                if let Some(export) = result["checkout"].as_str() {
+                    places.push((export.to_string(), "<tmp>"));
+                }
                 result["evidence"].as_array().into_iter().flatten().filter(|e| e["exitCode"] != 0)
                     .map(|e| (e["command"].clone(), e["exitCode"].clone(), checks::sanitize(&checks::tail(e["log"].as_str().unwrap_or(""), 8192), &places))).collect()
             };
@@ -1327,20 +1346,17 @@ impl Run {
     }
 
     /// One run of the checks on the candidate tree: the parent commit with the claimed paths from the work tree,
-    /// exported to a temporary folder. The cheap checks first; the verify commands only when they all pass.
+    /// exported to the repository's shared check checkout. The cheap checks first, then verify once they pass.
     ///
     /// The candidate tree, whatever brought it into the work tree, must leave the protected checks of the base as they
     /// were (content, mode, existence), except those args.allowCheckChanges names; else the package stops before
-    /// review. Each command runs only after its pid and start time are in the journal, and its end is journaled too,
-    /// so a resumed run (or a rerun) stops what any earlier attempt left running before it starts the checks again.
-    /// A start or an end the journal cannot record stops the run.
+    /// review. An interrupted attempt reuses its saved command results and continues in the same checkout when
+    /// available. An uncertain result or a replaced checkout that pending commands need requires a new attempt.
     fn run_checks(&mut self, step: &str, round: u32, full_tree: Option<&str>) -> Step<Value> {
         self.step = step.to_string();
         if let Some(d) = self.done(step) {
             return self.checks_result(step, d);
         }
-        let attempt = self.attempt(step);
-        self.reap_checks(step)?;
         let scratch = self.journal.file("tmp");
         let tree = match full_tree {
             Some(tree) => tree.to_string(),
@@ -1361,43 +1377,49 @@ impl Run {
             self.infra(step, r)?;
             return self.checks_result(step, result);
         }
-        let prior_runs = self.journal.events().iter().filter(|e| e["kind"] == "intent" && e["step"] == step && e["effect"] == "run checks").count();
-        let r = self.record_intent(step, round, "run checks", &sha256_hex(&tree), json!({ "tree": tree }));
-        self.infra(step, r)?;
-        let container = checks::temp_dir(&self.id, step);
-        let container = self.infra(step, container)?;
-        let export = container.join("checkout");
-        let result = std::fs::create_dir(&export).map_err(GatewayError::from);
-        self.infra(step, result)?;
-        let exported = self.git.checkout_for_checks(&tree, &export);
-        if let Err(e) = exported {
-            checks::remove(&container);
-            return self.infra(step, Err(e));
+        let full = full_tree.is_some();
+        let has_commands = if full { !self.verify_plan.full_local.is_empty() }
+            else { !self.verify_plan.checks.is_empty() || !self.verify_plan.verify.is_empty() };
+        if !has_commands {
+            let result = json!({ "ok": true, "tree": tree, "evidence": [] });
+            let r = self.record_done(step, round, result.clone());
+            self.infra(step, r)?;
+            return Ok(result);
         }
+        let attempt = self.attempt(step);
+        let slot = checks::CheckSlot::acquire(&self.cfg.home, &mut self.journal, step, attempt);
+        let mut slot = self.infra(step, slot)?;
+        self.reap_checks(step)?;
+        let prior_runs = self.journal.events().iter().filter(|e| e["kind"] == "intent" && e["step"] == step
+            && e["effect"] == "run checks" && e["attempt"] != attempt).count();
         let name = gateway::slug(step);
         let name = if prior_runs == 0 { name } else { format!("{name}-retry-{}", prior_runs + 1) };
         let logs = self.journal.file(&format!("logs/{name}"));
-        let limit = Duration::from_secs_f64(self.args.check_timeout_min * 60.0);
-        let journal = &mut self.journal;
-        let mut on = |phase, pid| checks::record_process(journal, step, attempt, phase, pid);
-        let (first, source) = if full_tree.is_some() { (&self.verify_plan.full_local, "project.full") } else {
-            (&self.verify_plan.checks, self.verify_plan.check_source)
+        let batch = checks::CheckBatch {
+            step, round, attempt, tree: &tree, head: None, logs: &logs,
+            limit: Duration::from_secs_f64(self.args.check_timeout_min * 60.0),
+            environment: checks::CommandEnvironment {
+                repo: Some(Path::new(&self.args.repo)),
+                extra: Some(&self.verify_plan.project.env),
+            },
+            checks: if full { ("project.full", &self.verify_plan.full_local) } else {
+                (self.verify_plan.check_source, &self.verify_plan.checks)
+            },
+            verify: (self.verify_plan.verify_source, if full { &[] } else { &self.verify_plan.verify }),
         };
-        let repo = Some(Path::new(&self.args.repo));
-        let (mut evidence, mut recorded) = checks::run_project_list(first, source, &export, &logs, limit, repo, &mut on);
-        if full_tree.is_none() && recorded && checks::passed(&evidence) && !self.verify_plan.verify.is_empty() {
-            let (more, ok) = checks::run_project_list(&self.verify_plan.verify, self.verify_plan.verify_source, &export, &logs, limit, repo, &mut on);
-            evidence.extend(more);
-            recorded = ok;
-        }
-        checks::remove(&container);
-        if !recorded {
-            self.halt_infra(step, format!("infrastructure at {step}"), "the journal could not record the start or the end of a check command, so no further command ran: fix the journal folder, then resume".into());
-            return Err(Halt);
-        }
-        let result = json!({ "ok": checks::passed(&evidence), "tree": tree, "checkout": export, "evidence": evidence });
+        let run = batch.run(&mut slot, &mut self.journal, &self.check_paths, &self.verify_plan.project.cache,
+            |staging| self.git.checkout_for_checks(&tree, staging));
+        let (checkout, evidence) = match self.infra(step, run)? {
+            checks::CheckOutcome::Finished { checkout, evidence } => (checkout, evidence),
+            checks::CheckOutcome::Unknown(why) => {
+                self.halt_infra(step, format!("unknown outcome at {step}"), why);
+                return Err(Halt);
+            }
+        };
+        let result = json!({ "ok": checks::passed(&evidence), "tree": tree, "checkout": checkout, "evidence": evidence });
         let r = self.record_done(step, round, result.clone());
         self.infra(step, r)?;
+        cut(step);
         Ok(result)
     }
 

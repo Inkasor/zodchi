@@ -18,9 +18,9 @@ All workflows take an absolute Git `repo`, a `label` and a `scenarios` array. Su
 
 ```json
 {
-  "repo": "/projects/dashboard", "head": "<candidate-commit>", "label": "Local candidate",
+  "repo": "/projects/app", "head": "<candidate-commit>", "label": "Local candidate",
   "setup": ["npm ci"],
-  "browser": { "executable": "/tools/chromium", "variable": "WB_TEST_CHROME" },
+  "browser": { "executable": "/tools/chromium", "variable": "APP_TEST_CHROME" },
   "review": "Check both screens",
   "scenarios": [
     { "id": "overview", "label": "Overview", "test": "tests/overview.mjs", "frames": ["overview.png"] },
@@ -29,7 +29,7 @@ All workflows take an absolute Git `repo`, a `label` and a `scenarios` array. Su
 }
 ```
 
-The required `head` identifies the exact commit; tests must be regular files committed at explicit repo-relative paths. Flow creates a private checkout with that commit as HEAD and verifies its tree and tracked state before setup, each test and each result. Setup is an optional list of shell commands, run once in order with the bounded checks runner; dependencies and generated files must be ignored or written to the supplied output folder. A lost setup or test receipt after execution stops the run rather than replaying an uncertain effect.
+The required `head` identifies the exact commit; tests must be regular files committed at explicit repo-relative paths. Flow creates a private checkout with that commit as HEAD and verifies its tree and worktree state before setup, each test and each result. Setup is an optional list of shell commands, run once in order from the checkout with the bounded checks runner. Use Git-ignored paths for files setup creates in the checkout. The checkout check stops the run if setup changes tracked files or leaves unignored files. A lost setup or test receipt after execution stops the run rather than replaying an uncertain effect.
 
 `browser.executable` is required and names the dedicated Chromium executable; `browser.node` optionally names Node, otherwise Node is found on PATH. Tests receive the Chromium path in `ZODCHI_ACCEPTANCE_CHROMIUM`, or in the uppercase environment variable named by `browser.variable`, and a unique scenario output directory in `ZODCHI_ACCEPTANCE_FRAMES`. Only the reduced tool environment and these paths are passed. Flow invokes Node with `--test --test-reporter=tap`; a successful exit must include passed tests. Each `frames` entry is a distinct direct image filename in that output directory. Visual review requires at least one verified image per selected scenario, supports up to six selected scenarios and reports omitted frames.
 
@@ -41,11 +41,11 @@ For declarative browser steps against a local candidate, commit a Node fixture w
 
 ```json
 {
-  "repo": "/projects/dashboard", "head": "<candidate-commit>", "label": "Local browser candidate",
+  "repo": "/projects/app", "head": "<candidate-commit>", "label": "Local browser candidate",
   "browser": { "executable": "/tools/chromium", "module": "/tools/playwright/index.js" },
   "setup": ["npm ci", "npm run build"],
   "fixture": { "script": "tests/fixture.mjs", "timeoutSeconds": 30,
-    "allowedWrites": [{ "method": "POST", "path": "/api/dashboard-runtime" }] },
+    "allowedWrites": [{ "method": "POST", "path": "/api/example-write" }] },
   "scenarios": [{ "id": "overview", "steps": [{ "id": "open", "open": "/", "expect": { "selector": "#summary" } }] }]
 }
 ```
@@ -58,7 +58,7 @@ Set `baseUrl`, `health` and optional `storageState` at the top level of the argu
 
 ```json
 {
-  "repo": "/projects/dashboard",
+  "repo": "/projects/app",
   "head": "<deployed-commit>",
   "label": "Dashboard release",
   "baseUrl": "https://dashboard.example.test",

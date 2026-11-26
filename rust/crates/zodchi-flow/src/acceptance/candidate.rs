@@ -30,11 +30,8 @@ pub(super) fn browser_plan(raw: &Value, repo: &Path) -> Result<Value> {
     let browser = &raw["browser"];
     media::fields(browser, &["node", "executable", "variable"], "browser")?;
     let variable = browser.get("variable").map(|v| media::text(v, "browser.variable"))
-        .transpose()?.unwrap_or("ZODCHI_ACCEPTANCE_CHROMIUM");
-    if variable.len() > 128 || !variable.bytes().enumerate().all(|(i, b)| {
-        b == b'_' || b.is_ascii_uppercase() || (i > 0 && b.is_ascii_digit())
-    }) || checks::KEEP.iter().any(|key| key.eq_ignore_ascii_case(variable))
-        || variable == "ZODCHI_ACCEPTANCE_FRAMES" {
+        .transpose()?.unwrap_or(checks::DEFAULT_BROWSER_VARIABLE);
+    if !checks::valid_browser_variable(variable) {
         return fail("browser.variable must be a distinct uppercase environment variable name.");
     }
     let node = if let Some(node) = browser.get("node") {
@@ -99,4 +96,25 @@ pub(super) fn setup(raw: &Value) -> Result<Value> {
     }
     if !commands.is_empty() { checks::preflight()?; }
     Ok(json!(commands))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plans_candidate_browser_variable_names() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut raw = json!({ "browser": { "node": "Cargo.toml", "executable": "Cargo.toml" } });
+        assert_eq!(browser_plan(&raw, repo).unwrap()["variable"], "ZODCHI_ACCEPTANCE_CHROMIUM");
+
+        for (variable, accepted) in checks::browser_variable_cases() {
+            raw["browser"]["variable"] = json!(variable);
+            let result = browser_plan(&raw, repo);
+            assert_eq!(result.is_ok(), accepted, "{variable:?}: {result:?}");
+            if let Ok(plan) = result {
+                assert_eq!(plan["variable"], variable);
+            }
+        }
+    }
 }

@@ -57,7 +57,7 @@ pub fn word_snapshot(cfg: &Config, allow_empty: bool) -> Result<Value> {
         .map(str::to_lowercase)
         .collect();
     if words.is_empty() && !allow_empty {
-        return fail("Supply a private-words file or grant allowNoScrub for this run.");
+        return fail("Supply a private-words file or, only with the owner's approval, set allowNoScrub for this run.");
     }
     let salt = format!("{:032x}", rand::random::<u128>());
     Ok(json!({"salt": salt, "entries": words.iter().map(|word|
@@ -152,6 +152,13 @@ impl Privacy {
             .join("\n");
         self.current
             .text(&screen_exact_paths(&normalized, &self.places), &self.places)
+    }
+
+    pub fn answer_is_private(&self, text: &str) -> bool {
+        self.current.answer_is_private(text)
+            || text.lines().any(|line| self.matches(&line.to_lowercase()))
+            || screen_exact_paths(text, &self.places) != text
+            || crate::checks::screen_paths(std::iter::once(text), &self.places) != text
     }
 
     fn matches(&self, text: &str) -> bool {

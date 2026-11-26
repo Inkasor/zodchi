@@ -30,6 +30,14 @@ const OWNER: &str = "owner decisions";
 const CONSTRAINTS: &str = include_str!("../../../../roles/research-constraints.schema.json");
 const EXPERT: &str = include_str!("../../../../roles/research-expert.schema.json");
 const FACTS: &str = include_str!("../../../../roles/research-fact-check.schema.json");
+const MAX_CONSTRAINTS: usize = 20;
+const MAX_CONSTRAINT_TEXT_CHARS: usize = 300;
+const MAX_EXPERT_FACTS: usize = 12;
+const MAX_EXPERT_TEXT_CHARS: usize = 600;
+const MAX_PROPOSAL_GROUP_CHARS: usize = 80;
+const MAX_CITATION_LINES: usize = 40;
+const EXPERT_PROMPT_RESERVE: usize = 1024;
+const CLAIM_NOT_SENT: &str = "The fact checker did not receive the complete claim.";
 const ROLES: [(&str, &str); 3] = [
     ("constraintChecker", "research-constraints"),
     ("researchExpert", "research-expert"),
@@ -48,23 +56,24 @@ pub fn start(raw: &Value, detach: bool) -> Result<Exit> {
 }
 
 fn prepare(raw: &Value) -> Result<(String, Journal)> {
-    if raw.as_object().is_none_or(|row| {
-        row.keys().any(|key| {
-            ![
-                "repo",
-                "tmp",
-                "label",
-                "request",
-                "questions",
-                "attachments",
-                "allowNoScrub",
-                "maxLines",
-                "models",
-            ]
-            .contains(&key.as_str())
-        })
-    }) {
+    let Some(fields) = raw.as_object() else {
         return fail("Unknown research input.");
+    };
+    if let Some(key) = fields.keys().find(|key| {
+        ![
+            "repo",
+            "tmp",
+            "label",
+            "request",
+            "questions",
+            "attachments",
+            "allowNoScrub",
+            "maxLines",
+            "models",
+        ]
+        .contains(&key.as_str())
+    }) {
+        return fail(format!("Unknown research input {key:?}."));
     }
     let label = raw["label"]
         .as_str()
@@ -130,6 +139,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
     check_legacy(&tmp, round)?;
     check_legacy_receipt(&tmp, round, &current)?;
     staged["prior"] = json!(lists::for_model(&ledger, &privacy));
+    check_expert_prompts(&staged, &privacy, max as usize)?;
     let overrides = match raw.get("models") {
         None => Map::new(),
         Some(Value::Object(overrides)) => overrides.clone(),
@@ -290,17 +300,24 @@ impl<'a> Wave<'a> {
         pending: &mut Vec<(usize, String)>,
         accept: impl FnOnce(Value) -> std::result::Result<(), (&'static str, String)>,
     ) {
+        // A withheld claim stops new work, but a failure found while draining a peer takes precedence.
+        let may_replace_stop = self
+            .stop
+            .as_ref()
+            .is_none_or(|(_, reason)| reason == CLAIM_NOT_SENT);
         match result {
             Ok(gateway::Step::Done(value)) => {
                 if let Err(stop) = accept(value) {
-                    self.stop.get_or_insert(stop);
+                    if may_replace_stop {
+                        self.stop = Some(stop);
+                    }
                 }
             }
             Ok(gateway::Step::Pending(key) | gateway::Step::Retryable(key)) => {
                 pending.push((index, key))
             }
             Err(err) => {
-                if self.stop.is_none()
+                if may_replace_stop
                     || matches!(&err, gateway::CallError::Stop { at, .. } if at.starts_with("unknown outcome"))
                 {
                     self.stop = Some((step, error(err)));
@@ -364,7 +381,11 @@ impl Research<'_> {
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .any(|file| !public(&file["name"], &fresh))
+                    .any(|file| {
+                        file["name"]
+                            .as_str()
+                            .is_none_or(|name| fresh.text(name) != name)
+                    })
             {
                 return Err(gateway::CallError::Stop {
                     at: format!("privacy at {step}"),
@@ -373,22 +394,40 @@ impl Research<'_> {
             }
         }
         self.privacy = fresh;
-        if self.journal.last("done", step, attempt).is_none() {
-            if let Some(intent) = self.journal.last("intent", step, attempt) {
-                if let Some(key) = intent["key"].as_str() {
-                    if job::job_dir(self.cfg, key)
-                        .ok()
-                        .and_then(|dir| job::read_job(&dir))
-                        .is_some_and(|job| job["status"] == "unknown")
-                    {
-                        return Err(gateway::CallError::Stop {
-                            at: format!("unknown outcome at {step}"),
-                            reason: format!(
-                                "job {key} ended unknown and cannot be requested again"
-                            ),
-                        });
-                    }
-                }
+        let validate = |value: &Value| {
+            if value.is_object() && public(value, &self.privacy) {
+                Ok(())
+            } else {
+                Err(
+                    "The research role must return a structured object without private text."
+                        .into(),
+                )
+            }
+        };
+        let key = self
+            .journal
+            .last("intent", step, attempt)
+            .and_then(|e| e["key"].as_str());
+        if let Some(done) = self.journal.last("done", step, attempt) {
+            // The gateway reuses this answer without validation. Apply current privacy
+            // rules before building the owner list from it.
+            if let Err(reason) = validate(&done["result"]) {
+                let key = key.unwrap_or("");
+                return Err(gateway::CallError::Stop {
+                    at: format!("invalid answer at {step}"),
+                    reason: format!("the answer of job {key} does not hold: {reason}"),
+                });
+            }
+        } else if let Some(key) = key {
+            if job::job_dir(self.cfg, key)
+                .ok()
+                .and_then(|dir| job::read_job(&dir))
+                .is_some_and(|job| job["status"] == "unknown")
+            {
+                return Err(gateway::CallError::Stop {
+                    at: format!("unknown outcome at {step}"),
+                    reason: format!("job {key} ended unknown and cannot be requested again"),
+                });
             }
         }
         let call = gateway::Call {
@@ -407,16 +446,7 @@ impl Research<'_> {
             call,
             mode,
             &|text| self.privacy.text(text),
-            |value| {
-                if value.is_object() && public(value, &self.privacy) {
-                    Ok(())
-                } else {
-                    Err(
-                        "The research role must return a structured object without private text."
-                            .into(),
-                    )
-                }
-            },
+            validate,
         )
     }
 
@@ -430,7 +460,7 @@ impl Research<'_> {
         mut accept: impl FnMut(
             usize,
             Value,
-            &Privacy,
+            &Self,
         ) -> std::result::Result<(), (&'static str, String)>,
     ) -> Option<(&'a str, String)> {
         let mut wave = Wave::default();
@@ -446,7 +476,7 @@ impl Research<'_> {
             }
             let result = self.call(step, role, schema, prompt, gateway::LocalMode::Schedule);
             wave.record(index, step, result, &mut pending, |value| {
-                accept(index, value, &self.privacy)
+                accept(index, value, self)
             });
         }
         loop {
@@ -455,7 +485,7 @@ impl Research<'_> {
                 let step = &calls[index].0;
                 let result = self.call(step, role, schema, "", gateway::LocalMode::Drain(&key));
                 wave.record(index, step, result, &mut retryable, |value| {
-                    accept(index, value, &self.privacy)
+                    accept(index, value, self)
                 });
             }
             if retryable.is_empty() || wave.stop.is_some() {
@@ -468,7 +498,7 @@ impl Research<'_> {
                 let step = &calls[index].0;
                 let result = self.call(step, role, schema, "", gateway::LocalMode::Retry(&key));
                 wave.record(index, step, result, &mut pending, |value| {
-                    accept(index, value, &self.privacy)
+                    accept(index, value, self)
                 });
             }
         }
@@ -508,11 +538,95 @@ impl Research<'_> {
 
 fn public(value: &Value, privacy: &Privacy) -> bool {
     match value {
-        Value::String(text) => privacy.text(text) == text.lines().collect::<Vec<_>>().join("\n"),
-        Value::Object(fields) => fields.values().all(|value| public(value, privacy)),
+        Value::String(text) => !privacy.answer_is_private(text),
+        Value::Object(fields) => fields.iter().all(|(key, value)| match value {
+            // A scalar credential field can split the name and value of an assignment.
+            Value::String(text) => !privacy.answer_is_private(&format!("{key}= {text}")),
+            Value::Number(number) => !privacy.answer_is_private(&format!("{key}= {number}")),
+            _ => !privacy.answer_is_private(key) && public(value, privacy),
+        }),
         Value::Array(values) => values.iter().all(|value| public(value, privacy)),
         _ => true,
     }
+}
+
+fn attachment_lines(staged: &Value, privacy: &Privacy) -> BTreeMap<String, Vec<String>> {
+    staged["attachments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|file| {
+            let alias = file["name"].as_str().expect("safe attachment name");
+            let text = privacy.text(file["text"].as_str().unwrap_or(""));
+            (alias.into(), text.lines().map(String::from).collect())
+        })
+        .collect()
+}
+
+fn numbered_attachments(attachments: &BTreeMap<String, Vec<String>>) -> Vec<(String, Vec<u8>)> {
+    attachments
+        .iter()
+        .map(|(name, rows)| {
+            let numbered = rows
+                .iter()
+                .enumerate()
+                .map(|(n, line)| format!("{}: {line}", n + 1))
+                .collect::<Vec<_>>()
+                .join("\n");
+            (name.clone(), numbered.into_bytes())
+        })
+        .collect()
+}
+
+fn expert_prompt(
+    staged: &Value,
+    question: &Value,
+    privacy: &Privacy,
+    attached: &[(String, Vec<u8>)],
+    limits: &str,
+    line_limit: usize,
+) -> Result<(String, String)> {
+    let title = privacy.text(question["title"].as_str().unwrap_or(""));
+    if title.chars().count() > 80 || title.contains('\n') {
+        return fail("The renewed question title is too long.");
+    }
+    let question_text = privacy.text(question["text"].as_str().unwrap_or(""));
+    let request = privacy.text(staged["request"].as_str().unwrap_or(""));
+    let decisions = privacy.text(&staged["prior"].to_string());
+    let header = format!(
+        "Question\n{title}\n{question_text}\n\nRequest\n{request}\n\nDecisions\n{decisions}\n\n\
+         Unconfirmed constraints\n{limits}\n\nReturn at least one item and use at most {line_limit} combined items and assumptions. \
+         Return at most {MAX_EXPERT_FACTS} facts. Keep each text and claim nonblank and at most {MAX_EXPERT_TEXT_CHARS} characters, \
+         and each group at most {MAX_PROPOSAL_GROUP_CHARS} characters. Cite attached line ranges of at most {MAX_CITATION_LINES} lines."
+    );
+    let prompt = compose_prompt(&header, attached)?;
+    if prompt.len() + EXPERT_PROMPT_RESERVE > LIMIT_PROMPT {
+        return fail("The question and attachments exceed the prompt size.");
+    }
+    Ok((title, prompt))
+}
+
+fn check_expert_prompts(staged: &Value, privacy: &Privacy, max_lines: usize) -> Result<()> {
+    let questions = staged["questions"].as_array().expect("staged questions");
+    if max_lines < questions.len() {
+        return fail(format!(
+            "args.maxLines ({max_lines}) must be at least the number of questions ({}).",
+            questions.len()
+        ));
+    }
+    let attached = numbered_attachments(&attachment_lines(staged, privacy));
+    for question in questions {
+        // Unconfirmed constraints and owner updates are available only at runtime.
+        expert_prompt(
+            staged,
+            question,
+            privacy,
+            &attached,
+            "",
+            max_lines / questions.len(),
+        )?;
+    }
+    Ok(())
 }
 
 fn error(error: gateway::CallError) -> String {
@@ -590,7 +704,8 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
     let staged = &pin["material"];
     let prior = staged["prior"].as_array().expect("staged prior decisions");
     let constraints_text = research.privacy.text(&format!(
-        "Check constraints for this request and the known decisions.\n\nRequest\n{}\n\nQuestions\n{}\n\nDecisions\n{}",
+        "Check constraints for this request and the known decisions. Return at most {MAX_CONSTRAINTS} constraints. \
+         Keep each constraint text nonblank and at most {MAX_CONSTRAINT_TEXT_CHARS} characters.\n\nRequest\n{}\n\nQuestions\n{}\n\nDecisions\n{}",
         staged["request"].as_str().unwrap_or(""), staged["questions"], staged["prior"]
     ));
     let check = [("constraints".into(), constraints_text)];
@@ -603,7 +718,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
     }
     let Some(rows) = constraints["constraints"]
         .as_array()
-        .filter(|rows| rows.len() <= 20)
+        .filter(|rows| rows.len() <= MAX_CONSTRAINTS)
     else {
         return research.stopped(
             "constraints",
@@ -618,9 +733,9 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
     }
     let mut limits = Vec::new();
     for row in rows {
-        let text = row["text"]
-            .as_str()
-            .filter(|text| !text.trim().is_empty() && text.chars().count() <= 300);
+        let text = row["text"].as_str().filter(|text| {
+            !text.trim().is_empty() && text.chars().count() <= MAX_CONSTRAINT_TEXT_CHARS
+        });
         let Some(text) = text else {
             return research.stopped("constraints", "A constraint needs bounded text.");
         };
@@ -638,16 +753,17 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
                 );
             }
             "confirmed" if entry.is_some_and(|entry| entry["state"] == "accepted") => {}
-            "confirmed" | "contradicts" | "unconfirmed" => limits.push(research.privacy.text(text)),
+            "confirmed" | "contradicts" | "unconfirmed" => limits.push(text.to_owned()),
             _ => return research.stopped("constraints", "Unknown constraint status."),
         }
     }
-    let mut attachments: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for file in staged["attachments"].as_array().into_iter().flatten() {
-        let alias = file["name"].as_str().expect("safe attachment name");
-        let text = research.privacy.text(file["text"].as_str().unwrap_or(""));
-        attachments.insert(alias.into(), text.lines().map(String::from).collect());
-    }
+    let prompt_limits = limits
+        .iter()
+        .map(|text| research.privacy.text(text))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let attachments = attachment_lines(staged, &research.privacy);
+    let attached = numbered_attachments(&attachments);
     let mut lines = Vec::new();
     let mut facts = Vec::new();
     let mut mechanical = Vec::new();
@@ -657,51 +773,24 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
     let mut calls = Vec::new();
     let mut titles = Vec::new();
     for (index, question) in questions.iter().enumerate() {
-        let step = format!("ask q{}", index + 1);
-        let title = research
-            .privacy
-            .text(question["title"].as_str().unwrap_or(""));
-        if title.chars().count() > 80 || title.contains('\n') {
-            return research.stopped("prompts", "The renewed question title is too long.");
-        }
-        let question_text = research
-            .privacy
-            .text(question["text"].as_str().unwrap_or(""));
-        let request = research
-            .privacy
-            .text(staged["request"].as_str().unwrap_or(""));
-        let decisions = research.privacy.text(&staged["prior"].to_string());
-        let header = format!(
-            "Question\n{title}\n{question_text}\n\nRequest\n{request}\n\nDecisions\n{decisions}\n\n\
-             Unconfirmed constraints\n{}\n\nUse at most {} combined items and assumptions. Cite attached line ranges.",
-             limits.join("\n"),(limit/questions.len()).max(1)
-        );
-        let attached: Vec<_> = attachments
-            .iter()
-            .map(|(name, rows)| {
-                let numbered = rows
-                    .iter()
-                    .enumerate()
-                    .map(|(n, line)| format!("{}: {line}", n + 1))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                (name.clone(), numbered.into_bytes())
-            })
-            .collect();
-        let prompt = compose_prompt(&header, &attached)?;
-        if prompt.len() + 1024 > LIMIT_PROMPT {
-            return research.stopped(
-                "prompts",
-                "The question and attachments exceed the prompt size.",
-            );
-        }
-        calls.push((step, prompt));
+        let (title, prompt) = match expert_prompt(
+            staged,
+            question,
+            &research.privacy,
+            &attached,
+            &prompt_limits,
+            (limit / questions.len()).max(1),
+        ) {
+            Ok(material) => material,
+            Err(error) => return research.stopped("prompts", error.0),
+        };
+        calls.push((format!("ask q{}", index + 1), prompt));
         titles.push(title);
     }
     for (wave_index, wave) in calls.chunks(2).enumerate() {
         let mut collected = BTreeMap::new();
         let mut line_count = lines.len();
-        let stop = research.wave(1, EXPERT, wave, |offset, answer, privacy| {
+        let stop = research.wave(1, EXPERT, wave, |offset, answer, research| {
             let index = wave_index * 2 + offset;
             let (mut proposals, mut cited, mut missing) = (Vec::new(), Vec::new(), Vec::new());
             collect_answer(
@@ -713,7 +802,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
                 &titles[index],
                 prior,
                 &attachments,
-                privacy,
+                &research.privacy,
             )
             .map_err(|err| ("collect", err.0))?;
             line_count += proposals.len();
@@ -739,6 +828,12 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
             facts.extend(cited);
             mechanical.extend(missing);
         }
+    }
+    // Preserve validated claims for the owner while applying inbound scrubbing to the checker copy.
+    let mut prompt_facts = facts.clone();
+    for fact in &mut prompt_facts {
+        let claim = fact["claim"].as_str().expect("fact claim");
+        fact["claim"] = json!(research.privacy.text(claim));
     }
     let mut reports = Vec::new();
     let mut extra_ids = Vec::new();
@@ -783,7 +878,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
                 let count = if issued {
                     remaining.len().min(15)
                 } else {
-                    fact_batch_len(remaining, capacity)
+                    fact_batch_len(&prompt_facts[cursor..], capacity)
                 };
                 if count == 0 {
                     reports.push(oversize_fact(&facts[cursor]));
@@ -793,16 +888,21 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
                 research.journal.append(json!({"kind":"fact batch","step":step,"attempt":attempt,"start":cursor,"count":count}))?;
                 &remaining[..count]
             };
-            calls.push((
-                step,
-                serde_json::to_string_pretty(batch).expect("facts JSON"),
-            ));
+            let prompt = serde_json::to_string_pretty(&prompt_facts[cursor..cursor + batch.len()])
+                .expect("facts JSON");
+            calls.push((step, prompt));
             batches.push(batch);
             cursor += batch.len();
             number += 1;
         }
-        let failure = research.wave(2, FACTS, &calls, |offset, answer, _| {
-            collect_verdicts(batches[offset], &answer, &mut reports, &mut extra_ids)
+        let failure = research.wave(2, FACTS, &calls, |offset, answer, research| {
+            let submitted = submitted_fact_batch(research.journal, &calls[offset].0)
+                .unwrap_or_default();
+            collect_verdicts(batches[offset], &answer, &mut reports, &mut extra_ids, |fact| {
+                let claim = fact["claim"].as_str().expect("fact claim");
+                let normalized = claim.lines().collect::<Vec<_>>().join("\n");
+                submitted.iter().any(|sent| sent["id"] == fact["id"] && sent["claim"] == normalized)
+            })
         });
         if let Some((step, reason)) = failure {
             write_unchecked_report(
@@ -851,14 +951,28 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
     decide(&mut research, tmp, pin, &list)
 }
 
+fn submitted_fact_batch(journal: &Journal, step: &str) -> Option<Vec<Value>> {
+    // The saved request includes the final gateway scrub and is reused across a cut.
+    let intent = journal.last("intent", step, journal.attempt(step))?;
+    let request = journal.read_value(intent["request"].as_str()?)?;
+    if intent["digest"] != sha256_hex(request.to_string()) {
+        return None;
+    }
+    let (_, body) = request["prompt"].as_str()?.split_once("\n\n")?;
+    // The JSON array can be followed by owner updates.
+    serde_json::Deserializer::from_str(body).into_iter().next()?.ok()
+}
+
 fn collect_verdicts(
     batch: &[Value],
     answer: &Value,
     reports: &mut Vec<Value>,
     extra_ids: &mut Vec<String>,
+    claim_sent: impl Fn(&Value) -> bool,
 ) -> std::result::Result<(), (&'static str, String)> {
     let mut unresolved = false;
     let mut contradicted = false;
+    let mut withheld_claim = false;
     let mut rows_by_id = BTreeMap::new();
     for row in answer["verdicts"].as_array().into_iter().flatten() {
         let Some(id) = row["id"].as_str() else {
@@ -875,6 +989,11 @@ fn collect_verdicts(
     }
     for fact in batch {
         let id = fact["id"].as_str().expect("fact ID");
+        if !claim_sent(fact) {
+            reports.push(json!({"id":id, "verdict":"unchecked", "note":CLAIM_NOT_SENT}));
+            withheld_claim = true;
+            continue;
+        }
         let verdict = rows_by_id.remove(id).flatten().filter(|row| {
             matches!(
                 row["verdict"].as_str(),
@@ -899,6 +1018,8 @@ fn collect_verdicts(
         ))
     } else if unresolved {
         Err(("facts", "Every batched fact needs one verdict.".into()))
+    } else if withheld_claim {
+        Err(("facts", CLAIM_NOT_SENT.into()))
     } else {
         Ok(())
     }
@@ -963,16 +1084,18 @@ fn collect_answer(
         for record in records {
             let text = record["text"]
                 .as_str()
-                .filter(|text| !text.trim().is_empty() && text.chars().count() <= 600)
+                .filter(|text| {
+                    !text.trim().is_empty() && text.chars().count() <= MAX_EXPERT_TEXT_CHARS
+                })
                 .ok_or_else(|| GatewayError(format!("Question {q} has an invalid {key} line.")))?;
             let group = record["group"]
                 .as_str()
                 .filter(|group| !group.trim().is_empty())
                 .unwrap_or(title);
-            if group.chars().count() > 80 {
+            if group.chars().count() > MAX_PROPOSAL_GROUP_CHARS {
                 return fail("The proposal group is too long.");
             }
-            let mut row = json!({"kind":kind,"group":group,"text":privacy.text(text)});
+            let mut row = json!({"kind":kind,"group":group,"text":text});
             if key == "items" {
                 let mut replacements = Vec::new();
                 for id in record["replaces"].as_array().into_iter().flatten() {
@@ -991,25 +1114,25 @@ fn collect_answer(
                 }
                 row["replaces"] = json!(replacements);
             } else {
-                row["why"] = json!(privacy.text(record["why"].as_str().unwrap_or("")));
+                row["why"] = json!(record["why"].as_str().unwrap_or(""));
             }
             lines.push(row);
         }
     }
     let rows = answer["facts"]
         .as_array()
-        .filter(|rows| rows.len() <= 12)
+        .filter(|rows| rows.len() <= MAX_EXPERT_FACTS)
         .ok_or_else(|| GatewayError(format!("Question {q} needs at most twelve facts.")))?;
     for (i, row) in rows.iter().enumerate() {
         let claim = row["claim"]
             .as_str()
-            .filter(|text| !text.trim().is_empty() && text.chars().count() <= 600)
+            .filter(|text| !text.trim().is_empty() && text.chars().count() <= MAX_EXPERT_TEXT_CHARS)
             .ok_or_else(|| GatewayError("A fact needs bounded claim text.".into()))?;
         let source = row["source"]
             .as_str()
             .ok_or_else(|| GatewayError("A fact needs a citation.".into()))?;
         let Some((name, excerpt)) = cite(source, attachments) else {
-            mechanical.push(json!({"claim":privacy.text(claim), "source":privacy.text(source),
+            mechanical.push(json!({"claim":claim, "source":privacy.text(source),
                 "reason":"The cited attachment or line range does not exist or exceeds the permitted range."}));
             continue;
         };
@@ -1018,7 +1141,7 @@ fn collect_answer(
         if privacy.text(&id) != id || privacy.text(&source) != source {
             return fail("A citation contains private structural text.");
         }
-        facts.push(json!({"id":id,"claim":privacy.text(claim),"source":source,"excerpt":excerpt}));
+        facts.push(json!({"id":id,"claim":claim,"source":source,"excerpt":excerpt}));
     }
     Ok(())
 }
@@ -1040,7 +1163,7 @@ fn cite<'a>(
     let first = number(first)?;
     let last = number(last)?;
     let lines = attachments.get(name)?;
-    if first > last || last > lines.len() || last - first >= 40 {
+    if first > last || last > lines.len() || last - first >= MAX_CITATION_LINES {
         return None;
     }
     let a = first.saturating_sub(3);
@@ -1198,6 +1321,120 @@ mod tests {
     use super::*;
 
     #[test]
+    fn answer_privacy_checks_pinned_words_and_paths() {
+        let dir = std::env::temp_dir().join(crate::journal::new_run_id());
+        let repo = dir.join("repo");
+        let tmp = dir.join("notes");
+        let mut cfg = Config::tenant(&dir, "fixture").unwrap();
+        cfg.home = dir.join("home");
+        let word = "pinned-private-word";
+        let snapshot = json!({"salt":"fixture","entries":[
+            {"len":word.len(), "hash":sha256_hex(format!("fixture:{word}"))}
+        ]});
+        let privacy = Privacy::new(&cfg, &snapshot, &repo, &tmp).unwrap();
+
+        assert!(public(
+            &json!({
+                "items":[{"text":"Use an access token in an httpOnly cookie."}],
+                "facts":[{"claim":"The header is documented.", "source":"1-auth:2"}]
+            }),
+            &privacy
+        ));
+        assert!(!public(&json!({"items":[{"text":word}]}), &privacy));
+        assert!(!public(
+            &json!({"items":[{"token":"fixture-value"}]}),
+            &privacy
+        ));
+        assert!(!public(
+            &json!({"items":[{"password":123456}]}),
+            &privacy
+        ));
+        assert!(!public(
+            &json!({"items":[{"password":"=fixture-value"}]}),
+            &privacy
+        ));
+        for path in [&repo, &tmp, &cfg.home] {
+            let answer = json!({"items":[{"text":format!("Found at {}", path.display())}]});
+            assert!(!public(&answer, &privacy));
+        }
+    }
+
+    fn prompt_privacy() -> Privacy {
+        let dir = std::env::temp_dir().join(crate::journal::new_run_id());
+        let mut cfg = Config::tenant(&dir, "fixture").unwrap();
+        cfg.home = dir.join("home");
+        let snapshot = json!({"salt":"fixture","entries":[]});
+        Privacy::new(&cfg, &snapshot, &dir.join("repo"), &dir.join("notes")).unwrap()
+    }
+
+    #[test]
+    fn prepare_requires_a_line_for_each_question() {
+        let staged = json!({"request":"Plan the shelves.", "prior":[], "attachments":[],
+            "questions":[{"title":"One","text":"Width?"},{"title":"Two","text":"Height?"}]});
+        let privacy = prompt_privacy();
+        assert_eq!(
+            check_expert_prompts(&staged, &privacy, 1).unwrap_err().0,
+            "args.maxLines (1) must be at least the number of questions (2)."
+        );
+        assert!(check_expert_prompts(&staged, &privacy, 2).is_ok());
+    }
+
+    #[test]
+    fn prepare_checks_the_assembled_prompt_for_every_question() {
+        let privacy = prompt_privacy();
+        let question = json!({"title":"One","text":"Width?"});
+        let mut staged = json!({
+            "request":"r".repeat(100_000),
+            "prior":[{"id":"1.1","state":"accepted","text":"d".repeat(4_000)}],
+            "attachments":[
+                {"name":"1-measures.txt","text":"a".repeat(190_000)},
+                {"name":"2-drawing.txt","text":"b".repeat(190_000)}
+            ],
+            "questions":[question.clone()],
+        });
+        assert!(check_expert_prompts(&staged, &privacy, 2).is_ok());
+        staged["questions"] = json!([question, {"title":"Two","text":"q".repeat(45_000)}]);
+        assert_eq!(
+            check_expert_prompts(&staged, &privacy, 2).unwrap_err().0,
+            "The question and attachments exceed the prompt size."
+        );
+    }
+
+    #[test]
+    fn prepare_names_an_unknown_key() {
+        let error = prepare(&json!({"maxLine": 2})).err().unwrap();
+        assert_eq!(error.0, r#"Unknown research input "maxLine"."#);
+    }
+
+    #[test]
+    fn research_role_schemas_match_validated_limits() {
+        let expert: Value = serde_json::from_str(EXPERT).unwrap();
+        let fields = &expert["properties"];
+        assert_eq!(fields["facts"]["maxItems"], MAX_EXPERT_FACTS);
+        for (array, field) in [
+            ("items", "text"),
+            ("assumptions", "text"),
+            ("facts", "claim"),
+        ] {
+            assert_eq!(
+                fields[array]["items"]["properties"][field]["maxLength"],
+                MAX_EXPERT_TEXT_CHARS
+            );
+        }
+        assert_eq!(
+            fields["items"]["items"]["properties"]["group"]["maxLength"],
+            MAX_PROPOSAL_GROUP_CHARS
+        );
+        let constraints: Value = serde_json::from_str(CONSTRAINTS).unwrap();
+        let constraints = &constraints["properties"]["constraints"];
+        assert_eq!(constraints["maxItems"], MAX_CONSTRAINTS);
+        assert_eq!(
+            constraints["items"]["properties"]["text"]["maxLength"],
+            MAX_CONSTRAINT_TEXT_CHARS
+        );
+    }
+
+    #[test]
     fn fact_batch_counts_serialized_bytes_and_caps_the_number_of_rows() {
         let facts = vec![json!({"id":"F1.1","excerpt":"quoted \"row\"\n第二行"}); 16];
         let two_rows = serde_json::to_vec_pretty(&facts[..2]).unwrap().len();
@@ -1216,7 +1453,7 @@ mod tests {
         ]});
         let mut reports = Vec::new();
         let mut extras = Vec::new();
-        collect_verdicts(&expected, &answer, &mut reports, &mut extras).unwrap();
+        collect_verdicts(&expected, &answer, &mut reports, &mut extras, |_| true).unwrap();
         assert_eq!(reports, [answer["verdicts"][1].clone()]);
         assert_eq!(extras, ["F1.2"]);
     }
@@ -1232,13 +1469,35 @@ mod tests {
         ]});
         let mut reports = Vec::new();
         let mut extras = Vec::new();
-        let (step, _) = collect_verdicts(&expected, &answer, &mut reports, &mut extras).unwrap_err();
+        let (step, _) = collect_verdicts(&expected, &answer, &mut reports, &mut extras, |_| true)
+            .unwrap_err();
         assert_eq!(step, "facts contradicted");
         assert_eq!(reports.len(), 4);
         assert_eq!(reports[0], answer["verdicts"][1]);
         assert_eq!(reports[1]["verdict"], "unchecked");
         assert_eq!(reports[2]["verdict"], "unchecked");
         assert_eq!(reports[3], answer["verdicts"][0]);
+    }
+
+    #[test]
+    fn a_checked_peer_contradiction_takes_precedence_over_a_withheld_claim() {
+        let mut wave = Wave::default();
+        let mut pending = Vec::new();
+        wave.record(
+            0,
+            "check f1",
+            Ok(gateway::Step::Done(Value::Null)),
+            &mut pending,
+            |_| Err(("facts", CLAIM_NOT_SENT.into())),
+        );
+        wave.record(
+            1,
+            "check f2",
+            Ok(gateway::Step::Done(Value::Null)),
+            &mut pending,
+            |_| Err(("facts contradicted", "A checked fact contradicts the research answer.".into())),
+        );
+        assert_eq!(wave.stop.unwrap().0, "facts contradicted");
     }
 
     #[test]

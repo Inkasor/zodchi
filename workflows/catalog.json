@@ -47,11 +47,11 @@
       "version": "1",
       "domain": "core",
       "purpose": "Collect bounded local incident evidence and prepare a classified draft.",
-      "limits": "Read-only adapter operations and one classifier; no dispatch or publication.",
+      "limits": "Read-only adapter operations and one classifier. Supply params for operation placeholders or those reads are skipped. The role defaults to architect. The models object overrides candidates by role. No dispatch or publication.",
       "required": ["repo", "incident", "adapter", "tmp"],
       "anyOf": [["report"], ["reportFile"]],
       "docs": "docs/incident-triage.md",
-      "example": {"repo": "/project", "incident": "case-1", "adapter": "/project/adapter.json", "tmp": "/tmp/case-1", "report": "Describe the incident"}
+      "example": {"repo": "/project", "incident": "case-1", "adapter": "/project/adapter.json", "tmp": "/tmp/case-1", "report": "Describe the incident", "params": {"id": "4711"}}
     },
     {
       "name": "design-brief",
@@ -445,7 +445,7 @@
       "version": "1",
       "domain": "core",
       "purpose": "Check a local operator-owned script and prepare a command for the operator.",
-      "limits": "Local Linux and Windows only; no remote action or execution of the operator command. Checks run unprivileged.",
+      "limits": "Local Linux and Windows only. Each unprivileged static check has a 30 s limit. The snapshot copy runs unprivileged with --check under a 60 s limit. Check mode must make no changes. The operator command is for manual execution. Repairs run only for a script defect when repo is given and fixes remain. The fixes limit defaults to 2.",
       "required": [
         "script",
         "tmp",

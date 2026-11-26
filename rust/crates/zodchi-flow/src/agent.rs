@@ -1,7 +1,7 @@
 //! The agent edits a private export. Only changes the engine can match to the claimed paths and the original
 //! worktree blobs are proposed for application. The writer's report is not used as a list of filesystem changes.
 
-use crate::{git::Git, patch};
+use crate::{git::Git, input::Scrubber, patch, verify::WriterSettings};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
@@ -21,6 +21,32 @@ pub(crate) fn check_writer_role(role: &Value) -> Result<()> {
         );
     }
     Ok(())
+}
+
+pub(crate) fn create_writer_cache(settings: &WriterSettings) -> Result<()> {
+    if let Some(cache) = &settings.cache {
+        fs::create_dir_all(cache)
+            .map_err(|error| GatewayError(format!("Cannot create the writer cache: {error}")))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn describe_writer_environment(
+    prompt: &mut String,
+    settings: &WriterSettings,
+    scrubber: &Scrubber,
+    private_places: &[(String, &str)],
+) {
+    let names = settings
+        .env
+        .keys()
+        .map(String::as_str)
+        .filter(|name| scrubber.text(name, private_places) == *name)
+        .collect::<Vec<_>>();
+    if !names.is_empty() {
+        let names = names.join(", ");
+        prompt.push_str(&format!("\n\nConfigured writer shell variables are {names}."));
+    }
 }
 
 pub fn prepare(

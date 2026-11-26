@@ -40,6 +40,13 @@ The release includes the Rust CLI, workflow catalog, model roles and a shared pl
 
 3. Add the directory of the returned `launcher` to your user PATH. It defaults to `~/.zodchi/bin` and follows `ZODCHI_HOME` if set. Run `zodchi release current` and `zodchi flow list`. Configure provider sign-in and roles as needed. [Model roles](model-roles.md) · [Claude executor](flow-claude.md)
 
+## Windows prerequisites
+
+Flow uses Git Bash for project checks. When building or checking Zodchi with Rust's
+`x86_64-pc-windows-gnu` toolchain, add the folder containing GNU Binutils' `dlltool.exe` and `as.exe` to
+the PATH that launches Zodchi. Alternatively, select the `x86_64-pc-windows-msvc` toolchain with its
+MSVC build tools. The packaged CLI can run project checks once their declared tools are on PATH.
+
 ## Load the plugin in your client
 
 - Claude Code can load it in the open chat with `/reload-plugins`. [Claude Code commands](https://code.claude.com/docs/en/commands)

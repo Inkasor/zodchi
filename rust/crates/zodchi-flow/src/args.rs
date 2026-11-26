@@ -1,6 +1,7 @@
 //! The arguments of `zodchi flow code-package`: the supported subset of the JavaScript workflow's arguments, checked
 //! before anything is claimed. An option this version does not support is refused, never ignored.
 
+use crate::checks;
 use crate::claims::{fold, norm};
 use serde_json::{json, Map, Value};
 
@@ -136,10 +137,13 @@ pub fn parse(a: &Value) -> Result<Args, String> {
     let browser = match o.get("browser") {
         None | Some(Value::Null) => None,
         Some(Value::Object(b)) if agent && b.keys().all(|k| k == "variable" || k == "executable") => {
-            let variable = b.get("variable").map_or(Some("ZODCHI_ACCEPTANCE_CHROMIUM"), Value::as_str).unwrap_or("");
+            let variable = b.get("variable").map_or(Some(checks::DEFAULT_BROWSER_VARIABLE), Value::as_str).unwrap_or("");
             let path = b.get("executable").and_then(Value::as_str).unwrap_or("");
-            if !["ZODCHI_ACCEPTANCE_CHROMIUM", "WB_TEST_CHROME"].contains(&variable) || !std::path::Path::new(path).is_absolute() {
-                return Err("args.browser needs an absolute executable and variable ZODCHI_ACCEPTANCE_CHROMIUM or WB_TEST_CHROME".into());
+            if !checks::valid_browser_variable(variable) {
+                return Err("args.browser.variable must be a distinct uppercase environment variable name".into());
+            }
+            if !std::path::Path::new(path).is_absolute() {
+                return Err("args.browser.executable must be an absolute path".into());
             }
             Some((variable.to_string(), path.to_string()))
         }
@@ -255,4 +259,29 @@ pub fn is_protected(args: &Args, rel_path: &str) -> bool {
 
 pub fn is_project_configuration(path: &str) -> bool {
     [crate::verify::CONFIG, crate::catalog::PROJECT].iter().any(|file| path.eq_ignore_ascii_case(file))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn parses_browser_variable_names() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut raw = json!({
+            "label": "browser", "brief": "brief.md", "repo": repo, "files": ["Cargo.toml"],
+            "mode": "agent", "browser": { "executable": repo.join("Cargo.toml") }
+        });
+        assert_eq!(parse(&raw).unwrap().browser.unwrap().0, "ZODCHI_ACCEPTANCE_CHROMIUM");
+
+        for (variable, accepted) in checks::browser_variable_cases() {
+            raw["browser"]["variable"] = json!(variable);
+            let result = parse(&raw);
+            assert_eq!(result.is_ok(), accepted, "{variable:?}: {result:?}");
+            if let Ok(args) = result {
+                assert_eq!(args.browser.unwrap().0, variable);
+            }
+        }
+    }
 }

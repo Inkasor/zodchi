@@ -1,6 +1,6 @@
 # Incident triage design
 
-The native `incident-triage` workflow is available in the shared catalog. `ops-script` is pending.
+`incident-triage` and `ops-script` are native workflows in the shared catalog.
 
 `incident-triage` takes a user's error report ("the job stopped", "the form asks me something I cannot answer", "a
 release is blocked by a process nobody can identify") to a draft: a saved evidence bundle, a classification, the reply
@@ -29,8 +29,11 @@ folder, not in this repository.
 ```
 
 - `params` are the values the adapter's operations take, read off the report by the lead. Each is checked against
-  its pattern and refused when it holds a character a shell gives meaning to.
-- `repo` is the Git checkout used by the local Codex gateway. The model is selected from the `architect` role by default; `role` selects another model role. The shipped expert classifier frame is required.
+  its pattern and refused when it holds a prohibited character or recognizable private material. Operations with
+  missing placeholder values are skipped.
+- `repo` is the Git checkout used by the local Codex gateway. The model is selected from the `architect` role by
+  default. `role` selects another model role, and `models` can override the candidate lists by role. The shipped
+  expert classifier frame is required.
 - One folder per incident. A second run in the same folder is a new revision; it never edits an older one.
 
 ## Native invocation and recovery
@@ -42,24 +45,27 @@ zodchi flow incident-triage --args incident.json
 zodchi flow incident-triage --args incident.json --detach
 zodchi flow status <run-id>
 zodchi flow incident-triage --resume <run-id>
+zodchi flow incident-triage --resume <run-id> --rerun "read E2"
 zodchi flow incident-triage --resume <run-id> --rerun classify
 ```
 
 Supply exactly one of `report` and `reportFile`. A detached run returns its run ID; resume does not need the input file. A stopped classifier is rerun only when explicitly requested. Otherwise its recorded key is reused; an unknown job outcome is not submitted again. The selected classifier and local executor configuration are checked against the values pinned at preparation.
 
-The native runner validates the adapter and model before incident reads. It collects bounded local operations directly, without a shell, and redacts the report and outputs before storage or model input. The classifier receives the adapter and evidence as untrusted data. Each read is journaled before execution and has a receipt afterward. A read interrupted without a receipt remains unresolved and is never repeated. The incident lock prevents concurrent revisions; resume must retain its own lock. Published artifact bytes are reconciled against existing files and mismatches are refused.
+The native runner validates the adapter and model before incident reads. It collects bounded local operations directly, without a shell, and redacts the report and outputs before storage or model input. The classifier receives the adapter and evidence as untrusted data. Each read is journaled before execution and has a receipt afterward. Resume uses any complete receipt from the journal. The incident lock prevents concurrent revisions and stays with the run during recovery. Published artifact bytes are reconciled against existing files and mismatches are refused.
 
 The runner prepares a complete owner record in a per-run staging directory before publishing `.lock`. After the final result it moves its lock to a per-run release directory and records completion before cleaning it up. Resume can finish either interrupted transition without removing a later run's lock. Existing legacy locks, including empty or malformed ones, are never adopted or cleared.
 
 The classifier answer is checked before a draft is written:
+   - a private word, recognizable credential value or screened private path stops the run at classification.
+     Ordinary wording such as "the API token expired" and "never paste credentials" passes this check;
    - an evidence id that is not in the bundle refuses the answer;
    - a finding about what agents may do must cite both the agent skill and an allow-list;
    - a text the lead acts on (the question for the owner, each gap's what and proposal, every
      field and list entry of the fix brief, the agent skill change) that asks for access, says someone has none or
      proposes working around a refusal refuses the answer; a prohibition ("the command must not grant access", "the
      test must not bypass the allow-list refusal") is not a proposal and passes;
-   - the facts, the suggested reply, the line for the lead, the route's reason and each finding's summary are not
-     checked: they are shown apart, as wording not to forward. No actionable place reads them: a finding is shown by
+   - the facts, the suggested reply, the line for the lead, the route's reason and each finding's summary pass the
+     privacy check and are shown separately as wording for the lead. A finding is shown by
      the workflow's own text only (its kind, its confidence and its evidence ids with the source of each, such as
      `op:processes`, `agentSkill` or `allowList:<name>`), and the same text is the cause in the incident-log note and
      what the lead hands to the operator or owner. `classification.json` keeps the summaries apart from the findings
@@ -94,8 +100,8 @@ and the adapter documents one, then a fixed text for the route:
 
 No text of the model is in it, so retry wording reaches the reply only through a recommended retry. The lead
 puts the reply into the reporter's language. The model's facts, its suggested reply, its line for the lead, the route's reason and the summary of each finding
-are shown in the draft under "Model's wording (not checked, do not forward as is)": they are not checked, and nothing
-is copied from them to the reporter as it stands.
+are shown in the draft under "Model's wording (not checked, do not forward as is)". They pass privacy screening and
+are available to the lead as reference.
 
 ### Kinds and routes
 
@@ -119,7 +125,14 @@ is copied from them to the reporter as it stands.
 <tmp>/rev-<n>/adapterHash    the SHA-256 of the adapter this revision used
 ```
 
-`state` is `drafted`, `needs-evidence` or `failed`; `collecting` and `classified` are intermediate states. Resume an interrupted run by its original ID. If a lock is lost, held by another run, or an external read has an unresolved outcome, the workflow stops rather than repeating the read or taking another run's lock.
+`state` is `drafted`, `needs-evidence` or `failed`. `collecting` and `classified` are intermediate states.
+Resume an interrupted run by its original ID. A lost or foreign lock stops the workflow.
+
+When a read was interrupted without a usable receipt, `--resume` stops with `reason: "unresolved read"` and the
+exact step name in `stoppedAt`, such as `read E2`. Follow the command in `next` to authorize the repeat with
+`--resume <run-id> --rerun "read E2"`. The latest journal event must be that unresolved read stop. The runner records
+a new attempt for that read, discards its incomplete pending receipt, and continues the same revision and plan.
+It reuses every other saved receipt and releases the incident lock when the run finishes.
 
 ## After the draft: phases 4-6 by hand
 

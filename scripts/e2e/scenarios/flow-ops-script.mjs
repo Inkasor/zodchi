@@ -61,7 +61,7 @@ export default function register({ scenario: registerScenario, world, zodchi, fl
   }
   const invoke = (t, f, args, env = {}) => zodchi(t, f.w, ["flow", ...args], { cwd: f.w.dir, env: { ...f.w.env, ...env } });
   const scenario = (name, description, run) => registerScenario(name, description, async (t) => {
-    if (["flow-ops-script", "flow-ops-script-resume", "flow-ops-script-recovery", "flow-ops-script-scoped-repair"].includes(name) && elevatedWindows()) {
+    if (["flow-ops-script", "flow-ops-script-resume", "flow-ops-script-recovery", "flow-ops-script-scoped-repair", "flow-ops-script-no-repair-on-tools"].includes(name) && elevatedWindows()) {
       return { skip: "Windows test process is elevated; the dry run requires an unprivileged token" };
     }
     if (process.platform !== "darwin") return run(t);
@@ -390,6 +390,75 @@ export default function register({ scenario: registerScenario, world, zodchi, fl
       t.eq(handoff.json?.status, "waiting", `${name} in source hands repair to the owner`);
       t.ok(!fs.existsSync(path.join(hidden.w.codex, "fake-turns.jsonl")), `${name} source causes no model call`);
     }
+  });
+
+  scenario("flow-ops-script-no-repair-on-tools", "a missing static check tool ends the run without a repair or model call", async (t) => {
+    const f = flowWorld(t, "flow-ops-script-no-repair-on-tools");
+    const interpreter = python();
+    f.w.env.ZODCHI_BASH = fakeBash(f.w);
+    f.w.env.PATH = `${path.dirname(f.w.env.ZODCHI_BASH)}${path.delimiter}${f.w.env.PATH}`;
+    const script = path.join(f.r, "src", "operator.py");
+    fs.writeFileSync(script, "print('checked')\n");
+    gitOut(f.r, ["add", "src/operator.py"]);
+    gitOut(f.r, ["commit", "-q", "-m", "add valid operator script"]);
+    t.ok(/^[0-9a-f]{40}$/.test(gitOut(f.r, ["rev-parse", "HEAD:src/operator.py"])), "the script is tracked in the repair repo");
+    const tmp = path.join(f.w.dir, "snapshots");
+    fs.mkdirSync(tmp);
+    const args = path.join(f.w.dir, "args.json");
+    fs.writeFileSync(args, JSON.stringify({ script, tmp, repo: f.r, fixes: 1, check: [interpreter, "{copy}", "--check"], sudo: ["sudo", interpreter, "{script}"] }));
+
+    const flows = path.join(f.w.zhome, "flows");
+    const readEvents = (id) => fs.readFileSync(path.join(flows, id, "events.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    const brokenPython = path.join(f.w.dir, "python-without-compiler");
+    fs.mkdirSync(brokenPython);
+    const source = path.join(brokenPython, "fixture.rs");
+    const executable = path.join(brokenPython, interpreter + (process.platform === "win32" ? ".exe" : ""));
+    fs.writeFileSync(source, `fn main() {
+        if std::env::args().nth(1).as_deref() == Some("--version") {
+            println!("Python 3.0 fixture");
+            return;
+        }
+        eprintln!("No module named py_compile");
+        std::process::exit(1);
+    }\n`);
+    const built = spawnSync("rustc", [source, "-o", executable], { encoding: "utf8", windowsHide: true });
+    t.ok(built.status === 0, `build the version-only Python fixture: ${built.stderr || built.error || ""}`);
+    const toolFailures = [
+      [{ ZODCHI_BASH: path.join(f.w.dir, "missing-bash") }, "Bash is required"],
+      [{ PATH: `${brokenPython}${path.delimiter}${f.w.env.PATH}` }, "A working Python 3 interpreter with isolated py_compile is required"],
+    ];
+    for (const [toolEnv, diagnostic] of toolFailures) {
+      for (const cutAfterFailure of [false, true]) {
+        const earlier = new Set(fs.existsSync(flows) ? fs.readdirSync(flows) : []);
+        const cut = await invoke(t, f, ["ops-script", "--args", args], { ZODCHI_FLOW_CUT: "ops-done snapshot 0" });
+        t.eq(cut.code, 75, "cut after snapshot and before static tool preflight");
+        const [id] = fs.readdirSync(flows).filter(run => !earlier.has(run));
+        const env = { ...toolEnv };
+        if (cutAfterFailure) env.ZODCHI_FLOW_CUT = "ops-done static 0";
+        let result = await invoke(t, f, ["ops-script", "--resume", id], env);
+        if (cutAfterFailure) {
+          t.eq(result.code, 75, "cut after recording the static tool failure");
+          result = await invoke(t, f, ["ops-script", "--resume", id]);
+        }
+        t.eq([result.code, result.json?.ready, result.json?.status, result.json?.step], [2, false, "failed", "static 0"], "a tool failure ends the parent at the static step");
+        t.eq(result.json?.detail?.error, diagnostic, "the failure preserves the tool diagnostic");
+        const events = readEvents(id);
+        t.eq(events.filter(event => event.kind === "ops-start").map(event => event.step), ["snapshot 0", "static 0"], "the journal shows one static attempt and no dry run");
+        t.ok(!events.some(event => event.kind === "ops-repair"), "the journal records no repair");
+        t.eq(fs.readdirSync(flows).filter(run => !earlier.has(run)), [id], "there is no child run");
+        t.eq(f.steps(), [], "the fake model received no requests");
+      }
+    }
+
+    const earlier = new Set(fs.readdirSync(flows));
+    fs.writeFileSync(script, "def broken(:\n");
+    const syntax = await invoke(t, f, ["ops-script", "--args", args], { ZODCHI_FLOW_CUT: "ops-repair 0" });
+    t.eq(syntax.code, 75, "a real syntax error reaches the repair gate");
+    const [id] = fs.readdirSync(flows).filter(run => !earlier.has(run));
+    const events = readEvents(id);
+    const check = events.find(event => event.kind === "ops-done" && event.step === "static 0")?.result?.checks?.at(-1);
+    t.ok(check?.code === 1 && check.stderr.includes("SyntaxError"), "the real compiler recorded the syntax error");
+    t.eq(events.filter(event => event.kind === "ops-repair").length, 1, "the syntax error qualifies for a repair");
   });
 
   scenario("flow-ops-script-scoped-repair", "repairs only the claimed script with an independent fake reviewer and resumes the same child", async (t) => {

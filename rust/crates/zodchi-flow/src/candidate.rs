@@ -20,9 +20,10 @@ use zodchi_core::{
 };
 
 pub const BRANCH: &str = "refs/heads/flow-candidate";
+pub(crate) const WORKSPACES_DIR: &str = "flow-candidates";
 
 pub fn workspace(home: &Path, id: &str) -> PathBuf {
-    home.join("flow-candidates").join(id)
+    home.join(WORKSPACES_DIR).join(id)
 }
 
 pub fn prepare(project: &Git, stage: &Git, base: &str) -> Result<()> {
@@ -241,6 +242,8 @@ fn apply_approved(id: &str) -> Result<Value> {
                     conflicts.join("; ")
                 ));
             }
+            // A package from an older release may be creating its first shared receipt now.
+            crate::cleanup::note_package_home(&home, id);
             journal.write_value("plans/application.json", &plan.to_json())?;
             write_json_atomic(&pending, &json!({ "runId": id }))?;
             journal.append(json!({ "kind": "application intent", "step": "apply candidate", "digest": sha256_hex(plan.to_json().to_string()) }))?;

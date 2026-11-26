@@ -59,7 +59,7 @@ The engine validates arguments before claiming files.
 | `protect`, `allowCheckChanges` | more protected paths and the exact approved paths the package may change. For example, `"allowCheckChanges": ["tests/math.mjs"]` |
 | `mode` | `expert` (default), or `agent` for a local Codex work role with a private workspace |
 | `continuations` | extra writer turns for each agent writing step, default 2, range 0 to 32. Use `"continuations": 16` for a step expected to need many turns |
-| `browser` | Agent mode opt-in: `{"executable":"/absolute/path/to/chromium"}` pins the browser for writer shells. Optional `variable` defaults to `ZODCHI_ACCEPTANCE_CHROMIUM`; `WB_TEST_CHROME` is also allowed. |
+| `browser` | Agent mode opt-in. `{"executable":"/absolute/path/to/chromium"}` pins the browser for writer shells. Optional `variable` defaults to `ZODCHI_ACCEPTANCE_CHROMIUM`. See [Browser input for an agent writer](#browser-input-for-an-agent-writer). |
 | `isolated` | `true` keeps writes, checks, and review on a private candidate. Apply the approved commit explicitly with `zodchi flow apply <run-id>` |
 | `budget` | `{ "calls": N, "minutes": M }` limits new model submissions, including review and gateway retries. `minutes` is optional. In agent mode the budget replaces the per-step continuation limit |
 | `sourceRun` | a finished isolated code package whose retained candidate seeds a correction on the same target branch and base. Declare every inherited changed path in `files` |
@@ -73,6 +73,24 @@ branch first), `fixIgnore` (commit `.agent-tmp/` in `.gitignore` first), `closeS
 `--rerun`), `commit: false`. A repository with a verify skill (`.claude/skills/verify/SKILL.md`) and no
 `args.verify` or committed project verification configuration is refused. Pass the skill's commands or declare
 the plan in `.zodchi/verify.json`.
+
+## Browser input for an agent writer
+
+An agent-mode package may opt in with `"browser": {"executable": "/absolute/path/to/chromium"}`. The default
+variable is `ZODCHI_ACCEPTANCE_CHROMIUM`. To use a project-specific name, set `"variable": "APP_TEST_CHROME"`.
+The name must match `[A-Z_][A-Z0-9_]*` and have at most 128 characters. Names inherited by the reduced check
+environment, such as `PATH` and `TEMP`, are reserved along with `ZODCHI_ACCEPTANCE_FRAMES`.
+
+The engine pins the regular file's resolved path and SHA-256 in the run and checks it before new writer jobs,
+including on resume. Only writer shells receive the configured variable. Keep the executable installed at the
+same path and restore the same bytes if a resumed run reports a changed pin.
+
+Project setup should install the project's Node and Playwright dependencies in the isolated writer workspace. Tests
+must pass the configured variable as Playwright's `executablePath` and select `headless: true`. If the author's
+sandbox cannot launch the browser, report the writer check as failed with the launch error and use the configured
+candidate-acceptance check on the project's runner.
+
+## Managing a run
 
 `zodchi flow list` lists available workflows. Add `--detach` to start a worker and receive a run ID immediately.
 `zodchi flow list --repo <directory>` applies the project's committed
@@ -113,11 +131,47 @@ The distribution's role table ships Terra 6.1 `xhigh` and Sol `high` for ordinar
 user-owned role tables keep their choices. A run's `models` override can request a one-off expert.
 
 The committed `.zodchi/verify.json` can declare default `checks` and `verify` command lists. Explicit package
-lists override those defaults. Flow pins the effective commands in the journal and keeps project verification
-files protected. An optional `tools` list checks command availability on PATH before any model submission.
+lists override those defaults. Flow pins the effective commands and settings in the journal and keeps project
+verification files protected.
+
+- `tools` checks command availability on PATH before any model submission. Use a command name such as
+  `"node"` for all platforms, or `{ "name": "dlltool", "os": "windows" }` for one OS. Supported selectors
+  are `windows`, `linux` and `macos`. When `cargo` is listed with `dlltool` and `as` as Windows tools,
+  Flow waives the two GNU tools when it can confirm an MSVC host and build target. The probe uses the pinned
+  `env`, including `RUSTUP_TOOLCHAIN` and `CARGO_BUILD_TARGET`. Literal profile options such as
+  `--config profile.release.lto=false` allow the waiver. An unresolved override in a Cargo configuration file
+  or verification command keeps the GNU requirements. [Windows setup](install.md#windows-prerequisites)
+- `cache` lists up to 16 relative build output folders, for example `["rust/target"]`. Use paths without dot
+  segments. A folder survives between check steps if both candidates declare and ignore it and neither tree
+  has tracked files there. Flow replaces all other checkout contents and any sibling fixtures.
+- `env` holds up to 16 non-secret string values, for example `{ "PIP_CACHE_DIR": "{cache}/pip" }`. Names use
+  letters, digits and underscores, with a letter or underscore first. Names are case-insensitively unique.
+  Inherited names such as `PATH` and `CARGO_HOME`, `LOG_DIR` and the `ZODCHI_` prefix are reserved.
+  Values must fit on one line. Flow expands `{cache}` to `<home>/flow-cache/<repo-slug>` and pins the
+  resulting values in the journal.
+- `writerEnv` sets variables for the agent writer and its `setup` commands. It follows the `env` rules and also
+  reserves the configured browser variable. Setup receives both sets, with `writerEnv` taking precedence on shared
+  names. Checks and verification use `env`. Flow pins the effective writer variables in the journal.
+
+In `writerEnv` values, `{writerCache}` resolves to `<home>/flow-cache/<repo-slug>/writer`, using the same repository
+slug as `{cache}`. Flow creates the folder when used and adds it to the writer's Codex sandbox writable roots.
+For Cargo, `"writerEnv": { "CARGO_TARGET_DIR": "{writerCache}/target", "CARGO_BUILD_JOBS": "4" }` lets writers reuse
+compiled dependencies and limits each build to four jobs. Cargo coordinates concurrent builds in the shared target
+folder with its own lock. If the local Codex version or platform ignores the writable-root setting, builds that write
+there fail in the writer sandbox. Remove the variable that uses `{writerCache}` from the project configuration in
+that environment.
+
+Engine-run setup, checks and verify commands share one slot under the Zodchi home across repositories.
+`zodchi flow status <run-id>` shows `waiting for the check slot` in `event` and the holder's run ID in
+`step`. Each command's time limit starts after the wait. Writer and reviewer turns can proceed while
+another run holds the slot. Checks use `<home>/flow-checks/<repo-slug>/checkout`, with a repository path slug
+as in package claims and a digest to distinguish similar paths. A resumed run takes the slot again for any
+pending setup or check step. On Windows the shell starts inside a job object. Flow settles any processes it
+left running before recording the command result and releasing the slot.
+
 Check commands receive `LOG_DIR` for their artifacts and `ZODCHI_VERIFY_REPOSITORY` for locating declared inputs
 in the source checkout. Run commands and write generated files in the exported candidate. The export has a
-private parent folder for materializing fixtures or pinned sibling sources. An optional
+parent folder for materializing fixtures or pinned sibling sources during that step. An optional
 `full: { "run": "local", "commands": [...] }` runs once on the reviewed candidate tree before the final result.
 With `full: { "run": "ci" }`, the result records pending CI.
 
@@ -139,8 +193,17 @@ Flow runs `checks` and `verify` in Bash with the launching process's `PATH` and 
 variables. The caller provides the interpreter and installs the project's dependencies. For Python, activate the
 project virtual environment in the shell that starts or resumes Zodchi before using `python -m pytest`. You can
 also invoke the interpreter by its quoted absolute path. In a `.venv` directory, it is typically `Scripts/python.exe`
-on Windows and `bin/python` on Unix. Relative paths in the command resolve from the temporary candidate checkout.
-Set any additional non-secret variables required by a check in the command itself.
+on Windows and `bin/python` on Unix. Relative paths in the command resolve from the candidate checkout.
+Set additional non-secret variables in `env` or in the command itself.
+
+Zodchi's own default verification uses `node scripts/e2e.mjs --cargo-profile check` with an incremental
+build. Cargo reserves the name `check`, so the script builds the `flow-check` profile and copies the
+executables Cargo reports for the configured target into `rust/target/check/` or `$CARGO_TARGET_DIR/check/`.
+The suite defaults to `release` when the option is omitted. For explicit release verification, pass Cargo
+a `--target-dir` separate from the one holding the running CLI. After the build succeeds, point
+`--no-build --bin-dir` at that target directory's `release/` subdirectory. On Windows, the suite runs the
+check profile or an explicit `--bin-dir` from temporary copies so its detached workers leave the build
+artifacts available to Cargo.
 
 ### Applying a private candidate
 
@@ -201,9 +264,10 @@ with the revisions they refer to. Set `rounds` on the first review to cap the ch
 is 3. Each linked round reports `reviewRound` and `reviewLimit`.
 
 To verify a committed candidate in `branch-review`, supply `checks` or `verify` as lists of trusted commands. Flow
-runs them in a temporary Git checkout of `head`, with access to the complete candidate tree. The fast `checks`
+runs them in the shared check checkout of `head`, with access to the complete candidate tree. The fast `checks`
 must pass before `verify` starts. Commands use the same [check environment](#check-command-environment) as
-`code-package`. A failed command stops the run before review. Successful commands attach the exact commit and
+`code-package`, including `tools`, `cache` and `env` from the committed comparison base. A failed command stops
+the run before review. Successful commands attach the exact commit and
 tree, exit codes and screened log excerpts to the review. Full logs stay in the run journal. Resume reuses
 completed verification.
 
@@ -262,7 +326,7 @@ For contributors, use the [source build](install-from-source.md). `zodchi releas
 6. **Checks.** The candidate tree (the last commit with the claimed paths from the work tree) is written as a Git
    tree (refused if it differs from the last commit anywhere but at the claimed files) and compared with the base:
    an existing protected check changed, deleted or with another mode, by the patch or by anybody, stops the package
-   before the checks with `protectedChanged`. A temporary Git repository outside the checkout gets an index and a
+   before the checks with `protectedChanged`. The separate Git checkout gets a fresh index and a
    local HEAD with that exact tree. It reads objects from the source repository and keeps its own index and refs. There
    the cheap checks run with bash, in order, each to its end, then the verify commands when they all passed; each
    with its real exit code and its log in the journal. A command starts only after its pid and start time are in
@@ -302,7 +366,7 @@ is pointed at:
   the expected commit parent and tree), a `submitted` line once the gateway took a job, and after it a `done` with
   the validated answer or the Git receipt; a `made` line with the commit id between `git commit-tree` and moving
   the branch; a `check started` line with the pid and start time of each check command and a `check ended` line
-  when it ended or was stopped; `stop`, `rerun`, `closing` (the result is saved and the claim is about to be
+  with its result and candidate tree when it completes; `stop`, `rerun`, `closing` (the result is saved and the claim is about to be
   closed) and `finished` lines. A record cut in the middle of its write can only be the last one: a resume drops it from the
   file (under the lock) before it writes; a record that does not read anywhere else stops the resume.
 - `requests/` (the exact request of each gateway job), `plans/` (each applied patch with its blobs before and after,
@@ -334,10 +398,11 @@ it). Each step comes back from the journal when it has a `done`; otherwise:
   it was extended by, is still this run's, and never touches the index: its entries followed the commit before the
   branch moved, so an entry that differs from the commit now is somebody's staging, left as it is and named in the
   receipt's `indexLeft`.
-- checks without a `done` (a rerun included) first stop every check command of the run that has a `check started`
-  and no `check ended` line, whatever step or attempt started it (by pid and start time; on Unix the whole process
-  group), then run again (they change nothing but their export). One that cannot be stopped, or a start or end the
-  journal cannot record, stops the run.
+- checks without a `done` take the slot and recover the command results recorded for the same candidate tree.
+  A resume with pending commands continues in the original checkout, including files generated by earlier commands.
+  A command with an uncertain result, or a checkout another run replaced before all needed results were saved,
+  stops for an explicit `--rerun`. The operating system releases the slot when its holder dies. The next holder
+  settles the previous command's Unix process group or Windows job object before using the export.
 - writer setup without a `writer prepared` or failure receipt stops any recorded commands still running and retries
   in a fresh export. A prepared workspace is reused. A recorded failure waits for `--rerun "setup <step>"`.
 - a run with a saved `result.json` returns it; when the cut came after the `closing` line, the claim of this run is
@@ -385,12 +450,12 @@ command and a REVIEW.md):
 
 ## Known limits of version 1
 
-- **No network or file system isolation for checks.** A check runs as the user, in a temporary export with a
+- **No network or file system isolation for checks.** A check runs as the user, in a separate export with a
   reduced environment, but it can reach the network and read whatever the user can read (the home folder with its
   credential stores included). Isolating the network is not available on every operating system the gateway runs
   on; run untrusted checks in a container or VM.
-- The export holds the tracked files of the candidate tree only: what the checks need beyond them (dependencies,
-  build caches) is installed by a check (`npm ci`, a build), every round anew.
+- The export starts with the candidate tree and the declared, Git-ignored cache folders. A check can prepare
+  additional dependencies with commands such as `npm ci`.
 - Codex executors through the local gateway in this page's runs; a company server and Claude roles are in
   [flow-server.md](flow-server.md) and [flow-claude.md](flow-claude.md). The skills of the three ways above are
   instructions for an agent, not part of the engine: an agent that ignores them is not stopped by them. The JavaScript
@@ -400,9 +465,6 @@ command and a REVIEW.md):
 - Blob ids in a patch are those of the bytes in the work tree (`git hash-object --no-filters`).
 - A finished gateway job is kept seven days; a run resumed after that cannot poll a job it submitted and stops
   with an unknown outcome instead of asking again.
-- On Windows a check command that an interrupted run left behind is stopped with what it started only while it
-  still runs itself; processes it started that outlived it are not found. On Unix what a check leaves in its
-  process group is ended when the check ends.
 - What a fixing writer sees of a failed check is cleaned of the known private folders and of lines with credential
   words, not of every possible secret: a check that prints a private value without such a word passes it on.
 
@@ -410,7 +472,8 @@ command and a REVIEW.md):
 
 - F9 (important), src/git.rs: The writer view and optional reviewer copies now exclude tracked links, but candidate_tree can still stage a claimed regular file that was replaced by a symlink after the writer request.
 - F10 (important), src/patch.rs: Fresh writes use the exact saved destination mode, but the plan does not record before modes.
-- F12 (important), src/checks.rs: The stdin gate prevents an unrecorded launch, but it still opens if process_start returns no identity.
+- F12 (important), src/checks.rs: Check commands outside code-package and branch-review can still open the stdin gate
+  without a process start time.
 - F19 (important), src/journal.rs: After a partial append fails, halt_infra tries to append a stop record to the same file.
 - F16 (important), src/code_package.rs: Direct command strings are gone from the prompt templates, but the engine truncates raw logs before sanitizing them and forwards whatever the marker list does not recognize.
 - F20 (important), src/checks.rs: Failure to create a log or launch bash returns a null exit code as an ordinary check failure rather than an infrastructure stop.
@@ -440,8 +503,3 @@ to CI.
 | `flow-entry-failing-verify` | the Codex skill's steps with a verify command that fails: `verifiedBy` is `none` while `verification.evidence` holds the command's exit code, as the skill says to tell it from a run in which nothing ran |
 | `flow-entry-server` | the Codex skill's steps with the model steps on a zodchi-server; nothing runs on this machine's Codex, the token is in no result or commit |
 | `flow-entry-claude` | the Codex skill's steps with a Claude writer (the fake `claude`): a failed write stops the run, the skill's rerun of the step named in `stoppedAt` goes on to approval |
-# Browser input for an agent writer
-
-An agent-mode package may opt in with `"browser": {"executable": "/absolute/path/to/chromium"}`. The default variable is `ZODCHI_ACCEPTANCE_CHROMIUM`; set `"variable": "WB_TEST_CHROME"` for projects using that convention. The engine pins the regular file's resolved path and SHA-256 in the run and checks it before new writer jobs, including on resume. The variable is available to the writer shell; review roles do not receive this override. Keep the executable installed at the same path and restore the same bytes if a resumed run reports a changed pin.
-
-Project setup should install the project's Node and Playwright dependencies in the isolated writer workspace. Tests must pass the configured variable as Playwright's `executablePath` and select `headless: true`. If the author's sandbox cannot launch the browser, record the actual failure and use the configured candidate-acceptance check on the project's runner; do not claim the writer smoke passed.
