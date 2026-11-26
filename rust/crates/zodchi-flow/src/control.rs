@@ -14,6 +14,10 @@ fn safety_block(events: &[Value]) -> Option<Value> {
 
 pub fn status(id: &str) -> Result<Exit> {
     let (journal, run) = Journal::open(&Config::new(None)?.home, id)?;
+    // The finished event precedes the completion receipt. Sample worker state first
+    // so that a completion receipt cannot be paired with a pre-finish snapshot.
+    let active = journal.active();
+    let receipt = journal.read_value("worker-result.json");
     let events = journal.snapshot()?;
     let finished = events.iter().any(|event| event["kind"] == "finished");
     let final_result = journal.read_value("result.json").filter(|result| finished && result.get("claimLeftOpen").is_none()).map(|mut result| {
@@ -22,8 +26,6 @@ pub fn status(id: &str) -> Result<Exit> {
         }
         if run["workflow"] == ops_script::NAME { ops_script::checked_result(&run, result) } else { result }
     });
-    let active = journal.active();
-    let receipt = journal.read_value("worker-result.json");
     let last = last_state_event(&events).unwrap_or(&Value::Null);
     let outcome = if final_result.is_some() {
         "finished"
