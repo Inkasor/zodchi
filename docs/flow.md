@@ -161,10 +161,20 @@ folder with its own lock. If the local Codex version or platform ignores the wri
 there fail in the writer sandbox. Remove the variable that uses `{writerCache}` from the project configuration in
 that environment.
 
-Engine-run setup, checks and verify commands share one slot under the Zodchi home across repositories.
+Engine-run setup, checks and verify commands share one slot across repositories and `ZODCHI_HOME` values.
+On Windows every launch for an account takes the lock in `%LOCALAPPDATA%\zodchi\locks\` first and records its
+holder there. Launches that can write to `%ProgramData%\zodchi\locks\` then take the machine-wide lock and
+mirror the holder receipt there. This lets elevated and ordinary launches for one account share a slot.
+On Unix, all launches for a user share `/tmp/zodchi-<uid>/` with mode `0700`, whether or not they set
+`XDG_RUNTIME_DIR`.
+`ZODCHI_CHECK_SLOT_DIR` is a test and advanced override for the shared slot directory. Use the same override
+for runs and cleanup that share a slot.
+Flow also acquires the original lock in `<home>/locks/` and mirrors the holder receipt there so a run
+resuming with an older pinned engine still shares the slot with new runs in that home.
 `zodchi flow status <run-id>` shows `waiting for the check slot` in `event` and the holder's run ID in
-`step`. Each command's time limit starts after the wait. Writer and reviewer turns can proceed while
-another run holds the slot. Checks use `<home>/flow-checks/<repo-slug>/checkout`, with a repository path slug
+`step`. The wait event also records the holder's home. Each command's time limit starts after the wait.
+Writer and reviewer turns can proceed while another run holds the slot. Checks use
+`<home>/flow-checks/<repo-slug>/checkout`, with a repository path slug
 as in package claims and a digest to distinguish similar paths. A resumed run takes the slot again for any
 pending setup or check step. On Windows the shell starts inside a job object. Flow settles any processes it
 left running before recording the command result and releasing the slot.
@@ -447,6 +457,8 @@ command and a REVIEW.md):
 | `flow-index-reconcile-worktree` | resume restores the prepared index before deciding that the checked tree has changed |
 | `flow-edits-approve`, `flow-edits-refused` | exact substitutions preserve line endings and resume by recorded blobs. Missing, ambiguous, overlapping, stale and protected changes stop before any file is written |
 | `flow-private-checks` | commands with private text are redacted in the review evidence. The fixing writer gets the failed check's log with `<tmp>` for the export folder and a credential line left out |
+| `flow-check-slot-homes` | checks in different Zodchi homes serialize and record the holder's run ID and home. Windows exercises both the machine-wide lock and per-user contention with a ProgramData fallback. Unix sets `XDG_RUNTIME_DIR` only for the first run and uses `ZODCHI_TEST_CHECK_SLOT_TMP` to give the default selector a private temporary root during verification |
+| `flow-cleanup-interrupted` | the next cleanup reports and removes a retired journal and an unpublished export, then the interrupted package resumes |
 
 ## Known limits of version 1
 

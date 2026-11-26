@@ -1,15 +1,15 @@
 //! Reclaim run-owned scratch and retire records only after checking their on-disk references.
 
 use crate::{
-    candidate,
+    candidate, checks,
     journal::{self, Journal},
     Exit,
 };
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, File, Metadata, OpenOptions},
-    io::{self, ErrorKind},
+    fs::{self, File, Metadata, OpenOptions, TryLockError},
+    io::{self, ErrorKind, Read, Seek, Write},
     path::{Component, Path, PathBuf},
 };
 use zodchi_core::{
@@ -100,6 +100,7 @@ pub fn cli(args: &[String]) -> Result<Exit> {
         &std::env::temp_dir(),
         Some(&profile_packages),
         &options,
+        checks::live_slot_owners,
     );
     Ok(Exit {
         code: if report.errors.is_empty() { 0 } else { 2 },
@@ -230,8 +231,10 @@ enum Kind {
     Writer,
     Candidate,
     CheckTemp,
+    CheckStage,
     JournalTemp,
     Journal,
+    RetiredJournal,
     DevBuild,
     Claim,
     Pending,
@@ -247,8 +250,10 @@ impl Kind {
             Self::Writer => "writer-workspace",
             Self::Candidate => "candidate-workspace",
             Self::CheckTemp => "check-temp",
+            Self::CheckStage => "check-stage",
             Self::JournalTemp => "journal-temp",
             Self::Journal => "journal",
+            Self::RetiredJournal => "retired-journal",
             Self::DevBuild => "dev-build",
             Self::Claim => "claim",
             Self::Pending => "pending-application",
@@ -353,7 +358,9 @@ impl Report {
         };
         if remove {
             self.items.push(item);
-        } else if item.bytes > LARGE || matches!(reason, LIVE | SCRATCH_INCOMPLETE | AMBIGUOUS_HOME)
+        } else if kind == Kind::RetiredJournal
+            || item.bytes > LARGE
+            || matches!(reason, LIVE | SCRATCH_INCOMPLETE | AMBIGUOUS_HOME)
         {
             self.kept.push(item);
         }
@@ -579,6 +586,7 @@ fn id_key(id: &str) -> String {
 #[derive(Default)]
 struct Runs {
     by_id: BTreeMap<String, (String, Option<Run>)>,
+    retired: Vec<PathBuf>,
     sources: BTreeSet<String>,
     dependencies: BTreeSet<String>,
     errors: Vec<String>,
@@ -588,6 +596,16 @@ impl Runs {
     fn load(home: &Path, inspect_build: bool) -> Result<Self> {
         let mut runs = Self::default();
         for entry in entries(&journal::flows_dir(home))? {
+            if is_retired_journal(&entry) {
+                match ordinary_dir(&entry) {
+                    Ok(true) => runs.retired.push(entry),
+                    Ok(false) => {}
+                    Err(error) => runs
+                        .errors
+                        .push(format!("Cannot inspect {}: {error}", entry.display())),
+                }
+                continue;
+            }
             let Some(id) = name(&entry).filter(|id| journal::is_run_id(id)) else {
                 continue;
             };
@@ -718,6 +736,99 @@ fn check_temps(temp: &Path, owns_run: impl Fn(&str) -> bool) -> Result<Vec<(Stri
         .collect())
 }
 
+fn check_stages(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut stages = Vec::new();
+    for repo in entries(root)? {
+        // Parked cache directories can survive a cut too, and may be needed by the next export.
+        if name(&repo).is_none_or(|name| name.ends_with(".cache")) || !ordinary_dir(&repo)? {
+            continue;
+        }
+        if checks::is_check_stage(&repo) {
+            // Older versions staged directly under flow-checks without a repository slug.
+            stages.push(repo);
+            continue;
+        }
+        for path in entries(&repo)? {
+            if checks::is_repo_check_stage(&path)? && ordinary_dir(&path)? {
+                stages.push(path);
+            }
+        }
+    }
+    Ok(stages)
+}
+
+fn ordinary_dir(path: &Path) -> io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => Ok(meta.is_dir() && !linked(&meta)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn check_stage_busy(root: &Path, stage: &Path, owners: &[Value]) -> Result<bool> {
+    let repo = stage.parent().expect("stage parent");
+    let matches_repo = |owner: &Value| {
+        repo == root
+            || owner["repoSlug"]
+                .as_str()
+                .is_none_or(|slug| name(repo) == Some(slug))
+    };
+    if owners.iter().any(matches_repo) {
+        return Ok(true);
+    }
+    let locks = root
+        .parent()
+        .expect("check root within its home")
+        .join("locks");
+    let Some(legacy_owner) = read_json(&locks.join("check-slot.json"))?
+        .filter(|owner| journal::live_pid(owner).is_some())
+    else {
+        return Ok(false);
+    };
+    if repo == root || legacy_owner["repoSlug"].is_string() {
+        return Ok(matches_repo(&legacy_owner));
+    }
+    // Older receipts may only identify the process. Confirm it still holds the home-local lock.
+    let lock_path = locks.join("check-slot.lock");
+    if checked(&lock_path)?.is_none() {
+        return Ok(false);
+    }
+    let lock = open_lock(&lock_path)?;
+    match lock.try_lock() {
+        Ok(()) => Ok(false),
+        Err(TryLockError::WouldBlock) => Ok(true),
+        Err(TryLockError::Error(error)) => Err(error.into()),
+    }
+}
+
+fn collect_check_stages(
+    home: &Path,
+    report: &mut Report,
+    slot_owners: &impl Fn() -> Result<Vec<Value>>,
+) {
+    let root = home.join(checks::CHECKS_DIR);
+    let stages = report.scanned(check_stages(&root));
+    if stages.is_empty() {
+        return;
+    }
+    // A writer records its repository before creating a fresh stage. Inspect the holder after listing paths.
+    let Some(owners) = report.scanned(slot_owners().map(Some)) else {
+        return;
+    };
+    for stage in stages {
+        if let Some(false) =
+            report.scanned(check_stage_busy(&root, &stage, &owners).map(Some))
+        {
+            report.record(
+                stage,
+                Kind::CheckStage,
+                None,
+                Decision::Remove("unpublished check export"),
+            );
+        }
+    }
+}
+
 #[derive(Default)]
 struct Packages {
     references: BTreeSet<String>,
@@ -816,7 +927,10 @@ fn package_decision(
     let mut has_id = false;
     for id in package_ids(value) {
         has_id = true;
-        if !journal::is_run_id(id) || checked(&journal::flows_dir(home).join(id))?.is_some() {
+        if !journal::is_run_id(id)
+            || checked(&journal::flows_dir(home).join(id))?.is_some()
+            || retired_journal_exists(home, id)?
+        {
             return Ok(None);
         }
     }
@@ -1038,12 +1152,97 @@ impl Builds {
     }
 }
 
-fn collect(home: &Path, temp: &Path, profile_packages: Option<&Path>, options: &Options) -> Report {
+fn is_retired_journal(path: &Path) -> bool {
+    name(path).is_some_and(|name| name.starts_with(".cleanup-"))
+}
+
+enum RetiredJournal {
+    Identified(String),
+    Unidentified,
+    Empty,
+}
+
+fn retired_journal(path: &Path) -> Result<RetiredJournal> {
+    // New retirement directories retain the original journal ID even after partial deletion.
+    if let Some((_, id)) = name(path).and_then(|name| name.split_once("--")) {
+        if journal::is_run_id(id) {
+            return Ok(RetiredJournal::Identified(id_key(id)));
+        }
+    }
+    for file in ["journal/run.json", "journal/result.json"] {
+        let Some(record) = read_json(&path.join(file))? else {
+            continue;
+        };
+        if let Some(id) = record["runId"].as_str().filter(|id| journal::is_run_id(id)) {
+            return Ok(RetiredJournal::Identified(id_key(id)));
+        }
+    }
+    // An interrupted legacy retirement can lose its identity before the rest of its files are deleted.
+    Ok(if entries(path)?.is_empty() {
+        RetiredJournal::Empty
+    } else {
+        RetiredJournal::Unidentified
+    })
+}
+
+fn retired_journal_exists(home: &Path, id: &str) -> Result<bool> {
+    let id = id_key(id);
+    for path in entries(&journal::flows_dir(home))? {
+        if is_retired_journal(&path) && ordinary_dir(&path)? {
+            match retired_journal(&path)? {
+                RetiredJournal::Identified(retired_id) if retired_id == id => return Ok(true),
+                RetiredJournal::Unidentified => return Ok(true),
+                _ => {}
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn retired_decision(path: &Path, packages: &Packages) -> Result<Decision> {
+    match retired_journal(path)? {
+        RetiredJournal::Identified(id) if packages.references.contains(&id) => {
+            return Ok(Decision::Keep(
+                "retired journal is referenced by a package record",
+            ));
+        }
+        RetiredJournal::Unidentified => {
+            let flows = path.parent().expect("retirement within flows");
+            for id in packages.references.iter().filter(|id| journal::is_run_id(id)) {
+                if !checked(&flows.join(id).join("run.json"))?.is_some_and(|meta| meta.is_file()) {
+                    return Ok(Decision::Keep(
+                        "retired journal may belong to an unresolved package record",
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+    if !packages.errors.is_empty() {
+        return Ok(Decision::Keep(
+            "some package references could not be checked",
+        ));
+    }
+    Ok(Decision::Remove("journal already retired by cleanup"))
+}
+
+fn collect(
+    home: &Path,
+    temp: &Path,
+    profile_packages: Option<&Path>,
+    options: &Options,
+    slot_owners: impl Fn() -> Result<Vec<Value>>,
+) -> Report {
     let runs = Runs::load(home, true).unwrap_or_else(|error| Runs {
         errors: vec![error.0],
         ..Runs::default()
     });
-    let packages = Packages::scan(home, profile_packages, options.journals, options.claims);
+    let packages = Packages::scan(
+        home,
+        profile_packages,
+        options.journals || !runs.retired.is_empty(),
+        options.claims,
+    );
     let cutoff = now_ms() - i128::from(options.retention_days) * DAY_MS;
     let mut report = Report::default();
     let decide = |kind, id: &str| {
@@ -1079,6 +1278,12 @@ fn collect(home: &Path, temp: &Path, profile_packages: Option<&Path>, options: &
             Some(&id),
             decide(Kind::CheckTemp, &id),
         );
+    }
+    collect_check_stages(home, &mut report, &slot_owners);
+    for path in &runs.retired {
+        if let Some(decision) = report.scanned(retired_decision(path, &packages).map(Some)) {
+            report.record(path.clone(), Kind::RetiredJournal, None, decision);
+        }
     }
     for (id, _) in runs.by_id.values() {
         let path = journal::flows_dir(home).join(id);
@@ -1116,7 +1321,14 @@ fn collect(home: &Path, temp: &Path, profile_packages: Option<&Path>, options: &
     report.errors.extend(runs.errors);
     report.errors.extend(packages.errors);
     if options.apply {
-        apply(home, profile_packages, options, cutoff, &mut report);
+        apply(
+            home,
+            profile_packages,
+            options,
+            cutoff,
+            &mut report,
+            &slot_owners,
+        );
     }
     report
 }
@@ -1138,11 +1350,14 @@ fn apply(
     options: &Options,
     cutoff: i128,
     report: &mut Report,
+    slot_owners: &impl Fn() -> Result<Vec<Value>>,
 ) {
     // The plan lists external workspaces and check temps before their journals.
     for item in &mut report.items {
         let result = match item.kind {
             Kind::DevBuild => remove_build(home, &item.path),
+            Kind::CheckStage => remove_check_stage(home, &item.path, slot_owners),
+            Kind::RetiredJournal => remove_retired_journal(home, profile_packages, &item.path),
             Kind::Claim | Kind::Pending => {
                 archive_package(home, profile_packages, &item.path, item.kind)
                     .map(|path| item.moved_to = Some(path))
@@ -1174,6 +1389,37 @@ fn apply(
                     .push(format!("{}: {}", item.path.display(), e.0));
             }
         }
+    }
+}
+
+fn remove_check_stage(
+    home: &Path,
+    path: &Path,
+    slot_owners: &impl Fn() -> Result<Vec<Value>>,
+) -> Result<()> {
+    // The next export uses a fresh name, even if it starts while cleanup is deleting the abandoned one.
+    let root = home.join(checks::CHECKS_DIR);
+    if check_stage_busy(&root, path, &slot_owners()?)? {
+        return fail("the repository holds the check slot");
+    }
+    if !checked(path)?.is_some_and(|meta| meta.is_dir()) {
+        return fail("the check stage is no longer a directory");
+    }
+    if path.parent() == Some(root.as_path()) {
+        return checks::clear_export(path);
+    }
+    if !checks::is_repo_check_stage(path)? {
+        return fail("the directory may be a fixture of the published check checkout");
+    }
+    checks::clear_repo_check_stage(path)
+}
+
+fn remove_retired_journal(home: &Path, profile_packages: Option<&Path>, path: &Path) -> Result<()> {
+    let _sources_lock = lock_sources(home, false)?;
+    let packages = Packages::scan(home, profile_packages, true, false);
+    match retired_decision(path, &packages)? {
+        Decision::Keep(reason) => fail(reason),
+        Decision::Remove(_) => remove_tree(path),
     }
 }
 
@@ -1220,17 +1466,23 @@ fn remove_run_item(
     if item.kind != Kind::Journal {
         return remove_tree(&item.path);
     }
-    let retired = journal::flows_dir(home).join(format!(".cleanup-{}", journal::new_run_id()));
+    let retired = retire_journal(home, id, &mut lock)?;
+    crate::code_package::cut("journal retired");
+    drop(lock);
+    remove_tree(&retired)
+        .map_err(|e| GatewayError(format!("Retired journal at {}: {}", retired.display(), e.0)))
+}
+
+fn retire_journal(home: &Path, id: &str, lock: &mut journal::RunLock) -> Result<PathBuf> {
+    let retired =
+        journal::flows_dir(home).join(format!(".cleanup-{}--{id}", journal::new_run_id()));
     fs::create_dir(&retired)?;
     let destination = retired.join("journal");
     if let Err(error) = lock.move_journal(&destination) {
         let _ = fs::remove_dir(&retired);
         return Err(error);
     }
-    drop(lock);
-    drop(sources_lock);
-    remove_tree(&retired)
-        .map_err(|e| GatewayError(format!("Retired journal at {}: {}", retired.display(), e.0)))
+    Ok(retired)
 }
 
 fn remove_build(home: &Path, path: &Path) -> Result<()> {
@@ -1244,11 +1496,99 @@ fn remove_build(home: &Path, path: &Path) -> Result<()> {
     remove_tree(path)
 }
 
-struct ClaimLock(PathBuf);
+struct ClaimLock {
+    dir: PathBuf,
+    directory_id: String,
+    owner: File,
+}
+
+impl ClaimLock {
+    fn acquire(repo: &Path) -> Result<Self> {
+        // Keep .lock empty so ordinary claim writers can still reclaim it after their ten-minute lease.
+        // The adjacent receipt serializes archival and ties the recorded pid to this instance of .lock.
+        let mut owner = open_lock(&repo.join(".cleanup-claim-owner"))?;
+        match owner.try_lock() {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => return fail("the claim lock is busy"),
+            Err(TryLockError::Error(error)) => return Err(error.into()),
+        }
+        let dir = repo.join(".lock");
+        match fs::create_dir(&dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                let Some(meta) = checked(&dir)?.filter(|meta| meta.is_dir()) else {
+                    return fail("the claim lock changed during recovery");
+                };
+                let identity = claim_lock_identity(&meta);
+                let mut receipt = Vec::new();
+                owner.read_to_end(&mut receipt)?;
+                let receipt = serde_json::from_slice::<Value>(&receipt).unwrap_or(Value::Null);
+                if receipt["directory"] == identity && journal::owner_pid(&receipt).is_some() {
+                    if let Some(pid) = journal::live_pid(&receipt) {
+                        return fail(format!("the claim lock is held by pid {pid}"));
+                    }
+                } else if !meta
+                    .modified()?
+                    .elapsed()
+                    .is_ok_and(|age| age.as_secs() > 600)
+                {
+                    return fail("the claim lock is busy");
+                }
+                if !checked(&dir)?
+                    .is_some_and(|meta| meta.is_dir() && claim_lock_identity(&meta) == identity)
+                {
+                    return fail("the claim lock changed during recovery");
+                }
+                fs::remove_dir(&dir)?;
+                fs::create_dir(&dir)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        let directory_id = claim_lock_identity(&fs::symlink_metadata(&dir)?);
+        let mut lock = Self {
+            dir,
+            directory_id,
+            owner,
+        };
+        let pid = std::process::id();
+        let receipt = json!({ "pid": pid, "start": zodchi_core::process::process_start(pid),
+            "directory": lock.directory_id });
+        lock.owner.set_len(0)?;
+        lock.owner.rewind()?;
+        lock.owner.write_all(receipt.to_string().as_bytes())?;
+        lock.owner.sync_all()?;
+        Ok(lock)
+    }
+}
+
+fn claim_lock_identity(meta: &Metadata) -> String {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        format!("{}:{}", meta.creation_time(), meta.last_write_time())
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        format!(
+            "{}:{}:{}:{}",
+            meta.dev(),
+            meta.ino(),
+            meta.ctime(),
+            meta.ctime_nsec()
+        )
+    }
+}
 
 impl Drop for ClaimLock {
     fn drop(&mut self) {
-        let _ = fs::remove_dir(&self.0);
+        // A legacy writer may have replaced the directory after the lease elapsed.
+        if fs::symlink_metadata(&self.dir)
+            .is_ok_and(|meta| claim_lock_identity(&meta) == self.directory_id)
+            && fs::remove_dir(&self.dir).is_ok()
+        {
+            let _ = self.owner.set_len(0);
+        }
     }
 }
 
@@ -1275,9 +1615,7 @@ fn archive_package(
         checked(&lock.join("owner.json"))?;
         (None, Some(Journal::lock_directory(lock)?))
     } else {
-        let lock = dir.join(".lock");
-        fs::create_dir(&lock)?;
-        (Some(ClaimLock(lock)), None)
+        (Some(ClaimLock::acquire(dir)?), None)
     };
     let value =
         read_json(path)?.ok_or_else(|| GatewayError("Package record no longer exists.".into()))?;
@@ -1449,7 +1787,15 @@ mod tests {
         }
 
         fn report(&self, options: Options) -> Report {
-            collect(&self.home, &self.temp, None, &options)
+            self.report_with_slot(options, || Ok(Vec::new()))
+        }
+
+        fn report_with_slot(
+            &self,
+            options: Options,
+            slot_owners: impl Fn() -> Result<Vec<Value>>,
+        ) -> Report {
+            collect(&self.home, &self.temp, None, &options, slot_owners)
         }
     }
 
@@ -1737,6 +2083,269 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_finishes_journal_retirement_after_the_rename() {
+        let f = Fixture::new();
+        f.expired("expired");
+        let (journal, _) = Journal::open(&f.home, "expired").unwrap();
+        let mut lock = journal.lock().unwrap();
+        let retired = retire_journal(&f.home, "expired", &mut lock).unwrap();
+        drop(lock);
+        assert!(!journal.dir.exists());
+        assert!(retired.join("journal/run.json").exists());
+
+        let options = || Options {
+            apply: true,
+            ..Options::default()
+        };
+        for (path, value) in [
+            ("packages/repo/claim.json", json!({"run":"expired"})),
+            (
+                "packages/repo/applications/pending.json",
+                json!({"runId":"expired"}),
+            ),
+        ] {
+            let reference = f.json(path, value);
+            let report = f.report(Options {
+                claims: true,
+                ..options()
+            });
+            assert!(report.errors.is_empty(), "{:?}", report.errors);
+            assert!(report.items.is_empty());
+            assert_eq!(report.kept.len(), 1);
+            assert_eq!(report.kept[0].path, retired);
+            assert!(retired.is_dir() && reference.is_file());
+            fs::remove_file(reference).unwrap();
+        }
+
+        let preview = f.report(Options::default());
+        assert!(preview.errors.is_empty(), "{:?}", preview.errors);
+        assert_eq!(preview.items.len(), 1);
+        assert_eq!(preview.items[0].kind.name(), "retired-journal");
+        let bytes = preview.items[0].bytes;
+        assert!(bytes > 0);
+        assert!(retired.is_dir());
+        let applied = f.report(options());
+        assert!(applied.errors.is_empty(), "{:?}", applied.errors);
+        assert_eq!(applied.freed, bytes);
+        assert!(applied.items[0].removed);
+        assert!(!retired.exists());
+    }
+
+    #[test]
+    fn cleanup_preserves_legacy_retirement_with_a_shared_pending_receipt() {
+        let custom = Fixture::new();
+        let profile = Fixture::new();
+        let packages = profile.home.join("packages");
+        let record = custom.json(
+            "flows/.cleanup-legacy/journal/run.json",
+            json!({"runId":"old"}),
+        );
+        let pending = profile.json(
+            "packages/repo/applications/pending.json",
+            json!({"runId":"old"}),
+        );
+        let options = Options {
+            apply: true,
+            claims: true,
+            ..Options::default()
+        };
+        let collect = || {
+            super::collect(
+                &custom.home,
+                &custom.temp,
+                Some(&packages),
+                &options,
+                || Ok(Vec::new()),
+            )
+        };
+        let protected = collect();
+        assert!(protected.errors.is_empty(), "{:?}", protected.errors);
+        assert!(protected.items.is_empty() && record.is_file() && pending.is_file());
+        assert_eq!(protected.kept[0].kind.name(), "retired-journal");
+
+        fs::remove_file(pending).unwrap();
+        let reclaimed = collect();
+        assert!(reclaimed.errors.is_empty(), "{:?}", reclaimed.errors);
+        assert!(reclaimed.items[0].removed && !record.exists());
+    }
+
+    #[test]
+    fn cleanup_preserves_an_unidentified_legacy_retirement_and_its_possible_reference() {
+        let custom = Fixture::new();
+        let profile = Fixture::new();
+        let packages = profile.home.join("packages");
+        let remaining = custom.file(
+            "flows/.cleanup-partial/journal/events.jsonl",
+            b"remaining journal evidence\n",
+        );
+        let interrupted_before_move = custom.home.join("flows/.cleanup-empty");
+        fs::create_dir(&interrupted_before_move).unwrap();
+        let pending = profile.json(
+            "packages/repo/applications/pending.json",
+            json!({"runId":"old"}),
+        );
+        record_package_home(&custom.home, &packages, "old").unwrap();
+        let options = Options {
+            apply: true,
+            claims: true,
+            ..Options::default()
+        };
+        let collect = || {
+            super::collect(
+                &custom.home,
+                &custom.temp,
+                Some(&packages),
+                &options,
+                || Ok(Vec::new()),
+            )
+        };
+        let protected = collect();
+        assert!(protected.errors.is_empty(), "{:?}", protected.errors);
+        assert!(remaining.is_file() && pending.is_file());
+        assert!(protected
+            .kept
+            .iter()
+            .any(|item| item.kind == Kind::RetiredJournal));
+        assert_eq!(protected.items.len(), 1);
+        assert_eq!(protected.items[0].path, interrupted_before_move);
+        assert!(protected.items[0].removed);
+
+        fs::remove_file(pending).unwrap();
+        let reclaimed = collect();
+        assert!(reclaimed.errors.is_empty(), "{:?}", reclaimed.errors);
+        assert_eq!(reclaimed.items.len(), 1);
+        assert_eq!(reclaimed.freed, b"remaining journal evidence\n".len() as u64);
+        assert!(reclaimed.items[0].removed && !remaining.exists());
+    }
+
+    #[test]
+    fn cleanup_removes_abandoned_check_stages_while_preserving_a_live_repository() {
+        let f = Fixture::new();
+        let live = f.file("flow-checks/live/.p-0123abcd/input", b"live stage");
+        let abandoned = f.file("flow-checks/other/.p-deadbeef/input", b"old stage");
+        let legacy = f.file("flow-checks/.p-0123abcd/input", b"old layout");
+        let checkout = f.file("flow-checks/other/checkout/record", b"published checkout");
+        let parked = f.file("flow-checks/other.cache/.p-0123abcd/input", b"parked cache");
+        let options = || Options {
+            apply: true,
+            ..Options::default()
+        };
+        let report = f.report_with_slot(options(), || {
+            Ok(vec![json!({"repoSlug":"unrelated"}), json!({"repoSlug":"live"})])
+        });
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.items.len(), 1);
+        assert_eq!(report.items[0].kind.name(), "check-stage");
+        assert_eq!(report.freed, 9);
+        assert!(!abandoned.exists());
+        assert!(live.exists() && legacy.exists());
+
+        let pid = std::process::id();
+        let start = zodchi_core::process::process_start(pid);
+        let old_receipt = f.json("locks/check-slot.json", json!({"pid":pid, "start":start}));
+        let report = f.report(options());
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.freed, 10);
+        assert!(!live.exists() && legacy.exists());
+
+        fs::remove_file(old_receipt).unwrap();
+        let report = f.report(options());
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.freed, 10);
+        assert!(!legacy.exists());
+        assert!(checkout.exists() && parked.exists());
+    }
+
+    #[test]
+    fn cleanup_preserves_stage_like_siblings_of_a_published_checkout() {
+        let f = Fixture::new();
+        let checkout = f.file("flow-checks/repo/checkout/.git/HEAD", b"published");
+        let fixture = f.file("flow-checks/repo/.p-fixture/input", b"verify input");
+        let numbered_fixture = f.file("flow-checks/repo/.p-deadbeef/input", b"more verify input");
+        let abandoned = f.file("flow-checks/repo/.p-0123abcd/input", b"old stage");
+        let marker = f.file("flow-checks/repo.stage-.p-0123abcd", b"");
+        let report = f.report(Options {
+            apply: true,
+            ..Options::default()
+        });
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.items.len(), 1);
+        assert!(report.items[0].removed && !abandoned.exists() && !marker.exists());
+        assert_eq!(report.freed, b"old stage".len() as u64);
+        assert!(checkout.is_file() && fixture.is_file() && numbered_fixture.is_file());
+    }
+
+    #[test]
+    fn cleanup_rechecks_the_check_slot_before_removing_a_stage() {
+        let f = Fixture::new();
+        let stage = f.file("flow-checks/repo/.p-deadbeef/input", b"candidate tree");
+        let scanned = std::cell::Cell::new(false);
+        let options = Options {
+            apply: true,
+            ..Options::default()
+        };
+        let report = f.report_with_slot(options, || {
+            Ok(if scanned.replace(true) {
+                vec![json!({"repoSlug":"repo"})]
+            } else {
+                Vec::new()
+            })
+        });
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("the repository holds the check slot")));
+        assert!(!report.items[0].removed && stage.exists());
+        assert_eq!(report.freed, 0);
+    }
+
+    #[test]
+    fn claim_archival_takes_over_a_dead_owner_and_keeps_a_live_one() {
+        let f = Fixture::new();
+        let claim = f.json(
+            "packages/repo/claim.json",
+            json!({"run":"missing","status":"open"}),
+        );
+        let repo = claim.parent().unwrap();
+        let pid = std::process::id();
+        let start = zodchi_core::process::process_start(pid).unwrap();
+        let mut guard = ClaimLock::acquire(repo).unwrap();
+        guard.owner.rewind().unwrap();
+        let written: Value = serde_json::from_reader(&guard.owner).unwrap();
+        assert_eq!(written["pid"], pid);
+        assert_eq!(written["start"], start);
+        drop(guard);
+
+        let lock = repo.join(".lock");
+        fs::create_dir(&lock).unwrap();
+        let identity = claim_lock_identity(&fs::symlink_metadata(&lock).unwrap());
+        let receipt = |start: &str| json!({"pid":pid, "start":start, "directory":identity});
+        f.json("packages/repo/.cleanup-claim-owner", receipt(&start));
+        let options = || Options {
+            claims: true,
+            apply: true,
+            ..Options::default()
+        };
+        let report = f.report(options());
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| e.contains(&format!("held by pid {pid}"))));
+        assert!(claim.is_file() && lock.is_dir());
+
+        // The old process is gone even though its pid now identifies this test.
+        f.json(
+            "packages/repo/.cleanup-claim-owner",
+            receipt("previous start"),
+        );
+        let report = f.report(options());
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let moved = report.items[0].moved_to.as_ref().unwrap();
+        assert!(moved.is_file());
+        assert!(!claim.exists() && !lock.exists());
+    }
+
+    #[test]
     fn a_scratch_scan_failure_only_defers_the_affected_journal() {
         let f = Fixture::new();
         f.expired("blocked-scratch");
@@ -1808,7 +2417,14 @@ mod tests {
             apply: true,
             ..Options::default()
         };
-        apply(&f.home, None, &options, now_ms() - 14 * DAY_MS, &mut report);
+        apply(
+            &f.home,
+            None,
+            &options,
+            now_ms() - 14 * DAY_MS,
+            &mut report,
+            &|| Ok(Vec::new()),
+        );
         assert_eq!(report.errors.len(), 2, "{:?}", report.errors);
         assert!(report.errors.iter().any(|e| e.contains(SCRATCH_INCOMPLETE)));
         assert!(writer.exists() && journal.is_dir());
@@ -1970,6 +2586,7 @@ mod tests {
                 claims: true,
                 ..Options::default()
             },
+            || Ok(Vec::new()),
         );
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         for removed in [owned_claim, owned_pending, legacy] {
@@ -2027,7 +2644,15 @@ mod tests {
             claims: true,
             ..Options::default()
         };
-        let collect_shared = || collect(&custom.home, &custom.temp, Some(&packages), &options);
+        let collect_shared = || {
+            collect(
+                &custom.home,
+                &custom.temp,
+                Some(&packages),
+                &options,
+                || Ok(Vec::new()),
+            )
+        };
 
         let report = collect_shared();
         assert!(report.errors.is_empty(), "{:?}", report.errors);

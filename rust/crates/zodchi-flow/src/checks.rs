@@ -6,11 +6,11 @@
 //! Known limit of this version: nothing isolates the network or the file system; a command can still reach the
 //! network and read what the user can read. Recorded in docs/flow.md.
 
-use crate::{claims, git::Git, journal::Journal};
+use crate::{claims, git::Git, journal::{self, Journal}};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs::{self, File, Metadata, OpenOptions, TryLockError};
-use std::io::{ErrorKind, Read, Write};
+use std::io::{self, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -118,59 +118,169 @@ pub fn preflight_tools(tools: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn slot_directory(variable: &str) -> Option<PathBuf> {
+    std::env::var_os(variable).filter(|path| !path.is_empty()).map(PathBuf::from)
+}
+
+struct SlotFiles {
+    lock: File,
+    receipt: PathBuf,
+}
+
+fn open_slot_in(dir: &Path) -> io::Result<SlotFiles> {
+    fs::create_dir_all(dir)?;
+    let dir = fs::canonicalize(dir)?;
+    let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false)
+        .open(dir.join("check-slot.lock"))?;
+    Ok(SlotFiles { lock, receipt: dir.join("check-slot.json") })
+}
+
+fn open_check_slot() -> Result<Vec<SlotFiles>> {
+    if let Some(dir) = slot_directory("ZODCHI_CHECK_SLOT_DIR") {
+        return Ok(vec![open_slot_in(&std::path::absolute(dir)?)?]);
+    }
+    open_default_check_slot()
+}
+
+#[cfg(windows)]
+fn open_default_check_slot() -> Result<Vec<SlotFiles>> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    // Always take the per-user lock first, including when this token can write to ProgramData.
+    let local = slot_directory("LOCALAPPDATA")
+        .ok_or_else(|| GatewayError("The per-user check slot requires LOCALAPPDATA to be set.".into()))?;
+    let mut files = vec![open_slot_in(&local.join("zodchi/locks"))?];
+    if let Some(dir) = slot_directory("ProgramData").map(|path| path.join("zodchi/locks")) {
+        let shared = (|| {
+            fs::create_dir_all(&dir)?;
+            // The lock file can be writable even when its directory cannot publish a receipt.
+            let probe = dir.join(format!(".probe-{:016x}", rand::random::<u64>()));
+            OpenOptions::new().write(true).create_new(true)
+                .custom_flags(0x0400_0000) // FILE_FLAG_DELETE_ON_CLOSE
+                .open(probe)?;
+            open_slot_in(&dir)
+        })();
+        match shared {
+            Ok(shared) if shared.receipt != files[0].receipt => files.push(shared),
+            Ok(_) => {}
+            Err(error) if matches!(error.kind(), ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem) => {}
+            Err(error) => return fail(format!("Cannot open the check slot in {}: {error}", dir.display())),
+        }
+    }
+    Ok(files)
+}
+
+#[cfg(unix)]
+fn open_default_check_slot() -> Result<Vec<SlotFiles>> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+
+    let uid = unsafe { libc::geteuid() };
+    // Desktop sessions and scheduled jobs of the same user must share both the lock and its receipt.
+    // E2E fixtures can redirect /tmp while exercising this selector inside a check that already holds the slot.
+    let tmp = slot_directory("ZODCHI_TEST_CHECK_SLOT_TMP").unwrap_or_else(|| PathBuf::from("/tmp"));
+    let dir = tmp.join(format!("zodchi-{uid}"));
+    match fs::DirBuilder::new().mode(0o700).create(&dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    let meta = fs::symlink_metadata(&dir)?;
+    if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o077 != 0 {
+        return fail(format!("The check slot requires a private directory owned by the current user: {}", dir.display()));
+    }
+    Ok(vec![open_slot_in(&dir)?])
+}
+
+fn read_slot_receipt(path: &Path) -> Result<Option<Value>> {
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map(Some)
+            .map_err(|error| GatewayError(format!("Cannot read the check slot receipt {}: {error}", path.display()))),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub(crate) fn live_slot_owners() -> Result<Vec<Value>> {
+    let mut owners = Vec::new();
+    for files in open_check_slot()? {
+        if let Some(owner) = read_slot_receipt(&files.receipt)?.filter(is_current_holder) {
+            owners.push(owner);
+        }
+    }
+    Ok(owners)
+}
+
 /// The kernel lock is the authority. The adjacent receipt can be read while a Windows file lock is held.
 /// It names the holder and, until a command is settled, the child to stop before any other run can use the slot.
 pub(crate) struct CheckSlot {
-    _lock: File,
-    receipt: PathBuf,
+    files: Vec<SlotFiles>,
     owner: Value,
 }
 
 impl CheckSlot {
     pub fn acquire(home: &Path, journal: &mut Journal, step: &str, attempt: u32) -> Result<Self> {
-        let locks = home.join("locks");
-        fs::create_dir_all(&locks)?;
-        let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false)
-            .open(locks.join("check-slot.lock"))?;
-        let receipt = locks.join("check-slot.json");
+        Self::acquire_open(home, journal, step, attempt, open_check_slot()?)
+    }
+
+    fn acquire_open(home: &Path, journal: &mut Journal, step: &str, attempt: u32, opened: Vec<SlotFiles>) -> Result<Self> {
+        let home = std::path::absolute(home)?;
+        // A default directory or override can already select this home's original slot.
+        let legacy = open_slot_in(&home.join("locks"))?;
+        let legacy = (!opened.iter().any(|files| files.receipt == legacy.receipt)).then_some(legacy);
+        let locks = opened.into_iter().map(|files| (files, None))
+            .chain(legacy.map(|files| (files, Some(home.as_path()))));
         let mut contended = false;
         let mut waiting = false;
-        loop {
-            match lock.try_lock() {
-                Ok(()) => break,
-                Err(TryLockError::Error(error)) => return Err(error.into()),
-                Err(TryLockError::WouldBlock) => {
-                    contended = true;
-                    if let Some(owner) = (!waiting).then(|| read_stored(&receipt)).flatten().filter(is_current_holder) {
-                        if let Some(holder) = owner["runId"].as_str() {
-                            record_slot_wait(journal, step, attempt, Some(holder))?;
+        let mut take = |lock: &File, receipt: &Path, legacy_home: Option<&Path>, journal: &mut Journal| -> Result<()> {
+            loop {
+                match lock.try_lock() {
+                    Ok(()) => return Ok(()),
+                    Err(TryLockError::Error(error)) => return Err(error.into()),
+                    Err(TryLockError::WouldBlock) => {
+                        contended = true;
+                        if let Some(mut owner) = (!waiting).then(|| read_stored(receipt)).flatten()
+                            .filter(|owner| is_current_holder(owner) && owner["runId"].is_string())
+                        {
+                            if let Some(home) = legacy_home.filter(|_| owner["home"].is_null()) {
+                                owner["home"] = json!(home.display().to_string());
+                            }
+                            record_slot_wait(journal, step, attempt, Some(&owner))?;
                             waiting = true;
                         }
+                        pause(100);
                     }
-                    pause(100);
                 }
             }
+        };
+        let pid = std::process::id();
+        let repo = journal.read_value("run.json").and_then(|run| repo_slug(run["repo"].as_str()?).ok());
+        let owner = json!({ "runId": journal.dir.file_name().and_then(|n| n.to_str()),
+            "home": home.display().to_string(), "repoSlug": repo, "step": step,
+            "pid": pid, "start": process_start(pid), "child": null });
+        let mut slot = Self { files: Vec::new(), owner };
+        let mut recover = Vec::new();
+        // The home-local lock comes last. Name this run while it waits, keeping any unsettled child recoverable.
+        for (files, legacy_home) in locks {
+            take(&files.lock, &files.receipt, legacy_home, journal)?;
+            let mut previous = read_slot_receipt(&files.receipt)?.unwrap_or(Value::Null);
+            if previous["child"].is_null() {
+                slot.publish_acquired(files)?;
+            } else {
+                recover.push((files, previous["child"].take()));
+            }
+        }
+        // Recover under all applicable locks. A prior engine may have mirrored one child to several receipts.
+        let mut settled_children = Vec::new();
+        for (files, child) in recover {
+            if !settled_children.contains(&child) {
+                settle_process(&child, child["step"].as_str().unwrap_or(step))?;
+                settled_children.push(child);
+            }
+            slot.publish_acquired(files)?;
         }
         // A previous holder can finish before its receipt is observed.
         if contended && !waiting {
             record_slot_wait(journal, step, attempt, None)?;
-        }
-        let previous: Value = match fs::read(&receipt) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| GatewayError(format!("Cannot read the check slot receipt {}: {e}", receipt.display())))?,
-            Err(e) if e.kind() == ErrorKind::NotFound => Value::Null,
-            Err(e) => return Err(e.into()),
-        };
-        let pid = std::process::id();
-        let owner = json!({ "runId": journal.dir.file_name().and_then(|n| n.to_str()), "step": step,
-            "pid": pid, "start": process_start(pid), "child": previous["child"] });
-        // Publish our identity while keeping the previous child recoverable until it is stopped.
-        write_json_atomic(&receipt, &owner)?;
-        let mut slot = Self { _lock: lock, receipt, owner };
-        let child = &slot.owner["child"];
-        if !child.is_null() {
-            settle_process(child, child["step"].as_str().unwrap_or(step))?;
-            slot.clear_child()?;
         }
         journal.append(json!({ "kind": "check slot acquired", "step": step, "attempt": attempt }))?;
         Ok(slot)
@@ -184,6 +294,15 @@ impl CheckSlot {
         }
     }
 
+    fn set_repository(&mut self, paths: &ProjectPaths) -> Result<()> {
+        let repo = paths.parent.file_name().and_then(|name| name.to_str()).expect("repository slug");
+        if self.owner["repoSlug"] != repo {
+            self.owner["repoSlug"] = json!(repo);
+            self.publish_owner()?;
+        }
+        Ok(())
+    }
+
     fn record_start(&mut self, journal: &mut Journal, mut event: Value, pid: u32, job: Option<&str>) -> Result<()> {
         let start = process_start(pid).ok_or_else(|| GatewayError(format!("Cannot identify check process {pid} before opening its gate.")))?;
         event["kind"] = json!("check started");
@@ -192,7 +311,7 @@ impl CheckSlot {
         event["job"] = json!(job);
         // The gate is still closed. Publish the identity before telling the child to run.
         self.owner["child"] = json!({ "pid": pid, "start": start, "step": event["step"], "job": job });
-        write_json_atomic(&self.receipt, &self.owner)?;
+        self.publish_owner()?;
         journal.append(event)
     }
 
@@ -205,31 +324,46 @@ impl CheckSlot {
     fn clear_child(&mut self) -> Result<()> {
         if !self.owner["child"].is_null() {
             self.owner["child"] = Value::Null;
-            write_json_atomic(&self.receipt, &self.owner)?;
+            self.publish_owner()?;
         }
+        Ok(())
+    }
+
+    fn publish_owner(&self) -> Result<()> {
+        for files in self.files.iter().rev() {
+            write_json_atomic(&files.receipt, &self.owner)?;
+        }
+        Ok(())
+    }
+
+    fn publish_acquired(&mut self, files: SlotFiles) -> Result<()> {
+        // Drop only removes receipts this guard published.
+        write_json_atomic(&files.receipt, &self.owner)?;
+        self.files.push(files);
         Ok(())
     }
 }
 
-fn record_slot_wait(journal: &mut Journal, step: &str, attempt: u32, holder: Option<&str>) -> Result<()> {
+fn record_slot_wait(journal: &mut Journal, step: &str, attempt: u32, owner: Option<&Value>) -> Result<()> {
     // Status displays kind and step. Keep the actual step separately.
+    let holder = owner.and_then(|owner| owner["runId"].as_str());
+    let holder_home = owner.and_then(|owner| owner["home"].as_str());
     let display = holder.map_or_else(|| step.to_string(), |holder| format!("{step} (held by {holder})"));
     journal.append(json!({ "kind": "waiting for the check slot", "step": display,
-        "checkStep": step, "attempt": attempt, "holder": holder }))
+        "checkStep": step, "attempt": attempt, "holder": holder, "holderHome": holder_home }))
 }
 
 fn is_current_holder(owner: &Value) -> bool {
-    let Some(pid) = owner["pid"].as_u64().and_then(|pid| u32::try_from(pid).ok()).filter(|&pid| pid > 0) else {
-        return false;
-    };
-    zodchi_core::process::alive(pid) && owner["start"].as_str().is_none_or(|start| process_start(pid).as_deref() == Some(start))
+    journal::live_pid(owner).is_some()
 }
 
 impl Drop for CheckSlot {
     fn drop(&mut self) {
         // Keep an unsettled child's identity for the next holder, even on a journal or process error.
         if self.owner["child"].is_null() {
-            let _ = fs::remove_file(&self.receipt);
+            for files in &self.files {
+                let _ = fs::remove_file(&files.receipt);
+            }
         }
         // On macOS, a concurrent fork can keep the flock held through an inherited descriptor.
         #[cfg(unix)]
@@ -242,17 +376,23 @@ pub(crate) struct ProjectPaths {
     parent: PathBuf,
 }
 
+pub(crate) const CHECKS_DIR: &str = "flow-checks";
+
+fn repo_slug(top: &str) -> Result<String> {
+    let top = claims::norm(top)?;
+    let claims_dir = claims::claims_dir(&top);
+    let name = claims_dir.file_name().and_then(|n| n.to_str()).unwrap_or("repo");
+    // The claims spelling is readable. A digest distinguishes paths whose punctuation folds to the same name.
+    let digest = sha256_hex(claims::fold(&top, &top));
+    Ok(format!("{}-{}", &name[name.len().saturating_sub(16)..], &digest[..12]))
+}
+
 impl ProjectPaths {
     pub fn new(home: &Path, git: &Git) -> Result<Self> {
         let top = git.run(&["rev-parse", "--show-toplevel"])?;
-        let top = claims::norm(top.trim_end_matches(['\r', '\n']))?;
-        let claims_dir = claims::claims_dir(&top);
-        let name = claims_dir.file_name().and_then(|n| n.to_str()).unwrap_or("repo");
-        // The claims spelling is readable. A digest distinguishes paths whose punctuation folds to the same name.
-        let digest = sha256_hex(claims::fold(&top, &top));
-        let slug = format!("{}-{}", &name[name.len().saturating_sub(16)..], &digest[..12]);
+        let slug = repo_slug(top.trim_end_matches(['\r', '\n']))?;
         let home = std::path::absolute(home)?;
-        Ok(Self { cache: home.join("flow-cache").join(&slug), parent: home.join("flow-checks").join(slug) })
+        Ok(Self { cache: home.join("flow-cache").join(&slug), parent: home.join(CHECKS_DIR).join(slug) })
     }
 
     pub fn private_places(&self) -> [(String, &'static str); 2] {
@@ -286,16 +426,21 @@ impl ProjectPaths {
     }
 
     /// Stage the exact tree first. Carry over only real directories that are still ignored by that tree and
-    /// do not intersect its tracked paths. The complete old parent is then discarded, including any sibling fixtures.
+    /// do not intersect its tracked paths. Discard the old checkout and any sibling fixtures before publishing.
     /// The slot must be held until the caller is finished with the published checkout.
     pub fn checkout(&self, cache: &[String], export: impl FnOnce(&Path) -> Result<()>) -> Result<PathBuf> {
         let root = self.check_root();
         fs::create_dir_all(root)?;
+        if !directory_path(root, &self.parent, false)? {
+            clear_export(&self.parent)?;
+            fs::create_dir(&self.parent)?;
+        }
         // Git writes into a unique stage. If the engine dies during the export, an old Git process cannot write
         // into the next holder's checkout. Keep the path short for Git object paths on Windows.
-        let stage = StagedExport::new(root)?;
+        let stage = StagedExport::new(&self.parent)?;
         let staging = stage.0.as_path();
         export(staging)?;
+        crate::code_package::cut("check export staging");
         let checkout = self.parent.join("checkout");
         let cache_receipt = ".git/zodchi-check-cache.json";
         let has_previous = directory_path(root, &checkout.join(".git"), false)?;
@@ -331,9 +476,14 @@ impl ProjectPaths {
                 }
             }
         }
-        clear_export(&self.parent)?;
-        fs::create_dir(&self.parent)?;
+        for entry in fs::read_dir(&self.parent)? {
+            let path = entry?.path();
+            if path != staging {
+                clear_export(&path)?;
+            }
+        }
         fs::rename(staging, &checkout).map_err(|e| GatewayError(format!("Cannot publish the check checkout {}: {e}", checkout.display())))?;
+        remove_stage_marker(staging)?;
         for entry in eligible {
             let from = parked.join(entry);
             if directory_path(root, &from, false)? {
@@ -349,16 +499,78 @@ const CHECK_WORKSPACE: &str = ".git/zodchi-check-workspace.json";
 
 struct StagedExport(PathBuf);
 
+pub(crate) fn is_check_stage(path: &Path) -> bool {
+    path.file_name().and_then(|name| name.to_str()).and_then(|name| name.strip_prefix(".p-"))
+        .is_some_and(|nonce| nonce.len() == 8 && nonce.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+}
+
+fn stage_marker(path: &Path) -> PathBuf {
+    let repo = path.parent().expect("stage parent");
+    let mut name = repo.file_name().expect("repository slug").to_os_string();
+    name.push(".stage-");
+    name.push(path.file_name().expect("stage name"));
+    repo.with_file_name(name)
+}
+
+pub(crate) fn is_repo_check_stage(path: &Path) -> Result<bool> {
+    if !is_check_stage(path) {
+        return Ok(false);
+    }
+    match fs::symlink_metadata(stage_marker(path)) {
+        Ok(meta) if meta.is_file() => return Ok(true),
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    // Old exports have no marker. A published checkout can have sibling fixtures with the same spelling.
+    let repo = path.parent().expect("stage parent");
+    Ok(!directory_path(repo, &repo.join("checkout/.git"), false)?)
+}
+
+fn remove_stage_marker(path: &Path) -> io::Result<()> {
+    match fs::remove_file(stage_marker(path)) {
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
+}
+
+pub(crate) fn clear_repo_check_stage(path: &Path) -> Result<()> {
+    clear_export(path)?;
+    Ok(remove_stage_marker(path)?)
+}
+
 impl StagedExport {
     fn new(root: &Path) -> Result<Self> {
-        let path = root.join(format!(".p-{:08x}", rand::random::<u32>()));
-        fs::create_dir(&path)?;
-        Ok(Self(path))
+        for entry in fs::read_dir(root)? {
+            let path = entry?.path();
+            if is_repo_check_stage(&path)? && directory_path(root, &path, false)? {
+                clear_repo_check_stage(&path)?;
+            }
+        }
+        loop {
+            let path = root.join(format!(".p-{:08x}", rand::random::<u32>()));
+            match fs::symlink_metadata(&path) {
+                Ok(_) => continue,
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            let marker = stage_marker(&path);
+            match File::create_new(&marker) {
+                Ok(_) => {}
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+            if let Err(error) = fs::create_dir(&path) {
+                let _ = fs::remove_file(&marker);
+                return Err(error.into());
+            }
+            return Ok(Self(path));
+        }
     }
 }
 
 impl Drop for StagedExport {
-    fn drop(&mut self) { let _ = clear_export(&self.0); }
+    fn drop(&mut self) { let _ = clear_repo_check_stage(&self.0); }
 }
 
 fn move_cache(from: &Path, to: &Path) -> Result<()> {
@@ -400,8 +612,13 @@ fn directory_path(root: &Path, path: &Path, vacant: bool) -> Result<bool> {
     Ok(!vacant)
 }
 
-fn clear_export(path: &Path) -> Result<()> {
-    remove_entry(path).map_err(|e| GatewayError(format!("Cannot clear the previous check export {}: {e}", path.display())))
+pub(crate) fn clear_export(path: &Path) -> Result<()> {
+    match remove_entry(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound
+            && fs::symlink_metadata(path).is_err_and(|e| e.kind() == ErrorKind::NotFound) => Ok(()),
+        Err(error) => fail(format!("Cannot clear the previous check export {}: {error}", path.display())),
+    }
 }
 
 fn remove_entry(path: &Path) -> std::io::Result<()> {
@@ -1031,6 +1248,7 @@ pub(crate) enum CheckOutcome {
 
 impl CheckBatch<'_> {
     pub fn run(&self, slot: &mut CheckSlot, journal: &mut Journal, paths: &ProjectPaths, cache: &[String], export: impl FnOnce(&Path) -> Result<()>) -> Result<CheckOutcome> {
+        slot.set_repository(paths)?;
         let step = self.step;
         let attempt = self.attempt;
         let tree = self.tree;
@@ -1306,6 +1524,11 @@ mod tests {
         fn journal(&self, id: &str) -> Journal {
             Journal::create(&self.0, id, &json!({})).unwrap()
         }
+
+        fn acquire(&self, journal: &mut Journal, step: &str) -> CheckSlot {
+            let files = open_slot_in(&self.0.join("locks")).unwrap();
+            CheckSlot::acquire_open(&self.0, journal, step, 1, vec![files]).unwrap()
+        }
     }
 
     impl Drop for Fixture {
@@ -1326,7 +1549,7 @@ mod tests {
         ];
         for (step, cmd, cwd, limit, exit, note) in cases {
             {
-                let mut slot = CheckSlot::acquire(&fixture.0, &mut journal, step, 1).unwrap();
+                let mut slot = fixture.acquire(&mut journal, step);
                 let mut record = |phase, pid, job: Option<&str>| slot.record(&mut journal, step, 1, phase, pid, job);
                 let (evidence, recorded) = run_commands(&[cmd.into()], step, cwd, &logs, limit, &CommandEnvironment::default(), false, &mut record);
                 assert!(recorded);
@@ -1342,12 +1565,20 @@ mod tests {
     fn a_waiting_run_records_the_holder_and_takes_the_slot_after_release() {
         let fixture = Fixture::new();
         let mut first = fixture.journal("first");
-        let mut second = fixture.journal("second");
-        let home = fixture.0.clone();
-        let (observer, _) = Journal::open(&home, "second").unwrap();
-        let first_slot = CheckSlot::acquire(&home, &mut first, "checks 1", 1).unwrap();
+        let second_home = fixture.0.join("other-home");
+        let mut second = Journal::create(&second_home, "second", &json!({})).unwrap();
+        let (observer, _) = Journal::open(&second_home, "second").unwrap();
+        let local = fixture.0.join("locks");
+        let shared = fixture.0.join("machine");
+        let first_slot = CheckSlot::acquire_open(&fixture.0, &mut first, "checks 1", 1, vec![
+            open_slot_in(&local).unwrap(), open_slot_in(&shared).unwrap(),
+        ]).unwrap();
+        let machine = open_slot_in(&shared).unwrap();
+        assert!(matches!(machine.lock.try_lock(), Err(TryLockError::WouldBlock)));
+        assert_eq!(read_stored(&machine.receipt).unwrap()["runId"], "first");
+        let files = open_slot_in(&local).unwrap();
         let waiter = std::thread::spawn(move || {
-            let _slot = CheckSlot::acquire(&home, &mut second, "verify", 1).unwrap();
+            let _slot = CheckSlot::acquire_open(&second_home, &mut second, "verify", 1, vec![files]).unwrap();
             second
         });
         let until = Instant::now() + Duration::from_secs(10);
@@ -1358,10 +1589,76 @@ mod tests {
             pause(25);
         };
         drop(first_slot);
+        assert!(machine.lock.try_lock().is_ok());
+        assert!(!machine.receipt.exists());
         let second = waiter.join().unwrap();
-        assert_eq!(waiting.unwrap()["holder"], "first");
+        let waiting = waiting.unwrap();
+        assert_eq!(waiting["holder"], "first");
+        assert_eq!(waiting["holderHome"], std::path::absolute(&fixture.0).unwrap().display().to_string());
         assert_eq!(second.events().iter().map(|event| event["kind"].as_str().unwrap()).collect::<Vec<_>>(),
             ["waiting for the check slot", "check slot acquired"]);
+    }
+
+    #[test]
+    fn a_waiting_run_contends_with_the_legacy_home_slot() {
+        let fixture = Fixture::new();
+        let home = fixture.0.join("home");
+        let legacy_dir = home.join("locks");
+        let SlotFiles { lock: old_lock, receipt: old_receipt } = open_slot_in(&legacy_dir).unwrap();
+        old_lock.try_lock().unwrap();
+        let pid = std::process::id();
+        write_json_atomic(&old_receipt, &json!({ "runId": "pinned-run", "pid": pid, "start": process_start(pid) })).unwrap();
+        let mut next = Journal::create(&home, "next", &json!({})).unwrap();
+        let (observer, _) = Journal::open(&home, "next").unwrap();
+        let files = open_slot_in(&fixture.0.join("shared")).unwrap();
+        let shared_receipt = files.receipt.clone();
+        let waiter = std::thread::spawn({
+            let home = home.clone();
+            move || {
+                let slot = CheckSlot::acquire_open(&home, &mut next, "verify", 1, vec![files]).unwrap();
+                (slot, next)
+            }
+        });
+        let until = Instant::now() + Duration::from_secs(10);
+        let waiting = loop {
+            if let Some(event) = observer.snapshot().unwrap().into_iter().next() { break Some(event); }
+            if Instant::now() > until { break None; }
+            pause(25);
+        };
+        let shared_holder = read_stored(&shared_receipt);
+        drop(old_lock);
+        let (slot, next) = waiter.join().unwrap();
+        let waiting = waiting.unwrap();
+        assert_eq!(waiting["kind"], "waiting for the check slot");
+        assert_eq!(waiting["holder"], "pinned-run");
+        assert_eq!(waiting["holderHome"], std::path::absolute(&home).unwrap().display().to_string());
+        assert_eq!(shared_holder.unwrap()["runId"], "next");
+        assert_eq!(next.events()[1]["kind"], "check slot acquired");
+        assert_eq!(read_stored(&old_receipt).unwrap()["runId"], "next");
+        let legacy = open_slot_in(&legacy_dir).unwrap().lock;
+        assert!(matches!(legacy.try_lock(), Err(TryLockError::WouldBlock)));
+        drop(slot);
+        assert!(legacy.try_lock().is_ok());
+        assert!(!old_receipt.exists());
+    }
+
+    #[test]
+    fn an_unsettled_legacy_child_blocks_checks_until_it_is_safe_to_proceed() {
+        let fixture = Fixture::new();
+        let old_receipt = open_slot_in(&fixture.0.join("locks")).unwrap().receipt;
+        // Recovery must never stop the calling process. Use it to model a child we cannot safely settle.
+        let pid = std::process::id();
+        let previous = json!({ "runId": "pinned-run",
+            "child": { "step": "legacy verify", "pid": pid, "start": process_start(pid) } });
+        write_json_atomic(&old_receipt, &previous).unwrap();
+        let shared_dir = fixture.0.join("shared");
+        let mut next = fixture.journal("next");
+        let error = CheckSlot::acquire_open(&fixture.0, &mut next, "verify", 1, vec![open_slot_in(&shared_dir).unwrap()])
+            .err().unwrap();
+        assert!(error.0.contains("legacy verify"), "{error}");
+        assert_eq!(read_stored(&old_receipt), Some(previous));
+        assert!(!shared_dir.join("check-slot.json").exists());
+        assert!(next.events().is_empty());
     }
 
     #[test]
@@ -1374,7 +1671,7 @@ mod tests {
         assert!(!is_current_holder(&owner));
         write_json_atomic(&locks.join("check-slot.json"), &owner).unwrap();
         let mut next = fixture.journal("next");
-        let _slot = CheckSlot::acquire(&fixture.0, &mut next, "checks 1", 1).unwrap();
+        let _slot = fixture.acquire(&mut next, "checks 1");
         assert_eq!(next.events()[0]["kind"], "check slot acquired");
         assert_eq!(read_stored(&locks.join("check-slot.json")).unwrap()["runId"], "next");
     }
@@ -1388,7 +1685,7 @@ mod tests {
         let cheap = ["check".into()];
         let verify = ["verify".into()];
         let step = "checks 1";
-        let mut slot = CheckSlot::acquire(&fixture.0, &mut journal, step, 1).unwrap();
+        let mut slot = fixture.acquire(&mut journal, step);
         let batch = CheckBatch {
             step, attempt: 1, round: 1, tree: "tree", head: None, logs: &logs, limit: Duration::from_secs(15),
             environment: CommandEnvironment::default(), checks: ("checks", &cheap), verify: ("args.verify", &verify),
@@ -1413,7 +1710,7 @@ mod tests {
         let cheap = ["cheap".into()];
         let verify = ["verify".into()];
         let step = "checks 1";
-        let mut slot = CheckSlot::acquire(&fixture.0, &mut journal, step, 1).unwrap();
+        let mut slot = fixture.acquire(&mut journal, step);
         let batch = CheckBatch {
             step, attempt: 1, round: 1, tree: "tree", head: None, logs: &logs, limit: Duration::from_secs(15),
             environment: CommandEnvironment::default(), checks: ("checks", &cheap), verify: ("args.verify", &verify),
@@ -1568,5 +1865,45 @@ mod tests {
         assert!(!checkout.join("tracked-cache").exists(), "a previously tracked folder became a cache");
         assert!(checkout.join("rust/target/leftover").exists());
         assert!(!parked.exists());
+    }
+
+    #[test]
+    fn staging_reclaims_abandoned_exports_for_its_repository_before_exporting() {
+        let fixture = Fixture::new();
+        let mut journal = fixture.journal("run");
+        let _slot = fixture.acquire(&mut journal, "verify");
+        let paths = ProjectPaths { cache: fixture.0.join("flow-cache/repo"), parent: fixture.0.join("flow-checks/repo") };
+        let abandoned = paths.parent.join(".p-deadbeef");
+        let another_repo = paths.check_root().join("another-repo/.p-deadbeef");
+        for stage in [&abandoned, &another_repo] {
+            fs::create_dir_all(stage).unwrap();
+            fs::write(stage.join("partial-export"), "staged files").unwrap();
+        }
+        let mut fresh = None;
+        let result = paths.checkout(&[], |staging| {
+            assert_eq!(staging.parent(), Some(paths.parent.as_path()));
+            assert!(staging.is_dir());
+            assert!(!abandoned.exists());
+            assert!(another_repo.exists());
+            fresh = Some(staging.to_path_buf());
+            fail("test export error")
+        });
+        assert_eq!(result.unwrap_err().0, "test export error");
+        assert!(!fresh.unwrap().exists());
+    }
+
+    #[test]
+    fn staging_distinguishes_a_registered_export_from_published_checkout_fixtures() {
+        let fixture = Fixture::new();
+        let repo = fixture.0.join("flow-checks/repo");
+        fs::create_dir_all(repo.join("checkout/.git")).unwrap();
+        let sibling = repo.join(".p-deadbeef");
+        fs::create_dir(&sibling).unwrap();
+        let interrupted = StagedExport::new(&repo).unwrap();
+        let abandoned = interrupted.0.clone();
+        std::mem::forget(interrupted);
+        let fresh = StagedExport::new(&repo).unwrap();
+        assert!(!abandoned.exists() && !stage_marker(&abandoned).exists());
+        assert!(sibling.exists() && fresh.0.exists());
     }
 }

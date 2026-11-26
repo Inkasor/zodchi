@@ -12,9 +12,14 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, samePath
   const flow = (t, f, args, env = {}) => zodchi(t, f.w, ["flow", ...args], {
     cwd: f.r, env: { ...f.w.env, ...env },
   });
+  const cleanupWorld = (t, name) => {
+    const f = flowWorld(t, name);
+    f.w.env.ZODCHI_CHECK_SLOT_DIR = path.join(f.w.dir, "slot");
+    return f;
+  };
 
   scenario("flow-cleanup-auto", "finishing an agent package removes its writer workspace and records reclaimed bytes", async (t) => {
-    const f = flowWorld(t, "flow-cleanup-auto");
+    const f = cleanupWorld(t, "flow-cleanup-auto");
     f.answer("write", {
       status: "done", flowWrites: { [math]: FIXED }, summary: "clamp inside the range",
       criteria: [], questions: [], changedFiles: [math], checks: [],
@@ -37,7 +42,7 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, samePath
   });
 
   scenario("flow-cleanup-command", "preview and reclaim disk space while preserving an interrupted application", async (t) => {
-    const f = flowWorld(t, "flow-cleanup-command");
+    const f = cleanupWorld(t, "flow-cleanup-command");
     gitOut(f.r, ["config", "core.autocrlf", "false"]);
     f.answer("write", f.patch([f.modify(math, STUB, FIXED)]));
     f.answer("review 1", f.review("approved"));
@@ -124,5 +129,63 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, samePath
         "the shared record is archived in the default profile");
       t.eq(fs.readFileSync(item.movedTo, "utf8"), contents, "the archived record retains its contents");
     }
+  });
+
+  scenario("flow-cleanup-interrupted", "reclaim a retired journal and an unpublished check export left by process exits", async (t) => {
+    const f = cleanupWorld(t, "flow-cleanup-cut");
+    const flows = path.join(f.w.zhome, "flows");
+    const reclaim = async (kind, file) => {
+      const find = report => report.items.find(item => item.kind === kind && samePath(item.path, file));
+      const preview = await flow(t, f, ["cleanup"]);
+      t.eq([preview.code, preview.json?.bytesFreed], [0, 0], `the default cleanup previews the ${kind}`);
+      const item = find(preview.json);
+      t.ok(item?.sizeBytes > 0 && !item.removed && fs.existsSync(file), `preview reports the size of the ${kind}`);
+      const applied = await flow(t, f, ["cleanup", "--apply"]);
+      t.eq([applied.code, applied.json?.bytesFreed], [0, item.sizeBytes], `apply reports the bytes from the ${kind}`);
+      t.ok(find(applied.json)?.removed && !fs.existsSync(file), `apply removes the ${kind}`);
+    };
+    const oldId = "old-unreferenced";
+    const old = path.join(flows, oldId);
+    write(path.join(old, "run.json"), JSON.stringify({ runId: oldId, workflow: "code-package" }));
+    write(path.join(old, "events.jsonl"), JSON.stringify({ kind: "finished", verdict: "blocked", at: "2000-01-01T00:00:00.000Z" }) + "\n");
+    write(path.join(old, "result.json"), JSON.stringify({ runId: oldId, approved: false, verdict: "blocked" }));
+    const retiredCut = await flow(t, f, ["cleanup", "--journals", "--retention-days", "1", "--apply"], { ZODCHI_FLOW_CUT: "journal retired" });
+    t.eq(retiredCut.code, 75, "cleanup stops immediately after retiring the journal");
+    const retiredName = fs.readdirSync(flows).find(name => name.startsWith(".cleanup-"));
+    t.ok(retiredName, "the cut leaves a retirement directory");
+    const retired = path.join(flows, retiredName);
+    t.ok(!fs.existsSync(old) && fs.existsSync(path.join(retired, "journal", "run.json")), "the journal was moved into the retirement directory");
+    await reclaim("retired-journal", retired);
+
+    f.answer("write", f.patch([f.modify(math, STUB, FIXED)]));
+    f.answer("review 1", f.review("approved"));
+    const stagedCut = await f.flow(["--args", f.args()], { ZODCHI_FLOW_CUT: "check export staging" });
+    t.eq(stagedCut.code, 75, "the package stops after exporting the candidate and before publishing the checkout");
+    const [runId] = fs.readdirSync(flows).filter(name => fs.existsSync(path.join(flows, name, "run.json")));
+    const root = path.join(f.w.zhome, "flow-checks");
+    const [slug] = fs.readdirSync(root);
+    const parent = path.join(root, slug);
+    const stageName = fs.readdirSync(parent).find(name => name.startsWith(".p-"));
+    t.ok(stageName, "the cut leaves an unpublished export in the repository's check directory");
+    const stage = path.join(parent, stageName);
+    t.ok(fs.existsSync(path.join(stage, math)) && !fs.existsSync(path.join(parent, "checkout")), "the candidate tree is still staged");
+    await reclaim("check-stage", stage);
+    const resumed = await f.flow(["--resume", runId]);
+    t.eq([resumed.code, resumed.json?.approved], [0, true], "the interrupted package stages a new checkout and resumes to approval");
+
+    const partial = path.join(flows, ".cleanup-partial");
+    const evidence = path.join(partial, "journal", "events.jsonl");
+    const pending = path.join(f.w.zhome, "packages", "legacy-repo", "applications", "pending.json");
+    const pendingContents = JSON.stringify({ runId: "legacy-cut-run" });
+    write(evidence, "remaining journal evidence\n");
+    write(pending, pendingContents);
+    const protectedCleanup = await flow(t, f, ["cleanup", "--claims", "--apply"]);
+    t.eq([protectedCleanup.code, protectedCleanup.json?.bytesFreed], [0, 0], "cleanup preserves the unfinished retirement and its possible reference");
+    t.ok(protectedCleanup.json.kept.some(item => item.kind === "retired-journal" && samePath(item.path, partial)),
+      "cleanup reports the unidentified retirement as kept");
+    t.eq(fs.readFileSync(evidence, "utf8"), "remaining journal evidence\n", "the partial legacy journal survives");
+    t.eq(fs.readFileSync(pending, "utf8"), pendingContents, "the pending application receipt survives");
+    fs.unlinkSync(pending);
+    await reclaim("retired-journal", partial);
   });
 }
