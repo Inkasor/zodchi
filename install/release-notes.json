@@ -1,6 +1,6 @@
 {
   "highlights": [
-    "Discover workflows with zodchi flow list and zodchi flow <workflow> --help; use candidate-acceptance for a candidate build and release-acceptance for a deployed release.",
-    "Local release selection and retained builds for workflow runs."
+    "Discover workflows with zodchi flow list and zodchi flow <workflow> --help. Use candidate-acceptance for a candidate build and release-acceptance for a deployed release.",
+    "The research workflow checks cited facts. Incident-triage reads allowlisted evidence. Ops-script checks local snapshots on Windows and Linux before operator handoff."
   ]
 }
