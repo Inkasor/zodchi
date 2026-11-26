@@ -45,8 +45,10 @@ pub(crate) fn live_pid(owner: &Value) -> Option<u32> {
     Some(pid)
 }
 
+/// A recorded pid outside the range a process can have is no owner. On Unix `kill(pid, 0)` cannot test a pid above
+/// `i32::MAX` and reports it as unknown, which `live_pid` would otherwise keep as a live, unreadable owner.
 pub(crate) fn owner_pid(owner: &Value) -> Option<u32> {
-    u32::try_from(owner["pid"].as_u64()?).ok().filter(|&pid| pid != 0)
+    u32::try_from(owner["pid"].as_u64()?).ok().filter(|&pid| pid != 0 && pid <= i32::MAX as u32)
 }
 
 pub(crate) fn source_ids(run: &Value) -> impl Iterator<Item = &str> {
