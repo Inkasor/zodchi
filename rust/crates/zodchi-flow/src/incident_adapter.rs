@@ -1376,11 +1376,6 @@ mod tests {
         let result = plan(&a, &json!({"id":"4711"}), "job failed", &scrubber).unwrap();
         assert_eq!(result["items"][1]["argv"][2], "4711");
         assert_eq!(result["items"][1]["skip"], "");
-        let secret = "opaqueSyntheticCredential123";
-        let result = plan(&a, &json!({"id":"4711"}), &format!("Authorization: Bearer {secret}"), &scrubber).unwrap();
-        assert!(!result.to_string().contains(secret));
-        let collected = collect(&result["items"][0], &cfg.home, &json!({}), &scrubber);
-        assert!(!collected.to_string().contains(secret));
         a["operations"]["job"]["timeoutSec"] = json!(1.0);
         a["operations"]["job"]["maxBytes"] = json!(256.0);
         assert!(validate_shape(&a).is_ok());

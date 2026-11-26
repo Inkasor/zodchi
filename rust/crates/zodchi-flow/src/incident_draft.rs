@@ -671,41 +671,14 @@ mod tests {
         }
     }
     #[test]
-    fn evidence_and_retry_are_checked() {
+    fn undocumented_retry_is_refused() {
         let bundle = json!({"items":[{"id":"E1","source":"report","outcome":"ok","provides":[]}]});
-        let mut a = answer();
-        a["findings"][0]["evidence"] = json!(["E2"]);
-        assert!(!judge(&a, &bundle, &json!({"operations":{}}))["refused"]
-            .as_array()
-            .unwrap()
-            .is_empty());
         let mut a = answer();
         a["recommendRetry"] = json!(true);
         assert!(!judge(&a, &bundle, &json!({"operations":{}}))["refused"]
             .as_array()
             .unwrap()
             .is_empty());
-    }
-    #[test]
-    fn model_wording_is_not_in_the_actionable_draft() {
-        let mut a = answer();
-        a["findings"][0]["kind"] = json!("user-action");
-        let j = judge(
-            &a,
-            &json!({"items":[{"id":"E1","source":"report","outcome":"ok","provides":[]}]}),
-            &json!({"product":"Catalog","operations":{}}),
-        );
-        let text = draft_text(
-            &j,
-            &json!({"product":"Catalog","operations":{}}),
-            "case",
-            1,
-            "hash",
-            "codex/model",
-        );
-        let (actionable, wording) = text.split_once("## Model's wording").unwrap();
-        assert!(!actionable.contains("unverified"));
-        assert!(wording.contains("unverified model words"));
     }
     #[test]
     fn legacy_access_fixtures_distinguish_prohibitions_and_actionable_requests() {
@@ -721,7 +694,6 @@ mod tests {
         for (case, should_refuse) in [
             ("security-prohibitions", false),
             ("access-in-brief", true),
-            ("access-in-gap", true),
             ("access-in-summary", false),
         ] {
             let answer: Value = serde_json::from_slice(

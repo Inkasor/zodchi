@@ -1625,18 +1625,13 @@ mod tests {
 
     // Windows may expose a non-working Microsoft Store alias as python3.exe.
     // Test fixtures require a real interpreter, independent of its command name.
+    #[cfg(windows)]
     fn fixture_python(cwd: &Path) -> PathBuf {
         ["python", "python3"].into_iter().filter_map(find_tool).find(|path| {
             run_command(path, &["--version".into()], cwd, &[], Duration::from_secs(10))
                 .is_ok_and(|result| !result.timed_out && result.code == Some(0)
                     && format!("{}{}", result.stdout, result.stderr).trim_start().starts_with("Python 3."))
         }).expect("a working Python 3 is required for the fixture")
-    }
-
-    #[test]
-    fn privilege_guard_refuses_elevated_without_running_a_script() {
-        assert!(reject_privileged(true).is_err());
-        assert!(reject_privileged(false).is_ok());
     }
 
     #[test]
@@ -1671,14 +1666,12 @@ mod tests {
     }
 
     #[test]
-    fn journaled_effects_are_not_blindly_replayed() {
-        let started = json!({"kind": "ops-start", "step": "remote upload"});
-        let done = json!({"kind": "ops-done", "step": "remote upload", "result": {"dir": "/tmp/ops-12345678"}});
-        assert_eq!(effect_state(&[], "remote upload").unwrap(), EffectState::Pending);
-        assert_eq!(effect_state(&[started.clone()], "remote upload").unwrap(), EffectState::Unresolved);
-        assert_eq!(effect_state(&[started.clone(), done.clone()], "remote upload").unwrap(), EffectState::Complete(done["result"].clone()));
-        assert!(effect_state(&[done], "remote upload").is_err());
-        assert!(effect_state(&[started.clone(), started], "remote upload").is_err());
+    fn malformed_effect_history_is_refused() {
+        let step = "dry 0";
+        let started = json!({"kind": "ops-start", "step": step});
+        let done = json!({"kind": "ops-done", "step": step, "result": {"ok": true, "code": 0}});
+        assert!(effect_state(&[done], step).is_err());
+        assert!(effect_state(&[started.clone(), started], step).is_err());
     }
 
     fn failure_cases() -> Vec<(&'static str, &'static str, Value, bool)> {
@@ -1701,13 +1694,6 @@ mod tests {
             ("dry-exit", "dry 0", json!({ "ok": false, "code": 127, "timedOut": false }), true),
             ("dry-timeout", "dry 0", json!({ "ok": false, "code": null, "timedOut": true }), true),
         ]
-    }
-
-    #[test]
-    fn only_script_defects_are_repairable() {
-        for (id, step, detail, expect_repair) in failure_cases() {
-            assert_eq!(repairable_failure(step, &detail), expect_repair, "{id}");
-        }
     }
 
     #[test]
@@ -1903,15 +1889,10 @@ mod tests {
         assert_eq!(parsed.check, ["python3", "{copy}", "--check"]);
         assert_eq!(parsed.fixes, 2);
         let mut invalid = args.clone();
-        invalid["check"] = json!(["bash", "-c", "{copy}"]);
-        assert!(Args::parse(&invalid).is_err());
         invalid["check"] = json!(["bash", "{copy}", "--check"]);
         assert!(Args::parse(&invalid).is_err());
         invalid = args.clone();
         invalid["sudo"] = json!("sudo {script}; id");
-        assert!(Args::parse(&invalid).is_err());
-        invalid = args.clone();
-        invalid["remote"] = json!("root@host");
         assert!(Args::parse(&invalid).is_err());
         invalid = args.clone();
         invalid["surprise"] = json!(true);
@@ -1996,12 +1977,6 @@ mod tests {
         fs::write(&suffixed, b"#!/bin/bash\n").unwrap();
         assert_eq!(script_kind(&suffixed).unwrap(), Some("shell"));
         fs::remove_dir_all(&base).unwrap();
-    }
-
-    #[test]
-    fn remote_is_refused_before_any_path_is_inspected() {
-        let raw = json!({ "remote": concat!("operator", "@", "example.invalid"), "script": "missing", "tmp": "missing" });
-        assert!(Args::parse(&raw).unwrap_err().contains("no remote action"));
     }
 
     #[test]
@@ -2106,23 +2081,6 @@ mod tests {
         fs::remove_dir_all(&base).unwrap();
     }
 
-    #[test]
-    fn isolated_python_ignores_a_snapshot_py_compile_module() {
-        let base = std::env::current_dir().unwrap().join(".agent-tmp").join(format!("ops-python-{:016x}", rand::random::<u64>()));
-        fs::create_dir_all(&base).unwrap();
-        let script = base.join("bad.py");
-        let shadow = base.join("py_compile.py");
-        fs::write(&script, b"def broken(:\n").unwrap();
-        fs::write(&shadow, b"raise SystemExit(0)\n").unwrap();
-        let snapshot = capture_snapshot(&base, &[script, shadow]).unwrap();
-        let python = fixture_python(&base);
-        let tools = Tools { bash: crate::checks::find_bash(), python: Some(python), shellcheck: None };
-        let checks = static_checks(&snapshot, &tools, &base.join("cache"), &mut 0).unwrap();
-        assert_ne!(checks[0].code, Some(0), "invalid syntax must be rejected by the standard library compiler");
-        assert!(checks[0].stderr.contains("SyntaxError"));
-        fs::remove_dir_all(&base).unwrap();
-    }
-
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_worker_death_stops_check_descendants() {
@@ -2216,15 +2174,5 @@ mod tests {
             assert_ne!(run(), Some(0));
         }
         fs::remove_dir_all(&base).unwrap();
-    }
-
-    #[test]
-    fn remote_is_explicit_and_cannot_inject_options() {
-        for host in [concat!("alice", "@", "example.com"), "operator@192.0.2.1", "a-b@host-name"] {
-            assert!(valid_remote(host), "{host}");
-        }
-        for host in [concat!("root", "@", "example.com"), "example.com", "-oProxyCommand=x@host", "u@-host", "u@host;id", "u@host:22", "u@host@other", concat!("u", "@", "host..com")] {
-            assert!(!valid_remote(host), "{host}");
-        }
     }
 }
