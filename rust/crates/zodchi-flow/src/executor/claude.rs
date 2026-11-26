@@ -22,16 +22,83 @@
 use serde_json::{json, Value};
 use std::{fs, io::{self, Write}, path::{Path, PathBuf}, time::Duration};
 use zodchi_core::config::Config;
+use zodchi_core::job::LIMIT_PROMPT;
 use zodchi_core::role::{check_role, load_role, Overrides};
-use zodchi_core::util::{fail, is_key, iso, read_stored, write_json_atomic, GatewayError, Result};
+use zodchi_core::util::{fail, is_key, iso, read_stored, sha256_hex, write_json_atomic, GatewayError, Result};
 
 use super::Executor;
+use crate::{gateway::{self, CallError}, journal::Journal};
 use crate::models::{claude_enabled, Pick};
 pub use zodchi_core::claude::{call, find_program, message, signed_in, version, Program, Sent};
 
 const RUN_ID_LEN: usize = 22; // "20261118-120000-abcdef"
 /// The field of a stored Claude role that carries the account the run was bound to at the gate.
 const ROLE_ACCOUNT: &str = "claudeAccount";
+
+/// Research screens the complete prompt, including owner updates, against both the current and
+/// pinned privacy rules. Its local scheduler submits to Codex only. Prepare the screened Claude
+/// request here, then let the common gateway code consume the intent, receipt and validated answer.
+pub(crate) fn ask_screened(
+    journal: &mut Journal,
+    cfg: &Config,
+    call: gateway::Call<'_>,
+    scrub: &dyn Fn(&str) -> String,
+    allow_retry: bool,
+    validate: impl Fn(&Value) -> std::result::Result<(), String>,
+) -> std::result::Result<Value, CallError> {
+    let step = call.step;
+    let attempt = journal.attempt(step);
+    let stop = |at, reason| CallError::Stop { at: format!("{at} at {step}"), reason };
+    let infra = |error: GatewayError| stop("infrastructure", error.0);
+    let exec = Claude::new(cfg.clone());
+    let intents = journal.all("intent", step, attempt);
+    if journal.last("done", step, attempt).is_none() && journal.last("safety blocked", step, attempt).is_none() {
+        if let Some(intent) = intents.last() {
+            // A receipt for a started turn can always be read. Only unsent requests that
+            // the gateway is eligible to retry need to pass the privacy rules again.
+            let key = intent["key"].as_str().unwrap_or("");
+            if allow_retry && intents.len() < 3 && intent["executor"] == exec.name()
+                && exec.exists(key) && exec.wait_final(key).is_ok_and(|fin| exec.died_before_turn(&fin))
+            {
+                if let Some(stored) = intent["request"].as_str().and_then(|file| journal.read_value(file))
+                    .filter(|stored| intent["digest"] == sha256_hex(stored.to_string()))
+                {
+                    let prompt = stored["prompt"].as_str()
+                        .ok_or_else(|| stop("privacy", "The saved request has no prompt to check before retry.".into()))?;
+                    if scrub(prompt) != prompt.lines().collect::<Vec<_>>().join("\n") {
+                        return Err(stop("privacy", "The saved request is covered by a newer privacy rule. Start a fresh round for a new request.".into()));
+                    }
+                }
+            }
+        } else {
+            let suffix = gateway::owner_suffix(journal, cfg, &[]).map_err(infra)?;
+            let prompt = scrub(&format!("{}{suffix}", call.prompt));
+            // Flow's journaled text requests share this byte limit with the Codex gateway.
+            if prompt.len() > LIMIT_PROMPT {
+                return Err(CallError::Context { bytes: prompt.len() });
+            }
+            let request_role = exec.role(call.role, call.pick, call.schema).map_err(infra)?;
+            let stored = json!({ "role": request_role, "prompt": prompt });
+            let key = gateway::base_key(call.id, step, attempt);
+            let file = format!("requests/{}.json", gateway::slug(&key));
+            journal.write_value(&file, &stored).map_err(infra)?;
+            journal.append(json!({
+                "kind": "intent", "step": step, "round": call.round, "attempt": attempt, "effect": "gateway job",
+                "digest": sha256_hex(stored.to_string()), "key": key, "request": file,
+                "role": call.role, "model": call.pick.model, "effort": call.pick.effort, "executor": exec.name(),
+            })).map_err(infra)?;
+            eprintln!("{}: {step} · {}/{} {} · {key}", call.id, call.pick.provider, call.pick.model, call.pick.effort);
+            let created = exec.submit(&key, &stored).map_err(infra)?;
+            cut(&format!("submit {step}"));
+            journal.append(json!({ "kind": "submitted", "step": step, "attempt": attempt, "key": key, "created": created })).map_err(infra)?;
+        }
+    }
+    if allow_retry {
+        gateway::ask(journal, cfg, call, validate)
+    } else {
+        gateway::ask_without_resubmission(journal, cfg, call, validate)
+    }
+}
 
 /// Makes the entries of a folder durable: a folder made in it, a file renamed into it. A file system that cannot
 /// sync a folder (an error of that kind) is taken as it is. On Windows a folder is opened for writing to be flushed;
@@ -161,6 +228,9 @@ impl Executor for Claude {
     fn submit(&self, key: &str, stored: &Value) -> Result<bool> {
         if !is_key(key) {
             return fail(format!("not a job key: {key:?}"));
+        }
+        if !stored["decisionsImage"].is_null() {
+            return fail("The Claude executor does not send images.");
         }
         let dir = self.job_dir(key);
         let parent = dir.parent().map(Path::to_path_buf).unwrap_or_default();

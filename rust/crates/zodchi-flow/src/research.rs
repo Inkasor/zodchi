@@ -1,7 +1,7 @@
 //! One native research round, with a snapshot of project material and an owner decision gate.
 
 use crate::{
-    control, gateway,
+    control, executor, gateway,
     git::Git,
     input,
     journal::Journal,
@@ -43,6 +43,30 @@ const ROLES: [(&str, &str); 3] = [
     ("researchExpert", "research-expert"),
     ("factChecker", "research-fact-check"),
 ];
+
+fn research_models(
+    table: &Map<String, Value>,
+    claude: &mut models::ClaudeGate,
+    roles: &Value,
+    codex: impl Fn() -> std::result::Result<(), String>,
+) -> Result<Map<String, Value>> {
+    let mut pair = Map::new();
+    let mut skipped = Vec::new();
+    for (key, role) in ROLES {
+        let installed = &roles[role];
+        if installed["mode"] != "expert" || installed["kind"] != "text" {
+            return fail(format!("Install the expert text role {role}."));
+        }
+        let pick = claude.one_shot(table, key, Some(installed), &mut skipped, |pick| {
+            if pick.provider == "codex" { codex() } else { Ok(()) }
+        }).map_err(GatewayError)?;
+        pair.insert(key.into(), pick.to_json());
+    }
+    if !skipped.is_empty() {
+        pair.insert("skipped".into(), json!(skipped));
+    }
+    Ok(pair)
+}
 
 pub fn start(raw: &Value, detach: bool) -> Result<Exit> {
     match prepare(raw) {
@@ -107,9 +131,6 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
         return fail("The research checkout must ignore .agent-tmp/.");
     }
     let cfg = Config::new(Some(&repo))?;
-    if crate::executor::flow_server(&cfg).is_some() {
-        return fail("The native research roles currently require the local Codex gateway.");
-    }
     let allow_empty = match raw.get("allowNoScrub") {
         None => false,
         Some(Value::Bool(allowed)) => *allowed,
@@ -146,25 +167,10 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
         Some(_) => return fail("args.models must be a model role table."),
     };
     let table = models::table(&cfg, &repo, &overrides).map_err(GatewayError)?;
-    let mut pair = Map::new();
-    for (key, role) in ROLES {
-        let installed = load_role(&cfg, role, &Overrides::default())?;
-        if installed["mode"] != "expert" || installed["kind"] != "text" {
-            return fail(format!("Install the expert text role {role}."));
-        }
-        let value = if table.contains_key(key) {
-            models::candidates(&table, key)
-                .map_err(GatewayError)?
-                .into_iter()
-                .find(|candidate| candidate.provider == "codex")
-                .ok_or_else(|| GatewayError(format!("No Codex model is available for {key}.")))?
-                .to_json()
-        } else {
-            json!({"provider":"codex","model":installed["model"],"effort":installed["effort"]})
-        };
-        pair.insert(key.into(), value);
-    }
-    models::codex_usable(&job::account(&cfg)).map_err(GatewayError)?;
+    let mut claude = models::ClaudeGate::of(&table);
+    let local_config = local_config(&cfg)?;
+    let codex = models::local_codex(&cfg, "Research requires the local Codex gateway for Codex candidates.");
+    let pair = research_models(&table, &mut claude, &local_config["roles"], codex)?;
     fs::create_dir_all(&tmp)?;
     let tmp = fs::canonicalize(tmp)?;
     let id = (0..16)
@@ -174,7 +180,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
             GatewayError("No usable research run identifier after sixteen draws.".into())
         })?;
     let pin = json!({"material":staged,"privacy":snapshot,"maxLines":max,"ledgerSha256":current,
-        "localConfig":local_config(&cfg)?,"pathAliases":aliases});
+        "localConfig":local_config,"pathAliases":aliases});
     let run = json!({
         "runId":id,"workflow":NAME,"version":VERSION,"release":env!("CARGO_PKG_VERSION"),"createdAt":iso(),
         "repo":repo,"tmp":tmp,"round":round,"label":label,"pair":pair,
@@ -186,9 +192,6 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
 
 // Record routing and role configuration without reading subscription credentials.
 fn local_config(cfg: &Config) -> Result<Value> {
-    if crate::executor::flow_server(cfg).is_some() {
-        return fail("Research requires the original local Codex gateway.");
-    }
     let mut roles = Map::new();
     for (_, role) in ROLES {
         roles.insert(role.into(), load_role(cfg, role, &Overrides::default())?);
@@ -335,10 +338,18 @@ impl Research<'_> {
         schema: &str,
         prompt: &str,
         mode: gateway::LocalMode<'_>,
+        allow_retry: bool,
     ) -> std::result::Result<gateway::Step, gateway::CallError> {
         let (name, gateway_role) = ROLES[role];
         let current = Config::new(self.cfg.root.as_deref())
-            .and_then(|cfg| local_config(&cfg))
+            .and_then(|cfg| {
+                if ROLES.iter().any(|(key, _)| self.run["pair"][key]["provider"] == "codex")
+                    && executor::flow_server(&cfg).is_some()
+                {
+                    return fail("Research requires the original local Codex gateway.");
+                }
+                local_config(&cfg)
+            })
             .map_err(|error| gateway::CallError::Stop {
                 at: format!("configuration at {step}"),
                 reason: error.0,
@@ -418,7 +429,7 @@ impl Research<'_> {
                     reason: format!("the answer of job {key} does not hold: {reason}"),
                 });
             }
-        } else if let Some(key) = key {
+        } else if let Some(key) = key.filter(|_| pick.provider == "codex") {
             if job::job_dir(self.cfg, key)
                 .ok()
                 .and_then(|dir| job::read_job(&dir))
@@ -440,12 +451,19 @@ impl Research<'_> {
             prompt: format!("{header}\n\n{prompt}"),
             writer_workspace: None,
         };
+        let scrub = |text: &str| self.privacy.text(text);
+        if pick.provider == "claude" {
+            // The local Codex scheduler submits a wave in parallel. Claude returns
+            // its final receipt in the foreground, so there is nothing to drain.
+            return executor::claude::ask_screened(self.journal, self.cfg, call, &scrub, allow_retry, validate)
+                .map(gateway::Step::Done);
+        }
         gateway::local_step(
             self.journal,
             self.cfg,
             call,
             mode,
-            &|text| self.privacy.text(text),
+            &scrub,
             validate,
         )
     }
@@ -474,7 +492,7 @@ impl Research<'_> {
             {
                 continue;
             }
-            let result = self.call(step, role, schema, prompt, gateway::LocalMode::Schedule);
+            let result = self.call(step, role, schema, prompt, gateway::LocalMode::Schedule, wave.stop.is_none());
             wave.record(index, step, result, &mut pending, |value| {
                 accept(index, value, self)
             });
@@ -483,7 +501,7 @@ impl Research<'_> {
             let mut retryable = Vec::new();
             for (index, key) in pending.drain(..) {
                 let step = &calls[index].0;
-                let result = self.call(step, role, schema, "", gateway::LocalMode::Drain(&key));
+                let result = self.call(step, role, schema, "", gateway::LocalMode::Drain(&key), false);
                 wave.record(index, step, result, &mut retryable, |value| {
                     accept(index, value, self)
                 });
@@ -496,7 +514,7 @@ impl Research<'_> {
                     break;
                 }
                 let step = &calls[index].0;
-                let result = self.call(step, role, schema, "", gateway::LocalMode::Retry(&key));
+                let result = self.call(step, role, schema, "", gateway::LocalMode::Retry(&key), true);
                 wave.record(index, step, result, &mut pending, |value| {
                     accept(index, value, self)
                 });
@@ -1319,6 +1337,29 @@ fn exit(result: Value) -> Exit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn research_uses_usable_claude_candidates_and_records_disabled_candidates() {
+        let keys = ROLES.map(|(key, _)| key);
+        let installed = Value::Object(ROLES.into_iter().map(|(_, role)| {
+            (role.into(), json!({"mode":"expert","kind":"text"}))
+        }).collect());
+        for enabled in [true, false] {
+            let (table, mut gate) = models::test_one_shot_gate(&keys, enabled);
+            let pair = research_models(&table, &mut gate, &installed, || {
+                assert!(!enabled, "a Claude-only round does not need Codex");
+                Ok(())
+            }).unwrap();
+            for (index, key) in keys.iter().enumerate() {
+                assert_eq!(pair[*key]["provider"], if enabled { "claude" } else { "codex" });
+                if enabled {
+                    assert_eq!(pair[*key]["account"], "claude-0123456789abcdef");
+                } else {
+                    assert!(pair["skipped"][index].as_str().unwrap().contains(&format!("{key} claude/opus: Claude is not an executor of this run: not enabled")));
+                }
+            }
+        }
+    }
 
     #[test]
     fn answer_privacy_checks_pinned_words_and_paths() {

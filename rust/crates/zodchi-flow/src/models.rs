@@ -36,7 +36,7 @@ impl Pick {
         let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
         Pick { provider: s("provider"), model: s("model"), effort: s("effort"), account: s("account") }
     }
-    fn name(&self) -> String {
+    pub(crate) fn name(&self) -> String {
         format!("{}/{}", self.provider, self.model)
     }
 }
@@ -99,6 +99,18 @@ pub fn codex_usable(account: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Check the local subscription only if the walk reaches a Codex candidate, at most once per gate.
+pub(crate) fn local_codex<'a>(cfg: &'a Config, server_refusal: &'static str) -> impl Fn() -> Result<(), String> + 'a {
+    let availability = std::cell::OnceCell::new();
+    move || availability.get_or_init(|| {
+        if crate::executor::flow_server(cfg).is_some() {
+            Err(server_refusal.into())
+        } else {
+            codex_usable(&zodchi_core::job::account(cfg))
+        }
+    }).clone()
+}
+
 /// How long a passed preflight of one CLI version, model and effort is taken as it is.
 const PREFLIGHT_FRESH_MS: i128 = 24 * 3600 * 1000;
 const PREFLIGHT_LIMIT: Duration = Duration::from_secs(180);
@@ -127,6 +139,45 @@ impl ClaudeGate {
             home: PathBuf::from(entry.and_then(|e| e.get("home")).and_then(Value::as_str).unwrap_or("")),
             program: None,
             picks: HashMap::new(),
+        }
+    }
+
+    /// Resolve a one-shot role in table order. Check workflow restrictions before running a preflight.
+    /// Some roles have historically used the installed Codex role if the table has no entry.
+    pub(crate) fn one_shot(
+        &mut self,
+        table: &Map<String, Value>,
+        role: &str,
+        fallback: Option<&Value>,
+        skipped: &mut Vec<String>,
+        mut check: impl FnMut(&Pick) -> Result<(), String>,
+    ) -> Result<Pick, String> {
+        let candidates = match fallback {
+            Some(installed) if !table.contains_key(role) => vec![Pick::from_json(&json!({
+                "provider": "codex", "model": installed["model"], "effort": installed["effort"],
+            }))],
+            _ => candidates(table, role)?,
+        };
+        let first_skip = skipped.len();
+        for mut pick in candidates {
+            let usable = check(&pick).and_then(|()| match pick.provider.as_str() {
+                "claude" => self.usable(&pick),
+                "codex" if !pick.model.is_empty() => Ok(String::new()),
+                _ => Err("needs a Codex or Claude candidate with a model".into()),
+            });
+            match usable {
+                Ok(account) => {
+                    pick.account = account;
+                    return Ok(pick);
+                }
+                Err(reason) => skipped.push(format!("{role} {}: {reason}", pick.name())),
+            }
+        }
+        let reasons = &skipped[first_skip..];
+        if reasons.is_empty() {
+            Err(format!("No candidate for {role}."))
+        } else {
+            Err(format!("No available candidate for {role}. {}", reasons.join("; ")))
         }
     }
 
@@ -188,6 +239,22 @@ impl ClaudeGate {
             Err((_, why, _)) => Err(format!("{} with effort {} did not answer a tiny structured call: {why}", p.model, p.effort)),
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn test_one_shot_gate(roles: &[&str], enabled: bool) -> (Map<String, Value>, ClaudeGate) {
+    let mut table = Map::new();
+    for role in roles {
+        table.insert((*role).into(), json!({ "candidates": [
+            { "provider": "claude", "model": "opus", "effort": "high", "account": "untrusted" },
+            { "provider": "codex", "model": "fallback" },
+        ] }));
+    }
+    table.insert(CLAUDE_ENTRY.into(), json!({ "enabled": enabled, "home": "test-home" }));
+    let mut gate = ClaudeGate::of(&table);
+    // Exercise the real gate's opt-in and ordering with a cached result, without spawning a program.
+    gate.picks.insert(("opus".into(), "high".into()), Ok("claude-0123456789abcdef".into()));
+    (table, gate)
 }
 
 /// The first writer candidate, in table order, that has an independent reviewer candidate; the first such reviewer.

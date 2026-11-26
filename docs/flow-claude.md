@@ -1,9 +1,20 @@
 # zodchi flow: Claude as an executor
 
-**Experimental, opt-in.** An expert step of `zodchi flow code-package` or `design-brief` may be played by Claude
-through the Claude Code CLI installed on this machine, signed in with the person's own Claude subscription: for
-example an Opus writer with a Codex reviewer. Codex only stays the default. The engine, its journal, its checks and
-its commits are the same as in [flow.md](flow.md); only who answers a model step changes.
+**Experimental, opt-in.** Claude can answer one-shot text roles through the locally installed Claude Code CLI,
+signed in with the person's Claude subscription. The default role table supplies the usual Codex picks.
+
+| Workflow | Role keys that accept Claude candidates |
+|---|---|
+| `code-package` | `expertWriter` in expert mode, `reviewer` |
+| `design-brief` | `writer`, `researcher`, `architect` (uses the `reviewer` table entry unless `args.models.architect` is set) |
+| `branch-review` | `reviewer`, `architect` |
+| `research` | `constraintChecker`, `researchExpert`, `factChecker` |
+| `incident-triage` | `architect` by default, or the role named by `args.role` |
+| `method-question` | `methodEditor` |
+
+The acceptor needs image input. The local Claude executor sends text, so acceptance selects a Codex candidate for
+frame review. The `method-question` researcher uses Codex for read-only tool access and web search. The `code-package`
+agent-mode writer uses the local Codex workspace.
 
 ## Enabling it
 
@@ -13,10 +24,10 @@ Claude runs only when the person enabled it in their own `~/.zodchi/flow.json` (
 { "claude": true }
 ```
 
-Nothing else enables it: not a repository's `.zodchi/models.json`, not `args.models`, not a server. Without it every
-Claude candidate is skipped with the reason `Claude is not an executor of this run: not enabled`. The setting is read
-again right before every Claude call: a run that was started with Claude and resumed after it was turned off sends
-nothing more to Claude (see [Outcomes](#outcomes)).
+Nothing else enables it: not a repository's `.zodchi/models.json`, not `args.models`, not a server. Without it the
+Claude gate skips otherwise eligible candidates with the reason `Claude is not an executor of this run: not enabled`.
+Flow reads the setting again right before each Claude call. Turning it off blocks further Claude calls when a run
+resumes (see [Outcomes](#outcomes)).
 
 Use [the model table](model-roles.md) or per-run `models` to select Claude candidates. For example:
 
@@ -29,6 +40,16 @@ Use [the model table](model-roles.md) or per-run `models` to select Claude candi
   }
 }
 ```
+
+This `args.models` object selects Opus as the branch reviewer.
+
+```json
+{"reviewer": {"candidates": [{"provider": "claude", "model": "opus", "effort": "high"}]}}
+```
+
+Each branch reviewer must have a different provider/model identity from every author and earlier reviewer.
+Add another candidate to that role's list if the run should fall back when Opus is unavailable. Flow walks the list
+in order and records any skipped candidate with its reason.
 
 `model` is what `claude --model` takes (an alias such as `opus` or a full model name); `effort` is what
 `claude --effort` takes (`low`, `medium`, `high`, `xhigh`, `max`).
@@ -72,9 +93,8 @@ claude -p --model <m> --effort <e> --output-format json --tools "" --strict-mcp-
        --no-session-persistence --safe-mode --settings <job>/settings.json --system-prompt <short frame>
 ```
 
-- The message goes on stdin: the frame of the installed gateway role (`flow-patch` or `code-review`), the step's
-  prompt as the Codex writer or reviewer gets it, and the step's JSON Schema with the instruction to answer one JSON
-  object and nothing else.
+- The message goes on stdin with the installed role's frame, the step's screened prompt and its JSON Schema.
+  Flow uses the same 512 KiB limit for journaled text prompts on both executors.
 - No tools (`--tools ""`), no MCP servers (`--strict-mcp-config` and none given), no hooks (`disableAllHooks` in the
   settings file), no skills, plugins, CLAUDE.md or other customizations (`--safe-mode`), no session kept. It runs in
   an empty folder of the job.
@@ -137,6 +157,8 @@ it is a `claude` program on PATH; on Windows it is named by `ZODCHI_CLAUDE_BIN`)
 | `flow-claude-missing` | the program missing or not signed in: skipped with the reason, the Codex pair runs; no pair left: refused at the gate |
 | `flow-claude-invalid` | an answer that is not JSON, then one with a field outside the schema, then a valid one followed by exit 3: each stops the run at the write step with the claim open, nothing applied and no other model asked; a rerun with a valid answer and a clean exit goes on to approval |
 | `flow-claude-account` | the sign-in changes between the gate and the call: refused, nothing sent; Claude disabled before a rerun: refused; enabled and signed in with the bound account again: the rerun goes on to approval |
+| `flow-branch-review-claude` | resume after a cut returns the verdict from the saved Claude job with one review intent |
+| `flow-research-claude` | a Claude research expert receives screened input, and its proposal reaches a finished owner decision |
 
 One real smoke run against the real Claude CLI belongs to the before-release run, not to CI.
 

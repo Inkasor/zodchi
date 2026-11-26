@@ -9,7 +9,7 @@ use crate::{
     package_source::Source,
     patch, review_source, verify::ProjectSettings, Exit,
 };
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::{fs, io::Read};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -50,6 +50,30 @@ const REVIEWS: [ReviewStep; 2] = [
 
 fn review_steps(architecture: bool) -> &'static [ReviewStep] {
     &REVIEWS[..if architecture { 2 } else { 1 }]
+}
+
+fn review_models(
+    table: &Map<String, Value>,
+    claude: &mut models::ClaudeGate,
+    authors: &[String],
+    architecture: bool,
+    mut check: impl FnMut(&ReviewStep, &Pick) -> std::result::Result<(), String>,
+) -> Result<Map<String, Value>> {
+    let mut pair = Map::new();
+    let mut used = authors.to_vec();
+    let mut skipped = Vec::new();
+    for review in review_steps(architecture) {
+        let pick = claude.one_shot(table, review.model_role, None, &mut skipped, |pick| {
+            if used.contains(&pick.name()) {
+                return Err("requires a model distinct from the authors and earlier reviewers".into());
+            }
+            check(review, pick)
+        }).map_err(GatewayError)?;
+        used.push(pick.name());
+        pair.insert(review.model_role.into(), pick.to_json());
+    }
+    pair.insert("skipped".into(), json!(skipped));
+    Ok(pair)
 }
 
 fn refused(why: String) -> Exit {
@@ -570,47 +594,21 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
         let largest = sizes.iter().take(3).map(|(name, bytes)| format!("{name} ({bytes} bytes)")).collect::<Vec<_>>().join(", ");
         return fail(format!("Review material needs {needed} bytes with its reserve (gateway limit {LIMIT_PROMPT} bytes). Largest contributions are {largest}. Use args.exclude for large data diffs or reduce the context."));
     }
-    if server.is_none() {
-        models::codex_usable(&job::account(&cfg)).map_err(GatewayError)?;
-    }
     let table = models::table(&cfg, &repo, &overrides).map_err(GatewayError)?;
-    let mut pair = serde_json::Map::new();
-    let mut used = authors.clone();
-    let mut skipped = Vec::new();
-    for review in review_steps(architecture) {
-        let role = review.model_role;
-        let candidates = models::candidates(&table, role).map_err(GatewayError)?;
-        let mut selected = None;
-        for pick in candidates {
-            let identity = format!("{}/{}", pick.provider, pick.model);
-            if pick.provider != "codex" || used.contains(&identity) {
-                skipped.push(format!("{role} {identity}: requires a Codex model distinct from the authors and earlier reviewers"));
-                continue;
+    let mut claude = models::ClaudeGate::of(&table);
+    let local_codex = models::local_codex(&cfg, "The local Codex gateway is not configured.");
+    let server = server.map(|url| executor::server::Server::new(cfg.clone(), url));
+    let pair = review_models(&table, &mut claude, &authors, architecture, |review, pick| {
+        if pick.provider == "codex" {
+            if let Some(server) = &server {
+                return server.preflight(&[review.gateway_role]).map_err(|error| error.0);
             }
-            used.push(identity);
-            selected = Some(pick);
-            break;
+            local_codex()?;
         }
-        let Some(pick) = selected else {
-            return fail(format!(
-                "No independent Codex {role}. {}",
-                skipped.join("; ")
-            ));
-        };
-        if server.is_none() {
-            load_role(&cfg, review.gateway_role, &Overrides::default())?;
-        }
-        pair.insert(role.into(), pick.to_json());
-    }
-    if let Some(url) = server {
-        let roles: Vec<_> = review_steps(architecture)
-            .iter()
-            .map(|review| review.gateway_role)
-            .collect();
-        executor::server::Server::new(cfg.clone(), url).preflight(&roles)?;
-    }
+        load_role(&cfg, review.gateway_role, &Overrides::default()).map_err(|error| error.0)?;
+        Ok(())
+    })?;
     let id = crate::journal::new_run_id();
-    pair.insert("skipped".into(), json!(skipped));
     let run = json!({
         "runId": id, "workflow": NAME, "version": VERSION, "release": env!("CARGO_PKG_VERSION"), "createdAt": iso(),
         "label": label, "repo": repo, "base": base, "head": head, "files": files, "architecture": architecture,
@@ -777,5 +775,36 @@ fn exit(result: Value) -> Exit {
     Exit {
         code: if result["approved"] == true { 0 } else { 2 },
         result,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_review_picks_are_independent_by_provider_and_model() {
+        let (mut table, mut claude) = models::test_one_shot_gate(&["reviewer", "architect"], true);
+        table.get_mut("architect").unwrap()["candidates"][1]["model"] = json!("opus");
+        let pair = review_models(&table, &mut claude, &["codex/author".into()], true, |_, _| Ok(())).unwrap();
+        assert_eq!(pair["reviewer"]["provider"], "claude");
+        assert_eq!(pair["reviewer"]["account"], "claude-0123456789abcdef");
+        assert_eq!(pair["architect"], json!({"provider":"codex","model":"opus","effort":"medium"}));
+        assert!(pair["skipped"][0].as_str().unwrap().contains("architect claude/opus: requires a model distinct"));
+
+        let pair = review_models(&table, &mut claude, &["claude/opus".into()], false, |_, _| Ok(())).unwrap();
+        assert_eq!(pair["reviewer"]["provider"], "codex");
+        assert!(pair["skipped"][0].as_str().unwrap().contains("reviewer claude/opus: requires a model distinct"));
+    }
+
+    #[test]
+    fn review_skips_claude_when_disabled() {
+        let (mut table, mut claude) = models::test_one_shot_gate(&["reviewer", "architect"], false);
+        table.get_mut("architect").unwrap()["candidates"][1]["model"] = json!("architect-fallback");
+        let pair = review_models(&table, &mut claude, &["codex/author".into()], true, |_, _| Ok(())).unwrap();
+        for (index, role) in ["reviewer", "architect"].into_iter().enumerate() {
+            assert_eq!(pair[role]["provider"], "codex");
+            assert!(pair["skipped"][index].as_str().unwrap().contains(&format!("{role} claude/opus: Claude is not an executor of this run: not enabled")));
+        }
     }
 }

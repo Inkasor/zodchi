@@ -16,7 +16,7 @@ use std::{
 };
 use zodchi_core::{
     config::Config,
-    job::{self, compose_prompt, LIMIT_PROMPT},
+    job::{compose_prompt, LIMIT_PROMPT},
     role::{load_role, Overrides},
     util::{fail, is_key, iso, sha256_hex, GatewayError, Result},
 };
@@ -35,6 +35,33 @@ const SECTIONS: [(&str, &str); 4] = [
     ("follows", "What follows for us"),
     ("unsettled", "Not settled"),
 ];
+
+fn method_models(
+    table: &Map<String, Value>,
+    claude: &mut models::ClaudeGate,
+    researcher: &Value,
+    editor: &Value,
+    codex: impl Fn() -> std::result::Result<(), String>,
+) -> Result<Value> {
+    let mut skipped = Vec::new();
+    let check = |pick: &Pick| if pick.provider == "codex" { codex() } else { Ok(()) };
+    let researcher = claude
+        .one_shot(table, "researcher", Some(researcher), &mut skipped, |pick| {
+            if pick.provider == "claude" {
+                Err("the method researcher needs read-only tool and web access. The Claude executor runs without tools.".into())
+            } else {
+                check(pick)
+            }
+        })
+        .map_err(GatewayError)?;
+    let editor = claude.one_shot(table, "methodEditor", Some(editor), &mut skipped, check)
+        .map_err(GatewayError)?;
+    let mut pair = json!({ "researcher": researcher.to_json(), "methodEditor": editor.to_json() });
+    if !skipped.is_empty() {
+        pair["skipped"] = json!(skipped);
+    }
+    Ok(pair)
+}
 
 pub fn start(raw: &Value, detach: bool) -> Result<Exit> {
     let (id, journal) = match prepare(raw) {
@@ -105,11 +132,6 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
         return fail("The repository must ignore .agent-tmp/ for gateway jobs.");
     }
     let cfg = Config::new(Some(&repo))?;
-    if crate::executor::flow_server(&cfg).is_some() {
-        return fail(
-            "method-question requires a local Codex gateway with the read-only research role.",
-        );
-    }
     let scrubber = input::Scrubber::new(&cfg)?;
     let places = [
         (repo.to_string_lossy().into_owned(), "<repo>"),
@@ -169,26 +191,14 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
     if editor_role["mode"] != "expert" {
         return fail("The method-synthesis gateway role must run as an expert.");
     }
-    let pick = |name: &str, role: &Value| -> Result<Pick> {
-        if !table.contains_key(name) {
-            return Ok(Pick::from_json(&json!({
-                "provider": "codex", "model": role["model"], "effort": role["effort"],
-            })));
-        }
-        models::candidates(&table, name)
-            .map_err(GatewayError)?
-            .into_iter()
-            .find(|pick| pick.provider == "codex")
-            .ok_or_else(|| GatewayError(format!("No Codex candidate for {name}.")))
-    };
-    let researcher = pick("researcher", &researcher_role)?;
-    let editor = pick("methodEditor", &editor_role)?;
     for ancestor in tmp.ancestors() {
         if fs::symlink_metadata(ancestor).is_ok_and(|meta| meta.file_type().is_symlink()) {
             return fail("args.tmp crosses a link.");
         }
     }
-    models::codex_usable(&job::account(&cfg)).map_err(GatewayError)?;
+    let mut claude = models::ClaudeGate::of(&table);
+    let codex = models::local_codex(&cfg, "method-question requires a local Codex gateway with the read-only research role.");
+    let pair = method_models(&table, &mut claude, &researcher_role, &editor_role, codex)?;
     fs::create_dir_all(&tmp)?;
     let tmp = fs::canonicalize(&tmp)?;
     let id = crate::journal::new_run_id();
@@ -199,7 +209,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
         "runId": id, "workflow": NAME, "version": VERSION, "release": env!("CARGO_PKG_VERSION"),
         "createdAt": iso(), "label": label, "repo": repo, "output": out, "head": head,
         "inputs": { "argsSha256": input::args_digest(raw), "materialSha256": sha256_hex(material.to_string()), "material": material },
-        "pair": { "researcher": researcher.to_json(), "methodEditor": editor.to_json() },
+        "pair": pair,
     });
     let journal = Journal::create(&cfg.home, &id, &run)?;
     crate::code_package::cut("start method question");
@@ -586,4 +596,48 @@ fn finish_event(journal: &mut Journal) -> Result<()> {
         journal.append(json!({ "kind": "finished", "step": "result" }))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn method_editor_uses_claude_only_when_enabled() {
+        for enabled in [true, false] {
+            let (table, mut gate) =
+                models::test_one_shot_gate(&["researcher", "methodEditor"], enabled);
+            let pair = method_models(&table, &mut gate, &Value::Null, &Value::Null, || Ok(()))
+                .unwrap();
+            assert_eq!(pair["researcher"]["provider"], "codex");
+            assert_eq!(
+                pair["skipped"][0],
+                "researcher claude/opus: the method researcher needs read-only tool and web access. The Claude executor runs without tools."
+            );
+            if enabled {
+                assert_eq!(pair["methodEditor"]["provider"], "claude");
+                assert_eq!(pair["methodEditor"]["account"], "claude-0123456789abcdef");
+            } else {
+                assert_eq!(pair["methodEditor"]["provider"], "codex");
+                assert!(pair["skipped"][1].as_str().unwrap().contains(
+                    "methodEditor claude/opus: Claude is not an executor of this run: not enabled"
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn method_refuses_a_claude_only_researcher() {
+        let (mut table, mut gate) = models::test_one_shot_gate(&["researcher", "methodEditor"], true);
+        table.get_mut("researcher").unwrap()["candidates"]
+            .as_array_mut()
+            .unwrap()
+            .truncate(1);
+        let error = method_models(&table, &mut gate, &Value::Null, &Value::Null, || {
+            panic!("no Codex candidate")
+        })
+        .unwrap_err();
+        assert!(error.0.contains("No available candidate for researcher."));
+        assert!(error.0.contains("the method researcher needs read-only tool and web access"));
+    }
 }

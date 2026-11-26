@@ -376,7 +376,21 @@ fn player_scenario(
     Ok(result)
 }
 
-fn role(raw: &Value, cfg: &Config, repo: &Path) -> Result<Value> {
+fn acceptor_pick(
+    table: &Map<String, Value>,
+    skipped: &mut Vec<String>,
+    codex: impl Fn() -> std::result::Result<(), String>,
+) -> Result<models::Pick> {
+    models::ClaudeGate::of(table).one_shot(table, "acceptor", None, skipped, |pick| {
+        match pick.provider.as_str() {
+            "claude" => Err("the acceptor needs image input; the Claude executor does not send images".into()),
+            "codex" => codex(),
+            _ => Ok(()),
+        }
+    }).map_err(GatewayError)
+}
+
+fn role(raw: &Value, cfg: &Config, repo: &Path, skipped: &mut Vec<String>) -> Result<Value> {
     if raw.get("choose").is_none() && raw.get("review").is_none() {
         return Ok(Value::Null);
     }
@@ -394,14 +408,7 @@ fn role(raw: &Value, cfg: &Config, repo: &Path) -> Result<Value> {
         None => Map::new(),
     };
     let table = models::table(cfg, repo, &args_models).map_err(GatewayError)?;
-    let pick = models::candidates(&table, "acceptor")
-        .map_err(GatewayError)?
-        .into_iter()
-        .find(|p| p.provider == "codex")
-        .ok_or_else(|| {
-            GatewayError("Acceptance needs a Codex candidate in models.acceptor.".into())
-        })?;
-    models::codex_usable(&job::account(cfg)).map_err(GatewayError)?;
+    let pick = acceptor_pick(&table, skipped, || models::codex_usable(&job::account(cfg)))?;
     let role = load_role(
         cfg,
         "acceptance-observer",
@@ -493,7 +500,8 @@ pub(super) fn prepare(workflow: &str, raw: &Value) -> Result<(Config, Value)> {
             player_scenario(&repo, scenario, steps, &names)?
         });
     }
-    let role = role(raw, &cfg, &repo)?;
+    let mut skipped = Vec::new();
+    let role = role(raw, &cfg, &repo, &mut skipped)?;
     let setup = if workflow == CANDIDATE { candidate::setup(raw)? } else { Value::Null };
     let tree = if workflow == CANDIDATE { json!(git.rev(&format!("{head}^{{tree}}"))?) } else { Value::Null };
     let mut plan = json!({ "scenarios": scenarios, "browser": browser, "choose": raw["choose"], "review": raw["review"], "role": role });
@@ -514,13 +522,38 @@ pub(super) fn prepare(workflow: &str, raw: &Value) -> Result<(Config, Value)> {
             plan["fixture"]["allowedWrites"] = writes;
         }
     }
-    let pair = if role.is_null() {
+    let mut pair = if role.is_null() {
         Value::Null
     } else {
         json!({ "acceptor": { "provider": "codex", "model": role["model"], "effort": role["effort"] } })
     };
+    if !skipped.is_empty() {
+        pair["skipped"] = json!(skipped);
+    }
     let run = json!({ "workflow": workflow, "version": "1", "runId": journal::new_run_id(), "release": env!("CARGO_PKG_VERSION"),
         "createdAt": iso(), "repo": repo, "head": head, "label": label, "pair": pair,
         "inputs": { "argsSha256": input::args_digest(raw), "planSha256": sha256_hex(plan.to_string()), "plan": plan } });
     Ok((cfg, run))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acceptor_skips_claude_because_it_cannot_receive_the_frames() {
+        let refusal = "the acceptor needs image input; the Claude executor does not send images";
+        for enabled in [true, false] {
+            let (mut table, _) = models::test_one_shot_gate(&["acceptor"], enabled);
+            let mut skipped = Vec::new();
+            let pick = acceptor_pick(&table, &mut skipped, || Ok(())).unwrap();
+            assert_eq!(pick.provider, "codex");
+            assert_eq!(skipped, [format!("acceptor claude/opus: {refusal}")]);
+
+            table.get_mut("acceptor").unwrap()["candidates"].as_array_mut().unwrap().truncate(1);
+            let error = acceptor_pick(&table, &mut Vec::new(), || panic!("no Codex candidate"))
+                .unwrap_err();
+            assert!(error.0.contains(refusal), "{}", error.0);
+        }
+    }
 }

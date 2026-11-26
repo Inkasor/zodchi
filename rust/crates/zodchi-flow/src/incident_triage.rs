@@ -10,7 +10,7 @@ use crate::{
     models::{self, Pick},
     Exit,
 };
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -36,6 +36,37 @@ const GATEWAY_ROLE: &str = "incident-classify";
 const UNRESOLVED_READ: &str = "unresolved read";
 const SCHEMA: &str = include_str!("../../../../roles/incident-classify.schema.json");
 const FRAME: &str = include_str!("../../../../roles/incident-classify.md");
+
+fn classifier_pick(
+    table: &Map<String, Value>,
+    claude: &mut models::ClaudeGate,
+    role: &str,
+    skipped: &mut Vec<String>,
+    scrubber: &Scrubber,
+    codex: impl Fn() -> std::result::Result<(), String>,
+) -> Result<Pick> {
+    claude.one_shot(table, role, None, skipped, |pick| {
+        if incident_adapter::is_private(&pick.model, scrubber) {
+            return Err("The classifier model name contains private material.".into());
+        }
+        if pick.provider == "codex" {
+            if !EFFORTS.contains(&pick.effort.as_str()) {
+                return Err("The classifier needs a supported Codex effort.".into());
+            }
+            return codex();
+        }
+        Ok(())
+    }).map_err(|reason| GatewayError(incident_adapter::redact(&reason, scrubber)))
+}
+
+fn classifier_executor_pin(cfg: &Config, pick: &Pick) -> String {
+    if pick.provider == "claude" {
+        return sha256_hex("claude");
+    }
+    // Keep the original pin for existing local Codex runs.
+    sha256_hex(json!({"codexBin":cfg.codex_bin,"jobsDir":cfg.jobs_dir,
+        "accounts":cfg.accounts.iter().map(|a| json!({"name":a.name,"home":a.codex_home})).collect::<Vec<_>>()}).to_string())
+}
 
 fn valid_revision(value: &Value) -> bool {
     value
@@ -572,25 +603,11 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
     {
         return fail("repo must ignore .agent-tmp/.");
     }
-    if executor::flow_server(&cfg).is_some() {
-        return fail("incident-triage currently requires the local Codex gateway.");
-    }
-    models::codex_usable(&job::account(&cfg)).map_err(GatewayError)?;
     let table = models::table(&cfg, &repo, overrides).map_err(GatewayError)?;
-    let pick = models::candidates(&table, model_role)
-        .map_err(GatewayError)?
-        .into_iter()
-        .find(|p| {
-            p.provider == "codex" && !p.model.is_empty() && EFFORTS.contains(&p.effort.as_str())
-        })
-        .ok_or_else(|| {
-            GatewayError(
-                "No supported Codex classifier candidate is available for this role.".into(),
-            )
-        })?;
-    if incident_adapter::is_private(&pick.model, &scrubber) {
-        return fail("The classifier model name contains private material.");
-    }
+    let mut claude = models::ClaudeGate::of(&table);
+    let mut skipped = Vec::new();
+    let codex = models::local_codex(&cfg, "incident-triage requires the local Codex gateway for Codex candidates.");
+    let pick = classifier_pick(&table, &mut claude, model_role, &mut skipped, &scrubber, codex)?;
     let role = load_role(
         &cfg,
         GATEWAY_ROLE,
@@ -603,7 +620,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
     if role["mode"] != "expert" || role["instructions"].as_str() != Some(FRAME.trim()) {
         return fail("The incident classifier must use its shipped expert frame.");
     }
-    if job::check(&cfg, &role)?["ok"] != true {
+    if pick.provider == "codex" && job::check(&cfg, &role)?["ok"] != true {
         return fail(
             "The selected Codex classifier model or effort is not available; no incident read ran.",
         );
@@ -616,11 +633,14 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
     );
     let material = json!({"plan":plan,"adapter":safe_adapter});
     let material_text = serde_json::to_string(&material).expect("JSON material");
-    let executor_pin = sha256_hex(json!({"codexBin":cfg.codex_bin,"jobsDir":cfg.jobs_dir,
-        "accounts":cfg.accounts.iter().map(|a| json!({"name":a.name,"home":a.codex_home})).collect::<Vec<_>>()}).to_string());
+    let executor_pin = classifier_executor_pin(&cfg, &pick);
+    let mut pair = json!({"classifier":pick.to_json(),"role":model_role});
+    if !skipped.is_empty() {
+        pair["skipped"] = json!(skipped.iter().map(|reason| incident_adapter::redact(reason, &scrubber)).collect::<Vec<_>>());
+    }
     let run = json!({"runId":id,"workflow":NAME,"version":VERSION,"release":env!("CARGO_PKG_VERSION"),"createdAt":iso(),
         "repo":repo,"incident":incident,"tmp":tmp,"adapterDir":cwd,"adapterHash":sha256_hex(&adapter_bytes),"lockToken":token,
-        "pair":{"classifier":pick.to_json(),"role":model_role},"roleSha256":sha256_hex(role.to_string()),"executorSha256":executor_pin,
+        "pair":pair,"roleSha256":sha256_hex(role.to_string()),"executorSha256":executor_pin,
         "inputs":{"argsSha256":args_digest(raw),"materialSha256":sha256_hex(&material_text)}});
     let journal = Journal::create(&cfg.home, &id, &run)?;
     journal.write_text("material.json", &material_text)?;
@@ -705,10 +725,9 @@ pub fn resume(id: &str, given: Option<&Value>, rerun: Option<&str>) -> Result<Ex
     let role = load_role(&cfg, GATEWAY_ROLE, &Overrides {
         model: Some(pick.model.clone()), effort: Some(pick.effort.clone()), ..Default::default()
     })?;
-    let executor_pin = sha256_hex(json!({"codexBin":cfg.codex_bin,"jobsDir":cfg.jobs_dir,
-        "accounts":cfg.accounts.iter().map(|a| json!({"name":a.name,"home":a.codex_home})).collect::<Vec<_>>()}).to_string());
+    let executor_pin = classifier_executor_pin(&cfg, &pick);
     if run["roleSha256"] != sha256_hex(role.to_string()) || run["executorSha256"] != executor_pin
-        || executor::flow_server(&cfg).is_some() {
+        || (pick.provider == "codex" && executor::flow_server(&cfg).is_some()) {
         return fail("The pinned classifier or local executor configuration changed; restore it before resuming.");
     }
     fs::create_dir_all(&tmp)?;
@@ -1165,6 +1184,27 @@ fn rename_no_replace(_from: &Path, _to: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classifier_uses_claude_only_when_enabled() {
+        let scrubber = Scrubber::with_private_words("");
+        for enabled in [true, false] {
+            let (table, mut gate) = models::test_one_shot_gate(&["architect"], enabled);
+            let mut skipped = Vec::new();
+            let pick = classifier_pick(&table, &mut gate, "architect", &mut skipped, &scrubber, || {
+                assert!(!enabled, "a Claude classifier does not need Codex");
+                Ok(())
+            }).unwrap();
+            if enabled {
+                assert_eq!(pick.provider, "claude");
+                assert_eq!(pick.account, "claude-0123456789abcdef");
+                assert!(skipped.is_empty());
+            } else {
+                assert_eq!(pick.provider, "codex");
+                assert!(skipped[0].contains("architect claude/opus: Claude is not an executor of this run: not enabled"));
+            }
+        }
+    }
 
     #[test]
     fn classifier_answer_accepts_plain_words_and_checks_private_material() {
