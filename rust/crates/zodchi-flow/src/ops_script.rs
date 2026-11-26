@@ -291,8 +291,9 @@ fn run_unix_command(program: &Path, startup_executable: &Path, args: &[std::ffi:
             "( IFS= read -r _ <&3 || kill -KILL -- \"-$$\" ) >/dev/null 2>&1 & ",
             "kill -0 \"$!\"; ",
             "exec 3<&-; trap - EXIT; ",
-            // execfail makes a failed exec return, and the || branch bypasses errexit.
-            "exec \"$@\" || { status=$?; printf '\\n%s\\n' \"$start_failure\" >&2; exit \"$status\"; }"
+            // execfail makes a failed exec return; under errexit Bash still exits on a failed
+            // exec even inside an || list, so errexit is turned off for the final exec only.
+            "set +e; exec \"$@\" || { status=$?; printf '\\n%s\\n' \"$start_failure\" >&2; exit \"$status\"; }"
         )).arg("ops-watch").arg(&start_failure).arg(program).args(args);
         command
     };
