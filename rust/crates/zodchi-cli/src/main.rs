@@ -24,6 +24,7 @@ Run it inside the repository the call is for: jobs are stored in its .agent-tmp/
   account  every subscription in ~/.zodchi/accounts.json: sign-in, limits, credits (no model call)
   flow     run a workflow as code: zodchi flow <workflow> --args <file.json>
            zodchi flow list shows the installed catalog
+           zodchi flow cleanup previews reclaimable storage (docs/cleanup.md)
            (docs/flow.md; exit 0 approved, 2 any other end, 1 a wrong call)
   release  build, install or register a Zodchi distribution
 

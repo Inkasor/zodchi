@@ -22,7 +22,38 @@ pub fn flows_dir(home: &Path) -> PathBuf {
 
 /// A clarification adds input while leaving the stopped step in place.
 pub(crate) fn last_state_event(events: &[Value]) -> Option<&Value> {
-    events.iter().rev().find(|event| event["kind"] != "owner clarification")
+    events.iter().rev().find(|event| {
+        !matches!(event["kind"].as_str(), Some("owner clarification" | "cleanup"))
+    })
+}
+
+/// Completion requires both a finished event and a stored result with a closed claim.
+pub(crate) fn finished_event<'a>(events: &'a [Value], result: Option<&Value>) -> Option<&'a Value> {
+    result.filter(|result| result.is_object() && result.get("claimLeftOpen").is_none())?;
+    events.iter().rfind(|event| event["kind"] == "finished")
+}
+
+/// An inaccessible process still owns its receipt unless its PID was demonstrably reused.
+pub(crate) fn live_pid(owner: &Value) -> Option<u32> {
+    let pid = owner_pid(owner)?;
+    if !alive(pid) {
+        return None;
+    }
+    if owner["start"].as_str().is_some_and(|expected| process_start(pid).is_some_and(|actual| expected != actual)) {
+        return None;
+    }
+    Some(pid)
+}
+
+pub(crate) fn owner_pid(owner: &Value) -> Option<u32> {
+    u32::try_from(owner["pid"].as_u64()?).ok().filter(|&pid| pid != 0)
+}
+
+pub(crate) fn source_ids(run: &Value) -> impl Iterator<Item = &str> {
+    [&run["sourceRun"], &run["inputs"]["args"]["sourceRun"]]
+        .into_iter()
+        .filter_map(Value::as_str)
+        .filter(|id| is_run_id(id))
 }
 
 pub fn is_run_id(text: &str) -> bool {
@@ -41,6 +72,16 @@ impl Journal {
     pub fn create(home: &Path, id: &str, run: &Value) -> Result<Journal> {
         let dir = flows_dir(home).join(id);
         fs::create_dir_all(flows_dir(home))?;
+        // Register source dependencies under the same lock the collector uses to retire a source.
+        let _sources = if source_ids(run).next().is_some() {
+            let lock = crate::cleanup::lock_sources(home, true)?;
+            for source in source_ids(run) {
+                Self::open(home, source)?;
+            }
+            Some(lock)
+        } else {
+            None
+        };
         fs::create_dir(&dir).map_err(|e| GatewayError(format!("Cannot make the journal {}: {e}", dir.display())))?;
         fs::File::create(dir.join("events.jsonl"))?.sync_all()?;
         let pinned = zodchi_core::config::dev_build_commit(home).map(|commit| {
@@ -49,6 +90,9 @@ impl Journal {
             run
         });
         write_json_atomic(&dir.join("run.json"), pinned.as_ref().unwrap_or(run))?;
+        if run["workflow"] == crate::code_package::WORKFLOW {
+            crate::cleanup::note_package_home(home, id);
+        }
         Ok(Journal { dir, events: vec![] })
     }
 
@@ -103,10 +147,9 @@ impl Journal {
     }
 
     pub fn active(&self) -> bool {
-        ["lock/owner.json", "worker.json"].iter().filter_map(|name| self.read_value(name)).any(|owner| {
-            let pid = owner["pid"].as_u64().unwrap_or(0) as u32;
-            pid > 0 && alive(pid) && owner["start"].as_str().is_none_or(|start| process_start(pid).as_deref() == Some(start))
-        })
+        ["lock/owner.json", "worker.json"].iter()
+            .filter_map(|name| self.read_value(name))
+            .any(|owner| live_pid(&owner).is_some())
     }
 
     /// Takes the lock of the run: one process at a time. A lock whose process is gone (or is another program now)
@@ -120,17 +163,18 @@ impl Journal {
             match fs::create_dir(&dir) {
                 Ok(()) => {
                     let me = std::process::id();
-                    write_json_atomic(&dir.join("owner.json"), &json!({ "pid": me, "start": process_start(me), "at": iso() }))?;
+                    write_json_atomic(&dir.join("owner.json"), &json!({
+                        "pid": me, "start": process_start(me), "at": iso(),
+                        "executable": std::env::current_exe().ok().map(|path| path.display().to_string()),
+                    }))?;
                     return Ok(RunLock { dir });
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     let owner = read_stored(&dir.join("owner.json")).unwrap_or(Value::Null);
-                    let pid = owner.get("pid").and_then(Value::as_u64).unwrap_or(0) as u32;
-                    let start = owner.get("start").and_then(Value::as_str).map(String::from);
-                    if pid > 0 && pid != std::process::id() && alive(pid) && (start.is_none() || process_start(pid) == start) {
+                    if let Some(pid) = live_pid(&owner).filter(|&pid| pid != std::process::id()) {
                         return fail(format!("Another process (pid {pid}) works on this run; one at a time."));
                     }
-                    if pid == 0 && owner.is_null() {
+                    if owner.is_null() {
                         // A lock folder without its owner file may be one being made right now.
                         let age = fs::metadata(&dir).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
                         if age.is_none_or(|a| a.as_secs() < 60) {
@@ -246,6 +290,16 @@ impl Journal {
 /// The lock of a run, released when the process is done with it.
 pub struct RunLock {
     dir: PathBuf,
+}
+
+impl RunLock {
+    /// Move a locked journal out of the live namespace before deleting any of its files.
+    pub(crate) fn move_journal(&mut self, destination: &Path) -> Result<()> {
+        let journal = self.dir.parent().expect("run lock inside a journal");
+        fs::rename(journal, destination)?;
+        self.dir = destination.join("lock");
+        Ok(())
+    }
 }
 
 impl Drop for RunLock {

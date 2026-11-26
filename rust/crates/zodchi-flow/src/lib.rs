@@ -15,6 +15,7 @@ mod review_source;
 mod catalog;
 pub mod checks;
 pub mod claims;
+mod cleanup;
 pub mod code_package;
 mod control;
 mod design_brief;
@@ -56,6 +57,7 @@ pub const USAGE: &str = "Usage: zodchi flow <workflow> --args <file.json> [--det
        zodchi flow status <run-id>
        zodchi flow status <run-id> --handoff
        zodchi flow apply <run-id>
+       zodchi flow cleanup [--apply] [--journals] [--retention-days <n>] [--claims]
        zodchi flow budget <run-id> [--add-calls <n>] [--add-minutes <n>]
        zodchi flow remark <run-id> --file <text>
        zodchi flow reply <run-id> --file <text> [--answered 1,2|all] [--no-new-decisions]
@@ -74,6 +76,9 @@ Exit code: 0 approved, 2 any other end (refused, stopped, changes requested), 1 
 /// `zodchi flow <workflow> ...`: the result of the run.
 pub fn cli(args: &[String]) -> Result<Exit> {
     let Some(workflow) = args.first() else { return fail(USAGE) };
+    if workflow == "cleanup" {
+        return cleanup::cli(&args[1..]);
+    }
     match args {
         [flag] if flag == "--help" || flag == "-h" => return Ok(Exit { code: 0, result: serde_json::json!({ "usage": USAGE, "catalog": catalog::all() }) }),
         [name, flag] if flag == "--help" || flag == "-h" => {
@@ -153,7 +158,7 @@ pub fn cli(args: &[String]) -> Result<Exit> {
             if rerun.is_some() {
                 return fail("--rerun goes with --resume <run-id>");
             }
-            if workflow == research::NAME {
+            let exit = if workflow == research::NAME {
                 research::start(&given, detach)
             } else if workflow == ops_script::NAME {
                 ops_script::start(&given, detach)
@@ -185,7 +190,8 @@ pub fn cli(args: &[String]) -> Result<Exit> {
                 code_package::start_detached(&given)
             } else {
                 code_package::start(&given)
-            }
+            }?;
+            Ok(control::after_run(exit))
         }
         (None, None) => fail(USAGE),
     }

@@ -1,4 +1,4 @@
-use crate::{acceptance, asset_round, branch_review, code_package, design_brief, incident_triage, input, journal::{last_state_event, Journal}, method_question, ops_script, research, rubric_probe, unity_check, video, voiceover, workspace_audit, youtube_publish, Exit};
+use crate::{acceptance, asset_round, branch_review, code_package, design_brief, incident_triage, input, journal::{finished_event, last_state_event, Journal}, method_question, ops_script, research, rubric_probe, unity_check, video, voiceover, workspace_audit, youtube_publish, Exit};
 use serde_json::{json, Value};
 use std::ffi::OsString;
 use zodchi_core::config::Config;
@@ -19,8 +19,7 @@ pub fn status(id: &str) -> Result<Exit> {
     let active = journal.active();
     let receipt = journal.read_value("worker-result.json");
     let events = journal.snapshot()?;
-    let finished = events.iter().any(|event| event["kind"] == "finished");
-    let final_result = journal.read_value("result.json").filter(|result| finished && result.get("claimLeftOpen").is_none()).map(|mut result| {
+    let final_result = journal.read_value("result.json").filter(|result| finished_event(&events, Some(result)).is_some()).map(|mut result| {
         if let Some(applied) = crate::candidate::application_status(&events) {
             result["application"] = applied;
         }
@@ -175,7 +174,10 @@ pub fn launch(journal: &Journal, id: &str, rerun: Option<&str>) -> Result<Exit> 
         Ok(child) => {
             let pid = child.id();
             let mut receipt = json!({ "runId": id, "status": "submitted", "pid": pid });
-            if let Err(error) = journal.write_value("worker.json", &json!({ "pid": pid, "start": process_start(pid) })) {
+            if let Err(error) = journal.write_value("worker.json", &json!({
+                "pid": pid, "start": process_start(pid),
+                "executable": std::env::current_exe().ok().map(|path| path.display().to_string()),
+            })) {
                 receipt["note"] = json!(format!("Worker started; its process receipt could not be stored: {}", error.0));
             }
             Ok(Exit { result: receipt, code: 0 })
@@ -210,7 +212,17 @@ pub fn resume(workflow: &str, id: &str, given: Option<&Value>, rerun: Option<&st
     if detach && !journal.file("result.json").is_file() && !journal.active() {
         return launch(&journal, id, rerun);
     }
-    resume_workflow(workflow, id, given, rerun)
+    resume_workflow(workflow, id, given, rerun).map(after_run)
+}
+
+/// The workflow call has released its lock and any processes it used. Cleanup has its own receipt.
+pub(crate) fn after_run(exit: Exit) -> Exit {
+    if exit.result["status"] != "submitted" && exit.result.get("claimLeftOpen").is_none() {
+        if let Some(id) = exit.result["runId"].as_str() {
+            crate::cleanup::after_run(id);
+        }
+    }
+    exit
 }
 
 pub fn worker(id: &str, rerun: Option<&str>) -> Result<Exit> {
@@ -219,7 +231,7 @@ pub fn worker(id: &str, rerun: Option<&str>) -> Result<Exit> {
         return Ok(exit);
     }
     let exit = match resume_workflow(run["workflow"].as_str().unwrap_or(""), id, None, rerun) {
-        Ok(exit) => exit,
+        Ok(exit) => after_run(exit),
         Err(error) => Exit { result: json!({ "runId": id, "status": "stopped", "stoppedAt": "worker", "infra": if run["workflow"] == ops_script::NAME { "ops-script worker failed; inspect the run locally".to_owned() } else { error.0 } }), code: 2 },
     };
     journal.write_value("worker-result.json", &exit.result)?;
