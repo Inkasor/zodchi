@@ -15,7 +15,7 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, samePath
     return probe => () => { stopped?.(); return probe(); };
   };
 
-  scenario("flow-check-slot", "packages serialize their checks, resume between commands, and screen private check paths", async (t) => {
+  scenario("flow-check-slot", "packages serialize checks, resume in the original checkout after cleanup, and screen private check paths", async (t) => {
     const first = flowWorld(t, "slot-first");
     const second = flowWorld(t, "slot-second");
     second.w.zhome = first.w.zhome;
@@ -123,8 +123,20 @@ record("end");
     const checkRoot = path.join(first.w.zhome, "flow-checks");
     const slug = fs.readdirSync(checkRoot).find(name => fs.existsSync(path.join(checkRoot, name, "checkout")));
     t.ok(slug, "the interrupted check has a published checkout");
+    const checkout = path.join(checkRoot, slug, "checkout", ".git", "HEAD");
+    const abandoned = path.join(checkRoot, slug, ".p-0123abcd");
+    const marker = path.join(checkRoot, `${slug}.stage-${path.basename(abandoned)}`);
+    const payload = "old stage";
+    fs.mkdirSync(abandoned);
+    fs.writeFileSync(path.join(abandoned, "input"), payload);
+    fs.writeFileSync(marker, "");
     const cleaned = await zodchi(t, first.w, ["flow", "cleanup", "--apply"], { cwd: first.r });
     t.eq(cleaned.code, 0, "cleanup runs between the cheap check and verify");
+    t.eq(cleaned.json.bytesFreed, Buffer.byteLength(payload), "cleanup reports the bytes from the abandoned export");
+    t.eq(cleaned.json.items.map(item => [item.kind, item.removed, samePath(item.path, abandoned)]),
+      [["check-stage", true, true]], "only the marked stage is removed");
+    t.ok(!fs.existsSync(abandoned) && !fs.existsSync(marker) && fs.existsSync(checkout),
+      "cleanup removes the abandoned stage and its marker and preserves the checkout");
     for (const fixture of stageLikeFixtures) {
       const dir = path.join(checkRoot, slug, fixture);
       t.ok(!cleaned.json.items.some(item => samePath(item.path, dir)), `cleanup leaves the ${fixture} fixture out of its plan`);
@@ -180,9 +192,11 @@ record("end");
     failed.w.env.ZODCHI_CHECK_SLOT_DIR = path.join(failed.w.dir, "slot");
     failed.answer("write", failed.patch([failed.modify("src/math.mjs", STUB, FIXED)]));
     failed.answer("fix 1.1", { ...failed.patch([]), status: "blocked" });
+    const diagnostic = "const p = require('node:path'); console.error('sibling', p.resolve('..', 'fixture')); " +
+      "console.error('mixed sibling', p.resolve('..') + '/fixture'); process.exit(4)";
     const failure = await failed.flow(["--args", failed.args({
       fixes: 1,
-      verify: [`node -e "console.error(require('node:path').resolve('..', 'fixture')); process.exit(4)"`],
+      verify: [`node -e "${diagnostic}"`],
     })]);
     t.eq([failure.code, failed.steps()], [2, ["write", "fix 1.1"]], "the failure reaches the fixing writer");
     const failedCommand = events(failure.json.journal).find(e => e.kind === "check ended" && e.result?.exitCode === 4);
@@ -190,8 +204,10 @@ record("end");
     t.ok(log.includes(`${privateName}-repo-`) && log.includes("fixture"), "the raw diagnostic names the sibling in a private path");
     const turns = fs.readFileSync(path.join(failed.w.codex, "fake-turns.jsonl"), "utf8").trim().split(/\r?\n/).map(JSON.parse);
     const prompt = turns.find(turn => turn.step === "fix 1.1").prompt;
-    t.ok(/<check-workspace>[/\\]fixture/.test(prompt) && !prompt.includes(privateName),
-      "the fixing prompt preserves the diagnostic without the private repository name");
+    const locations = prompt.replaceAll("\\", "/").split(/\r?\n/).filter(line => /^(mixed )?sibling /.test(line));
+    t.eq(locations, ["sibling <check-workspace>/fixture", "mixed sibling <check-workspace>/fixture"],
+      "the fixing prompt preserves the sibling diagnostics in both path spellings");
+    t.ok(!prompt.includes(privateName), "the fixing prompt omits the private repository name");
   });
 
   const checkDifferentHomes = async (t, { fallback = false } = {}) => {
@@ -270,6 +286,7 @@ fs.appendFileSync(trace, "${name} end\\n");
     const results = await Promise.all([started, queued]);
     t.eq(results.map(result => [result.code, result.json?.approved]), [[0, true], [0, true]], "both packages finish approved");
     t.eq(order(), ["first start", "first end", "second start", "second end"], "the checks in the two homes never overlap");
+    t.ok(!fs.existsSync(path.join(slot, "check-slot.json")), "release removes the shared owner receipt");
   };
 
   scenario("flow-check-slot-homes", "packages in different Zodchi homes contend for the same default check slot", async (t) => {

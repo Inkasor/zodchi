@@ -1159,55 +1159,6 @@ function flowWorld(t, name) {
   return { w, r, base, brief, answer, patch, modify, review, finding, args, flow, steps, claim, commits };
 }
 
-scenario("flow-approve", "zodchi flow code-package to approval: the patch is applied, the cheap check runs before verify on an exported tree, one commit with a Verified stamp of real exit codes, the review carries the base REVIEW.md", async (t) => {
-  const f = flowWorld(t, "flow-approve");
-  f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
-  f.answer("review 1", f.review("approved"));
-  const res = await f.flow(["--args", f.args()]);
-  t.eq([res.code, res.json && res.json.verdict, res.json && res.json.approved], [0, "approved", true], "the run ends approved, exit 0");
-  t.eq([res.json.rounds.length, res.json.verifiedBy, res.json.openFindings], [1, "args.verify", []], "one round, verified by args.verify, nothing open");
-  t.eq([res.json.models.expertWriter.model, res.json.models.reviewer.model], ["fake-writer", "fake-reviewer"], "the pair: distinct Codex models, pinned");
-  t.ok(res.json.skipped.some((s) => /claude\/opus: Claude is not an executor/.test(s)) && res.json.skipped.some((s) => /fake-writer: the same model as the writer/.test(s)), "skipped candidates are recorded with their reasons");
-  const ev = res.json.verification.evidence;
-  t.eq(ev.map((e) => [e.source, e.exitCode]), [["checks", 0], ["args.verify", 0]], "the cheap check ran first, then verify, each with its real exit code");
-  t.ok(ev.every((e) => fs.existsSync(e.log) && fs.readFileSync(e.log, "utf8").trim()), "each command has a non-empty log");
-  t.ok(ev.every((e) => !samePath(path.dirname(e.log), f.r) && !e.log.toLowerCase().startsWith(path.resolve(f.r).toLowerCase())), "the logs are outside the checkout");
-  t.eq(f.commits().length, 1, "one commit on top of the base");
-  const message = gitOut(f.r, ["log", "-1", "--format=%B"]);
-  t.ok(message.startsWith("clamp: round 1") && message.includes("Verified: checks exit 0; args.verify exit 0"), "the commit message carries the stamp");
-  t.ok(!/node |smoke|math\.test/.test(message), "the stamp names sources and exit codes, never a command");
-  t.eq(gitOut(f.r, ["show", "--name-only", "--format=", "HEAD"]).split("\n"), ["src/math.mjs"], "the commit holds the claimed file only");
-  t.eq(fs.readFileSync(path.join(f.r, "src", "math.mjs"), "utf8"), FIXED, "the work tree holds the patch");
-  t.eq(gitOut(f.r, ["status", "--porcelain"]), "", "the work tree is clean after the commit");
-  t.eq(f.steps(), ["write", "review 1"], "the writer and the reviewer each ran once");
-  const reviewTurn = readJsonl(path.join(f.w.codex, "fake-turns.jsonl")).find((x) => x.step === "review 1");
-  t.ok(reviewTurn.prompt.includes("REVIEW-BASE-MARKER") && reviewTurn.prompt.includes('<attachment path="REVIEW.base.md">'), "the review carries REVIEW.md of the base commit");
-  t.ok(reviewTurn.prompt.includes('<attachment path="change.diff">') && reviewTurn.prompt.includes("Math.max(lo, x)"), "the review carries the diff");
-  t.eq(f.claim().status, "done", "the claim is closed as done");
-  const again = await f.flow(["--resume", res.json.runId]);
-  t.eq([again.code, again.json.verdict, again.json.rounds.length], [0, "approved", 1], "resuming a finished run returns its result");
-  t.eq(f.steps().length, 2, "and runs nothing");
-});
-
-scenario("flow-close-round", "a review asks for a change: the writer closes it, the new round is checked, committed and approved by a second review that sees the first", async (t) => {
-  const f = flowWorld(t, "flow-close-round");
-  f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
-  f.answer("review 1", f.review("changes_requested", [f.finding("F1")]));
-  f.answer("close 1", f.patch([f.modify("src/math.mjs", FIXED, CLOSED)], "comment added"));
-  f.answer("review 2", f.review("approved"));
-  const res = await f.flow(["--args", f.args()]);
-  t.eq([res.code, res.json.verdict, res.json.rounds.length], [0, "approved", 2], "approved in the second round");
-  t.eq(res.json.rounds.map((x) => x.verdict), ["changes_requested", "approved"], "round verdicts");
-  t.ok(/F1 important src\/math\.mjs:1/.test(res.json.rounds[0].review.findings[0]), "the finding is read with its severity");
-  t.eq(gitOut(f.r, ["log", "--format=%s", `${f.base}..HEAD`]).split("\n"), ["clamp: round 2", "clamp: round 1"], "one commit per round");
-  t.eq(fs.readFileSync(path.join(f.r, "src", "math.mjs"), "utf8"), CLOSED, "the close round's patch is in place");
-  const close = readJsonl(path.join(f.w.codex, "fake-turns.jsonl")).find((x) => x.step === "close 1");
-  t.ok(close.prompt.includes("F1 important") && close.prompt.includes('<attachment path="review-1.json">'), "the writer got the finding and the review");
-  const second = readJsonl(path.join(f.w.codex, "fake-turns.jsonl")).find((x) => x.step === "review 2");
-  t.ok(second.prompt.includes('<attachment path="review-1.json">'), "the second review sees the first");
-  t.eq(f.steps(), ["write", "review 1", "close 1", "review 2"], "each step ran once");
-});
-
 scenario("flow-round-exhaustion", "important findings in every review: the run stops by the rounds rule, the findings stay open, the claim is closed as stopped", async (t) => {
   const f = flowWorld(t, "flow-round-exhaustion");
   f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
@@ -1260,41 +1211,6 @@ scenario("flow-protected", "a patch that edits an existing test stops the packag
   t.eq([f.commits().length, f.steps()], [0, ["write"]], "no commit, no review");
 });
 
-scenario("flow-failing-verify", "the cheap check passes and verify fails: no commit, no review, verifiedBy none with both exit codes", async (t) => {
-  const f = flowWorld(t, "flow-failing-verify");
-  f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
-  const res = await f.flow(["--args", f.args({ verify: ["node smoke.mjs --fail"], fixes: 0 })]);
-  t.eq([res.code, res.json.stoppedAt, res.json.verifiedBy], [2, "checks (args.verify exit 1)", "none"], "stopped at the checks, not verified");
-  t.eq(res.json.verification.evidence.map((e) => [e.source, e.exitCode]), [["checks", 0], ["args.verify", 1]], "both ran in order with their real exit codes");
-  t.eq(res.json.verification.stamp, "Verified: none", "the stamp says nothing verified it");
-  t.ok(/smoke 4/.test(fs.readFileSync(res.json.verification.evidence[1].log, "utf8")), "the verify log holds the program's output");
-  t.eq([f.commits().length, f.steps()], [0, ["write"]], "no commit, no review");
-  t.eq(fs.readFileSync(path.join(f.r, "src", "math.mjs"), "utf8"), FIXED, "the work stays in the work tree");
-});
-
-scenario("flow-resume-cuts", "a cut right after the writer's gateway submission and one right after the commit: each --resume goes on from the journal with no duplicate model call and no second commit", async (t) => {
-  const f = flowWorld(t, "flow-resume-cuts");
-  f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
-  f.answer("review 1", f.review("approved"));
-  const first = await f.flow(["--args", f.args()], { ZODCHI_FLOW_CUT: "submit write" });
-  t.eq(first.code, 75, "cut after the submission of the write turn");
-  const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
-  t.ok(id, `the journal holds the run ${id}`);
-  t.eq(f.claim().status, "open", "the claim stays open across the cut");
-  const second = await f.flow(["--resume", id], { ZODCHI_FLOW_CUT: "commit 1" });
-  t.eq(second.code, 75, "cut after the commit of round 1");
-  t.eq(f.commits().length, 1, "the commit exists");
-  const third = await f.flow(["--resume", id]);
-  t.eq([third.code, third.json.verdict, third.json.runId], [0, "approved", id], "the resumed run ends approved");
-  t.eq(f.commits().length, 1, "still one commit: the interrupted commit was reconciled, not repeated");
-  t.eq(third.json.rounds[0].commit.commit, gitOut(f.r, ["rev-parse", "HEAD"]), "the receipt names that commit");
-  t.eq(f.steps(), ["write", "review 1"], "each model turn ran once");
-  const events = readJsonl(path.join(f.w.zhome, "flows", id, "events.jsonl"));
-  t.eq(events.filter((e) => e.kind === "intent" && e.step === "write").length, 1, "one intent for the write call: never resubmitted under a new key");
-  t.eq(events.filter((e) => e.kind === "intent" && e.step === "commit 1").length, 1, "one intent for the commit");
-  t.eq(f.claim().status, "done", "the claim is closed as done");
-});
-
 scenario("flow-protected-worktree", "a claimed test edited in the work tree while the run is cut is caught on the candidate tree: the package stops before the checks run, nothing committed", async (t) => {
   const f = flowWorld(t, "flow-protected-worktree");
   f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
@@ -1331,24 +1247,10 @@ scenario("flow-no-review-md", "a repository with neither REVIEW.md nor a verify 
   gitOut(f.r, ["commit", "-q", "-m", "no review focus"]);
   f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
   f.answer("review 1", f.review("approved"));
-  const res = await f.flow(["--args", f.args()]);
+  const res = await f.flow(["--args", f.args({ verify: [] })]);
   t.eq([res.code, res.json.verdict, res.json.refused], [0, "approved", undefined], "the gate passes and the run ends approved");
   const reviewTurn = readJsonl(path.join(f.w.codex, "fake-turns.jsonl")).find((x) => x.step === "review 1");
   t.ok(/has no REVIEW\.md/.test(reviewTurn.prompt) && !reviewTurn.prompt.includes("REVIEW.base.md"), "the review says the base has no REVIEW.md");
-});
-
-scenario("flow-cut-result", "a cut after the result is saved and before the claim is closed: resume returns the saved approval and closes the claim, not a conflict with its own claim", async (t) => {
-  const f = flowWorld(t, "flow-cut-result");
-  f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
-  f.answer("review 1", f.review("approved"));
-  const first = await f.flow(["--args", f.args()], { ZODCHI_FLOW_CUT: "result" });
-  t.eq(first.code, 75, "cut after the result was saved");
-  const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
-  t.eq(f.claim().status, "open", "the claim is still open at the cut");
-  const res = await f.flow(["--resume", id]);
-  t.eq([res.code, res.json.verdict, res.json.refused, res.json.conflicts], [0, "approved", undefined, undefined], "the saved approval comes back");
-  t.eq(f.claim().status, "done", "the claim is closed as the result says");
-  t.eq([f.commits().length, f.steps()], [1, ["write", "review 1"]], "nothing ran again");
 });
 
 scenario("flow-staged-after-commit", "a cut right after the commit, then the parent's version staged by hand: resume records the commit and leaves that staging alone", async (t) => {

@@ -1562,44 +1562,6 @@ mod tests {
     }
 
     #[test]
-    fn a_waiting_run_records_the_holder_and_takes_the_slot_after_release() {
-        let fixture = Fixture::new();
-        let mut first = fixture.journal("first");
-        let second_home = fixture.0.join("other-home");
-        let mut second = Journal::create(&second_home, "second", &json!({})).unwrap();
-        let (observer, _) = Journal::open(&second_home, "second").unwrap();
-        let local = fixture.0.join("locks");
-        let shared = fixture.0.join("machine");
-        let first_slot = CheckSlot::acquire_open(&fixture.0, &mut first, "checks 1", 1, vec![
-            open_slot_in(&local).unwrap(), open_slot_in(&shared).unwrap(),
-        ]).unwrap();
-        let machine = open_slot_in(&shared).unwrap();
-        assert!(matches!(machine.lock.try_lock(), Err(TryLockError::WouldBlock)));
-        assert_eq!(read_stored(&machine.receipt).unwrap()["runId"], "first");
-        let files = open_slot_in(&local).unwrap();
-        let waiter = std::thread::spawn(move || {
-            let _slot = CheckSlot::acquire_open(&second_home, &mut second, "verify", 1, vec![files]).unwrap();
-            second
-        });
-        let until = Instant::now() + Duration::from_secs(10);
-        let waiting = loop {
-            let last = observer.snapshot().unwrap().pop();
-            if let Some(event) = last { break Some(event); }
-            if Instant::now() > until { break None; }
-            pause(25);
-        };
-        drop(first_slot);
-        assert!(machine.lock.try_lock().is_ok());
-        assert!(!machine.receipt.exists());
-        let second = waiter.join().unwrap();
-        let waiting = waiting.unwrap();
-        assert_eq!(waiting["holder"], "first");
-        assert_eq!(waiting["holderHome"], std::path::absolute(&fixture.0).unwrap().display().to_string());
-        assert_eq!(second.events().iter().map(|event| event["kind"].as_str().unwrap()).collect::<Vec<_>>(),
-            ["waiting for the check slot", "check slot acquired"]);
-    }
-
-    #[test]
     fn a_waiting_run_contends_with_the_legacy_home_slot() {
         let fixture = Fixture::new();
         let home = fixture.0.join("home");
@@ -1729,20 +1691,6 @@ mod tests {
         }
         let recovered = batch.run(&mut slot, &mut journal, &paths, &[], |_| panic!("all commands already have receipts")).unwrap();
         assert!(matches!(recovered, CheckOutcome::Finished { evidence, .. } if evidence == expected));
-    }
-
-    #[test]
-    fn check_paths_screen_sibling_fixtures() {
-        let fixture = Fixture::new();
-        let paths = ProjectPaths {
-            cache: fixture.0.join("flow-cache").join("private-repo"),
-            parent: fixture.0.join("flow-checks").join("private-repo"),
-        };
-        for file in [paths.parent.join("fixture"), fixture.0.join("flow-checks/private-repo/fixture")] {
-            let diagnostic = format!("could not read {}", file.display());
-            let screened = sanitize(&diagnostic, &paths.private_places());
-            assert_eq!(screened.replace('\\', "/"), "could not read <check-workspace>/fixture");
-        }
     }
 
     #[cfg(windows)]

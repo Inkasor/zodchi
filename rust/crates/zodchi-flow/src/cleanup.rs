@@ -2257,25 +2257,6 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_preserves_stage_like_siblings_of_a_published_checkout() {
-        let f = Fixture::new();
-        let checkout = f.file("flow-checks/repo/checkout/.git/HEAD", b"published");
-        let fixture = f.file("flow-checks/repo/.p-fixture/input", b"verify input");
-        let numbered_fixture = f.file("flow-checks/repo/.p-deadbeef/input", b"more verify input");
-        let abandoned = f.file("flow-checks/repo/.p-0123abcd/input", b"old stage");
-        let marker = f.file("flow-checks/repo.stage-.p-0123abcd", b"");
-        let report = f.report(Options {
-            apply: true,
-            ..Options::default()
-        });
-        assert!(report.errors.is_empty(), "{:?}", report.errors);
-        assert_eq!(report.items.len(), 1);
-        assert!(report.items[0].removed && !abandoned.exists() && !marker.exists());
-        assert_eq!(report.freed, b"old stage".len() as u64);
-        assert!(checkout.is_file() && fixture.is_file() && numbered_fixture.is_file());
-    }
-
-    #[test]
     fn cleanup_rechecks_the_check_slot_before_removing_a_stage() {
         let f = Fixture::new();
         let stage = f.file("flow-checks/repo/.p-deadbeef/input", b"candidate tree");

@@ -11,16 +11,18 @@ export default function register({ scenario, flowWorld, gitOut, STUB, FIXED }) {
     return file;
   }
 
-  scenario("flow-project-verify", "targeted project commands replay from the base plan and the full suite runs once on the approved tree", async (t) => {
+  scenario("flow-project-verify", "a review finding is closed in a second round, using the pinned checks and one full verification of the approved tree", async (t) => {
     const f = flowWorld(t, "flow-project-verify");
     const file = configure(f, {
       checks: ["node --check src/math.mjs"],
       verify: ["node test/math.test.mjs"],
       full: { run: "local", commands: ["node smoke.mjs"] },
     });
+    const base = gitOut(f.r, ["rev-parse", "HEAD"]);
+    const closed = "// The result stays inside the range.\n" + FIXED;
     f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
     f.answer("review 1", f.review("changes_requested", [f.finding("F1")]));
-    f.answer("close 1", f.patch([f.modify("src/math.mjs", FIXED, "// The result stays inside the range.\n" + FIXED)]));
+    f.answer("close 1", f.patch([f.modify("src/math.mjs", FIXED, closed)]));
     f.answer("review 2", f.review("approved"));
     const cut = await f.flow(["--args", f.args({ checks: [], verify: [] })], { ZODCHI_FLOW_CUT: "apply write" });
     t.eq(cut.code, 75, "the package has pinned the verification plan");
@@ -28,6 +30,15 @@ export default function register({ scenario, flowWorld, gitOut, STUB, FIXED }) {
     const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
     const result = await f.flow(["--resume", id]);
     t.eq([result.code, result.json.verdict, result.json.verifiedBy], [0, "approved", "project.verify"], "uses the plan from the recorded base");
+    t.eq(result.json.rounds.map(round => round.verdict), ["changes_requested", "approved"], "the second round is approved");
+    t.ok(/F1 important src\/math\.mjs:1/.test(result.json.rounds[0].review.findings[0]), "the finding is read with its severity");
+    t.eq(gitOut(f.r, ["log", "--format=%s", `${base}..HEAD`]).split("\n"), ["clamp: round 2", "clamp: round 1"], "one commit per round");
+    t.eq(fs.readFileSync(path.join(f.r, "src", "math.mjs"), "utf8"), closed, "the close round's patch is in place");
+    const turns = fs.readFileSync(path.join(f.w.codex, "fake-turns.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+    const close = turns.find(turn => turn.step === "close 1");
+    t.ok(close.prompt.includes("F1 important") && close.prompt.includes('<attachment path="review-1.json">'), "the writer got the finding and the review");
+    const second = turns.find(turn => turn.step === "review 2");
+    t.ok(second.prompt.includes('<attachment path="review-1.json">'), "the second review sees the first");
     for (const round of result.json.rounds) {
       t.eq(round.checks.evidence.map((command) => command.source), ["project.checks", "project.verify"],
         "each round runs only the two targeted lists");

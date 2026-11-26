@@ -71,13 +71,14 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     const { checks } = JSON.parse(attached);
     t.ok(checks.some(check => check.result.includes("browserType.launch") && !check.result.includes(browser)), "review check attachment redacts the browser path");
   });
-  scenario("flow-agent-browser-reply-redaction", "an owner reply receives a redacted writer handoff", async (t) => {
+  scenario("flow-agent-browser-reply-redaction", "an alternate browser variable reaches the writer and its path is redacted from the reply handoff", async (t) => {
     const f = flowWorld(t, "flow-agent-browser-reply-redaction");
     const browser = path.join(f.w.zhome, "chromium-fixture");
+    const variable = "APP_TEST_CHROME";
     fs.writeFileSync(browser, "browser fixture");
     const summary = `Launch failed at ${browser}`;
     f.answer("write", { ...report("blocked", {}), summary });
-    const first = await f.flow(["--args", f.args({ mode: "agent", browser: { executable: browser } })]);
+    const first = await f.flow(["--args", f.args({ mode: "agent", browser: { executable: browser, variable } })]);
     t.eq(first.json?.status, "waiting", "the writer waits for a reply");
     const events = fs.readFileSync(path.join(first.json.journal, "events.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
     t.eq(events.find(e => e.kind === "done" && e.step === "write").result.summary, summary, "the original journal receipt is preserved");
@@ -89,21 +90,11 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     f.answer("review 1", f.review("approved"));
     const resumed = await f.flow(["--resume", first.json.runId]);
     t.eq([resumed.code, resumed.json?.approved], [0, true], "the reply resumes the writer");
-    const prompt = turns(f)[1].prompt;
-    t.ok(prompt.includes("Launch failed at") && !prompt.includes(browser), "the reply handoff redacts the browser path");
-  });
-  scenario("flow-agent-browser-alternate", "an alternate browser variable is passed only to the writer", async (t) => {
-    const f = flowWorld(t, "flow-agent-browser-alternate");
-    const browser = path.join(f.w.zhome, "chromium-fixture");
-    const variable = "APP_TEST_CHROME";
-    fs.writeFileSync(browser, "browser fixture");
-    f.answer("write", report("done", { "src/math.mjs": FIXED }));
-    f.answer("review 1", f.review("approved"));
-    const res = await f.flow(["--args", f.args({ mode: "agent", browser: { executable: browser, variable } })]);
-    t.eq([res.code, res.json?.approved], [0, true], "alternate variable is accepted");
     const calls = turns(f);
     t.ok(samePath(calls.find(c => c.step === "write").config["shell_environment_policy.set"][variable], fs.realpathSync(browser)), "writer receives the alternate variable");
     t.ok(!JSON.stringify(calls.find(c => c.step === "review 1").config).includes(variable), "review does not receive the alternate variable");
+    const prompt = calls[1].prompt;
+    t.ok(prompt.includes("Launch failed at") && !prompt.includes(browser), "the reply handoff redacts the browser path");
   });
   scenario("flow-agent-prerequisite-superseded", "earlier prerequisite evidence does not explain a later block", async (t) => {
     const f = flowWorld(t, "flow-agent-prerequisite-superseded");

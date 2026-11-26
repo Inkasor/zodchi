@@ -185,7 +185,7 @@ export default function register(h) {
 
   // ------------------------------------------------------------------------------------------------ scenarios
 
-  scenario("flow-entry-skills", "the Codex skill and the Claude Code skill: one shared body, front matter, exactly the three commands the doc names, a brief template with the review boundary, an args example the engine takes, no foreground-breaking or journal-editing advice, no real host", async (t) => {
+  function checkSkillContract(t) {
     const codex = readSkill(SKILLS.codex);
     const claude = readSkill(SKILLS.claude);
     t.eq([codex.front.name, claude.front.name], ["zodchi-flow", "zodchi-flow"], "both skills are named zodchi-flow, as their folders");
@@ -208,36 +208,42 @@ export default function register(h) {
       for (const k of STOP_FIELDS) t.ok(s.body.includes(`\`${k}\``), `${s.rel}: it names the result field ${k} for a run that did not end approved`);
       t.ok(/\.zodchi\/flows\//.test(s.body) && /`run\.json`/.test(s.body) && /`result\.json`/.test(s.body), `${s.rel}: it says where the run id of a cut run is found`);
     }
-    // The engine takes the args example as written (anything outside its subset is refused before a claim).
-    const f = flowWorld(t, "flow-entry-skills");
-    f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
-    f.answer("review 1", f.review("approved"));
-    const res = await startBySkill(t, f, codex);
-    t.eq([res.code, res.json && res.json.verdict], [0, "approved"], "the example's keys are all ones the engine accepts");
     t.eq(Object.keys(codex.argsExample).sort(), ["brief", "checks", "files", "label", "repo", "verify"], "the example holds the six fields of a package");
-  });
+    return codex;
+  }
 
-
-  scenario("flow-entry-local", "from a Codex session on the local gateway: the Codex skill's steps as written (brief from its template, args from its example, the run command from another folder, the result read, the finished run resumed) reach the engine and end approved", async (t) => {
-    const skill = readSkill(SKILLS.codex);
+  scenario("flow-entry-local", "the shared skills lead to local approval, with real check and commit evidence and a resumable result", async (t) => {
+    const skill = checkSkillContract(t);
     const f = flowWorld(t, "flow-entry-local");
     f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
     f.answer("review 1", f.review("approved"));
     const res = await startBySkill(t, f, skill);
     readLikeSkill(t, f, skill, res);
+    t.eq([res.json.rounds.length, res.json.verifiedBy, res.json.openFindings], [1, "args.verify", []], "one round, verified by args.verify, nothing open");
     t.eq(res.json.models, { expertWriter: { provider: "codex", model: "fake-writer", effort: "medium" }, reviewer: { provider: "codex", model: "fake-reviewer", effort: "high" } }, "the pair: two distinct Codex models, pinned");
-    const turn = readJsonl(path.join(f.w.codex, "fake-turns.jsonl")).find((x) => x.step === "write");
+    t.ok(res.json.skipped.some((s) => /claude\/opus: Claude is not an executor/.test(s)) && res.json.skipped.some((s) => /fake-writer: the same model as the writer/.test(s)), "skipped candidates are recorded with their reasons");
+    const evidence = res.json.verification.evidence;
+    t.eq(evidence.map((e) => [e.source, e.exitCode]), [["checks", 0], ["args.verify", 0]], "the cheap check ran first, then verify, each with its real exit code");
+    t.ok(evidence.every((e) => fs.existsSync(e.log) && fs.readFileSync(e.log, "utf8").trim()), "each command has a non-empty log");
+    t.ok(evidence.every((e) => !samePath(path.dirname(e.log), f.r) && !e.log.toLowerCase().startsWith(path.resolve(f.r).toLowerCase())), "the logs are outside the checkout");
+    const message = gitOut(f.r, ["log", "-1", "--format=%B"]);
+    t.ok(message.startsWith("clamp: round 1") && message.includes("Verified: checks exit 0; args.verify exit 0"), "the commit message carries the stamp");
+    t.ok(!/node |smoke|math\.test/.test(message), "the stamp names sources and exit codes, never a command");
+    t.eq(gitOut(f.r, ["status", "--porcelain"]), "", "the work tree is clean after the commit");
+    t.eq(f.steps(), ["write", "review 1"], "the writer and the reviewer each ran once");
+    const [turn, review] = readJsonl(path.join(f.w.codex, "fake-turns.jsonl"));
     t.ok(turn.prompt.includes("## Review boundary") && turn.prompt.includes("a clamp that lets a value out of its range"), "the writer got the brief made from the template, with its review boundary");
-    const review = readJsonl(path.join(f.w.codex, "fake-turns.jsonl")).find((x) => x.step === "review 1");
     t.ok(review.prompt.includes("Out of scope: a second run started at the same instant"), "the reviewer got the review boundary");
+    t.ok(review.prompt.includes("REVIEW-BASE-MARKER") && review.prompt.includes('<attachment path="REVIEW.base.md">'), "the review carries REVIEW.md of the base commit");
+    t.ok(review.prompt.includes('<attachment path="change.diff">') && review.prompt.includes("Math.max(lo, x)"), "the review carries the diff");
     const again = await resumeBySkill(t, f, skill, res.json.runId);
-    t.eq([again.code, again.json.verdict, f.steps()], [0, "approved", ["write", "review 1"]], "the skill's resume of a finished run prints its result and runs nothing");
+    t.eq([again.code, again.json.verdict, again.json.rounds.length, f.steps()], [0, "approved", 1, ["write", "review 1"]], "the skill's resume of a finished run prints its result and runs nothing");
     // A run the engine refuses ends with exit 2 and `refused`, nothing claimed: what the skill says to read.
     const refused = await startBySkill(t, f, skill, { args: { branch: "elsewhere" } });
     t.ok(refused.code === 2 && /args\.branch is not supported/.test(refused.json.refused), "an option outside the engine's subset: exit 2, `refused` names it");
   });
 
-  scenario("flow-entry-cut", "from a Claude Code session: the Claude Code skill's steps as written, with the run cut after its write step was submitted: the run id is found as the skill says and its resume goes on, one model turn per step, never a new run", async (t) => {
+  scenario("flow-entry-cut", "the Claude Code skill resumes a run cut after writer submission and after commit, with one turn per step and one commit", async (t) => {
     const skill = readSkill(SKILLS.claude);
     const f = flowWorld(t, "flow-entry-cut");
     f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
@@ -247,10 +253,17 @@ export default function register(h) {
     t.eq(f.claim().status, "open", "the claim stays open across the cut");
     const id = runIdOf(f.w.zhome, f.r, "clamp");
     t.ok(id && /^\d{8}-\d{6}-[0-9a-f]{6}$/.test(id), `the run id is found from the journal folder as the skill says (${id})`);
+    const committed = await resumeBySkill(t, f, skill, id, { ZODCHI_FLOW_CUT: "commit 1" });
+    t.eq(committed.code, 75, "cut after the commit of round 1");
+    t.eq(f.commits().length, 1, "the commit exists at the cut");
     const res = await resumeBySkill(t, f, skill, id);
     readLikeSkill(t, f, skill, res);
     t.eq(res.json.runId, id, "the resume is the same run");
     t.eq(f.steps(), ["write", "review 1"], "each model step ran once");
+    const events = readJsonl(path.join(res.json.journal, "events.jsonl"));
+    for (const step of ["write", "commit 1"]) {
+      t.eq(events.filter(e => e.kind === "intent" && e.step === step).length, 1, `one intent for ${step}`);
+    }
     t.eq(fs.readdirSync(path.join(f.w.zhome, "flows")).length, 1, "no second run was started");
     t.eq(runIdOf(f.w.zhome, f.r, "clamp"), id, "a finished run is still the newest one of its repository and label: the skill resumes it and it prints its result");
   });
@@ -269,6 +282,7 @@ export default function register(h) {
     t.eq(f.steps(), ["write", "review 1"], "both model steps ran before the cut");
     const res = await resumeBySkill(t, f, skill, id);
     readLikeSkill(t, f, skill, res);
+    t.eq([res.json.refused, res.json.conflicts], [undefined, undefined], "the saved approval returns without a claim refusal or conflict");
     t.eq([res.json.runId, f.steps()], [id, ["write", "review 1"]], "the resume is the same run and asked no model again");
   });
 
@@ -277,12 +291,20 @@ export default function register(h) {
     t.ok(/did not establish that the change is verified, not that nothing ran/.test(skill.body.replace(/\s+/g, " ")) && /`evidence`/.test(skill.body) && /exitCode/.test(skill.body), "the skill says none is not 'nothing ran' and points to the evidence");
     const f = flowWorld(t, "flow-entry-failing-verify");
     f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
-    const res = await startBySkill(t, f, skill, { args: { verify: ["node -e 'console.log(JSON.stringify({ok:true,exitCode:0})); process.exit(4)'"], fixes: 0 } });
-    t.eq([res.code, res.json.verifiedBy], [2, "none"], "the run did not end approved and verifiedBy is none");
+    const verify = [
+      "node smoke.mjs --fail",
+      "node -e 'console.log(JSON.stringify({ok:true,exitCode:0})); process.exit(4)'",
+    ];
+    const res = await startBySkill(t, f, skill, { args: { verify, fixes: 0 } });
+    t.eq([res.code, res.json.stoppedAt, res.json.verifiedBy], [2, "checks (args.verify exit 1)", "none"], "the run stops at the failed verification");
+    t.eq(res.json.verification.stamp, "Verified: none", "the stamp records that verification failed");
     const evidence = res.json.verification.evidence;
-    t.eq(evidence.map((e) => [e.source, e.exitCode]), [["checks", 0], ["args.verify", 4]], "a success claim in stdout does not override the real process exit code");
-    t.ok(fs.readFileSync(evidence[1].log, "utf8").includes('{"ok":true,"exitCode":0}'), "the misleading output remains available for diagnosis");
+    t.eq(evidence.map((e) => [e.source, e.exitCode]),
+      [["checks", 0], ["args.verify", 1], ["args.verify", 4]], "checks run first, then both verifies record their real exit codes");
+    t.ok(/smoke 4/.test(fs.readFileSync(evidence[1].log, "utf8")), "the verify log holds the program's output");
+    t.ok(fs.readFileSync(evidence[2].log, "utf8").includes('{"ok":true,"exitCode":0}'), "the misleading output remains available for diagnosis");
     t.eq([f.commits().length, f.steps()], [0, ["write"]], "no commit, no review");
+    t.eq(fs.readFileSync(path.join(f.r, "src", "math.mjs"), "utf8"), FIXED, "the work stays in the work tree");
   });
 
   scenario("flow-entry-server", "from a Codex session for a colleague: the Codex skill's steps as written with flow.json naming a server: the model steps run on the server under the user's account, everything else stays local, same engine and result", async (t) => {

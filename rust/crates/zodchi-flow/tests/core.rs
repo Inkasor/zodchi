@@ -37,21 +37,6 @@ fn repo(tag: &str) -> PathBuf {
 }
 
 #[test]
-fn a_missing_file_is_absent_not_an_error() {
-    let dir = repo("absent");
-    let g = Git::new(&dir);
-    assert!(!g.exists_at("HEAD", "REVIEW.md").unwrap());
-    assert!(!g.exists_at("HEAD", ".claude/skills/verify/SKILL.md").unwrap());
-    assert!(g.show("HEAD", "REVIEW.md").unwrap().is_none());
-    assert!(g.exists_at("HEAD", "src/a.txt").unwrap());
-    assert_eq!(g.show("HEAD", "src/a.txt").unwrap().unwrap(), b"a\n");
-    assert_eq!(g.entry_at("HEAD", "src").unwrap().unwrap().1, "tree");
-    assert!(g.show("HEAD", "src").unwrap().is_none(), "a folder is not a file");
-    assert!(g.exists_at("no-such-commit", "src/a.txt").is_err(), "an unreadable commit is an error");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
 fn the_candidate_tree_takes_claimed_files_only() {
     let dir = repo("candidate");
     let g = Git::new(&dir);

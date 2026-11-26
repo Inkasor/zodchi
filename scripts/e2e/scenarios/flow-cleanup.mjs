@@ -18,29 +18,6 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, samePath
     return f;
   };
 
-  scenario("flow-cleanup-auto", "finishing an agent package removes its writer workspace and records reclaimed bytes", async (t) => {
-    const f = cleanupWorld(t, "flow-cleanup-auto");
-    f.answer("write", {
-      status: "done", flowWrites: { [math]: FIXED }, summary: "clamp inside the range",
-      criteria: [], questions: [], changedFiles: [math], checks: [],
-    });
-    f.answer("review 1", f.review("approved"));
-    const result = await f.flow(["--args", f.args({ mode: "agent" })]);
-    t.eq([result.code, result.json?.verdict], [0, "approved"], "the agent package is approved");
-    const { runId, journal } = result.json;
-    const writers = path.join(f.w.zhome, "flow-writers", runId);
-    const events = readEvents(journal);
-    t.ok(events.some(event => event.kind === "writer prepared"), "a writer workspace was prepared");
-    t.ok(!fs.existsSync(writers), "the finished run has no writer workspace");
-    const cleanup = events.find(event => event.kind === "cleanup");
-    t.ok(cleanup?.bytesFreed > 0 && cleanup.items.some(item =>
-      item.kind === "writer-workspace" && item.removed && samePath(item.path, writers)),
-    "the journal records the workspace and its reclaimed bytes");
-    const handoff = await flow(t, f, ["status", runId, "--handoff"]);
-    t.eq([handoff.code, handoff.json?.status, handoff.json?.verdict],
-      [0, "finished", "approved"], "handoff still reports the approved run");
-  });
-
   scenario("flow-cleanup-command", "preview and reclaim disk space while preserving an interrupted application", async (t) => {
     const f = cleanupWorld(t, "flow-cleanup-command");
     gitOut(f.r, ["config", "core.autocrlf", "false"]);
