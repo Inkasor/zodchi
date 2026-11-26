@@ -148,6 +148,16 @@ if (mode === "fail") {
     delete saved.attempt;
     fs.writeFileSync(pending, JSON.stringify(saved));
     fs.writeFileSync(statusFile, "changed status\n");
+    const collected = await cli(["--resume", id], { ZODCHI_FLOW_CUT: "collect incident evidence" });
+    t.eq(collected.code, 75, "the run stops after saving the evidence and before submitting the classifier");
+    const evidenceAtCut = path.join(tmp, "rev-1", "evidence.json");
+    const frozenEvidence = fs.readFileSync(evidenceAtCut, "utf8");
+    t.ok(frozenEvidence.includes("original status"), "the evidence cut saved the recovered read");
+    const entriesAtCut = fs.readFileSync(path.join(f.w.zhome, "flows", id, "events.jsonl"), "utf8")
+      .split("\n").filter(Boolean).map(line => JSON.parse(line));
+    t.ok(!entriesAtCut.some(e => e.kind === "intent" && e.step === "classify"),
+      "evidence was saved before the classifier intent");
+    t.eq(f.steps(), [], "no classifier turn before the evidence cut");
     const submit = await cli(["--resume", id], { ZODCHI_FLOW_CUT: "submit classify" });
     t.eq(submit.code, 75, "the run stops after submitting the classifier");
     t.ok(!fs.existsSync(pending) && fs.existsSync(path.join(reads, "E2.json")), "resume publishes the legacy pending receipt");
@@ -170,6 +180,9 @@ if (mode === "fail") {
     t.eq(result.code, 0, "the same run completes");
     t.eq(fs.readFileSync(path.join(foreignDir, "owner"), "utf8"), foreign, "resume preserves a later run's lock");
     const evidence = fs.readFileSync(result.json.files.evidence, "utf8");
+    t.eq(evidence, frozenEvidence, "the published evidence is the saved evidence from the cut");
+    t.eq(result.json.evidenceSha256, crypto.createHash("sha256").update(frozenEvidence).digest("hex"),
+      "the result identifies the evidence saved at the cut");
     t.ok(evidence.includes("original status") && !evidence.includes("changed status"), "the saved read is reused");
     const classification = JSON.parse(fs.readFileSync(result.json.files.classification, "utf8"));
     t.eq(classification.classifier.key, result.json.jobKey, "the classification retains the submitted key");
