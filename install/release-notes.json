@@ -1,6 +1,7 @@
 {
   "highlights": [
-    "Discover workflows with zodchi flow list and zodchi flow <workflow> --help. Use candidate-acceptance for a candidate build and release-acceptance for a deployed release.",
-    "The research workflow checks cited facts. Incident-triage reads allowlisted evidence. Ops-script checks local snapshots on Windows and Linux before operator handoff."
+    "Package checks take one machine-wide check slot, reuse a stable checkout and the build cache declared in .zodchi/verify.json, and refuse before any model call when declared tools are missing. Agent writers get writerEnv and a shared writer cache.",
+    "Finished runs remove their writer workspaces; zodchi flow cleanup lists and removes old candidates, journals, claims and dev builds, keeping every journal a claim or pending application still uses.",
+    "Research and incident-triage refuse model answers only for real secrets, incident reads cut large output and can be retried with --rerun \"read <id>\", and ops-script repairs only script defects."
   ]
 }
