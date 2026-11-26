@@ -65,6 +65,127 @@ pub(crate) fn withheld_lines(text: &str) -> usize {
     text.lines().filter(|line| matches!(*line, PRIVATE_WITHHELD | checks::WITHHELD_LINE)).count()
 }
 
+fn answer_has_credential_option(text: &str, option: &Regex) -> bool {
+    const PROMPT_FLAGS: &[(&str, &str)] = &[("psql", "--password"), ("psql", "-W")];
+    static COMMAND_TOKEN: LazyLock<Regex> = LazyLock::new(|| {
+        // Keep quoted arguments together so a separator inside one cannot start a command.
+        let word_part = r#"[^ \t\r\n;&|<>()"'`\\]+|\\[^\r\n]|"(?:\\[^\r\n]|[^"\\\r\n])*"|'[^'\r\n]*'"#;
+        Regex::new(&format!(
+            concat!(
+                // A Markdown list marker can precede the command on a new line.
+                r"(?m:^[ \t]*(?:[-+*]|[0-9]{{1,9}}[.)])[ \t]+)|",
+                r#"(?:&>>?|[<>][<>]?&?)[ \t]*(?:{word_part})+|"#,
+                r#"(?P<separator>[;&|()\r\n]|`+|\\\r?\n)|"#,
+                r#"(?P<word>(?P<assignment>[a-zA-Z_][a-zA-Z0-9_]*=)(?:{word_part})*|(?:{word_part})+)"#,
+            ),
+            word_part = word_part,
+        ))
+        .expect("constant command token pattern")
+    });
+    static SHELL_VARIABLE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"\A\$(?:(?i:env:)?[A-Za-z_][A-Za-z0-9_]*|\{(?i:env:)?[A-Za-z_][A-Za-z0-9_]*\})\z",
+        )
+        .expect("constant shell variable pattern")
+    });
+    // None expects an executable. An empty name disables tool-specific matches.
+    let mut command = None;
+    let mut enclosing_commands = Vec::new();
+    let mut prompt_offsets = Vec::new();
+    let mut before_comment: Option<Vec<(&str, &str)>> = None;
+    for capture in COMMAND_TOKEN.captures_iter(text) {
+        if let Some(separator) = capture.name("separator") {
+            let separator = separator.as_str();
+            if let Some(commands) = before_comment.take_if(|commands| {
+                separator.ends_with(['\r', '\n'])
+                    || (separator.starts_with('`')
+                        && commands.last().is_some_and(|&(end, _)| end == separator))
+            }) {
+                enclosing_commands = commands;
+                command = None;
+            }
+            if separator.starts_with('\\') {
+                continue;
+            }
+            if enclosing_commands
+                .last()
+                .is_some_and(|&(end, _)| end == separator)
+            {
+                command = enclosing_commands.pop().map(|(_, tool)| tool);
+            } else {
+                // Resume the enclosing command after a group or a backtick expression.
+                match separator {
+                    "(" => enclosing_commands.push((")", command.unwrap_or_default())),
+                    ticks if ticks.starts_with('`') => {
+                        enclosing_commands.push((ticks, command.unwrap_or_default()));
+                    }
+                    _ => {}
+                }
+                command = if separator == ")" { Some("") } else { None };
+            }
+            continue;
+        }
+        let Some(word) = capture.name("word") else {
+            continue;
+        };
+        let arg = word.as_str();
+        let after_comment_marker = arg.strip_prefix('#').filter(|_| before_comment.is_none());
+        if after_comment_marker.is_some() {
+            // Keep screening tokens in the comment and restore the command nesting at its end.
+            before_comment = Some(enclosing_commands.clone());
+        }
+        let unquoted = match arg.as_bytes() {
+            [b'"', .., b'"'] | [b'\'', .., b'\''] => &arg[1..arg.len() - 1],
+            _ => arg,
+        };
+        if (command.is_none() || before_comment.is_some())
+            && arg != "$"
+            && capture.name("assignment").is_none()
+        {
+            let executable = after_comment_marker.unwrap_or(unquoted);
+            let name = executable.rsplit(['/', '\\']).next().unwrap_or(executable);
+            let name = name.strip_suffix(".exe").unwrap_or(name);
+            // A pasted MySQL command in a comment may follow another tool or prose.
+            if command.is_none() || (name == "mysql" && !executable.starts_with('-')) {
+                command = Some(name);
+                continue;
+            }
+        }
+        let Some(tool) = command else {
+            continue;
+        };
+        if unquoted == "--" {
+            command = Some("");
+        } else if before_comment.is_none() && PROMPT_FLAGS.contains(&(tool, arg)) {
+            prompt_offsets.push(word.start());
+        } else if tool == "mysql"
+            && unquoted.strip_prefix("-p").is_some_and(|value| {
+                let expansion = value
+                    .strip_prefix('"')
+                    .and_then(|value| value.strip_suffix('"'))
+                    .unwrap_or(value);
+                !matches!(value, "" | "''" | "\"\"")
+                    && (arg.starts_with('\'') || !SHELL_VARIABLE.is_match(expansion))
+            })
+        {
+            return true;
+        }
+    }
+
+    let mut offset = 0;
+    while let Some(capture) = option.captures_at(text, offset) {
+        let flag = capture.name("flag").expect("matched credential option flag");
+        if !flag.as_str().eq_ignore_ascii_case("--no-password")
+            && prompt_offsets.binary_search(&flag.start()).is_err()
+        {
+            return true;
+        }
+        // Screen the text after the switch, including credential options in an argument.
+        offset = flag.end();
+    }
+    false
+}
+
 impl Scrubber {
     pub fn new(config: &Config) -> Result<Self> {
     let denylist = std::env::var_os("ZODCHI_DENYLIST").map(PathBuf::from)
@@ -175,7 +296,7 @@ impl Scrubber {
             ])
             .expect("constant credential patterns");
             let raw_start = Regex::new(&format!(
-                r#"(?:(?i:(?P<credential_before>{before_literal}))|(?:^|[^\w]))b?r(?P<hashes>#+)""#,
+                r#"(?:(?i:(?P<credential_before>{before_literal}))|(?:^|[^\w]))b?r(?P<hashes>#*)""#,
             ))
             .expect("constant raw-string start pattern");
             let after_raw = Regex::new(&format!(r"(?i)^{after_literal}"))
@@ -196,14 +317,8 @@ impl Scrubber {
         if self.has_private_word(text) || secrets.is_match(text) {
             return true;
         }
-        let mut offset = 0;
-        while let Some(capture) = option.captures_at(text, offset) {
-            let flag = capture.name("flag").expect("matched credential option flag");
-            if !flag.as_str().eq_ignore_ascii_case("--no-password") {
-                return true;
-            }
-            // This switch takes no value. Screen the text that follows it as well.
-            offset = flag.end();
+        if answer_has_credential_option(text, option) {
+            return true;
         }
         raw_start
             .captures_iter(text)
@@ -496,6 +611,18 @@ mod tests {
     }
 
     #[test]
+    fn answer_privacy_checks_multiline_raw_string_comparisons() {
+        let scrubber = Scrubber { words: vec![] };
+        for answer in [
+            "if password == r\"fixture-\nvalue\"",
+            "if br\"fixture-\nvalue\" != config.DB_TOKEN",
+        ] {
+            assert!(scrubber.answer_is_private(answer), "{answer:?}");
+        }
+        assert!(!scrubber.answer_is_private(r#"if password == r"" || mode == r"read""#));
+    }
+
+    #[test]
     fn answer_privacy_checks_option_values_but_accepts_no_password_flag() {
         let scrubber = Scrubber { words: vec![] };
         for answer in [
@@ -509,6 +636,145 @@ mod tests {
             "psql --no-password catalog; mysql --password fixture-value",
             r#"psql --no-password "log entry: mysql --password fixture-value""#,
             "client --no-password=fixture-value",
+        ] {
+            assert!(scrubber.answer_is_private(answer), "{answer:?}");
+        }
+    }
+
+    #[test]
+    fn answer_privacy_distinguishes_cli_prompts_from_password_values() {
+        let scrubber = Scrubber { words: vec![] };
+        for answer in [
+            "psql --password catalog",
+            "psql -W catalog",
+            "psql --no-password catalog",
+            "Run `psql -U reader --password \"test catalog\"` to check the connection.",
+            "APP_MODE=test ./psql --password catalog",
+            "summary= psql --password catalog",
+            "mysql -p catalog",
+            "mysql -P3306 catalog",
+            r#"mysql -p"" catalog"#,
+            "ssh -o PasswordAuthentication=no example.org",
+        ] {
+            assert!(!scrubber.answer_is_private(answer), "{answer:?}");
+        }
+        for answer in [
+            "mysql --password fixture-value",
+            "mysql -pfixture-value",
+            r#"mysql -p"fixture value""#,
+            "client --password fixture-value",
+            "psql --password=fixture-value",
+            "psql --password catalog\nif password == r#\"fixture-value\"#",
+            "psql --password catalog; mysql -pfixture-value",
+            "psql --password catalog && client --password fixture-value",
+            r#"psql --password "log entry: client --password fixture-value""#,
+            r#"mysql -e "select 1; psql catalog" --password fixture-value"#,
+            "mysql psql --password fixture-value",
+            "APP=./psql mysql --password fixture-value",
+            "mysql &>psql --password fixture-value",
+            "mysql -h $(printf host) psql --password fixture-value",
+            "mysql -h `printf host` psql --password fixture-value",
+        ] {
+            assert!(scrubber.answer_is_private(answer), "{answer:?}");
+        }
+    }
+
+    #[test]
+    fn answer_privacy_screens_credential_options_in_shell_comments() {
+        let scrubber = Scrubber { words: vec![] };
+        for answer in [
+            "psql catalog # previously used mysql --password fixture-value",
+            "psql --password catalog # previous invocation: psql --password fixture-value",
+            "psql catalog # trailing backslash \\\nmysql --password fixture-value",
+            "mysql -h $(printf host # note; psql (ignored\n) --password fixture-value",
+            "mysql catalog # -pfixture-value",
+        ] {
+            assert!(scrubber.answer_is_private(answer), "{answer:?}");
+        }
+        for answer in [
+            "psql --password catalog # interactive prompt",
+            r##"psql -h "#catalog" --password catalog"##,
+            r"psql -h \#catalog --password catalog",
+            "psql catalog # interactive prompt\npsql --password catalog",
+            "Run `psql catalog # connection` and `psql --password catalog`.",
+        ] {
+            assert!(!scrubber.answer_is_private(answer), "{answer:?}");
+        }
+    }
+
+    #[test]
+    fn answer_privacy_checks_pasted_mysql_commands_in_shell_comments() {
+        let scrubber = Scrubber { words: vec![] };
+        for answer in [
+            "psql catalog # previously used mysql -pfixture-value",
+            "psql catalog #mysql -pfixture-value",
+        ] {
+            assert!(scrubber.answer_is_private(answer), "{answer:?}");
+        }
+        for answer in [
+            "psql --password catalog # use -p5432 for the port",
+            "psql catalog # previously used mysql -p catalog",
+        ] {
+            assert!(!scrubber.answer_is_private(answer), "{answer:?}");
+        }
+    }
+
+    #[test]
+    fn answer_privacy_recognizes_commands_in_markdown_lists() {
+        let scrubber = Scrubber { words: vec![] };
+        for answer in [
+            "- psql --password catalog",
+            "  * psql --password catalog",
+            "1) psql --password catalog",
+        ] {
+            assert!(!scrubber.answer_is_private(answer), "{answer:?}");
+        }
+        for answer in [
+            "- mysql -pfixture-value",
+            "+ mysql -pfixture-value",
+            "2. mysql -pfixture-value",
+        ] {
+            assert!(scrubber.answer_is_private(answer), "{answer:?}");
+        }
+    }
+
+    #[test]
+    fn answer_privacy_distinguishes_mysql_password_variables_from_literals() {
+        let scrubber = Scrubber { words: vec![] };
+        for answer in [
+            "mysql -p$DB_PASSWORD catalog",
+            "mysql -p${DB_PASSWORD} catalog",
+            r#"mysql -p"$DB_PASSWORD" catalog"#,
+            r#"mysql -p"${DB_PASSWORD}" catalog"#,
+            r#"mysql "-p$DB_PASSWORD" catalog"#,
+        ] {
+            assert!(!scrubber.answer_is_private(answer), "{answer:?}");
+        }
+        for answer in [
+            "mysql -p'$DB_PASSWORD' catalog",
+            "mysql '-p$DB_PASSWORD' catalog",
+            r#"mysql -p"\$DB_PASSWORD" catalog"#,
+            r#"mysql -p"${DB_PASSWORD:-fixture-value}" catalog"#,
+            r#"mysql -p"${DB_PASSWORD}fixture-value" catalog"#,
+        ] {
+            assert!(scrubber.answer_is_private(answer), "{answer:?}");
+        }
+    }
+
+    #[test]
+    fn answer_privacy_checks_powershell_mysql_password_arguments() {
+        let scrubber = Scrubber { words: vec![] };
+        for answer in [
+            r#"mysql -p"$env:DB_PASSWORD" catalog"#,
+            "mysql -p$env:DB_PASSWORD catalog",
+            r#"mysql -p"${ENV:DB_PASSWORD}" catalog"#,
+        ] {
+            assert!(!scrubber.answer_is_private(answer), "{answer:?}");
+        }
+        for answer in [
+            "mysql -p'$env:DB_PASSWORD' catalog",
+            r#"mysql -p"$env:DB_PASSWORD-fixture-value" catalog"#,
+            r#"mysql -p"${env:DB_PASSWORD}fixture-value" catalog"#,
         ] {
             assert!(scrubber.answer_is_private(answer), "{answer:?}");
         }
