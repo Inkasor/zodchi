@@ -70,8 +70,10 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
         .as_str()
         .filter(|label| is_key(label) && label.len() <= 40)
         .ok_or_else(|| GatewayError("args.label needs a short gateway key.".into()))?;
-    let repo = fs::canonicalize(material::path(&raw["repo"], "args.repo")?)?;
+    let repo_input = material::path(&raw["repo"], "args.repo")?;
+    let repo = fs::canonicalize(&repo_input)?;
     let tmp = material::path(&raw["tmp"], "args.tmp")?;
+    let aliases = json!({"repo":raw["repo"], "tmp":raw["tmp"]});
     if tmp
         .ancestors()
         .any(|part| fs::symlink_metadata(part).is_ok_and(|meta| meta.file_type().is_symlink()))
@@ -112,7 +114,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
             .ok_or_else(|| GatewayError("args.maxLines is an integer between 1 and 200.".into()))?,
     };
     let snapshot = material::word_snapshot(&cfg, allow_empty)?;
-    let privacy = Privacy::new(&cfg, &snapshot, &repo, &tmp)?;
+    let privacy = Privacy::with_aliases(&cfg, &snapshot, &repo, &tmp, &aliases)?;
     if privacy.text(label) != label {
         return fail("The research label contains private text.");
     }
@@ -162,7 +164,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
             GatewayError("No usable research run identifier after sixteen draws.".into())
         })?;
     let pin = json!({"material":staged,"privacy":snapshot,"maxLines":max,"ledgerSha256":current,
-        "localConfig":local_config(&cfg)?});
+        "localConfig":local_config(&cfg)?,"pathAliases":aliases});
     let run = json!({
         "runId":id,"workflow":NAME,"version":VERSION,"release":env!("CARGO_PKG_VERSION"),"createdAt":iso(),
         "repo":repo,"tmp":tmp,"round":round,"label":label,"pair":pair,
@@ -335,11 +337,17 @@ impl Research<'_> {
         let id = self.run["runId"].as_str().expect("run id");
         let repo = Path::new(self.run["repo"].as_str().expect("repo"));
         let tmp = Path::new(self.run["tmp"].as_str().expect("tmp"));
-        let fresh = Privacy::new(self.cfg, &self.run["inputs"]["pin"]["privacy"], repo, tmp)
-            .map_err(|error| gateway::CallError::Stop {
-                at: format!("privacy at {step}"),
-                reason: error.0,
-            })?;
+        let fresh = Privacy::with_aliases(
+            self.cfg,
+            &self.run["inputs"]["pin"]["privacy"],
+            repo,
+            tmp,
+            &self.run["inputs"]["pin"]["pathAliases"],
+        )
+        .map_err(|error| gateway::CallError::Stop {
+            at: format!("privacy at {step}"),
+            reason: error.0,
+        })?;
         let header = format!("Step: {step} ({NAME} v{VERSION}, run {id})");
         let attempt = self.journal.attempt(step);
         // An existing intent uses its saved request. The gateway screens that
@@ -568,7 +576,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
             return Err(error);
         }
     }
-    let privacy = Privacy::new(&cfg, &pin["privacy"], repo, tmp)?;
+    let privacy = Privacy::with_aliases(&cfg, &pin["privacy"], repo, tmp, &pin["pathAliases"])?;
     let mut research = Research {
         journal: &mut journal,
         cfg: &cfg,
@@ -1059,7 +1067,7 @@ pub(crate) fn reply_text(journal: &Journal, cfg: &Config, run: &Value, file: &Pa
     if run["inputs"]["pinSha256"] != sha256_hex(pin.to_string()) {
         return fail("The pinned research input does not match its digest.");
     }
-    let privacy = Privacy::new(cfg, &pin["privacy"], &repo, &tmp)?;
+    let privacy = Privacy::with_aliases(cfg, &pin["privacy"], &repo, &tmp, &pin["pathAliases"])?;
     // Includes 200 fixes of 600 characters even with JSON surrogate-pair escapes.
     let raw = material::bounded(file, 2 * 1024 * 1024, "research reply")?;
     let mut actions = lists::parse_reply(&raw)?;

@@ -74,7 +74,18 @@ pub struct Privacy {
 }
 
 impl Privacy {
+    #[cfg(test)]
     pub fn new(cfg: &Config, snapshot: &Value, repo: &Path, tmp: &Path) -> Result<Self> {
+        Self::with_aliases(cfg, snapshot, repo, tmp, &Value::Null)
+    }
+
+    pub fn with_aliases(
+        cfg: &Config,
+        snapshot: &Value,
+        repo: &Path,
+        tmp: &Path,
+        aliases: &Value,
+    ) -> Result<Self> {
         let rows = snapshot["entries"]
             .as_array()
             .ok_or_else(|| GatewayError("The private-words receipt is invalid.".into()))?;
@@ -86,13 +97,30 @@ impl Privacy {
             (cfg.home.to_string_lossy().into_owned(), "<zodchi-home>"),
             (repo.to_string_lossy().into_owned(), "<repo>"),
         ];
+        // Remarks are recorded with only these canonical places, before research
+        // applies its additional caller aliases.
+        let remark_places = places.clone();
+        if let Some(repo_alias) = aliases["repo"].as_str() {
+            places.push((repo_alias.to_owned(), "<repo>"));
+        }
+        let research_prefixes = places.clone();
         let tmp = tmp.to_string_lossy().into_owned();
         // A stored owner remark may already have had the checkout or home prefix redacted.
-        let alias = crate::checks::screen_paths(std::iter::once(tmp.as_str()), &places);
-        if alias != tmp && alias != "<repo>" && alias != "<zodchi-home>" {
-            places.push((alias, "<research>"));
+        for spelling in std::iter::once(tmp.as_str()).chain(aliases["tmp"].as_str()) {
+            for prefixes in [&remark_places, &research_prefixes] {
+                let exact_prefix = screen_exact_paths(spelling, prefixes);
+                for value in [spelling, exact_prefix.as_str()] {
+                    let alias = crate::checks::screen_paths(std::iter::once(value), prefixes);
+                    if alias != spelling && alias != "<repo>" && alias != "<zodchi-home>" {
+                        places.push((alias, "<research>"));
+                    }
+                }
+            }
         }
         places.push((tmp, "<research>"));
+        if let Some(tmp_alias) = aliases["tmp"].as_str() {
+            places.push((tmp_alias.to_owned(), "<research>"));
+        }
         Ok(Self {
             current,
             salt: salt.into(),
@@ -122,7 +150,8 @@ impl Privacy {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        self.current.text(&normalized, &self.places)
+        self.current
+            .text(&screen_exact_paths(&normalized, &self.places), &self.places)
     }
 
     fn matches(&self, text: &str) -> bool {
@@ -147,6 +176,88 @@ impl Privacy {
                     )))
                 })
         })
+    }
+}
+
+// The shared path scrubber handles uniform slash variants. Preserve exact mixed
+// spellings first, before a shorter checkout prefix can obscure a temp path.
+fn screen_exact_paths(text: &str, places: &[(String, &str)]) -> String {
+    let mut mixed: Vec<_> = places
+        .iter()
+        .filter(|(path, _)| path.contains('/') && path.contains('\\'))
+        .collect();
+    mixed.sort_by_key(|(path, _)| std::cmp::Reverse(path.len()));
+    let mut result = text.to_owned();
+    for (path, replacement) in mixed {
+        let lower = result.to_ascii_lowercase();
+        let needle = path.to_ascii_lowercase();
+        let mut output = String::new();
+        let mut at = 0;
+        while let Some(offset) = lower[at..].find(&needle) {
+            output.push_str(&result[at..at + offset]);
+            output.push_str(replacement);
+            at += offset + needle.len();
+        }
+        output.push_str(&result[at..]);
+        result = output;
+    }
+    result
+}
+
+#[cfg(test)]
+mod exact_path_tests {
+    use super::{screen_exact_paths, Privacy};
+    use crate::input;
+    use serde_json::json;
+    use zodchi_core::config::Config;
+
+    #[test]
+    fn mixed_spelling_prefers_longer_path_and_ignores_ascii_case() {
+        let places = vec![
+            (concat!("C:", r"\work/repo").to_owned(), "<repo>"),
+            (
+                concat!("C:", r"\work/repo\.\notes").to_owned(),
+                "<research>",
+            ),
+            (r"<repo>\.\notes/more".to_owned(), "<research>"),
+        ];
+        assert_eq!(
+            screen_exact_paths(
+                concat!("C:", r"\WORK/repo\.\notes and <repo>\.\notes/more"),
+                &places,
+            ),
+            "<research> and <research>"
+        );
+    }
+
+    #[test]
+    fn caller_repo_alias_does_not_hide_recorded_home_prefix() {
+        let home = std::env::temp_dir().join(crate::journal::new_run_id());
+        let repo = home.join("private-repo");
+        let tmp = repo.join("working-notes");
+        let sep = std::path::MAIN_SEPARATOR;
+        let repo_alias = format!("{}{sep}.{sep}private-repo", home.display());
+        let tmp_alias = format!("{repo_alias}/.{sep}working-notes");
+        let mut cfg = Config::tenant(&home, "fixture").unwrap();
+        cfg.home = home.clone();
+        let snapshot = json!({"salt":"fixture", "entries":[]});
+        let privacy = Privacy::with_aliases(
+            &cfg,
+            &snapshot,
+            &repo,
+            &tmp,
+            &json!({"repo":repo_alias, "tmp":tmp_alias}),
+        )
+        .unwrap();
+        let recorder_places = [
+            (home.to_string_lossy().into_owned(), "<zodchi-home>"),
+            (repo.to_string_lossy().into_owned(), "<repo>"),
+        ];
+        let recorded = input::scrub(&cfg, &tmp_alias, &recorder_places).unwrap();
+        assert!(recorded.starts_with("<zodchi-home>"), "{recorded}");
+        assert_eq!(privacy.text(&recorded), "<research>");
+        assert_eq!(privacy.text(&tmp_alias), "<research>");
+        assert_eq!(privacy.text("Use oak."), "Use oak.");
     }
 }
 

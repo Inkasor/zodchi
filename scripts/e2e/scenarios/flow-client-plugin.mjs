@@ -73,7 +73,14 @@ export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, r
 
   scenario("flow-research-deferred-fixes", "apply long owner fixes and resolve an earlier open replacement", async t => {
     const { f, file, args, tmp, flows, call } = researchFixture(t, "research-fixes");
+    const tmpWithDot = process.platform === "win32"
+      ? `${f.r}/.\\.agent-tmp\\working-notes`
+      : `${f.r}${path.sep}.${path.sep}.agent-tmp${path.sep}working-notes`;
+    const researchArgs = JSON.parse(fs.readFileSync(args, "utf8"));
+    researchArgs.tmp = tmpWithDot;
+    fs.writeFileSync(args, JSON.stringify(researchArgs));
     fs.mkdirSync(tmp, { recursive: true });
+    const canonicalTmp = fs.realpathSync.native(tmp);
     const ledger = path.join(tmp, "decisions.json");
     fs.writeFileSync(ledger, JSON.stringify({ version: 1, appliedRounds: [1], entries: [
       { id: "1.1", n: 1, round: 1, kind: "proposal", state: "accepted", text: "Use one shelf.", decidedInRound: 1 },
@@ -85,11 +92,11 @@ export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, r
     t.eq((await call(["research", "--args", args], { ZODCHI_FLOW_CUT: "submit constraints" })).code, 75, "cut before the fresh expert request");
     const [id] = fs.readdirSync(flows);
     fs.writeFileSync(deny, "");
-    fs.writeFileSync(file("note"), `Use oak.\nopening-only-word\n${tmp}`);
+    fs.writeFileSync(file("note"), `Use oak.\nopening-only-word\n${canonicalTmp}\n${tmpWithDot}`);
     t.eq((await call(["remark", id, "--file", file("note")])).code, 0, "owner remark recorded after the cut");
     t.eq((await call(["research", "--resume", id])).json?.status, "waiting", "owner list ready");
     const request = JSON.parse(fs.readFileSync(path.join(flows, id, "requests", `flow-${id}-ask-q1.json`), "utf8"));
-    t.ok(request.prompt.includes("Use oak.") && !request.prompt.includes("opening-only-word") && !request.prompt.includes("working-notes"),
+    t.ok(request.prompt.includes("Use oak.") && !request.prompt.includes("opening-only-word") && !request.prompt.includes(canonicalTmp) && !request.prompt.includes(tmpWithDot) && !request.prompt.includes("working-notes"),
       "the saved fresh request applies pinned privacy to remarks");
     const reply = file("reply.json");
     const fixes = Array.from({ length: 4 }, (_, i) => ({ n: i + 1, verdict: "fix", text: String(i).repeat(500) }));

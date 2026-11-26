@@ -28,6 +28,22 @@ function python() {
 }
 
 export default function register({ scenario: registerScenario, world, zodchi, flowWorld, gitOut }) {
+  let windowsElevated;
+  function elevatedWindows() {
+    if (process.platform !== "win32") return false;
+    if (windowsElevated instanceof Error) throw windowsElevated;
+    if (windowsElevated !== undefined) return windowsElevated;
+    const result = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+      "$p = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()); $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"],
+    { encoding: "utf8", windowsHide: true });
+    const output = result.stdout?.trim();
+    if (result.error || result.status !== 0 || !["True", "False"].includes(output)) {
+      windowsElevated = new Error(`Cannot detect Windows elevation: ${result.error || result.stderr || output || `exit ${result.status}`}`);
+      throw windowsElevated;
+    }
+    windowsElevated = output === "True";
+    return windowsElevated;
+  }
   function fixture(name) {
     const w = world(name);
     const interpreter = python();
@@ -45,6 +61,9 @@ export default function register({ scenario: registerScenario, world, zodchi, fl
   }
   const invoke = (t, f, args, env = {}) => zodchi(t, f.w, ["flow", ...args], { cwd: f.w.dir, env: { ...f.w.env, ...env } });
   const scenario = (name, description, run) => registerScenario(name, description, async (t) => {
+    if (["flow-ops-script", "flow-ops-script-resume", "flow-ops-script-recovery", "flow-ops-script-scoped-repair"].includes(name) && elevatedWindows()) {
+      return { skip: "Windows test process is elevated; the dry run requires an unprivileged token" };
+    }
     if (process.platform !== "darwin") return run(t);
     const w = world(`${name}-unsupported`);
     const tmp = path.join(w.dir, "snapshots");
@@ -175,6 +194,12 @@ export default function register({ scenario: registerScenario, world, zodchi, fl
   scenario("flow-ops-script-refusal", "refuses unsafe templates and remote root before effects", async (t) => {
     const f = fixture("flow-ops-script-refusal");
     fs.writeFileSync(f.script, "print('never run')\n");
+    if (elevatedWindows()) {
+      const elevated = await invoke(t, f, ["ops-script", "--args", f.args]);
+      const flows = path.join(f.w.zhome, "flows");
+      t.ok(elevated.code === 2 && elevated.json?.refused?.includes("dry run must not run as root or elevated") && !elevated.json?.runId && fs.readdirSync(f.tmp).length === 0 && (!fs.existsSync(flows) || fs.readdirSync(flows).length === 0),
+        "elevation is explicitly refused before a journal or snapshot");
+    }
     const data = JSON.parse(fs.readFileSync(f.args, "utf8"));
     data.check = ["bash", "-c", "{copy}"];
     fs.writeFileSync(f.args, JSON.stringify(data));
