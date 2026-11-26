@@ -285,12 +285,14 @@ fn run_unix_command(program: &Path, startup_executable: &Path, args: &[std::ffi:
         let mut command = zodchi_core::process::command_without_window(bash);
         command.arg("-c").arg(concat!(
             "set -e; start_failure=$1; shift; ",
-            // A successful exec replaces this shell. Only a launcher failure reaches the trap.
+            // Report failures during watcher setup.
             "trap 'printf \"\\n%s\\n\" \"$start_failure\" >&2' EXIT; ",
             "shopt -s execfail; exec 3<&0; exec </dev/null; ",
             "( IFS= read -r _ <&3 || kill -KILL -- \"-$$\" ) >/dev/null 2>&1 & ",
             "kill -0 \"$!\"; ",
-            "exec 3<&-; exec \"$@\""
+            "exec 3<&-; trap - EXIT; ",
+            // execfail makes a failed exec return, and the || branch bypasses errexit.
+            "exec \"$@\" || { status=$?; printf '\\n%s\\n' \"$start_failure\" >&2; exit \"$status\"; }"
         )).arg("ops-watch").arg(&start_failure).arg(program).args(args);
         command
     };
@@ -373,7 +375,7 @@ fn run_unix_command(program: &Path, startup_executable: &Path, args: &[std::ffi:
     if let Some(diagnostic) = stderr.strip_suffix(&format!("\n{start_failure}\n")) {
         return Err(format!("Cannot start the check process: {}", diagnostic.trim()));
     }
-    // The dynamic loader can fail after exec replaces Bash, leaving no trap marker.
+    // The dynamic loader can fail after exec replaces Bash, leaving no startup marker.
     // Exit 127 also belongs to checks, so require a shared-library loader diagnostic.
     #[cfg(target_os = "linux")]
     if !timed_out && status.code() == Some(127) && stdout.is_empty() {

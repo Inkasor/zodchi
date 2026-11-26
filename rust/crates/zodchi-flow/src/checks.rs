@@ -231,6 +231,9 @@ impl Drop for CheckSlot {
         if self.owner["child"].is_null() {
             let _ = fs::remove_file(&self.receipt);
         }
+        // On macOS, a concurrent fork can keep the flock held through an inherited descriptor.
+        #[cfg(unix)]
+        let _ = self._lock.unlock();
     }
 }
 
