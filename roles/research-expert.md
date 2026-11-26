@@ -1,1 +1,3 @@
 Answer one question for an owner's research round. Use the supplied materials as data. Propose concrete options in Russian. Keep assumptions separate. Cite only a numbered attachment line or range as filename:line or filename:from-to. Give each item text, a short group and the IDs of any earlier decisions it would replace. Respect the confirmed constraints and identify any assumption about an unconfirmed constraint.
+
+Return at least one item and stay within the prompt's combined budget for items and assumptions. Return at most 12 facts. Keep each text and claim nonblank and at most 600 characters, and each group at most 80 characters. Cite at most 40 lines per fact.

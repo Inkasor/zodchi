@@ -28,6 +28,27 @@ export default function register({ scenario, flowWorld, zodchi, FAKE_FLOW }) {
     });
     return { f, tmp, args, file, run };
   }
+  scenario("flow-research-ordinary-words", "keep ordinary credential vocabulary in an expert proposal", async t => {
+    const { f, tmp, args, file, run } = fixture(t, "flow-research-ordinary-words");
+    const text = "Keep the access token in an httpOnly cookie.";
+    f.answer("ask q1", {
+      items: [{ text, group: "Access", replaces: [] }],
+      assumptions: [],
+      facts: [],
+    });
+    const ready = await run(["research", "--args", args]);
+    t.eq([ready.code, ready.json?.status], [2, "waiting"], "the expert answer reaches the owner");
+    t.ok(fs.readFileSync(ready.json.list, "utf8").includes(text), "the owner sees the complete proposal");
+    const id = ready.json.runId;
+    const reply = file("owner.json");
+    fs.writeFileSync(reply, JSON.stringify([{ n: 1, verdict: "accept" }]));
+    t.eq((await run(["reply", id, "--file", reply])).code, 0, "the owner accepts the proposal");
+    const completed = await run(["research", "--resume", id]);
+    t.eq([completed.code, completed.json?.approved], [0, true], "the round finishes");
+    const ledger = JSON.parse(fs.readFileSync(path.join(tmp, "decisions.json"), "utf8"));
+    t.eq(ledger.entries[0].text, text, "the ledger keeps the proposal text");
+    t.eq(f.steps(), ["constraints", "ask q1"], "each required role ran once");
+  });
   scenario("flow-research-owner-resume", "call each role once and resume the exact list and owner decision", async t => {
     const { f, tmp, args, file, run } = fixture(t, "flow-research-owner-resume");
     const first = await run(["research", "--args", args], { ZODCHI_FLOW_CUT: "submit ask q1" });
@@ -118,8 +139,72 @@ export default function register({ scenario, flowWorld, zodchi, FAKE_FLOW }) {
     const report = JSON.parse(fs.readFileSync(stopped.json.facts, "utf8"));
     t.eq([report.verdicts[0].id, report.verdicts[0].verdict], ["F1.1", "unchecked"], "the report identifies the unchecked fact");
     t.ok(report.verdicts[0].note.includes("one verdict"), "the report explains why it is unchecked");
+    await checkWithheldClaim(t);
+    await checkWithheldClaimWave(t);
     await checkReplannedBatch(t);
   });
+  async function checkWithheldClaim(t) {
+    const { f, args, file, run } = fixture(t, "flow-research-withheld-claim");
+    const claim = "The browser stores the access token in an httpOnly cookie.";
+    const visible = "The drawing places a support at each edge.";
+    fs.appendFileSync(file("tools.txt"), claim + "\n");
+    f.answer("ask q1", {
+      items: [{ text: "Use a support at each edge.", group: "Supports", replaces: [] }],
+      assumptions: [],
+      facts: [{ claim, source: "1-tools.txt:3" }, { claim: visible, source: "1-tools.txt:2" }],
+    });
+    const verdicts = ["F1.1", "F1.2"].map(id => ({ id, verdict: "supported", note: "Checked the cited line." }));
+    f.answer("check f1", { verdicts });
+    const cut = await run(["research", "--args", args], { ZODCHI_FLOW_CUT: "submit check f1" });
+    t.eq(cut.code, 75, "cut after submitting the scrubbed checker prompt");
+    const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
+    const stopped = await run(["research", "--resume", id]);
+    t.eq([stopped.code, stopped.json?.stoppedAt], [2, "facts"], "the withheld assertion stays unchecked after resume");
+    t.eq(f.steps(), ["constraints", "ask q1", "check f1"], "resume reuses the submitted checker prompt");
+    const turns = fs.readFileSync(path.join(f.w.codex, "fake-turns.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    const prompt = turns.find(turn => turn.step === "check f1").prompt;
+    t.ok(prompt.includes('"claim": "[source line withheld]"') && !prompt.includes(claim) && prompt.includes(visible),
+      "the checker sees the scrubbed claim and the full second claim");
+    const report = JSON.parse(fs.readFileSync(stopped.json.facts, "utf8"));
+    t.eq(report.facts.map(row => row.claim), [claim, visible], "the owner sees both complete assertions");
+    t.eq(report.verdicts, [
+      { id: "F1.1", verdict: "unchecked", note: "The fact checker did not receive the complete claim." },
+      verdicts[1],
+    ], "only the full assertion can receive a supported verdict");
+  }
+  async function checkWithheldClaimWave(t) {
+    const { f, args, run } = fixture(t, "flow-research-withheld-wave");
+    const spec = JSON.parse(fs.readFileSync(args, "utf8"));
+    spec.questions = Array.from({ length: 3 }, (_, i) => ({ ...spec.questions[0], title: `Shelf ${i + 1}` }));
+    fs.writeFileSync(args, JSON.stringify(spec));
+    const ids = [];
+    for (let q = 1; q <= 3; q++) {
+      const facts = Array.from({ length: 12 }, (_, i) => {
+        ids.push(`F${q}.${i + 1}`);
+        const claim = q === 1 && i === 0
+          ? "The browser stores the access token in an httpOnly cookie."
+          : "The drawing places a support at each edge.";
+        return { claim, source: "1-tools.txt:2" };
+      });
+      f.answer(`ask q${q}`, { items: [{ text: "Use two supports.", group: "Supports", replaces: [] }], assumptions: [], facts });
+    }
+    const verdicts = ids.map(id => ({ id, verdict: "supported", note: "Checked the cited line." }));
+    for (let i = 0; i < 3; i++) {
+      f.answer(`check f${i + 1}`, { verdicts: verdicts.slice(i * 15, (i + 1) * 15) });
+    }
+    const stopped = await run(["research", "--args", args]);
+    const reason = "The fact checker did not receive the complete claim.";
+    t.eq([stopped.code, stopped.json?.stoppedAt, stopped.json?.reason], [2, "facts", reason], "a withheld claim stops the round");
+    const events = fs.readFileSync(path.join(f.w.zhome, "flows", stopped.json.runId, "events.jsonl"), "utf8")
+      .trim().split("\n").map(line => JSON.parse(line));
+    t.eq(events.filter(e => e.step?.startsWith("check f") && ["submitted", "done"].includes(e.kind))
+      .map(e => [e.kind, e.step]), [["submitted", "check f1"], ["submitted", "check f2"], ["done", "check f1"], ["done", "check f2"]],
+      "the started peer is drained and check f3 is never submitted");
+    const report = JSON.parse(fs.readFileSync(stopped.json.facts, "utf8"));
+    const unchecked = id => ({ id, verdict: "unchecked", note: reason });
+    t.eq(report.verdicts, [unchecked(ids[0]), ...verdicts.slice(1, 30), ...ids.slice(30).map(unchecked)],
+      "only the withheld claim and the unstarted facts are unchecked");
+  }
   async function checkReplannedBatch(t) {
     const { f, args, file, run } = fixture(t, "flow-research-replan");
     const spec = JSON.parse(fs.readFileSync(args, "utf8"));

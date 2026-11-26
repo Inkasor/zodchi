@@ -1,8 +1,10 @@
 use crate::{checks, journal::Journal, patch, Exit};
+use regex::RegexSet;
 use serde_json::{json, Value};
 use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 use zodchi_core::config::Config;
 use zodchi_core::util::{fail, iso, Result};
 
@@ -88,6 +90,63 @@ impl Scrubber {
     pub(crate) fn credential_shape(line: &str) -> bool {
         let lower = line.to_ascii_lowercase();
         ["sk-", "ghp_", "github_pat_", "xoxb-", "akia", "eyj"].iter().any(|prefix| lower.contains(prefix))
+    }
+
+    /// Check model output for private words and recognizable credential values.
+    pub(crate) fn answer_is_private(&self, text: &str) -> bool {
+        static SECRETS: LazyLock<RegexSet> = LazyLock::new(|| {
+            let qualifier = r"(?:[a-z_][a-z0-9_.-]*[._-]|_)";
+            let names = concat!(
+                r"(?:password|passwd|pwd|secret|(?:access|refresh|id|session)?token|",
+                r"api[ _-]?key|access[ _-]?key|private[ _-]?key|client[ _-]?secret|",
+                r"authorization|auth|bearer|cookies?|credentials?|session[ _-]?id|пароль|токен|ключ)",
+            );
+            let quoted = r#""[^"\r\n]+"|'[^'\r\n]+'|`[^`\r\n]+`"#;
+            let bare_char = r#"[^\s,;&"'`]"#;
+            let value = format!("(?:{quoted}|{bare_char}+)");
+            // An equal sign immediately after the operator makes it a comparison.
+            let after_equals = format!(r#"(?:\s+{value}|{quoted}|[^=\s,;&"'`]{bare_char}*)"#);
+            // Match whole setting names, including dotted settings and CLI flags.
+            // A numeric attachment prefix such as 1-notes.auth is not a setting.
+            let start = r"(?:^|[^\w.-])(?:--?)?";
+            let equals = format!(
+                concat!(
+                    r#"(?i)(?:{start}{qualifier}?(?:{names}|pass)["'`]?[ \t]*"#,
+                    r#"|\[[ \t]*["']{qualifier}?(?:{names}|pass)["'][ \t]*\][ \t]*)={after_equals}"#,
+                ),
+                start = start,
+                qualifier = qualifier,
+                names = names,
+                after_equals = after_equals,
+            );
+            // A colon after "pass" is ambiguous unless the name is qualified or quoted.
+            let colon = format!(
+                concat!(
+                    r#"(?i)(?:{start}(?:{qualifier}?{names}|{qualifier}pass)["'`]?"#,
+                    r#"|["'`]{qualifier}?pass["'`])[ \t]*:\s*{value}"#,
+                ),
+                start = start,
+                qualifier = qualifier,
+                names = names,
+                value = value,
+            );
+            RegexSet::new([
+                equals.as_str(),
+                colon.as_str(),
+                // An underscore can delimit Markdown emphasis around a value.
+                r"(?:^|[\W_])(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}",
+                r"(?:^|[\W_])gh[pousr]_[A-Za-z0-9]{20,}",
+                r"(?:^|[\W_])github_pat_[A-Za-z0-9_]{20,}",
+                r"(?:^|[\W_])xox[abpr]-[A-Za-z0-9-]{10,}",
+                r"(?:^|[\W_])AKIA[0-9A-Z]{16}(?:$|[\W_])",
+                r"(?:^|[\W_])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+",
+                r"(?i)-----BEGIN (?:[A-Z0-9-]+ )*PRIVATE KEY-----",
+                // User info is in the authority. An @ in a path or query is ordinary URL text.
+                r"[A-Za-z][A-Za-z0-9+.-]*://[^\s/?#@]+@[^\s/?#@]+",
+            ])
+            .expect("constant credential patterns")
+        });
+        self.has_private_word(text) || SECRETS.is_match(text)
     }
 
     pub fn value(&self, value: &mut Value, places: &[(String, &str)]) {
@@ -274,4 +333,82 @@ pub fn model_context(journal: &Journal) -> Result<String> {
         }
     }
     Ok(context.join("\n\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn answer_privacy_accepts_ordinary_words() {
+        let scrubber = Scrubber { words: vec![] };
+        for answer in [
+            "хранить access token в httpOnly cookie",
+            "Use a risk-based approach and task-specific checks in Slovakia.",
+            "Review the task-specific-validation steps.",
+            "Use disk-encryption-and-backup.",
+            "Never commit credentials or a private key.",
+            "Use a second pass: inspect the joints.",
+            r#"Read os.environ["API_KEY"] to find the setting."#,
+            r#"os.environ["API_KEY"] = """#,
+            r#"if os.environ["API_KEY"] == "":"#,
+            r#"if password=="":"#,
+            "Discuss passwords, secrets, authorization and bearer schemes.",
+            "The short prefixes sk-, ghp_, AKIA and eyJ are examples.",
+            "An empty value is password=\"\".",
+            "Use a token.\r\nRotate it.\r\n",
+            "Use https://registry.example/@scope/package or https://example.org/?tag=@demo.",
+            "See 1-auth:2 and attach/2-pwd:2-4.",
+            "See 3-notes.auth:5.",
+            "See 4-notes.pass:5.",
+        ] {
+            assert!(!scrubber.answer_is_private(answer), "{answer:?}");
+        }
+        assert_eq!(scrubber.text("Use a token.", &[]), checks::WITHHELD_LINE);
+        assert_eq!(
+            scrubber.text("Use https://registry.example/@scope/package.", &[]),
+            checks::WITHHELD_LINE
+        );
+    }
+
+    #[test]
+    fn answer_privacy_refuses_private_words_and_credentials() {
+        let scrubber = Scrubber { words: vec!["fixture-private-word".into()] };
+        for answer in [
+            "A FIXTURE-PRIVATE-WORD appears.".into(),
+            "password=hunter2xyz".into(),
+            "token: \"value with spaces\"".into(),
+            "_TOKEN=fixture-value".into(),
+            "--password=fixture-value".into(),
+            "api_key=fixture-value".into(),
+            r#"os.environ["API_KEY"] = "fixture-value""#.into(),
+            r#"settings['db.password'] = 'fixture-value'"#.into(),
+            "PASS=fixture-value".into(),
+            r#""pass": "fixture-value""#.into(),
+            r#"db.pass: "fixture-value""#.into(),
+            "DB_PASS: fixture-value".into(),
+            "db.password=fixture-value".into(),
+            "password=fixture=value".into(),
+            "\"GITHUB_TOKEN\": \"fixture-value\"".into(),
+            "`apiKey`: `fixture-value`".into(),
+            "Authorization: Bearer abc123def456".into(),
+            format!("sk-{}", "a".repeat(20)),
+            format!("_sk-{}_", "a".repeat(20)),
+            format!("pk-{}", "a".repeat(16)),
+            format!("rk-{}", "a".repeat(16)),
+            format!("ghp_{}", "a".repeat(20)),
+            format!("gho_{}", "a".repeat(20)),
+            format!("github_pat_{}", "a_".repeat(20)),
+            format!("xoxb-{}", "a".repeat(10)),
+            concat!("AKIA", "0123456789ABCDEF").into(),
+            concat!("__AKIA", "0123456789ABCDEF__").into(),
+            "eyJhbGciOiJIUzI1NiJ9.e30.fixture_signature".into(),
+            "eyJhbGciOiJIUzI1NiJ9.e30.----".into(),
+            concat!("-----BEGIN RSA ", "PRIVATE KEY-----").into(),
+            "https://user@localhost/fixture".into(),
+            "https://user:fixture-value@localhost/fixture".into(),
+        ] {
+            assert!(scrubber.answer_is_private(&answer), "{answer:?}");
+        }
+    }
 }
