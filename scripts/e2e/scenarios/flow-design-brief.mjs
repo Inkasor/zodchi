@@ -244,23 +244,27 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, RO
     t.eq(delivered.toString(), `<!-- design-brief: clamp -->\n${fixed.markdown}\n`, "publication adds exactly one ownership marker to the reviewed Markdown");
   });
 
-  scenario("flow-design-brief-unsafe-evidence", "the gate protects existing files and rejects a citation with a mismatching quote", async (t) => {
+  scenario("flow-design-brief-unsafe-evidence", "protect existing files, plan a question without file hints, and stop on a blocked review of mismatched evidence", async (t) => {
     const f = flowWorld(t, "flow-design-brief-unsafe-evidence");
     const output = path.join(f.r, ".agent-tmp", "brief.md");
     fs.mkdirSync(path.dirname(output), { recursive: true });
     fs.writeFileSync(output, "User's existing notes.\n");
-    const args = argsFor(f, output);
+    const question = "What does clamp do today?";
+    const args = argsFor(f, output, { questions: [question] });
     const foreign = await flow(t, f, ["design-brief", "--args", args]);
     t.eq([foreign.code, f.steps()], [2, []], "a foreign brief is refused before any model turn");
     fs.renameSync(output, path.join(path.dirname(output), "existing.md"));
+    f.answer("plan", { questions: [{ question, files: ["repo1/src/math.mjs"] }] });
     f.answer("facts 1", facts("This quote does not occur in the file."));
     f.answer("draft", draft("Review the evidence before defining the clamp scenario."));
     f.answer("review", f.review("blocked"));
     const result = await flow(t, f, ["design-brief", "--args", args]);
     t.eq([result.code, result.json?.facts, result.json?.rejectedFacts, result.json?.review?.verdict, f.steps(), fs.existsSync(output)],
-      [2, 0, 1, "blocked", ["facts 1", "draft", "review"], false], "a bad quote yields no fact or approved brief");
+      [2, 0, 1, "blocked", ["plan", "facts 1", "draft", "review"], false],
+      "planning supplies the source, the bad quote yields no fact, and a blocked review stops before a fix or publication");
     const requests = fs.readFileSync(path.join(f.w.codex, "fake-turns.jsonl"), "utf8").trim().split(/\r?\n/).map(JSON.parse);
-    t.ok(!requests[1].prompt.includes("This quote does not occur") && requests[1].prompt.includes("No cited facts could be verified"),
+    const { prompt } = requests.find(turn => turn.step === "draft");
+    t.ok(!prompt.includes("This quote does not occur") && prompt.includes("No cited facts could be verified"),
       "the writer sees the evidence gap without the claim associated with the invalid quote");
   });
 
@@ -392,19 +396,5 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, RO
     const prompt = turns[3].prompt;
     t.ok(prompt.includes("Use Upper") && prompt.indexOf("Correction from the owner. Use Lower.") > prompt.indexOf("Use Upper"),
       "the correction is delivered after the original owner answer");
-  });
-
-  scenario("flow-design-brief-plan-blocked", "a question without file hints is planned and a blocked review ends the run", async (t) => {
-    const f = flowWorld(t, "flow-design-brief-plan-blocked");
-    const output = path.join(f.r, ".agent-tmp", "brief.md");
-    const question = "What does clamp do today?";
-    const args = argsFor(f, output, { questions: [question] });
-    f.answer("plan", { questions: [{ question, files: ["repo1/src/math.mjs"] }] });
-    f.answer("facts 1", facts(STUB.trim()));
-    f.answer("draft", draft("Run the clamp scenario."));
-    f.answer("review", f.review("blocked"));
-    const result = await flow(t, f, ["design-brief", "--args", args]);
-    t.eq([result.code, result.json?.review?.verdict, f.steps(), fs.existsSync(output)],
-      [2, "blocked", ["plan", "facts 1", "draft", "review"], false], "planning is used and a blocked review stops before a fix or publication");
   });
 }

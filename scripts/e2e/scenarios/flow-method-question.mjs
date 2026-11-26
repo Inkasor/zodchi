@@ -61,22 +61,7 @@ export default function register({ scenario, flowWorld, gitOut, zodchi }) {
     t.eq([replay.code, replay.json?.sha256, f.steps()], [0, done.json.sha256, names], "completed run is read without new calls");
   });
 
-  scenario("flow-method-question-source-and-sheet", "a missing source or empty synthesis stops before publication", async t => {
-    const { f, flow, file } = fixture(t, "flow-method-question-source-and-sheet");
-    f.answer("real 1", {
-      answer: "A loose claim.",
-      findings: [{ claim: "A loose claim.", quote: "It might work.", source: "unknown" }],
-      notFound: [],
-    });
-    const invalidSource = await flow(["method-question", "--args", file]);
-    t.eq([invalidSource.code, invalidSource.json?.stoppedAt, f.steps()], [2, "invalid answer at real 1", ["real 1"]], "the run stops before synthesis when a citation is untraceable");
-    f.answer("real 1", answer("Two supports carry the shelf.", "structure"));
-    f.answer("fold", { realFacts: [], constructions: [], follows: [], unsettled: [] });
-    const empty = await flow(["method-question", "--args", file]);
-    t.eq([empty.code, empty.json?.stoppedAt, f.steps()], [2, "invalid answer at fold", ["real 1", ...names]], "an empty answer cannot publish a sheet");
-  });
-
-  scenario("flow-method-question-validation", "the domain gate and citation checks refuse incomplete or unsupported output", async t => {
+  scenario("flow-method-question-validation", "the domain gate and answer checks refuse untraceable sources, empty sheets, and unsupported citations", async t => {
     const { f, flow, file, sheet } = fixture(t, "flow-method-question-validation");
     const config = path.join(f.r, ".zodchi", "workflows.json");
     fs.mkdirSync(path.dirname(config), { recursive: true });
@@ -89,9 +74,26 @@ export default function register({ scenario, flowWorld, gitOut, zodchi }) {
     const refused = await flow(["method-question", "--args", file]);
     t.eq([refused.code, f.steps()], [2, []], "a disabled domain spends no turns");
     select(["gamedev-unity"]);
+
+    f.answer("real 1", {
+      answer: "A loose claim.",
+      findings: [{ claim: "A loose claim.", quote: "It might work.", source: "unknown" }],
+      notFound: [],
+    });
+    const invalidSource = await flow(["method-question", "--args", file]);
+    t.eq([invalidSource.code, invalidSource.json?.stoppedAt, f.steps()], [2, "invalid answer at real 1", ["real 1"]],
+      "the run stops before synthesis when a citation is untraceable");
+
+    f.answer("real 1", answer("Two supports carry the shelf.", "structure"));
+    f.answer("fold", { realFacts: [], constructions: [], follows: [], unsettled: [] });
+    const empty = await flow(["method-question", "--args", file]);
+    t.eq([empty.code, empty.json?.stoppedAt, f.steps()], [2, "invalid answer at fold", ["real 1", ...names]],
+      "an empty answer cannot publish a sheet");
+
     f.answer("fold", { ...sheet, realFacts: [row("Unsupported claim", "documented", ["missing.1"])] });
     const blocked = await flow(["method-question", "--args", file]);
-    t.eq([blocked.code, blocked.json?.stoppedAt, f.steps()], [2, "invalid answer at fold", names], "an invented citation blocks publication");
+    t.eq([blocked.code, blocked.json?.stoppedAt, f.steps()], [2, "invalid answer at fold", ["real 1", ...names, ...names]],
+      "an invented citation blocks publication");
     t.ok(!fs.existsSync(path.join(f.w.dir, "method output", "method-" + blocked.json.runId, "options.md")), "the unsupported draft stays out of the output");
   });
 }

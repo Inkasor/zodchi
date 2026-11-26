@@ -796,15 +796,4 @@ mod tests {
         assert_eq!(pair["reviewer"]["provider"], "codex");
         assert!(pair["skipped"][0].as_str().unwrap().contains("reviewer claude/opus: requires a model distinct"));
     }
-
-    #[test]
-    fn review_skips_claude_when_disabled() {
-        let (mut table, mut claude) = models::test_one_shot_gate(&["reviewer", "architect"], false);
-        table.get_mut("architect").unwrap()["candidates"][1]["model"] = json!("architect-fallback");
-        let pair = review_models(&table, &mut claude, &["codex/author".into()], true, |_, _| Ok(())).unwrap();
-        for (index, role) in ["reviewer", "architect"].into_iter().enumerate() {
-            assert_eq!(pair[role]["provider"], "codex");
-            assert!(pair["skipped"][index].as_str().unwrap().contains(&format!("{role} claude/opus: Claude is not an executor of this run: not enabled")));
-        }
-    }
 }

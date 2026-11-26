@@ -143,9 +143,17 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, FIXED })
     f.answer("review", f.review("approved"));
     f.answer("architecture", f.review("approved"));
     const args = path.join(f.w.dir, "branch.json");
+    const claude = { provider: "claude", model: "opus", effort: "high" };
     fs.writeFileSync(args, JSON.stringify({
       label: "review", repo: f.r, base: f.base, author: ["codex/fake-writer"], architecture: true,
-      models: { architect: { candidates: [{ provider: "codex", model: "fake-architect", effort: "high" }] } },
+      models: {
+        reviewer: { candidates: [
+          claude,
+          { provider: "codex", model: "fake-writer", effort: "medium" },
+          { provider: "codex", model: "fake-reviewer", effort: "high" },
+        ] },
+        architect: { candidates: [claude, { provider: "codex", model: "fake-architect", effort: "high" }] },
+      },
       context: ["src/math.mjs"],
     }));
     const first = await flow(["branch-review", "--args", args], { ZODCHI_FLOW_CUT: "submit review" });
@@ -159,6 +167,12 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, FIXED })
       [0, id, "2", originalHead, ["src/math.mjs"], true], "the pinned range was reviewed under the original run ID");
     t.eq([done.json.models.reviewer.model, done.json.models.architect.model], ["fake-reviewer", "fake-architect"],
       "reviewer and architect are distinct from the authors and each other");
+    t.eq([done.json.models.reviewer.provider, done.json.models.architect.provider], ["codex", "codex"],
+      "both review roles use the Codex fallback when Claude is disabled");
+    for (const role of ["reviewer", "architect"]) {
+      t.ok(done.json.models.skipped.some(reason => reason.includes(`${role} claude/opus: Claude is not an executor of this run: not enabled`)),
+        `the pinned picks explain why the ${role} skipped Claude`);
+    }
     const status = await flow(["status", id]);
     t.eq([status.json?.workflow, status.json?.status, status.json?.result?.head],
       ["branch-review", "finished", originalHead], "any CLI reads the same result");
