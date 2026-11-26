@@ -9,6 +9,8 @@ export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, r
   const release = (args) => JSON.parse(execFileSync(ZODCHI, ["release", ...args], {
     cwd: ROOT, encoding: "utf8", windowsHide: true,
   }));
+  let builtBundle;
+  const releaseBundle = () => builtBundle ??= release(["build", "--out", path.join(scratch, "flow-release"), "--archive"]);
 
   function researchFixture(t, name, count = 1) {
     const f = flowWorld(t, name);
@@ -246,7 +248,7 @@ export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, r
     `);
     const ext = process.platform === "win32" ? ".exe" : "";
     for (const client of ["codex", "claude"]) fs.copyFileSync(process.execPath, path.join(bin, client + ext));
-    const bundle = release(["build", "--out", path.join(fixture, "bundle"), "--archive"]);
+    const bundle = releaseBundle();
     const env = { ...process.env, ZODCHI_HOME: path.join(fixture, "home"), FAKE_CLIENT_HOME: fixture,
       CODEX_HOME: path.join(fixture, "codex-config"), CLAUDE_CONFIG_DIR: path.join(fixture, "claude-config"),
       ZODCHI_CODEX_BIN: path.join(bin, "codex" + ext), NODE_OPTIONS: `--require "${clientScript.replace(/\\/g, "/")}"` };
@@ -266,8 +268,8 @@ export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, r
     }
   });
   scenario("flow-release-bundle", "the binary, catalog and both native manifests travel together in a versioned bundle", async (t) => {
-    const output = path.join(scratch, "flow-release");
-    const built = release(["build", "--out", output, "--archive"]);
+    const built = releaseBundle();
+    const output = built.root;
     const receipt = JSON.parse(fs.readFileSync(path.join(output, "release.json"), "utf8"));
     const read = (file) => JSON.parse(fs.readFileSync(path.join(output, "marketplace", "plugins", "zodchi", file), "utf8"));
     t.eq([read(".codex-plugin/plugin.json").version, read(".claude-plugin/plugin.json").version, receipt.version],
@@ -307,7 +309,7 @@ export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, r
     const f = flowWorld(t, "dev-revision");
     const location = path.join(scratch, "dev-package");
     fs.mkdirSync(location);
-    const packed = release(["build", "--out", path.join(location, "bundle"), "--archive"]);
+    const packed = releaseBundle();
     const sha256 = bytes => crypto.createHash("sha256").update(bytes).digest("hex");
     const invoke = (program, args) => run(t, program, args, { cwd: f.r, env: f.w.env });
     const activate = async (commit) => {

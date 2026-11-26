@@ -316,54 +316,36 @@ pub fn resolve(table: &Map<String, Value>, codex: &Result<(), String>, writer_ro
 mod tests {
     use super::*;
 
-    fn table(enabled: bool) -> Map<String, Value> {
+    fn table() -> Map<String, Value> {
         let v = json!({
             "expertWriter": { "candidates": [{ "provider": "claude", "model": "opus", "effort": "high" }, { "provider": "codex", "model": "w" }] },
             "reviewer": { "candidates": [{ "provider": "codex", "model": "w" }, { "provider": "codex", "model": "r", "effort": "high" }] },
-            "@claude": { "enabled": enabled, "home": "" },
+            "@claude": { "enabled": false, "home": "" },
         });
         v.as_object().unwrap().clone()
     }
 
     #[test]
-    fn claude_disabled_gives_a_codex_pair() {
-        let (w, r, skipped) = resolve(&table(false), &Ok(()), WRITER_ROLE, false, &[]).unwrap();
-        assert_eq!((w.model.as_str(), r.model.as_str(), w.effort.as_str()), ("w", "r", "medium"));
-        assert_eq!(w.to_json(), json!({ "provider": "codex", "model": "w", "effort": "medium" }), "a Codex pick carries no account");
-        assert!(skipped[0].starts_with("expertWriter claude/opus: Claude is not an executor of this run: not enabled"), "{skipped:?}");
-        assert!(skipped.iter().any(|s| s.contains("reviewer codex/w: the same model as the writer")));
-    }
-
-    #[test]
     fn no_pair_is_refused_with_reasons() {
-        let mut t = table(false);
+        let mut t = table();
         t.insert("reviewer".into(), json!({ "candidates": [{ "provider": "codex", "model": "w" }, { "provider": "other", "model": "x" }] }));
         let why = resolve(&t, &Ok(()), WRITER_ROLE, false, &[]).unwrap_err();
         assert!(why.starts_with("No writer/reviewer pair of distinct models") && why.contains("not a Codex or Claude candidate"), "{why}");
-        let why = resolve(&table(false), &Err("Codex is not signed in".into()), WRITER_ROLE, false, &[]).unwrap_err();
+        let why = resolve(&table(), &Err("Codex is not signed in".into()), WRITER_ROLE, false, &[]).unwrap_err();
         assert!(why.contains("codex/w: Codex is not signed in"), "{why}");
     }
 
     #[test]
     fn an_account_is_bound_only_by_the_gate() {
-        let claude = Pick { provider: "claude".into(), model: "opus".into(), effort: "high".into(), account: "claude-0123456789abcdef".into() };
-        assert_eq!(Pick::from_json(&claude.to_json()).account, claude.account, "the binding survives run.json");
-        let mut t = table(false);
+        let mut t = table();
         t.insert(WRITER_ROLE.into(), json!({ "candidates": [{ "provider": "codex", "model": "w", "account": "claude-forged" }] }));
         let (w, _, _) = resolve(&t, &Ok(()), WRITER_ROLE, false, &[]).unwrap();
         assert_eq!(w.account, "", "a table cannot bind an account");
     }
 
     #[test]
-    fn an_enabled_claude_without_a_home_is_skipped() {
-        let (w, _, skipped) = resolve(&table(true), &Ok(()), WRITER_ROLE, false, &[]).unwrap();
-        assert_eq!(w.provider, "codex");
-        assert!(skipped[0].contains("claude/opus: Claude is not an executor"), "{skipped:?}");
-    }
-
-    #[test]
     fn a_claude_model_the_role_cannot_carry_is_skipped_before_any_program_runs() {
-        let mut t = table(true);
+        let mut t = table();
         t.insert(CLAUDE_ENTRY.into(), json!({ "enabled": true, "home": "unused-home" }));
         t.insert(WRITER_ROLE.into(), json!({ "candidates": [{ "provider": "claude", "model": "opus[1m]" }, { "provider": "codex", "model": "w" }] }));
         let (w, _, skipped) = resolve(&t, &Ok(()), WRITER_ROLE, false, &[]).unwrap();

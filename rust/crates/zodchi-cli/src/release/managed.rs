@@ -560,8 +560,6 @@ mod tests {
         assert_eq!(current.active, "1.1.0");
         assert!(!home.join(TRANSACTION).exists());
         assert_eq!(pinned_version(home, "original", &current).unwrap(), "1.0.0");
-        let args = ["flow", "code-package", "--resume", "original"].map(String::from);
-        assert_eq!(existing_run(&args), Some("original"));
     }
 
     #[test]

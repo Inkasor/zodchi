@@ -24,13 +24,14 @@ function listFile(cwd, name, jobs, role) {
   return file;
 }
 
-export default function ({ scenario, world, repo, prompt, zodchi, samePath }) {
+export function registerBatchSubmit({ scenario, world, repo, prompt, zodchi }, checkListFields) {
   scenario("gateway-batch-submit", "list preflight, ordered submission, resolved roles and idempotency", async t => {
     const w = world("gateway-batch-submit");
     const cwd = repo(t, w);
     const call = (...args) => zodchi(t, w, args, { cwd });
     const jobDir = key => path.join(cwd, ".agent-tmp", "gateway", key);
     const stored = key => JSON.parse(fs.readFileSync(path.join(jobDir(key), "request.json"), "utf8"));
+    await checkListFields(t, { w, cwd, prompt, call, jobDir });
     const entries = ["plain", "attached", "structured"].map(key => {
       const file = `${key}.md`;
       fs.writeFileSync(path.join(cwd, file), `marker-${key}`);
@@ -101,7 +102,9 @@ export default function ({ scenario, world, repo, prompt, zodchi, samePath }) {
     for (const key of keys) t.eq(turns(w.codex, `marker-${key}`).length, 1, `repeat did not rerun ${key}`);
     t.eq(["fresh-marker", "original-marker", "changed-marker"].map(word => turns(w.codex, word).length), [1, 1, 0], "the partial submission ran only the two original requests");
   });
+}
 
+export default function ({ scenario, world, repo, prompt, zodchi, samePath }) {
   scenario("gateway-wait-many", "batch wait conditions, deadlines, ordered delivery and destination ownership", async t => {
     const w = world("gateway-wait-many");
     const cwd = repo(t, w);
@@ -122,7 +125,7 @@ export default function ({ scenario, world, repo, prompt, zodchi, samePath }) {
     for (const args of [
       ["--list", form], ["--all"], ["--all", "--any", "--list", form], ["--all", "--key", "text-job"],
       ["--all", "--list", form, "--out", "wrong.md"], ["--all", "--keys", ""],
-      ["--all", "--list", form, "--keys", "x"], ["--any", "--keys", "text-job,text-job"],
+      ["--any", "--keys", "text-job,text-job"],
       ["--all", "--list", listFile(cwd, "empty", [])], ["--all", "--keys", "x", "--keys", "x"],
       ["--all", "--keys", "../bad"], ["--all", "--list", listFile(cwd, "repeat", [{ key: "x" }, { key: "x" }])],
     ]) {

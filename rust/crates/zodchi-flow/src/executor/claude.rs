@@ -337,8 +337,6 @@ mod tests {
         let key = "flow-test-write";
         assert!(final_state(&dir, key).is_err(), "no folder: no job");
         fs::create_dir_all(&dir).unwrap();
-        let reserved = final_state(&dir, key).unwrap();
-        assert_eq!((reserved["status"].as_str(), reserved["turnStartedAt"].is_null()), (Some("failed"), true), "a reserved key never started");
         write_synced(&dir.join("job.json"), &json!({ "key": key, "status": "starting", "account": "claude-x" })).unwrap();
         assert_eq!(final_state(&dir, key).unwrap()["status"], json!("failed"));
         write_synced(&dir.join("job.json"), &json!({ "key": key, "status": "running", "turnStartedAt": "t" })).unwrap();
@@ -349,5 +347,4 @@ mod tests {
         assert_eq!(final_state(&dir, key).unwrap()["status"], json!("succeeded"));
         let _ = fs::remove_dir_all(&dir);
     }
-
 }

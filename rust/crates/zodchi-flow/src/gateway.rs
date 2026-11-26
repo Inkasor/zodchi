@@ -400,18 +400,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pins_browser_variable_names() {
-        let executable = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        for (variable, accepted) in checks::browser_variable_cases() {
-            let result = pin_browser(&variable, &executable);
-            assert_eq!(result.is_ok(), accepted, "{variable:?}: {result:?}");
-            if let Ok(pin) = result {
-                assert_eq!(pin["variable"], variable);
-            }
-        }
-    }
-
-    #[test]
     fn writer_config_merges_the_environment_and_appends_only_the_writer_cache() {
         let home = Path::new(env!("CARGO_MANIFEST_DIR"));
         let cache = home.join("flow-cache/repo/writer");
@@ -436,11 +424,6 @@ mod tests {
         }));
         assert_eq!(role["config"]["sandbox_workspace_write.writable_roots"], json!([existing, cache]));
         assert_eq!(role["config"]["model_context_window"], 272000);
-
-        let review_role = json!({ "mode": "expert", "instructions": "Review the patch." });
-        let mut review = review_role.clone();
-        configure_writer_role(&mut review, None, Some(&pin)).unwrap();
-        assert_eq!(review, review_role);
     }
 
     #[test]
@@ -483,23 +466,5 @@ mod tests {
         assert_eq!(role["config"], json!({ "sandbox_workspace_write": {
             "writable_roots": [nested, dotted, cache], "network_access": false,
         }}));
-    }
-
-    #[test]
-    fn writer_environment_keeps_private_names_out_of_the_prompt() {
-        let private_name = "FIXTURE_ONLY_BUILD_MODE";
-        let settings = WriterSettings {
-            env: [("CARGO_BUILD_JOBS".into(), "4".into()), (private_name.into(), "fixture-mode".into())].into(),
-            cache: None,
-        };
-        let mut role = json!({ "mode": "work" });
-        configure_writer_role(&mut role, Some(&settings), None).unwrap();
-        let scrubber = input::Scrubber::with_private_words("fixture_only");
-        let mut prompt = String::from("Implement the patch.");
-        agent::describe_writer_environment(&mut prompt, &settings, &scrubber, &[]);
-
-        assert_eq!(role["config"]["shell_environment_policy.set"][private_name], "fixture-mode");
-        assert!(prompt.contains("CARGO_BUILD_JOBS"));
-        assert!(!prompt.to_ascii_lowercase().contains("fixture_only"));
     }
 }

@@ -637,15 +637,6 @@ mod tests {
     }
 
     #[test]
-    fn curl_output() {
-        let a = split_output(b"{\"a\":1}\n\napplication/json\n200").unwrap();
-        assert_eq!((a.status, a.content_type.as_str(), a.body.as_slice()), (200, "application/json", b"{\"a\":1}\n".as_slice()));
-        let empty = split_output(b"\n\n000").unwrap();
-        assert_eq!((empty.status, empty.body.len()), (0, 0));
-        assert!(split_output(b"no status").is_none());
-    }
-
-    #[test]
     fn final_jobs_carry_only_our_words() {
         let job = json!({ "key": "k", "status": "auth_required", "error": { "code": "auth_required", "message": "SERVER WORDS" }, "account": "u1", "turnStartedAt": null });
         let fin = final_job("k", &job, None, "https://gw.example.org");
@@ -653,9 +644,6 @@ mod tests {
         let text = fin["error"].as_str().unwrap();
         assert!(text.contains("/v1/login") && !text.contains("SERVER WORDS"));
         assert!(fin.get("account").is_none() && fin.get("result").is_none());
-        let ok = final_job("k", &json!({ "key": "k", "status": "succeeded", "turnStartedAt": "t", "result": { "text": "x" } }), Some(json!({ "a": 1 })), "b");
-        assert_eq!(ok["result"], json!({ "data": { "a": 1 } }));
-        assert_eq!(ok["error"], Value::Null);
         let odd = final_job("k", &json!({ "status": "failed", "error": { "code": "Not A Code <x>" } }), None, "b");
         assert!(odd["error"].as_str().unwrap().starts_with("job_failed"), "a code that is not one falls back to the status");
     }

@@ -43,10 +43,10 @@ export default function (h) {
     const runId = () => fs.readdirSync(path.join(f.w.zhome, "flows"))[0];
     const events = (id) => readJsonl(path.join(f.w.zhome, "flows", id, "events.jsonl"));
     /** The token is in no file of the journal, in no output of the run and in no commit. */
-    const noToken = (res, id) => {
+    const noToken = (res, id, ...earlier) => {
       const leaks = filesUnder(path.join(f.w.zhome, "flows", id)).filter((file) => fs.readFileSync(file, "utf8").includes(u.token));
       t.eq(leaks, [], "the token is in no file of the journal");
-      t.ok(!res.out.includes(u.token) && !res.err.includes(u.token), "the token is in no output of the run");
+      t.ok([res, ...earlier].every(({ out, err }) => !out.includes(u.token) && !err.includes(u.token)), "the token is in no output of the run");
       t.ok(!gitOut(f.r, ["log", "-p", "--all"]).includes(u.token), "the token is in no commit");
     };
     return { ...f, data, u, o, server, tokenFile, jobsDir, answer, steps, turn, jobs, request, runId, events, noToken };
@@ -54,13 +54,17 @@ export default function (h) {
 
   const schemaOf = (name, version = "v1") => JSON.parse(fs.readFileSync(path.join(ROOT, "rust", "crates", "zodchi-flow", "flows", "code-package", version, name), "utf8"));
 
-  scenario("flow-server-approve", "zodchi flow code-package with its model steps on a zodchi-server: the writer and the reviewer run on the server under the user's subscription, with the flow's own schemas; apply, checks, commit and journal stay local; the token reaches no journal, output or commit", async (t) => {
+  scenario("flow-server-approve", "resume a server-backed code package after posting the writer job: one server turn per step with the flow schemas, local checks and commit, no token in the journal, output or commit", async (t) => {
     const s = await serverWorld(t, "flow-server-approve");
     s.answer("write", s.patch([s.modify("src/math.mjs", STUB, FIXED)]));
     s.answer("review 1", s.review("approved"));
-    const res = await s.flow(["--args", s.args()]);
-    t.eq([res.code, res.json && res.json.verdict, res.json && res.json.approved], [0, "approved", true], "the run ends approved, exit 0");
-    const id = res.json.runId;
+    const first = await s.flow(["--args", s.args()], { ZODCHI_FLOW_CUT: "submit write" });
+    t.eq(first.code, 75, "cut right after the write job was posted");
+    const id = s.runId();
+    t.eq(s.jobs(), [`flow-${id}-write`], "the server took the write job");
+    t.eq(s.claim().status, "open", "the claim stays open across the cut");
+    const res = await s.flow(["--resume", id]);
+    t.eq([res.code, res.json?.verdict, res.json?.approved, res.json?.runId], [0, "approved", true, id], "the resumed run ends approved, exit 0");
     t.eq(s.steps(), ["write", "review 1"], "the writer and the reviewer each ran once, on the server");
     t.eq(readJsonl(path.join(s.w.codex, "fake-turns.jsonl")).length, 0, "no model turn ran on this machine");
     t.eq(s.jobs(), [`flow-${id}-review-1`, `flow-${id}-write`], "the server holds one job per step, under the journaled keys");
@@ -74,30 +78,13 @@ export default function (h) {
     t.ok(reviewTurn.prompt.includes("REVIEW-BASE-MARKER") && reviewTurn.prompt.includes('<attachment path="change.diff">'), "the review prompt carries the base REVIEW.md and the diff, inlined");
     t.eq(s.commits().length, 1, "one commit, made locally");
     t.ok(gitOut(s.r, ["log", "-1", "--format=%B"]).includes("Verified: checks exit 0; args.verify exit 0"), "the commit carries the stamp of the local checks");
-    const intents = s.events(id).filter((e) => e.kind === "intent" && e.effect === "gateway job");
-    t.eq(intents.map((e) => [e.step, e.executor]), [["write", "server"], ["review 1", "server"]], "each model step's intent names the server executor");
-    t.eq(s.claim().status, "done", "the claim is closed as done");
-    s.noToken(res, id);
-  });
-
-  scenario("flow-server-resume", "a cut right after POST /v1/jobs of the write step: --resume looks the journaled key up on the server and waits for that job; the model is asked once, one intent, one job per step", async (t) => {
-    const s = await serverWorld(t, "flow-server-resume");
-    s.answer("write", s.patch([s.modify("src/math.mjs", STUB, FIXED)]));
-    s.answer("review 1", s.review("approved"));
-    const first = await s.flow(["--args", s.args()], { ZODCHI_FLOW_CUT: "submit write" });
-    t.eq(first.code, 75, "cut right after the write job was posted");
-    const id = s.runId();
-    t.eq(s.jobs(), [`flow-${id}-write`], "the server took the write job");
-    t.eq(s.claim().status, "open", "the claim stays open across the cut");
-    const res = await s.flow(["--resume", id]);
-    t.eq([res.code, res.json && res.json.verdict, res.json && res.json.runId], [0, "approved", id], "the resumed run ends approved");
-    t.eq(s.steps(), ["write", "review 1"], "each model turn ran once");
-    t.eq(s.jobs(), [`flow-${id}-review-1`, `flow-${id}-write`], "no second write job: the key was looked up, never submitted under a new one");
     const events = s.events(id);
+    const intents = events.filter((e) => e.kind === "intent" && e.effect === "gateway job");
+    t.eq(intents.map((e) => [e.step, e.executor]), [["write", "server"], ["review 1", "server"]], "each model step's intent names the server executor");
     t.eq(events.filter((e) => e.kind === "intent" && e.step === "write").length, 1, "one intent for the write step");
     t.eq(events.filter((e) => e.kind === "submitted" && e.step === "write").length, 0, "the resumed run did not submit the write step again");
-    t.eq(s.commits().length, 1, "one commit");
-    s.noToken(res, id);
+    t.eq(s.claim().status, "done", "the claim is closed as done");
+    s.noToken(res, id, first);
   });
 
   scenario("flow-server-resume-before-post", "the write step's intent is journaled and its POST /v1/jobs stores nothing, as a cut between the two leaves it: --resume posts the journaled request again under the same key, and only with the token of the account it was made for; the model is asked once", async (t) => {
