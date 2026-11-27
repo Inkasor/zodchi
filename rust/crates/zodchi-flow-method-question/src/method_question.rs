@@ -1,14 +1,5 @@
 //! Research the real object and game implementations, then prepare a traceable options sheet.
 
-use crate::{
-    boundary::Launch, catalog::ProjectGate,
-    gateway,
-    git::Git,
-    input_common,
-    journal::Journal,
-    models::{self, Pick},
-    Exit,
-};
 use serde_json::{json, Map, Value};
 use std::{
     collections::BTreeMap,
@@ -21,7 +12,17 @@ use zodchi_core::{
     role::{load_role, Overrides},
     util::{fail, is_key, iso, sha256_hex, GatewayError, Result},
 };
-use zodchi_flow_engine::publish::publish;
+use zodchi_flow_engine::{
+    boundary::{self, Launch},
+    catalog::ProjectGate,
+    gateway,
+    git::Git,
+    input_common,
+    journal::{self, Journal},
+    models::{self, Pick},
+    publish::publish,
+    Exit,
+};
 
 pub const NAME: &str = "method-question";
 const VERSION: &str = "1";
@@ -203,7 +204,7 @@ fn prepare(raw: &Value, require_workflow: ProjectGate) -> Result<(String, Journa
     let pair = method_models(&table, &mut claude, &researcher_role, &editor_role, codex)?;
     fs::create_dir_all(&tmp)?;
     let tmp = fs::canonicalize(&tmp)?;
-    let id = crate::journal::new_run_id();
+    let id = journal::new_run_id();
     let out = tmp.join(format!("method-{id}"));
     fs::create_dir(&out)?;
     let material = json!({ "context": context, "questions": questions });
@@ -214,7 +215,7 @@ fn prepare(raw: &Value, require_workflow: ProjectGate) -> Result<(String, Journa
         "pair": pair,
     });
     let journal = Journal::create(&cfg.home, &id, &run)?;
-    crate::boundary::cut("start method question");
+    boundary::cut("start method question");
     Ok((id, journal))
 }
 
