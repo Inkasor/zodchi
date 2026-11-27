@@ -2,14 +2,14 @@
 
 use crate::{args, checks, claims, git::Git, input_common, patch};
 use input_common::{Scrubber, Withholding};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use zodchi_core::config::Config;
 use zodchi_core::job::{compose_prompt, LIMIT_PROMPT};
-use zodchi_core::util::{fail, GatewayError, Result};
+use zodchi_core::util::{fail, sha256_hex, GatewayError, Result};
 
 const MAX_SOURCE: usize = LIMIT_PROMPT / 3;
 const PRIVATE_PATH: &str = "[private path removed]";
@@ -69,7 +69,7 @@ fn text_list(value: &Value, name: &str) -> Result<Vec<String>> {
     }
 }
 
-pub fn capture(raw: &Value, cfg: &Config) -> Result<Value> {
+pub fn capture(raw: &Value, cfg: &Config) -> Result<(Value, bool)> {
     let repos = text_list(&raw["repos"], "args.repos")?;
     if repos.is_empty() {
         return fail("Design brief needs at least one repository.");
@@ -110,9 +110,46 @@ pub fn capture(raw: &Value, cfg: &Config) -> Result<Value> {
         }
         sources.push(json!({ "id": id, "root": root, "head": head }));
     }
-    let places = places(cfg, &sources);
-    let screen = |text: &str| clean(&scrubber, text, &places, public);
-    let mut task = TaskScreening::new(&scrubber, &places, public);
+    let mut material = json!({
+        "inventory": inventory, "sources": sources, "public": public,
+        "allowPrivateWords": allowed, "oversized": oversized,
+    });
+    let CapturedTask { screened, locations, word_exception, rewrote_paths } =
+        capture_task(raw, cfg, &material, &scrubber)?;
+    if locations.is_empty() {
+        if let Some(problem) = screened.get("taskProblem").and_then(Value::as_str) {
+            return fail(problem);
+        }
+    } else {
+        material["taskScreening"] = json!({ "locations": locations });
+        if let Some(approved) = word_exception {
+            // Bind a future approval to this snapshot without storing its words or lines.
+            material["taskScreening"]["wordApprovalSha256"] = json!(sha256_hex(approved.to_string()));
+        }
+    }
+    material.as_object_mut().expect("pinned material").extend(screened);
+    Ok((material, rewrote_paths))
+}
+
+struct CapturedTask {
+    screened: Map<String, Value>,
+    locations: Vec<String>,
+    word_exception: Option<Value>,
+    rewrote_paths: bool,
+}
+
+pub(crate) fn task_word_exception(raw: &Value, cfg: &Config, material: &Value) -> Result<Option<Value>> {
+    let scrubber = scrubber(cfg, material)?;
+    Ok(capture_task(raw, cfg, material, &scrubber)?.word_exception)
+}
+
+fn capture_task(raw: &Value, cfg: &Config, material: &Value, scrubber: &Scrubber) -> Result<CapturedTask> {
+    let sources = material["sources"].as_array().expect("pinned sources");
+    let inventory = material["inventory"].as_array().expect("pinned inventory");
+    let public = material["public"] == true;
+    let places = places(cfg, sources);
+    let screen = |text: &str| clean(scrubber, text, &places, public);
+    let mut task = TaskScreening::new(scrubber, &places, public);
     let goal = raw["goal"]
         .as_str()
         .filter(|goal| !goal.trim().is_empty())
@@ -146,12 +183,12 @@ pub fn capture(raw: &Value, cfg: &Config) -> Result<Value> {
             }
         }
     }
-    for source in &sources {
+    for source in sources {
         let alias = source["id"].as_str().unwrap_or("");
         for path in ["AGENTS.md", "CLAUDE.md"] {
             let name = format!("{alias}/{path}");
-            if inventory.contains(&name) {
-                if let SourceText::Screened(text) = read_source(&sources, &name, &screen)? {
+            if inventory.iter().any(|file| file.as_str() == Some(name.as_str())) {
+                if let SourceText::Screened(text) = read_source(sources, &name, &screen)? {
                     documents.push((name, false, TaskText::same(text)));
                 }
             }
@@ -195,11 +232,11 @@ pub fn capture(raw: &Value, cfg: &Config) -> Result<Value> {
                     let root = claims::norm(repo["root"].as_str().unwrap_or(""))?;
                     let name = args::rel(&root, &hint).map_err(GatewayError)?;
                     let alias = format!("{}/{name}", repo["id"].as_str().unwrap_or(""));
-                    if let Some(bytes) = oversized.get(&alias) {
-                        return fail(source_size_error(&alias, *bytes));
+                    if let Some(bytes) = material["oversized"][&alias].as_u64() {
+                        return fail(source_size_error(&alias, bytes as usize));
                     }
-                    if !inventory.contains(&alias)
-                        || question_source(&sources, &alias, &screen)?.is_none()
+                    if !repository_alias(material, &alias)
+                        || question_source(sources, &alias, &screen)?.is_none()
                     {
                         return fail(
                             "A question file is outside the available, screened Git source.",
@@ -213,25 +250,18 @@ pub fn capture(raw: &Value, cfg: &Config) -> Result<Value> {
             questions.push((task.screen(&format!("questions[{}]", index + 1), text), files));
         }
     }
-    let mut material = task_material(&goal, &documents, &questions, false)?;
-    if task.locations.is_empty() {
-        if let Some(problem) = material["taskProblem"].as_str() {
-            return fail(problem);
-        }
+    let screened = task_material(&goal, &documents, &questions, false)?;
+    let word_exception = if task.words.is_empty() {
+        None
     } else {
-        let with_words = if task.words.is_empty() {
-            None
-        } else {
-            Some(task_material(&goal, &documents, &questions, true)?)
-        };
-        material["taskScreening"] = json!({ "locations": task.locations, "words": task.words, "withWords": with_words });
-    }
-    material["inventory"] = json!(inventory);
-    material["sources"] = json!(sources);
-    material["public"] = json!(public);
-    material["allowPrivateWords"] = json!(allowed);
-    material["oversized"] = json!(oversized);
-    Ok(material)
+        Some(json!({
+            "allowPrivateWords": task.words,
+            "withWords": task_material(&goal, &documents, &questions, true)?,
+        }))
+    };
+    Ok(CapturedTask {
+        screened, locations: task.locations, word_exception, rewrote_paths: task.rewrote_paths,
+    })
 }
 
 struct TaskText {
@@ -261,11 +291,12 @@ struct TaskScreening<'a> {
     public: bool,
     locations: Vec<String>,
     words: BTreeSet<String>,
+    rewrote_paths: bool,
 }
 
 impl<'a> TaskScreening<'a> {
     fn new(scrubber: &'a Scrubber, places: &'a [(String, &'static str)], public: bool) -> Self {
-        Self { scrubber, places, public, locations: Vec::new(), words: BTreeSet::new() }
+        Self { scrubber, places, public, locations: Vec::new(), words: BTreeSet::new(), rewrote_paths: false }
     }
 
     fn screen(&mut self, name: &str, raw: &str) -> TaskText {
@@ -284,12 +315,12 @@ impl<'a> TaskScreening<'a> {
                 }
                 reason => reason,
             };
-            let (visible, allowed) = match (reason, line != path_screened) {
-                (Some(Withholding::PrivateWord) | None, true) => {
+            let (visible, allowed) = match (reason, line != path_screened, path_screened == PRIVATE_PATH) {
+                (Some(Withholding::PrivateWord), true, _) | (None, true, true) => {
                     self.locations.push(format!("{name}:{location} (private-path)"));
                     (PRIVATE_PATH, PRIVATE_PATH)
                 }
-                (Some(reason), _) => {
+                (Some(reason), _, _) => {
                     self.locations.push(format!("{name}:{location} ({})", reason.reason()));
                     let marker = reason.marker();
                     let allowed = if self.public && matches!(reason, Withholding::PrivateWord) {
@@ -300,7 +331,10 @@ impl<'a> TaskScreening<'a> {
                     };
                     (marker, allowed)
                 }
-                (None, false) => (line, line),
+                (None, rewritten, _) => {
+                    self.rewrote_paths |= rewritten;
+                    (path_screened, path_screened)
+                }
             };
             screened.push(visible);
             with_words.push(allowed);
@@ -318,7 +352,7 @@ fn task_material(
     documents: &[(String, bool, TaskText)],
     questions: &[(TaskText, Vec<String>)],
     allow: bool,
-) -> Result<Value> {
+) -> Result<Map<String, Value>> {
     let documents_for = |include_extracts| documents.iter()
         .filter(|(_, extract, _)| include_extracts || !*extract)
         .map(|(name, _, text)| (name.clone(), text.select(allow).as_bytes().to_vec()))
@@ -333,16 +367,21 @@ fn task_material(
         .map(|(text, files)| json!({ "question": text.select(allow), "files": files })).collect();
     let needs_plan = questions.is_empty() || questions.iter()
         .any(|question| question["files"].as_array().is_some_and(Vec::is_empty));
-    let mut material = json!({ "context": context, "researchContext": research_context,
-        "extracts": extracts, "questions": questions, "needsPlan": needs_plan });
+    let mut material = Map::from_iter([
+        ("context".into(), json!(context)),
+        ("researchContext".into(), json!(research_context)),
+        ("extracts".into(), json!(extracts)),
+        ("questions".into(), json!(questions)),
+        ("needsPlan".into(), json!(needs_plan)),
+    ]);
     let max_context = LIMIT_PROMPT / 2;
     if !goal.usable(allow) {
-        material["taskProblem"] = json!("No goal remains after screening. Start a new design-brief run with a rephrased goal.");
+        material.insert("taskProblem".into(), json!("No goal remains after screening. Start a new design-brief run with a rephrased goal."));
     } else if context.len() > max_context {
-        material["taskProblem"] = json!(format!(
+        material.insert("taskProblem".into(), json!(format!(
             "The goal and screened context need {} UTF-8 bytes (limit {max_context}). Shorten the goal or the input documents.",
             context.len()
-        ));
+        )));
     }
     Ok(material)
 }
@@ -427,7 +466,11 @@ pub fn clean(
     places: &[(String, &str)],
     public: bool,
 ) -> String {
-    let mut screened = screen_public_paths(scrubber.text(text, places), public);
+    trim_public_text(scrubber.text(text, places), public)
+}
+
+fn trim_public_text(text: String, public: bool) -> String {
+    let mut screened = screen_public_paths(text, public);
     if public && screened.ends_with('\n') {
         screened.pop();
     }
@@ -562,7 +605,7 @@ pub(crate) fn question_sources(
     let available = material["sources"].as_array().expect("pinned Git sources");
     let scrubber = scrubber(cfg, material)?;
     let places = places(cfg, available);
-    let screen = |text: &str| clean(&scrubber, text, &places, material["public"] == true);
+    let screen = |text: &str| trim_public_text(scrubber.repository_text(text, &places), material["public"] == true);
     let mut sources = BTreeMap::new();
     let mut omitted = Vec::new();
     for file in text_list(&question["files"], "question.files")? {

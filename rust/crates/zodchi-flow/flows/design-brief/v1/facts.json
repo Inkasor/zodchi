@@ -13,7 +13,10 @@
           "claim": { "type": "string" },
           "file": { "type": "string", "description": "The alias of the supplied source attachment." },
           "line": { "type": "integer" },
-          "quote": { "type": "string" }
+          "quote": {
+            "type": "string",
+            "description": "A verbatim excerpt from the visible source line, without its displayed line number. Cite visible code comparisons as written and report withheld lines in unknowns."
+          }
         }
       }
     },

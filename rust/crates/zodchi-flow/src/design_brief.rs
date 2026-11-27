@@ -28,6 +28,7 @@ const VERSION_ONE_DIGEST: &str = "a65a6ed024f68fe54d475a3879dd3de0a4d741de444ed1
 const PLAN: &str = include_str!("../flows/design-brief/v1/plan.json");
 const FACTS: &str = include_str!("../flows/design-brief/v1/facts.json");
 const DRAFT: &str = include_str!("../flows/design-brief/v1/draft.json");
+const FOLLOW_UP_REVIEW: &str = include_str!("../flows/design-brief/v1/review.md");
 const REQUIRED_HEADINGS: [&str; 2] = ["## Review boundary", "## Checks"];
 const ROLES: [&str; 2] = ["flow-brief", "architecture-review"];
 const EVIDENCE_STEP: &str = "repository evidence";
@@ -37,6 +38,8 @@ const STOP: &str = "Stop";
 const CONTINUE_SCREENED: &str = "Continue without those lines";
 const REPHRASE_TASK: &str = "Stop to rephrase";
 const ALLOW_TASK_WORDS: &str = "Allow these words for this run";
+const REVIEW_DECISION_STEP: &str = "review clarifications";
+const ACCEPT_CLARIFICATIONS: &str = "Accept with clarifications";
 
 pub fn start(raw: &Value, launch: Option<Launch>, require_workflow: ProjectGate) -> Result<Exit> {
     match prepare(raw, require_workflow) {
@@ -96,7 +99,7 @@ fn prepare(raw: &Value, require_workflow: ProjectGate) -> Result<(String, Journa
     {
         return fail("The requested output already belongs to another file.");
     }
-    let material = design_material::capture(raw, &Config::new(None)?)?;
+    let (material, rewrote_paths) = design_material::capture(raw, &Config::new(None)?)?;
     let selected = &material["sources"][0];
     let target = design_material::absolute(&selected["root"], "target repository")?;
     require_workflow(
@@ -122,13 +125,16 @@ fn prepare(raw: &Value, require_workflow: ProjectGate) -> Result<(String, Journa
     let needs_task_choice = !material["taskScreening"].is_null();
     let material = material.to_string();
     let material_digest = sha256_hex(&material);
-    let (pair, inputs) = if needs_task_choice {
+    let pair = if needs_task_choice {
         // Model selection can make a Claude preflight call, so wait for the task choice.
-        (Value::Null, json!({ "argsSha256": args_digest(raw), "models": raw["models"],
-            "materialSha256": material_digest }))
+        Value::Null
     } else {
-        (select_models(&cfg, &root, &raw["models"])?,
-            json!({ "args": raw, "materialSha256": material_digest }))
+        select_models(&cfg, &root, &raw["models"])?
+    };
+    let inputs = if needs_task_choice || rewrote_paths {
+        json!({ "argsSha256": args_digest(raw), "models": raw["models"], "materialSha256": material_digest })
+    } else {
+        json!({ "args": raw, "materialSha256": material_digest })
     };
     let id = journal::new_run_id();
     let run = json!({
@@ -239,7 +245,7 @@ pub fn resume(id: &str, given: Option<&Value>, rerun: Option<&str>) -> Result<Ex
     let mut material: Value = serde_json::from_str(&material)
         .map_err(|e| GatewayError(format!("Cannot read pinned design inputs: {e}")))?;
     let mut context = json!({ "workflow": NAME, "runId": id, "journal": journal.dir, "label": run["label"], "models": run["pair"] });
-    if let Some(outcome) = choose_screened_task(&mut journal, &mut material, &context)? {
+    if let Some(outcome) = choose_screened_task(&mut journal, &mut material, &context, given)? {
         return Ok(outcome);
     }
     let repo = design_material::absolute(&run["repo"], "recorded gateway repository")?;
@@ -311,6 +317,25 @@ pub fn resume(id: &str, given: Option<&Value>, rerun: Option<&str>) -> Result<Ex
                 result["offendingQuestions"] = json!(gap.questions);
                 return refuse(&mut journal, result, &gap.message());
             }
+            Next::ReviewClarifications(mut outcome) => {
+                match owner_reply(&journal, REVIEW_DECISION_STEP) {
+                    Some(ACCEPT_CLARIFICATIONS) => outcome.approved = true,
+                    Some(STOP) => {
+                        outcome.approved = false;
+                        context["stoppedAt"] = json!("owner stopped at review clarifications");
+                    }
+                    _ => {
+                        let path = journal.write_text("candidate.md", &brief(&run, &steps[outcome.draft]))?;
+                        context["review"] = steps[outcome.review].clone();
+                        return wait_for_owner(&mut journal, REVIEW_DECISION_STEP, &json!([{
+                            "question": "Only non-blocking findings remain. How should the brief proceed?",
+                            "options": [ACCEPT_CLARIFICATIONS, STOP],
+                            "default": STOP,
+                        }]), Some(&path), context);
+                    }
+                }
+                return save_result(&mut journal, &run, &material, &steps, context, outcome);
+            }
             Next::Finish(outcome) => {
                 return save_result(&mut journal, &run, &material, &steps, context, outcome)
             }
@@ -352,44 +377,99 @@ pub fn resume(id: &str, given: Option<&Value>, rerun: Option<&str>) -> Result<Ex
     }
 }
 
-fn choose_screened_task(journal: &mut Journal, material: &mut Value, result: &Value) -> Result<Option<Exit>> {
+fn choose_screened_task(
+    journal: &mut Journal,
+    material: &mut Value,
+    result: &Value,
+    given: Option<&Value>,
+) -> Result<Option<Exit>> {
     let screening = &material["taskScreening"];
     let Some(locations) = screening["locations"].as_array() else { return Ok(None) };
-    let reply = journal.events().iter().rev().find(|event| {
-        event["step"] == TASK_SCREENING_STEP && event["kind"] == "rerun"
-    }).and_then(|event| event["ownerAnswer"].as_str()).map(str::trim);
-    match (reply, screening["withWords"].as_object()) {
-        (Some(CONTINUE_SCREENED), _) => {}
-        (Some(REPHRASE_TASK), _) => return refuse(journal, result.clone(),
-            "The owner stopped to rephrase the task. Start a new design-brief run with the revised input.").map(Some),
-        (Some(ALLOW_TASK_WORDS), Some(with_words)) => {
-            let selected = with_words.clone();
-            // Keep approved entries in the private journal. The event stream only carries the choice.
-            let receipt = json!({ "allowPrivateWords": screening["words"] });
-            if journal.read_value("task-screening.json").as_ref() != Some(&receipt) {
-                journal.write_value("task-screening.json", &receipt)?;
+    let needs_original = screening["wordApprovalSha256"].is_string();
+    let can_allow = needs_original || screening["withWords"].is_object();
+    let wait = |journal: &mut Journal, approved: bool| {
+        let locations: Vec<_> = locations.iter().filter_map(Value::as_str).collect();
+        let mut question = format!("Screening withheld the task lines listed below.\n- {}\nHow should the brief proceed?", locations.join("\n- "));
+        let mut options = vec![CONTINUE_SCREENED, REPHRASE_TASK];
+        if can_allow {
+            options.push(ALLOW_TASK_WORDS);
+            question.push_str(" The word exception restores only lines withheld for private words.");
+        }
+        let mut result = result.clone();
+        if needs_original {
+            let next = "To restore the approved lines, resume in the foreground with --args and the original input documents.";
+            question.push(' ');
+            question.push_str(next);
+            if approved {
+                result["next"] = json!(next);
             }
+        }
+        wait_for_owner(journal, TASK_SCREENING_STEP, &json!([{
+            "question": question, "options": options, "default": REPHRASE_TASK,
+        }]), None, result).map(Some)
+    };
+    match owner_reply(journal, TASK_SCREENING_STEP) {
+        Some(CONTINUE_SCREENED) => {}
+        Some(REPHRASE_TASK) => return refuse(journal, result.clone(),
+            "The owner stopped to rephrase the task. Start a new design-brief run with the revised input.").map(Some),
+        Some(ALLOW_TASK_WORDS) if can_allow => {
+            let Some(selected) = approved_task_words(journal, material, given)? else {
+                return wait(journal, true);
+            };
             let fields = material.as_object_mut().expect("pinned material");
             fields.shift_remove("taskProblem");
             fields.extend(selected);
         }
-        (_, with_words) => {
-            let locations: Vec<_> = locations.iter().filter_map(Value::as_str).collect();
-            let mut question = format!("Screening withheld the task lines listed below.\n- {}\nHow should the brief proceed?", locations.join("\n- "));
-            let mut options = vec![CONTINUE_SCREENED, REPHRASE_TASK];
-            if with_words.is_some() {
-                options.push(ALLOW_TASK_WORDS);
-                question.push_str(" The word exception restores only lines withheld for private words.");
-            }
-            return wait_for_owner(journal, TASK_SCREENING_STEP, &json!([{
-                "question": question, "options": options, "default": REPHRASE_TASK,
-            }]), None, result.clone()).map(Some);
-        }
+        _ => return wait(journal, false),
     }
     if let Some(problem) = material["taskProblem"].as_str() {
         return refuse(journal, result.clone(), problem).map(Some);
     }
     Ok(None)
+}
+
+fn approved_task_words(
+    journal: &Journal,
+    material: &Value,
+    given: Option<&Value>,
+) -> Result<Option<Map<String, Value>>> {
+    let screening = &material["taskScreening"];
+    let file = "task-screening.json";
+    if let Some(legacy) = screening["withWords"].as_object() {
+        let receipt = json!({ "allowPrivateWords": screening["words"] });
+        if journal.read_value(file).as_ref() != Some(&receipt) {
+            journal.write_value(file, &receipt)?;
+        }
+        return Ok(Some(legacy.clone()));
+    }
+    let digest = &screening["wordApprovalSha256"];
+    let mut snapshot: Value = if journal.file(file).is_file() {
+        serde_json::from_str(&journal.read_verified(file, digest)?)
+            .map_err(|_| GatewayError("Cannot read the approved task snapshot.".into()))?
+    } else {
+        let Some(raw) = given else { return Ok(None) };
+        let cfg = Config::new(None)?;
+        let Ok(Some(snapshot)) = design_material::task_word_exception(raw, &cfg, material) else {
+            return Ok(None);
+        };
+        let text = snapshot.to_string();
+        if digest != &sha256_hex(&text) {
+            return Ok(None);
+        }
+        journal.write_text(file, &text)?;
+        crate::boundary::cut("pin approved task words");
+        snapshot
+    };
+    match snapshot["withWords"].take() {
+        Value::Object(fields) => Ok(Some(fields)),
+        _ => fail("The approved task snapshot is missing its task fields."),
+    }
+}
+
+fn owner_reply<'a>(journal: &'a Journal, step: &str) -> Option<&'a str> {
+    journal.events().iter().rev().find(|event| {
+        event["step"] == step && event["kind"] == "rerun"
+    })?["ownerAnswer"].as_str().map(str::trim)
 }
 
 enum ModelStep<'a> {
@@ -442,7 +522,7 @@ impl OwnerDecisions {
         let mut state = Self::default();
         let mut waiting = None;
         for event in journal.events() {
-            if event["step"] == TASK_SCREENING_STEP {
+            if event["step"] == TASK_SCREENING_STEP || event["step"] == REVIEW_DECISION_STEP {
                 continue;
             }
             if event["step"] == EVIDENCE_STEP {
@@ -462,7 +542,7 @@ impl OwnerDecisions {
                 state.answered.extend(confirmed.iter().filter_map(Value::as_str).map(String::from));
                 state.pending = decisions.iter().filter(|decision| !state.is_answered(decision)).cloned().collect();
             } else if let [decision] = decisions.as_slice() {
-                let matches = decision["options"].as_array().is_some_and(|options|
+                let matches = decision["screened"] != true && decision["options"].as_array().is_some_and(|options|
                     options.iter().any(|option| option.as_str() == Some(reply.trim())));
                 if matches {
                     if let Some(question) = decision["question"].as_str() {
@@ -529,10 +609,7 @@ enum EvidenceReply {
 
 impl EvidenceReply {
     fn from_journal(journal: &Journal) -> Option<Self> {
-        let answer = journal.events().iter().rev().find(|event| {
-            event["step"] == EVIDENCE_STEP && event["kind"] == "rerun"
-        })?["ownerAnswer"].as_str()?;
-        match answer.trim() {
+        match owner_reply(journal, EVIDENCE_STEP)? {
             CONTINUE_ANYWAY => Some(Self::Continue),
             ADD_SOURCES => Some(Self::AddSources),
             STOP => Some(Self::Stop),
@@ -557,6 +634,7 @@ enum Next<'a> {
     Wait(&'static str),
     NoRepositoryFacts(FactCounts),
     RefusePlan(PlanGap<'a>),
+    ReviewClarifications(Outcome),
     Finish(Outcome),
 }
 
@@ -624,14 +702,19 @@ fn next_step<'a>(
         let Some(verdict) = steps.get(review_name) else {
             return Ok(Next::Call(review));
         };
-        let approved = verdict["verdict"] == "approved"
-            && review_contract::blocking_findings(verdict).next().is_none();
-        if approved || verdict["verdict"] == "blocked" || draft_name == "fix" {
-            return Ok(Next::Finish(Outcome {
-                draft: draft_name,
-                review: review_name,
-                approved,
-            }));
+        let clear = review_contract::blocking_findings(verdict).next().is_none();
+        let outcome = Outcome {
+            draft: draft_name,
+            review: review_name,
+            approved: verdict["verdict"] == "approved" && clear,
+        };
+        if verdict["verdict"] != "blocked" && clear
+            && verdict["findings"].as_array().is_some_and(|findings| !findings.is_empty())
+        {
+            return Ok(Next::ReviewClarifications(outcome));
+        }
+        if outcome.approved || verdict["verdict"] == "blocked" || draft_name == "fix" {
+            return Ok(Next::Finish(outcome));
         }
     }
     unreachable!("the final review produces an outcome")
@@ -644,13 +727,17 @@ fn wait_for_owner(
     draft: Option<&Path>,
     mut result: Value,
 ) -> Result<Exit> {
-    let prompt = questions
-        .as_array()
-        .into_iter()
-        .flatten()
+    let decisions = questions.as_array().into_iter().flatten();
+    let mut prompt = decisions.clone()
         .filter_map(|item| item["question"].as_str())
         .collect::<Vec<_>>()
         .join("\n");
+    if decisions.into_iter().any(|item| item["screened"] == true) {
+        let next = "Rephrase each screened owner decision in your reply.";
+        prompt.push('\n');
+        prompt.push_str(next);
+        result["next"] = json!(next);
+    }
     if !journal
         .last_event()
         .is_some_and(|event| event["kind"] == "waiting" && event["step"] == step && event["decisions"] == *questions)
@@ -806,6 +893,10 @@ fn model_step(
             gateway_role = ROLES[1];
             preamble.push_str("Independently review this brief against the goal and pinned evidence. Flag unsupported facts, ambiguous outcomes, broad scope, and checks that miss the intended behavior.");
             let name = if matches!(call, ModelStep::ReviewFix) {
+                preamble.push_str("\n\n");
+                preamble.push_str(FOLLOW_UP_REVIEW.trim());
+                let previous = cleaned_values(&steps["review"], &clean);
+                attachments.push(("review.json".into(), previous.to_string().into_bytes()));
                 "fix"
             } else {
                 "draft"
@@ -967,25 +1058,28 @@ fn screen_draft(answer: &mut Value, screening: &mut AnswerScreening<'_>) -> std:
         };
     }
     screen_optional_list(answer, "unverified", screening)?;
-    let mut index = 0;
-    answer["ownerDecisions"].as_array_mut().expect("validated decisions").retain_mut(|item| {
-        index += 1;
-        item.as_object_mut().expect("validated decision").retain(|field, _| {
-            matches!(field.as_str(), "question" | "options" | "default")
-        });
+    for (index, item) in answer["ownerDecisions"].as_array_mut().expect("validated decisions").iter_mut().enumerate() {
+        let index = index + 1;
         let field = format!("ownerDecisions[{index}]");
         let changed = screen_field(&mut item["question"], &format!("{field}.question"), screening);
+        let question_withheld = changed && item["question"].as_str().is_some_and(|text| text.trim().is_empty());
         screen_field(&mut item["default"], &format!("{field}.default"), screening);
         let options = item["options"].as_array_mut().expect("validated options");
+        let prior_options = options.len();
         screen_list(options, &format!("{field}.options"), screening);
-        if options.len() < 2 || (changed && item["question"].as_str().is_none_or(|text| text.trim().is_empty())) {
-            return false;
+        let withheld = prior_options - options.len();
+        if options.len() < 2 || question_withheld || item["screened"] == true {
+            item["screened"] = json!(true);
+            item["withheldOptions"] = json!(item["withheldOptions"].as_u64().unwrap_or(0) + withheld as u64);
+            item["default"] = Value::Null;
+            if question_withheld {
+                item["question"] = json!(format!("Question {index} withheld by screening."));
+            }
         }
         if !item["options"].as_array().expect("validated options").contains(&item["default"]) {
             item["default"] = Value::Null;
         }
-        true
-    });
+    }
     Ok(())
 }
 
@@ -1240,6 +1334,9 @@ fn normalize_draft(answer: &mut Value, screening: &mut AnswerScreening<'_>) -> s
             }
             item["default"] = Value::Null;
         }
+        item.as_object_mut().expect("validated decision").retain(|field, _| {
+            matches!(field.as_str(), "question" | "options" | "default")
+        });
     }
     Ok(())
 }

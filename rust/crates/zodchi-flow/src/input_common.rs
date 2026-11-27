@@ -42,6 +42,7 @@ const PRIVATE_KEY_MARKER: &str = r"(?i)-----(BEGIN|END) (?:[A-Z0-9-]+ )*PRIVATE 
 const CREDENTIAL_URL: &str = concat!(r"[A-Za-z][A-Za-z0-9+.-]*:", r"//[^\s/?#@]+@[^\s/?#@]+");
 const INPUT_QUOTED: &str = r#"(?:br|rb|fr|rf|[bruf])?(?P<quoted>"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|`(?:\\.|[^`\\\r\n])*`)"#;
 const AUTHORIZATION_VALUE: &str = r"[A-Za-z0-9._~+/-]{8,}={0,2}";
+const IDENTIFIER: &str = r"(?:r#)?[$_\p{XID_Start}][$\p{XID_Continue}]*";
 
 #[derive(Clone, Copy)]
 pub(crate) enum Withholding {
@@ -98,23 +99,52 @@ fn raw_literal<'a>(text: &'a str, hashes: &str) -> Option<(&'a str, usize)> {
     Some((&text[..end], end + closing.len()))
 }
 
-fn looks_like_input_secret(value: &str, quoted: bool) -> bool {
+fn reference_syntax(value: &str) -> bool {
     static REFERENCE: LazyLock<Regex> = LazyLock::new(|| {
-        let name = r"(?:r#)?[$_\p{XID_Start}][$\p{XID_Continue}]*";
-        Regex::new(&format!(r"\A{name}(?:(?:::?|\.){name})*(?:::)?\z"))
+        Regex::new(&format!(r"\A{IDENTIFIER}(?:(?:::?|\.){IDENTIFIER})*(?:::)?\z"))
             .expect("constant identifier and member reference pattern")
     });
+    REFERENCE.is_match(value)
+}
+
+fn opaque_bare_value(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mixed = value.chars().count() >= 20
+        && value.chars().all(char::is_alphanumeric)
+        && value.chars().any(char::is_alphabetic)
+        && value.chars().any(char::is_numeric);
+    mixed || (bytes.len() >= 24 && (bytes.iter().all(u8::is_ascii_hexdigit) || {
+        let engine = if value.ends_with('=') { &STANDARD } else { &STANDARD_NO_PAD };
+        engine.decode(value).is_ok()
+    }))
+}
+
+fn looks_like_input_secret(value: &str, quoted: bool) -> bool {
     static PATH_OR_URL: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(concat!(
             r"\A(?:[A-Za-z][A-Za-z0-9+.-]*://.+|(?:[A-Za-z]:)?[/\\].+|",
             r"(?:[\w.~-]+[/\\])+[\w.~-]+[/\\]?|[\w.-]+\.[A-Za-z][A-Za-z0-9]*|\.[\w.-]+)\z",
         )).expect("constant path, file name and URL pattern")
     });
-    value.chars().count() >= 12
-        && !value.chars().any(char::is_whitespace)
-        && !value.chars().all(|c| c.is_lowercase() || matches!(c, '-' | '_'))
-        && (quoted || !REFERENCE.is_match(value))
+    // A bare comparison operand can end at a Python suite colon.
+    let bare = value.strip_suffix(':').filter(|value| !value.ends_with(':')).unwrap_or(value);
+    (!quoted && opaque_bare_value(bare)
+        || (value.chars().count() >= 12
+            && !value.chars().any(char::is_whitespace)
+            && !value.chars().all(|c| c.is_lowercase() || matches!(c, '-' | '_'))
+            && (quoted || !reference_syntax(bare))))
         && !PATH_OR_URL.is_match(value)
+}
+
+fn identifier_comparison(line: &str) -> bool {
+    static COMPARISON: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(&format!(
+            r"\A\s*(?:return[ \t]+)?(?P<left>{IDENTIFIER})[ \t]*(?:===?|!==?)[ \t]*(?P<right>{IDENTIFIER})[ \t]*;?\s*\z",
+        )).expect("constant comparison of two identifiers")
+    });
+    COMPARISON.captures(line).is_some_and(|comparison| {
+        !opaque_bare_value(&comparison["left"]) && !opaque_bare_value(&comparison["right"])
+    })
 }
 
 fn input_literal(text: &str) -> Option<(&str, bool, usize)> {
@@ -403,7 +433,7 @@ impl Scrubber {
             let input_setting = Regex::new(&format!(r"(?i)(?:{before_equals}(?:{operator}|=)|{colon_prefix})"))
                 .expect("constant input setting pattern");
             let input_reversed = Regex::new(&format!(
-                r#"(?i){boundary}(?:{INPUT_QUOTED}|(?P<bare>[^\s,;&|<>(){{}}\[\]"'`=!]+)){after_literal}"#,
+                r#"(?i){boundary}(?:{INPUT_QUOTED}|(?P<bare>[^\s,;&|<>(){{}}\[\]"'`=!]+)(?:(?P<padding>={{1,2}})\s+)?){after_literal}"#,
             )).expect("constant input comparison pattern");
             // The header label identifies Bearer values that would look like prose without it.
             let bearer_header = format!(
@@ -499,7 +529,9 @@ impl Scrubber {
                     let value = quoted.as_str();
                     looks_like_input_secret(&value[1..value.len() - 1], true)
                 } else {
-                    looks_like_input_secret(&capture["bare"], false)
+                    let value = capture.name("bare").expect("bare comparison operand");
+                    let end = capture.name("padding").map_or(value.end(), |padding| padding.end());
+                    looks_like_input_secret(&text[value.start()..end], false)
                 };
                 secret.then(|| capture.get(0).expect("input comparison").range())
             }))
@@ -640,6 +672,18 @@ impl Scrubber {
         });
         checks::screen_paths(lines, places)
     }
+
+    pub(crate) fn repository_text(&self, raw: &str, places: &[(String, &str)]) -> String {
+        // Keep the repository keyword rule except for standalone identifier comparisons.
+        // The value scan still covers the complete source, including multiline literals.
+        let lines = self.screened_lines(raw).zip(self.design_lines(raw))
+            .map(|((line, keyword), (_, reason))| match keyword {
+                Some(Withholding::Value) if reason.is_none() && identifier_comparison(line) => line,
+                Some(withholding) => withholding.marker(),
+                None => line,
+            });
+        checks::screen_paths(lines, places)
+    }
 }
 
 pub fn model_context(journal: &Journal) -> Result<String> {
@@ -698,6 +742,10 @@ mod tests {
         let raw_comparison = format!(concat!(r##"if r#"{}"# == pass"##, "word {{}}"), mixed_value);
         let multiline = format!(concat!("Notes\r\nconst to", "ken =\r\n    \"{}\";\r\nFooter"), mixed_value);
         let bare_value = format!(concat!("to", "ken: {}"), mixed_value);
+        let long_mixed = concat!("A1b2C3d4", "E5f6G7h8", "J9k0");
+        let lower_hex = concat!("abcdefab", "cdefabcd", "efabcdef");
+        let base64 = STANDARD.encode("ABC".repeat(6));
+        let padded_base64 = STANDARD.encode("ABC".repeat(5) + "AB");
         let github_pat = format!("github_pat_{}", "a_".repeat(20));
         let slack = format!("xoxb-{}", "a".repeat(10));
         let jwt = concat!("eyJ", "hbGciOiJIUzI1NiJ9.e30.fixture_signature");
@@ -717,6 +765,10 @@ mod tests {
             (concat!("let au", r#"th = "ordinary quoted phrase";"#), &[]),
             (concat!("let pass", r#"word = "a123B456c78";"#), &[]),
             (concat!("let pass", "word = LONG_ENVIRONMENT_VALUE_123;"), &[]),
+            (concat!("if pass", "word == expected_", "password:"), &[]),
+            (concat!("if expected_", "password == pass", "word:"), &[]),
+            (concat!("if expected_", "password===pass", "word:"), &[]),
+            (concat!("if to", "ken == verify", "Clamp12345678:"), &[]),
             (concat!("let au", "th = Settings::fixture_credential();"), &[]),
             (concat!("to", r#"ken: "fixtures/local-2026/settings""#), &[]),
             (concat!("to", r#"ken: "fixture-settings-2026.json""#), &[]),
@@ -729,6 +781,11 @@ mod tests {
             (&comparison, &[(1, "credential")]),
             (&raw_comparison, &[(1, "credential")]),
             (&bare_value, &[(1, "credential")]),
+            (&format!(concat!("to", "ken = {};"), long_mixed), &[(1, "credential")]),
+            (&format!(concat!("if {} != pass", "word:"), long_mixed), &[(1, "credential")]),
+            (&format!(concat!("if pass", "word == {}:"), lower_hex), &[(1, "credential")]),
+            (&format!(concat!("to", "ken = {};"), base64), &[(1, "credential")]),
+            (&format!(concat!("if {} == to", "ken:"), padded_base64), &[(1, "credential")]),
             (&github_pat, &[(1, "credential")]),
             (&slack, &[(1, "credential")]),
             (jwt, &[(1, "credential")]),
