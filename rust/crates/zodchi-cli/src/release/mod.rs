@@ -19,38 +19,92 @@ const USAGE: &str =
        zodchi release register --clients codex,claude  (from a portable bundle)
        zodchi release skill --print | --into <skills-dir> [--force]";
 
+#[derive(Clone, Copy)]
+enum Command {
+    Build,
+    Marketplace,
+    Install,
+    Dev,
+    Notes,
+    Current,
+    Register,
+    Skill,
+}
+
+type Flags = &'static [(&'static str, &'static str)];
+
+const COMMANDS: &[(&str, Command, Flags)] = &[
+    (
+        "build",
+        Command::Build,
+        &[("--out", "directory"), ("--source", "directory"), ("--archive", "boolean")],
+    ),
+    (
+        "marketplace",
+        Command::Marketplace,
+        &[("--out", "directory"), ("--source", "directory")],
+    ),
+    (
+        "install",
+        Command::Install,
+        &[("--archive", "file"), ("--sha256", "digest"), ("--clients", "client-list")],
+    ),
+    (
+        "dev",
+        Command::Dev,
+        &[("--archive", "file"), ("--sha256", "digest")],
+    ),
+    ("notes", Command::Notes, &[("--hook", "boolean")]),
+    ("current", Command::Current, &[]),
+    ("register", Command::Register, &[("--clients", "client-list")]),
+    (
+        "skill",
+        Command::Skill,
+        &[("--print", "boolean"), ("--into", "directory"), ("--force", "boolean")],
+    ),
+];
+
+pub fn usage() -> Value {
+    let subcommands: Vec<_> = COMMANDS
+        .iter()
+        .map(|&(name, _, flags)| {
+            let flags: Vec<_> = flags
+                .iter()
+                .map(|&(name, kind)| json!({ "name": name, "valueKind": kind }))
+                .collect();
+            json!({ "name": name, "flags": flags, "subcommands": [] })
+        })
+        .collect();
+    json!({ "name": "release", "flags": [], "subcommands": subcommands })
+}
+
 pub enum Output {
     Json(Value),
     Text(String),
 }
 
-pub fn route(args: &[String]) -> Result<Option<u8>> {
-    managed::route(args)
+pub fn route(args: &[String], agent: bool) -> Result<Option<u8>> {
+    managed::route(args, agent)
 }
 
 pub fn cli(args: &[String]) -> Result<Output> {
     let Some((command, tail)) = args.split_first() else {
         return fail(USAGE);
     };
-    let (keys, switches): (&[&str], &[&str]) = match command.as_str() {
-        "build" => (&["--out", "--source"], &["--archive"]),
-        "marketplace" => (&["--out", "--source"], &[]),
-        "install" => (&["--archive", "--sha256", "--clients"], &[]),
-        "dev" => (&["--archive", "--sha256"], &[]),
-        "current" => (&[], &[]),
-        "notes" => (&[], &["--hook"]),
-        "register" => (&["--clients"], &[]),
-        "skill" => (&["--into"], &["--print", "--force"]),
-        _ => return fail(USAGE),
+    let Some(&(_, command, flags)) = COMMANDS
+        .iter()
+        .find(|(name, _, _)| *name == command.as_str())
+    else {
+        return fail(USAGE);
     };
     let mut items = tail.iter();
     let mut options = BTreeMap::new();
     while let Some(key) = items.next() {
-        let switch = switches.contains(&key.as_str());
-        if (!switch && !keys.contains(&key.as_str())) || options.contains_key(key.as_str()) {
+        let flag = flags.iter().find(|(name, _)| *name == key.as_str());
+        let Some(&(_, kind)) = flag.filter(|_| !options.contains_key(key.as_str())) else {
             return fail(format!("Invalid or repeated option {key}.\n{USAGE}"));
-        }
-        let value = if switch {
+        };
+        let value = if kind == "boolean" {
             ""
         } else {
             items
@@ -67,29 +121,28 @@ pub fn cli(args: &[String]) -> Result<Output> {
             .copied()
             .ok_or_else(|| GatewayError(format!("Missing {key}.\n{USAGE}")))
     };
-    let result = match command.as_str() {
-        "build" | "marketplace" => {
+    let result = match command {
+        Command::Build | Command::Marketplace => {
             let source = options
                 .get("--source")
                 .map_or_else(env::current_dir, |path| std::path::absolute(path))?;
             let out = std::path::absolute(required("--out")?)?;
-            if command == "build" {
+            if matches!(command, Command::Build) {
                 bundle::build_release(&out, &source, options.contains_key("--archive"))
             } else {
                 bundle::build_marketplace(&out, &source)
             }
         }
-        "install" => managed::install(
+        Command::Install => managed::install(
             Path::new(required("--archive")?),
             required("--sha256")?,
             options.get("--clients").copied(),
         ),
-        "dev" => dev::activate(Path::new(required("--archive")?), required("--sha256")?),
-        "current" => dev::report(),
-        "notes" => notes::report(options.contains_key("--hook")),
-        "register" => managed::register(required("--clients")?),
-        "skill" => return skill(&options),
-        _ => unreachable!(),
+        Command::Dev => dev::activate(Path::new(required("--archive")?), required("--sha256")?),
+        Command::Current => dev::report(),
+        Command::Notes => notes::report(options.contains_key("--hook")),
+        Command::Register => managed::register(required("--clients")?),
+        Command::Skill => return skill(&options),
     }?;
     Ok(Output::Json(result))
 }

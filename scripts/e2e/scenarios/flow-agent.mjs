@@ -7,7 +7,121 @@ const report = (status, flowWrites, questions = []) => ({
 });
 const turns = (f) => fs.readFileSync(path.join(f.w.codex, "fake-turns.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
 
-export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FIXED, samePath }) {
+export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FIXED, samePath, FAKE }) {
+  function authRpcFixture(dir) {
+    const fake = path.join(dir, "fake-codex-auth-rpc.mjs");
+    fs.writeFileSync(fake, `import path from "node:path";
+import readline from "node:readline";
+
+if (process.argv[2] !== "app-server") process.exit(0);
+const expired = path.basename(process.env.CODEX_HOME) === "expired-codex";
+const results = {
+  initialize: {},
+  "account/read": { account: { type: "chatgpt" } },
+  "account/rateLimits/read": { ordinaryUsageAllowed: true },
+  "config/read": { config: {} },
+};
+for await (const line of readline.createInterface({ input: process.stdin })) {
+  const { id, method } = JSON.parse(line);
+  if (id == null) continue;
+  const denied = (expired && method === "account/read") || method === "thread/start";
+  const error = denied
+    ? { code: -32000, message: "Expired private-token-fixture", data: { codexErrorInfo: "unauthorized" } }
+    : { code: -32601, message: "Unexpected fixture method " + method };
+  const response = !denied && Object.hasOwn(results, method) ? { id, result: results[method] } : { id, error };
+  console.log(JSON.stringify(response));
+}
+`);
+    return fake;
+  }
+
+  async function checkSignIn(t) {
+    const f = flowWorld(t, "flow-agent-cli-sign-in");
+    const auth = path.join(f.w.codex, "fake-auth.json");
+    const agent = { ZODCHI_AGENT: "1" };
+    const invoke = (args, override = {}) => zodchi(t, f.w, args, { cwd: f.r, env: { ...f.w.env, ...agent, ...override } });
+    const assertSignIn = (result, note) => {
+      t.ok(/^[^\r\n]+\r?\n$/.test(result.err), `${note}: stderr has one line`);
+      const { error } = JSON.parse(result.err);
+      t.eq([result.code, error.kind, error.exitCode], [3, "sign-in", 3], `${note}: code 3 is a sign-in failure`);
+      t.ok(error.hint.includes("codex login") && !result.err.includes("private-token-fixture"),
+        `${note}: the sign-in hint omits provider diagnostics`);
+    };
+    const run = (key, seconds, file = f.brief, role = "text") =>
+      ["run", "--role", role, "--key", key, "--prompt", file, "--wait-sec", seconds];
+    const start = ["--args", f.args({ mode: "agent" })];
+
+    fs.unlinkSync(auth);
+    const unsigned = await invoke(run("unsigned-codex", "60"));
+    assertSignIn(unsigned, "unsigned Codex job");
+    t.eq(unsigned.json?.job?.status, "auth_required", "run still prints the terminal job record");
+    for (const command of ["wait", "job"]) {
+      const observation = await invoke([command, "--key", "unsigned-codex"]);
+      t.eq([observation.code, observation.json?.job?.status, observation.err],
+        [2, "auth_required", ""], `${command} reports a terminal job status`);
+    }
+    const refused = await f.flow(start, agent);
+    assertSignIn(refused, "unsigned Flow start");
+    t.ok(refused.json?.refused?.includes("Codex is not signed in"), "the Flow gate still prints its refusal result");
+    const plain = await f.flow(start, { ZODCHI_AGENT: "0" });
+    t.eq([plain.code, plain.out, plain.err], [2, refused.out, ""], "plain mode keeps the existing Flow refusal and exit code");
+    t.eq([f.claim(), f.steps()], [null, []], "no claim or model turn without sign-in");
+
+    fs.writeFileSync(auth, "{}");
+    f.answer("write", { flowError: { codexErrorInfo: "unauthorized", message: "Expired private-token-fixture" } });
+    const stopped = await f.flow(start, agent);
+    assertSignIn(stopped, "sign-in expires during a Flow run");
+    t.eq(stopped.json?.stoppedAt, "gateway auth_required at write", "the Flow result keeps the gateway stop");
+    const waited = await invoke(["flow", "wait", stopped.json.runId, "--timeout-min", "0"]);
+    assertSignIn(waited, "wait observes a Flow run stopped for auth_required");
+    t.eq(waited.json?.runId, stopped.json.runId, "wait still prints the observed run");
+
+    const accounts = path.join(f.w.zhome, "accounts.json");
+    const expiredHome = path.join(f.w.dir, "expired-codex");
+    fs.mkdirSync(expiredHome);
+    fs.writeFileSync(accounts, JSON.stringify({ accounts: [
+      { name: "expired", codexHome: expiredHome },
+      { name: "default", codexHome: f.w.codex },
+    ] }));
+    const rpc = await invoke(run("codex-auth-rpc", "60"), { ZODCHI_CODEX_BIN: authRpcFixture(f.w.dir) });
+    assertSignIn(rpc, "Codex RPC authentication failure");
+    t.eq([rpc.json?.job?.status, rpc.json?.job?.account, rpc.json?.job?.accountsSkipped],
+      ["auth_required", "default", [{ account: "expired", reason: "not signed in to a ChatGPT subscription" }]],
+      "the gateway skips an unauthorized account/read and records unauthorized thread/start as auth_required");
+    t.eq(rpc.json?.job?.error, "thread/start: Expired private-token-fixture", "the job result retains its provider diagnostic");
+    fs.unlinkSync(accounts);
+
+    // A real pending job holds at the fake model until released, so even a slow runner sees code 3 here.
+    const prompt = path.join(f.w.dir, "held-prompt.txt");
+    fs.writeFileSync(prompt, "HOLD:agent-exit-code");
+    const role = path.join(f.w.dir, "kept-thread.json");
+    fs.writeFileSync(role, JSON.stringify({ mode: "work", model: "fake-model", effort: "low", sandbox: "read-only" }));
+    const fake = { ZODCHI_CODEX_BIN: FAKE };
+    const key = "held-codex";
+    const release = () => fs.writeFileSync(path.join(f.w.codex, "fake-release-agent-exit-code"), "");
+    try {
+      const pending = await invoke([...run(key, "0", prompt, role), "--keep-thread"], fake);
+      t.eq([pending.code, pending.err], [3, ""], "a live job returns code 3 with no sign-in envelope");
+      t.ok(["queued", "running"].includes(pending.json?.job?.status), "the stdout job record is pending");
+      for (const args of [["job", "--key", key], ["wait", "--key", key, "--wait-sec", "0"]]) {
+        const observed = await invoke(args);
+        t.eq([observed.code, observed.err], [3, ""], `${args[0]} retains code 3 for a pending job`);
+        t.ok(["queued", "running"].includes(observed.json?.job?.status), `${args[0]} prints the pending job record`);
+      }
+    } finally {
+      release();
+    }
+    const finished = await invoke(["wait", "--key", key, "--wait-sec", "60"]);
+    t.eq([finished.code, finished.json?.job?.account, finished.json?.job?.threadId],
+      [0, "default", "thread-1"], "the pending job finishes and keeps its thread on the selected account");
+
+    fs.writeFileSync(accounts, JSON.stringify({ accounts: [{ name: "replacement", codexHome: f.w.codex }] }));
+    const missingAccount = await invoke([...run("removed-thread-account", "60", f.brief, role), "--resume", key], fake);
+    t.eq([missingAccount.code, missingAccount.json?.job?.status, missingAccount.err],
+      [2, "auth_required", ""], "a removed resume account retains the terminal status without a sign-in envelope");
+    t.ok(missingAccount.json?.job?.error?.includes("accounts.json no longer lists"), "the job result explains how the account is missing");
+  }
+
   scenario("flow-agent-browser-input", "the writer browser input is pinned across continuation and resume", async (t) => {
     const f = flowWorld(t, "flow-agent-browser-input");
     const browser = path.join(f.w.dir, "chromium-fixture");
@@ -515,6 +629,7 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     t.ok(samePath(observed[0].cwd, observed[1].cwd), "the owner reply preserves the private workspace");
     t.ok(observed[1].prompt.includes(summary) && observed[1].prompt.includes("Drop the extra file"),
       "the new thread receives the prior summary and the owner's reply");
+    await checkSignIn(t);
   });
 
   scenario("flow-agent-timeout", "a timed-out ephemeral writer leaves its completed edits for the next turn", async (t) => {

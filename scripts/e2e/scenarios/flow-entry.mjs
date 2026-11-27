@@ -164,7 +164,7 @@ export default function register(h) {
     }
     const answer = (step, value) => fs.writeFileSync(path.join(home, "answers", `${step.replace(/ /g, "-")}.json`), typeof value === "string" ? value : JSON.stringify(value));
     const calls = () => readJsonl(path.join(home, "calls.jsonl")).filter((c) => c.kind === "call");
-    return { f, answer, calls };
+    return { f, home, answer, calls };
   }
 
   /** A flow world whose model steps go to a real zodchi-server on 127.0.0.1: the user's token in a token file, the
@@ -210,6 +210,138 @@ export default function register(h) {
     };
   }
 
+  function expectEnvelope(t, result, kind, code) {
+    t.eq(result.code, code, "the process returns the envelope's exit code");
+    t.ok(/^[^\r\n]+\r?\n$/.test(result.err), "stderr contains exactly one envelope line");
+    const { error } = JSON.parse(result.err);
+    t.eq([error.kind, error.exitCode], [kind, code], "the error kind and exit code are machine-readable");
+    t.ok(typeof error.message === "string" && error.message.length > 0
+      && typeof error.hint === "string" && error.hint.length > 0, "the envelope has a message and a hint");
+    return error;
+  }
+
+  async function checkCliContract(t, f) {
+    const agent = { ...f.w.env, ZODCHI_AGENT: "1" };
+    const plain = { ...f.w.env, ZODCHI_AGENT: "0" };
+    const invoke = (args, env = plain) => zodchi(t, f.w, args, { cwd: f.r, env });
+    const before = dryRunState(f);
+    const usage = await invoke(["--usage"], agent);
+    t.eq([usage.code, usage.err], [0, ""], "--usage writes one JSON document to stdout");
+    const children = (name) => usage.json.commands.find((command) => command.name === name).subcommands;
+    const workflow = children("flow").find((command) => command.name === "code-package");
+    t.ok(workflow?.flags.some((flag) => flag.name === "--dry-run" && flag.valueKind === "boolean"),
+      "the installed code-package command lists --dry-run as a switch");
+    for (const control of ["close", "cancel"]) {
+      t.ok(children("flow").find((command) => command.name === control)
+        ?.flags.some((flag) => flag.name === "--reason" && flag.valueKind === "text"), `flow ${control} takes a reason`);
+    }
+    t.ok(children("flow").find((command) => command.name === "video")
+      ?.subcommands.find((command) => command.name === "publish")
+      ?.flags.some((flag) => flag.name === "--file" && flag.valueKind === "json-file"), "flow video publish takes a JSON file");
+    const catalog = (await invoke(["flow", "list"])).json;
+    t.ok(catalog.workflows.every(({ name }) => children("flow").some((command) => command.name === name)),
+      "usage includes every installed workflow");
+    t.ok(children("release").find((command) => command.name === "install")
+      ?.flags.some((flag) => flag.name === "--archive" && flag.valueKind === "file"), "release install takes an archive file");
+    t.ok(children("release").find((command) => command.name === "build")
+      ?.flags.some((flag) => flag.name === "--archive" && flag.valueKind === "boolean"), "release build takes --archive as a switch");
+    const buildOption = await invoke(["release", "build", "--archive"]);
+    const installOption = await invoke(["release", "install", "--archive"]);
+    t.eq([buildOption.err.split("\n")[0], installOption.err.split("\n")[0]],
+      ["Missing --out.", "Missing value for --archive."], "the release parser uses the advertised flag kinds");
+    t.ok(usage.json.configFiles.find(({ path }) => path === "~/.zodchi/flow.json")?.keys.includes("credits"),
+      "usage lists flow.json credit configuration");
+    t.ok(["ZODCHI_AGENT", "CODEX_HOME"].every((key) => usage.json.environment.includes(key)), "usage lists environment names");
+    t.eq(Object.keys(usage.json.exitCodes), ["0", "1", "2", "3"], "usage lists the exit codes");
+    t.eq(Object.keys(usage.json.exitCodes["3"]).sort(), ["pending", "sign-in"], "usage describes both meanings of code 3");
+
+    const invalid = ["flow", "runs", "--args", "x"];
+    const help = await invoke(["flow", "--help"]);
+    const old = await invoke(invalid);
+    t.eq([old.code, old.out, old.err], [1, "", help.json.usage + "\n"], "the legacy call prints its usage to stderr");
+    const wrong = await invoke(invalid, agent);
+    expectEnvelope(t, wrong, "wrong-call", 1);
+    t.eq(wrong.out, "", "a malformed flow call has no result JSON");
+    const privatePath = path.join(f.w.dir, "private-argument");
+    const privateFailure = await invoke(["flow", "code-package", "--args", "x", privatePath], agent);
+    expectEnvelope(t, privateFailure, "wrong-call", 1);
+    t.ok(!privateFailure.err.includes("private-argument"), "invalid arguments are absent from the envelope");
+    const status = await invoke(["status", "--json", "missing-first", "missing-second"]);
+    expectEnvelope(t, status, "not-found", 2);
+    t.eq(status.json, [], "redirected JSON status keeps its existing stdout even when both keys are missing");
+    const missingKeys = await invoke(["status", "--json"]);
+    expectEnvelope(t, missingKeys, "wrong-call", 2);
+    t.eq(dryRunState(f), before, "usage and rejected calls leave source, home and model turns unchanged");
+
+    // Package the already built fixture binary. A damaged recovery record traps an accidental update
+    // before any request to GitHub, after it would already have created the release lock.
+    const home = path.join(f.w.dir, "managed-home");
+    const version = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version;
+    const releaseDir = path.join(home, "releases", version);
+    fs.mkdirSync(path.dirname(releaseDir), { recursive: true });
+    const built = await invoke(["release", "build", "--source", ROOT, "--out", releaseDir]);
+    t.eq(built.code, 0, "the installed release fixture packages the local binary");
+    const launcher = path.join(home, built.json.cli);
+    fs.mkdirSync(path.dirname(launcher), { recursive: true });
+    fs.copyFileSync(path.join(releaseDir, built.json.cli), launcher);
+    fs.writeFileSync(path.join(home, "managed-release.json"), JSON.stringify({ active: version, clients: [] }));
+    fs.writeFileSync(path.join(home, "release-activation.json"), "incomplete fixture record");
+    const installed = directorySnapshot(home);
+    const invalidWorkflow = ["flow", "code-package", "--args", "x", "--unexpected"];
+    for (const args of [invalid, invalidWorkflow]) {
+      const launched = await run(t, launcher, args, { cwd: f.r, env: agent });
+      expectEnvelope(t, launched, "wrong-call", 1);
+    }
+    t.ok(!fs.existsSync(path.join(home, "release-install.lock")), "the malformed call never takes the release lock");
+    t.eq(directorySnapshot(home), installed, "the launcher and release state are byte-identical");
+
+    const future = await run(t, launcher, ["flow", "future-workflow", "--args", "x"], { cwd: f.r, env: agent });
+    const lines = future.err.split(/\r?\n/);
+    t.eq([lines.length, lines[2]], [3, ""], "the update warning and final error are separate JSON lines");
+    t.eq(JSON.parse(lines[0]).warning.kind, "release-update", "the launcher checks for an update for a workflow outside its catalog");
+    t.ok(fs.existsSync(path.join(home, "release-install.lock")), "the start form enters the release update path");
+    expectEnvelope(t, { ...future, err: lines[1] + "\n" }, "wrong-call", 1);
+  }
+
+  async function checkCliDiagnostics(t, f) {
+    const agent = { ...f.w.env, ZODCHI_AGENT: "1" };
+    const plain = { ...f.w.env, ZODCHI_AGENT: "0" };
+    const invoke = (args, env) => zodchi(t, f.w, args, { cwd: f.r, env });
+    const config = path.join(f.w.zhome, "config.json");
+    const warning = "Expected a JSON object in config.json. Using no limit on parallel jobs.";
+    fs.writeFileSync(config, "[]");
+    try {
+      const human = await invoke(["roles"], plain);
+      t.eq([human.code, human.err], [0, warning + "\n"], "the config warning remains text in plain mode");
+      const machine = await invoke(["roles"], agent);
+      t.eq([machine.code, JSON.parse(machine.err)], [0, { warning: { kind: "config", message: warning } }],
+        "a successful command preserves its config warning as JSON in agent mode");
+      const failed = await invoke(["status", "--json", "missing-after-warning"], plain);
+      const lines = failed.err.split(/\r?\n/);
+      t.eq([lines.length, lines[2]], [3, ""], "redirected --json status prints two complete JSON lines");
+      t.eq(JSON.parse(lines[0]), { warning: { kind: "config", message: warning } }, "the warning precedes the error");
+      expectEnvelope(t, { ...failed, err: lines[1] + "\n" }, "not-found", 2);
+    } finally {
+      fs.unlinkSync(config);
+    }
+
+    const args = path.join(f.w.dir, "youtube-consent.json");
+    fs.writeFileSync(args, JSON.stringify({
+      profile: "fixture",
+      channelId: "UC" + "a".repeat(22),
+      clientFile: path.join(f.w.dir, "unused-desktop-client.json"),
+    }));
+    // A detached process has no controlling terminal even if the runner itself has one.
+    const consent = spawnSync(ZODCHI, ["flow", "youtube-publish", "connect", "--args", args], {
+      cwd: f.r, env: agent, detached: true, windowsHide: true, encoding: "utf8", timeout: 10000,
+    });
+    if (consent.error) throw consent.error;
+    const error = expectEnvelope(t, { code: consent.status, err: consent.stderr }, "sign-in", 3);
+    t.eq(consent.stdout, "", "consent without a controlling terminal produces no stdout result");
+    t.ok(error.hint.includes("terminal") && !consent.stderr.includes("unused-desktop-client"),
+      "the consent hint points to a terminal and omits the local input path");
+  }
+
   function checkSkillContract(t) {
     const codex = readSkill(SKILLS.codex);
     const claude = readSkill(SKILLS.claude);
@@ -253,6 +385,8 @@ export default function register(h) {
   scenario("flow-entry-local", "the shared skills lead to local approval, with real check and commit evidence and a resumable result", async (t) => {
     const skill = checkSkillContract(t);
     const f = flowWorld(t, "flow-entry-local");
+    await checkCliContract(t, f);
+    await checkCliDiagnostics(t, f);
     f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
     f.answer("review 1", f.review("approved"));
     const file = skillArgs(t, f, skill, {});
@@ -347,6 +481,9 @@ export default function register(h) {
     // A run the engine refuses ends with exit 2 and `refused`, nothing claimed: what the skill says to read.
     const refused = await startBySkill(t, f, skill, { args: { branch: "elsewhere" } });
     t.ok(refused.code === 2 && /args\.branch is not supported/.test(refused.json.refused), "an option outside the engine's subset: exit 2, `refused` names it");
+    const agentRefused = await startBySkill(t, f, skill, { env: { ZODCHI_AGENT: "1" }, args: { branch: "elsewhere" } });
+    t.eq([agentRefused.code, agentRefused.json, agentRefused.err],
+      [2, refused.json, ""], "a workflow refusal remains a structured stdout result in agent mode");
   });
 
   scenario("flow-entry-cut", "the Claude Code skill resumes a run cut after writer submission and after commit, with one turn per step and one commit", async (t) => {
@@ -440,6 +577,23 @@ export default function register(h) {
     const skill = readSkill(SKILLS.codex);
     const c = claudeWorld(t, "flow-entry-claude");
     const { f } = c;
+    const auth = path.join(c.home, "fake-auth.json");
+    const agent = { ZODCHI_AGENT: "1" };
+    fs.unlinkSync(auth);
+    try {
+      const unsigned = await zodchi(t, f.w, ["run", "--provider", "claude", "--model", "opus",
+        "--role", "text", "--key", "unsigned-claude", "--prompt", f.brief, "--wait-sec", "60"],
+        { cwd: f.r, env: { ...f.w.env, ...agent } });
+      expectEnvelope(t, unsigned, "sign-in", 3);
+      t.eq(unsigned.json?.job?.status, "auth_required", "the unsigned Claude job's stdout is still the job record");
+      const onlyClaude = { expertWriter: { candidates: [{ provider: "claude", model: "opus", effort: "high" }] } };
+      const refused = await f.flow(["--args", f.args({ models: onlyClaude })], agent);
+      expectEnvelope(t, refused, "sign-in", 3);
+      t.ok(refused.json?.refused?.includes("Claude Code is not signed in"), "the flow refusal still names its cause");
+      t.eq([c.calls(), f.claim()], [[], null], "no model was asked and nothing was claimed without sign-in");
+    } finally {
+      fs.writeFileSync(auth, "{}");
+    }
     c.answer("write", "Here is the patch: clamp now uses Math.min and Math.max.");
     f.answer("review 1", f.review("approved"));
     const file = skillArgs(t, f, skill, {});

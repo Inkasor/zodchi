@@ -489,6 +489,7 @@ fn cli_catalog_controls_and_invalid_calls() {
     assert_eq!(cleanup.code(0).result["apply"], false);
     for (args, message) in [
         (&[][..], "Usage: zodchi flow"),
+        (&["runs", "--args", "x"][..], "Usage: zodchi flow"),
         (&["list", "--bad"][..], "No workflow"),
         (
             &["unknown-workflow"][..],
@@ -517,7 +518,7 @@ fn cli_catalog_controls_and_invalid_calls() {
         let call = w.flow(args);
         call.wrong(message);
         let prefix = match args {
-            [] => Some(String::new()),
+            [] | ["runs", "--args", "x"] => Some(String::new()),
             ["list", "--bad"] | ["unknown-workflow"] | ["status"] => Some(format!(
                 "No workflow {:?} in zodchi flow. Run zodchi flow list for the catalog.\n",
                 args[0]

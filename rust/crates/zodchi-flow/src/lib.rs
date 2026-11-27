@@ -3,6 +3,15 @@
 
 #![allow(clippy::result_large_err)]
 
+// Keep flow progress and local diagnostics out of the CLI's JSON stderr stream.
+macro_rules! eprintln {
+    ($($args:tt)*) => {
+        if !crate::agent_requested() {
+            ::std::eprintln!($($args)*);
+        }
+    };
+}
+
 mod acceptance;
 mod accepted_media;
 mod agent;
@@ -54,9 +63,23 @@ mod workspace_audit;
 mod youtube_publish;
 
 pub use code_package::{Exit, CUT_EXIT};
+pub use control::{sign_in_required, SignIn};
 
-use serde_json::Value;
+use serde_json::{json, Value};
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::{self, IsTerminal},
+};
+use zodchi_core::config::{agent_requested, AGENT_ENV};
 use zodchi_core::util::{fail, GatewayError, Result};
+
+pub fn environment_keys() -> impl Iterator<Item = &'static str> {
+    [
+        AGENT_ENV, "ZODCHI_BASH", "ZODCHI_CHECK_SLOT_DIR", "ZODCHI_DENYLIST",
+        "ZODCHI_FLOW_CUT", "ZODCHI_TEST_CHECK_SLOT_TMP", checks::DEFAULT_BROWSER_VARIABLE,
+    ].into_iter().chain(checks::KEEP)
+}
 
 pub const USAGE: &str = "Usage: zodchi flow <workflow> --args <file.json> [--detach]
        zodchi flow code-package --args <file.json> --dry-run
@@ -83,7 +106,8 @@ pub const USAGE: &str = "Usage: zodchi flow <workflow> --args <file.json> [--det
        zodchi flow list [--repo <directory>]
 For a code-package evidence gap reply, use one <gap id>: <option> line per gap. Put supporting text below that line.
 Prints the result JSON. The journal is ~/.zodchi/flows/<run-id>/.
-Exit code: 0 approved, 2 any other end (refused, stopped, changes requested), 1 a wrong call.";
+Exit codes: 0 success or approved, 1 a wrong call or command failure, 2 refused, stopped or not approved.
+In agent mode, exit 3 means sign-in required. For flow wait, exit 3 also covers a timeout (status: timeout).";
 
 fn compiled_catalog() -> Value {
     serde_json::from_str(include_str!("../../../../workflows/catalog.json"))
@@ -92,6 +116,150 @@ fn compiled_catalog() -> Value {
 
 fn require_workflow(git: &git::Git, base: &str, workflow: &str) -> Result<()> {
     catalog::require(git, base, workflow, &compiled_catalog())
+}
+
+const RUN_FLAGS: &[(&str, &str)] = &[
+    ("--args", "json-file"),
+    ("--resume", "run-id"),
+    ("--rerun", "step"),
+    ("--detach", "boolean"),
+    ("--dry-run", "boolean"),
+];
+
+const HELP_FLAGS: [&str; 2] = ["--help", "-h"];
+
+fn workflows(catalog: &Value) -> &[Value] {
+    catalog["workflows"].as_array().expect("workflows")
+}
+
+#[derive(Default)]
+struct UsageCommand<'a> {
+    flags: BTreeMap<&'a str, &'a str>,
+    subcommands: BTreeMap<&'a str, Self>,
+}
+
+impl UsageCommand<'_> {
+    fn describe(self, name: &str) -> Value {
+        let flags: Vec<_> = self.flags.into_iter()
+            .map(|(name, kind)| json!({ "name": name, "valueKind": kind }))
+            .collect();
+        let subcommands: Vec<_> = self.subcommands.into_iter()
+            .map(|(name, command)| command.describe(name))
+            .collect();
+        json!({ "name": name, "flags": flags, "subcommands": subcommands })
+    }
+}
+
+// Controls with dedicated parsers already publish their forms in the usage diagnostic.
+fn documented_commands<'a>(usage: &'a str, prefix: &str) -> BTreeMap<&'a str, UsageCommand<'a>> {
+    let mut commands = BTreeMap::new();
+    for line in usage.lines() {
+        let line = line.trim_start();
+        let line = line.strip_prefix("Usage: ").unwrap_or(line);
+        let Some(form) = line.strip_prefix(prefix) else { continue };
+        let mut words = form.split_whitespace().peekable();
+        let is_command = |word: &str| word.starts_with(|c: char| c.is_ascii_lowercase());
+        let Some(name) = words.next().filter(|word| is_command(word)) else { continue };
+        let mut command: &mut UsageCommand<'_> = commands.entry(name).or_default();
+        while let Some(&word) = words.peek().filter(|word| is_command(word)) {
+            words.next();
+            command = command.subcommands.entry(word).or_default();
+        }
+        while let Some(word) = words.next() {
+            let word = word.trim_matches(['[', ']']);
+            if !word.starts_with("--") {
+                continue;
+            }
+            let value = words.peek().map(|word| word.trim_end_matches(']'));
+            let kind = match value {
+                Some("<n>") => "integer",
+                Some("N") => "number",
+                Some("<file.json>") => "json-file",
+                Some("<directory>") => "directory",
+                Some("<text>") if word == "--file" => "text-file",
+                Some(kind @ ("<text>" | "<name>")) => kind.trim_matches(['<', '>']),
+                Some("1,2|all") => "decision-list",
+                _ => "boolean",
+            };
+            command.flags.insert(word, kind);
+            if kind != "boolean" {
+                words.next();
+            }
+        }
+    }
+    commands
+}
+
+/// Command and workflow options from this installation's catalog and parser.
+pub fn usage() -> Value {
+    let mut commands = documented_commands(USAGE, "zodchi flow ");
+    let catalog = compiled_catalog();
+    for entry in workflows(&catalog) {
+        let name = entry["name"].as_str().expect("workflow name");
+        let command = commands.entry(name).or_default();
+        command.flags.extend(RUN_FLAGS.iter().copied().filter(|(flag, _)| {
+            *flag != "--dry-run" || name == code_package::WORKFLOW
+        }));
+        command.flags.extend(HELP_FLAGS.map(|name| (name, "boolean")));
+    }
+    commands.entry("cleanup").or_default().flags.extend(HELP_FLAGS.map(|name| (name, "boolean")));
+    let mut subcommands: Vec<_> = commands.into_iter()
+        .map(|(name, command)| command.describe(name))
+        .collect();
+    subcommands.push(json!({ "name": "_worker", "flags": [], "subcommands": [], "internal": true }));
+    let flags: Vec<_> = HELP_FLAGS.iter().map(|name| json!({ "name": name, "valueKind": "boolean" })).collect();
+    json!({ "name": "flow", "flags": flags, "subcommands": subcommands })
+}
+
+#[derive(Default)]
+struct RunOptions<'a> {
+    file: Option<&'a str>,
+    resume: Option<&'a str>,
+    rerun: Option<&'a str>,
+    detach: bool,
+    dry_run: bool,
+}
+
+fn run_options(tail: &[String]) -> Result<RunOptions<'_>> {
+    let mut parsed = RunOptions::default();
+    let mut options = tail.iter().map(String::as_str);
+    while let Some(flag) = options.next() {
+        let value_kind = RUN_FLAGS.iter().find(|(name, _)| *name == flag).map(|(_, kind)| *kind);
+        match (value_kind, flag) {
+            (Some("boolean"), "--detach") if !parsed.detach => parsed.detach = true,
+            (Some("boolean"), "--dry-run") if !parsed.dry_run => parsed.dry_run = true,
+            (Some("json-file"), _) => parsed.file = Some(options.next().ok_or_else(|| unexpected(flag))?),
+            (Some("run-id"), _) => parsed.resume = Some(options.next().ok_or_else(|| unexpected(flag))?),
+            (Some("step"), _) => parsed.rerun = Some(options.next().ok_or_else(|| unexpected(flag))?),
+            _ => return Err(unexpected(flag)),
+        }
+    }
+    if parsed.dry_run && (parsed.resume.is_some() || parsed.detach) {
+        return fail("--dry-run cannot be used with --resume or --detach.");
+    }
+    Ok(parsed)
+}
+
+fn unexpected(flag: &str) -> GatewayError {
+    GatewayError(format!("Unexpected argument: {flag}\n{USAGE}"))
+}
+
+/// Recognize a start before selecting the release that will resolve the workflow name.
+pub fn starts_run(args: &[String]) -> bool {
+    let Some((workflow, tail)) = args.split_first() else { return false };
+    // The launcher may predate workflows in the next release.
+    if !workflow.starts_with(|c: char| c.is_ascii_lowercase())
+        || !workflow.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        || matches!(workflow.as_str(),
+            "cleanup" | "runs" | "wait" | "cancel" | "close" | "list" | "status"
+                | "apply" | "budget" | "remark" | "reply")
+    {
+        return false;
+    }
+    run_options(tail).is_ok_and(|options| {
+        options.file.is_some_and(|file| !file.is_empty() && !file.starts_with("--"))
+            && options.resume.is_none() && options.rerun.is_none() && !options.dry_run
+    })
 }
 
 /// Whether the arguments after `flow` include the preview switch. The launcher checks this before any updates.
@@ -107,6 +275,22 @@ pub fn requests_dry_run(args: &[String]) -> bool {
         }
     }
     false
+}
+
+/// Whether a flow call opens the interactive YouTube consent prompt.
+pub fn requests_consent(args: &[String]) -> bool {
+    matches!(args, [workflow, command, flag, _]
+        if workflow == youtube_publish::NAME && command == "connect" && flag == "--args")
+}
+
+/// Open the attached terminal even when the standard streams are redirected.
+pub fn controlling_terminal() -> io::Result<fs::File> {
+    let name = if cfg!(windows) { "CONOUT$" } else { "/dev/tty" };
+    let terminal = fs::OpenOptions::new().read(true).write(true).open(name)?;
+    if !terminal.is_terminal() {
+        return Err(io::Error::new(io::ErrorKind::NotConnected, "No controlling terminal."));
+    }
+    Ok(terminal)
 }
 
 /// `zodchi flow <workflow> ...`: the result of the run.
@@ -129,10 +313,10 @@ pub fn cli(args: &[String]) -> Result<Exit> {
         _ => {}
     }
     match args {
-        [flag] if flag == "--help" || flag == "-h" => return Ok(Exit { code: 0, result: serde_json::json!({ "usage": USAGE, "catalog": compiled_catalog() }) }),
-        [name, flag] if flag == "--help" || flag == "-h" => {
+        [flag] if HELP_FLAGS.contains(&flag.as_str()) => return Ok(Exit { code: 0, result: serde_json::json!({ "usage": USAGE, "catalog": compiled_catalog() }) }),
+        [name, flag] if HELP_FLAGS.contains(&flag.as_str()) => {
             let catalog = compiled_catalog();
-            let entry = catalog["workflows"].as_array().expect("workflows").iter()
+            let entry = workflows(&catalog).iter()
                 .find(|item| item["name"] == name.as_str())
                 .ok_or_else(|| GatewayError(format!("No workflow {name:?} in zodchi flow. Run zodchi flow list for the catalog.")))?;
             return Ok(Exit { code: 0, result: entry.clone() });
@@ -163,7 +347,7 @@ pub fn cli(args: &[String]) -> Result<Exit> {
         [workflow, command, flag, file] if workflow == voiceover::NAME && command == "plan" && flag == "--args" => {
             return voiceover::preview(&video_media::read_json(std::path::Path::new(file))?);
         }
-        [workflow, command, flag, file] if workflow == youtube_publish::NAME && command == "connect" && flag == "--args" => {
+        [_, _, _, file] if requests_consent(args) => {
             return youtube_publish::connect(&video_media::read_json(std::path::Path::new(file))?);
         }
         [workflow, command, flag, profile] if workflow == youtube_publish::NAME && command == "whoami" && flag == "--profile" => {
@@ -171,39 +355,11 @@ pub fn cli(args: &[String]) -> Result<Exit> {
         }
         _ => {}
     }
-    if ![code_package::WORKFLOW, branch_review::NAME, design_brief::NAME, incident_triage::NAME, method_question::NAME, ops_script::NAME, research::NAME, rubric_probe::NAME, unity_check::NAME, workspace_audit::NAME, asset_round::NAME, video::NAME, voiceover::NAME, acceptance::RELEASE, acceptance::PLAYER, acceptance::CANDIDATE, youtube_publish::NAME].contains(&workflow.as_str()) {
+    if !workflows(&compiled_catalog()).iter().any(|entry| entry["name"] == workflow.as_str()) {
         return fail(format!("No workflow {workflow:?} in zodchi flow. Run zodchi flow list for the catalog.\n{USAGE}"));
     }
-    let mut file = None;
-    let mut resume = None;
-    let mut rerun = None;
-    let mut detach = false;
-    let mut dry_run = false;
-    let mut i = 1;
-    while i < args.len() {
-        let switch = match args[i].as_str() {
-            "--detach" if !detach => Some(&mut detach),
-            "--dry-run" if !dry_run => Some(&mut dry_run),
-            _ => None,
-        };
-        if let Some(switch) = switch {
-            *switch = true;
-            i += 1;
-            continue;
-        }
-        let value = args.get(i + 1).cloned();
-        match (args[i].as_str(), value) {
-            ("--args", Some(v)) => file = Some(v),
-            ("--resume", Some(v)) => resume = Some(v),
-            ("--rerun", Some(v)) => rerun = Some(v),
-            _ => return fail(format!("Unexpected argument: {}\n{USAGE}", args[i])),
-        }
-        i += 2;
-    }
-    if dry_run && (resume.is_some() || detach) {
-        return fail("--dry-run cannot be used with --resume or --detach.");
-    }
-    let given = match &file {
+    let RunOptions { file, resume, rerun, detach, dry_run } = run_options(&args[1..])?;
+    let given = match file {
         Some(f) => {
             let text = std::fs::read_to_string(f).map_err(|_| GatewayError(format!("Cannot read the args {f}")))?;
             Some(serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}')).map_err(|e| GatewayError(format!("The args {f} are not JSON: {e}")))?)
@@ -211,7 +367,7 @@ pub fn cli(args: &[String]) -> Result<Exit> {
         None => None,
     };
     match (resume, given) {
-        (Some(id), given) => control::resume(workflow, &id, given.as_ref(), rerun.as_deref(), detach),
+        (Some(id), given) => control::resume(workflow, id, given.as_ref(), rerun, detach),
         (None, Some(given)) => {
             if rerun.is_some() {
                 return fail("--rerun goes with --resume <run-id>");

@@ -1,7 +1,10 @@
 //! Desktop authorization runs separately from a publication worker.
 
 use super::api::{self, Google, READ_SCOPE, UPLOAD_SCOPE};
-use crate::{video_media as media, Exit};
+use crate::{
+    agent_requested, control::NO_CONSENT_TERMINAL, controlling_terminal, video_media as media,
+    Exit,
+};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::{rngs::OsRng, RngCore};
 use serde_json::{json, Value};
@@ -232,6 +235,12 @@ pub(crate) fn connect(args: &Value) -> Result<Exit> {
     if !client_file.is_absolute() {
         return fail("clientFile must be an absolute path to the downloaded Desktop app JSON.");
     }
+    let terminal_error = |_| GatewayError(NO_CONSENT_TERMINAL.into());
+    let terminal = if agent_requested() {
+        Some(controlling_terminal().map_err(terminal_error)?)
+    } else {
+        None
+    };
     let mut credentials = Vec::new();
     fs::File::open(client_file)?
         .take(16_385)
@@ -267,8 +276,14 @@ pub(crate) fn connect(args: &Value) -> Result<Exit> {
         ("access_type", "offline"),
         ("prompt", "consent"),
     ]);
-    eprintln!("Open this Google consent page in your browser. The local connection waits for five minutes.");
-    eprintln!("https://accounts.google.com/o/oauth2/v2/auth?{request}");
+    let prompt = "Open this Google consent page in your browser. The local connection waits for five minutes.";
+    let url = format!("https://accounts.google.com/o/oauth2/v2/auth?{request}");
+    if let Some(mut terminal) = terminal {
+        writeln!(terminal, "{prompt}\n{url}").map_err(terminal_error)?;
+    } else {
+        ::std::eprintln!("{prompt}");
+        ::std::eprintln!("{url}");
+    }
     let code = await_consent(listener, &state)?;
     fields.extend([
         ("grant_type", "authorization_code"),

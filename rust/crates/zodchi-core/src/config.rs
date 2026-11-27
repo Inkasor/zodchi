@@ -2,14 +2,35 @@
 //! subscriptions (Codex homes) the user listed.
 
 use crate::util::{fail, Result};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::env;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use crate::process::command_without_window;
 
 // No cap by default (owner decision 2026-11-21): maxParallelJobs is an optional cap.
 const DEFAULT_MAX_PARALLEL_JOBS: usize = usize::MAX;
 const TENANT_MAX_PARALLEL_JOBS: usize = 2;
+
+pub const AGENT_ENV: &str = "ZODCHI_AGENT";
+
+pub fn agent_requested() -> bool {
+    env::var_os(AGENT_ENV).is_some_and(|value| value == "1")
+}
+
+/// Use a fixed warning message for JSON and keep the original diagnostic for terminals.
+pub fn cli_warning(
+    agent: bool,
+    kind: &'static str,
+    message: &'static str,
+    diagnostic: fmt::Arguments<'_>,
+) {
+    if agent {
+        eprintln!("{}", json!({ "warning": { "kind": kind, "message": message } }));
+    } else {
+        eprintln!("{diagnostic}");
+    }
+}
 
 /// One subscription: a Codex home with its own sign-in. The user lists them in the order to use them.
 #[derive(Debug, Clone)]
@@ -138,19 +159,25 @@ pub fn load_accounts(home: &Path) -> Result<Vec<Account>> {
     Ok(accounts)
 }
 
-fn load_max_parallel_jobs(home: &Path) -> usize {
+fn load_max_parallel_jobs(home: &Path, agent: bool) -> usize {
     let file = home.join("config.json");
     let bytes = match std::fs::read(&file) {
         Ok(bytes) => bytes,
         Err(e) => {
             if e.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("Cannot read config.json ({e}). Using no limit on parallel jobs.");
+                cli_warning(
+                    agent,
+                    "config",
+                    "Cannot read config.json. Using no limit on parallel jobs.",
+                    format_args!("Cannot read config.json ({e}). Using no limit on parallel jobs."),
+                );
             }
             return DEFAULT_MAX_PARALLEL_JOBS;
         }
     };
     let Ok(Value::Object(config)) = serde_json::from_slice(&bytes) else {
-        eprintln!("Expected a JSON object in config.json. Using no limit on parallel jobs.");
+        let message = "Expected a JSON object in config.json. Using no limit on parallel jobs.";
+        cli_warning(agent, "config", message, format_args!("{message}"));
         return DEFAULT_MAX_PARALLEL_JOBS;
     };
     let Some(value) = config.get("maxParallelJobs") else {
@@ -160,7 +187,8 @@ fn load_max_parallel_jobs(home: &Path) -> usize {
         Some(0) => DEFAULT_MAX_PARALLEL_JOBS,
         Some(limit) => limit,
         None => {
-            eprintln!("Invalid maxParallelJobs in config.json. Expected a positive integer (0 means no limit). Using no limit on parallel jobs.");
+            let message = "Invalid maxParallelJobs in config.json. Expected a positive integer (0 means no limit). Using no limit on parallel jobs.";
+            cli_warning(agent, "config", message, format_args!("{message}"));
             DEFAULT_MAX_PARALLEL_JOBS
         }
     }
@@ -188,18 +216,35 @@ fn local_roles(home: &Path) -> PathBuf {
 impl Config {
     /// Explicit non-Git directory for local expert jobs. Keep their journal in the user's Zodchi home.
     pub fn context(root: &Path) -> Result<Config> {
+        Self::load_context(root, agent_requested())
+    }
+
+    pub fn new(root: Option<&Path>) -> Result<Config> {
+        Self::load(root, agent_requested())
+    }
+
+    /// The CLI can also enable JSON warnings for redirected status --json.
+    pub fn for_cli(root: Option<&Path>, context: Option<&Path>, agent: bool) -> Result<Config> {
+        match (root, context) {
+            (Some(_), Some(_)) => fail("--root and --context exclude each other."),
+            (None, Some(path)) => Self::load_context(path, agent),
+            _ => Self::load(root, agent),
+        }
+    }
+
+    fn load_context(root: &Path, agent: bool) -> Result<Config> {
         let root = std::fs::canonicalize(root)?;
         if !root.is_dir() {
             return fail("A local gateway context must be a directory.");
         }
-        let mut config = Self::new(Some(&root))?;
+        let mut config = Self::load(Some(&root), agent)?;
         let digest = crate::util::sha256_hex(root.to_string_lossy().as_bytes());
         config.jobs_dir = Some(config.home.join("local-jobs").join(digest));
         config.standalone = true;
         Ok(config)
     }
 
-    pub fn new(root: Option<&Path>) -> Result<Config> {
+    fn load(root: Option<&Path>, agent: bool) -> Result<Config> {
         let top = match root {
             Some(r) => Some(std::path::absolute(r)?),
             None => git_top(&env::current_dir()?),
@@ -210,7 +255,7 @@ impl Config {
             jobs_dir: top.as_ref().map(|t| t.join(".agent-tmp").join("gateway")),
             root: top,
             roles_dir: local_roles(&home),
-            max_parallel_jobs: load_max_parallel_jobs(&home),
+            max_parallel_jobs: load_max_parallel_jobs(&home, agent),
             home,
             codex_bin: find_codex(),
             accounts,

@@ -66,6 +66,112 @@ pub fn status(id: &str) -> Result<Exit> {
     )
 }
 
+#[derive(Clone, Copy)]
+pub enum SignIn {
+    Codex,
+    Claude,
+    Server,
+    ApiKey,
+    YouTube,
+}
+
+pub(crate) const NO_CONSENT_TERMINAL: &str = "YouTube consent requires a controlling terminal.";
+
+impl SignIn {
+    pub fn for_job(job: &Value) -> Option<Self> {
+        if job["status"] != "auth_required" || job["kind"] == "decisions" {
+            return None;
+        }
+        if job["provider"] == "claude" {
+            return job["error"].as_str().filter(|why| claude_signed_out(why)).map(|_| Self::Claude);
+        }
+        // LOGIN_HINT is the unsigned-account outcome. Provider auth errors come after account selection.
+        // A missing account for a resumed thread has the legacy status but neither of these signals.
+        (job["error"] == zodchi_core::job::LOGIN_HINT || job["account"].is_string()).then_some(Self::Codex)
+    }
+
+    /// Recognize the legacy diagnostic when a workflow reports a gate failure as text.
+    pub fn for_gate(why: &str) -> Option<Self> {
+        if why == NO_CONSENT_TERMINAL {
+            return Some(Self::YouTube);
+        }
+        if why == zodchi_core::job::LOGIN_HINT {
+            return Some(Self::Codex);
+        }
+        if why.starts_with("auth_required: your ChatGPT subscription on the flow server ") {
+            return Some(Self::Server);
+        }
+        if why.starts_with("No writer/reviewer pair of distinct models: ")
+            || why.starts_with("No available candidate for ")
+        {
+            if why.contains(": Codex is not signed in (zodchi account)") {
+                return Some(Self::Codex);
+            }
+            if why.split(": Claude preflight: ").skip(1).any(claude_signed_out) {
+                return Some(Self::Claude);
+            }
+        }
+        None
+    }
+}
+
+fn stop_sign_in(result: &Value) -> Option<SignIn> {
+    if result["status"] == "closed" || result["verdict"] == "closed" {
+        return None;
+    }
+    if result["workflow"] == voiceover::NAME && result["errorKind"] == "auth_required" {
+        return Some(SignIn::ApiKey);
+    }
+    let stopped = result["stoppedAt"].as_str().unwrap_or_default();
+    let why = result["infra"].as_str().or_else(|| result["reason"].as_str()).unwrap_or_default();
+    if stopped == "worker" {
+        return SignIn::for_gate(why);
+    }
+    let job_error = why.strip_prefix("job ")
+        .or_else(|| why.split_once(". job ").map(|(_, job)| job))
+        .and_then(|job| job.split_once(": ").map(|(_, error)| error));
+    // The gateway has already recorded the provider's auth status in these stop reasons.
+    if stopped.starts_with("gateway auth_required at ")
+        || why.starts_with("gateway auth_required at ")
+    {
+        let error = job_error.unwrap_or(why);
+        return Some(if let Some(provider) = SignIn::for_gate(error) {
+            provider
+        } else if error.starts_with("OPENAI_API_KEY ") || error.starts_with("The Realtime API refused ") {
+            SignIn::ApiKey
+        } else {
+            SignIn::Codex
+        });
+    }
+    ((stopped.starts_with("gateway refused at ") || why.starts_with("gateway refused at "))
+        && job_error.is_some_and(claude_signed_out))
+        .then_some(SignIn::Claude)
+}
+
+fn claude_signed_out(why: &str) -> bool {
+    why.starts_with("Claude Code is not signed in with a Claude subscription (claude auth status:")
+}
+
+/// Classify the existing result without changing the stdout or journal schema.
+pub fn sign_in_required(args: &[String], exit: &Exit) -> Option<SignIn> {
+    if exit.code != 2 || matches!(args.first().map(String::as_str), Some("close" | "cancel")) {
+        return None;
+    }
+    let result = &exit.result;
+    let sign_in = result["refused"].as_str().and_then(SignIn::for_gate).or_else(|| stop_sign_in(result));
+    if sign_in.is_some() {
+        return sign_in;
+    }
+    // Detached wait keeps its terse observation on stdout; its journal has the actual stop cause.
+    if args.first().is_some_and(|command| command == "wait")
+        && matches!(result["status"].as_str(), Some("stopped" | "finished"))
+    {
+        let observed = status(result["runId"].as_str()?).ok()?.result;
+        return [&observed, &observed["result"], &observed["lastResult"]].into_iter().find_map(stop_sign_in);
+    }
+    None
+}
+
 pub(crate) fn stop_run(id: &str, reason: &str, cancel: bool) -> Result<Exit> {
     if reason.trim().is_empty() || reason.chars().count() > 500 {
         return fail("--reason must contain between 1 and 500 characters of text.");

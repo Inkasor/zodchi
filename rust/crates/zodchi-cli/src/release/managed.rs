@@ -11,7 +11,7 @@ use std::{
 };
 use ureq::Agent;
 use zodchi_core::{
-    config::{find_codex, user_home},
+    config::{agent_requested, cli_warning, find_codex, user_home},
     process::{command_without_window, run},
     util::{fail, write_json_atomic, GatewayError, Result},
 };
@@ -315,7 +315,12 @@ fn activate(
         return Err(error);
     }
     if let Err(error) = fs::remove_file(&journal) {
-        eprintln!("Zodchi activated {version}. Could not remove the completed activation record: {error}.");
+        cli_warning(
+            agent_requested(),
+            "release-activation",
+            "Zodchi activated the release. It could not remove the completed activation record.",
+            format_args!("Zodchi activated {version}. Could not remove the completed activation record: {error}."),
+        );
     }
     Ok(())
 }
@@ -363,7 +368,9 @@ fn update(home: &Path, state: &State) -> Result<Option<String>> {
         &candidate.version,
     )?;
     activate(home, &current, &root, &candidate.version, plugin)?;
-    eprintln!("Zodchi activated release {}.", candidate.version);
+    if !agent_requested() {
+        eprintln!("Zodchi activated release {}.", candidate.version);
+    }
     Ok(Some(candidate.version))
 }
 
@@ -480,7 +487,7 @@ pub(super) fn current(home: &Path) -> Result<Option<Value>> {
     ))
 }
 
-pub(super) fn route(args: &[String]) -> Result<Option<u8>> {
+pub(super) fn route(args: &[String], agent: bool) -> Result<Option<u8>> {
     let binary = env::current_exe()?;
     let Some(home) = binary.parent().and_then(Path::parent) else {
         return Ok(None);
@@ -494,7 +501,7 @@ pub(super) fn route(args: &[String]) -> Result<Option<u8>> {
         return Ok(None);
     }
     if let Some(binary) = dev::route(home, args)? {
-        return launch(&binary, home, args).map(Some);
+        return launch(&binary, home, args, agent).map(Some);
     }
     if !home.join(STATE).is_file() {
         return Ok(None);
@@ -503,28 +510,41 @@ pub(super) fn route(args: &[String]) -> Result<Option<u8>> {
     let version = if let Some(id) = existing_run(args) {
         pinned_version(home, id, &state)?
     } else if args.first().is_some_and(|command| command == "flow")
-        && !zodchi_flow::requests_dry_run(&args[1..])
-        && args.iter().any(|arg| arg == "--args")
+        && zodchi_flow::starts_run(&args[1..])
     {
         match update(home, &state) {
             Ok(Some(version)) => version,
             Ok(None) => state.active,
             Err(error) => {
-                eprintln!("Zodchi update: {error} Using {}.", state.active);
+                cli_warning(
+                    agent,
+                    "release-update",
+                    "Zodchi could not update. Using the current release.",
+                    format_args!("Zodchi update: {error} Using {}.", state.active),
+                );
                 state.active
             }
         }
     } else {
         state.active
     };
-    launch(&executable(home, &version)?, home, args).map(Some)
+    launch(&executable(home, &version)?, home, args, agent).map(Some)
 }
 
-fn launch(binary: &Path, home: &Path, args: &[String]) -> Result<u8> {
-    let exit = command_without_window(binary)
-        .args(args)
-        .env("ZODCHI_HOME", home)
-        .status()?;
+fn launch(binary: &Path, home: &Path, args: &[String], agent: bool) -> Result<u8> {
+    let consent = agent && args.split_first().is_some_and(|(command, tail)| {
+        command == "flow" && zodchi_flow::requests_consent(tail)
+    });
+    // Preserve a Windows console for consent and for status to detect interactive stdout.
+    let inherit_console = cfg!(windows)
+        && (consent || (!agent && crate::requests_status_json(args)))
+        && zodchi_flow::controlling_terminal().is_ok();
+    let mut command = if inherit_console {
+        std::process::Command::new(binary)
+    } else {
+        command_without_window(binary)
+    };
+    let exit = command.args(args).env("ZODCHI_HOME", home).status()?;
     Ok(exit
         .code()
         .and_then(|code| u8::try_from(code).ok())

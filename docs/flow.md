@@ -42,8 +42,7 @@ zodchi flow code-package --args package.json
 }
 ```
 
-It prints the result JSON and exits 0 when the change is approved, 2 for any other end (refused, stopped, changes
-requested), 1 for a wrong call.
+It prints the result JSON. See [CLI output and exit codes](#cli-output-and-exit-codes) for the exit contract.
 
 The engine validates arguments before claiming files.
 
@@ -73,6 +72,36 @@ branch first), `fixIgnore` (commit `.agent-tmp/` in `.gitignore` first), `closeS
 `--rerun`), `commit: false`. A repository with a verify skill (`.claude/skills/verify/SKILL.md`) and no
 `args.verify` or committed project verification configuration is refused. Pass the skill's commands or declare
 the plan in `.zodchi/verify.json`.
+
+## CLI output and exit codes
+
+`zodchi --usage` prints one JSON document without writing files or calling a model. It describes commands and flags,
+including the installed flow catalog, along with recognized environment variable names, configuration paths and keys,
+and exit codes. Each flag has a `name` and a `valueKind`. A `boolean` flag takes no following value.
+
+Set `ZODCHI_AGENT=1` for machine-readable stderr in any workflow mode. `zodchi status --json` also enables this
+when stdout is redirected. Each stderr line is a JSON object. A warning has the shape
+`{"warning":{"kind":"config","message":"..."}}`. A command that reports a failure on stderr ends with a single
+error envelope containing `error.kind`, `error.message`, `error.hint` and `error.exitCode`. The error kinds are
+`wrong-call`, `sign-in`, `limit`, `refused`, `infra` and `not-found`.
+Messages and hints in the envelope omit local paths, credentials and provider diagnostics. Job and flow results
+continue to appear on stdout, including the existing `refused` field.
+
+`zodchi flow youtube-publish connect` sends the Google consent prompt and URL to the controlling terminal in
+agent mode. If it cannot open a terminal, it reports `sign-in` and exits 3 before starting consent.
+
+| Code | Meaning |
+|---|---|
+| 0 | Success or approval. `submit` returns 0 once the job is stored. |
+| 1 | Command failure or wrong call. The managed launcher checks the flow start syntax before taking the update lock. |
+| 2 | Refused, stopped, not approved or another terminal job status. `status` also returns 2 for a bad call or unknown job key. |
+| 3 | In agent mode, `run` or a flow start, resume or wait needs sign-in. Stderr has `error.kind: "sign-in"`. |
+| 3 | A job is still running in `run`, `wait` or `job`, or a `flow wait` timed out. Read the status on stdout. |
+
+For a stored job, `wait` and `job` report `auth_required` as a terminal job status with code 2. If the account for a
+resumed Codex thread is missing from `accounts.json`, `run` returns code 2 and the job result names the missing
+account. Outside CLI agent mode, sign-in failures keep their existing exit code and diagnostic. After signing
+in for a stopped flow, follow the result's `next` instructions.
 
 ## Browser input for an agent writer
 
@@ -444,6 +473,7 @@ command and a REVIEW.md):
 | `flow-close-round` | a review with an important finding, the close round, a second commit and a second review that sees the first, approval |
 | `flow-round-exhaustion` | important findings in every review: `stop rule: 2 review rounds without approval`, the findings open, the claim `stopped` |
 | `flow-outside-claim` | unsupported options and a pass rule in words refused before any claim or model call; a patch naming an unclaimed file refused whole, nothing applied, committed or reviewed |
+| `flow-agent-scope` | an agent writer's extra path waits for an owner reply. Also checks unsigned Codex jobs, flow starts, expiry during a flow, account fallback after an auth RPC error, and pending jobs with exit 3 and empty stderr |
 | `flow-protected` | a patch editing an existing test: `protectedChanged`, stopped before review, the test unchanged |
 | `flow-failing-verify` | the cheap check passes, verify exits 1: no commit, no review, `verifiedBy: "none"` with both exit codes |
 | `flow-resume-cuts` | a cut right after the write submission and one right after the commit, each `--resume` going on: one model turn per step, one commit, one intent each |
@@ -510,7 +540,7 @@ to CI.
 |---|---|
 | `flow-entry-skills` | the two skills share one body; exactly the run, resume and rerun commands; a brief template with the review boundary; an args example the engine takes; nothing that backgrounds a run, edits the journal, resubmits or switches branches; no real host |
 | `flow-entry-install` | the installer puts the Codex skill in `$CODEX_HOME/skills` (else `~/.codex/skills`) and the Claude Code skill in the plugin it installs; it leaves a file it did not write or you changed, `--force` replaces it, `--no-codex-skill` skips it (on `--uninstall` too, whatever `$CODEX_HOME` is by then), `--uninstall` removes both |
-| `flow-entry-local` | the Codex skill's steps on the local gateway: brief, args, run from another folder, result read, finished run resumed, a refusal read |
+| `flow-entry-local` | the Codex skill's steps on the local gateway: brief, args, run from another folder, result read, finished run resumed, a refusal read. Also checks `--usage`, JSON errors and warnings, consent without a terminal, and when a flow start takes the release update lock. |
 | `flow-entry-cut` | the Claude Code skill's steps with the run cut after the write submission, and with the `result` cut after the result is saved: the run id found as the skill says, resumed, one model turn per step, no second run, the claim closed without a model call |
 | `flow-entry-failing-verify` | the Codex skill's steps with a verify command that fails: `verifiedBy` is `none` while `verification.evidence` holds the command's exit code, as the skill says to tell it from a run in which nothing ran |
 | `flow-entry-server` | the Codex skill's steps with the model steps on a zodchi-server; nothing runs on this machine's Codex, the token is in no result or commit |
