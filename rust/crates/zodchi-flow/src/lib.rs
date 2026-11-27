@@ -3,15 +3,6 @@
 
 #![allow(clippy::result_large_err)]
 
-// Keep flow progress and local diagnostics out of the CLI's JSON stderr stream.
-macro_rules! eprintln {
-    ($($args:tt)*) => {
-        if !crate::agent_requested() {
-            ::std::eprintln!($($args)*);
-        }
-    };
-}
-
 mod child_package;
 mod control;
 mod input;
@@ -57,13 +48,11 @@ pub mod executor {
 
     pub mod local {
         pub use zodchi_flow_engine::executor::local::LocalGateway;
-        pub(crate) use zodchi_flow_engine::executor::local::pinned_image;
     }
 }
 
 pub mod gateway {
     pub use zodchi_flow_engine::gateway::{ask, base_key, slug, summary, Call, CallError};
-    pub(crate) use zodchi_flow_engine::gateway::*;
 }
 
 pub mod journal {
@@ -76,7 +65,6 @@ pub mod models {
         claude_enabled, codex_usable, local_codex_usable, resolve, table, ClaudeGate, Pick,
         CLAUDE_ENTRY, REVIEWER_ROLE, WRITER_ROLE,
     };
-    pub(crate) use zodchi_flow_engine::models::*;
 }
 
 pub mod patch {
@@ -84,7 +72,6 @@ pub mod patch {
         apply, apply_recoverable, claimed_as, no_links, outside, parse, plan, reconcile, Change, Edit,
         Patch, Plan, Refusal,
     };
-    pub(crate) use zodchi_flow_engine::patch::plain;
 }
 
 pub mod verify {
@@ -110,7 +97,7 @@ use std::{
     fs,
     io::{self, IsTerminal},
 };
-use zodchi_core::config::{agent_requested, AGENT_ENV};
+use zodchi_core::config::AGENT_ENV;
 use zodchi_core::util::{fail, GatewayError, Result};
 
 pub fn environment_keys() -> impl Iterator<Item = &'static str> {
