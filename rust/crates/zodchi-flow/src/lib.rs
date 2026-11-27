@@ -65,6 +65,8 @@ pub const USAGE: &str = "Usage: zodchi flow <workflow> --args <file.json> [--det
        zodchi flow status <run-id> --handoff
        zodchi flow runs [--active]
        zodchi flow wait <run-id>... | --all [--timeout-min N]
+       zodchi flow cancel <run-id> --reason <text>
+       zodchi flow close <run-id> --reason <text>
        zodchi flow apply <run-id>
        zodchi flow cleanup [--apply] [--journals] [--retention-days <n>] [--claims]
        zodchi flow budget <run-id> [--add-calls <n>] [--add-minutes <n>]
@@ -98,7 +100,7 @@ pub fn requests_dry_run(args: &[String]) -> bool {
     while let Some(arg) = options.next() {
         match arg.as_str() {
             "--dry-run" => return true,
-            "--args" | "--resume" | "--rerun" | "--file" | "--allow-files" | "--profile" | "--repo" => {
+            "--args" | "--resume" | "--rerun" | "--file" | "--allow-files" | "--profile" | "--repo" | "--reason" => {
                 options.next();
             }
             _ => {}
@@ -117,6 +119,13 @@ pub fn cli(args: &[String]) -> Result<Exit> {
         "cleanup" => return cleanup::cli(&args[1..]),
         "runs" => return runs::list(&args[1..]),
         "wait" => return runs::wait(&args[1..]),
+        "cancel" | "close" => {
+            let [_, id, flag, reason] = args else { return fail(USAGE) };
+            if flag != "--reason" {
+                return fail(USAGE);
+            }
+            return control::stop_run(id, reason, workflow == "cancel");
+        }
         _ => {}
     }
     match args {

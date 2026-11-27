@@ -57,6 +57,64 @@ fn exit_of(result: Value) -> Exit {
     Exit { result, code }
 }
 
+pub(crate) struct PinnedClaim<'a> {
+    pub dir: PathBuf,
+    label: &'a str,
+}
+
+impl<'a> PinnedClaim<'a> {
+    /// Resolve the claim from the journal even if the checkout or brief is gone.
+    pub(crate) fn for_shutdown(run: &'a Value, id: &str) -> Result<Option<Self>> {
+        if run["workflow"] != WORKFLOW {
+            return Ok(None);
+        }
+        // The stored label names an existing claim. Check filename safety without
+        // imposing the length limit for new runs.
+        let label = run["inputs"]["args"]["label"]
+            .as_str()
+            .or_else(|| run["label"].as_str())
+            .filter(|label| {
+                !label.is_empty()
+                    && label.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+            })
+            .ok_or_else(|| GatewayError(format!("Run {id} has no valid package label in its run.json.")))?;
+        let repo = run["repo"]
+            .as_str()
+            .filter(|repo| Path::new(repo).is_absolute())
+            .ok_or_else(|| GatewayError(format!("Run {id} has no absolute repository in its run.json.")))?;
+        let dir = claims::claims_dir(&claims::norm(repo)?);
+        Ok(Some(Self { dir, label }))
+    }
+
+    pub(crate) fn close(&self, id: &str) -> Result<()> {
+        if self.dir.try_exists()? {
+            claims::close(&self.dir, self.label, id, "closed")?;
+        }
+        Ok(())
+    }
+}
+
+/// Waiting foreground runs have no result file. The journal has their latest review and its evidence gaps.
+pub(crate) fn recorded_findings(events: &[Value]) -> Option<Vec<String>> {
+    let (index, review) = events.iter().enumerate().rfind(|(_, event)| {
+        event["kind"] == "done"
+            && event["step"].as_str().is_some_and(|step| step.starts_with("review "))
+            && event["result"]["findings"].is_array()
+    })?;
+    let findings = review["result"]["findings"].as_array()?;
+    if !findings.is_empty() || review["result"]["verdict"] != "blocked" {
+        return Some(findings.iter().map(|finding| finding_text(finding, severity(finding["severity"].as_str().unwrap_or("")))).collect());
+    }
+    let gaps = events[index + 1..].iter().find(|event| {
+        event["kind"] == "gaps" && event["step"] == review["step"] && event["attempt"] == review["attempt"]
+    });
+    Some(gaps.into_iter().flat_map(|event| event["gaps"].as_array().into_iter().flatten())
+        .filter(|gap| gap["state"] == "finding")
+        .map(|gap| gap_finding_text(
+            gap["id"].as_str().unwrap_or(""), gap["what"].as_str().unwrap_or(""), gap["why"].as_str().unwrap_or(""),
+        )).collect())
+}
+
 /// A saved result provides the verdict after the claim can be closed. Keep it for a later resume if closure fails.
 fn finish_result(journal: &mut Journal, args: &Args, id: &str, mut result: Value) -> Result<Exit> {
     let finished = journal.events().iter().any(|entry| entry["kind"] == json!("finished"));
@@ -117,6 +175,17 @@ fn severity(word: &str) -> &'static str {
         "pre-existing" => "pre-existing",
         _ => "important",
     }
+}
+
+fn finding_text(finding: &Value, severity: &str) -> String {
+    let id = finding["id"].as_str().unwrap_or("F?");
+    let location = finding["location"].as_str().unwrap_or("");
+    let problem = finding["problem"].as_str().unwrap_or("");
+    format!("{id} {severity} {location}: {problem}")
+}
+
+fn gap_finding_text(id: &str, what: &str, why: &str) -> String {
+    format!("{id} important evidence gap: {what}\n  {why}")
 }
 
 fn schema(text: &str) -> Value {
@@ -750,7 +819,7 @@ pub(crate) fn start_run(
             "checkTimeoutMin": args.check_timeout_min, "continuations": args.continuations,
             "executors": executors, "checksEnvironment": "exported candidate tree, reduced environment" },
     });
-    let journal = Journal::create(&cfg.home, &id, &run)?;
+    let mut journal = Journal::create(&cfg.home, &id, &run)?;
     if is_child { crate::boundary::cut("code-package context"); }
     journal.write_text("brief.md", &brief)?;
     if let Some(text) = &review_md {
@@ -761,6 +830,10 @@ pub(crate) fn start_run(
         return launch(&journal, &id);
     }
     let lock = journal.lock()?;
+    journal.load()?;
+    if let Some(result) = journal.read_value("result.json") {
+        return Ok(exit_of(result));
+    }
     let run = Run::new(id, args, cfg, git, journal, &run, brief, review_md)?;
     let exit = run.machine();
     drop(lock);
@@ -2209,7 +2282,7 @@ impl Run {
             gap.state = GapState::Superseded;
         }
         let writer_findings = current.iter().filter(|gap| gap.state == GapState::Finding).map(|gap| {
-            format!("{} important evidence gap: {}\n  {}", gap.id, gap.evidence.what, gap.evidence.why)
+            gap_finding_text(&gap.id, &gap.evidence.what, &gap.evidence.why)
         }).collect();
         if !current.is_empty() || !previous.is_empty() {
             let snapshot = current.iter().chain(&previous).chain(&accepted).map(ReviewGap::to_json).collect();
@@ -2385,7 +2458,7 @@ impl Run {
         let mut important = Vec::new();
         for f in data["findings"].as_array().cloned().unwrap_or_default() {
             let sev = severity(f["severity"].as_str().unwrap_or(""));
-            let line = format!("{} {sev} {}: {}", f["id"].as_str().unwrap_or("F?"), f["location"].as_str().unwrap_or(""), f["problem"].as_str().unwrap_or(""));
+            let line = finding_text(&f, sev);
             if sev == "important" {
                 important.push(line.clone());
             }

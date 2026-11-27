@@ -11,6 +11,8 @@ use std::{
     fs::{self, File, Metadata, OpenOptions, TryLockError},
     io::{self, ErrorKind, Read, Seek, Write},
     path::{Component, Path, PathBuf},
+    thread,
+    time::{Duration, Instant},
 };
 use zodchi_core::{
     config::{is_source_commit, user_home},
@@ -224,6 +226,17 @@ pub(crate) fn lock_sources(home: &Path, shared: bool) -> Result<File> {
         lock.lock()?;
     }
     Ok(lock)
+}
+
+/// A cancellation may need to signal the run lock's owner. Serialize those commands
+/// separately, so one closer can never mistake another closer for the worker.
+pub(crate) fn lock_shutdown(journal: &Journal) -> Result<Option<File>> {
+    let lock = open_lock(&journal.file(".shutdown.lock"))?;
+    match lock.try_lock() {
+        Ok(()) => Ok(Some(lock)),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(error)) => Err(error.into()),
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1496,7 +1509,7 @@ fn remove_build(home: &Path, path: &Path) -> Result<()> {
     remove_tree(path)
 }
 
-struct ClaimLock {
+pub(crate) struct ClaimLock {
     dir: PathBuf,
     directory_id: String,
     owner: File,
@@ -1504,12 +1517,32 @@ struct ClaimLock {
 
 impl ClaimLock {
     fn acquire(repo: &Path) -> Result<Self> {
+        Self::wait(repo, Duration::ZERO)
+    }
+
+    pub(crate) fn wait(repo: &Path, timeout: Duration) -> Result<Self> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match Self::try_acquire(repo)? {
+                ClaimLockAttempt::Acquired(lock) => return Ok(lock),
+                ClaimLockAttempt::Busy(message) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return fail(message);
+                    }
+                    thread::sleep(remaining.min(Duration::from_millis(100)));
+                }
+            }
+        }
+    }
+
+    fn try_acquire(repo: &Path) -> Result<ClaimLockAttempt> {
         // Keep .lock empty so ordinary claim writers can still reclaim it after their ten-minute lease.
         // The adjacent receipt serializes archival and ties the recorded pid to this instance of .lock.
         let mut owner = open_lock(&repo.join(".cleanup-claim-owner"))?;
         match owner.try_lock() {
             Ok(()) => {}
-            Err(TryLockError::WouldBlock) => return fail("the claim lock is busy"),
+            Err(TryLockError::WouldBlock) => return Ok(ClaimLockAttempt::Busy("the claim lock is busy".into())),
             Err(TryLockError::Error(error)) => return Err(error.into()),
         }
         let dir = repo.join(".lock");
@@ -1525,14 +1558,14 @@ impl ClaimLock {
                 let receipt = serde_json::from_slice::<Value>(&receipt).unwrap_or(Value::Null);
                 if receipt["directory"] == identity && journal::owner_pid(&receipt).is_some() {
                     if let Some(pid) = journal::live_pid(&receipt) {
-                        return fail(format!("the claim lock is held by pid {pid}"));
+                        return Ok(ClaimLockAttempt::Busy(format!("the claim lock is held by pid {pid}")));
                     }
                 } else if !meta
                     .modified()?
                     .elapsed()
                     .is_ok_and(|age| age.as_secs() > 600)
                 {
-                    return fail("the claim lock is busy");
+                    return Ok(ClaimLockAttempt::Busy("the claim lock is busy".into()));
                 }
                 if !checked(&dir)?
                     .is_some_and(|meta| meta.is_dir() && claim_lock_identity(&meta) == identity)
@@ -1557,8 +1590,13 @@ impl ClaimLock {
         lock.owner.rewind()?;
         lock.owner.write_all(receipt.to_string().as_bytes())?;
         lock.owner.sync_all()?;
-        Ok(lock)
+        Ok(ClaimLockAttempt::Acquired(lock))
     }
+}
+
+enum ClaimLockAttempt {
+    Acquired(ClaimLock),
+    Busy(String),
 }
 
 fn claim_lock_identity(meta: &Metadata) -> String {

@@ -1,16 +1,23 @@
 use crate::{
     acceptance,
     asset_round::{self, ChildWorkflow, Children},
-    boundary, branch_review, budget, child_package, cleanup, code_package, design_brief,
+    boundary, branch_review, budget, checks, child_package, cleanup, code_package, design_brief,
     incident_triage, input, input_common::args_match,
-    journal::{self, safety_block, Journal, StatusHooks},
+    journal::{self, safety_block, Journal, StatusHooks, SHUTDOWN_REQUEST},
     method_question, ops_script, research, rubric_probe, unity_check, video, voiceover,
     workspace_audit, youtube_publish, Exit,
 };
 use serde_json::{json, Value};
-use std::path::Path;
-use zodchi_core::config::Config;
-use zodchi_core::util::{fail, GatewayError, Result};
+use std::{
+    path::Path,
+    thread,
+    time::{Duration, Instant},
+};
+use zodchi_core::{
+    config::Config,
+    process::stop_process,
+    util::{fail, iso, GatewayError, Result},
+};
 
 pub(crate) const ASSET_CHILDREN: Children = Children {
     package: ChildWorkflow {
@@ -57,6 +64,250 @@ pub fn status(id: &str) -> Result<Exit> {
             stop_details: Some(voiceover::project_stop_status),
         },
     )
+}
+
+pub(crate) fn stop_run(id: &str, reason: &str, cancel: bool) -> Result<Exit> {
+    if reason.trim().is_empty() || reason.chars().count() > 500 {
+        return fail("--reason must contain between 1 and 500 characters of text.");
+    }
+    let cfg = Config::new(None)?;
+    let (mut journal, run) = Journal::open(&cfg.home, id)?;
+    if journal.finished(&journal.snapshot()?) {
+        return fail(format!("run {id} has finished"));
+    }
+    let live_error = |pid| {
+        format!("Run {id} is live (pid {pid}). Use zodchi flow cancel {id} --reason <text>.")
+    };
+    if !cancel {
+        if let Some((pid, _)) = journal.live_owner(None) {
+            return fail(live_error(pid));
+        }
+    }
+    let claim = code_package::PinnedClaim::for_shutdown(&run, id)?;
+    let places = [
+        (cfg.home.to_string_lossy().into_owned(), "<zodchi-home>"),
+        (run["repo"].as_str().unwrap_or("").to_owned(), "<repo>"),
+    ];
+    let reason = input::scrub(&cfg, reason.trim(), &places)?;
+    let Some(_shutdown) = cleanup::lock_shutdown(&journal)? else {
+        return fail(format!("Another command is closing run {id}."));
+    };
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let lock = loop {
+        if let Some((pid, owner)) = journal.live_owner(None) {
+            if !cancel {
+                return fail(live_error(pid));
+            }
+            if Instant::now() >= deadline {
+                return fail(format!("Run {id} is still live (pid {pid}) after waiting 60 seconds."));
+            }
+            cancel_worker(&journal, claim.as_ref(), id, (pid, &owner), &reason, deadline)?;
+        }
+        match journal.lock() {
+            Ok(lock) if journal.live_owner(Some(std::process::id())).is_none() => break lock,
+            Ok(_) => {} // A detached worker appeared before we took the lock.
+            Err(error) => match journal.live_owner(None) {
+                Some((pid, _)) if !cancel => return fail(live_error(pid)),
+                Some(_) if Instant::now() < deadline => {}
+                _ => return Err(error),
+            },
+        }
+    };
+    journal.load_for_shutdown()?;
+    let stored = journal.read_value("result.json");
+    if journal::finished_event(journal.events(), stored.as_ref()).is_some() {
+        return fail(format!("run {id} has finished"));
+    }
+    let request = match shutdown_request(&journal)? {
+        Some(request) => request,
+        None => {
+            let request = json!({ "kind": "close requested", "at": iso(), "reason": reason });
+            journal.write_value(SHUTDOWN_REQUEST, &request)?;
+            request
+        }
+    };
+    let result = finish_shutdown(&mut journal, &run, id, claim.as_ref(), &request, stored.as_ref())?;
+    drop(lock);
+    Ok(cleanup::after_run(Exit { code: 0, result }))
+}
+
+fn cancel_worker(
+    journal: &Journal,
+    claim: Option<&code_package::PinnedClaim<'_>>,
+    id: &str,
+    (pid, owner): (u32, &Value),
+    reason: &str,
+    deadline: Instant,
+) -> Result<()> {
+    let start = owner["start"]
+        .as_str()
+        .filter(|start| !start.trim().is_empty())
+        .ok_or_else(|| {
+            GatewayError(format!("Cannot verify the start time of run {id}'s worker (pid {pid})."))
+        })?;
+    let events = journal.snapshot()?;
+    if journal.finished(&events) {
+        return fail(format!("run {id} has finished"));
+    }
+    // A live worker owns events.jsonl. Record the event separately before signalling
+    // and merge it into the event stream once the run lock has been recovered.
+    if shutdown_request(journal)?.is_none() {
+        journal.write_value(SHUTDOWN_REQUEST, &json!({
+            "kind": "cancel requested", "at": iso(), "pid": pid, "reason": reason,
+            "step": journal::last_state_event(&events).and_then(|event| event["step"].as_str()),
+        }))?;
+        boundary::cut("flow cancel request");
+    }
+
+    let _claim_lock = if let Some(claim) = claim {
+        std::fs::create_dir_all(&claim.dir)?;
+        // A killed worker cannot release the legacy repository-wide claim lock. Wait
+        // for claim writes to finish and hold the lock while signalling the worker.
+        let wait = deadline
+            .saturating_duration_since(Instant::now())
+            .saturating_sub(Duration::from_secs(10));
+        Some(cleanup::ClaimLock::wait(&claim.dir, wait)?)
+    } else {
+        None
+    };
+    if journal.finished(&journal.snapshot()?) {
+        return fail(format!("run {id} has finished"));
+    }
+    if journal::live_pid(owner).is_none() {
+        return Ok(());
+    }
+    let signal = stop_process(i64::from(pid), Some(start));
+    while journal::live_pid(owner).is_some() {
+        if signal == "unknown" {
+            return fail(format!("Could not signal run {id}'s worker (pid {pid})."));
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return fail(format!("Run {id} is still live (pid {pid}) after waiting 60 seconds."));
+        }
+        thread::sleep(remaining.min(Duration::from_millis(100)));
+    }
+    Ok(())
+}
+
+fn shutdown_request(journal: &Journal) -> Result<Option<Value>> {
+    if !journal.file(SHUTDOWN_REQUEST).try_exists()? {
+        return Ok(None);
+    }
+    let request = journal
+        .read_value(SHUTDOWN_REQUEST)
+        .filter(|request| {
+            matches!(request["kind"].as_str(), Some("cancel requested" | "close requested"))
+                && request["reason"].is_string()
+                && request["at"].is_string()
+        })
+        .ok_or_else(|| GatewayError("The run's shutdown request is unreadable.".into()))?;
+    Ok(Some(request))
+}
+
+fn finish_shutdown(
+    journal: &mut Journal,
+    run: &Value,
+    id: &str,
+    claim: Option<&code_package::PinnedClaim<'_>>,
+    request: &Value,
+    stored: Option<&Value>,
+) -> Result<Value> {
+    if request["kind"] == "cancel requested"
+        && !journal.events().iter().any(|event| event["kind"] == "cancel requested")
+    {
+        let mut event = request.clone();
+        event["requestedAt"] = request["at"].clone();
+        journal.append(event)?;
+    }
+    let result = if let Some(closed) = journal.events().iter().rfind(|event| event["kind"] == "closed") {
+        closed["result"].clone()
+    } else {
+        let worker = journal.read_value("worker-result.json");
+        let prior = stored.or(worker.as_ref()).unwrap_or(&Value::Null);
+        let step = journal
+            .last_event()
+            .and_then(|event| event["step"].as_str())
+            .or_else(|| prior["stoppedAt"].as_str())
+            .or_else(|| journal.events().iter().rev().find_map(|event| event["step"].as_str()))
+            .unwrap_or("start");
+        let findings = stored
+            .and_then(|result| result.get("openFindings").cloned())
+            .or_else(|| {
+                if run["workflow"] == code_package::WORKFLOW {
+                    code_package::recorded_findings(journal.events()).map(|findings| json!(findings))
+                } else {
+                    None
+                }
+            })
+            .or_else(|| prior.get("openFindings").cloned())
+            .unwrap_or_else(|| json!([]));
+        let mut result = json!({
+            "runId": id, "workflow": run["workflow"], "version": run["version"],
+            "status": "closed", "verdict": "closed", "approved": false,
+            "stoppedAt": step, "reason": request["reason"],
+            "openFindings": findings,
+        });
+        if let Some(step) = journal::unknown_model_step(journal.events()) {
+            result["unknownOutcome"] = json!(step);
+        }
+        for key in ["candidate", "claimAdded"] {
+            if let Some(value) = prior.get(key) {
+                result[key] = value.clone();
+            }
+        }
+        // A cut worker can leave independently contained checks. Settle the recorded
+        // processes before cleanup can remove their checkouts.
+        checks::reap_unended(journal)?;
+        let event = json!({ "kind": "closed", "step": result["stoppedAt"], "reason": request["reason"], "result": result });
+        journal.append(event)?;
+        result
+    };
+    if let Some(claim) = claim {
+        claim.close(id)?;
+    }
+    boundary::cut("flow close claim");
+    journal.write_value("result.json", &result)?;
+    journal.append(json!({ "kind": "finished", "step": result["stoppedAt"], "verdict": "closed" }))?;
+    Ok(result)
+}
+
+fn saved_shutdown(id: &str, result: Option<Value>, rerun: Option<&str>) -> Result<Option<Exit>> {
+    let Some(result) = result.filter(|result| result["verdict"] == "closed") else { return Ok(None) };
+    if rerun.is_some() {
+        return fail(format!("run {id} has finished"));
+    }
+    Ok(Some(Exit { code: 2, result }))
+}
+
+fn resume_shutdown(journal: &mut Journal, run: &Value, id: &str, rerun: Option<&str>) -> Result<Option<Exit>> {
+    let Some(request) = shutdown_request(journal)? else { return Ok(None) };
+    let events = journal.snapshot()?;
+    let stored = journal.read_value("result.json");
+    if journal::finished_event(&events, stored.as_ref()).is_some() {
+        return saved_shutdown(id, stored, rerun);
+    }
+    if journal.live_owner(Some(std::process::id())).is_some() {
+        return status(id).map(Some);
+    }
+    let Some(_shutdown) = cleanup::lock_shutdown(journal)? else {
+        return status(id).map(Some);
+    };
+    let lock = journal.lock()?;
+    if journal.live_owner(Some(std::process::id())).is_some() {
+        drop(lock);
+        return status(id).map(Some);
+    }
+    journal.load_for_shutdown()?;
+    let stored = journal.read_value("result.json");
+    if journal::finished_event(journal.events(), stored.as_ref()).is_some() {
+        return saved_shutdown(id, stored, rerun);
+    }
+    let claim = code_package::PinnedClaim::for_shutdown(run, id)?;
+    let result = finish_shutdown(journal, run, id, claim.as_ref(), &request, stored.as_ref())?;
+    drop(lock);
+    Ok(Some(cleanup::after_run(Exit { code: 2, result })))
 }
 
 /// The state a new executor needs to continue safely, without model responses, commands or log contents.
@@ -165,7 +416,7 @@ fn refused_rerun(journal: &Journal, id: &str, rerun: Option<&str>) -> Result<Opt
 }
 
 pub fn resume(workflow: &str, id: &str, given: Option<&Value>, rerun: Option<&str>, detach: bool) -> Result<Exit> {
-    let (journal, run) = Journal::open(&Config::new(None)?.home, id)?;
+    let (mut journal, run) = Journal::open(&Config::new(None)?.home, id)?;
     if run["workflow"] != workflow {
         return zodchi_core::util::fail(format!("Run {id} belongs to {}.", run["workflow"]));
     }
@@ -173,6 +424,9 @@ pub fn resume(workflow: &str, id: &str, given: Option<&Value>, rerun: Option<&st
         if !args_match(&run["inputs"], given) {
             return zodchi_core::util::fail(format!("The args differ from those run {id} started with."));
         }
+    }
+    if let Some(exit) = resume_shutdown(&mut journal, &run, id, rerun)? {
+        return Ok(exit);
     }
     if let Some(exit) = refused_rerun(&journal, id, rerun)? {
         return Ok(exit);
@@ -187,7 +441,10 @@ pub fn resume(workflow: &str, id: &str, given: Option<&Value>, rerun: Option<&st
 }
 
 pub fn worker(id: &str, rerun: Option<&str>) -> Result<Exit> {
-    let (journal, run) = Journal::open(&Config::new(None)?.home, id)?;
+    let (mut journal, run) = Journal::open(&Config::new(None)?.home, id)?;
+    if let Some(exit) = resume_shutdown(&mut journal, &run, id, rerun)? {
+        return Ok(exit);
+    }
     if let Some(exit) = refused_rerun(&journal, id, rerun)? {
         return Ok(exit);
     }

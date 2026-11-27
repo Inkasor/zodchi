@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { setTimeout as pause } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 
 function homeState(dir) {
   const mtime = String(fs.statSync(dir, { bigint: true }).mtimeNs);
@@ -14,12 +15,12 @@ function homeState(dir) {
   return [mtime, entries];
 }
 
-export default function register({ scenario, flowWorld, zodchi, STUB, FIXED }) {
+export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FIXED }) {
   async function checkJournalReaders(t, f) {
     const home = path.join(f.w.dir, "reader-home");
     fs.mkdirSync(home);
-    const caller = (args) => zodchi(t, f.w, ["flow", ...args], {
-      cwd: f.w.dir, env: { ...f.w.env, ZODCHI_HOME: home }, timeoutMs: 10000,
+    const caller = (args, extraEnv = {}) => zodchi(t, f.w, ["flow", ...args], {
+      cwd: f.w.dir, env: { ...f.w.env, ZODCHI_HOME: home, ...extraEnv }, timeoutMs: 10000,
     });
     const empty = await caller(["runs"]);
     t.eq([empty.code, empty.json], [0, []], "a home without a flows directory has no runs");
@@ -132,6 +133,21 @@ export default function register({ scenario, flowWorld, zodchi, STUB, FIXED }) {
     const changes = await caller(["wait", "changes"]);
     t.eq([changes.code, changes.json?.status, changes.json?.next],
       [2, "finished", "Resolve the findings."], "wait reports a finished but unapproved result and its next action");
+
+    const opsId = "ops-to-close";
+    seed(opsId, { kind: "waiting", step: "dry 0" }, {
+      workflow: "ops-script", ownerFile: "lock/owner.json", ownerPid: 2147483647,
+    });
+    const cut = await caller(["cancel", opsId, "--reason", "The operator withdrew the request."], {
+      ZODCHI_FLOW_CUT: "flow close claim",
+    });
+    t.eq(cut.code, 75, "cancel on an inactive run starts closure and can be interrupted");
+    const recovered = await caller(["ops-script", "--resume", opsId, "--detach"]);
+    t.eq([recovered.code, recovered.json?.verdict, recovered.json?.stoppedAt, recovered.json?.reason],
+      [2, "closed", "dry 0", "The operator withdrew the request."], "resume completes closure before loading workflow inputs");
+    t.ok(!fs.existsSync(path.join(home, "flows", opsId, "lock")), "a closed workflow releases its own run lock");
+    const opsWait = await caller(["wait", opsId]);
+    t.eq([opsWait.code, opsWait.json?.status], [2, "closed"], "wait reports closure as an unapproved end");
   }
 
   scenario("flow-worker-reattach", "a detached flow keeps one run and a second caller can inspect and resume it", async (t) => {
@@ -164,6 +180,13 @@ export default function register({ scenario, flowWorld, zodchi, STUB, FIXED }) {
     t.eq(attach.json.runId, id, "the second caller attaches to the same run");
     const limit = Date.now() + 30000;
     await t.until("the detached worker reached the held verification", () => fs.existsSync(ready), limit - Date.now());
+    const journal = path.join(f.w.zhome, "flows", id);
+    const liveState = () => [fs.readdirSync(journal).sort(), fs.readFileSync(path.join(journal, "events.jsonl"), "utf8"), f.claim(), f.steps()];
+    const beforeClose = liveState();
+    const refused = await fromAnotherDirectory(["close", id, "--reason", "The reader tried to close a live run."]);
+    t.ok(refused.code === 1 && refused.err.includes(`pid ${start.json.pid}`) && refused.err.includes("flow cancel"),
+      "close refuses a live run and names its worker and the cancel command");
+    t.eq(liveState(), beforeClose, "refusing to close a live run leaves its journal, claim and model calls alone");
     const remaining = Math.max(1, limit - Date.now());
     const waiting = fromAnotherDirectory(["wait", id, "--timeout-min", "0.5"], { timeoutMs: remaining });
     const [held, pending] = await Promise.all([
@@ -181,6 +204,86 @@ export default function register({ scenario, flowWorld, zodchi, STUB, FIXED }) {
     const final = inspected.json?.status === "finished" ? inspected.json.result : null;
     t.eq([final?.approved, f.claim().status, f.commits().length, f.steps()],
       [true, "done", 1, ["write", "review 1"]], "detached execution, inspection and resume do not duplicate effects");
+    await t.until("the finished worker has published its final receipt", () => fs.existsSync(path.join(journal, "worker-result.json")));
+    const beforeFinished = [homeState(journal), f.claim(), f.steps()];
+    for (const command of ["close", "cancel"]) {
+      const ended = await fromAnotherDirectory([command, id, "--reason", "Already reviewed."]);
+      t.ok(ended.code === 1 && ended.err.includes(`run ${id} has finished`), `${command} refuses a finished run`);
+    }
+    t.eq([homeState(journal), f.claim(), f.steps()], beforeFinished, "both refusals leave the finished run unchanged");
+
+    const heldReview = flowWorld(t, "flow-worker-cancel");
+    // The isolated checkout must preserve the LF bytes used to hash the fake patches.
+    gitOut(heldReview.r, ["config", "core.autocrlf", "false"]);
+    heldReview.answer("write", heldReview.patch([heldReview.modify("src/math.mjs", STUB, FIXED)]));
+    heldReview.answer("review 1", { flowHang: true });
+    const reviewRelease = path.join(heldReview.w.dir, "release-held-review");
+    const wrapper = path.join(heldReview.w.dir, "hold-review.mjs");
+    fs.writeFileSync(wrapper, `
+      import fs from "node:fs";
+      setInterval(() => { if (fs.existsSync(${JSON.stringify(reviewRelease)})) process.exit(1); }, 25).unref();
+      await import(${JSON.stringify(pathToFileURL(heldReview.w.env.ZODCHI_CODEX_BIN).href)});
+    `);
+    heldReview.w.env.ZODCHI_CODEX_BIN = wrapper;
+    t.cleanups.push(() => fs.writeFileSync(reviewRelease, ""));
+    const started = await heldReview.flow(["--args", heldReview.args({ isolated: true }), "--detach"]);
+    t.eq([started.code, started.json?.status], [0, "submitted"], "the review can run detached");
+    const cancelledId = started.json.runId;
+    const cancelledJournal = path.join(heldReview.w.zhome, "flows", cancelledId);
+    const file = (name) => path.join(cancelledJournal, name);
+    const events = () => fs.readFileSync(file("events.jsonl"), "utf8").split("\n").slice(0, -1).filter(Boolean).map(JSON.parse);
+    await t.until("the held review turn started and its submission was recorded", () => heldReview.steps().includes("review 1")
+      && events().some((event) => event.kind === "submitted" && event.step === "review 1"));
+    const candidateRef = `refs/zodchi/candidates/${cancelledId}/1`;
+    const candidate = gitOut(heldReview.r, ["rev-parse", candidateRef]);
+    t.ok(/^[0-9a-f]{40}$/.test(candidate), "the isolated review has a retained candidate before cancellation");
+    const cancel = (args, options = {}) => zodchi(t, heldReview.w, ["flow", ...args], {
+      cwd: heldReview.w.dir, timeoutMs: 10000, ...options,
+    });
+    const reason = "The owner withdrew the review.";
+    const requestedOnly = await cancel(["cancel", cancelledId, "--reason", reason], {
+      env: { ...heldReview.w.env, ZODCHI_FLOW_CUT: "flow cancel request" },
+    });
+    const pendingRequest = JSON.parse(fs.readFileSync(file("shutdown-request.json"), "utf8"));
+    t.eq([requestedOnly.code, pendingRequest.kind, pendingRequest.pid, pendingRequest.reason, heldReview.claim()?.status],
+      [75, "cancel requested", started.json.pid, reason, "open"], "the cancellation event is durable before the worker is signalled");
+    const stillRunning = await cancel(["status", cancelledId]);
+    t.eq(stillRunning.json?.status, "running", "a cut before signalling leaves the worker live");
+    const cancelStarted = performance.now();
+    const cancelled = await cancel(["cancel", cancelledId, "--reason", reason], { timeoutMs: 65000 });
+    t.eq([cancelled.code, cancelled.json?.verdict, cancelled.json?.reason, cancelled.json?.stoppedAt, cancelled.json?.unknownOutcome],
+      [0, "closed", reason, "review 1", "review 1"], "cancel reports the in-flight review as an unknown outcome");
+    t.ok(performance.now() - cancelStarted < 60000, "cancel completes within the worker wait limit");
+    const workerExited = () => {
+      const pid = started.json.pid;
+      try {
+        process.kill(pid, 0);
+        if (process.platform === "linux") {
+          const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+          return stat[stat.lastIndexOf(") ") + 2] === "Z";
+        }
+        return false;
+      } catch (error) {
+        return error.code === "ESRCH" || error.code === "ENOENT";
+      }
+    };
+    t.ok(workerExited() && !fs.existsSync(file("lock")), "cancel waits for the worker to exit and releases its lock");
+    t.eq([heldReview.claim()?.status, JSON.parse(fs.readFileSync(file("result.json"), "utf8"))],
+      ["closed", cancelled.json], "cancel closes the claim and saves the returned result");
+    const history = events();
+    const requested = history.find((event) => event.kind === "cancel requested");
+    const closed = history.find((event) => event.kind === "closed");
+    t.ok(requested?.reason === reason && requested.pid === started.json.pid && requested.requestedAt === pendingRequest.at
+      && requested.seq < closed?.seq,
+      "the cancellation request identifies the worker before the closing event");
+    const continued = await cancel(["code-package", "--resume", cancelledId, "--detach"]);
+    t.eq([continued.code, continued.json, heldReview.steps()], [2, cancelled.json, ["write", "review 1"]],
+      "resume returns the saved unknown outcome without retrying the review");
+    const retry = await cancel(["code-package", "--resume", cancelledId, "--rerun", "review 1"]);
+    t.eq([retry.code, heldReview.steps()], [1, ["write", "review 1"]], "an explicit rerun cannot repeat a closed review");
+    const applied = await cancel(["apply", cancelledId]);
+    t.eq([applied.code, applied.json?.status, gitOut(heldReview.r, ["rev-parse", candidateRef]), heldReview.commits()],
+      [2, "blocked", candidate, []], "a cancelled isolated candidate stays available and cannot be applied");
   });
 
   scenario("flow-owner-reply", "the run waits for an answer, scrubs owner inputs before saving them and resumes the same claim", async (t) => {
@@ -219,5 +322,78 @@ export default function register({ scenario, flowWorld, zodchi, STUB, FIXED }) {
     const next = fs.readFileSync(path.join(f.w.zhome, "flows", id, "requests", `flow-${id}-write-a2.json`), "utf8");
     t.ok(next.includes("Keep the output integer.") && next.includes("Use the limits from the brief.")
       && next.includes("[private text removed]") && !next.includes(privateWord), "the next prompt includes only scrubbed owner input");
+
+    gitOut(f.r, ["config", "core.autocrlf", "false"]);
+    f.answer("write", f.patch([f.modify("src/math.mjs", FIXED, `// Keep the clamp in range.\n${FIXED}`)]));
+    f.answer("review 1", f.review("changes_requested", [f.finding("F1")]));
+    f.answer("close 1", { ...f.patch([]), status: "blocked", questions: ["Should the comment name the limits?"] });
+    const waiting = await f.flow(["--args", f.args({ isolated: true, rounds: 2 })]);
+    const waitingId = waiting.json.runId;
+    t.eq([waiting.code, waiting.json?.status, f.claim()?.status, waiting.json?.openFindings?.length],
+      [2, "waiting", "open", 1], "the second run waits for the owner with an open review finding");
+    const waitingJournal = path.join(f.w.zhome, "flows", waitingId);
+    const earlier = homeState(path.join(f.w.zhome, "flows", id));
+    const before = [homeState(waitingJournal), f.claim(), f.steps()];
+    for (const args of [["close", waitingId], ["cancel", waitingId], ["close", waitingId, "--reason", "x".repeat(501)]]) {
+      t.eq((await caller(args)).code, 1, `${args[0]} rejects a missing or oversized reason`);
+    }
+    t.eq([homeState(waitingJournal), f.claim(), f.steps()], before, "invalid reasons leave the waiting run unchanged");
+    fs.mkdirSync(path.join(waitingJournal, "tmp"), { recursive: true });
+    const raw = `The owner deferred the change.\n${privateWord}`;
+    const savedReason = "The owner deferred the change.\n[private text removed]";
+    const closed = await caller(["close", waitingId, "--reason", raw]);
+    const saved = JSON.parse(fs.readFileSync(path.join(waitingJournal, "result.json"), "utf8"));
+    t.eq([closed.code, closed.json, saved.verdict, saved.reason, saved.stoppedAt, saved.openFindings, f.claim()?.status],
+      [0, saved, "closed", savedReason, "close 1", waiting.json.openFindings, "closed"],
+      "close preserves the stopped step and open findings and closes the claim with the screened reason");
+    const eventsText = fs.readFileSync(path.join(waitingJournal, "events.jsonl"), "utf8");
+    const history = eventsText.trimEnd().split("\n").map(JSON.parse);
+    const closing = history.find((event) => event.kind === "closed");
+    t.ok(!eventsText.includes(privateWord) && closing?.reason === savedReason && Number.isFinite(Date.parse(closing?.at)),
+      "the closed event has a timestamp and records only screened text");
+    t.ok(!fs.existsSync(path.join(waitingJournal, "tmp")), "close runs the normal post-run cleanup");
+    const status = await caller(["status", waitingId]);
+    const runs = await caller(["runs"]);
+    const listed = runs.json?.find((run) => run.runId === waitingId);
+    t.eq([status.code, status.json?.status, status.json?.event, status.json?.result, runs.code, listed?.status, listed?.live],
+      [0, "closed", "closed", saved, 0, "closed", false], "status and runs show the closed run");
+    const restored = await caller(["code-package", "--resume", waitingId]);
+    t.eq([restored.code, restored.json, f.steps(), homeState(path.join(f.w.zhome, "flows", id))],
+      [2, saved, before[2], earlier], "resume prints the saved result without a model call or touching the earlier run");
+    const afterClose = [homeState(waitingJournal), f.claim(), f.steps()];
+    const repeated = await caller(["close", waitingId, "--reason", "A second reason."]);
+    t.ok(repeated.code === 1 && repeated.err.includes(`run ${waitingId} has finished`),
+      "an explicitly closed run is finished");
+    t.eq([homeState(waitingJournal), f.claim(), f.steps()], afterClose, "a repeated close cannot replace the saved reason");
+
+    // Seed a stored claim at the documented 60-character limit. The current
+    // new-run parser caps labels at 40 characters.
+    const storedId = "stored-code-package";
+    const storedLabel = "stored-" + "x".repeat(53);
+    const storedJournal = path.join(f.w.zhome, "flows", storedId);
+    const storedRunFile = path.join(storedJournal, "run.json");
+    const storedRun = JSON.parse(fs.readFileSync(path.join(waitingJournal, "run.json"), "utf8"));
+    storedRun.runId = storedId;
+    storedRun.inputs.args.label = "../" + storedLabel;
+    const claimEvent = history.find((event) => event.kind === "done" && event.step === "claim");
+    const storedClaim = path.join(path.dirname(claimEvent.result.file), storedLabel + ".json");
+    fs.writeFileSync(storedClaim, JSON.stringify({ ...f.claim(), label: storedLabel, run: storedId, status: "open", closedAt: undefined }));
+    fs.mkdirSync(storedJournal);
+    fs.writeFileSync(storedRunFile, JSON.stringify(storedRun));
+    fs.writeFileSync(path.join(storedJournal, "events.jsonl"), JSON.stringify({ kind: "waiting", step: "write" }) + "\n");
+    const beforeInvalid = homeState(storedJournal);
+    const invalid = await caller(["cancel", storedId, "--reason", "Stop the stored run."]);
+    t.ok(invalid.code === 1 && invalid.err.includes("no valid package label"), "cancel rejects an unsafe stored label");
+    t.eq(homeState(storedJournal), beforeInvalid, "an invalid claim identity leaves the run without a shutdown request");
+
+    storedRun.inputs.args.label = storedLabel;
+    fs.writeFileSync(storedRunFile, JSON.stringify(storedRun));
+    const closedStored = await caller(["close", storedId, "--reason", "Stop the stored run."]);
+    const own = JSON.parse(fs.readFileSync(storedClaim, "utf8"));
+    t.eq([closedStored.code, closedStored.json?.verdict, own.run, own.status, f.claim()],
+      [0, "closed", storedId, "closed", afterClose[1]], "close releases the stored long-label claim and leaves the other claim alone");
+    const restoredStored = await caller(["code-package", "--resume", storedId]);
+    t.eq([restoredStored.code, restoredStored.json, f.steps()], [2, closedStored.json, afterClose[2]],
+      "resume returns the stored long-label result without a model call");
   });
 }

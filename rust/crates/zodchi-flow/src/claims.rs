@@ -1,5 +1,5 @@
 //! Package claims, shared with the JavaScript workflows: one JSON file per package in
-//! `~/.zodchi/packages/<repository>/<label>.json` with `label`, `status` ("open", "done", "stopped"), `files` (paths
+//! `~/.zodchi/packages/<repository>/<label>.json` with `label`, `status` ("open", "done", "stopped", "closed"), `files` (paths
 //! relative to the repository, lower case) and `base`. Every change of the folder happens under the lock folder
 //! `.lock` (mkdir is atomic); a lock older than ten minutes is stale.
 
@@ -169,7 +169,7 @@ pub fn holds(dir: &Path, label: &str, run: &str, keys: &[String]) -> bool {
 
 /// Closes the claim of this run with a status; a claim that is gone or belongs to another run is left alone.
 pub fn close(dir: &Path, label: &str, run: &str, status: &str) -> Result<bool> {
-    with_lock(dir, || {
+    let update = || {
         let own = file(dir, label);
         let bytes = match std::fs::read(&own) {
             Ok(bytes) => bytes,
@@ -183,11 +183,19 @@ pub fn close(dir: &Path, label: &str, run: &str, status: &str) -> Result<bool> {
         if claim["run"] != json!(run) {
             return Ok(false);
         }
-        if claim["status"] == json!("open") {
+        if claim["status"] == "open" || (status == "closed" && claim["status"] != "closed") {
             claim["status"] = json!(status);
             claim["closedAt"] = json!(iso());
             write_json_atomic(&own, &claim)?;
         }
         Ok(true)
-    })
+    };
+    if status == "closed" {
+        // A cancel command may have been cut while using this same lock to stop the worker.
+        fs::create_dir_all(dir)?;
+        let _lock = crate::cleanup::ClaimLock::wait(dir, Duration::from_secs(120))?;
+        update()
+    } else {
+        with_lock(dir, update)
+    }
 }
