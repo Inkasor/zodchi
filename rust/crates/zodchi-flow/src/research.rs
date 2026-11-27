@@ -13,6 +13,7 @@ use crate::{
 };
 use serde_json::{json, Map, Value};
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     fs,
     io::{self, Write},
@@ -35,6 +36,8 @@ const MAX_CONSTRAINTS: usize = 20;
 const MAX_CONSTRAINT_TEXT_CHARS: usize = 300;
 const MAX_EXPERT_FACTS: usize = 12;
 const MAX_EXPERT_TEXT_CHARS: usize = 600;
+const SHORTENABLE_EXPERT_FIELDS: [(&str, &str); 2] = [("items", "text"), ("facts", "claim")];
+const EXPERT_SHORTENING_MARKER: &str = " […]";
 const MAX_PROPOSAL_GROUP_CHARS: usize = 80;
 const MAX_CITATION_LINES: usize = 40;
 const EXPERT_PROMPT_RESERVE: usize = 1024;
@@ -205,6 +208,23 @@ fn local_config(cfg: &Config) -> Result<Value> {
     Ok(json!({"codex":cfg.codex_bin,"accounts":accounts,"roles":roles}))
 }
 
+fn same_local_config(current: &Value, pinned: &Value) -> bool {
+    if current == pinned {
+        return true;
+    }
+    // Older rounds pinned the shipped schema with both caps. Their saved requests keep that schema.
+    let mut legacy = current.clone();
+    let schema = &mut legacy["roles"]["research-expert"]["outputSchema"];
+    if *schema != serde_json::from_str::<Value>(EXPERT).expect("research schema") {
+        return false;
+    }
+    for (section, field) in SHORTENABLE_EXPERT_FIELDS {
+        schema["properties"][section]["items"]["properties"][field]["maxLength"] =
+            json!(MAX_EXPERT_TEXT_CHARS);
+    }
+    &legacy == pinned
+}
+
 fn check_legacy(tmp: &Path, round: usize) -> Result<()> {
     if tmp
         .join("rounds")
@@ -355,7 +375,7 @@ impl Research<'_> {
                 at: format!("configuration at {step}"),
                 reason: error.0,
             })?;
-        if current != self.run["inputs"]["pin"]["localConfig"] {
+        if !same_local_config(&current, &self.run["inputs"]["pin"]["localConfig"]) {
             return Err(gateway::CallError::Stop {
                 at: format!("configuration at {step}"),
                 reason: "The local Codex configuration changed. Restore it before resuming.".into(),
@@ -811,11 +831,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
         let mut line_count = lines.len();
         let stop = research.wave(1, EXPERT, wave, |offset, answer, research| {
             let index = wave_index * 2 + offset;
-            let (mut proposals, mut cited, mut missing) = (Vec::new(), Vec::new(), Vec::new());
-            collect_answer(
-                &mut proposals,
-                &mut cited,
-                &mut missing,
+            let answer = collect_answer(
                 &answer,
                 index + 1,
                 &titles[index],
@@ -824,28 +840,39 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
                 &research.privacy,
             )
             .map_err(|err| ("collect", err.0))?;
-            line_count += proposals.len();
+            line_count += answer.lines.len();
             if line_count > limit {
                 return Err((
                     "collect",
                     "The proposals and assumptions exceed the round line budget.".into(),
                 ));
             }
-            collected.insert(offset, (proposals, cited, missing));
+            collected.insert(offset, answer);
             Ok(())
         });
         if let Some((step, reason)) = stop {
             return research.stopped(step, reason);
         }
-        for (proposals, cited, missing) in collected.into_values() {
-            for mut proposal in proposals {
+        for answer in collected.into_values() {
+            for event in answer.shortened {
+                // A resume can collect the same saved answer before the list is written.
+                if !research.journal.events().iter().any(|recorded| {
+                    recorded["kind"] == event["kind"]
+                        && recorded["question"] == event["question"]
+                        && recorded["section"] == event["section"]
+                        && recorded["line"] == event["line"]
+                }) {
+                    research.journal.append(event)?;
+                }
+            }
+            for mut proposal in answer.lines {
                 let n = lines.len() + 1;
                 proposal["n"] = json!(n);
                 proposal["id"] = json!(format!("{round}.{n}"));
                 lines.push(proposal);
             }
-            facts.extend(cited);
-            mechanical.extend(missing);
+            facts.extend(answer.facts);
+            mechanical.extend(answer.mechanical);
         }
     }
     // Preserve validated claims for the owner while applying inbound scrubbing to the checker copy.
@@ -1082,17 +1109,65 @@ fn write_unchecked_report(
     Ok(())
 }
 
+#[derive(Default)]
+struct CollectedAnswer {
+    lines: Vec<Value>,
+    facts: Vec<Value>,
+    mechanical: Vec<Value>,
+    shortened: Vec<Value>,
+}
+
+impl CollectedAnswer {
+    fn expert_text<'a>(
+        &mut self,
+        record: &'a Value,
+        question: usize,
+        section: &str,
+        line: usize,
+        invalid: impl FnOnce() -> GatewayError,
+    ) -> Result<Cow<'a, str>> {
+        let field = if section == "facts" { "claim" } else { "text" };
+        let Some(text) = record[field].as_str().filter(|text| !text.trim().is_empty()) else {
+            return Err(invalid());
+        };
+        let original_chars = text.chars().count();
+        if original_chars <= MAX_EXPERT_TEXT_CHARS {
+            return Ok(Cow::Borrowed(text));
+        }
+        if !SHORTENABLE_EXPERT_FIELDS.contains(&(section, field)) {
+            return Err(invalid());
+        }
+        // Keep rejecting a too-long record that also violates the executor's schema.
+        let schema: Value = serde_json::from_str(EXPERT).expect("research schema");
+        if zodchi_core::claude::conforms(record, &schema["properties"][section]["items"], "answer")
+            .is_err()
+        {
+            return Err(invalid());
+        }
+        let keep = MAX_EXPERT_TEXT_CHARS - EXPERT_SHORTENING_MARKER.chars().count();
+        let (end, _) = text.char_indices().nth(keep).expect("overlong expert text");
+        self.shortened.push(json!({
+            "kind": "expert line shortened",
+            "step": "collect",
+            "question": question,
+            "section": section,
+            "line": line,
+            "originalChars": original_chars,
+            "originalText": text,
+        }));
+        Ok(Cow::Owned(format!("{}{EXPERT_SHORTENING_MARKER}", &text[..end])))
+    }
+}
+
 fn collect_answer(
-    lines: &mut Vec<Value>,
-    facts: &mut Vec<Value>,
-    mechanical: &mut Vec<Value>,
     answer: &Value,
     q: usize,
     title: &str,
     prior: &[Value],
     attachments: &BTreeMap<String, Vec<String>>,
     privacy: &Privacy,
-) -> Result<()> {
+) -> Result<CollectedAnswer> {
+    let mut collected = CollectedAnswer::default();
     for (key, kind) in [("items", "proposal"), ("assumptions", "assumption")] {
         let records = answer[key]
             .as_array()
@@ -1100,13 +1175,10 @@ fn collect_answer(
         if key == "items" && records.is_empty() {
             return fail(format!("Question {q} has no proposals."));
         }
-        for record in records {
-            let text = record["text"]
-                .as_str()
-                .filter(|text| {
-                    !text.trim().is_empty() && text.chars().count() <= MAX_EXPERT_TEXT_CHARS
-                })
-                .ok_or_else(|| GatewayError(format!("Question {q} has an invalid {key} line.")))?;
+        for (index, record) in records.iter().enumerate() {
+            let text = collected.expert_text(record, q, key, index + 1, || {
+                GatewayError(format!("Question {q} has an invalid {key} line."))
+            })?;
             let group = record["group"]
                 .as_str()
                 .filter(|group| !group.trim().is_empty())
@@ -1135,7 +1207,7 @@ fn collect_answer(
             } else {
                 row["why"] = json!(record["why"].as_str().unwrap_or(""));
             }
-            lines.push(row);
+            collected.lines.push(row);
         }
     }
     let rows = answer["facts"]
@@ -1143,15 +1215,14 @@ fn collect_answer(
         .filter(|rows| rows.len() <= MAX_EXPERT_FACTS)
         .ok_or_else(|| GatewayError(format!("Question {q} needs at most twelve facts.")))?;
     for (i, row) in rows.iter().enumerate() {
-        let claim = row["claim"]
-            .as_str()
-            .filter(|text| !text.trim().is_empty() && text.chars().count() <= MAX_EXPERT_TEXT_CHARS)
-            .ok_or_else(|| GatewayError("A fact needs bounded claim text.".into()))?;
+        let claim = collected.expert_text(row, q, "facts", i + 1, || {
+            GatewayError("A fact needs bounded claim text.".into())
+        })?;
         let source = row["source"]
             .as_str()
             .ok_or_else(|| GatewayError("A fact needs a citation.".into()))?;
         let Some((name, excerpt)) = cite(source, attachments) else {
-            mechanical.push(json!({"claim":claim, "source":privacy.text(source),
+            collected.mechanical.push(json!({"claim":claim, "source":privacy.text(source),
                 "reason":"The cited attachment or line range does not exist or exceeds the permitted range."}));
             continue;
         };
@@ -1160,9 +1231,11 @@ fn collect_answer(
         if privacy.text(&id) != id || privacy.text(&source) != source {
             return fail("A citation contains private structural text.");
         }
-        facts.push(json!({"id":id,"claim":claim,"source":source,"excerpt":excerpt}));
+        collected
+            .facts
+            .push(json!({"id":id,"claim":claim,"source":source,"excerpt":excerpt}));
     }
-    Ok(())
+    Ok(collected)
 }
 
 fn cite<'a>(
@@ -1453,16 +1526,15 @@ mod tests {
         let expert: Value = serde_json::from_str(EXPERT).unwrap();
         let fields = &expert["properties"];
         assert_eq!(fields["facts"]["maxItems"], MAX_EXPERT_FACTS);
-        for (array, field) in [
-            ("items", "text"),
-            ("assumptions", "text"),
-            ("facts", "claim"),
-        ] {
-            assert_eq!(
-                fields[array]["items"]["properties"][field]["maxLength"],
-                MAX_EXPERT_TEXT_CHARS
-            );
+        for (section, field) in SHORTENABLE_EXPERT_FIELDS {
+            let schema = &fields[section]["items"]["properties"][field];
+            assert_eq!(schema["type"], "string");
+            assert!(schema.get("maxLength").is_none());
         }
+        assert_eq!(
+            fields["assumptions"]["items"]["properties"]["text"]["maxLength"],
+            MAX_EXPERT_TEXT_CHARS
+        );
         assert_eq!(
             fields["items"]["items"]["properties"]["group"]["maxLength"],
             MAX_PROPOSAL_GROUP_CHARS

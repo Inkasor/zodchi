@@ -21,8 +21,7 @@
         "properties": {
           "text": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 600
+            "minLength": 1
           },
           "group": {
             "type": "string",
@@ -71,8 +70,7 @@
         "properties": {
           "claim": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 600
+            "minLength": 1
           },
           "source": {
             "type": "string"

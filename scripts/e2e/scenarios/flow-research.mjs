@@ -55,6 +55,7 @@ export default function register({ scenario, flowWorld, zodchi, FAKE_FLOW }) {
     t.eq(ledger.entries[0].text, proposal, "the ledger keeps the complete proposal");
     t.eq(f.steps(), ["constraints", "ask q1", "check f1"], "no model is called during the reply");
     await checkScrubbedReply(t);
+    await checkExpertLineLengths(t, f.steps());
   });
   async function checkScrubbedReply(t) {
     const { f, tmp, args, file, run } = fixture(t, "flow-research-scrubbed-reply");
@@ -79,6 +80,81 @@ export default function register({ scenario, flowWorld, zodchi, FAKE_FLOW }) {
     const ledger = JSON.parse(fs.readFileSync(path.join(tmp, "decisions.json"), "utf8"));
     t.eq(ledger.entries.map(e => e.text), recorded.map(a => a.text), "all thirty corrections are applied verbatim");
     t.eq(f.steps(), ["constraints", "ask q1"], "a fact-free round only calls the constraint checker and expert once");
+  }
+  async function checkExpertLineLengths(t, normalSteps) {
+    const { f, args, file, run } = fixture(t, "flow-research-expert-line-lengths");
+    const limit = 600;
+    const marker = " […]";
+    const kept = limit - [...marker].length;
+    const tail = ' "хвост"\r\n  ';
+    const cyrillic = "я".repeat(2 * limit - [...tail].length) + tail;
+    const exact = "🪵".repeat(limit);
+    const oneOver = exact + "я";
+    const claim = "д".repeat(limit + 1);
+    const item = text => ({ text, group: "Supports", replaces: [] });
+    f.answer("ask q1", {
+      items: [cyrillic, exact, oneOver].map(item),
+      assumptions: [],
+      facts: [{ claim, source: "1-tools.txt:2" }],
+    });
+
+    const roleDir = file("roles");
+    for (const role of ["research-constraints", "research-expert", "research-fact-check"]) {
+      for (const ext of [".json", ".md", ".schema.json"]) {
+        const name = role + ext;
+        fs.copyFileSync(path.join(f.w.env.ZODCHI_ROLES, name), path.join(roleDir, name));
+      }
+    }
+    f.w.env.ZODCHI_ROLES = roleDir;
+    const schemaFile = path.join(roleDir, "research-expert.schema.json");
+    const schema = fs.readFileSync(schemaFile, "utf8");
+    const legacy = JSON.parse(schema);
+    legacy.properties.items.items.properties.text.maxLength = limit;
+    legacy.properties.facts.items.properties.claim.maxLength = limit;
+    fs.writeFileSync(schemaFile, JSON.stringify(legacy));
+
+    const cut = await run(["research", "--args", args], { ZODCHI_FLOW_CUT: "submit check f1" });
+    t.eq(cut.code, 75, "the round collects the long lines and submits the fact check");
+    const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
+    const journal = path.join(f.w.zhome, "flows", id);
+    const events = () => fs.readFileSync(path.join(journal, "events.jsonl"), "utf8")
+      .trim().split("\n").map(line => JSON.parse(line));
+    const shortening = rows => rows.filter(e => e.kind === "expert line shortened");
+    const before = events();
+    const shortened = shortening(before);
+    t.eq(shortened.map(e => [e.question, e.section, e.line, e.originalChars, e.originalText]), [
+      [1, "items", 1, 2 * limit, cyrillic],
+      [1, "items", 3, limit + 1, oneOver],
+      [1, "facts", 1, limit + 1, claim],
+    ], "collect journals only shortened lines, with their positions, lengths and full originals");
+    const intent = before.find(e => e.kind === "intent" && e.step === "ask q1");
+    const sent = JSON.parse(fs.readFileSync(path.join(journal, intent.request), "utf8")).role.outputSchema.properties;
+    t.ok(!Object.hasOwn(sent.items.items.properties.text, "maxLength")
+      && !Object.hasOwn(sent.facts.items.properties.claim, "maxLength"),
+      "the executor receives a schema that permits the long lines");
+
+    fs.writeFileSync(schemaFile, schema);
+    const ready = await run(["research", "--resume", id]);
+    t.eq([ready.code, ready.json?.status], [2, "waiting"], "the resumed round reaches the owner list after the schema update");
+    const list = JSON.parse(fs.readFileSync(path.join(journal, "list.json"), "utf8"));
+    t.eq(list.lines.map(row => row.text), [
+      "я".repeat(kept) + marker, exact, "🪵".repeat(kept) + marker,
+    ], "collect keeps the 600-character line and shortens both longer lines to 600 characters");
+    t.eq(list.facts.facts[0].claim, "д".repeat(kept) + marker, "the fact report uses the bounded claim");
+    t.eq(shortening(events()), shortened, "resume preserves the original journal events without duplicating them");
+    t.eq(f.steps(), normalSteps, "shortening and resume use the same executor turns as a normal answer");
+
+    for (const [name, invalid] of [
+      ["blank", item(" ".repeat(limit + 1))],
+      ["wrong-type", item(42)],
+      ["missing-field", { text: cyrillic, replaces: [] }],
+    ]) {
+      const bad = fixture(t, "flow-research-expert-line-" + name);
+      bad.f.answer("ask q1", { items: [invalid], assumptions: [], facts: [] });
+      const stopped = await bad.run(["research", "--args", bad.args]);
+      t.eq([stopped.code, stopped.json?.stoppedAt, stopped.json?.reason],
+        [2, "collect", "Question 1 has an invalid items line."], name + " keeps the original collect error");
+    }
   }
   scenario("flow-research-contradicted", "stop on a checked contradiction before presenting any list", async t => {
     const { f, args, run } = fixture(t, "flow-research-contradicted");
