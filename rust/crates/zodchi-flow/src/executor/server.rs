@@ -27,7 +27,7 @@ use zodchi_core::job::{is_terminal, LIMIT_PROMPT};
 use zodchi_core::util::{fail, is_key, now_ms, parse_iso_ms, read_stored, sha256_hex, GatewayError, Result};
 
 use super::Executor;
-use crate::code_package::{REVIEWER_GATEWAY_ROLE, WRITER_GATEWAY_ROLE};
+use crate::boundary::{REVIEWER_GATEWAY_ROLE, WRITER_GATEWAY_ROLE};
 use crate::journal::{flows_dir, is_run_id};
 use crate::models::{codex_usable, Pick};
 

@@ -1,8 +1,11 @@
 //! One video from scenario choice to an approved, verified file.
 
 use crate::{
-    control, input, journal::Journal, video_manifest as manifest, video_media as media,
-    video_metrics as metrics, video_research, Exit,
+    accepted_media::{self, assert_artifact, VideoFiles, MARKER, VERSION},
+    boundary::Launch,
+    input_common,
+    journal::{self, Journal, StatusHooks},
+    video_manifest as manifest, video_media as media, video_metrics as metrics, video_research, Exit,
 };
 use serde_json::{json, Value};
 use std::{
@@ -20,21 +23,19 @@ use zodchi_core::{
     util::{fail, iso, publish, sha256_hex, GatewayError, Result},
 };
 
-pub const NAME: &str = "video";
-const VERSION: &str = "1";
+pub use crate::accepted_media::NAME;
 const SCRIPT: &str = "choose scenario";
 const PROBE: &str = "accept probe";
 const FINAL: &str = "accept final";
-const MARKER: &str = ".zodchi-video-run.json";
 
-pub fn start(raw: &Value, detach: bool) -> Result<Exit> {
-    match prepare(raw) {
-        Ok((id, _)) if !detach => resume(&id, None, None),
-        Ok((id, journal)) if !journal.file("result.json").exists() => {
-            control::launch(&journal, &id, None)
+pub fn start(raw: &Value, launch: Option<Launch>) -> Result<Exit> {
+    match (prepare(raw), launch) {
+        (Ok((id, _)), None) => resume(&id, None, None),
+        (Ok((id, journal)), Some(launch)) if !journal.file("result.json").exists() => {
+            launch(&journal, &id)
         }
-        Ok((id, _)) => control::status(&id),
-        Err(error) => Ok(Exit {
+        (Ok((id, _)), Some(_)) => status(&id),
+        (Err(error), _) => Ok(Exit {
             code: 2,
             result: json!({ "workflow": NAME, "refused": error.0 }),
         }),
@@ -73,7 +74,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
         let (journal, run) = Journal::open(&cfg.home, id)?;
         if run["workflow"] != NAME
             || run["repo"] != json!(dir)
-            || !input::args_match(&run["inputs"], raw)
+            || !input_common::args_match(&run["inputs"], raw)
         {
             return fail(format!("This directory already belongs to video run {id}. Resume that run or use another video directory."));
         }
@@ -164,7 +165,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
         "viewTarget": target, "comparisonWindowSeconds": window });
     let run = json!({ "runId": run_id, "workflow": NAME, "version": VERSION, "release": env!("CARGO_PKG_VERSION"),
         "repo": dir, "videoId": id, "title": title, "format": format, "createdAt": iso(),
-        "inputs": { "argsSha256": input::args_digest(raw), "manifest": base, "manifestSha256": base_sha,
+        "inputs": { "argsSha256": input_common::args_digest(raw), "manifest": base, "manifestSha256": base_sha,
             "plan": plan, "planSha256": sha256_hex(plan.to_string()) } });
     let journal = Journal::create(&cfg.home, &run_id, &run)?;
     if let Some(bytes) = frozen_research {
@@ -301,31 +302,8 @@ struct Video {
 
 impl Video {
     fn open(id: &str) -> Result<(Self, crate::journal::RunLock)> {
-        let (mut journal, run) = Journal::open(&Config::new(None)?.home, id)?;
-        if run["workflow"] != NAME
-            || run["version"] != VERSION
-            || run["inputs"]["planSha256"] != sha256_hex(run["inputs"]["plan"].to_string())
-        {
-            return fail("This is not a supported video run with an intact plan.");
-        }
-        let dir = media::directory(&run["repo"], "recorded video directory")?;
-        if media::read_json(&media::owned(&dir, MARKER)?)?["runId"] != id {
-            return fail("The video directory no longer belongs to this run.");
-        }
-        let lock = journal.lock()?;
-        journal.load()?;
-        let manifest = manifest::load(&journal, &run, &dir)?;
-        let cfg = Config::context(&dir)?;
-        Ok((
-            Self {
-                journal,
-                run,
-                cfg,
-                dir,
-                manifest,
-            },
-            lock,
-        ))
+        let (VideoFiles { journal, run, dir, cfg, manifest }, lock) = accepted_media::open(id)?;
+        Ok((Self { journal, run, dir, cfg, manifest }, lock))
     }
 
     fn plan(&self) -> &Value {
@@ -353,7 +331,7 @@ impl Video {
         }) {
             self.journal.append(event.clone())?;
         }
-        let mut exit = control::status(self.run["runId"].as_str().unwrap())?;
+        let mut exit = status(self.run["runId"].as_str().unwrap())?;
         exit.result["status"] = json!("waiting");
         exit.result["question"] = json!(question);
         exit.result["video"]["decision"] = event["video"].clone();
@@ -479,19 +457,10 @@ impl Video {
         })
     }
 
-    fn assert_artifact(&self, artifact: &Value) -> Result<()> {
-        let relative = media::text(&artifact["relativePath"], "recorded render path")?;
-        let path = media::owned(&self.dir, relative)?;
-        if media::checked(artifact)? != path {
-            return fail("The verified artifact is outside the recorded render slot.");
-        }
-        Ok(())
-    }
-
     fn render(&mut self, step: &str, variant: &Value) -> Result<Value> {
         let attempt = self.journal.attempt(step);
         if let Some(done) = self.journal.last("done", step, attempt) {
-            self.assert_artifact(&done["result"])?;
+            assert_artifact(&self.dir, &done["result"])?;
             return Ok(done["result"].clone());
         }
         if !variant["scenario"].is_null() {
@@ -531,7 +500,7 @@ impl Video {
         let path = media::owned(&self.dir, row["path"].as_str().unwrap())?;
         let verified = match self.journal.last("render verified", step, attempt) {
             Some(event) => {
-                self.assert_artifact(&event["result"])?;
+                assert_artifact(&self.dir, &event["result"])?;
                 event["result"].clone()
             }
             None => match self.make_render(step, attempt, &path, variant, &row) {
@@ -610,7 +579,7 @@ impl Video {
                 json!({ "kind": "render exited", "step": step, "attempt": attempt,
                 "exitCode": code, "timedOut": timed_out, "error": failure }),
             )?;
-            crate::code_package::cut(&format!("video {step} exited"));
+            crate::boundary::cut(&format!("video {step} exited"));
             if let Some(message) = failure {
                 if manifest::update_render(
                     &mut self.manifest,
@@ -725,7 +694,7 @@ impl Video {
                     read_text(path)?.into_bytes(),
                 ));
             }
-            let notes = input::model_context(&self.journal)?;
+            let notes = input_common::model_context(&self.journal)?;
             let prompt = read_text(media::checked(&expert["prompt"])?)?;
             let brief = if self.plan()["brief"].is_null() {
                 String::new()
@@ -736,7 +705,7 @@ impl Video {
                 "priorVideoStats": metrics::prompt_summary(&self.plan()["priorRuns"]), "artifact": artifact });
             let prompt =
                 job::compose_prompt(&format!("{prompt}\n\n{brief}\n\n{part}\n\n{notes}"), &parts)?;
-            let prompt = input::scrub(
+            let prompt = input_common::scrub(
                 &self.cfg,
                 &prompt,
                 &[(self.dir.to_string_lossy().into_owned(), "<video>")],
@@ -804,7 +773,7 @@ impl Video {
         let Some(frames) = frames.as_array().filter(|rows| !rows.is_empty()) else {
             return Ok(Vec::new());
         };
-        self.assert_artifact(artifact)?;
+        assert_artifact(&self.dir, artifact)?;
         let input = Path::new(artifact["path"].as_str().unwrap());
         let duration = artifact["seconds"].as_f64().unwrap();
         let ffmpeg = media::text(&self.plan()["ffmpeg"], "ffmpeg")?;
@@ -985,7 +954,20 @@ pub fn record_reply(waiting: &Value, raw: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn status_detail(run: &Value, events: &[Value]) -> Value {
+fn status(id: &str) -> Result<Exit> {
+    journal::status(
+        id,
+        StatusHooks { details: Some(project_status), ..StatusHooks::default() },
+    )
+}
+
+pub(crate) fn project_status(run: &Value, events: &[Value], result: &mut Value) {
+    if run["workflow"] == NAME {
+        result["video"] = status_detail(run, events);
+    }
+}
+
+fn status_detail(run: &Value, events: &[Value]) -> Value {
     let last = events.last();
     let renders: Vec<_> = events
         .iter()
@@ -1024,7 +1006,7 @@ pub fn record_publication(id: &str, raw: &Value) -> Result<Exit> {
         "publication",
     )?;
     let (mut video, _lock) = Video::open(id)?;
-    let words = input::scrub(&video.cfg, media::owner_words(&raw["ownerWords"])?, &[])?;
+    let words = input_common::scrub(&video.cfg, media::owner_words(&raw["ownerWords"])?, &[])?;
     let result = video
         .journal
         .read_value("result.json")
@@ -1036,7 +1018,7 @@ pub fn record_publication(id: &str, raw: &Value) -> Result<Exit> {
     if raw["render"] != artifact["render"] || raw["sha256"] != artifact["sha256"] {
         return fail("Publication must identify the accepted render and SHA-256.");
     }
-    video.assert_artifact(artifact)?;
+    assert_artifact(&video.dir, artifact)?;
     let id_public = media::text(&raw["publicationId"], "publicationId")?;
     if id_public.len() > 512 {
         return fail("publicationId is too long.");
@@ -1071,19 +1053,6 @@ pub fn record_publication(id: &str, raw: &Value) -> Result<Exit> {
         code: 0,
         result: json!({"runId": id, "publication": publication, "file": artifact}),
     })
-}
-
-pub(crate) fn accepted_upload(id: &str) -> Result<(PathBuf, Value)> {
-    let (video, _lock) = Video::open(id)?;
-    let result = video.journal.read_value("result.json")
-        .filter(|result| result["verdict"] == "approved" && video.manifest["status"] == "accepted")
-        .ok_or_else(|| GatewayError("Choose an approved video run with an accepted, unpublished final MP4.".into()))?;
-    let artifact = &result["final"];
-    if artifact["render"] != video.manifest["chosen"] {
-        return fail("The accepted render does not match the video manifest.");
-    }
-    video.assert_artifact(artifact)?;
-    Ok((video.dir, artifact.clone()))
 }
 
 pub fn record_stats(id: &str, raw: &Value) -> Result<Exit> {

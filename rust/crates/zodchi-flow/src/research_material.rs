@@ -1,4 +1,4 @@
-use crate::input;
+use crate::input_common;
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeSet, HashSet},
@@ -66,7 +66,7 @@ pub fn word_snapshot(cfg: &Config, allow_empty: bool) -> Result<Value> {
 }
 
 pub struct Privacy {
-    current: input::Scrubber,
+    current: input_common::Scrubber,
     salt: String,
     sizes: BTreeSet<usize>,
     fingerprints: HashSet<String>,
@@ -92,7 +92,7 @@ impl Privacy {
         let salt = snapshot["salt"]
             .as_str()
             .ok_or_else(|| GatewayError("The private-words receipt has no salt.".into()))?;
-        let current = input::Scrubber::new(cfg)?;
+        let current = input_common::Scrubber::new(cfg)?;
         let mut places = vec![
             (cfg.home.to_string_lossy().into_owned(), "<zodchi-home>"),
             (repo.to_string_lossy().into_owned(), "<repo>"),
@@ -214,7 +214,7 @@ fn screen_exact_paths(text: &str, places: &[(String, &str)]) -> String {
 #[cfg(test)]
 mod exact_path_tests {
     use super::{screen_exact_paths, Privacy};
-    use crate::input;
+    use crate::input_common;
     use serde_json::json;
     use zodchi_core::config::Config;
 
@@ -260,7 +260,7 @@ mod exact_path_tests {
             (home.to_string_lossy().into_owned(), "<zodchi-home>"),
             (repo.to_string_lossy().into_owned(), "<repo>"),
         ];
-        let recorded = input::scrub(&cfg, &tmp_alias, &recorder_places).unwrap();
+        let recorded = input_common::scrub(&cfg, &tmp_alias, &recorder_places).unwrap();
         assert!(recorded.starts_with("<zodchi-home>"), "{recorded}");
         assert_eq!(privacy.text(&recorded), "<research>");
         assert_eq!(privacy.text(&tmp_alias), "<research>");

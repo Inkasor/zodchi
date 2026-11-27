@@ -1,9 +1,10 @@
 //! One native research round, with a snapshot of project material and an owner decision gate.
 
 use crate::{
-    control, executor, gateway,
+    boundary::Launch, catalog::ProjectGate,
+    executor, gateway,
     git::Git,
-    input,
+    input_common,
     journal::Journal,
     models::{self, Pick},
     research_lists as lists,
@@ -68,18 +69,18 @@ fn research_models(
     Ok(pair)
 }
 
-pub fn start(raw: &Value, detach: bool) -> Result<Exit> {
-    match prepare(raw) {
-        Ok((id, journal)) if detach => control::launch(&journal, &id, None),
-        Ok((id, _)) => resume(&id, None, None),
-        Err(error) => Ok(Exit {
+pub fn start(raw: &Value, launch: Option<Launch>, require_workflow: ProjectGate) -> Result<Exit> {
+    match (prepare(raw, require_workflow), launch) {
+        (Ok((id, journal)), Some(launch)) => launch(&journal, &id),
+        (Ok((id, _)), None) => resume(&id, None, None),
+        (Err(error), _) => Ok(Exit {
             code: 2,
             result: json!({"workflow":NAME,"refused":error.0,"approved":false}),
         }),
     }
 }
 
-fn prepare(raw: &Value) -> Result<(String, Journal)> {
+fn prepare(raw: &Value, require_workflow: ProjectGate) -> Result<(String, Journal)> {
     let Some(fields) = raw.as_object() else {
         return fail("Unknown research input.");
     };
@@ -117,7 +118,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
     if fs::canonicalize(git.run(&["rev-parse", "--show-toplevel"])?.trim())? != repo {
         return fail("args.repo must be the top of a Git checkout.");
     }
-    crate::catalog::require(&git, &git.rev("HEAD^{commit}")?, NAME)?;
+    require_workflow(&git, &git.rev("HEAD^{commit}")?, NAME)?;
     if git
         .output(
             &["check-ignore", "-q", "--", ".agent-tmp/gateway/"],
@@ -184,7 +185,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
     let run = json!({
         "runId":id,"workflow":NAME,"version":VERSION,"release":env!("CARGO_PKG_VERSION"),"createdAt":iso(),
         "repo":repo,"tmp":tmp,"round":round,"label":label,"pair":pair,
-        "inputs":{"argsSha256":input::args_digest(raw),"pin":pin,"pinSha256":sha256_hex(pin.to_string())},
+        "inputs":{"argsSha256":input_common::args_digest(raw),"pin":pin,"pinSha256":sha256_hex(pin.to_string())},
     });
     let journal = Journal::create(&cfg.home, &id, &run)?;
     Ok((id, journal))
@@ -255,7 +256,7 @@ fn lock(path: &Path, id: &str) -> Result<()> {
     file.write_all(id.as_bytes())?;
     file.sync_all()?;
     drop(file);
-    crate::code_package::cut("research lock prepared");
+    crate::boundary::cut("research lock prepared");
     let published = fs::hard_link(&temporary, path);
     match published {
         Ok(()) => {}
@@ -266,7 +267,7 @@ fn lock(path: &Path, id: &str) -> Result<()> {
         }
         Err(error) => return Err(error.into()),
     }
-    crate::code_package::cut("research lock published");
+    crate::boundary::cut("research lock published");
     fs::remove_file(temporary)?;
     Ok(())
 }
@@ -530,7 +531,7 @@ impl Research<'_> {
     fn finish(&mut self, result: Value) -> Result<Exit> {
         self.journal.write_value("result.json", &result)?;
         release(&self.lock, self.run["runId"].as_str().expect("run id"))?;
-        crate::code_package::cut("research lock released");
+        crate::boundary::cut("research lock released");
         finish_event(self.journal)?;
         Ok(exit(result))
     }
@@ -661,7 +662,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
     if run["workflow"] != NAME
         || run["version"] != VERSION
         || retry.is_some()
-        || given.is_some_and(|args| !input::args_match(&run["inputs"], args))
+        || given.is_some_and(|args| !input_common::args_match(&run["inputs"], args))
     {
         return fail(
             "Resume with the original research run ID. A new paid attempt requires a new run.",
@@ -1302,7 +1303,7 @@ fn decide(research: &mut Research<'_>, tmp: &Path, pin: &Value, list: &Value) ->
             )?;
         }
         write_json_atomic(&file, &next)?;
-        crate::code_package::cut("research decisions");
+        crate::boundary::cut("research decisions");
         next
     };
     let summary = research.journal.write_text(
@@ -1443,7 +1444,7 @@ mod tests {
 
     #[test]
     fn prepare_names_an_unknown_key() {
-        let error = prepare(&json!({"maxLine": 2})).err().unwrap();
+        let error = prepare(&json!({"maxLine": 2}), crate::require_workflow).err().unwrap();
         assert_eq!(error.0, r#"Unknown research input "maxLine"."#);
     }
 

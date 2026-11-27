@@ -1,6 +1,6 @@
 //! Verify a named, already running Unity Editor by executing a pinned list of CLI commands.
 
-use crate::{control, git::Git, input, journal::Journal, patch, Exit};
+use crate::{boundary::Launch, catalog::ProjectGate, git::Git, input_common, journal::Journal, patch, Exit};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -21,19 +21,19 @@ const VERSION: &str = "1";
 const READ_STATE: &str = "var dirty = false; for (var i = 0; i < UnityEngine.SceneManagement.SceneManager.sceneCount; i++) { dirty |= UnityEngine.SceneManagement.SceneManager.GetSceneAt(i).isDirty; } return new { dirty, playing = UnityEditor.EditorApplication.isPlayingOrWillChangePlaymode, compiling = UnityEditor.EditorApplication.isCompiling, scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene().path };";
 const OUTPUT_LIMIT: usize = 1024 * 1024;
 
-pub fn start(raw: &Value, detach: bool) -> Result<Exit> {
-    start_with(raw, detach, None)
+pub fn start(raw: &Value, launch: Option<Launch>, require_workflow: ProjectGate) -> Result<Exit> {
+    start_with(raw, launch, require_workflow, None)
 }
 
-pub(crate) fn start_child(raw: &Value, id: &str) -> Result<Exit> {
-    start_with(raw, false, Some(id))
+pub(crate) fn start_child(raw: &Value, id: &str, require_workflow: ProjectGate) -> Result<Exit> {
+    start_with(raw, None, require_workflow, Some(id))
 }
 
-fn start_with(raw: &Value, detach: bool, id: Option<&str>) -> Result<Exit> {
-    match prepare(raw, id) {
-        Ok((id, journal)) if detach => control::launch(&journal, &id, None),
-        Ok((id, _)) => resume(&id, None, None),
-        Err(error) => Ok(Exit {
+fn start_with(raw: &Value, launch: Option<Launch>, require_workflow: ProjectGate, id: Option<&str>) -> Result<Exit> {
+    match (prepare(raw, id, require_workflow), launch) {
+        (Ok((id, journal)), Some(launch)) => launch(&journal, &id),
+        (Ok((id, _)), None) => resume(&id, None, None),
+        (Err(error), _) => Ok(Exit {
             code: 2,
             result: json!({ "workflow": NAME, "approved": false, "refused": error.0 }),
         }),
@@ -78,7 +78,7 @@ fn cli_path(raw: &Value) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn prepare(raw: &Value, id: Option<&str>) -> Result<(String, Journal)> {
+fn prepare(raw: &Value, id: Option<&str>, require_workflow: ProjectGate) -> Result<(String, Journal)> {
     if raw.as_object().is_none_or(|args| {
         args.keys()
             .any(|key| !["repo", "tmp", "steps", "cli", "note"].contains(&key.as_str()))
@@ -92,7 +92,7 @@ fn prepare(raw: &Value, id: Option<&str>) -> Result<(String, Journal)> {
     if fs::canonicalize(git.run(&["rev-parse", "--show-toplevel"])?.trim())? != repo {
         return fail("args.repo must be the top of the Git checkout.");
     }
-    crate::catalog::require(&git, &git.rev("HEAD^{commit}")?, NAME)?;
+    require_workflow(&git, &git.rev("HEAD^{commit}")?, NAME)?;
     let mut bytes = Vec::new();
     fs::File::open(steps)?
         .take((OUTPUT_LIMIT + 1) as u64)
@@ -189,7 +189,7 @@ fn prepare(raw: &Value, id: Option<&str>) -> Result<(String, Journal)> {
     }
     let cli = cli_path(raw)?;
     let cfg = Config::new(Some(&repo))?;
-    let scrubber = input::Scrubber::new(&cfg)?;
+    let scrubber = input_common::Scrubber::new(&cfg)?;
     if tmp
         .ancestors()
         .any(|part| fs::symlink_metadata(part).is_ok_and(|meta| meta.file_type().is_symlink()))
@@ -204,7 +204,7 @@ fn prepare(raw: &Value, id: Option<&str>) -> Result<(String, Journal)> {
     let run = json!({
         "runId": id, "workflow": NAME, "version": VERSION, "release": env!("CARGO_PKG_VERSION"),
         "createdAt": iso(), "repo": repo, "project": project, "output": out, "cli": cli, "note": note,
-        "inputs": { "argsSha256": input::args_digest(raw), "planSha256": sha256_hex(plan.to_string()), "plan": plan },
+        "inputs": { "argsSha256": input_common::args_digest(raw), "planSha256": sha256_hex(plan.to_string()), "plan": plan },
     });
     let journal = Journal::create(&cfg.home, &id, &run)?;
     Ok((id, journal))
@@ -372,7 +372,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
     if run["workflow"] != NAME
         || run["version"] != VERSION
         || retry.is_some()
-        || given.is_some_and(|value| !input::args_match(&run["inputs"], value))
+        || given.is_some_and(|value| !input_common::args_match(&run["inputs"], value))
     {
         return fail("Resume unity-check with its original run ID and reconcile any interrupted Editor command first.");
     }
@@ -534,7 +534,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
             Ok(answer) => answer,
             Err(error) => return stop(&mut journal, result, &step, &error.0, true),
         };
-        crate::code_package::cut(&format!("unity {step}"));
+        crate::boundary::cut(&format!("unity {step}"));
         let differs: Vec<_> = spec["expect"]
             .as_object()
             .into_iter()
@@ -565,7 +565,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
         if after["dirty"] == false {
             owns_dirty = false;
         }
-        let answer_text = input::scrub(
+        let answer_text = input_common::scrub(
             &cfg,
             &serde_json::to_string_pretty(&answer).expect("JSON"),
             &[],
@@ -575,7 +575,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
             "ownsPlay": owns_play, "ownsDirty": owns_dirty, "differs": differs, "readback": answer_text,
         });
         journal.append(json!({ "kind": "done", "step": step, "attempt": 1, "result": receipt }))?;
-        crate::code_package::cut(&format!("done unity {step}"));
+        crate::boundary::cut(&format!("done unity {step}"));
         records.push(receipt);
         if !differs.is_empty() {
             return finish_difference(&mut journal, result, &step, records, json!(differs));

@@ -1,6 +1,6 @@
 //! A limit on new model submissions. Recorded calls and known outcomes are still recoverable at the limit.
 
-use crate::{code_package, journal::Journal, Exit};
+use crate::{boundary::{Exit, REVIEWER_GATEWAY_ROLE}, journal::Journal};
 use serde_json::{json, Value};
 use zodchi_core::{
     config::Config,
@@ -52,7 +52,7 @@ impl Budget {
             .collect();
         let reviewer = jobs
             .iter()
-            .filter(|e| e["role"] == code_package::REVIEWER_GATEWAY_ROLE)
+            .filter(|e| e["role"] == REVIEWER_GATEWAY_ROLE)
             .count();
         let first = jobs
             .first()
@@ -94,33 +94,16 @@ impl Budget {
     }
 }
 
-pub fn extend(id: &str, options: &[String]) -> Result<Exit> {
-    if options.is_empty() || options.len() % 2 != 0 {
-        return fail(crate::USAGE);
-    }
-    let mut calls = None;
-    let mut minutes = None;
-    for pair in options.chunks_exact(2) {
-        let destination = match pair[0].as_str() {
-            "--add-calls" => &mut calls,
-            "--add-minutes" => &mut minutes,
-            _ => return fail(crate::USAGE),
-        };
-        let amount = pair[1]
-            .parse::<u32>()
-            .ok()
-            .filter(|n| *n > 0)
-            .ok_or_else(|| {
-                GatewayError("Budget additions must be positive whole numbers.".into())
-            })?;
-        if destination.replace(amount).is_some() {
-            return fail(crate::USAGE);
-        }
-    }
+pub(crate) fn extend(
+    id: &str,
+    calls: Option<u32>,
+    minutes: Option<u32>,
+    supports_budget: impl FnOnce(&Value) -> bool,
+) -> Result<Exit> {
     let (mut journal, run) = Journal::open(&Config::new(None)?.home, id)?;
     let _lock = journal.lock()?;
     journal.load()?;
-    if run["workflow"] != code_package::WORKFLOW
+    if !supports_budget(&run)
         || journal.file("result.json").is_file()
         || !journal
             .last_event()

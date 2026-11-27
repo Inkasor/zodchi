@@ -1,9 +1,9 @@
 //! Reclaim run-owned scratch and retire records only after checking their on-disk references.
 
 use crate::{
-    candidate, checks,
+    boundary::Exit,
+    checks,
     journal::{self, Journal},
-    Exit,
 };
 use serde_json::{json, Value};
 use std::{
@@ -527,7 +527,7 @@ fn run_state(
             .as_bool()
             .or_else(|| verdict.map(|_| false))
     };
-    let applied = candidate::applied(&events).is_some_and(|r| r["status"] == "applied");
+    let applied = journal::candidate_applied(&events).is_some_and(|r| r["status"] == "applied");
     let awaiting_application = !applied
         && (result["application"]["status"] == "pending"
             || (approved == Some(true)
@@ -1258,7 +1258,7 @@ fn collect(
     };
     for (root, kind) in [
         (WRITERS, Kind::Writer),
-        (candidate::WORKSPACES_DIR, Kind::Candidate),
+        (journal::CANDIDATE_WORKSPACES, Kind::Candidate),
     ] {
         for path in report.scanned_external(entries(&home.join(root))) {
             if let Some(id) = name(&path)
@@ -1467,7 +1467,7 @@ fn remove_run_item(
         return remove_tree(&item.path);
     }
     let retired = retire_journal(home, id, &mut lock)?;
-    crate::code_package::cut("journal retired");
+    crate::boundary::cut("journal retired");
     drop(lock);
     remove_tree(&retired)
         .map_err(|e| GatewayError(format!("Retired journal at {}: {}", retired.display(), e.0)))
@@ -1640,8 +1640,18 @@ fn archive_package(
     Ok(destination)
 }
 
+/// The workflow call has released its lock and any processes it used. Cleanup has its own receipt.
+pub(crate) fn after_run(exit: Exit) -> Exit {
+    if exit.result["status"] != "submitted" && exit.result.get("claimLeftOpen").is_none() {
+        if let Some(id) = exit.result["runId"].as_str() {
+            clean_after_run(id);
+        }
+    }
+    exit
+}
+
 /// This is best effort and must never replace the workflow's result or exit code.
-pub(crate) fn after_run(id: &str) {
+fn clean_after_run(id: &str) {
     let result = zodchi_home().and_then(|home| clean_finished(&home, &std::env::temp_dir(), id));
     if let Err(error) = result {
         eprintln!("Flow cleanup for {id}: {error}");
@@ -2034,7 +2044,7 @@ mod tests {
             ("recent", false),
         ] {
             assert_eq!(
-                planned(&report, &candidate::workspace(&f.home, id)),
+                planned(&report, &journal::candidate_workspace(&f.home, id)),
                 remove,
                 "{id}"
             );

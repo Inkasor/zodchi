@@ -1,6 +1,6 @@
 //! Inventory a workspace, pin the owner's decisions, and create verified archive copies.
 
-use crate::{control, git::Git, input, journal::Journal, patch, Exit};
+use crate::{boundary::Launch, git::Git, input_common, journal::Journal, patch, Exit};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -19,11 +19,11 @@ pub const NAME: &str = "workspace-audit";
 const VERSION: &str = "1";
 const OWNER_STEP: &str = "owner decisions";
 
-pub fn start(raw: &Value, detach: bool) -> Result<Exit> {
-    match prepare(raw) {
-        Ok((id, journal)) if detach => control::launch(&journal, &id, None),
-        Ok((id, _)) => resume(&id, None, None),
-        Err(error) => Ok(Exit {
+pub fn start(raw: &Value, launch: Option<Launch>) -> Result<Exit> {
+    match (prepare(raw), launch) {
+        (Ok((id, journal)), Some(launch)) => launch(&journal, &id),
+        (Ok((id, _)), None) => resume(&id, None, None),
+        (Err(error), _) => Ok(Exit {
             code: 2,
             result: json!({ "workflow": NAME, "approved": false, "refused": error.0 }),
         }),
@@ -121,7 +121,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
     let run = json!({
         "runId": id, "workflow": NAME, "version": VERSION, "release": env!("CARGO_PKG_VERSION"),
         "createdAt": iso(), "repo": root, "archive": archive,
-        "inputs": { "argsSha256": input::args_digest(raw) },
+        "inputs": { "argsSha256": input_common::args_digest(raw) },
     });
     let journal = Journal::create(&cfg.home, &id, &run)?;
     Ok((id, journal))
@@ -250,7 +250,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
     if run["workflow"] != NAME
         || run["version"] != VERSION
         || retry.is_some()
-        || given.is_some_and(|value| !input::args_match(&run["inputs"], value))
+        || given.is_some_and(|value| !input_common::args_match(&run["inputs"], value))
     {
         return fail("Resume the workspace audit with its original run ID.");
     }

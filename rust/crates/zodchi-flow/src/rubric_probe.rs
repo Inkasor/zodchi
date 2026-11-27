@@ -1,7 +1,8 @@
 //! Probe a Decisions rubric against fixed sound and defective frames.
 
 use crate::{
-    control, design_brief, executor::local::pinned_image, gateway, git::Git, input,
+    boundary::Launch, catalog::ProjectGate,
+    design_brief, executor::local::pinned_image, gateway, git::Git, input_common,
     journal::Journal, models::Pick, Exit,
 };
 use serde_json::{json, Value};
@@ -20,19 +21,19 @@ use zodchi_core::{
 pub const NAME: &str = "rubric-probe";
 const VERSION: &str = "1";
 
-pub fn start(raw: &Value, detach: bool) -> Result<Exit> {
-    start_with(raw, detach, None)
+pub fn start(raw: &Value, launch: Option<Launch>, require_workflow: ProjectGate) -> Result<Exit> {
+    start_with(raw, launch, require_workflow, None)
 }
 
-pub(crate) fn start_child(raw: &Value, id: &str) -> Result<Exit> {
-    start_with(raw, false, Some(id))
+pub(crate) fn start_child(raw: &Value, id: &str, require_workflow: ProjectGate) -> Result<Exit> {
+    start_with(raw, None, require_workflow, Some(id))
 }
 
-fn start_with(raw: &Value, detach: bool, id: Option<&str>) -> Result<Exit> {
-    match prepare(raw, id) {
-        Ok((id, journal)) if detach => control::launch(&journal, &id, None),
-        Ok((id, _)) => resume(&id, None, None),
-        Err(error) => Ok(Exit {
+fn start_with(raw: &Value, launch: Option<Launch>, require_workflow: ProjectGate, id: Option<&str>) -> Result<Exit> {
+    match (prepare(raw, id, require_workflow), launch) {
+        (Ok((id, journal)), Some(launch)) => launch(&journal, &id),
+        (Ok((id, _)), None) => resume(&id, None, None),
+        (Err(error), _) => Ok(Exit {
             code: 2,
             result: json!({
                 "workflow": NAME, "approved": false, "refused": error.0,
@@ -53,7 +54,7 @@ fn plain_path(value: &Value, name: &str) -> Result<PathBuf> {
         })
 }
 
-fn prepare(raw: &Value, id: Option<&str>) -> Result<(String, Journal)> {
+fn prepare(raw: &Value, id: Option<&str>, require_workflow: ProjectGate) -> Result<(String, Journal)> {
     let args = raw
         .as_object()
         .ok_or_else(|| GatewayError("rubric-probe needs an arguments object.".into()))?;
@@ -81,7 +82,7 @@ fn prepare(raw: &Value, id: Option<&str>) -> Result<(String, Journal)> {
     if fs::canonicalize(top.trim())? != fs::canonicalize(&repo)? {
         return fail("args.repo must be the top of its Git checkout.");
     }
-    crate::catalog::require(&git, &git.rev("HEAD^{commit}")?, NAME)?;
+    require_workflow(&git, &git.rev("HEAD^{commit}")?, NAME)?;
     if git
         .output(
             &["check-ignore", "-q", "--", ".agent-tmp/gateway/"],
@@ -113,7 +114,7 @@ fn prepare(raw: &Value, id: Option<&str>) -> Result<(String, Journal)> {
         .as_array()
         .filter(|list| !list.is_empty())
         .ok_or_else(|| GatewayError("Supply one or more frames in args.frames.".into()))?;
-    let scrubber = input::Scrubber::new(&cfg)?;
+    let scrubber = input_common::Scrubber::new(&cfg)?;
     if scrubber.text(label, &[]) != label {
         return fail("args.label contains private text.");
     }
@@ -189,7 +190,7 @@ fn prepare(raw: &Value, id: Option<&str>) -> Result<(String, Journal)> {
     let run = json!({
         "runId": id, "workflow": NAME, "version": VERSION, "release": env!("CARGO_PKG_VERSION"),
         "createdAt": iso(), "label": label, "repo": repo, "output": output,
-        "inputs": { "argsSha256": input::args_digest(raw), "material": material, "materialSha256": sha256_hex(material.to_string()) },
+        "inputs": { "argsSha256": input_common::args_digest(raw), "material": material, "materialSha256": sha256_hex(material.to_string()) },
         "policy": { "paid": true },
         "pair": { "decisions": { "provider": "openai", "model": rubric["model"], "role": role_name } },
     });
@@ -230,7 +231,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
     if run["workflow"] != NAME
         || run["version"] != VERSION
         || run["policy"]["paid"] != true
-        || given.is_some_and(|given| !input::args_match(&run["inputs"], given))
+        || given.is_some_and(|given| !input_common::args_match(&run["inputs"], given))
     {
         return fail("The run does not match this rubric-probe command.");
     }

@@ -1,6 +1,6 @@
 //! Immutable input from a finished code package in the same checkout.
 
-use crate::{args, claims, code_package, git::Git, journal::Journal, patch};
+use crate::{args, boundary::WORKFLOW, claims, git::Git, journal::Journal, patch};
 use serde_json::{json, Value};
 use std::{fs, path::Path};
 use zodchi_core::util::{fail, GatewayError, Result};
@@ -17,7 +17,7 @@ pub(crate) struct Source {
 impl Source {
     pub fn load(home: &Path, repo: &Path, id: &str) -> Result<Self> {
         let (journal, run) = Journal::open(home, id)?;
-        if run["workflow"] != code_package::WORKFLOW || run["runId"] != id {
+        if run["workflow"] != WORKFLOW || run["runId"] != id {
             return fail(format!("Run {id} is not a code package."));
         }
         let same_repo = run["repo"]

@@ -440,7 +440,7 @@ impl ProjectPaths {
         let stage = StagedExport::new(&self.parent)?;
         let staging = stage.0.as_path();
         export(staging)?;
-        crate::code_package::cut("check export staging");
+        crate::boundary::cut("check export staging");
         let checkout = self.parent.join("checkout");
         let cache_receipt = ".git/zodchi-check-cache.json";
         let has_previous = directory_path(root, &checkout.join(".git"), false)?;
@@ -1300,7 +1300,7 @@ impl CheckBatch<'_> {
                 event["pid"] = json!(exit.pid);
                 event["result"] = result.clone();
                 slot.record_end(journal, event)?;
-                crate::code_package::cut(&format!("{step} {source} #{number}"));
+                crate::boundary::cut(&format!("{step} {source} #{number}"));
                 evidence.push(result);
             }
         }

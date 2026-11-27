@@ -202,9 +202,9 @@ child.on('exit', (code) => process.exit(code === null ? 1 : code));"#;
     };
     let start = process_start(pid).ok_or_else(|| GatewayError("Could not identify fixture process before startup.".into()))?;
     journal.append(json!({"kind":"check started", "step":step, "attempt":1, "pid":pid, "start":start}))?;
-    crate::code_package::cut("fixture recorded before start");
+    crate::boundary::cut("fixture recorded before start");
     fixture.child.stdin.as_mut().unwrap().write_all(&[1])?;
-    crate::code_package::cut("fixture started before readiness");
+    crate::boundary::cut("fixture started before readiness");
     let (send, receive) = mpsc::channel();
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);

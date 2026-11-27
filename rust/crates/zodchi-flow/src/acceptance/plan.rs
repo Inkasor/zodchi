@@ -1,5 +1,5 @@
 use super::{candidate, fixture, CANDIDATE, PLAYER, RELEASE};
-use crate::{catalog, git::Git, input, journal, models, video_media as media};
+use crate::{catalog::ProjectGate, git::Git, input_common, journal, models, video_media as media};
 use serde_json::{json, Map, Value};
 use std::{
     fs,
@@ -424,7 +424,7 @@ fn role(raw: &Value, cfg: &Config, repo: &Path, skipped: &mut Vec<String>) -> Re
     Ok(role)
 }
 
-pub(super) fn prepare(workflow: &str, raw: &Value) -> Result<(Config, Value)> {
+pub(super) fn prepare(workflow: &str, raw: &Value, require_workflow: ProjectGate) -> Result<(Config, Value)> {
     let common = [
         "repo",
         "head",
@@ -459,7 +459,7 @@ pub(super) fn prepare(workflow: &str, raw: &Value) -> Result<(Config, Value)> {
     } else {
         return fail(if workflow == RELEASE { "release-acceptance requires the deployed commit in head." } else { "candidate-acceptance requires an explicit commit in head." });
     };
-    catalog::require(&git, &head, workflow)?;
+    require_workflow(&git, &head, workflow)?;
     if workflow == PLAYER && !cfg!(windows) {
         return fail("player-acceptance needs a Windows host with a private desktop.");
     }
@@ -532,7 +532,7 @@ pub(super) fn prepare(workflow: &str, raw: &Value) -> Result<(Config, Value)> {
     }
     let run = json!({ "workflow": workflow, "version": "1", "runId": journal::new_run_id(), "release": env!("CARGO_PKG_VERSION"),
         "createdAt": iso(), "repo": repo, "head": head, "label": label, "pair": pair,
-        "inputs": { "argsSha256": input::args_digest(raw), "planSha256": sha256_hex(plan.to_string()), "plan": plan } });
+        "inputs": { "argsSha256": input_common::args_digest(raw), "planSha256": sha256_hex(plan.to_string()), "plan": plan } });
     Ok((cfg, run))
 }
 

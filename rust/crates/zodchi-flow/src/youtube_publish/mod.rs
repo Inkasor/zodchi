@@ -12,7 +12,7 @@ use self::{
     artifact::Artifact,
     auth::{SystemVault, Vault},
 };
-use crate::{input, journal::Journal, video, video_media as media, Exit};
+use crate::{accepted_media, input_common as input, journal::Journal, video_media as media, Exit};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -27,6 +27,8 @@ pub(crate) use auth::{connect, whoami};
 pub const NAME: &str = "youtube-publish";
 const VERSION: &str = "1";
 const APPROVAL: &str = "approve private upload";
+pub(crate) const REPLY_WAITING_ONLY: &str =
+    "The upload has its decision. Resolve the reported issue and resume the same YouTube run.";
 
 pub fn start(raw: &Value) -> Result<Exit> {
     match prepare(raw) {
@@ -84,7 +86,7 @@ fn prepare(raw: &Value) -> Result<Exit> {
     let channel = auth::channel_id(&raw["channelId"])?;
     let video_run = media::text(&raw["videoRun"], "videoRun")?;
     let metadata = metadata(raw)?;
-    let (dir, artifact) = video::accepted_upload(video_run)?;
+    let (dir, artifact) = accepted_media::accepted_upload(video_run)?;
     if !Path::new(media::text(&artifact["path"], "accepted MP4")?)
         .extension()
         .and_then(|s| s.to_str())
@@ -146,7 +148,21 @@ pub fn record_reply(waiting: &Value, raw: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn status_detail(run: &Value, events: &[Value]) -> Value {
+pub(crate) fn project_status(run: &Value, events: &[Value], result: &mut Value) {
+    if run["workflow"] == NAME {
+        result["youtube"] = status_detail(run, events);
+    }
+}
+
+pub(crate) fn handoff(id: &str, run: &Value, current: &Value, result: &Value, result_path: &Path) -> Value {
+    json!({ "runId": id, "workflow": run["workflow"], "version": run["version"],
+        "status": current["status"], "step": current["step"], "journal": current["journal"],
+        "question": current["question"], "reason": result.get("reason").unwrap_or(&current["infra"]),
+        "youtube": current["youtube"], "resultFile": (!result.is_null()).then_some(result_path),
+        "verdict": result["verdict"], "observed": result["observed"] })
+}
+
+fn status_detail(run: &Value, events: &[Value]) -> Value {
     let inputs = &run["inputs"];
     let mut detail = json!({ "plan": inputs["plan"], "planSha256": inputs["planSha256"] });
     if let Some(event) = events

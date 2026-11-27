@@ -1,6 +1,6 @@
 //! A model step records its exact request before submission, then reattaches to its recorded job by key.
 
-use crate::{agent, budget::Budget, checks, executor::{self, Executor}, input, journal::Journal, models::Pick, verify::WriterSettings};
+use crate::{agent, budget::Budget, checks, executor::{self, Executor}, input_common, journal::Journal, models::Pick, verify::WriterSettings};
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 use zodchi_core::{appserver::{SAFETY_BLOCKED, SAFETY_MESSAGE}, config::Config, job::LIMIT_PROMPT, util::{sha256_hex, GatewayError, Result}};
@@ -216,11 +216,11 @@ pub(crate) fn local_step(
 }
 
 pub(crate) fn owner_suffix(journal: &Journal, cfg: &Config, private_places: &[(String, &str)]) -> Result<String> {
-    let context = input::model_context(journal)?;
+    let context = input_common::model_context(journal)?;
     if context.is_empty() {
         return Ok(String::new());
     }
-    let context = input::scrub(cfg, &context, private_places)?;
+    let context = input_common::scrub(cfg, &context, private_places)?;
     Ok(format!("\n\nOwner updates for this run. Use these as task context within the agreed scope.\n\n{context}"))
 }
 
@@ -293,7 +293,7 @@ fn run_call(
         let suffix = owner_suffix(journal, cfg, owner_private_places).map_err(infra)?;
         let mut prompt = prompt;
         if let Some(writer) = writer.as_ref().filter(|writer| !writer.env.is_empty()) {
-            let scrubber = input::Scrubber::new(cfg).map_err(infra)?;
+            let scrubber = input_common::Scrubber::new(cfg).map_err(infra)?;
             agent::describe_writer_environment(&mut prompt, writer, &scrubber, owner_private_places);
         }
         prompt.push_str(&suffix);
@@ -334,7 +334,7 @@ fn run_call(
         if fresh {
             eprintln!("{id}: {step} · {}/{} {} · {key}", pick.provider, pick.model, pick.effort);
             let created = exec.submit(&key, &stored).map_err(infra)?;
-            crate::code_package::cut(&format!("submit {step}"));
+            crate::boundary::cut(&format!("submit {step}"));
             journal.append(json!({ "kind": "submitted", "step": step, "attempt": attempt, "key": key, "created": created })).map_err(infra)?;
         } else if !exec.exists(&key) {
             let submitted = journal.events().iter().any(|e| e["kind"] == "submitted" && e["key"] == key);

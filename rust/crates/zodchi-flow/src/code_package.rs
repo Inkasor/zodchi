@@ -9,16 +9,19 @@
 
 use crate::agent;
 use crate::args::{self, is_protected, Args};
+use crate::boundary::Launch;
 use crate::candidate;
+use crate::catalog::ProjectGate;
 use crate::checks;
 use crate::claims;
 use crate::executor;
 use crate::gateway;
 use crate::git::Git;
-use crate::input::{self, Scrubber};
-use crate::journal::Journal;
+use crate::input_common::{self, Scrubber};
+use crate::journal::{application_status, candidate_workspace, Journal};
 use crate::models::{self, Pick};
 use crate::patch::{self, Patch, Refusal};
+use crate::review_contract::check_review;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -28,7 +31,11 @@ use zodchi_core::role::load_role;
 use zodchi_core::role::Overrides;
 use zodchi_core::util::{fail, iso, sha256_hex, GatewayError, Result};
 
-pub const WORKFLOW: &str = "code-package";
+pub use crate::boundary::{Exit, CUT_EXIT, REVIEWER_GATEWAY_ROLE, WORKFLOW, WRITER_GATEWAY_ROLE};
+#[allow(unused_imports)]
+pub(crate) use crate::boundary::cut;
+pub use crate::control::{start_package as start, start_package_detached as start_detached};
+
 pub const VERSION: &str = "1";
 
 const RULES: &str = include_str!("../flows/code-package/v1/rules.md");
@@ -42,17 +49,6 @@ const PATCH_SCHEMA_V1: &str = include_str!("../flows/code-package/v1/patch.schem
 const PATCH_SCHEMA_V2: &str = include_str!("../flows/code-package/v2/patch.schema.json");
 pub(crate) const REVIEW_SCHEMA: &str = include_str!("../flows/code-package/v1/review.schema.json");
 
-pub const WRITER_GATEWAY_ROLE: &str = "flow-patch";
-pub const REVIEWER_GATEWAY_ROLE: &str = "code-review";
-
-/// The process exit code of a cut made on purpose (`ZODCHI_FLOW_CUT`), as a crash would leave the run.
-pub const CUT_EXIT: i32 = 75;
-
-pub struct Exit {
-    pub result: Value,
-    pub code: u8,
-}
-
 fn exit_of(result: Value) -> Exit {
     let code = if result["approved"] == json!(true) { 0 } else { 2 };
     Exit { result, code }
@@ -62,7 +58,7 @@ fn exit_of(result: Value) -> Exit {
 fn finish_result(journal: &mut Journal, args: &Args, id: &str, mut result: Value) -> Result<Exit> {
     let finished = journal.events().iter().any(|entry| entry["kind"] == json!("finished"));
     if finished && result.get("claimLeftOpen").is_none() {
-        if let Some(application) = candidate::application_status(journal.events()) {
+        if let Some(application) = application_status(journal.events()) {
             result["application"] = application;
         }
         return Ok(exit_of(result));
@@ -124,14 +120,6 @@ fn schema(text: &str) -> Value {
     serde_json::from_str(text).expect("the schemas of this version are JSON")
 }
 
-/// A cut on purpose, for recovery tests: `ZODCHI_FLOW_CUT=<point>` exits without running destructors.
-pub(crate) fn cut(point: &str) {
-    if std::env::var("ZODCHI_FLOW_CUT").ok().as_deref() == Some(point) {
-        eprintln!("zodchi flow: cut after {point} (ZODCHI_FLOW_CUT)");
-        std::process::exit(CUT_EXIT);
-    }
-}
-
 /// Named text attachments of a request: (name, bytes).
 type Attachments = Vec<(String, Vec<u8>)>;
 
@@ -173,11 +161,6 @@ struct Run {
 
 // ------------------------------------------------------------------------------------------------- start, resume
 
-/// Starts a new run from its arguments: the gate (no effect), then the journal, the claim and the machine.
-pub fn start(raw: &Value) -> Result<Exit> {
-    start_run(raw, false, None)
-}
-
 fn review_context(git: &Git, commit: &str, files: &[String]) -> Result<Vec<(String, String)>> {
     let mut context = Vec::with_capacity(files.len());
     let mut size = 0;
@@ -201,15 +184,16 @@ fn review_context(git: &Git, commit: &str, files: &[String]) -> Result<Vec<(Stri
     Ok(context)
 }
 
-pub fn start_detached(raw: &Value) -> Result<Exit> {
-    start_run(raw, true, None)
+pub(crate) fn start_child(raw: &Value, id: &str, require_workflow: ProjectGate) -> Result<Exit> {
+    start_run(raw, Some(id), None, require_workflow)
 }
 
-pub(crate) fn start_child(raw: &Value, id: &str) -> Result<Exit> {
-    start_run(raw, false, Some(id))
-}
-
-fn start_run(raw: &Value, detach: bool, id: Option<&str>) -> Result<Exit> {
+pub(crate) fn start_run(
+    raw: &Value,
+    id: Option<&str>,
+    launch: Option<Launch>,
+    require_workflow: ProjectGate,
+) -> Result<Exit> {
     let label = raw["label"].as_str().unwrap_or("").to_string();
     let args = match args::parse(raw) {
         Ok(a) => a,
@@ -233,7 +217,7 @@ fn start_run(raw: &Value, detach: bool, id: Option<&str>) -> Result<Exit> {
     let Ok(base) = git.rev("HEAD^{commit}") else {
         return Ok(refused(&label, format!("{} has no commit yet: commit the current state first.", args.repo)));
     };
-    if let Err(error) = crate::catalog::require(&git, &base, WORKFLOW) {
+    if let Err(error) = require_workflow(&git, &base, WORKFLOW) {
         return Ok(refused(&label, error.0));
     }
     let Some(branch) = git.branch()? else {
@@ -352,14 +336,14 @@ fn start_run(raw: &Value, detach: bool, id: Option<&str>) -> Result<Exit> {
             "executors": executors, "checksEnvironment": "exported candidate tree, reduced environment" },
     });
     let journal = Journal::create(&cfg.home, &id, &run)?;
-    if is_child { cut("code-package context"); }
+    if is_child { crate::boundary::cut("code-package context"); }
     journal.write_text("brief.md", &brief)?;
     if let Some(text) = &review_md {
         journal.write_text("REVIEW.base.md", text)?;
     }
     if is_child { journal.write_text("initialized", "1\n")?; }
-    if detach {
-        return crate::control::launch(&journal, &id, None);
+    if let Some(launch) = launch {
+        return launch(&journal, &id);
     }
     let lock = journal.lock()?;
     let run = Run::new(id, args, cfg, git, journal, &run, brief, review_md)?;
@@ -492,7 +476,7 @@ impl Run {
         out.insert("verifiedBy".into(), json!("none"));
         let check_paths = checks::ProjectPaths::new(&cfg.home, &git)?;
         let (git, project, branch) = if args.isolated {
-            let stage = candidate::workspace(&cfg.home, &id);
+            let stage = candidate_workspace(&cfg.home, &id);
             out.insert("workspace".into(), json!(stage));
             out.insert("targetBranch".into(), run["branch"].clone());
             (Git::new(&stage), Some(git), candidate::BRANCH.to_string())
@@ -567,7 +551,7 @@ impl Run {
         let result = Value::Object(self.out);
         self.journal.append(json!({ "kind": "closing", "close": close, "status": self.claim_status }))?;
         self.journal.write_value("result.json", &result)?;
-        cut("result");
+        crate::boundary::cut("result");
         finish_result(&mut self.journal, &self.args, &self.id, result)
     }
 
@@ -1076,7 +1060,7 @@ impl Run {
                     preamble.push_str("\n\nContinue the writer's work in this same private workspace. Inspect its current files and preserve edits that are already complete.");
                 }
                 if let Some(summary) = &previous_summary {
-                    let scrubbed = input::scrub(&self.cfg, summary, &self.private_places());
+                    let scrubbed = input_common::scrub(&self.cfg, summary, &self.private_places());
                     let scrubbed = self.infra(&turn, scrubbed)?;
                     preamble.push_str("\n\nPrevious writer summary (work status):\n");
                     preamble.push_str(&scrubbed);
@@ -1254,7 +1238,7 @@ impl Run {
         self.infra(step, r)?;
         let a = patch::apply(&self.git.root, &plan);
         self.infra(step, a)?;
-        cut(step);
+        crate::boundary::cut(step);
         let result = json!({ "paths": plan.after.keys().collect::<Vec<_>>(), "claimAdded": added, "exec": plan.exec });
         let r = self.record_done(step, round, result.clone());
         self.infra(step, r)?;
@@ -1460,7 +1444,7 @@ impl Run {
         let result = json!({ "ok": checks::passed(&evidence), "tree": tree, "checkout": checkout, "evidence": evidence });
         let r = self.record_done(step, round, result.clone());
         self.infra(step, r)?;
-        cut(step);
+        crate::boundary::cut(step);
         Ok(result)
     }
 
@@ -1591,7 +1575,7 @@ impl Run {
         self.infra(&step, r)?;
         let changed = self.git.reset_index_paths(&commit, &from_commit);
         self.infra(&step, changed)?;
-        cut(&format!("index {n}"));
+        crate::boundary::cut(&format!("index {n}"));
         let moved = self.git.run(&["update-ref", "-m", &format!("zodchi flow {}: round {n}", self.args.label), &self.branch, &commit, &parent]);
         if let Err(error) = moved {
             let tip = match self.git.rev(&self.branch) {
@@ -1613,7 +1597,7 @@ impl Run {
             self.halt_infra(&step, format!("{stop} at {step}"), why);
             return Err(Halt);
         }
-        cut(&step);
+        crate::boundary::cut(&step);
         self.commit_receipt(&step, n, &parent, &commit, &tree)
     }
 
@@ -1873,27 +1857,6 @@ fn strings(v: &Value) -> Vec<String> {
 
 fn merge(a: &Value, b: &Value) -> Value {
     zodchi_core::util::merge(a, b)
-}
-
-/// A review answer by the schema: a verdict and findings with their fields.
-pub(crate) fn check_review(v: &Value) -> std::result::Result<(), String> {
-    if !["approved", "changes_requested", "blocked"].contains(&v["verdict"].as_str().unwrap_or("")) {
-        return Err("verdict is approved, changes_requested or blocked".into());
-    }
-    let Some(list) = v["findings"].as_array() else { return Err("findings is a list".into()) };
-    for f in list {
-        for k in ["id", "severity", "location", "problem"] {
-            if !f[k].is_string() {
-                return Err(format!("a finding has no {k}"));
-            }
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn blocking_findings(review: &Value) -> impl Iterator<Item = &Value> {
-    review["findings"].as_array().into_iter().flatten().filter(|finding|
-        !matches!(finding["severity"].as_str(), Some("nit" | "pre-existing")))
 }
 
 /// What verified a round: the slowest source that ran and passed, from the real exit codes. The stamp names the

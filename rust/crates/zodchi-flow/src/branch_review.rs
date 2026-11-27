@@ -1,9 +1,10 @@
 //! Branch review pins the committed trees and authors, then runs independent reviews through the shared journal.
 
 use crate::{
-    args, checks, code_package, executor, gateway,
+    boundary::Launch, catalog::ProjectGate,
+    args, checks, review_contract, executor, gateway,
     git::Git,
-    input,
+    input_common,
     journal::Journal,
     models::{self, Pick},
     package_source::Source,
@@ -157,7 +158,7 @@ fn fork_words(git: &Git, base: &str, public: bool) -> Result<Vec<String>> {
     }
     let bytes = git.show(base, PATH)?.unwrap_or_default();
     let text = std::str::from_utf8(&bytes).map_err(|_| GatewayError("The fork allow-list must be UTF-8.".into()))?;
-    Ok(input::private_words(text.trim_start_matches('\u{feff}')))
+    Ok(input_common::private_words(text.trim_start_matches('\u{feff}')))
 }
 
 fn coordinator_receipt(path: &str, head: &str, tree: &str) -> Result<Value> {
@@ -273,7 +274,7 @@ fn verify_candidate(journal: &mut Journal, run: &Value, cfg: &Config, available:
     places.extend(paths.private_places());
     let allowed: Vec<_> = run["reviewPolicy"]["forkWords"].as_array().into_iter().flatten()
         .filter_map(Value::as_str).map(String::from).collect();
-    let scrubber = input::Scrubber::new(cfg)?.allow_words(&allowed);
+    let scrubber = input_common::Scrubber::new(cfg)?.allow_words(&allowed);
     let budget = available.min(32 * 1024) / 6 / evidence.len().max(1);
     let commands: Vec<_> = evidence.iter().map(|item| {
         let log = Path::new(item["log"].as_str().unwrap_or(""));
@@ -290,11 +291,23 @@ fn verify_candidate(journal: &mut Journal, run: &Value, cfg: &Config, available:
     Ok(result)
 }
 
-pub fn start(raw: &Value, detach: bool) -> Result<Exit> {
-    match prepare(raw) {
+pub(crate) fn project_handoff(run: &Value, result: &Value, handoff: &mut Value) {
+    handoff["head"] = run["head"].clone();
+    handoff["screening"] = run["screening"].clone();
+    for key in ["previousReview", "reviewRound", "reviewLimit", "verificationReceipt"] {
+        if let Some(value) = run.get(key).filter(|value| !value.is_null()) {
+            handoff[key] = value.clone();
+        }
+    }
+    handoff["review"] = json!({ "verdict": result["review"]["verdict"],
+        "openFindings": result["blocking"].as_array().map(Vec::len) });
+}
+
+pub fn start(raw: &Value, launch: Option<Launch>, require_workflow: ProjectGate) -> Result<Exit> {
+    match prepare(raw, require_workflow) {
         Ok((id, journal)) => {
-            if detach {
-                crate::control::launch(&journal, &id, None)
+            if let Some(launch) = launch {
+                launch(&journal, &id)
             } else {
                 resume(&id, None, None)
             }
@@ -303,7 +316,7 @@ pub fn start(raw: &Value, detach: bool) -> Result<Exit> {
     }
 }
 
-fn prepare(raw: &Value) -> Result<(String, Journal)> {
+fn prepare(raw: &Value, require_workflow: ProjectGate) -> Result<(String, Journal)> {
     let Some(fields) = raw.as_object() else {
         return fail("branch-review needs a JSON object for its arguments.");
     };
@@ -402,7 +415,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
         return fail("The candidate does not descend from the source package base.");
     }
     let tree = git.rev(&format!("{head}^{{tree}}"))?;
-    crate::catalog::require(&git, &head, NAME)?;
+    require_workflow(&git, &head, NAME)?;
     if server.is_none() {
         job::ensure_ignored(&cfg)?;
     }
@@ -487,7 +500,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
         (cfg.home.to_string_lossy().into_owned(), "<zodchi-home>"),
     ];
     let allowed = fork_words(&git, &base, public)?;
-    let scrubber = input::Scrubber::new(&cfg)?.allow_words(&allowed);
+    let scrubber = input_common::Scrubber::new(&cfg)?.allow_words(&allowed);
     let clean = |bytes: &[u8]| {
         scrubber
             .text(&String::from_utf8_lossy(bytes), &places)
@@ -668,7 +681,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
     }
     let mut material = journal.read_verified("material.md", &run["inputs"]["materialSha256"])?;
     let cfg = Config::new(run["repo"].as_str().map(Path::new))?;
-    let schema: Value = serde_json::from_str(code_package::REVIEW_SCHEMA).expect("review schema");
+    let schema: Value = serde_json::from_str(review_contract::REVIEW_SCHEMA).expect("review schema");
     let mut result = json!({
         "runId": id, "workflow": NAME, "version": version, "label": run["label"], "base": run["base"],
         "head": run["head"], "files": run["files"], "models": run["pair"], "journal": journal.dir,
@@ -719,7 +732,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
                 "Step: {step} ({NAME} v{version}, run {id})\n\n{instruction}\n\n{material}"
             ),
         };
-        match gateway::ask(&mut journal, &cfg, call, code_package::check_review) {
+        match gateway::ask(&mut journal, &cfg, call, review_contract::check_review) {
             Ok(data) => {
                 reviews.insert(step.into(), data);
             }
@@ -737,7 +750,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
     }
     let blocking: Vec<_> = reviews
         .values()
-        .flat_map(code_package::blocking_findings)
+        .flat_map(review_contract::blocking_findings)
         .collect();
     let approved = blocking.is_empty()
         && reviews

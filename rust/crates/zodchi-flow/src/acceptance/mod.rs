@@ -6,7 +6,8 @@ mod candidate;
 mod fixture;
 
 use crate::{
-    checks, control, executor::local::pinned_image, input, journal::Journal, video_media as media,
+    boundary::Launch, catalog::ProjectGate,
+    checks, executor::local::pinned_image, input_common, journal::Journal, video_media as media,
     Exit,
 };
 use serde_json::{json, Value};
@@ -34,8 +35,8 @@ const LEGACY_DRIVERS: [&str; 2] = [
 ];
 const BROWSER_RECEIPT_LIMIT: usize = 512 * 1024;
 
-pub fn start(workflow: &str, args: &Value, detach: bool) -> Result<Exit> {
-    let (cfg, mut run) = match plan::prepare(workflow, args) {
+pub fn start(workflow: &str, args: &Value, launch: Option<Launch>, require_workflow: ProjectGate) -> Result<Exit> {
+    let (cfg, mut run) = match plan::prepare(workflow, args, require_workflow) {
         Ok(prepared) => prepared,
         Err(error) => {
             return Ok(Exit {
@@ -52,11 +53,21 @@ pub fn start(workflow: &str, args: &Value, detach: bool) -> Result<Exit> {
     if workflow == RELEASE || (workflow == CANDIDATE && !run["inputs"]["plan"]["fixture"].is_null()) {
         journal.write_text("browser-driver.mjs", DRIVER)?;
     }
-    if detach {
-        control::launch(&journal, id, None)
+    if let Some(launch) = launch {
+        launch(&journal, id)
     } else {
         resume(id, None)
     }
+}
+
+pub(crate) fn handoff(id: &str, run: &Value, current: &Value, result: &Value, result_path: &Path) -> Value {
+    let scenarios: Vec<_> = result["scenarios"].as_array().into_iter().flatten()
+        .map(|s| json!({ "id": s["id"], "status": s["status"] })).collect();
+    json!({ "runId": id, "workflow": current["workflow"], "version": current["version"],
+        "repo": current["repo"], "head": run["head"], "status": current["status"], "step": current["step"],
+        "journal": current["journal"], "resultFile": (!result.is_null()).then_some(result_path),
+        "verdict": result["verdict"], "reason": result["reason"], "models": current["models"],
+        "scenarios": scenarios, "safetyBlock": current["safetyBlock"] })
 }
 
 pub fn resume(id: &str, rerun: Option<&str>) -> Result<Exit> {
@@ -434,7 +445,7 @@ impl Engine {
         if self.journal.last("intent", step, 1).is_none() {
             role["outputSchema"] = schema;
             let role = check_role(&role)?;
-            let prompt = input::scrub(
+            let prompt = input_common::scrub(
                 &self.cfg,
                 &format!(
                     "Step: {step} ({} v1, run {id})\n\n{prompt}",
@@ -471,14 +482,14 @@ impl Engine {
             let done = job::wait(&self.cfg, &key, Duration::from_secs(30))?;
             match done["status"].as_str().unwrap_or("") {
                 "succeeded" => {
-                    let scrubber = input::Scrubber::new(&self.cfg)?;
+                    let scrubber = input_common::Scrubber::new(&self.cfg)?;
                     let mut answer = done["result"]["data"].clone();
                     scrubber.value(&mut answer, &[]);
                     let result = json!({ "key": key, "model": done["model"], "effort": done["effort"], "answer": answer, "frames": frames });
                     self.journal.append(
                         json!({ "kind": "done", "step": step, "attempt": 1, "result": result }),
                     )?;
-                    crate::code_package::cut(&format!("acceptance model {step}"));
+                    crate::boundary::cut(&format!("acceptance model {step}"));
                     return Ok(result);
                 }
                 zodchi_core::appserver::SAFETY_BLOCKED => {
@@ -511,7 +522,7 @@ impl Engine {
 
     fn persist(&mut self, step: &str, receipt: &str, result: Value) -> Result<Value> {
         self.journal.write_value(receipt, &result)?;
-        crate::code_package::cut(&format!("acceptance receipt {step}"));
+        crate::boundary::cut(&format!("acceptance receipt {step}"));
         self.journal
             .append(json!({ "kind": "done", "step": step, "attempt": 1, "result": result }))?;
         Ok(result)
@@ -684,7 +695,7 @@ impl Engine {
     fn screen_browser_receipt(&self, data: &mut Value) -> Result<()> {
         let places =
             crate::design_material::places(&self.cfg, &[json!({ "root": self.run["repo"] })]);
-        let scrubber = input::Scrubber::new(&self.cfg)?;
+        let scrubber = input_common::Scrubber::new(&self.cfg)?;
         for key in ["network", "console"] {
             for event in data[key].as_array_mut().into_iter().flatten() {
                 for field in ["path", "message"] {

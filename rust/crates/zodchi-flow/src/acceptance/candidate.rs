@@ -69,7 +69,7 @@ pub(super) fn scenario(git: &Git, head: &str, raw: &Value) -> Result<Value> {
 /// Create a private Git checkout with the actual commit as HEAD and only local object reads.
 pub(super) fn checkout(repo: &Path, dir: &Path, head: &str, tree: &str) -> Result<()> {
     fs::create_dir(dir)?;
-    crate::code_package::cut("acceptance checkout staging");
+    crate::boundary::cut("acceptance checkout staging");
     let snapshot = Git::new(repo).init_snapshot(dir)?;
     snapshot.run(&["reset", "--hard", "--quiet", "--no-recurse-submodules", head])?;
     check_checkout(dir, head, tree)

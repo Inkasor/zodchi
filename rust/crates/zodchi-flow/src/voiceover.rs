@@ -1,7 +1,8 @@
 //! Render the approved wording of each timed cue as speech, then place the cues in a WAV.
 
 use crate::{
-    control, input,
+    boundary::Launch,
+    input_common,
     journal::{new_run_id, Journal},
     video_media as media, Exit,
 };
@@ -227,7 +228,14 @@ pub fn preview(raw: &Value) -> Result<Exit> {
     })
 }
 
-pub fn start(raw: &Value, detach: bool) -> Result<Exit> {
+pub(crate) fn project_stop_status(run: &Value, last: &Value, result: &mut Value) {
+    if run["workflow"] == NAME {
+        result["errorKind"] = last["errorKind"].clone();
+        result["mayHaveBeenCharged"] = last["mayHaveBeenCharged"].clone();
+    }
+}
+
+pub fn start(raw: &Value, launch: Option<Launch>) -> Result<Exit> {
     if raw["paid"] != true {
         return fail("voiceover uses the OpenAI API. Set args.paid to true to authorize the planned cue calls.");
     }
@@ -238,14 +246,14 @@ pub fn start(raw: &Value, detach: bool) -> Result<Exit> {
     let run = json!({
         "runId": id, "workflow": NAME, "version": VERSION, "release": env!("CARGO_PKG_VERSION"),
         "repo": dir, "inputs": {
-            "argsSha256": input::args_digest(raw), "planSha256": input::args_digest(&plan), "plan": plan,
+            "argsSha256": input_common::args_digest(raw), "planSha256": input_common::args_digest(&plan), "plan": plan,
         },
         "pair": { "voice": { "provider": "openai-realtime", "model": MODEL, "voice": plan["voice"], "language": plan["language"] } },
         "policy": { "paid": true, "plannedCalls": plan["calls"] },
     });
     let journal = Journal::create(&cfg.home, &id, &run)?;
-    if detach {
-        control::launch(&journal, &id, None)
+    if let Some(launch) = launch {
+        launch(&journal, &id)
     } else {
         resume(&id, None)
     }
@@ -259,7 +267,7 @@ pub fn resume(id: &str, rerun: Option<&str>) -> Result<Exit> {
     if run["workflow"] != NAME
         || run["version"] != VERSION
         || run["policy"]["paid"] != true
-        || run["inputs"]["planSha256"] != input::args_digest(plan)
+        || run["inputs"]["planSha256"] != input_common::args_digest(plan)
     {
         return fail("The pinned voiceover plan does not match the run.");
     }
@@ -353,7 +361,7 @@ fn render_cue(journal: &mut Journal, voice: &str, index: usize, cue: &Value) -> 
         if row["cue"] != number
             || row["attempt"] != attempt
             || row["path"] != json!(journal.file(&file))
-            || row["planSha256"] != input::args_digest(cue)
+            || row["planSha256"] != input_common::args_digest(cue)
             || journal
                 .last("intent", &step, attempt)
                 .map(|event| &event["planSha256"])
@@ -398,7 +406,7 @@ fn render_cue(journal: &mut Journal, voice: &str, index: usize, cue: &Value) -> 
         });
     }
     let spoken = cue["spokenText"].as_str().expect("spoken text");
-    let plan_sha = input::args_digest(cue);
+    let plan_sha = input_common::args_digest(cue);
     let request = SpeechRequest {
         voice,
         speed: cue["speed"].as_f64().unwrap_or(1.0),
@@ -572,7 +580,7 @@ mod tests {
         let temp = std::env::temp_dir().join(format!("zodchi-audio-{}", new_run_id()));
         let mut journal = Journal::create(&temp, "test", &json!({})).unwrap();
         let cue = json!({ "startMs": 0, "endMs": 3000, "text": "Saved cue." });
-        let plan_sha = input::args_digest(&cue);
+        let plan_sha = input_common::args_digest(&cue);
         journal
             .append(json!({
                 "kind": "intent", "step": "cue 1", "attempt": 1, "planSha256": plan_sha,

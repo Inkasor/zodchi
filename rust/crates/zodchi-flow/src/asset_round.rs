@@ -1,9 +1,6 @@
 //! Advance one asset round using the ledger, scoped tools and the native child workflows.
 
-use crate::{
-    checks, code_package, control, git::Git, input, journal::Journal, patch, rubric_probe,
-    unity_check, Exit,
-};
+use crate::{boundary::Launch, catalog::ProjectGate, checks, git::Git, input_common, journal::Journal, patch, Exit};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -20,11 +17,29 @@ pub const NAME: &str = "asset-round";
 const VERSION: &str = "1";
 const OWNER: &str = "owner verdict";
 
-pub fn start(raw: &Value, detach: bool) -> Result<Exit> {
-    match prepare(raw) {
-        Ok((id, journal)) if detach => control::launch(&journal, &id, None),
-        Ok((id, _)) => resume(&id, None, None),
-        Err(error) => Ok(Exit {
+#[derive(Clone, Copy)]
+pub(crate) struct ChildWorkflow {
+    pub name: &'static str,
+    pub start: fn(&Value, &str) -> Result<Exit>,
+    pub resume: fn(&str, &Value) -> Result<Exit>,
+}
+
+pub(crate) struct Children {
+    pub package: ChildWorkflow,
+    pub unity: ChildWorkflow,
+    pub rubric: ChildWorkflow,
+}
+
+pub fn start(
+    raw: &Value,
+    launch: Option<Launch>,
+    require_workflow: ProjectGate,
+    children: &Children,
+) -> Result<Exit> {
+    match (prepare(raw, require_workflow), launch) {
+        (Ok((id, journal)), Some(launch)) => launch(&journal, &id),
+        (Ok((id, _)), None) => resume(&id, None, None, children),
+        (Err(error), _) => Ok(Exit {
             code: 2,
             result: json!({"workflow": NAME, "approved": false, "refused": error.0}),
         }),
@@ -96,7 +111,7 @@ fn ledger_round(ledger: &Value, stage: u64, accepted: &str) -> Result<u64> {
     Ok(rounds.len() as u64 + 1)
 }
 
-fn prepare(raw: &Value) -> Result<(String, Journal)> {
+fn prepare(raw: &Value, require_workflow: ProjectGate) -> Result<(String, Journal)> {
     if raw.as_object().is_none_or(|args| {
         args.keys().any(|key| {
             ![
@@ -125,7 +140,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
     if fs::canonicalize(git.run(&["rev-parse", "--show-toplevel"])?.trim())? != repo {
         return fail("args.repo must be the top of its Git checkout.");
     }
-    crate::catalog::require(&git, &git.rev("HEAD^{commit}")?, NAME)?;
+    require_workflow(&git, &git.rev("HEAD^{commit}")?, NAME)?;
     let cfg = Config::new(Some(&repo))?;
     let ledger = absolute(&raw["ledger"], "args.ledger")?;
     if ledger
@@ -140,7 +155,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
     }
     let (text, data) = object_file(&ledger)?;
     let round = ledger_round(&data, stage, accepted)?;
-    let scrubber = input::Scrubber::new(&cfg)?;
+    let scrubber = input_common::Scrubber::new(&cfg)?;
     let summary = raw["summary"]
         .as_str()
         .filter(|text| !text.trim().is_empty())
@@ -233,7 +248,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
         "createdAt": iso(), "repo": repo, "ledger": ledger, "label": label, "round": round, "stage": stage,
         "summary": summary, "tmp": path, "ledgerSha256": sha256_hex(&text), "accepted": accepted,
         "policy": { "paid": plan.get("rubric").is_some() },
-        "inputs": { "argsSha256": input::args_digest(raw), "plan": plan, "planSha256": sha256_hex(plan.to_string()) }
+        "inputs": { "argsSha256": input_common::args_digest(raw), "plan": plan, "planSha256": sha256_hex(plan.to_string()) }
     });
     let journal = Journal::create(&cfg.home, &id, &run)?;
     Ok((id, journal))
@@ -243,28 +258,28 @@ fn run_child(
     journal: &mut Journal,
     cfg: &Config,
     step: &str,
-    name: &str,
+    workflow: ChildWorkflow,
     args: &Value,
-    start: impl FnOnce(&Value, &str) -> Result<Exit>,
 ) -> Result<Option<Value>> {
     if let Some(done) = journal.last("done", step, 1) {
         return Ok(Some(done["result"].clone()));
     }
+    let name = workflow.name;
     let id = if let Some(intent) = journal.last("child intent", step, 1) {
-        if intent["argsSha256"] != input::args_digest(args) {
+        if intent["argsSha256"] != input_common::args_digest(args) {
             return fail("The saved child workflow arguments have changed.");
         }
         intent["runId"].as_str().unwrap_or("").to_string()
     } else {
         let id = crate::journal::new_run_id();
-        journal.append(json!({ "kind": "child intent", "step": step, "attempt": 1, "runId": id, "workflow": name, "argsSha256": input::args_digest(args) }))?;
+        journal.append(json!({ "kind": "child intent", "step": step, "attempt": 1, "runId": id, "workflow": name, "argsSha256": input_common::args_digest(args) }))?;
         id
     };
     let run_folder = cfg.home.join("flows").join(&id);
     let exit = if run_folder.exists() {
-        control::resume(name, &id, Some(args), None, false)?
+        (workflow.resume)(&id, args)?
     } else {
-        start(args, &id)?
+        (workflow.start)(args, &id)?
     };
     if exit.code == 0 || !run_folder.is_dir() || run_folder.join("result.json").is_file() {
         let record = json!({"ok": exit.code == 0, "runId": id, "output": exit.result});
@@ -369,12 +384,12 @@ fn release_lock(path: &Path, id: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Exit> {
+pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>, children: &Children) -> Result<Exit> {
     let (mut journal, run) = Journal::open(&Config::new(None)?.home, id)?;
     if run["workflow"] != NAME
         || run["version"] != VERSION
         || retry.is_some()
-        || given.is_some_and(|given| !input::args_match(&run["inputs"], given))
+        || given.is_some_and(|given| !input_common::args_match(&run["inputs"], given))
     {
         return fail("Resume asset-round using its original run ID and reconcile its child workflow separately if needed.");
     }
@@ -431,35 +446,14 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
             break;
         }
         let record = match step {
-            "package" => run_child(
-                &mut journal,
-                &cfg,
-                step,
-                code_package::WORKFLOW,
-                args,
-                code_package::start_child,
-            )?,
-            "unity" => run_child(
-                &mut journal,
-                &cfg,
-                step,
-                unity_check::NAME,
-                args,
-                unity_check::start_child,
-            )?,
+            "package" => run_child(&mut journal, &cfg, step, children.package, args)?,
+            "unity" => run_child(&mut journal, &cfg, step, children.unity, args)?,
             "rubric" => {
                 let args = json!({
                     "repo": run["repo"], "tmp": run["tmp"], "label": run["label"], "role": args["role"], "paid": true,
                     "frames": frames.iter().map(|file| json!({"file": file, "note": run["summary"], "sound": true, "defects": []})).collect::<Vec<_>>(),
                 });
-                run_child(
-                    &mut journal,
-                    &cfg,
-                    step,
-                    rubric_probe::NAME,
-                    &args,
-                    rubric_probe::start_child,
-                )?
+                run_child(&mut journal, &cfg, step, children.rubric, &args)?
             }
             "check" => Some(checked_command(
                 &mut journal,
@@ -522,7 +516,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
     rows.push(row.clone());
     journal.write_value("round.json", &result)?;
     write_json_atomic(ledger, &current)?;
-    crate::code_package::cut("asset ledger");
+    crate::boundary::cut("asset ledger");
     record_owner(&mut journal, ledger, &lock, current, &row, result)
 }
 

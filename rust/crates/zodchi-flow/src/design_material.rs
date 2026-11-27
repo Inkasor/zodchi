@@ -1,6 +1,6 @@
 //! Capture Git sources for design-brief. Models receive aliases, screened material, and actual cited lines.
 
-use crate::{args, checks, claims, git::Git, input, patch};
+use crate::{args, checks, claims, git::Git, input_common, patch};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
@@ -60,7 +60,7 @@ pub fn capture(raw: &Value, cfg: &Config) -> Result<Value> {
     let mut oversized = BTreeMap::new();
     let public = raw["publicRepo"] == true;
     let allowed = allowed_words(&raw["allowPrivateWords"], public)?;
-    let scrubber = input::Scrubber::new(cfg)?.allow_words(&allowed);
+    let scrubber = input_common::Scrubber::new(cfg)?.allow_words(&allowed);
     for (index, value) in repos.iter().enumerate() {
         let root = absolute(&json!(value), "args.repos")?;
         let git = Git::new(&root);
@@ -245,9 +245,9 @@ fn allowed_words(value: &Value, public: bool) -> Result<Vec<String>> {
         .collect()
 }
 
-pub(crate) fn scrubber(cfg: &Config, material: &Value) -> Result<input::Scrubber> {
+pub(crate) fn scrubber(cfg: &Config, material: &Value) -> Result<input_common::Scrubber> {
     let allowed = allowed_words(&material["allowPrivateWords"], material["public"] == true)?;
-    Ok(input::Scrubber::new(cfg)?.allow_words(&allowed))
+    Ok(input_common::Scrubber::new(cfg)?.allow_words(&allowed))
 }
 
 fn paths_equal(a: &str, b: &str) -> bool {
@@ -293,7 +293,7 @@ pub fn public_path(line: &str) -> bool {
 }
 
 pub fn clean(
-    scrubber: &input::Scrubber,
+    scrubber: &input_common::Scrubber,
     text: &str,
     places: &[(String, &str)],
     public: bool,

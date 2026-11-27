@@ -1,9 +1,10 @@
 //! Research the real object and game implementations, then prepare a traceable options sheet.
 
 use crate::{
-    control, design_brief, gateway,
+    boundary::Launch, catalog::ProjectGate,
+    design_brief, gateway,
     git::Git,
-    input,
+    input_common,
     journal::Journal,
     models::{self, Pick},
     Exit,
@@ -63,8 +64,8 @@ fn method_models(
     Ok(pair)
 }
 
-pub fn start(raw: &Value, detach: bool) -> Result<Exit> {
-    let (id, journal) = match prepare(raw) {
+pub fn start(raw: &Value, launch: Option<Launch>, require_workflow: ProjectGate) -> Result<Exit> {
+    let (id, journal) = match prepare(raw, require_workflow) {
         Ok(run) => run,
         Err(error) => {
             return Ok(Exit {
@@ -75,8 +76,8 @@ pub fn start(raw: &Value, detach: bool) -> Result<Exit> {
             })
         }
     };
-    if detach {
-        control::launch(&journal, &id, None)
+    if let Some(launch) = launch {
+        launch(&journal, &id)
     } else {
         resume(&id, None, None)
     }
@@ -94,7 +95,7 @@ fn path_field(raw: &Value, field: &str) -> Result<PathBuf> {
         })
 }
 
-fn prepare(raw: &Value) -> Result<(String, Journal)> {
+fn prepare(raw: &Value, require_workflow: ProjectGate) -> Result<(String, Journal)> {
     let args = raw
         .as_object()
         .ok_or_else(|| GatewayError("method-question needs an arguments object.".into()))?;
@@ -118,7 +119,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
         return fail("args.repo must be the top of its Git checkout.");
     }
     let head = git.rev("HEAD^{commit}")?;
-    crate::catalog::require(&git, &head, NAME)?;
+    require_workflow(&git, &head, NAME)?;
     if git
         .output(
             &["check-ignore", "-q", "--", ".agent-tmp/gateway/"],
@@ -132,7 +133,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
         return fail("The repository must ignore .agent-tmp/ for gateway jobs.");
     }
     let cfg = Config::new(Some(&repo))?;
-    let scrubber = input::Scrubber::new(&cfg)?;
+    let scrubber = input_common::Scrubber::new(&cfg)?;
     let places = [
         (repo.to_string_lossy().into_owned(), "<repo>"),
         (cfg.home.to_string_lossy().into_owned(), "<zodchi-home>"),
@@ -208,11 +209,11 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
     let run = json!({
         "runId": id, "workflow": NAME, "version": VERSION, "release": env!("CARGO_PKG_VERSION"),
         "createdAt": iso(), "label": label, "repo": repo, "output": out, "head": head,
-        "inputs": { "argsSha256": input::args_digest(raw), "materialSha256": sha256_hex(material.to_string()), "material": material },
+        "inputs": { "argsSha256": input_common::args_digest(raw), "materialSha256": sha256_hex(material.to_string()), "material": material },
         "pair": pair,
     });
     let journal = Journal::create(&cfg.home, &id, &run)?;
-    crate::code_package::cut("start method question");
+    crate::boundary::cut("start method question");
     Ok((id, journal))
 }
 
@@ -220,7 +221,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
     let (mut journal, run) = Journal::open(&Config::new(None)?.home, id)?;
     if run["workflow"] != NAME
         || run["version"] != VERSION
-        || given.is_some_and(|given| !input::args_match(&run["inputs"], given))
+        || given.is_some_and(|given| !input_common::args_match(&run["inputs"], given))
     {
         return fail("The run does not match this method-question command.");
     }
@@ -250,7 +251,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
         .map(Path::new)
         .ok_or_else(|| GatewayError("The journal names no repository.".into()))?;
     let cfg = Config::new(Some(repo))?;
-    let scrubber = input::Scrubber::new(&cfg)?;
+    let scrubber = input_common::Scrubber::new(&cfg)?;
     let research_schema = serde_json::from_str(RESEARCH_SCHEMA).expect("research schema");
     let sheet_schema = serde_json::from_str(SHEET_SCHEMA).expect("method synthesis schema");
     let researcher = Pick::from_json(&run["pair"]["researcher"]);
@@ -464,7 +465,7 @@ fn traceable(source: &str) -> bool {
     })
 }
 
-fn validate_research(value: &Value, scrubber: &input::Scrubber) -> std::result::Result<(), String> {
+fn validate_research(value: &Value, scrubber: &input_common::Scrubber) -> std::result::Result<(), String> {
     let text = |value: &Value| {
         value
             .as_str()
@@ -492,7 +493,7 @@ fn validate_sheet(
     value: &Value,
     evidence: &BTreeMap<String, Value>,
     responses: &[Value],
-    scrubber: &input::Scrubber,
+    scrubber: &input_common::Scrubber,
 ) -> std::result::Result<(), String> {
     let has_questions = |side: &str| responses.iter().any(|row| row["side"] == side);
     let has_evidence = |side: &str| evidence.values().any(|row| row["side"] == side);
@@ -557,7 +558,7 @@ fn validate_sheet(
     Ok(())
 }
 
-fn clean(text: &str, scrubber: &input::Scrubber) -> bool {
+fn clean(text: &str, scrubber: &input_common::Scrubber) -> bool {
     let normalized = text.lines().collect::<Vec<_>>().join("\n");
     scrubber.text(text, &[]) == normalized
 }

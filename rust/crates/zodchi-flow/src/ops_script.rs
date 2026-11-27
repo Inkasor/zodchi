@@ -16,7 +16,7 @@ use std::time::Duration;
 use std::time::Instant;
 use serde_json::{json, Value};
 use zodchi_core::util::sha256_hex;
-use crate::{input, journal::{self, Journal}, Exit};
+use crate::{boundary::Launch, child_package, input_common, journal::{self, Journal}, Exit};
 use zodchi_core::{config::Config, util::{fail, iso, GatewayError}};
 
 pub const NAME: &str = "ops-script";
@@ -692,7 +692,15 @@ fn outcome(result: Value) -> Exit {
     Exit { code: if result["ready"] == true { 0 } else { 2 }, result }
 }
 
-pub(crate) fn checked_result(run: &Value, mut result: Value) -> Value {
+pub(crate) fn project_status_result(run: &Value, result: Value) -> Value {
+    if run["workflow"] == NAME {
+        checked_result(run, result)
+    } else {
+        result
+    }
+}
+
+fn checked_result(run: &Value, mut result: Value) -> Value {
     if result["ready"] != true { return result; }
     let verified = Args::parse_mode(&run["inputs"]["args"], false)
         .and_then(|args| Snapshot::restore(&result["snapshot"], &args.tmp, &args.inputs).map(|_| ()));
@@ -705,7 +713,7 @@ pub(crate) fn checked_result(run: &Value, mut result: Value) -> Value {
     result
 }
 
-pub fn start(raw: &Value, detach: bool) -> zodchi_core::util::Result<Exit> {
+pub fn start(raw: &Value, launch: Option<Launch>) -> zodchi_core::util::Result<Exit> {
     let prepared = (|| -> Result<(Args, Tools), String> {
         let args = Args::parse(raw)?;
         if args.remote.is_some() {
@@ -724,7 +732,7 @@ pub fn start(raw: &Value, detach: bool) -> zodchi_core::util::Result<Exit> {
     let run = json!({ "runId": id, "workflow": NAME, "version": VERSION, "release": env!("CARGO_PKG_VERSION"),
         "createdAt": iso(), "repo": args.repo, "inputs": { "args": raw } });
     let journal = Journal::create(&cfg.home, &id, &run)?;
-    if detach { crate::control::launch(&journal, &id, None) } else { resume(&id, None, None) }
+    if let Some(launch) = launch { launch(&journal, &id) } else { resume(&id, None, None) }
 }
 
 /// Journal the intention before the effect. A recorded start without a result
@@ -736,11 +744,11 @@ where F: FnOnce() -> Value {
         EffectState::Unresolved => Ok(None),
         EffectState::Pending => {
             journal.append(json!({ "kind": "ops-start", "step": step }))?;
-            crate::code_package::cut(&format!("ops-start {step}"));
+            crate::boundary::cut(&format!("ops-start {step}"));
             let value = run();
-            crate::code_package::cut(&format!("ops-effect {step}"));
+            crate::boundary::cut(&format!("ops-effect {step}"));
             journal.append(json!({ "kind": "ops-done", "step": step, "result": value }))?;
-            crate::code_package::cut(&format!("ops-done {step}"));
+            crate::boundary::cut(&format!("ops-done {step}"));
             Ok(Some(value))
         }
     }
@@ -761,7 +769,7 @@ fn repair_scope(args: &Args) -> Option<(PathBuf, Vec<String>)> {
     let repo = fs::canonicalize(args.repo.as_ref()?).ok()?;
     if !repo.is_dir() { return None; }
     let cfg = Config::new(None).ok()?;
-    let scrubber = input::Scrubber::new(&cfg).ok()?;
+    let scrubber = input_common::Scrubber::new(&cfg).ok()?;
     let mut files = Vec::new();
     for (index, source) in args.inputs.iter().enumerate() {
         // Companions remain local unless explicitly selected by the caller.
@@ -860,7 +868,7 @@ fn failed(journal: &mut Journal, id: &str, args: &Args, attempt: u64, step: &str
             let (repo, files) = scope.ok_or_else(|| GatewayError("Repair scope is unavailable".into()))?;
             let child = journal::new_run_id();
             let cfg = Config::new(None)?;
-            let scrubber = input::Scrubber::new(&cfg)?;
+            let scrubber = input_common::Scrubber::new(&cfg)?;
             let mut places: Vec<(String, &str)> = args.inputs.iter().map(|path| (path.display().to_string(), "[input]")).collect();
             places.push((args.tmp.display().to_string(), "[tmp]"));
             places.push((repo.display().to_string(), "[repo]"));
@@ -903,15 +911,16 @@ fn failed(journal: &mut Journal, id: &str, args: &Args, attempt: u64, step: &str
                 "files": files, "rounds": 1, "fixes": 0, "models": models });
             let event = json!({ "kind": "ops-repair", "attempt": attempt, "child": child, "args": raw });
             journal.append(event.clone())?;
-            crate::code_package::cut(&format!("ops-repair {attempt}"));
+            crate::boundary::cut(&format!("ops-repair {attempt}"));
             event
         };
         let child = event["child"].as_str().ok_or_else(|| GatewayError("Missing repair child id".into()))?;
         let cfg = Config::new(None)?;
         let child_dir = journal::flows_dir(&cfg.home).join(child);
         let result = if first {
-            crate::code_package::start_child(&event["args"], child)
+            child_package::start(&event["args"], child)
         } else if child_dir.join("initialized").is_file() {
+            // Preserve the initialized repair's direct lock acquisition and result handling.
             crate::code_package::resume(child, Some(&event["args"]), None)
         } else {
             // A cut in the code-package gate may have interrupted a model
@@ -1004,7 +1013,7 @@ fn resume_guarded(id: &str, given: Option<&Value>, retry: Option<&str>, cfg: &Co
     // A recorded failure or interrupted effect must survive even if that effect
     // damaged the snapshot. Never restore or run a new check before this audit.
     if let Some((step, detail)) = recorded_failure { return failed(&mut journal, id, &args, attempt, &step, detail); }
-    let scrubber = input::Scrubber::new(cfg)?;
+    let scrubber = input_common::Scrubber::new(cfg)?;
     let mut places: Vec<(String, &str)> = args.inputs.iter().map(|path| (path.display().to_string(), "[input]")).collect();
     places.push((args.tmp.display().to_string(), "[tmp]"));
     if let Some(repo) = &args.repo { places.push((repo.display().to_string(), "[repo]")); }

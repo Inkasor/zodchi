@@ -1,14 +1,13 @@
 //! Write the existing video manifest format from the Rust workflow journal.
 
-use crate::{journal::Journal, video_media as media};
+use crate::{accepted_media::{encoded, MANIFEST}, journal::Journal, video_media as media};
 use serde_json::{json, Value};
 use std::{fs, path::Path};
-use zodchi_core::util::{fail, iso, pretty, sha256_hex, write_atomic, GatewayError, Result};
+use zodchi_core::util::{fail, iso, sha256_hex, write_atomic, GatewayError, Result};
 
 const EDIT_FIELDS: [&str; 6] = [
     "proposed", "sources", "segments", "audio", "costs", "claims",
 ];
-const MANIFEST: &str = "manifest.json";
 
 pub fn edit_of(manifest: &Value) -> Value {
     Value::Object(
@@ -268,36 +267,6 @@ pub fn initial(dir: &Path, id: &str, format: &str, title: &str) -> Result<(Value
         }),
         Value::Null,
     ))
-}
-
-fn encoded(value: &Value) -> String {
-    pretty(value) + "\n"
-}
-
-pub fn load(journal: &Journal, run: &Value, dir: &Path) -> Result<Value> {
-    let path = media::owned(dir, MANIFEST)?;
-    let last = journal
-        .events()
-        .iter()
-        .rev()
-        .find(|event| event["kind"] == "video manifest");
-    let (body, before) = last.map_or(
-        (&run["inputs"]["manifest"], &run["inputs"]["manifestSha256"]),
-        |e| (&e["body"], &e["before"]),
-    );
-    let expected = sha256_hex(encoded(body));
-    let current = if path.exists() {
-        media::stamp(&path)?["sha256"].clone()
-    } else {
-        Value::Null
-    };
-    if current != expected && &current != before {
-        return fail("manifest.json changed outside the video workflow.");
-    }
-    if current != expected {
-        write_atomic(&path, encoded(body).as_bytes())?;
-    }
-    Ok(body.clone())
 }
 
 pub fn save(journal: &mut Journal, dir: &Path, after: &Value) -> Result<()> {

@@ -4,23 +4,28 @@
 #![allow(clippy::result_large_err)]
 
 mod acceptance;
+mod accepted_media;
 mod agent;
 pub mod args;
 mod asset_round;
+mod boundary;
 mod branch_review;
 mod budget;
 mod candidate;
 mod package_source;
+mod review_contract;
 mod review_source;
 mod catalog;
 pub mod checks;
 pub mod claims;
+mod child_package;
 mod cleanup;
 pub mod code_package;
 mod control;
 mod design_brief;
 mod design_material;
 mod input;
+mod input_common;
 mod incident_adapter;
 mod incident_draft;
 mod incident_triage;
@@ -73,6 +78,15 @@ pub const USAGE: &str = "Usage: zodchi flow <workflow> --args <file.json> [--det
 Prints the result JSON. The journal is ~/.zodchi/flows/<run-id>/.
 Exit code: 0 approved, 2 any other end (refused, stopped, changes requested), 1 a wrong call.";
 
+fn compiled_catalog() -> Value {
+    serde_json::from_str(include_str!("../../../../workflows/catalog.json"))
+        .expect("workflow catalog")
+}
+
+fn require_workflow(git: &git::Git, base: &str, workflow: &str) -> Result<()> {
+    catalog::require(git, base, workflow, &compiled_catalog())
+}
+
 /// `zodchi flow <workflow> ...`: the result of the run.
 pub fn cli(args: &[String]) -> Result<Exit> {
     let Some(workflow) = args.first() else { return fail(USAGE) };
@@ -80,27 +94,27 @@ pub fn cli(args: &[String]) -> Result<Exit> {
         return cleanup::cli(&args[1..]);
     }
     match args {
-        [flag] if flag == "--help" || flag == "-h" => return Ok(Exit { code: 0, result: serde_json::json!({ "usage": USAGE, "catalog": catalog::all() }) }),
+        [flag] if flag == "--help" || flag == "-h" => return Ok(Exit { code: 0, result: serde_json::json!({ "usage": USAGE, "catalog": compiled_catalog() }) }),
         [name, flag] if flag == "--help" || flag == "-h" => {
-            let catalog = catalog::all();
+            let catalog = compiled_catalog();
             let entry = catalog["workflows"].as_array().expect("workflows").iter()
                 .find(|item| item["name"] == name.as_str())
                 .ok_or_else(|| GatewayError(format!("No workflow {name:?} in zodchi flow. Run zodchi flow list for the catalog.")))?;
             return Ok(Exit { code: 0, result: entry.clone() });
         }
-        [command] if command == "list" => return Ok(Exit { code: 0, result: catalog::all() }),
+        [command] if command == "list" => return Ok(Exit { code: 0, result: compiled_catalog() }),
         [command, flag, root] if command == "list" && flag == "--repo" => {
-            return Ok(Exit { code: 0, result: catalog::project(std::path::Path::new(root))? });
+            return Ok(Exit { code: 0, result: catalog::project(std::path::Path::new(root), compiled_catalog)? });
         }
         [command, id] if command == "status" => return control::status(id),
         [command, id, flag] if command == "status" && flag == "--handoff" => return control::handoff(id),
         [command, id] if command == "apply" => return candidate::apply(id),
-        [command, id, rest @ ..] if command == "budget" => return budget::extend(id, rest),
+        [command, id, rest @ ..] if command == "budget" => return control::extend_budget(id, rest),
         [command, id, flag, file] if command == "remark" && flag == "--file" => {
             return input::remark(id, file);
         }
         [command, id, flag, file] if command == "reply" && flag == "--allow-files" => return input::allow_scope(id, file),
-        [command, id, rest @ ..] if command == "reply" => return input::reply(id, rest),
+        [command, id, rest @ ..] if command == "reply" => return input::reply(id, rest, control::reply_policy),
         [command, id] if command == "_worker" => return control::worker(id, None),
         [command, id, rerun] if command == "_worker" => return control::worker(id, Some(rerun)),
         [workflow, command, flag, file] if workflow == video::NAME && command == "research" && flag == "--args" => {
@@ -158,40 +172,41 @@ pub fn cli(args: &[String]) -> Result<Exit> {
             if rerun.is_some() {
                 return fail("--rerun goes with --resume <run-id>");
             }
+            let launch = detach.then_some(control::launch_start as boundary::Launch);
             let exit = if workflow == research::NAME {
-                research::start(&given, detach)
+                research::start(&given, launch, require_workflow)
             } else if workflow == ops_script::NAME {
-                ops_script::start(&given, detach)
+                ops_script::start(&given, launch)
             } else if workflow == branch_review::NAME {
-                branch_review::start(&given, detach)
+                branch_review::start(&given, launch, require_workflow)
             } else if workflow == design_brief::NAME {
-                design_brief::start(&given, detach)
+                design_brief::start(&given, launch, require_workflow)
             } else if workflow == incident_triage::NAME {
-                incident_triage::start(&given, detach)
+                incident_triage::start(&given, launch, require_workflow)
             } else if workflow == method_question::NAME {
-                method_question::start(&given, detach)
+                method_question::start(&given, launch, require_workflow)
             } else if workflow == rubric_probe::NAME {
-                rubric_probe::start(&given, detach)
+                rubric_probe::start(&given, launch, require_workflow)
             } else if workflow == unity_check::NAME {
-                unity_check::start(&given, detach)
+                unity_check::start(&given, launch, require_workflow)
             } else if workflow == workspace_audit::NAME {
-                workspace_audit::start(&given, detach)
+                workspace_audit::start(&given, launch)
             } else if workflow == asset_round::NAME {
-                asset_round::start(&given, detach)
+                asset_round::start(&given, launch, require_workflow, &control::ASSET_CHILDREN)
             } else if workflow == video::NAME {
-                video::start(&given, detach)
+                video::start(&given, launch)
             } else if workflow == voiceover::NAME {
-                voiceover::start(&given, detach)
+                voiceover::start(&given, launch)
             } else if workflow == youtube_publish::NAME {
                 youtube_publish::start(&given)
             } else if [acceptance::RELEASE, acceptance::PLAYER, acceptance::CANDIDATE].contains(&workflow.as_str()) {
-                acceptance::start(workflow, &given, detach)
+                acceptance::start(workflow, &given, launch, require_workflow)
             } else if detach {
                 code_package::start_detached(&given)
             } else {
                 code_package::start(&given)
             }?;
-            Ok(control::after_run(exit))
+            Ok(cleanup::after_run(exit))
         }
         (None, None) => fail(USAGE),
     }

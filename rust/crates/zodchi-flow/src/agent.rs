@@ -1,7 +1,7 @@
 //! The agent edits a private export. Only changes the engine can match to the claimed paths and the original
 //! worktree blobs are proposed for application. The writer's report is not used as a list of filesystem changes.
 
-use crate::{git::Git, input::Scrubber, patch, verify::WriterSettings};
+use crate::{git::Git, input_common::Scrubber, patch, verify::WriterSettings};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;

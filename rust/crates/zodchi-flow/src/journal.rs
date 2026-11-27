@@ -4,10 +4,15 @@
 //! attempt, input digest, intended effect and gateway key, and after it the validated result or the Git receipt.
 //! One process at a time works on a run: `lock/` holds its pid and start.
 
+use crate::{
+    boundary::{Exit, WORKFLOW},
+    budget::Budget,
+};
 use serde_json::{json, Map, Value};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use zodchi_core::config::Config;
 use zodchi_core::process::{alive, process_start};
 use zodchi_core::util::{fail, iso, pretty, read_stored, sha256_hex, write_json_atomic, GatewayError, Result};
 
@@ -18,6 +23,29 @@ pub struct Journal {
 
 pub fn flows_dir(home: &Path) -> PathBuf {
     home.join("flows")
+}
+
+pub(crate) const CANDIDATE_WORKSPACES: &str = "flow-candidates";
+
+pub(crate) fn candidate_workspace(home: &Path, id: &str) -> PathBuf {
+    home.join(CANDIDATE_WORKSPACES).join(id)
+}
+
+pub(crate) fn candidate_applied(events: &[Value]) -> Option<Value> {
+    events
+        .iter()
+        .rev()
+        .find(|event| event["kind"] == "application finished")
+        .map(|event| event["result"].clone())
+}
+
+pub(crate) fn application_status(events: &[Value]) -> Option<Value> {
+    candidate_applied(events).or_else(|| {
+        events
+            .iter()
+            .any(|event| event["kind"] == "application intent")
+            .then(|| json!({ "status": "pending_reconciliation" }))
+    })
 }
 
 /// A clarification adds input while leaving the stopped step in place.
@@ -31,6 +59,100 @@ pub(crate) fn last_state_event(events: &[Value]) -> Option<&Value> {
 pub(crate) fn finished_event<'a>(events: &'a [Value], result: Option<&Value>) -> Option<&'a Value> {
     result.filter(|result| result.is_object() && result.get("claimLeftOpen").is_none())?;
     events.iter().rfind(|event| event["kind"] == "finished")
+}
+
+pub(crate) fn safety_block(events: &[Value]) -> Option<Value> {
+    events.iter().rev().find(|event| event["kind"] == "safety blocked").map(|event| {
+        json!({ "step": event["step"], "jobKey": event["key"], "provider": event["provider"] })
+    })
+}
+
+/// Optional workflow projections applied at the same points as the common status fields.
+#[derive(Default)]
+pub(crate) struct StatusHooks {
+    pub check_result: Option<fn(&Value, Value) -> Value>,
+    pub details: Option<fn(&Value, &[Value], &mut Value)>,
+    pub stop_details: Option<fn(&Value, &Value, &mut Value)>,
+}
+
+pub(crate) fn status(id: &str, hooks: StatusHooks) -> Result<Exit> {
+    let (journal, run) = Journal::open(&Config::new(None)?.home, id)?;
+    // The finished event precedes the completion receipt. Sample worker state first
+    // so that a completion receipt cannot be paired with a pre-finish snapshot.
+    let active = journal.active();
+    let receipt = journal.read_value("worker-result.json");
+    let events = journal.snapshot()?;
+    let final_result = journal.read_value("result.json").filter(|result| finished_event(&events, Some(result)).is_some()).map(|mut result| {
+        if let Some(applied) = application_status(&events) {
+            result["application"] = applied;
+        }
+        if let Some(check_result) = hooks.check_result {
+            result = check_result(&run, result);
+        }
+        result
+    });
+    let last = last_state_event(&events).unwrap_or(&Value::Null);
+    let outcome = if final_result.is_some() {
+        "finished"
+    } else if active {
+        "running"
+    } else if last["kind"] == "waiting" {
+        "waiting"
+    } else if last["kind"] == "youtube processing" {
+        "processing"
+    } else if last["kind"] == "scope allowed" || last["kind"] == "budget extended" || (last["kind"] == "rerun" && last.get("ownerAnswer").is_some()) {
+        "ready"
+    } else if receipt.is_some() || last["kind"] == "stop" {
+        "stopped"
+    } else {
+        "interrupted"
+    };
+    let mut result = json!({
+        "runId": id, "workflow": run["workflow"], "version": run["version"], "release": run["release"], "repo": run["repo"],
+        "status": outcome, "step": last["step"], "event": last["kind"], "models": run["pair"],
+        "journal": journal.dir.display().to_string(),
+    });
+    if let Some(commit) = run.get("buildCommit") {
+        result["buildCommit"] = commit.clone();
+    }
+    if let Some(details) = hooks.details {
+        details(&run, &events, &mut result);
+    }
+    if let Some(block) = safety_block(&events) {
+        result["safetyBlock"] = block;
+    }
+    if outcome == "waiting" {
+        result["question"] = last["question"].clone();
+        if let Some(reason) = last.get("reason") { result["reason"] = reason.clone(); }
+        if last["scope"].is_array() {
+            result["outsideClaim"] = last["scope"].clone();
+        }
+        if last["decisions"].is_array() {
+            result["ownerDecisions"] = last["decisions"].clone();
+            result["draft"] = last["draft"].clone();
+        }
+    }
+    if let Ok(budget) = Budget::parse(&run["inputs"]["args"]["budget"]) {
+        result["budget"] = budget.report(&events);
+    }
+    if let Some(key) = last["key"].as_str() {
+        result["jobKey"] = json!(key);
+    }
+    if last["kind"] == "stop" && !active {
+        result["stoppedAt"] = last["stoppedAt"].clone();
+        result["infra"] = last["what"].clone();
+        if let Some(stop_details) = hooks.stop_details {
+            stop_details(&run, last, &mut result);
+        }
+    }
+    if let Some(final_result) = final_result {
+        result["result"] = final_result;
+    } else if !active && outcome != "ready" {
+        if let Some(receipt) = receipt {
+            result["lastResult"] = receipt;
+        }
+    }
+    Ok(Exit { result, code: 0 })
 }
 
 /// An inaccessible process still owns its receipt unless its PID was demonstrably reused.
@@ -92,7 +214,7 @@ impl Journal {
             run
         });
         write_json_atomic(&dir.join("run.json"), pinned.as_ref().unwrap_or(run))?;
-        if run["workflow"] == crate::code_package::WORKFLOW {
+        if run["workflow"] == WORKFLOW {
             crate::cleanup::note_package_home(home, id);
         }
         Ok(Journal { dir, events: vec![] })

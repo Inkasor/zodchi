@@ -3,7 +3,7 @@
 
 use crate::{
     checks,
-    input::{PRIVATE_WITHHELD, Scrubber},
+    input_common::{PRIVATE_WITHHELD, Scrubber},
 };
 use serde_json::{Value, json};
 use std::path::Path;

@@ -5,10 +5,7 @@ use zodchi_core::util::{fail, GatewayError, Result};
 
 pub const PROJECT: &str = ".zodchi/workflows.json";
 
-pub fn all() -> Value {
-    serde_json::from_str(include_str!("../../../../workflows/catalog.json"))
-        .expect("workflow catalog")
-}
+pub(crate) type ProjectGate = fn(&Git, &str, &str) -> Result<()>;
 
 fn configured_domains(git: &Git, base: &str) -> Result<Option<Vec<String>>> {
     let Some(bytes) = git.show(base, PROJECT)? else {
@@ -46,11 +43,11 @@ fn enabled(domains: Option<&[String]>, domain: &str) -> bool {
     domain == "core" || domains.is_none_or(|names| names.iter().any(|name| name == domain))
 }
 
-pub fn project(root: &Path) -> Result<Value> {
+pub fn project(root: &Path, compiled: impl FnOnce() -> Value) -> Result<Value> {
     let git = Git::new(root);
     let head = git.rev("HEAD^{commit}")?;
     let domains = configured_domains(&git, &head)?;
-    let mut catalog = all();
+    let mut catalog = compiled();
     let entries = catalog["workflows"].as_array_mut().expect("workflows");
     entries.retain(|item| {
         enabled(
@@ -61,8 +58,7 @@ pub fn project(root: &Path) -> Result<Value> {
     Ok(catalog)
 }
 
-pub fn require(git: &Git, base: &str, workflow: &str) -> Result<()> {
-    let catalog = all();
+pub fn require(git: &Git, base: &str, workflow: &str, catalog: &Value) -> Result<()> {
     let workflow_entry = catalog["workflows"]
         .as_array()
         .expect("workflows")

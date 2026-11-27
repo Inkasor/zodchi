@@ -1,96 +1,62 @@
-use crate::{acceptance, asset_round, branch_review, code_package, design_brief, incident_triage, input, journal::{finished_event, last_state_event, Journal}, method_question, ops_script, research, rubric_probe, unity_check, video, voiceover, workspace_audit, youtube_publish, Exit};
+use crate::{
+    acceptance,
+    asset_round::{self, ChildWorkflow, Children},
+    boundary, branch_review, budget, child_package, cleanup, code_package, design_brief,
+    incident_triage, input, input_common::args_match,
+    journal::{self, safety_block, Journal, StatusHooks},
+    method_question, ops_script, research, rubric_probe, unity_check, video, voiceover,
+    workspace_audit, youtube_publish, Exit,
+};
 use serde_json::{json, Value};
-use std::ffi::OsString;
+use std::path::Path;
 use zodchi_core::config::Config;
-use zodchi_core::job::spawn_flow_worker;
-use zodchi_core::process::process_start;
-use zodchi_core::util::Result;
+use zodchi_core::util::{fail, GatewayError, Result};
 
-fn safety_block(events: &[Value]) -> Option<Value> {
-    events.iter().rev().find(|event| event["kind"] == "safety blocked").map(|event| {
-        json!({ "step": event["step"], "jobKey": event["key"], "provider": event["provider"] })
-    })
+pub(crate) const ASSET_CHILDREN: Children = Children {
+    package: ChildWorkflow {
+        name: boundary::WORKFLOW,
+        start: child_package::start,
+        resume: child_package::resume,
+    },
+    unity: ChildWorkflow {
+        name: unity_check::NAME,
+        start: |args, id| unity_check::start_child(args, id, crate::require_workflow),
+        resume: |id, args| resume(unity_check::NAME, id, Some(args), None, false),
+    },
+    rubric: ChildWorkflow {
+        name: rubric_probe::NAME,
+        start: |args, id| rubric_probe::start_child(args, id, crate::require_workflow),
+        resume: |id, args| resume(rubric_probe::NAME, id, Some(args), None, false),
+    },
+};
+
+pub(crate) fn reply_policy(run: &Value) -> input::ReplyPolicy {
+    let mut policy = input::ReplyPolicy::default();
+    match run["workflow"].as_str() {
+        Some(research::NAME) => policy.read_text = Some(research::reply_text),
+        Some(design_brief::NAME) => policy.decision_flags = true,
+        Some(video::NAME) => policy.media_decision = Some(video::record_reply),
+        Some(youtube_publish::NAME) => {
+            policy.media_decision = Some(youtube_publish::record_reply);
+            policy.waiting_only_error = Some(youtube_publish::REPLY_WAITING_ONLY);
+        }
+        _ => {}
+    }
+    policy
 }
 
 pub fn status(id: &str) -> Result<Exit> {
-    let (journal, run) = Journal::open(&Config::new(None)?.home, id)?;
-    // The finished event precedes the completion receipt. Sample worker state first
-    // so that a completion receipt cannot be paired with a pre-finish snapshot.
-    let active = journal.active();
-    let receipt = journal.read_value("worker-result.json");
-    let events = journal.snapshot()?;
-    let final_result = journal.read_value("result.json").filter(|result| finished_event(&events, Some(result)).is_some()).map(|mut result| {
-        if let Some(applied) = crate::candidate::application_status(&events) {
-            result["application"] = applied;
-        }
-        if run["workflow"] == ops_script::NAME { ops_script::checked_result(&run, result) } else { result }
-    });
-    let last = last_state_event(&events).unwrap_or(&Value::Null);
-    let outcome = if final_result.is_some() {
-        "finished"
-    } else if active {
-        "running"
-    } else if last["kind"] == "waiting" {
-        "waiting"
-    } else if last["kind"] == "youtube processing" {
-        "processing"
-    } else if last["kind"] == "scope allowed" || last["kind"] == "budget extended" || (last["kind"] == "rerun" && last.get("ownerAnswer").is_some()) {
-        "ready"
-    } else if receipt.is_some() || last["kind"] == "stop" {
-        "stopped"
-    } else {
-        "interrupted"
-    };
-    let mut result = json!({
-        "runId": id, "workflow": run["workflow"], "version": run["version"], "release": run["release"], "repo": run["repo"],
-        "status": outcome, "step": last["step"], "event": last["kind"], "models": run["pair"],
-        "journal": journal.dir.display().to_string(),
-    });
-    if let Some(commit) = run.get("buildCommit") {
-        result["buildCommit"] = commit.clone();
-    }
-    if run["workflow"] == video::NAME {
-        result["video"] = video::status_detail(&run, &events);
-    }
-    if run["workflow"] == youtube_publish::NAME {
-        result["youtube"] = youtube_publish::status_detail(&run, &events);
-    }
-    if let Some(block) = safety_block(&events) {
-        result["safetyBlock"] = block;
-    }
-    if outcome == "waiting" {
-        result["question"] = last["question"].clone();
-        if let Some(reason) = last.get("reason") { result["reason"] = reason.clone(); }
-        if last["scope"].is_array() {
-            result["outsideClaim"] = last["scope"].clone();
-        }
-        if last["decisions"].is_array() {
-            result["ownerDecisions"] = last["decisions"].clone();
-            result["draft"] = last["draft"].clone();
-        }
-    }
-    if let Ok(budget) = crate::budget::Budget::parse(&run["inputs"]["args"]["budget"]) {
-        result["budget"] = budget.report(&events);
-    }
-    if let Some(key) = last["key"].as_str() {
-        result["jobKey"] = json!(key);
-    }
-    if last["kind"] == "stop" && !active {
-        result["stoppedAt"] = last["stoppedAt"].clone();
-        result["infra"] = last["what"].clone();
-        if run["workflow"] == voiceover::NAME {
-            result["errorKind"] = last["errorKind"].clone();
-            result["mayHaveBeenCharged"] = last["mayHaveBeenCharged"].clone();
-        }
-    }
-    if let Some(final_result) = final_result {
-        result["result"] = final_result;
-    } else if !active && outcome != "ready" {
-        if let Some(receipt) = receipt {
-            result["lastResult"] = receipt;
-        }
-    }
-    Ok(Exit { result, code: 0 })
+    journal::status(
+        id,
+        StatusHooks {
+            check_result: Some(ops_script::project_status_result),
+            details: Some(|run, events, result| {
+                video::project_status(run, events, result);
+                youtube_publish::project_status(run, events, result);
+            }),
+            stop_details: Some(voiceover::project_stop_status),
+        },
+    )
 }
 
 /// The state a new executor needs to continue safely, without model responses, commands or log contents.
@@ -106,21 +72,12 @@ pub fn handoff(id: &str) -> Result<Exit> {
         .map(|entry| json!({ "source": entry["source"], "exitCode": entry["exitCode"], "log": entry["log"] }))
         .collect();
     let result_file = if current.get("result").is_some() { "result.json" } else { "worker-result.json" };
-    let result_path = std::path::Path::new(current["journal"].as_str().unwrap()).join(result_file);
+    let result_path = Path::new(current["journal"].as_str().unwrap()).join(result_file);
     if run["workflow"] == youtube_publish::NAME {
-        return Ok(Exit { code: 0, result: json!({ "runId": id, "workflow": run["workflow"], "version": run["version"],
-            "status": current["status"], "step": current["step"], "journal": current["journal"],
-            "question": current["question"], "reason": result.get("reason").unwrap_or(&current["infra"]),
-            "youtube": current["youtube"], "resultFile": (!result.is_null()).then_some(result_path),
-            "verdict": result["verdict"], "observed": result["observed"] }) });
+        return Ok(Exit { code: 0, result: youtube_publish::handoff(id, &run, &current, result, &result_path) });
     }
     if [acceptance::RELEASE, acceptance::PLAYER, acceptance::CANDIDATE].iter().any(|name| current["workflow"] == *name) {
-        let scenarios: Vec<_> = result["scenarios"].as_array().into_iter().flatten().map(|s| json!({ "id": s["id"], "status": s["status"] })).collect();
-        return Ok(Exit { code: 0, result: json!({ "runId": id, "workflow": current["workflow"], "version": current["version"],
-            "repo": current["repo"], "head": run["head"], "status": current["status"], "step": current["step"],
-            "journal": current["journal"], "resultFile": (!result.is_null()).then_some(result_path),
-            "verdict": result["verdict"], "reason": result["reason"], "models": current["models"],
-            "scenarios": scenarios, "safetyBlock": current["safetyBlock"] }) });
+        return Ok(Exit { code: 0, result: acceptance::handoff(id, &run, &current, result, &result_path) });
     }
     let mut handoff = json!({
         "runId": id, "workflow": current["workflow"], "version": current["version"], "repo": current["repo"],
@@ -135,17 +92,60 @@ pub fn handoff(id: &str) -> Result<Exit> {
         "safetyBlock": current["safetyBlock"],
     });
     if run["workflow"] == branch_review::NAME {
-        handoff["head"] = run["head"].clone();
-        handoff["screening"] = run["screening"].clone();
-        for key in ["previousReview", "reviewRound", "reviewLimit", "verificationReceipt"] {
-            if let Some(value) = run.get(key).filter(|value| !value.is_null()) {
-                handoff[key] = value.clone();
-            }
-        }
-        handoff["review"] = json!({ "verdict": result["review"]["verdict"],
-            "openFindings": result["blocking"].as_array().map(Vec::len) });
+        branch_review::project_handoff(&run, result, &mut handoff);
     }
     Ok(Exit { code: 0, result: handoff })
+}
+
+/// Starts a new run from its arguments: the gate (no effect), then the journal, the claim and the machine.
+pub fn start_package(raw: &Value) -> Result<Exit> {
+    code_package::start_run(raw, None, None, crate::require_workflow)
+}
+
+pub fn start_package_detached(raw: &Value) -> Result<Exit> {
+    code_package::start_run(raw, None, Some(launch_start), crate::require_workflow)
+}
+
+pub(crate) fn launch_start(journal: &Journal, id: &str) -> Result<Exit> {
+    launch(journal, id, None)
+}
+
+fn launch(journal: &Journal, id: &str, rerun: Option<&str>) -> Result<Exit> {
+    boundary::launch(
+        journal,
+        id,
+        rerun,
+        |run| [rubric_probe::NAME, asset_round::NAME, voiceover::NAME]
+            .iter()
+            .any(|name| run["workflow"] == *name),
+        status,
+    )
+}
+
+pub fn extend_budget(id: &str, options: &[String]) -> Result<Exit> {
+    if options.is_empty() || options.len() % 2 != 0 {
+        return fail(crate::USAGE);
+    }
+    let mut calls = None;
+    let mut minutes = None;
+    for pair in options.chunks_exact(2) {
+        let destination = match pair[0].as_str() {
+            "--add-calls" => &mut calls,
+            "--add-minutes" => &mut minutes,
+            _ => return fail(crate::USAGE),
+        };
+        let amount = pair[1]
+            .parse::<u32>()
+            .ok()
+            .filter(|n| *n > 0)
+            .ok_or_else(|| {
+                GatewayError("Budget additions must be positive whole numbers.".into())
+            })?;
+        if destination.replace(amount).is_some() {
+            return fail(crate::USAGE);
+        }
+    }
+    budget::extend(id, calls, minutes, |run| run["workflow"] == boundary::WORKFLOW)
 }
 
 fn refused_rerun(journal: &Journal, id: &str, rerun: Option<&str>) -> Result<Option<Exit>> {
@@ -158,48 +158,13 @@ fn refused_rerun(journal: &Journal, id: &str, rerun: Option<&str>) -> Result<Opt
     Ok(Some(exit))
 }
 
-pub fn launch(journal: &Journal, id: &str, rerun: Option<&str>) -> Result<Exit> {
-    if journal.active() {
-        return status(id);
-    }
-    let mut args: Vec<OsString> = ["flow", "_worker", id].into_iter().map(OsString::from).collect();
-    if let Some(step) = rerun {
-        args.push(step.into());
-    }
-    let keep_api_key = journal.read_value("run.json").is_some_and(|run|
-        (run["workflow"] == rubric_probe::NAME || run["workflow"] == asset_round::NAME
-            || run["workflow"] == voiceover::NAME)
-            && run["policy"]["paid"] == true);
-    match spawn_flow_worker(&args, keep_api_key) {
-        Ok(child) => {
-            let pid = child.id();
-            let mut receipt = json!({ "runId": id, "status": "submitted", "pid": pid });
-            if let Err(error) = journal.write_value("worker.json", &json!({
-                "pid": pid, "start": process_start(pid),
-                "executable": std::env::current_exe().ok().map(|path| path.display().to_string()),
-            })) {
-                receipt["note"] = json!(format!("Worker started; its process receipt could not be stored: {}", error.0));
-            }
-            Ok(Exit { result: receipt, code: 0 })
-        }
-        Err(error) => {
-            let result = json!({
-                "runId": id, "status": "stopped", "stoppedAt": "start worker", "infra": error.0,
-                "next": "Resume this run to start its worker."
-            });
-            journal.write_value("worker-result.json", &result)?;
-            Ok(Exit { result, code: 2 })
-        }
-    }
-}
-
 pub fn resume(workflow: &str, id: &str, given: Option<&Value>, rerun: Option<&str>, detach: bool) -> Result<Exit> {
     let (journal, run) = Journal::open(&Config::new(None)?.home, id)?;
     if run["workflow"] != workflow {
         return zodchi_core::util::fail(format!("Run {id} belongs to {}.", run["workflow"]));
     }
     if let Some(given) = given {
-        if !input::args_match(&run["inputs"], given) {
+        if !args_match(&run["inputs"], given) {
             return zodchi_core::util::fail(format!("The args differ from those run {id} started with."));
         }
     }
@@ -212,17 +177,7 @@ pub fn resume(workflow: &str, id: &str, given: Option<&Value>, rerun: Option<&st
     if detach && !journal.file("result.json").is_file() && !journal.active() {
         return launch(&journal, id, rerun);
     }
-    resume_workflow(workflow, id, given, rerun).map(after_run)
-}
-
-/// The workflow call has released its lock and any processes it used. Cleanup has its own receipt.
-pub(crate) fn after_run(exit: Exit) -> Exit {
-    if exit.result["status"] != "submitted" && exit.result.get("claimLeftOpen").is_none() {
-        if let Some(id) = exit.result["runId"].as_str() {
-            crate::cleanup::after_run(id);
-        }
-    }
-    exit
+    resume_workflow(workflow, id, given, rerun).map(cleanup::after_run)
 }
 
 pub fn worker(id: &str, rerun: Option<&str>) -> Result<Exit> {
@@ -231,7 +186,7 @@ pub fn worker(id: &str, rerun: Option<&str>) -> Result<Exit> {
         return Ok(exit);
     }
     let exit = match resume_workflow(run["workflow"].as_str().unwrap_or(""), id, None, rerun) {
-        Ok(exit) => after_run(exit),
+        Ok(exit) => cleanup::after_run(exit),
         Err(error) => Exit { result: json!({ "runId": id, "status": "stopped", "stoppedAt": "worker", "infra": if run["workflow"] == ops_script::NAME { "ops-script worker failed; inspect the run locally".to_owned() } else { error.0 } }), code: 2 },
     };
     journal.write_value("worker-result.json", &exit.result)?;
@@ -249,7 +204,7 @@ fn resume_workflow(workflow: &str, id: &str, given: Option<&Value>, rerun: Optio
         rubric_probe::NAME => rubric_probe::resume(id, given, rerun),
         unity_check::NAME => unity_check::resume(id, given, rerun),
         workspace_audit::NAME => workspace_audit::resume(id, given, rerun),
-        asset_round::NAME => asset_round::resume(id, given, rerun),
+        asset_round::NAME => asset_round::resume(id, given, rerun, &ASSET_CHILDREN),
         research::NAME => research::resume(id, given, rerun),
         video::NAME => video::resume(id, given, rerun),
         voiceover::NAME => voiceover::resume(id, rerun),

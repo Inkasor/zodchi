@@ -1,7 +1,8 @@
 //! The design-brief effects: pinned sources, validated model output and publication of the approved Markdown.
 
 use crate::{
-    code_package, design_material, executor, gateway,
+    boundary::Launch, catalog::ProjectGate,
+    review_contract, design_material, executor, gateway,
     journal::{self, Journal},
     models::{self, Pick},
     Exit,
@@ -27,11 +28,11 @@ const DRAFT: &str = include_str!("../flows/design-brief/v1/draft.json");
 const REQUIRED_HEADINGS: [&str; 2] = ["## Review boundary", "## Checks"];
 const ROLES: [&str; 2] = ["flow-brief", "architecture-review"];
 
-pub fn start(raw: &Value, detach: bool) -> Result<Exit> {
-    match prepare(raw) {
+pub fn start(raw: &Value, launch: Option<Launch>, require_workflow: ProjectGate) -> Result<Exit> {
+    match prepare(raw, require_workflow) {
         Ok((id, journal)) => {
-            if detach {
-                crate::control::launch(&journal, &id, None)
+            if let Some(launch) = launch {
+                launch(&journal, &id)
             } else {
                 resume(&id, None, None)
             }
@@ -43,7 +44,7 @@ pub fn start(raw: &Value, detach: bool) -> Result<Exit> {
     }
 }
 
-fn prepare(raw: &Value) -> Result<(String, Journal)> {
+fn prepare(raw: &Value, require_workflow: ProjectGate) -> Result<(String, Journal)> {
     let fields = raw
         .as_object()
         .ok_or_else(|| GatewayError("design-brief needs a JSON object.".into()))?;
@@ -88,7 +89,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
     let material = design_material::capture(raw, &Config::new(None)?)?;
     let selected = &material["sources"][0];
     let target = design_material::absolute(&selected["root"], "target repository")?;
-    crate::catalog::require(
+    require_workflow(
         &crate::git::Git::new(&target),
         selected["head"].as_str().expect("captured source commit"),
         NAME,
@@ -435,7 +436,7 @@ fn next_step<'a>(material: &'a Value, steps: &'a Map<String, Value>) -> Result<N
             return Ok(Next::Call(review));
         };
         let approved = verdict["verdict"] == "approved"
-            && code_package::blocking_findings(verdict).next().is_none();
+            && review_contract::blocking_findings(verdict).next().is_none();
         if approved || verdict["verdict"] == "blocked" || draft_name == "fix" {
             return Ok(Next::Finish(Outcome {
                 draft: draft_name,
@@ -583,7 +584,7 @@ fn model_step(
             }
         }
         ModelStep::Review | ModelStep::ReviewFix => {
-            schema = code_package::REVIEW_SCHEMA;
+            schema = review_contract::REVIEW_SCHEMA;
             gateway_role = ROLES[1];
             preamble.push_str("Independently review this brief against the goal and pinned evidence. Flag unsupported facts, ambiguous outcomes, broad scope, and checks that miss the intended behavior.");
             let name = if matches!(call, ModelStep::ReviewFix) {
@@ -594,7 +595,7 @@ fn model_step(
             attachments.push(("brief.md".into(), draft_markdown(&steps[name]).into_bytes()));
         }
     }
-    if schema == DRAFT || schema == code_package::REVIEW_SCHEMA {
+    if schema == DRAFT || schema == review_contract::REVIEW_SCHEMA {
         let findings: Vec<&Value> = steps
             .iter()
             .filter(|(name, _)| name.starts_with("facts "))
@@ -639,9 +640,9 @@ fn model_step(
                     owner.reconcile(step, answer);
                     Ok(())
                 }
-                _ => code_package::check_review(answer),
+                _ => review_contract::check_review(answer),
             }?;
-            if schema != code_package::REVIEW_SCHEMA && cleaned_values(answer, &clean) != *answer {
+            if schema != review_contract::REVIEW_SCHEMA && cleaned_values(answer, &clean) != *answer {
                 return Err(
                     "The answer contains material that would change during screening.".into(),
                 );
@@ -711,7 +712,7 @@ fn recorded_sources(
         let scrubber = design_material::scrubber(cfg, material)?;
         let places = design_material::places(cfg, material["sources"].as_array().expect("pinned sources"));
         let answer = design_material::clean(&scrubber, answer, &places, material["public"] == true);
-        if answer.lines().any(|line| !line.trim().is_empty() && crate::input::withheld_lines(line) == 0) {
+        if answer.lines().any(|line| !line.trim().is_empty() && crate::input_common::withheld_lines(line) == 0) {
             files.insert("owner-source.md".into(), answer);
         }
     }
@@ -894,7 +895,7 @@ fn save_result(
                     result["infra"] = json!(error.0);
                     return Ok(Exit { code: 2, result });
                 }
-                code_package::cut("publish design brief");
+                crate::boundary::cut("publish design brief");
             }
         }
         if result["approved"] == true {

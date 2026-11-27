@@ -27,7 +27,7 @@ use zodchi_core::role::{check_role, load_role, Overrides};
 use zodchi_core::util::{fail, is_key, iso, read_stored, sha256_hex, write_json_atomic, GatewayError, Result};
 
 use super::Executor;
-use crate::{gateway::{self, CallError}, journal::Journal};
+use crate::{boundary::cut, gateway::{self, CallError}, journal::Journal};
 use crate::models::{claude_enabled, Pick};
 pub use zodchi_core::claude::{call, find_program, message, signed_in, version, Program, Sent};
 
@@ -133,14 +133,6 @@ fn write_bytes_synced(file: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut f = fs::File::create(file)?;
     f.write_all(bytes)?;
     f.sync_all()
-}
-
-/// A test cut of the engine (`ZODCHI_FLOW_CUT`, as in `code_package`): the process ends right here.
-fn cut(point: &str) {
-    if std::env::var("ZODCHI_FLOW_CUT").ok().as_deref() == Some(point) {
-        eprintln!("zodchi flow: cut after {point} (ZODCHI_FLOW_CUT)");
-        std::process::exit(crate::CUT_EXIT);
-    }
 }
 
 pub struct Claude {

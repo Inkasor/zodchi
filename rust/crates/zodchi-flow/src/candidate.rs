@@ -1,10 +1,10 @@
 //! A private checkout for a package and an explicit, recoverable application of its reviewed commit.
 
 use crate::{
+    boundary::Exit,
     checks, claims,
-    code_package::{self, Exit},
     git::Git,
-    journal::Journal,
+    journal::{candidate_applied, Journal},
     package_source::Source,
     patch::{self, Plan},
 };
@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     fs,
-    path::{Path, PathBuf},
+    path::Path,
 };
 use zodchi_core::{
     config::Config,
@@ -20,11 +20,6 @@ use zodchi_core::{
 };
 
 pub const BRANCH: &str = "refs/heads/flow-candidate";
-pub(crate) const WORKSPACES_DIR: &str = "flow-candidates";
-
-pub fn workspace(home: &Path, id: &str) -> PathBuf {
-    home.join(WORKSPACES_DIR).join(id)
-}
 
 pub fn prepare(project: &Git, stage: &Git, base: &str) -> Result<()> {
     if stage.root.exists() {
@@ -126,23 +121,6 @@ pub fn pin(
     Ok(json!({ "commit": commit, "tree": tree, "ref": reference, "round": round }))
 }
 
-pub fn applied(events: &[Value]) -> Option<Value> {
-    events
-        .iter()
-        .rev()
-        .find(|event| event["kind"] == "application finished")
-        .map(|event| event["result"].clone())
-}
-
-pub fn application_status(events: &[Value]) -> Option<Value> {
-    applied(events).or_else(|| {
-        events
-            .iter()
-            .any(|event| event["kind"] == "application intent")
-            .then(|| json!({ "status": "pending_reconciliation" }))
-    })
-}
-
 pub fn apply(id: &str) -> Result<Exit> {
     match apply_approved(id) {
         Ok(result) => Ok(Exit { code: 0, result }),
@@ -158,7 +136,7 @@ fn apply_approved(id: &str) -> Result<Value> {
     let (mut journal, run) = Journal::open(&home, id)?;
     let _run_lock = journal.lock()?;
     journal.load()?;
-    if let Some(result) = applied(journal.events()) {
+    if let Some(result) = candidate_applied(journal.events()) {
         return Ok(result);
     }
     let repo = Path::new(text(&run, "repo")?);
@@ -193,7 +171,7 @@ fn apply_approved(id: &str) -> Result<Value> {
         .filter(|s| s != id)
     {
         let (other_journal, _) = Journal::open(&home, &other)?;
-        if applied(&other_journal.snapshot()?).is_none() {
+        if candidate_applied(&other_journal.snapshot()?).is_none() {
             return fail(format!("Application of run {other} was interrupted. Resolve it before applying another candidate."));
         }
     }
@@ -258,7 +236,7 @@ fn apply_approved(id: &str) -> Result<Value> {
             "partial" => patch::apply_recoverable(&git, &plan)?,
             _ => return fail("A path of the application differs from both the original and approved states. Inspect the saved plan before resuming."),
         }
-        code_package::cut("candidate files");
+        crate::boundary::cut("candidate files");
         let verified = git.candidate_tree(base, &paths, &plan.exec, &journal.file("tmp"))?;
         if verified != tree {
             return fail("The applied files do not reproduce the approved tree. The branch was not advanced.");
@@ -268,7 +246,7 @@ fn apply_approved(id: &str) -> Result<Value> {
         }
         let to_reset = index_transition(&git, base, commit, &paths, intent.is_some())?;
         git.reset_index_paths(commit, &to_reset)?;
-        code_package::cut("candidate index");
+        crate::boundary::cut("candidate index");
         if branch_tip(&git, branch)? != base {
             return fail("The target branch moved before publishing the approved commit.");
         }
@@ -280,7 +258,7 @@ fn apply_approved(id: &str) -> Result<Value> {
             commit,
             base,
         ])?;
-        code_package::cut("candidate branch");
+        crate::boundary::cut("candidate branch");
     }
     if journal
         .events()
