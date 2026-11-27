@@ -320,6 +320,25 @@ the pinned tree and attaches it with `provenance: "coordinator"`. The result rec
 The Rust implementations of `branch-review` and `design-brief` can resume version 1 journals from
 the original shared CLI. They verify the original definition digest and reuse the recorded steps.
 
+### Verify a commit
+
+`zodchi flow verify <commit-or-ref> [--repo <dir>] [--args <file.json>] [--only checks|verify] [--detach]`
+runs the committed `.zodchi/verify.json` plan in the shared check checkout without a claim or model call.
+Use trusted commands in the committed configuration and args file.
+The repository defaults to the current Git checkout. An args JSON object can replace the matching project
+command lists with nonempty `setup`, `checks` and `verify` lists, replace `tools`, or override individual
+`env` entries. Setup runs before either
+selection. `--only checks` runs the cheap checks. `--only verify` runs the verify commands and any local
+`full.commands`. Without `--only`, verification follows successful cheap checks. Select at least one check
+or verify command. Setup and verification receive the verification environment (`env`) and use a
+60-minute limit per command.
+
+The result reports `commit`, `tree`, the journal path and `runId`, and `commands` with their source, exit
+code, elapsed milliseconds, screened `output` and full `log` path. A passing result exits 0, a failed run
+exits 2, and a wrong call exits 1. Use `status` or `wait` with the run ID returned by `--detach`. Pass a
+passing run's ID as `verificationRun` to a branch review of the same tree, or save the result's `receipt`
+object as the review's `verificationFile`.
+
 Discover the catalog with `zodchi flow list` (or `list --repo <directory>` for enabled domains), `zodchi flow --help`, and `zodchi flow <workflow> --help`. These commands return JSON without starting a run.
 
 ## UI acceptance

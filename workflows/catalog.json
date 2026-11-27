@@ -107,6 +107,16 @@
       }
     },
     {
+      "name": "verify",
+      "version": "1",
+      "domain": "core",
+      "purpose": "Run the project's verification on a committed tree without a model call.",
+      "limits": "Runs the committed plan in the shared check checkout and records a reusable receipt.",
+      "required": ["commit-or-ref"],
+      "docs": "docs/flow.md#verify-a-commit",
+      "example": {"commit-or-ref": "HEAD"}
+    },
+    {
       "name": "method-question",
       "version": "1",
       "domain": "gamedev-unity",

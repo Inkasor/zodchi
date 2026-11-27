@@ -294,6 +294,15 @@ export default function register(h) {
     const workflow = children("flow").find((command) => command.name === "code-package");
     t.ok(workflow?.flags.some((flag) => flag.name === "--dry-run" && flag.valueKind === "boolean"),
       "the installed code-package command lists --dry-run as a switch");
+    const verify = children("flow").find((command) => command.name === "verify");
+    t.eq(verify?.flags.filter(flag => !["--help", "-h"].includes(flag.name)), [
+      { name: "--args", valueKind: "json-file" },
+      { name: "--detach", valueKind: "boolean" },
+      { name: "--only", valueKind: "checks|verify" },
+      { name: "--repo", valueKind: "directory" },
+      { name: "--rerun", valueKind: "step" },
+      { name: "--resume", valueKind: "run-id" },
+    ], "usage describes the model-free verification flags");
     for (const control of ["close", "cancel"]) {
       t.ok(children("flow").find((command) => command.name === control)
         ?.flags.some((flag) => flag.name === "--reason" && flag.valueKind === "text"), `flow ${control} takes a reason`);
@@ -445,6 +454,131 @@ export default function register(h) {
     return codex;
   }
 
+  async function checkCommitVerification(t, f) {
+    const cli = (args, { cwd = f.r, env = {} } = {}) =>
+      zodchi(t, f.w, ["flow", ...args], { cwd, env: { ...f.w.env, ...env } });
+    const config = path.join(f.r, ".zodchi", "verify.json");
+    fs.mkdirSync(path.dirname(config), { recursive: true });
+    fs.writeFileSync(config, JSON.stringify({
+      setup: ["echo ready > .verify-ready"],
+      checks: ['test -f .verify-ready && test "$VERIFY_FIXTURE" = committed && node test/math.test.mjs'],
+      verify: ["node smoke.mjs"],
+      full: { run: "local", commands: ["echo full verification"] },
+      tools: ["node"],
+      env: { VERIFY_FIXTURE: "committed" },
+    }));
+    gitOut(f.r, ["add", "--", ".zodchi/verify.json"]);
+    gitOut(f.r, ["commit", "-qm", "declare verification"]);
+    const commit = gitOut(f.r, ["rev-parse", "HEAD"]);
+    const tree = gitOut(f.r, ["rev-parse", "HEAD^{tree}"]);
+    fs.writeFileSync(config, JSON.stringify({ checks: ["exit 51"] }));
+    fs.writeFileSync(path.join(f.r, "src", "math.mjs"), STUB);
+    const before = dryRunState(f);
+
+    const ok = await cli(["verify", "HEAD"]);
+    t.eq([ok.code, ok.json?.verdict, ok.json?.commit, ok.json?.tree], [0, "passed", commit, tree],
+      "verify HEAD uses the committed plan and tree even with local edits");
+    t.eq(ok.json?.commands?.map(row => [row.source, row.exitCode]),
+      [["setup", 0], ["checks", 0], ["verify", 0], ["verify", 0]], "setup, checks, verify and local full verification run in order");
+    t.ok(ok.json.commands.every(row => Number.isSafeInteger(row.ms) && path.isAbsolute(row.log) && fs.existsSync(row.log)),
+      "each command includes its duration and a full log path");
+    t.eq(ok.json.receipt, { head: commit, tree, commands: ok.json.commands.map(({ command, exitCode, output }) => ({ command, exitCode, output })) },
+      "the receipt contains the checked tree and screened command evidence in branch-review's file format");
+    t.eq(path.basename(ok.json.journal), ok.json.runId, "the journal path names the verify run");
+
+    const args = path.join(f.w.dir, "verify args.json");
+    fs.writeFileSync(args, JSON.stringify({
+      setup: ['test "$VERIFY_FIXTURE" = override'],
+      checks: ["exit 52"],
+      verify: ['test "$VERIFY_FIXTURE" = override || exit 53; echo "password=fixture-value"; echo "visible output"; exit 7'],
+      env: { VERIFY_FIXTURE: "override" },
+      tools: ["node"],
+    }));
+    const failed = await cli(["verify", commit, "--args", args, "--only", "verify"]);
+    t.eq([failed.code, failed.json?.verdict, failed.json?.commands?.map(row => [row.source, row.exitCode])],
+      [2, "failed", [["setup", 0], ["verify", 7]]], "only verify skips cheap checks and a failure prevents local full verification");
+    const command = failed.json.commands[1];
+    t.ok(command.output.includes("visible output") && !failed.out.includes("fixture-value")
+      && fs.readFileSync(command.log, "utf8").includes("fixture-value"), "stdout is screened and the journal keeps the full log");
+
+    const detached = await cli(["verify", commit, "--repo", f.r, "--only", "checks", "--detach"], { cwd: f.w.dir });
+    t.eq([detached.code, detached.json?.status], [0, "submitted"], "verify can start a worker from outside the repo");
+    const id = detached.json.runId;
+    const wait = await cli(["wait", id, "--timeout-min", "0.5"]);
+    t.eq([wait.code, wait.json?.workflow, wait.json?.status], [0, "verify", "finished"], "wait reports a passed verify worker as successful");
+    const status = await cli(["status", id]);
+    t.eq(status.json?.result?.commands?.map(row => [row.source, row.exitCode]), [["setup", 0], ["checks", 0]],
+      "status returns the worker result for only checks");
+    const runs = await cli(["runs"]);
+    t.ok(runs.json?.some(row => row.runId === id && row.workflow === "verify" && row.status === "finished"),
+      "runs lists the verification journal");
+
+    const cut = await cli(["verify", commit, "--only", "checks"], { env: { ZODCHI_FLOW_CUT: "verify setup #1" } });
+    t.eq(cut.code, 75, "the check runner can be cut after a recorded setup command");
+    const opened = (await cli(["runs"])).json.filter(row => row.workflow === "verify" && row.status === "interrupted");
+    t.eq(opened.length, 1, "the cut created an interrupted verify journal");
+    const resumed = await cli(["verify", "--resume", opened[0].runId]);
+    t.eq([resumed.code, resumed.json?.commit, resumed.json?.commands?.map(row => row.source)], [0, commit, ["setup", "checks"]],
+      "resume continues on the pinned checkout and reuses the setup receipt");
+    const events = readJsonl(path.join(resumed.json.journal, "events.jsonl"));
+    t.eq(events.filter(event => event.kind === "check started").map(event => event.commandIndex), [1, 2],
+      "resume starts only the remaining check");
+
+    fs.writeFileSync(args, JSON.stringify({ tools: ["zodchi-missing-verify-tool"] }));
+    const missingTool = await cli(["verify", commit, "--args", args]);
+    t.eq([missingTool.code, missingTool.json?.verdict, missingTool.json?.commands], [2, "failed", []],
+      "a required tool override is checked before launching any commands");
+    t.ok(missingTool.json.infra.includes("zodchi-missing-verify-tool"), "the verification stop names the missing tool");
+    const closed = await cli(["close", missingTool.json.runId, "--reason", "fixture complete"]);
+    t.eq([closed.code, closed.json?.workflow, closed.json?.status], [0, "verify", "closed"],
+      "close works for a stopped verification journal");
+
+    const wrong = await cli(["verify", "missing-verify-ref"], { env: { ZODCHI_AGENT: "1" } });
+    expectEnvelope(t, wrong, "wrong-call", 1);
+    t.eq(wrong.out, "", "a wrong ref produces no result on stdout");
+    const after = dryRunState(f);
+    t.eq([after.packages, after.repo, after.status, after.turns], [before.packages, before.repo, before.status, before.turns],
+      "commit verification takes no claim, leaves the source checkout intact, and makes no model call");
+
+    const reviewArgs = path.join(f.w.dir, "review-args.json");
+    const branchReview = (overrides) => {
+      fs.writeFileSync(reviewArgs, JSON.stringify({
+        repo: f.r, base: f.base, head: commit, label: "clamp-review", author: "codex/fake-writer", ...overrides,
+      }));
+      return cli(["branch-review", "--args", reviewArgs]);
+    };
+    fs.writeFileSync(args, JSON.stringify({ checks: ["node smoke.mjs"] }));
+    const earlierRun = await cli(["verify", f.base, "--args", args, "--only", "checks"]);
+    t.eq([earlierRun.code, earlierRun.json?.commit], [0, f.base], "the earlier tree has its own passing verification");
+    const wrongRun = await branchReview({ verificationRun: earlierRun.json.runId });
+    t.ok(wrongRun.code === 2 && wrongRun.json?.refused?.includes("no passing checks for tree"),
+      "branch-review refuses a passing verify run for another tree");
+    t.eq(failed.json?.tree, tree, "the failed verification checked the candidate tree");
+    const failedRun = await branchReview({ verificationRun: failed.json.runId });
+    t.ok(failedRun.code === 2 && failedRun.json?.refused?.includes("no passing checks for tree"),
+      "branch-review refuses a failed verify run for the correct tree");
+    t.eq(f.steps(), after.turns, "verification and refused evidence references call no model");
+
+    const sameTreeHead = gitOut(f.r, ["commit-tree", tree, "-p", commit, "-m", "same candidate tree"]);
+    f.answer("review", f.review("approved"));
+    const linked = await branchReview({ head: sameTreeHead, verificationRun: ok.json.runId });
+    t.eq([linked.code, linked.json?.head, linked.json?.verificationRun, linked.json?.tree],
+      [0, sameTreeHead, ok.json.runId, tree], "branch-review links passing verify evidence for the same tree");
+    const requestPath = path.join(linked.json.journal, "requests", `flow-${linked.json.runId}-review.json`);
+    const { prompt } = JSON.parse(fs.readFileSync(requestPath, "utf8"));
+    const attachment = prompt.match(/<attachment path="verification\.json">\n([\s\S]*?)\n<\/attachment>/);
+    t.ok(attachment, "the review request contains verification.json");
+    const evidenceFromRun = JSON.parse(attachment[1]);
+    t.eq([evidenceFromRun.runId, evidenceFromRun.tree, evidenceFromRun.commands],
+      [ok.json.runId, tree, ok.json.receipt.commands], "the review receives screened evidence attributed to its verify run");
+
+    const receipt = path.join(f.w.dir, "verification-receipt.json");
+    fs.writeFileSync(receipt, JSON.stringify(ok.json.receipt));
+    const fromFile = await branchReview({ verificationFile: receipt });
+    t.eq([fromFile.code, fromFile.json?.verificationReceipt?.tree, f.steps()],
+      [0, tree, [...after.turns, "review", "review"]], "the generated receipt also works as a coordinator verificationFile");
+  }
+
   scenario("flow-entry-local", "the shared skills lead to local approval, with real check and commit evidence and a resumable result", async (t) => {
     const skill = checkSkillContract(t);
     const f = flowWorld(t, "flow-entry-local");
@@ -547,6 +681,7 @@ export default function register(h) {
     const agentRefused = await startBySkill(t, f, skill, { env: { ZODCHI_AGENT: "1" }, args: { branch: "elsewhere" } });
     t.eq([agentRefused.code, agentRefused.json, agentRefused.err],
       [2, refused.json, ""], "a workflow refusal remains a structured stdout result in agent mode");
+    await checkCommitVerification(t, f);
     await checkDryRunClaims(t);
     await checkAnalysisWriter(t);
     await checkWave(t);

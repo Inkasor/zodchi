@@ -106,6 +106,7 @@ pub fn environment_keys() -> impl Iterator<Item = &'static str> {
 
 pub const USAGE: &str = "Usage: zodchi flow <workflow> --args <file.json> [--detach]
        zodchi flow code-package --args <file.json> --dry-run
+       zodchi flow verify <commit-or-ref> [--repo <dir>] [--args <file.json>] [--only checks|verify] [--detach]
        zodchi flow <workflow> --resume <run-id> [--args <file.json>] [--rerun <step>] [--detach]
        zodchi flow status <run-id>
        zodchi flow status <run-id> --handoff
@@ -186,7 +187,8 @@ fn documented_commands<'a>(usage: &'a str, prefix: &str) -> BTreeMap<&'a str, Us
                 Some("<n>") => "integer",
                 Some("N") => "number",
                 Some("<file.json>") => "json-file",
-                Some("<directory>") => "directory",
+                Some("<directory>" | "<dir>") => "directory",
+                Some("checks|verify") => "checks|verify",
                 Some("<text>") if word == "--file" => "text-file",
                 Some(kind @ ("<text>" | "<name>")) => kind.trim_matches(['<', '>']),
                 Some("1,2|all") => "decision-list",
@@ -255,9 +257,17 @@ fn unexpected(flag: &str) -> GatewayError {
     GatewayError(format!("Unexpected argument: {flag}\n{USAGE}"))
 }
 
+fn read_args(file: &str) -> Result<Value> {
+    let text = fs::read_to_string(file).map_err(|_| GatewayError(format!("Cannot read the args {file}")))?;
+    serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|error| GatewayError(format!("The args {file} are not JSON: {error}")))
+}
+
 /// Recognize a start before selecting the release that will resolve the workflow name.
 pub fn starts_run(args: &[String]) -> bool {
     let Some((name, tail)) = args.split_first() else { return false };
+    if name == zodchi_flow_engine::verify::NAME {
+        return registry::verify_entry::starts_run(tail);
+    }
     // The launcher may predate workflows in the next release.
     if !name.starts_with(|c: char| c.is_ascii_lowercase())
         || !name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
@@ -279,7 +289,7 @@ pub fn requests_dry_run(args: &[String]) -> bool {
     while let Some(arg) = options.next() {
         match arg.as_str() {
             "--dry-run" => return true,
-            "--args" | "--resume" | "--rerun" | "--file" | "--allow-files" | "--profile" | "--repo" | "--reason" => {
+            "--args" | "--resume" | "--rerun" | "--file" | "--allow-files" | "--profile" | "--repo" | "--reason" | "--only" => {
                 options.next();
             }
             _ => {}
@@ -356,13 +366,7 @@ pub fn cli(args: &[String]) -> Result<Exit> {
         return fail(format!("No workflow {name:?} in zodchi flow. Run zodchi flow list for the catalog.\n{USAGE}"));
     }
     let RunOptions { file, resume, rerun, detach, dry_run } = run_options(&args[1..])?;
-    let given = match file {
-        Some(f) => {
-            let text = std::fs::read_to_string(f).map_err(|_| GatewayError(format!("Cannot read the args {f}")))?;
-            Some(serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}')).map_err(|e| GatewayError(format!("The args {f} are not JSON: {e}")))?)
-        }
-        None => None,
-    };
+    let given = file.map(read_args).transpose()?;
     match (resume, given) {
         (Some(id), given) => control::resume(name, id, given.as_ref(), rerun, detach),
         (None, Some(given)) => {

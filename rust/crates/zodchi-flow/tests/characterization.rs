@@ -434,11 +434,27 @@ fn cli_catalog_controls_and_invalid_calls() {
     assert_eq!(help["catalog"], *list);
     let recorded = baseline();
     let usage = recorded["usage"].as_str().unwrap()
+        .replace("       zodchi flow <workflow> --resume", concat!(
+            "       zodchi flow verify <commit-or-ref> [--repo <dir>] [--args <file.json>] [--only checks|verify] [--detach]\n",
+            "       zodchi flow <workflow> --resume",
+        ))
         .replace("--allow-files <file.json>\n", "--allow-files <file.json> [--file <text>]\n")
         .replace("0 success or approved,", "0 success, approved or closed by the owner,");
     assert_eq!(help["usage"], usage.as_str());
     let mut prior_catalog = list.clone();
-    let package = prior_catalog["workflows"].as_array_mut().unwrap().iter_mut()
+    let prior_entries = prior_catalog["workflows"].as_array_mut().unwrap();
+    let verify = prior_entries.iter().position(|entry| entry["name"] == "verify").unwrap();
+    assert_eq!(prior_entries.remove(verify), json!({
+        "name": "verify",
+        "version": "1",
+        "domain": "core",
+        "purpose": "Run the project's verification on a committed tree without a model call.",
+        "limits": "Runs the committed plan in the shared check checkout and records a reusable receipt.",
+        "required": ["commit-or-ref"],
+        "docs": "docs/flow.md#verify-a-commit",
+        "example": { "commit-or-ref": "HEAD" }
+    }));
+    let package = prior_entries.iter_mut()
         .find(|entry| entry["name"] == "code-package").unwrap();
     let limits = package["limits"].as_str().unwrap()
         .strip_suffix(" Set kind to analysis to select hardWriter (the default is code).").unwrap();
@@ -458,6 +474,7 @@ fn cli_catalog_controls_and_invalid_calls() {
         .unwrap()
         .keys()
         .map(String::as_str)
+        .chain(["verify"])
         .collect();
     assert_eq!(names, captured);
     assert_eq!(w.flow(&["-h"]).code(0).result, *help);

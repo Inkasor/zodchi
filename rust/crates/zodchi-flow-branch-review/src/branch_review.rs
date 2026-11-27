@@ -21,7 +21,7 @@ use zodchi_flow_engine::{
     models::{self, Pick},
     package_source::Source,
     patch, review_contract, review_source,
-    verify::ProjectSettings,
+    verify::{self, ProjectSettings},
     Exit,
 };
 
@@ -472,13 +472,15 @@ fn prepare(raw: &Value, require_workflow: ProjectGate) -> Result<(String, Journa
     let verification = if let Some(file) = verification_file {
         Some(coordinator_receipt(file, &head, &tree)?)
     } else { match verification_run {
-        Some(id) => Some(
-            Source::load(&cfg.home, &repo, id)?
-                .evidence(&tree)
-                .ok_or_else(|| {
-                    GatewayError(format!("Run {id} has no passing checks for tree {tree}."))
-                })?,
-        ),
+        Some(id) => {
+            let (journal, run) = Journal::open(&cfg.home, id)?;
+            let evidence = if run["workflow"] == verify::NAME {
+                verify::run_evidence(&journal, &run, id, &repo, &tree)?
+            } else {
+                Source::load(&cfg.home, &repo, id)?.evidence(&tree)
+            };
+            Some(evidence.ok_or_else(|| GatewayError(format!("Run {id} has no passing checks for tree {tree}.")))?)
+        }
         None if local_verification.is_none() => source.as_ref().and_then(|s| s.evidence(&tree)),
         None => None,
     } };

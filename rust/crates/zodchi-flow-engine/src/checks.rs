@@ -1247,8 +1247,26 @@ pub enum CheckOutcome {
     Unknown(String),
 }
 
+#[derive(Default)]
+pub(crate) struct AdditionalChecks<'a> {
+    pub setup: &'a [String],
+    pub full: &'a [String],
+}
+
+type CommandGroup<'a> = (&'a str, &'a [String], bool);
+
 impl CheckBatch<'_> {
     pub fn run(&self, slot: &mut CheckSlot, journal: &mut Journal, paths: &ProjectPaths, cache: &[String], export: impl FnOnce(&Path) -> Result<()>) -> Result<CheckOutcome> {
+        self.run_prepared(slot, journal, paths, cache, AdditionalChecks::default(), export)
+    }
+
+    pub(crate) fn run_prepared(&self, slot: &mut CheckSlot, journal: &mut Journal, paths: &ProjectPaths, cache: &[String], additional: AdditionalChecks<'_>, export: impl FnOnce(&Path) -> Result<()>) -> Result<CheckOutcome> {
+        let groups = [
+            ("setup", additional.setup, true),
+            (self.checks.0, self.checks.1, false),
+            (self.verify.0, self.verify.1, false),
+            ("project.full", additional.full, false),
+        ];
         slot.set_repository(paths)?;
         let step = self.step;
         let attempt = self.attempt;
@@ -1257,12 +1275,12 @@ impl CheckBatch<'_> {
         if intent.is_some_and(|event| event["tree"] != tree) {
             return Ok(CheckOutcome::Unknown("the candidate tree changed after this check attempt began".into()));
         }
-        let mut evidence = match self.recover(journal) {
+        let mut evidence = match self.recover(journal, &groups) {
             Ok(evidence) => evidence,
             Err(why) => return Ok(CheckOutcome::Unknown(why)),
         };
         let mut checkout = paths.parent.join("checkout");
-        if self.next(&evidence).is_some() {
+        if next_command(&groups, &evidence).is_some() {
             if evidence.is_empty() {
                 let workspace = match intent.and_then(|event| event["workspaceId"].as_str()) {
                     Some(id) => id.to_string(),
@@ -1291,7 +1309,7 @@ impl CheckBatch<'_> {
             }
             let bash = find_bash();
             let _ = fs::create_dir_all(self.logs);
-            while let Some((source, cmd, number)) = self.next(&evidence) {
+            while let Some((source, cmd, number)) = next_command(&groups, &evidence) {
                 let log = command_log(self.logs, source, number);
                 let mut event = json!({ "step": step, "attempt": attempt, "tree": tree, "commandIndex": evidence.len() + 1 });
                 let exit = run_one(&bash, cmd, &checkout, &log, self.limit, &self.environment, |pid, job| {
@@ -1308,22 +1326,8 @@ impl CheckBatch<'_> {
         Ok(CheckOutcome::Finished { checkout, evidence })
     }
 
-    fn next(&self, evidence: &[Value]) -> Option<(&str, &str, usize)> {
-        let index = evidence.len();
-        let (source, cmds) = self.checks;
-        if let Some(cmd) = cmds.get(index) {
-            return Some((source, cmd, index + 1));
-        }
-        if !passed(&evidence[..cmds.len()]) {
-            return None;
-        }
-        let (source, verify) = self.verify;
-        let verify_index = index - cmds.len();
-        verify.get(verify_index).map(|cmd| (source, cmd.as_str(), verify_index + 1))
-    }
-
     /// A start without a result is ambiguous even after reaping. Only replay a complete prefix of receipts.
-    fn recover(&self, journal: &Journal) -> std::result::Result<Vec<Value>, String> {
+    fn recover(&self, journal: &Journal, groups: &[CommandGroup<'_>]) -> std::result::Result<Vec<Value>, String> {
         let mut evidence = Vec::new();
         let mut started = None;
         let unknown = |index| format!("check command {index} has no matching result for this candidate; inspect the logs before rerunning");
@@ -1331,7 +1335,7 @@ impl CheckBatch<'_> {
             && matches!(event["kind"].as_str(), Some("check started" | "check ended")))
         {
             let index = evidence.len() + 1;
-            let Some((source, cmd, number)) = self.next(&evidence) else { return Err(unknown(index)) };
+            let Some((source, cmd, number)) = next_command(groups, &evidence) else { return Err(unknown(index)) };
             if event["tree"] != self.tree || event["commandIndex"] != index {
                 return Err(unknown(index));
             }
@@ -1358,6 +1362,21 @@ impl CheckBatch<'_> {
         }
         Ok(evidence)
     }
+}
+
+/// Each group needs successful results from the previous groups. Setup also stops on its first failure.
+fn next_command<'a>(groups: &[CommandGroup<'a>], mut evidence: &[Value]) -> Option<(&'a str, &'a str, usize)> {
+    for &(source, commands, stop_on_failure) in groups {
+        let index = evidence.len();
+        if let Some(command) = commands.get(index) {
+            return (!stop_on_failure || passed(evidence)).then_some((source, command.as_str(), index + 1));
+        }
+        if !passed(&evidence[..commands.len()]) {
+            return None;
+        }
+        evidence = &evidence[commands.len()..];
+    }
+    None
 }
 
 /// A stable label for a command in the evidence, such as "args.verify #1".

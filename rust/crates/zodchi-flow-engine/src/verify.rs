@@ -1,14 +1,27 @@
 use crate::args::{self, Args};
-use crate::checks::{self, ProjectPaths};
+use crate::checks::{self, CheckBatch, CheckOutcome, CheckSlot, CommandEnvironment, ProjectPaths};
 use crate::git::Git;
+use crate::journal::{self, Journal};
+use crate::{input_common, Exit};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use zodchi_core::util::{fail, GatewayError, Result};
+use std::time::Duration;
+use zodchi_core::{config::Config, util::{fail, iso, GatewayError, Result}};
 
 pub const CONFIG: &str = ".zodchi/verify.json";
 pub const LEGACY_SKILL: &str = ".claude/skills/verify/SKILL.md";
 pub const PROJECT_SKILL: &str = ".agents/skills/verify/SKILL.md";
+pub const NAME: &str = "verify";
+pub const VERSION: &str = "1";
+const STEP: &str = "verify";
+
+#[derive(Clone, Copy)]
+pub enum Selection {
+    All,
+    Checks,
+    Verify,
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct ProjectSettings {
@@ -122,9 +135,13 @@ impl Plan {
     }
 
     pub fn legacy(args: &Args) -> Self {
+        Self::from_commands(args.setup.clone(), args.checks.clone(), args.verify.clone())
+    }
+
+    fn from_commands(setup: Vec<String>, checks: Vec<String>, verify: Vec<String>) -> Self {
         Self {
-            setup: args.setup.clone(), setup_source: "args.setup",
-            checks: args.checks.clone(), verify: args.verify.clone(), project: ProjectSettings::default(), writer: WriterSettings::default(),
+            setup, setup_source: "args.setup", checks, verify,
+            project: ProjectSettings::default(), writer: WriterSettings::default(),
             check_source: "checks", verify_source: "args.verify",
             full_local: vec![], full_in_ci: false,
         }
@@ -132,37 +149,68 @@ impl Plan {
 
     #[doc(hidden)]
     pub fn load(git: &Git, base: &str, args: &Args, paths: &ProjectPaths) -> Result<Self> {
-        let mut plan = Self::legacy(args);
-        let Some(value) = config_at(git, base)? else {
-            if args.verify.is_empty() {
-                for path in [PROJECT_SKILL, LEGACY_SKILL] {
-                    if git.exists_at(base, path)? {
-                        return fail(format!("The repository has a verify skill ({path}); pass its commands as args.verify or declare them in {CONFIG}."));
-                    }
+        Self::legacy(args).configure(git, base, paths, Some(args), None, Selection::All)
+    }
+
+    fn for_commit(git: &Git, commit: &str, paths: &ProjectPaths, overrides: &Value, selection: Selection) -> Result<Self> {
+        let fields = overrides.as_object()
+            .ok_or_else(|| GatewayError("Verification args must be a JSON object.".into()))?;
+        if let Some(key) = fields.keys().find(|key| !["setup", "checks", "verify", "tools", "env"].contains(&key.as_str())) {
+            return fail(format!("Unknown verification argument: {key}"));
+        }
+        let commands = |name| args::commands(fields.get(name), name).map_err(GatewayError);
+        let plan = Self::from_commands(commands("setup")?, commands("checks")?, commands("verify")?)
+            .configure(git, commit, paths, None, Some(overrides), selection)?;
+        if plan.checks.is_empty() && plan.verify.is_empty() && plan.full_local.is_empty() {
+            return fail("No verification commands selected. Declare checks or verify in the project plan or --args.");
+        }
+        Ok(plan)
+    }
+
+    fn configure(mut self, git: &Git, base: &str, paths: &ProjectPaths, package: Option<&Args>, overrides: Option<&Value>, selection: Selection) -> Result<Self> {
+        let configured = config_at(git, base)?;
+        if configured.is_none() && self.verify.is_empty() && !matches!(selection, Selection::Checks) {
+            for path in [PROJECT_SKILL, LEGACY_SKILL] {
+                if git.exists_at(base, path)? {
+                    return fail(format!("The repository has a verify skill ({path}); pass its commands as args.verify or declare them in {CONFIG}."));
                 }
             }
-            return Ok(plan);
-        };
+        }
+        let mut value = configured.unwrap_or_else(|| json!({}));
+        if let Some(overrides) = overrides {
+            if let Some(tools) = overrides.get("tools") {
+                value["tools"] = tools.clone();
+            }
+            if let Some(extra) = overrides.get("env") {
+                let mut env = environment(value.get("env"), "env", None)?;
+                for (name, value) in environment(Some(extra), "env", None)? {
+                    env.retain(|key, _| !key.eq_ignore_ascii_case(&name));
+                    env.insert(name, value);
+                }
+                value["env"] = json!(env);
+            }
+        }
         let commands = |value, name| args::commands(value, name).map_err(|why| GatewayError(format!("{CONFIG}: {why}")));
         let setup = commands(value.get("setup"), "setup")?;
         let checks = commands(value.get("checks"), "checks")?;
         let verify = commands(value.get("verify"), "verify")?;
-        plan.project = ProjectSettings::configured(&value, &paths.cache)?;
-        let writer = WriterSettings::configured(&value, &paths.cache, args.browser.as_ref().map(|(name, _)| name.as_str()))?;
-        if args.agent {
-            plan.writer = writer;
+        self.project = ProjectSettings::configured(&value, &paths.cache)?;
+        let browser = package.and_then(|args| args.browser.as_ref()).map(|(name, _)| name.as_str());
+        let writer = WriterSettings::configured(&value, &paths.cache, browser)?;
+        if package.is_some_and(|args| args.agent) {
+            self.writer = writer;
         }
-        if args.agent && plan.setup.is_empty() && !setup.is_empty() {
-            plan.setup = setup;
-            plan.setup_source = "project.setup";
+        if package.is_none_or(|args| args.agent) && self.setup.is_empty() && !setup.is_empty() {
+            self.setup = setup;
+            self.setup_source = "project.setup";
         }
-        if plan.checks.is_empty() && !checks.is_empty() {
-            plan.checks = checks;
-            plan.check_source = "project.checks";
+        if self.checks.is_empty() && !checks.is_empty() {
+            self.checks = checks;
+            self.check_source = "project.checks";
         }
-        if plan.verify.is_empty() && !verify.is_empty() {
-            plan.verify = verify;
-            plan.verify_source = "project.verify";
+        if self.verify.is_empty() && !verify.is_empty() {
+            self.verify = verify;
+            self.verify_source = "project.verify";
         }
         if let Some(full) = value.get("full") {
             if full.as_object().is_none_or(|o| o.keys().any(|key| key != "run" && key != "commands")) {
@@ -170,14 +218,22 @@ impl Plan {
             }
             let full_commands = commands(full.get("commands"), "full.commands")?;
             match full["run"].as_str() {
-                Some("local") if !full_commands.is_empty() => plan.full_local = full_commands,
-                Some("ci") if full_commands.is_empty() => plan.full_in_ci = true,
+                Some("local") if !full_commands.is_empty() => self.full_local = full_commands,
+                Some("ci") if full_commands.is_empty() => self.full_in_ci = true,
                 _ => return fail(format!("{CONFIG}: full.run is local with commands, or ci with commands defined by CI")),
             }
         }
-        let setup_env = (!plan.setup.is_empty() && !plan.writer.env.is_empty()).then(|| plan.setup_environment());
-        plan.project.select_tools(&value, std::env::consts::OS,
-            plan.setup.iter().chain(&plan.checks).chain(&plan.verify).chain(&plan.full_local).map(String::as_str),
+        match selection {
+            Selection::Checks => {
+                self.verify.clear();
+                self.full_local.clear();
+            }
+            Selection::Verify => self.checks.clear(),
+            Selection::All => {}
+        }
+        let setup_env = (!self.setup.is_empty() && !self.writer.env.is_empty()).then(|| self.setup_environment());
+        self.project.select_tools(&value, std::env::consts::OS,
+            self.setup.iter().chain(&self.checks).chain(&self.verify).chain(&self.full_local).map(String::as_str),
             |env| {
                 // Setup can select a different Rust toolchain or target from the check commands.
                 let host = |env: &BTreeMap<String, String>| rust_host(git, base, paths, env);
@@ -186,7 +242,7 @@ impl Plan {
                 }
                 host(env)
             });
-        Ok(plan)
+        Ok(self)
     }
 
     #[doc(hidden)]
@@ -222,6 +278,10 @@ impl Plan {
 
     pub fn from_run(run: &Value, args: &Args) -> Result<Self> {
         let Some(plan) = run.get("verificationPlan") else { return Ok(Self::legacy(args)) };
+        Self::from_pin(plan, args.browser.as_ref().map(|(name, _)| name.as_str()))
+    }
+
+    fn from_pin(plan: &Value, browser: Option<&str>) -> Result<Self> {
         let commands = |key| {
             let list = plan.get(key).and_then(Value::as_array)
                 .ok_or_else(|| GatewayError(format!("The pinned verification plan has no {key} list.")))?;
@@ -252,10 +312,161 @@ impl Plan {
         Ok(Self {
             setup, setup_source,
             checks: commands("checks")?, verify: commands("verify")?, project: ProjectSettings::from_json(plan)?, check_source, verify_source,
-            writer: WriterSettings::from_pin(plan, args.browser.as_ref().map(|(name, _)| name.as_str()))?,
+            writer: WriterSettings::from_pin(plan, browser)?,
             full_local: commands("fullLocal")?, full_in_ci,
         })
     }
+}
+
+/// Resolve the ref and pin its plan before either the caller or a detached worker runs it.
+pub fn prepare(reference: &str, repo: Option<&Path>, overrides: &Value, selection: Selection) -> Result<(String, Journal)> {
+    let directory = repo.map(Path::to_path_buf).map_or_else(std::env::current_dir, Ok)?;
+    let top = Git::new(&directory).run(&["rev-parse", "--show-toplevel"])?;
+    let git = Git::new(Path::new(top.trim_end_matches(['\r', '\n'])));
+    let commit = git.rev(&format!("{reference}^{{commit}}"))
+        .map_err(|_| GatewayError(format!("Cannot resolve {reference:?} to a commit.")))?;
+    let tree = git.rev(&format!("{commit}^{{tree}}"))?;
+    let cfg = Config::new(Some(&git.root))?;
+    let home = std::path::absolute(&cfg.home)?;
+    let paths = ProjectPaths::new(&home, &git)?;
+    let plan = Plan::for_commit(&git, &commit, &paths, overrides, selection)?;
+    let id = journal::new_run_id();
+    let run = json!({
+        "runId": id, "workflow": NAME, "version": VERSION, "release": env!("CARGO_PKG_VERSION"),
+        "createdAt": iso(), "repo": git.root, "commit": commit, "tree": tree,
+        "verificationPlan": plan.to_json(), "inputs": { "args": overrides },
+    });
+    let journal = Journal::create(&home, &id, &run)?;
+    Ok((id, journal))
+}
+
+pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Exit> {
+    let cfg = Config::new(None)?;
+    let home = std::path::absolute(&cfg.home)?;
+    let (mut journal, run) = Journal::open(&home, id)?;
+    if run["workflow"] != NAME || run["version"] != VERSION
+        || given.is_some_and(|args| !input_common::args_match(&run["inputs"], args))
+    {
+        return fail(format!("Run {id} does not match this verify command."));
+    }
+    let _lock = journal.lock()?;
+    journal.load()?;
+    if let Some(result) = journal.read_value("result.json") {
+        if retry.is_some() {
+            return fail(format!("Run {id} has finished."));
+        }
+        return finish(&mut journal, result, true);
+    }
+    if let Some(step) = retry {
+        if step != STEP || !journal.last_event().is_some_and(|event| event["kind"] == "stop" && event["step"] == step) {
+            return fail("--rerun must name the stopped verify step.");
+        }
+        journal.append(json!({ "kind": "rerun", "step": step }))?;
+    }
+
+    let pinned = |field| run[field].as_str()
+        .ok_or_else(|| GatewayError(format!("The verification run has no pinned {field}.")));
+    let git = Git::new(Path::new(pinned("repo")?));
+    let commit = pinned("commit")?;
+    let tree = pinned("tree")?;
+    let plan = Plan::from_pin(&run["verificationPlan"], None)?;
+    let paths = ProjectPaths::new(&home, &git)?;
+    let mut places = input_common::places(&cfg, &[json!({ "root": git.root })]);
+    places.extend(paths.private_places());
+    let scrubber = input_common::Scrubber::new(&cfg)?;
+    let attempt = journal.attempt(STEP);
+    let outcome = run_checks(&mut journal, &home, &git, commit, tree, &paths, &plan, attempt);
+    let (evidence, stop) = match outcome {
+        Ok(CheckOutcome::Finished { evidence, .. }) => (evidence, None),
+        Ok(CheckOutcome::Unknown(why)) | Err(GatewayError(why)) => {
+            let evidence = journal.all("check ended", STEP, attempt).into_iter()
+                .filter_map(|event| event.get("result").cloned()).collect();
+            (evidence, Some(scrubber.text(&why, &places)))
+        }
+    };
+    let passed = stop.is_none() && !evidence.is_empty() && checks::passed(&evidence);
+    let budget = 32 * 1024 / 6 / evidence.len().max(1);
+    let commands: Vec<_> = evidence.iter().map(|item| {
+        let log = Path::new(item["log"].as_str().unwrap_or(""));
+        let output = checks::review_output(log, budget, |raw| scrubber.text(raw, &places));
+        let source = if item["source"] == "project.full" { json!("verify") } else { item["source"].clone() };
+        json!({
+            "command": scrubber.text(item["command"].as_str().unwrap_or(""), &places),
+            "source": source, "exitCode": item["exitCode"], "ms": item["ms"], "log": item["log"],
+            "output": output, "note": scrubber.text(item["note"].as_str().unwrap_or(""), &places),
+        })
+    }).collect();
+    let receipt: Vec<_> = commands.iter().filter(|_| stop.is_none())
+        .map(|row| json!({ "command": row["command"], "exitCode": row["exitCode"], "output": row["output"] })).collect();
+    let mut result = json!({
+        "runId": id, "workflow": NAME, "version": VERSION, "journal": journal.dir,
+        "verdict": if passed { "passed" } else { "failed" }, "commit": commit, "tree": tree,
+        "commands": commands, "receipt": { "head": commit, "tree": tree, "commands": receipt },
+    });
+    if let Some(why) = stop {
+        result["stoppedAt"] = json!(STEP);
+        result["infra"] = json!(why);
+        journal.append(json!({ "kind": "stop", "step": STEP, "stoppedAt": STEP, "what": why }))?;
+        return Ok(Exit { result, code: 2 });
+    }
+    finish(&mut journal, result, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_checks(journal: &mut Journal, home: &Path, git: &Git, commit: &str, tree: &str, paths: &ProjectPaths, plan: &Plan, attempt: u32) -> Result<CheckOutcome> {
+    checks::preflight()?;
+    checks::preflight_tools(&plan.project.tools)?;
+    let mut slot = CheckSlot::acquire(home, journal, STEP, attempt)?;
+    checks::reap_unended(journal)?;
+    let logs = journal.file(&format!("logs/verify-{attempt}"));
+    let batch = CheckBatch {
+        step: STEP, round: 1, attempt, tree, head: Some(commit), logs: &logs, limit: Duration::from_secs(3600),
+        environment: CommandEnvironment { repo: Some(&git.root), extra: Some(&plan.project.env) },
+        checks: ("checks", &plan.checks),
+        verify: ("verify", &plan.verify),
+    };
+    batch.run_prepared(&mut slot, journal, paths, &plan.project.cache, checks::AdditionalChecks {
+        setup: &plan.setup, full: &plan.full_local,
+    }, |staging| {
+        let snapshot = git.init_snapshot(staging)?;
+        snapshot.run(&["reset", "--hard", "--quiet", "--no-recurse-submodules", commit])?;
+        Ok(())
+    })
+}
+
+fn finish(journal: &mut Journal, result: Value, saved: bool) -> Result<Exit> {
+    if !saved {
+        journal.write_value("result.json", &result)?;
+    }
+    if journal::finished_event(journal.events(), Some(&result)).is_none() {
+        journal.append(json!({ "kind": "finished", "step": STEP, "verdict": result["verdict"] }))?;
+    }
+    let code = if result["verdict"] == "passed" { 0 } else { 2 };
+    Ok(Exit { result, code })
+}
+
+/// Attach a finished verify receipt to another commit with the same tree in the same checkout.
+pub fn run_evidence(journal: &Journal, run: &Value, id: &str, repo: &Path, tree: &str) -> Result<Option<Value>> {
+    if run["workflow"] != NAME || run["runId"] != id {
+        return fail(format!("Run {id} is not a verify run."));
+    }
+    let pinned_repo = run["repo"].as_str().filter(|path| Path::new(path).is_absolute())
+        .and_then(|path| std::fs::canonicalize(path).ok());
+    if pinned_repo.as_deref() != Some(std::fs::canonicalize(repo)?.as_path()) {
+        return fail(format!("Run {id} belongs to a different checkout."));
+    }
+    let events = journal.snapshot()?;
+    let Some(result) = journal.read_value("result.json").filter(|result| {
+        journal::finished_event(&events, Some(result)).is_some()
+            && result["runId"] == id && result["verdict"] == "passed"
+            && result["tree"] == tree && run["tree"] == tree && run["commit"] == result["commit"]
+            && result["receipt"]["tree"] == tree && result["receipt"]["head"] == result["commit"]
+    }) else { return Ok(None) };
+    let commands = &result["receipt"]["commands"];
+    if !commands.as_array().is_some_and(|rows| !rows.is_empty() && checks::passed(rows)) {
+        return Ok(None);
+    }
+    Ok(Some(json!({ "runId": id, "tree": tree, "commit": result["commit"], "commands": commands })))
 }
 
 fn config_at(git: &Git, base: &str) -> Result<Option<Value>> {

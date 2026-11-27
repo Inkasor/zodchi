@@ -39,6 +39,8 @@ mod research_entry;
 mod rubric_probe_entry;
 #[path = "unity_check.rs"]
 mod unity_check_entry;
+#[path = "verify.rs"]
+pub(crate) mod verify_entry;
 #[path = "video.rs"]
 mod video_entry;
 #[path = "voiceover.rs"]
@@ -134,6 +136,7 @@ static ENTRIES: &[&Entry] = &[
     &incident_triage_entry::ENTRY,
     &design_brief_entry::ENTRY,
     &branch_review_entry::ENTRY,
+    &verify_entry::ENTRY,
     &method_question_entry::ENTRY,
     &rubric_probe_entry::ENTRY,
     &asset_round_entry::ENTRY,
