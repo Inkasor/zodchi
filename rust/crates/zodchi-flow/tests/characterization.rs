@@ -1076,13 +1076,22 @@ fn worker_and_resume_reuse_the_interrupted_local_write() {
 fn child_gate_attempts(trace: &Path) -> usize {
     // Trace Git outside of the child journal. Every start attempt with these valid,
     // unchanged args checks the repository's ignore rules, even if journal creation then fails.
+    // The package's Git wrapper adds -c core.quotepath=false. The gateway's own ignore check omits it.
     jsonl(trace)
         .into_iter()
         .filter(|row| {
             row["event"] == "start"
                 && row["argv"].as_array().is_some_and(|argv| {
-                    argv.windows(4)
-                        .any(|args| args == ["check-ignore", "-q", "--", ".agent-tmp/gateway/"])
+                    argv.windows(6).any(|args| {
+                        args == [
+                            "-c",
+                            "core.quotepath=false",
+                            "check-ignore",
+                            "-q",
+                            "--",
+                            ".agent-tmp/gateway/",
+                        ]
+                    })
                 })
         })
         .count()
@@ -1131,11 +1140,10 @@ fn asset_child_context_cut_reenters_the_existing_child() {
     );
     fs::write(&child_run, &original).unwrap();
 
+    // Resume finishes the existing child and leaves the round waiting for the owner.
     let resumed = w.flow_env(&["asset-round", "--resume", &parent], &extra[..1]);
-    // P01b changes this baseline. The missing journal brief is a resume error
-    // with the original child's ID, even though the original input brief still exists.
-    resumed.wrong(&format!("The brief of run {child}"));
-    assert!(resumed.err.contains("brief.md"));
+    assert_eq!(resumed.code(2).result["status"], "waiting");
+    assert!(resumed.result["stoppedAt"].is_null());
     assert_eq!(
         child_gate_attempts(&trace),
         starts,
@@ -1143,11 +1151,24 @@ fn asset_child_context_cut_reenters_the_existing_child() {
     );
     assert_eq!(w.runs("code-package"), [child.clone()]);
     assert_eq!(fs::read(child_run).unwrap(), original);
-    assert!(!dir.join("initialized").exists());
-    assert!(jsonl(&dir.join("events.jsonl")).is_empty());
-    assert_eq!(jsonl(&parent_events), [pin]);
+    assert_eq!(
+        fs::read(dir.join("brief.md")).unwrap(),
+        fs::read(w.dir.join("brief.md")).unwrap()
+    );
+    assert_eq!(fs::read_to_string(dir.join("initialized")).unwrap(), "1\n");
+    assert!(jsonl(&dir.join("events.jsonl"))
+        .iter()
+        .any(|event| event["kind"] == "finished"));
+    let events = jsonl(&parent_events);
+    assert_eq!(events.len(), 3, "{events:?}");
+    assert_eq!(events[0], pin);
+    assert_eq!(events[1]["kind"], "done");
+    assert_eq!(events[1]["step"], "package");
+    assert_eq!(events[1]["result"]["runId"], child);
+    assert_eq!(events[1]["result"]["ok"], true);
+    assert_eq!(events[2]["kind"], "waiting");
     assert!(!w.run(&parent).join("result.json").exists());
-    assert!(w.steps().is_empty());
+    assert_eq!(w.steps(), ["write", "review 1"]);
 }
 
 #[test]

@@ -368,6 +368,39 @@ fn start_run(raw: &Value, detach: bool, id: Option<&str>) -> Result<Exit> {
     exit
 }
 
+fn restore_child_context(journal: &Journal, run: &Value, git: &Git, id: &str) -> Result<()> {
+    let inputs = &run["inputs"];
+    let brief_path = inputs["brief"].as_str()
+        .ok_or_else(|| GatewayError(format!("Run {id} has no brief path in its run.json.")))?;
+    let brief_problem = || format!("The brief of run {id} ({brief_path}) has changed or gone missing since the run started");
+    let brief = std::fs::read_to_string(brief_path)
+        .map_err(|error| GatewayError(format!("{} ({error}).", brief_problem())))?;
+    if inputs["briefSha256"] != sha256_hex(&brief) {
+        return fail(format!("{}.", brief_problem()));
+    }
+    let review_md = if inputs["reviewMd"] == json!(true) {
+        let base = run["base"].as_str().filter(|base| !base.is_empty())
+            .ok_or_else(|| GatewayError(format!("Run {id} has no base commit for REVIEW.md in its run.json.")))?;
+        let cannot_read = |reason: &str| GatewayError(format!(
+            "The base REVIEW.md of run {id} in commit {base} ({}) cannot be read ({reason}).",
+            git.root.display(),
+        ));
+        let bytes = git.show(base, "REVIEW.md")
+            .map_err(|error| cannot_read(&error.0))?
+            .ok_or_else(|| cannot_read("no regular REVIEW.md in the commit"))?;
+        Some(String::from_utf8_lossy(&bytes).into_owned())
+    } else {
+        None
+    };
+
+    journal.write_text("brief.md", &brief)?;
+    if let Some(text) = &review_md {
+        journal.write_text("REVIEW.base.md", text)?;
+    }
+    journal.write_text("initialized", "1\n")?;
+    Ok(())
+}
+
 /// Resumes a run from its journal. `args`, when given, must be the arguments the run started with; `rerun` names the
 /// step the run stopped at, to run it again under a new key.
 pub fn resume(id: &str, given: Option<&Value>, rerun: Option<&str>) -> Result<Exit> {
@@ -408,14 +441,22 @@ pub fn resume(id: &str, given: Option<&Value>, rerun: Option<&str>) -> Result<Ex
     }
     let repo = PathBuf::from(&args.repo);
     let cfg = Config::new(Some(&repo))?;
-    let brief = std::fs::read_to_string(journal.file("brief.md")).map_err(|e| GatewayError(format!("The brief of run {id} ({}) cannot be read: {e}", journal.file("brief.md").display())))?;
+    let git = Git::new(&repo);
+    let brief_file = journal.file("brief.md");
+    let missing = |path: &Path| {
+        std::fs::symlink_metadata(path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    };
+    // A child can be cut after the journal was created, before it wrote its context.
+    if journal.events().is_empty() && missing(&brief_file) && missing(&journal.file("initialized")) {
+        restore_child_context(&journal, &run, &git, id)?;
+    }
+    let brief = std::fs::read_to_string(&brief_file).map_err(|e| GatewayError(format!("The brief of run {id} ({}) cannot be read: {e}", brief_file.display())))?;
     let review_md = if run["inputs"]["reviewMd"] == json!(true) {
         let file = journal.file("REVIEW.base.md");
         Some(std::fs::read_to_string(&file).map_err(|e| GatewayError(format!("The base REVIEW.md of run {id} ({}) cannot be read: {e}; the review would lose the owner's criteria.", file.display())))?)
     } else {
         None
     };
-    let git = Git::new(&repo);
     let r = Run::new(id.to_string(), args, cfg, git, journal, &run, brief, review_md)?;
     let exit = r.machine();
     drop(lock);
