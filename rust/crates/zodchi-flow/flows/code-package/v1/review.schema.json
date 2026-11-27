@@ -7,7 +7,8 @@
     "verdict",
     "summary",
     "findings",
-    "notVerified"
+    "notVerified",
+    "gaps"
   ],
   "properties": {
     "verdict": {
@@ -74,6 +75,29 @@
       "description": "What could not be judged from the request: name the missing file and what it would settle",
       "items": {
         "type": "string"
+      }
+    },
+    "gaps": {
+      "type": "array",
+      "description": "Evidence gaps that prevent a verdict when blocked without findings. Use an empty list when there are none.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["what", "why", "writerCloseable"],
+        "properties": {
+          "what": {
+            "type": "string",
+            "description": "What the available evidence does not establish. Keep this wording for the same gap in a follow-up."
+          },
+          "why": {
+            "type": "string",
+            "description": "Why the evidence is insufficient and what would settle it"
+          },
+          "writerCloseable": {
+            "type": "boolean",
+            "description": "Whether the writer can supply a test or other evidence within the package's scope"
+          }
+        }
       }
     }
   }

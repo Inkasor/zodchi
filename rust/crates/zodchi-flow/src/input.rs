@@ -1,24 +1,37 @@
-use crate::{boundary::Exit, journal::Journal, patch, video_media};
+use crate::{
+    boundary::{self, Exit},
+    journal::{self, Journal},
+    patch, video_media,
+};
 use serde_json::{json, Value};
 use std::fs;
 use std::io::Read;
 use std::path::Path;
 use zodchi_core::config::Config;
-use zodchi_core::util::{fail, iso, Result};
+use zodchi_core::util::{fail, iso, GatewayError, Result};
 
 #[allow(unused_imports)]
 pub(crate) use crate::input_common::{args_digest, args_match, model_context, scrub, Scrubber};
 
-fn sanitized(config: &Config, run: &Value, file: &str, media_reply: bool) -> Result<String> {
+fn read_input(file: &str, media_reply: bool) -> Result<String> {
     let mut raw = String::new();
     fs::File::open(file)?.take(8193).read_to_string(&mut raw)?;
     if raw.len() > 8192 || raw.trim().is_empty() || (!media_reply && raw.chars().count() > 2000) || raw.contains('\0') {
         return fail("Workflow input must contain between 1 and 2000 characters of text.");
     }
-    let places = [
+    Ok(raw)
+}
+
+fn private_places(config: &Config, run: &Value) -> [(String, &'static str); 2] {
+    [
         (config.home.to_string_lossy().into_owned(), "<zodchi-home>"),
         (run["repo"].as_str().unwrap_or("").to_string(), "<repo>"),
-    ];
+    ]
+}
+
+fn sanitized(config: &Config, run: &Value, file: &str, media_reply: bool) -> Result<String> {
+    let raw = read_input(file, media_reply)?;
+    let places = private_places(config, run);
     if media_reply {
         let mut value: Value = serde_json::from_str(raw.trim().trim_start_matches('\u{feff}'))
             .map_err(|_| zodchi_core::util::GatewayError("A media reply needs a JSON decision.".into()))?;
@@ -44,6 +57,92 @@ struct Reply<'a> {
     answered: Option<&'a str>,
     no_new_decisions: bool,
     policy: fn(&Value) -> ReplyPolicy,
+}
+
+pub(crate) const REVIEW_GAPS: &str = "review gaps";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GapOption {
+    Accept,
+    Attach,
+    ReviewAgain,
+}
+
+impl GapOption {
+    pub(crate) const ALL: [Self; 3] = [Self::Accept, Self::Attach, Self::ReviewAgain];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Accept => "accept",
+            Self::Attach => "attach context or verification",
+            Self::ReviewAgain => "review again",
+        }
+    }
+
+    fn parse(label: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|option| option.label() == label)
+    }
+}
+
+pub(crate) struct GapDecision {
+    pub id: String,
+    pub option: GapOption,
+    pub material: String,
+}
+
+impl GapDecision {
+    fn to_json(&self) -> Value {
+        json!({ "id": self.id, "option": self.option.label(), "material": self.material })
+    }
+
+    pub(crate) fn from_json(decision: &Value) -> Option<Self> {
+        Some(Self {
+            id: decision["id"].as_str()?.to_string(),
+            option: GapOption::parse(decision["option"].as_str()?)?,
+            material: decision["material"].as_str()?.to_string(),
+        })
+    }
+}
+
+fn gap_decisions(text: &str, gaps: &[Value]) -> Result<Vec<GapDecision>> {
+    let mut decisions: Vec<GapDecision> = Vec::new();
+    for line in text.trim_start_matches('\u{feff}').lines() {
+        let header = line.split_once(':').filter(|(id, _)| is_gap_id(id.trim()));
+        if let Some((id, option)) = header {
+            let id = id.trim();
+            if !gaps.iter().any(|gap| gap["id"] == id) {
+                return fail(format!("Unknown review gap {id}."));
+            }
+            if decisions.iter().any(|decision| decision.id == id) {
+                return fail(format!("Repeated review gap {id}."));
+            }
+            let option = GapOption::parse(option.trim()).ok_or_else(|| {
+                GatewayError(format!(
+                    "For {id}, choose accept, attach context or verification, or review again."
+                ))
+            })?;
+            decisions.push(GapDecision { id: id.to_string(), option, material: String::new() });
+        } else if let Some(decision) = decisions.last_mut() {
+            decision.material.push_str(line);
+            decision.material.push('\n');
+        } else if !line.trim().is_empty() {
+            return fail("Start the reply with a line of the form <gap id>: <option>.");
+        }
+    }
+    for gap in gaps {
+        let id = gap["id"].as_str().expect("waiting review gap has an id");
+        if !decisions.iter().any(|decision| decision.id == id) {
+            return fail(format!("Missing decision for review gap {id}."));
+        }
+    }
+    Ok(decisions)
+}
+
+fn is_gap_id(id: &str) -> bool {
+    id.strip_prefix('g').and_then(|rest| rest.split_once('-'))
+        .is_some_and(|(review, index)| [review, index].into_iter().all(|part| {
+            !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
+        }))
 }
 
 pub fn remark(id: &str, file: &str) -> Result<Exit> {
@@ -75,9 +174,39 @@ fn record(id: &str, file: &str, reply: Option<Reply<'_>>) -> Result<Exit> {
     let (mut journal, run) = Journal::open(&config.home, id)?;
     if let Some(reply) = reply {
         let _lock = journal.lock()?;
-        journal.load()?;
+        let gap_wait = if run["workflow"] == boundary::WORKFLOW {
+            journal::last_state_event(&journal.snapshot()?)
+                .filter(|event| event["kind"] == "waiting" && event["reason"] == REVIEW_GAPS)
+                .cloned()
+        } else {
+            None
+        };
+        if gap_wait.is_none() {
+            journal.load()?;
+        }
         if journal.file("result.json").is_file() {
             return fail(format!("Run {id} has already recorded its result."));
+        }
+        if let Some(waiting) = gap_wait {
+            // Validate the entire gap reply before appending or repairing the journal.
+            if reply.answered.is_some() || reply.no_new_decisions {
+                return fail("--answered and --no-new-decisions apply only to design-brief.");
+            }
+            let gaps = waiting["gaps"].as_array().expect("waiting review gaps");
+            let mut decisions = gap_decisions(&read_input(file, false)?, gaps)?;
+            let scrubber = Scrubber::new(&config)?;
+            let places = private_places(&config, &run);
+            for decision in &mut decisions {
+                decision.material = scrubber.text(decision.material.trim_end_matches('\n'), &places);
+            }
+            let step = &waiting["step"];
+            journal.load()?;
+            journal.append(json!({
+                "kind": "rerun", "step": step, "attempt": waiting["attempt"],
+                "ownerAnswer": decisions.iter().map(GapDecision::to_json).collect::<Vec<_>>(),
+            }))?;
+            boundary::cut("review gap reply");
+            return Ok(Exit { result: json!({ "runId": id, "status": "ready", "step": step }), code: 0 });
         }
         let policy = (reply.policy)(&run);
         let waiting = journal.last_event();

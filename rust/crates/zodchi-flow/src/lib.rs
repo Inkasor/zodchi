@@ -78,6 +78,7 @@ pub const USAGE: &str = "Usage: zodchi flow <workflow> --args <file.json> [--det
        zodchi flow youtube-publish connect --args <file.json>
        zodchi flow youtube-publish whoami --profile <name>
        zodchi flow list [--repo <directory>]
+For a code-package evidence gap reply, use one <gap id>: <option> line per gap. Put supporting text below that line.
 Prints the result JSON. The journal is ~/.zodchi/flows/<run-id>/.
 Exit code: 0 approved, 2 any other end (refused, stopped, changes requested), 1 a wrong call.";
 

@@ -16,3 +16,9 @@ writer workspace. Use verification.json for the engine's verification of the rev
 Every finding has a severity: "important" (a real defect the change brings in; it blocks approval), "nit" (worth
 fixing, does not block) or "pre-existing" (it was there before the change; does not block). verdict "approved"
 only when no important finding is open; "blocked" when the change cannot be judged from what the request holds.
+
+Use findings for defects in the change. Use gaps for missing evidence when the verdict is "blocked" and there are
+no findings. For each gap, state what you could not establish and why. Set writerCloseable to true if the writer
+can supply a test or other evidence within the package. Set it to false if the owner must decide or supply
+information. Keep the "what" wording when the same gap remains open in another review. Consider any owner
+decisions and material in owner-gap-reply.json. Use an empty gaps list when there are no gaps to report.

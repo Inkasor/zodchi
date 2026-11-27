@@ -1083,6 +1083,21 @@ fn worker_and_resume_reuse_the_interrupted_local_write() {
         .map(|e| e["kind"].as_str().unwrap())
         .collect();
     assert_eq!(write_events, ["intent", "done"]);
+    let review_events: Vec<_> = after.iter().filter(|e| e["step"] == "review 1").collect();
+    assert_eq!(
+        review_events
+            .iter()
+            .map(|e| e["kind"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["intent", "submitted", "done"]
+    );
+    let review_request = dir.join(review_events[0]["request"].as_str().unwrap());
+    let mut schema = read_json(&review_request)["role"]["outputSchema"].clone();
+    schema.sort_all_objects();
+    assert_eq!(
+        sha256_hex(schema.to_string()),
+        baseline()["codePackageReviewSchemaSha256"].as_str().unwrap()
+    );
     assert_eq!(
         fs::read_to_string(w.repo.join("src/math.mjs")).unwrap(),
         FIXED

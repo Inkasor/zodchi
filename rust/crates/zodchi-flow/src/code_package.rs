@@ -17,6 +17,7 @@ use crate::claims;
 use crate::executor;
 use crate::gateway;
 use crate::git::Git;
+use crate::input::{GapDecision, GapOption, REVIEW_GAPS};
 use crate::input_common::{self, Scrubber};
 use crate::journal::{application_status, candidate_workspace, Journal};
 use crate::models::{self, Pick};
@@ -29,7 +30,7 @@ use zodchi_core::config::Config;
 use zodchi_core::job::{self, compose_prompt, LIMIT_PROMPT};
 use zodchi_core::role::load_role;
 use zodchi_core::role::Overrides;
-use zodchi_core::util::{fail, iso, sha256_hex, GatewayError, Result};
+use zodchi_core::util::{fail, iso, now_ms, parse_iso_ms, sha256_hex, GatewayError, Result};
 
 pub use crate::boundary::{Exit, CUT_EXIT, REVIEWER_GATEWAY_ROLE, WORKFLOW, WRITER_GATEWAY_ROLE};
 #[allow(unused_imports)]
@@ -127,6 +128,103 @@ type Attachments = Vec<(String, Vec<u8>)>;
 struct Halt;
 type Step<T> = std::result::Result<T, Halt>;
 
+struct GapEvidence {
+    what: String,
+    why: String,
+    writer_closeable: bool,
+}
+
+fn review_gap_evidence(review: &Value) -> std::result::Result<Vec<GapEvidence>, String> {
+    let Some(gaps) = review.get("gaps") else { return Ok(Vec::new()) };
+    let gaps = gaps.as_array().ok_or("gaps is a list")?;
+    gaps.iter().map(|gap| {
+        let (Some(what), Some(why), Some(writer_closeable)) = (
+            gap["what"].as_str(), gap["why"].as_str(), gap["writerCloseable"].as_bool(),
+        ) else {
+            return Err("a gap needs what and why text and a writerCloseable boolean".into());
+        };
+        if gap.as_object().is_none_or(|fields| fields.len() != 3) {
+            return Err("a gap has unexpected fields".into());
+        }
+        Ok(GapEvidence { what: what.into(), why: why.into(), writer_closeable })
+    }).collect()
+}
+
+fn check_package_review(review: &Value) -> std::result::Result<(), String> {
+    check_review(review)?;
+    review_gap_evidence(review).map(|_| ())
+}
+
+fn package_review_schema(reviewer: &Pick) -> Value {
+    let mut schema = schema(REVIEW_SCHEMA);
+    if reviewer.provider == "claude" {
+        // The text executor validates locally before handing the answer to the package decoder.
+        // Only the structured output request needs every property to be required.
+        schema["required"].as_array_mut().expect("review schema required fields").retain(|field| field != "gaps");
+    }
+    schema
+}
+
+// Match an open gap across reviews by its "what", ignoring case and runs of whitespace.
+fn gap_identity(what: &str) -> String {
+    what.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GapState {
+    Open,
+    Finding,
+    Accepted,
+    ContextAttached,
+    ReviewAgain,
+    Superseded,
+}
+
+struct ReviewGap {
+    id: String,
+    evidence: GapEvidence,
+    state: GapState,
+}
+
+impl ReviewGap {
+    fn to_json(&self) -> Value {
+        let state = match self.state {
+            GapState::Open => "open",
+            GapState::Finding => "finding",
+            GapState::Accepted => "accepted",
+            GapState::ContextAttached => "context attached",
+            GapState::ReviewAgain => "review again",
+            GapState::Superseded => "superseded",
+        };
+        json!({
+            "id": self.id, "what": self.evidence.what, "why": self.evidence.why,
+            "writerCloseable": self.evidence.writer_closeable, "state": state,
+        })
+    }
+}
+
+struct GapReply {
+    seq: u64,
+    decisions: Vec<GapDecision>,
+}
+
+struct ReviewRound<'a> {
+    n: u32,
+    candidate: &'a str,
+    summary: &'a str,
+    unverified: &'a [String],
+    verification: &'a Value,
+    checks: &'a Value,
+    commit: &'a Value,
+}
+
+struct RoundVerdict {
+    review: Value,
+    findings: Vec<String>,
+    important: Vec<String>,
+    verdict: &'static str,
+}
+
 struct Run {
     id: String,
     args: Args,
@@ -146,6 +244,8 @@ struct Run {
     browser: Value,
     writer: Pick,
     reviewer: Pick,
+    review_number: u32,
+    gaps: Vec<ReviewGap>,
     claims_dir: PathBuf,
     claimed: Vec<String>,
     head: String,
@@ -493,6 +593,8 @@ impl Run {
             verify_plan, check_paths,
             browser: run["browser"].clone(),
             id, args, cfg, git, project, journal, base, seed, history, brief, review_md, writer, reviewer, out,
+            review_number: 0,
+            gaps: vec![],
             keep_claim: false,
             claim_status: "stopped",
             questions: vec![],
@@ -617,14 +719,11 @@ impl Run {
             } else {
                 self.head.clone()
             };
-            let review = self.review(n, &reviewed, &summary, &unverified, &verification)?;
-            let findings = strings(&review["findings"]);
-            let important = strings(&review["important"]);
+            let RoundVerdict { review, findings, important, verdict } = self.review_round(&ReviewRound {
+                n, candidate: &reviewed, summary: &summary, unverified: &unverified,
+                verification: &verification, checks: &checks, commit: &receipt,
+            })?;
             let word = review["verdict"].as_str().unwrap_or("");
-            let verdict = if word == "blocked" || (word == "changes_requested" && findings.is_empty()) { "blocked" } else if !important.is_empty() { "changes_requested" } else { "approved" };
-            self.out.insert("openFindings".into(), json!(findings));
-            self.out.insert("verdict".into(), json!(verdict));
-            self.push_round(json!({ "n": n, "checks": checks, "commit": receipt, "review": review, "verification": verification, "verdict": verdict }));
             if verdict == "approved" {
                 if self.verify_plan.full_in_ci {
                     self.out.insert("fullVerification".into(), json!({ "status": "pending_ci" }));
@@ -652,7 +751,8 @@ impl Run {
                 return Ok(());
             }
             if verdict == "blocked" {
-                self.out.insert("stoppedAt".into(), json!(format!("review verdict {word}{}", if findings.is_empty() { " without findings" } else { "" })));
+                let stopped_at = if word == "blocked" { "review verdict blocked" } else { "review verdict changes_requested without findings" };
+                self.out.insert("stoppedAt".into(), json!(stopped_at));
                 self.out.insert("question".into(), json!(format!("The reviewer could not approve or name what to change ({word}): {} See {}.", review["summary"].as_str().unwrap_or(""), review["reviewFile"].as_str().unwrap_or(""))));
                 return Err(Halt);
             }
@@ -662,9 +762,10 @@ impl Run {
                 return Err(Halt);
             }
             let step = format!("close {n}");
-            let vars = vec![("round", n.to_string()), ("findings", important.iter().map(|f| format!("- {f}")).collect::<Vec<_>>().join("\n"))];
+            let review_number = self.review_number;
+            let vars = vec![("round", review_number.to_string()), ("findings", important.iter().map(|f| format!("- {f}")).collect::<Vec<_>>().join("\n"))];
             let review_file = std::fs::read(review["reviewFile"].as_str().unwrap_or("")).unwrap_or_default();
-            let fix = self.writer_turn(&step, n, CLOSE, vars, vec![(format!("review-{n}.json"), review_file)])?;
+            let fix = self.writer_turn(&step, n, CLOSE, vars, vec![(format!("review-{review_number}.json"), review_file)])?;
             if fix.status != "done" {
                 return self.stop_blocked(&step, &fix);
             }
@@ -1115,7 +1216,12 @@ impl Run {
             .filter_map(|key| self.browser[key].as_str().filter(|path| !path.is_empty()))
             .map(|path| (path.to_string(), "<browser>"))
             .collect();
-        match gateway::ask_budgeted(&mut self.journal, &self.cfg, call, self.args.budget, browser, &owner_private_places, validate) {
+        let result = gateway::ask_budgeted(&mut self.journal, &self.cfg, call, self.args.budget, browser, &owner_private_places, validate);
+        self.call_result(step, result)
+    }
+
+    fn call_result(&mut self, step: &str, result: std::result::Result<Value, gateway::CallError>) -> Step<Value> {
+        match result {
             Ok(data) => Ok(data),
             Err(gateway::CallError::Stop { at, reason }) if at == format!("budget at {step}") => {
                 self.keep_claim = true;
@@ -1662,22 +1768,260 @@ impl Run {
 
     // --------------------------------------------------------------------------------------------- review
 
-    fn review(&mut self, n: u32, candidate: &str, summary: &str, unverified: &[String], verification: &Value) -> Step<Value> {
-        let step = format!("review {n}");
-        self.step = step.clone();
+    fn review_round(&mut self, round: &ReviewRound<'_>) -> Step<RoundVerdict> {
+        let previous_writer_review = self.review_number;
+        let mut reply = None;
+        loop {
+            self.review_number += 1;
+            let step = format!("review {}", self.review_number);
+            let (review, reported) = self.review(round, &step, previous_writer_review, reply.as_ref())?;
+            let findings = strings(&review["findings"]);
+            let important = strings(&review["important"]);
+            let word = review["verdict"].as_str().unwrap_or("");
+            let blocked_on_gaps = word == "blocked" && findings.is_empty();
+            let verdict = if word == "blocked" || (word == "changes_requested" && findings.is_empty()) {
+                "blocked"
+            } else if !important.is_empty() {
+                "changes_requested"
+            } else {
+                "approved"
+            };
+            let mut outcome = RoundVerdict { review, findings, important, verdict };
+            let reported = blocked_on_gaps.then_some(reported);
+            let writer_findings = self.track_gaps(round.n, &step, &outcome.review, reported)?;
+            let mut waiting = false;
+            if blocked_on_gaps {
+                if !writer_findings.is_empty() {
+                    outcome.findings = writer_findings.clone();
+                    outcome.important = writer_findings;
+                    outcome.verdict = "changes_requested";
+                } else if self.gaps.iter().any(|gap| gap.state == GapState::Open) {
+                    waiting = true;
+                } else {
+                    outcome.verdict = "approved";
+                }
+            }
+            self.show_review_round(round, &outcome);
+            if waiting {
+                let answer = self.review_gap_reply(round.n, &step)?;
+                if answer.decisions.iter().any(|decision| decision.option != GapOption::Accept) {
+                    reply = Some(answer);
+                    continue;
+                }
+                outcome.verdict = "approved";
+                self.show_review_round(round, &outcome);
+            }
+            return Ok(outcome);
+        }
+    }
+
+    fn show_review_round(&mut self, round: &ReviewRound<'_>, outcome: &RoundVerdict) {
+        self.out.insert("openFindings".into(), json!(outcome.findings));
+        self.out.insert("verdict".into(), json!(outcome.verdict));
+        self.push_round(json!({
+            "n": round.n, "checks": round.checks, "commit": round.commit, "review": outcome.review,
+            "verification": round.verification, "verdict": outcome.verdict,
+        }));
+    }
+
+    fn record_gaps(&mut self, step: &str, round: u32, attempt: u32, gaps: Vec<Value>) -> Step<()> {
+        if !gaps.is_empty() && self.journal.last("gaps", step, attempt).is_none() {
+            let record = self.journal.append(json!({
+                "kind": "gaps", "step": step, "round": round, "attempt": attempt, "gaps": gaps,
+            }));
+            self.infra(step, record)?;
+        }
+        Ok(())
+    }
+
+    fn track_gaps(&mut self, round: u32, step: &str, review: &Value, reported: Option<Vec<GapEvidence>>) -> Step<Vec<String>> {
+        let (mut accepted, mut previous): (Vec<_>, Vec<_>) = std::mem::take(&mut self.gaps)
+            .into_iter().partition(|gap| gap.state == GapState::Accepted);
+        let mut current = Vec::new();
+        if let Some(reported) = reported {
+            if reported.is_empty() {
+                current.push(ReviewGap {
+                    id: format!("g{}-0", self.review_number),
+                    evidence: GapEvidence {
+                        what: review["summary"].as_str().unwrap_or("The reviewer could not establish enough evidence.").to_string(),
+                        why: "The reviewer did not name a specific evidence gap.".into(),
+                        writer_closeable: false,
+                    },
+                    state: GapState::Open,
+                });
+            }
+            // An accepted gap stays waived. Match each remaining report to at most one unresolved gap,
+            // including one sent to a writer or re-review that has yet to settle it.
+            for (index, evidence) in reported.into_iter().enumerate() {
+                let identity = gap_identity(&evidence.what);
+                let id = match previous.iter().position(|gap| gap_identity(&gap.evidence.what) == identity) {
+                    Some(index) => previous.remove(index).id,
+                    None if accepted.iter().any(|gap| gap_identity(&gap.evidence.what) == identity) => continue,
+                    None => format!("g{}-{}", self.review_number, index + 1),
+                };
+                let state = if evidence.writer_closeable && round < self.args.rounds {
+                    GapState::Finding
+                } else {
+                    GapState::Open
+                };
+                current.push(ReviewGap { id, evidence, state });
+            }
+        }
+        for gap in &mut previous {
+            gap.state = GapState::Superseded;
+        }
+        let writer_findings = current.iter().filter(|gap| gap.state == GapState::Finding).map(|gap| {
+            format!("{} important evidence gap: {}\n  {}", gap.id, gap.evidence.what, gap.evidence.why)
+        }).collect();
+        if !current.is_empty() || !previous.is_empty() {
+            let snapshot = current.iter().chain(&previous).chain(&accepted).map(ReviewGap::to_json).collect();
+            self.record_gaps(step, round, self.attempt(step), snapshot)?;
+        }
+        accepted.extend(current);
+        self.gaps = accepted;
+        Ok(writer_findings)
+    }
+
+    fn review_gap_reply(&mut self, round: u32, review_step: &str) -> Step<GapReply> {
+        let step = format!("{REVIEW_GAPS} {}", self.review_number);
+        let attempt = self.attempt(review_step);
+        if let Some(event) = self.journal.last("rerun", &step, attempt) {
+            let seq = event["seq"].as_u64().expect("journal sequence");
+            let decisions = event["ownerAnswer"].as_array()
+                .and_then(|answers| answers.iter().map(GapDecision::from_json).collect::<Option<Vec<_>>>())
+                .ok_or_else(|| GatewayError("The saved review gap reply is unreadable.".into()));
+            let decisions = self.infra(&step, decisions)?;
+            let mut changed = Vec::with_capacity(decisions.len());
+            for decision in &decisions {
+                let gap = self.gaps.iter_mut().find(|gap| gap.id == decision.id).expect("validated gap id");
+                gap.state = match decision.option {
+                    GapOption::Accept => GapState::Accepted,
+                    GapOption::Attach => GapState::ContextAttached,
+                    GapOption::ReviewAgain => GapState::ReviewAgain,
+                };
+                changed.push(gap.to_json());
+            }
+            self.record_gaps(&step, round, attempt, changed)?;
+            return Ok(GapReply { seq, decisions });
+        }
+        let gaps: Vec<_> = self.gaps.iter().filter(|gap| gap.state == GapState::Open).collect();
+        let items = gaps.iter().map(|gap| format!("- {}  {}\n  {}", gap.id, gap.evidence.what, gap.evidence.why)).collect::<Vec<_>>();
+        let question = format!(
+            "The reviewer needs a decision on each of these evidence gaps.\n{}\n\n\
+             For each gap, use `<gap id>: accept`, `<gap id>: attach context or verification`, or `<gap id>: review again`. \
+             Put any supporting material under that gap's line.", items.join("\n"),
+        );
+        let gaps: Vec<_> = gaps.into_iter().map(ReviewGap::to_json).collect();
+        if !self.journal.last_event().is_some_and(|event| {
+            event["kind"] == "waiting" && event["step"] == step && event["attempt"] == attempt && event["reason"] == REVIEW_GAPS
+        }) {
+            let record = self.journal.append(json!({
+                "kind": "waiting", "step": step, "round": round, "attempt": attempt, "reason": REVIEW_GAPS,
+                "question": question, "gaps": gaps, "options": GapOption::ALL.map(GapOption::label),
+            }));
+            self.infra(&step, record)?;
+        }
+        self.out.insert("status".into(), json!("waiting"));
+        self.out.insert("stoppedAt".into(), json!(REVIEW_GAPS));
+        self.out.insert("question".into(), json!(question));
+        self.out.insert("openGaps".into(), json!(gaps));
+        self.out.insert("next".into(), json!(format!("Use zodchi flow reply {} --file <text>, then resume.", self.id)));
+        self.keep_claim = true;
+        Err(Halt)
+    }
+
+    /// The owner requested one new review of the same candidate. Save the reply's sequence on the
+    /// gateway intent, reserve its budget once per attempt, and keep the same key across dispatch and recovery.
+    /// An explicit rerun after a stop starts a new attempt with the same reply.
+    fn call_gap_review(&mut self, step: &str, round: u32, pick: &Pick, mut prompt: String, reply_seq: u64) -> std::result::Result<Value, gateway::CallError> {
+        let attempt = self.attempt(step);
+        let schema = package_review_schema(pick);
+        let stop = |at, reason| gateway::CallError::Stop { at: format!("{at} at {step}"), reason };
+        let infra = |error: GatewayError| stop("infrastructure", error.0);
+        if self.done(step).is_none() && self.journal.last("safety blocked", step, attempt).is_none() {
+            let intent = self.journal.last("intent", step, attempt);
+            if intent.is_none() && self.args.budget.is_some_and(|budget| budget.exhausted(&self.journal)) {
+                return Err(stop("budget", "The package budget for new model calls is exhausted.".into()));
+            }
+            let key = gateway::base_key(&self.id, step, attempt);
+            let exec = executor::for_pick(&self.cfg, pick).map_err(|reason| stop("infrastructure", reason))?;
+            let dispatch = if let Some(intent) = intent {
+                if intent["gapReplySeq"] != reply_seq || intent["key"] != key {
+                    return Err(stop("unknown outcome", format!("The saved review intent does not match gap reply {reply_seq}.")));
+                }
+                // The server executor has its own account-bound recovery for an intent with a missing key.
+                // For a local executor, recover an absent key only inside the gateway's retention window
+                // and before a submission receipt. A known job is always reattached below.
+                const RECOVERY_WINDOW_MS: i128 = 6 * 86_400_000;
+                let recent = intent["at"].as_str().and_then(parse_iso_ms).is_some_and(|at| now_ms() - at < RECOVERY_WINDOW_MS);
+                let submitted = self.journal.last("submitted", step, attempt).is_some();
+                if matches!(exec.name(), "local-gateway" | "claude") && intent["executor"] == exec.name()
+                    && recent && !submitted && !exec.exists(&key)
+                {
+                    let stored = intent["request"].as_str().and_then(|file| self.journal.read_value(file))
+                        .filter(|stored| intent["digest"] == sha256_hex(stored.to_string()))
+                        .ok_or_else(|| stop("unknown outcome", format!("The saved request for {key} is missing or changed.")))?;
+                    Some(stored)
+                } else {
+                    None
+                }
+            } else {
+                prompt.push_str(&gateway::owner_suffix(&self.journal, &self.cfg, &self.private_places()).map_err(infra)?);
+                if prompt.len() > LIMIT_PROMPT {
+                    return Err(gateway::CallError::Context { bytes: prompt.len() });
+                }
+                let role = exec.role(REVIEWER_GATEWAY_ROLE, pick, &schema).map_err(infra)?;
+                let mut stored = json!({ "role": role, "prompt": prompt });
+                if stored["role"]["mode"] == "work" {
+                    stored["keepThread"] = json!(false);
+                }
+                let file = format!("requests/{key}.json");
+                self.journal.write_value(&file, &stored).map_err(infra)?;
+                self.record_intent(step, round, "gateway job", &sha256_hex(stored.to_string()), json!({
+                    "key": key, "request": file, "role": REVIEWER_GATEWAY_ROLE, "model": pick.model,
+                    "effort": pick.effort, "executor": exec.name(), "gapReplySeq": reply_seq,
+                })).map_err(infra)?;
+                Some(stored)
+            };
+            if let Some(stored) = dispatch {
+                crate::boundary::cut(&format!("intent {step}"));
+                eprintln!("{}: {step} · {}/{} {} · {key}", self.id, pick.provider, pick.model, pick.effort);
+                let created = exec.submit(&key, &stored).map_err(infra)?;
+                crate::boundary::cut(&format!("submit {step}"));
+                self.journal.append(json!({
+                    "kind": "submitted", "step": step, "attempt": attempt, "key": key, "created": created,
+                })).map_err(infra)?;
+            }
+        }
+        let call = gateway::Call {
+            id: &self.id, step, round, role: REVIEWER_GATEWAY_ROLE, pick, schema: &schema,
+            prompt: String::new(), writer_workspace: None,
+        };
+        gateway::ask_without_resubmission(&mut self.journal, &self.cfg, call, check_package_review)
+    }
+
+    fn review(&mut self, round: &ReviewRound<'_>, step: &str, previous_writer_review: u32, reply: Option<&GapReply>) -> Step<(Value, Vec<GapEvidence>)> {
+        let n = self.review_number;
+        self.step = step.to_string();
         let reviews = format!("reviews/review-{n}.json");
         let review_file = self.journal.file(&reviews).display().to_string();
-        let attempt = self.attempt(&step);
-        let prompt = if self.done(&step).is_some() || !self.journal.all("intent", &step, attempt).is_empty() {
+        let attempt = self.attempt(step);
+        let prompt = if self.done(step).is_some() || self.journal.last("intent", step, attempt).is_some() {
             String::new()
         } else {
-            let built = self.review_prompt(n, candidate, &step, summary, unverified, verification);
-            self.infra(&step, built)?
+            let built = self.review_prompt(round, step, previous_writer_review, reply);
+            self.infra(step, built)?
         };
         let reviewer = self.reviewer.clone();
-        let data = self.ask(&step, n, REVIEWER_GATEWAY_ROLE, &reviewer, &schema(REVIEW_SCHEMA), prompt, None, check_review)?;
+        let data = if let Some(reply) = reply {
+            let call = self.call_gap_review(step, round.n, &reviewer, prompt, reply.seq);
+            self.call_result(step, call)?
+        } else {
+            self.ask(step, round.n, REVIEWER_GATEWAY_ROLE, &reviewer, &package_review_schema(&reviewer), prompt, None, check_package_review)?
+        };
         let w = self.journal.write_value(&reviews, &data);
-        self.infra(&step, w)?;
+        self.infra(step, w)?;
+        let gaps = self.infra(step, review_gap_evidence(&data).map_err(GatewayError))?;
         // The severity comes from the structured field; the strings are only how the result and the prompts show them.
         let mut findings = Vec::new();
         let mut important = Vec::new();
@@ -1689,7 +2033,7 @@ impl Run {
             }
             findings.push(line);
         }
-        Ok(json!({ "verdict": data["verdict"], "summary": data["summary"], "findings": findings, "important": important, "blocking": important.len(), "reviewFile": review_file }))
+        Ok((json!({ "verdict": data["verdict"], "summary": data["summary"], "findings": findings, "important": important, "blocking": important.len(), "reviewFile": review_file }), gaps))
     }
 
     fn review_verification(&self, candidate: &str, verification: &Value, evidence: &[Value]) -> Result<Vec<u8>> {
@@ -1723,11 +2067,11 @@ impl Run {
         })).map_err(|error| GatewayError(format!("Cannot encode the verification attachment: {error}")))
     }
 
-    fn review_writer_checks(&self, round: u32) -> Result<Option<Vec<u8>>> {
+    fn review_writer_checks(&self, previous_writer_review: u32) -> Result<Option<Vec<u8>>> {
         if !self.args.agent {
             return Ok(None);
         }
-        let previous_review = format!("review {}", round - 1);
+        let previous_review = format!("review {previous_writer_review}");
         let mut reported: Vec<_> = self.journal.events().iter().rev()
             .filter(|event| event["kind"] == "done")
             .take_while(|event| event["step"] != previous_review)
@@ -1754,7 +2098,9 @@ impl Run {
             .map(Some).map_err(|error| GatewayError(format!("Cannot encode the writer checks attachment: {error}")))
     }
 
-    fn review_prompt(&self, n: u32, candidate: &str, step: &str, summary: &str, unverified: &[String], verification: &Value) -> Result<String> {
+    fn review_prompt(&self, round: &ReviewRound<'_>, step: &str, previous_writer_review: u32, reply: Option<&GapReply>) -> Result<String> {
+        let n = self.review_number;
+        let ReviewRound { candidate, summary, unverified, verification, .. } = *round;
         let mut paths = vec!["diff", "--no-renames", &self.base, candidate, "--"];
         paths.extend(self.claimed.iter().map(String::as_str));
         let diff = self.git.run(&paths)?;
@@ -1765,7 +2111,9 @@ impl Run {
             if self.verify_plan.full_local.is_empty() { "" } else {
                 ". The configured Full verification will run on this candidate tree after an approving review"
             });
-        let history = if n > 1 {
+        let history = if reply.is_some() {
+            format!("This is review {n} of the same candidate. Read the previous review (review-{}.json) and the owner's gap decisions (owner-gap-reply.json). Reassess the open gaps using the evidence provided.", n - 1)
+        } else if n > 1 {
             format!("This is review round {n}. The previous review is attached as review-{}.json; the writer closed its important findings (its words are in the summary above), and the package's commits sit on top of the base.", n - 1)
         } else {
             "This is the first review of the change; its commit sits on top of the base.".into()
@@ -1776,7 +2124,8 @@ impl Run {
             "The base commit has no REVIEW.md: judge by the brief."
         };
         let scrubber = Scrubber::new(&self.cfg)?;
-        let summary = scrubber.text(summary, &self.private_places());
+        let places = self.private_places();
+        let summary = scrubber.text(summary, &places);
         let text = render(REVIEW, &[
             ("step", step.to_string()), ("run", self.id.clone()), ("base", self.base.clone()), ("summary", summary),
             ("unverified", if unverified.is_empty() { "nothing named".into() } else { unverified.join("; ") }),
@@ -1804,6 +2153,22 @@ impl Run {
             let prev = std::fs::read(self.journal.file(&format!("reviews/review-{}.json", n - 1))).unwrap_or_default();
             required.push((format!("review-{}.json", n - 1), prev));
         }
+        if let Some(reply) = reply {
+            let decisions: Vec<_> = reply.decisions.iter().map(|decision| {
+                let gap = self.gaps.iter().find(|gap| gap.id == decision.id).expect("validated gap id");
+                let mut detail = json!({
+                    "id": gap.id,
+                    "what": gap.evidence.what,
+                    "why": gap.evidence.why,
+                    "option": decision.option.label(),
+                });
+                if decision.option == GapOption::Attach {
+                    detail["material"] = json!(scrubber.text(&decision.material, &places));
+                }
+                detail
+            }).collect();
+            required.push(("owner-gap-reply.json".into(), json!({ "decisions": decisions }).to_string().into_bytes()));
+        }
         if !self.args.review_context.is_empty() {
             let scrubber = Scrubber::new(&self.cfg)?;
             let places = self.private_places();
@@ -1818,7 +2183,7 @@ impl Run {
         }
         // Drop the largest optional attachments first when the request is too large.
         let mut optional: Vec<(String, Vec<u8>)> = Vec::new();
-        if let Some(checks) = self.review_writer_checks(n)? {
+        if let Some(checks) = self.review_writer_checks(previous_writer_review)? {
             optional.push(("writer-checks.json".into(), checks));
         }
         // Copies of the reviewed commit's blobs, never the live work tree.
