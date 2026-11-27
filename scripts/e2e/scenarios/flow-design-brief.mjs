@@ -74,22 +74,40 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, RO
     const extract = path.join(f.w.dir, "extract.md");
     fs.writeFileSync(extract, quote + "\n");
     const cited = file => ({ facts: [{ claim: "The declared limit is 42.", file, line: 1, quote }], unknowns: [] });
-    f.answer("plan", { questions: [{ question, files: [alias] }] });
+    f.answer("plan", { questions: [{ question, files: [alias, "repo1/src/math.mjs"] }] });
     f.answer("facts 1", cited("context-1.md"));
     f.answer("draft", draft("Confirm the declared limit from the supplied extract."));
     f.answer("review", f.review("approved"));
     const output = path.join(f.w.dir, "with-extract.md");
-    const result = await flow(t, f, ["design-brief", "--args", argsFor(f, output, { questions: [question], context: [extract] })]);
-    t.eq([result.code, result.json?.facts, f.steps()], [0, 1, ["plan", "facts 1", "draft", "review"]],
-      "a stale large alias resolves to the attached extract and its verified quote");
+    const contextOnly = await flow(t, f, ["design-brief", "--args", argsFor(f, output, { questions: [question], context: [extract] })]);
+    t.eq([contextOnly.code, contextOnly.json?.status, contextOnly.json?.repositoryFacts, contextOnly.json?.contextFacts, f.steps()],
+      [2, "waiting", 0, 1, ["plan", "facts 1"]], "a readable repository source and a verified context quote still require an owner decision");
+    t.ok(/No repository facts/.test(contextOnly.json?.question ?? "") && !contextOnly.json?.draft && !fs.existsSync(output),
+      "the context-only stop explains the missing evidence before writing a draft");
     const request = (result, step) => JSON.parse(fs.readFileSync(path.join(result.journal, "requests", `flow-${result.runId}-${step}.json`), "utf8")).prompt;
-    const available = request(result.json, "plan").match(/<attachment path="available-files\.txt">\n([\s\S]*?)\n<\/attachment>/);
-    t.ok(available[1].includes("context-1.md") && !available[1].includes(alias), "large blobs stay out of the plan inventory");
-    const prompt = request(result.json, "facts-1");
+    const planPrompt = request(contextOnly.json, "plan");
+    const available = planPrompt.match(/<attachment path="available-files\.txt">\n([\s\S]*?)\n<\/attachment>/);
+    t.ok(available[1].includes("context-1.md") && !available[1].includes(alias), "the readable inventory includes the extract alias");
+    const oversized = planPrompt.match(/<attachment path="oversized-files\.txt">\n([\s\S]*?)\n<\/attachment>/);
+    t.eq(oversized?.[1].split("\n"), [alias], "the planner can cite the oversized file by its pinned alias");
+    t.ok(!planPrompt.includes("// padding"), "the planner receives only the oversized file name");
+    const prompt = request(contextOnly.json, "facts-1");
     t.ok(prompt.includes('<attachment path="context-1.md">') && prompt.includes(quote)
       && prompt.includes("limit 174762") && !prompt.includes("// padding"), "facts receive the excerpt and the reason the large blob was omitted");
+    const contextRun = contextOnly.json.runId;
+    const status = await flow(t, f, ["status", contextRun]);
+    t.eq([status.json?.status, status.json?.ownerDecisions?.[0]?.options], ["waiting", ["Continue anyway", "Add sources", "Stop"]],
+      "the usual owner status displays all evidence choices");
+    const choice = path.join(f.w.dir, "evidence-choice.txt");
+    fs.writeFileSync(choice, "Continue anyway");
+    const proceed = await flow(t, f, ["reply", contextRun, "--file", choice]);
+    t.eq(proceed.code, 0, "the owner can explicitly continue using the existing reply command");
+    const result = await flow(t, f, ["design-brief", "--resume", contextRun]);
+    t.eq([result.code, result.json?.facts, f.steps()], [0, 1, ["plan", "facts 1", "draft", "review"]],
+      "a stale large alias resolves to the attached extract and its verified quote after the owner chooses to proceed");
 
     const withReply = path.join(f.w.dir, "with-reply.md");
+    f.answer("plan", { questions: [{ question, files: [alias] }] });
     const waiting = await flow(t, f, ["design-brief", "--args", argsFor(f, withReply, { questions: [question] })]);
     t.eq([waiting.code, waiting.json?.status, f.steps().at(-1)], [2, "waiting", "plan"],
       "missing readable source asks for input without starting a fact call");
@@ -101,9 +119,25 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, RO
     const reply = await flow(t, f, ["reply", id, "--file", extract]);
     t.eq(reply.code, 0, "the owner supplies the focused extract to the existing run");
     f.answer("facts 1", cited("owner-source.md"));
+    const ownerOnly = await flow(t, f, ["design-brief", "--resume", id]);
+    t.eq([ownerOnly.code, ownerOnly.json?.status, ownerOnly.json?.repositoryFacts, ownerOnly.json?.contextFacts, f.steps().slice(5)],
+      [2, "waiting", 0, 1, ["facts 1"]], "a quote from the owner's extract is context evidence");
+    const acceptExtract = await flow(t, f, ["reply", id, "--file", choice]);
+    t.eq(acceptExtract.code, 0, "the owner authorizes drafting from the extract");
+    const draftCut = await flow(t, f, ["design-brief", "--resume", id], { ZODCHI_FLOW_CUT: "submit draft" });
+    t.eq(draftCut.code, 75, "the owner extract supports a saved draft request");
+    // Recreate a journal from before the repository evidence gate and origin counts.
+    const eventFile = path.join(ownerOnly.json.journal, "events.jsonl");
+    const events = fs.readFileSync(eventFile, "utf8").trim().split(/\r?\n/).map(JSON.parse)
+      .filter(event => event.step !== "repository evidence");
+    const researched = events.find(event => event.kind === "done" && event.step === "facts 1");
+    delete researched.result.repositoryFacts;
+    fs.writeFileSync(eventFile, events.map((event, index) => JSON.stringify({ ...event, seq: index + 1 })).join("\n") + "\n");
     const resumed = await flow(t, f, ["design-brief", "--resume", id]);
     t.eq([resumed.code, resumed.json?.runId, resumed.json?.facts, f.steps().slice(5)],
       [0, id, 1, ["facts 1", "draft", "review"]], "the same run accepts a verified quote from the owner extract");
+    t.eq([resumed.json?.repositoryFacts, resumed.json?.contextFacts], [0, 1],
+      "an older run resumes its saved draft with context-only evidence");
   });
 
   scenario("flow-design-brief-claude", "an opted-in brief pins a Claude researcher and writer, and a Codex reviewer", async (t) => {
@@ -244,7 +278,7 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, RO
     t.eq(delivered.toString(), `<!-- design-brief: clamp -->\n${fixed.markdown}\n`, "publication adds exactly one ownership marker to the reviewed Markdown");
   });
 
-  scenario("flow-design-brief-unsafe-evidence", "protect existing files, plan a question without file hints, and stop on a blocked review of mismatched evidence", async (t) => {
+  scenario("flow-design-brief-unsafe-evidence", "protect existing files, recover from an ungrounded plan, and stop on a blocked review of mismatched evidence", async (t) => {
     const f = flowWorld(t, "flow-design-brief-unsafe-evidence");
     const output = path.join(f.r, ".agent-tmp", "brief.md");
     fs.mkdirSync(path.dirname(output), { recursive: true });
@@ -254,18 +288,82 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, RO
     const foreign = await flow(t, f, ["design-brief", "--args", args]);
     t.eq([foreign.code, f.steps()], [2, []], "a foreign brief is refused before any model turn");
     fs.renameSync(output, path.join(path.dirname(output), "existing.md"));
-    f.answer("plan", { questions: [{ question, files: ["repo1/src/math.mjs"] }] });
+    fs.writeFileSync(path.join(f.r, "src", "worktree-only.mjs"), STUB);
+    f.answer("plan", { questions: [{ question, files: ["repo1/src/worktree-only.mjs"] }] });
+    f.answer("replan", { questions: [{ question, files: ["repo1/src/math.mjs"] }] });
     f.answer("facts 1", facts("This quote does not occur in the file."));
     f.answer("draft", draft("Review the evidence before defining the clamp scenario."));
     f.answer("review", f.review("blocked"));
-    const result = await flow(t, f, ["design-brief", "--args", args]);
+    const cut = await flow(t, f, ["design-brief", "--args", args], { ZODCHI_FLOW_CUT: "submit replan" });
+    t.eq(cut.code, 75, "a file absent from the pinned commit triggers the second planning call");
+    const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
+    const waiting = await flow(t, f, ["design-brief", "--resume", id]);
+    t.eq([waiting.code, waiting.json?.status, waiting.json?.repositoryFacts, waiting.json?.contextFacts, f.steps()],
+      [2, "waiting", 0, 0, ["plan", "replan", "facts 1"]], "the recovered plan starts research once and a rejected quote cannot authorize drafting");
+    const choice = path.join(f.w.dir, "evidence-choice.txt");
+    fs.writeFileSync(choice, "I read the question.");
+    const acknowledged = await flow(t, f, ["reply", id, "--file", choice, "--answered", "all"]);
+    t.eq(acknowledged.code, 0, "the usual reply command records the acknowledgement");
+    const stillWaiting = await flow(t, f, ["design-brief", "--resume", id]);
+    t.eq([stillWaiting.json?.status, f.steps()], ["waiting", ["plan", "replan", "facts 1"]],
+      "marking the question answered without choosing to proceed cannot start a draft");
+    fs.writeFileSync(choice, "Continue anyway");
+    const proceed = await flow(t, f, ["reply", id, "--file", choice]);
+    t.eq(proceed.code, 0, "the owner explicitly chooses to draft with an evidence gap");
+    const result = await flow(t, f, ["design-brief", "--resume", id]);
     t.eq([result.code, result.json?.facts, result.json?.rejectedFacts, result.json?.review?.verdict, f.steps(), fs.existsSync(output)],
-      [2, 0, 1, "blocked", ["plan", "facts 1", "draft", "review"], false],
+      [2, 0, 1, "blocked", ["plan", "replan", "facts 1", "draft", "review"], false],
       "planning supplies the source, the bad quote yields no fact, and a blocked review stops before a fix or publication");
     const requests = fs.readFileSync(path.join(f.w.codex, "fake-turns.jsonl"), "utf8").trim().split(/\r?\n/).map(JSON.parse);
+    t.ok(requests.find(turn => turn.step === "replan").prompt.includes(question), "the second planning call names the ungrounded question");
+    for (const step of ["plan", "replan"]) {
+      const { prompt } = requests.find(turn => turn.step === step);
+      t.ok(prompt.includes("When a code question needs an owner extract, cite the original file alias.")
+        && prompt.includes("Set notCode to true only for questions unrelated to code."),
+        `${step} explains when to cite an extract's repository file and when to mark a question notCode`);
+    }
     const { prompt } = requests.find(turn => turn.step === "draft");
     t.ok(!prompt.includes("This quote does not occur") && prompt.includes("No cited facts could be verified"),
       "the writer sees the evidence gap without the claim associated with the invalid quote");
+  });
+
+  scenario("flow-design-brief-unfit-plan", "a plan gets one correction before refusal if its questions still lack repository sources", async (t) => {
+    const f = flowWorld(t, "flow-design-brief-unfit-plan");
+    const output = path.join(f.w.dir, "unfit-brief.md");
+    const questions = [
+      "Where is clamp implemented?",
+      "Which arguments does clamp read?",
+      "What result does clamp return?",
+      "Where do callers use clamp?",
+      "Which tests exercise the limits?",
+    ];
+    const unsourced = { questions: questions.map(question => ({ question, files: [] })) };
+    f.answer("plan", unsourced);
+    f.answer("replan", unsourced);
+    const refused = await flow(t, f, ["design-brief", "--args", argsFor(f, output, { questions: [] })]);
+    t.eq([refused.code, refused.json?.approved, refused.json?.offendingQuestions, f.steps(), fs.existsSync(output)],
+      [2, false, questions, ["plan", "replan"], false], "two ungrounded plans refuse the run and name all five questions");
+    t.ok(questions.every(question => refused.json?.refused?.includes(question)), "the refusal explains the missing repository evidence by question");
+    const recovered = await flow(t, f, ["design-brief", "--resume", refused.json.runId]);
+    t.eq([recovered.code, recovered.json?.offendingQuestions, f.steps()], [2, questions, ["plan", "replan"]],
+      "resuming a refusal uses the same result without a third planning call");
+
+    const general = { questions: questions.map((question, index) => ({
+      question, files: index === 0 ? ["repo1/src/math.mjs"] : [], notCode: true,
+    })) };
+    f.answer("plan", general);
+    f.answer("replan", general);
+    const allGeneral = await flow(t, f, ["design-brief", "--args", argsFor(f, output, { questions: [] })]);
+    t.eq([allGeneral.code, allGeneral.json?.offendingQuestions, f.steps()],
+      [2, questions, ["plan", "replan", "plan", "replan"]], "marking every question notCode fails even with a repository alias in the plan");
+    t.ok(allGeneral.json?.refused?.includes("notCode"), "the refusal explains why all-general questions are unfit");
+
+    const runs = path.join(f.w.zhome, "flows");
+    const existingRuns = fs.readdirSync(runs);
+    const withoutRepos = await flow(t, f, ["design-brief", "--args", argsFor(f, output, { repos: [] })]);
+    t.eq([withoutRepos.code, withoutRepos.json, fs.readdirSync(runs), f.steps()],
+      [2, { workflow: "design-brief", approved: false, refused: "Design brief needs at least one repository." },
+        existingRuns, ["plan", "replan", "plan", "replan"]], "the no-repository result and lack of run events stay the same");
   });
 
   scenario("flow-design-brief-owner-closed", "localized headings and partial owner answers survive repeated draft steps", async (t) => {
@@ -358,6 +456,36 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, RO
     f.answer("facts 1", { facts: [{ ...answer.facts[0], claim: `${legacy} api_key=${fixtureValue}` }], unknowns: [] });
     const unsafe = await flow(t, f, ["design-brief", "--args", refusedArgs]);
     t.ok(unsafe.code === 2 && /would change during screening/.test(unsafe.json?.infra ?? ""), "a placeholder does not exempt nearby sensitive text");
+
+    const samePath = path.join(f.r, "src", "math.mjs");
+    const contextLines = ["The rollout uses the upper limit.", "Keep the old result."];
+    fs.writeFileSync(samePath, contextLines.join("\n") + "\n");
+    const questions = ["What does the pinned implementation contain?", "What did the owner choose for rollout?"];
+    const mixedArgs = argsFor(f, path.join(f.w.dir, "mixed-evidence.md"), { questions, context: [samePath] });
+    f.answer("plan", { questions: [
+      { question: questions[0], files: ["repo1/src/math.mjs", "repo1/src/other.mjs"] },
+      { question: questions[1], files: [], notCode: true },
+    ] });
+    f.answer("facts 1", { facts: [
+      ...facts(STUB.trim()).facts,
+      { claim: "The source also defines text.", file: "repo1/src/math.mjs", line: 2, quote: templateLine },
+      { claim: "The other module exports a constant.", file: "repo1/src/other.mjs", line: 1, quote: "export const other = 1;" },
+      { claim: "The source states the rollout policy.", file: "repo1/src/math.mjs", line: 1, quote: contextLines[0] },
+    ], unknowns: [] });
+    f.answer("facts 2", { facts: contextLines.map((quote, index) => ({
+      claim: quote, file: "context-1.md", line: index + 1, quote,
+    })), unknowns: [] });
+    const runs = path.join(f.w.zhome, "flows");
+    const existingRuns = new Set(fs.readdirSync(runs));
+    const priorTurns = f.steps().length;
+    const mixedCut = await flow(t, f, ["design-brief", "--args", mixedArgs], { ZODCHI_FLOW_CUT: "submit facts 2" });
+    t.eq(mixedCut.code, 75, "a single notCode question can use the attached context without a file hint");
+    const [mixedRun] = fs.readdirSync(runs).filter(id => !existingRuns.has(id));
+    const mixed = await flow(t, f, ["design-brief", "--resume", mixedRun]);
+    t.eq([mixed.code, mixed.json?.facts, mixed.json?.repositoryFacts, mixed.json?.contextFacts, mixed.json?.rejectedFacts],
+      [0, 5, 3, 2, 1], "one path supplies distinct pinned and attached texts, and a quote from the wrong origin is rejected");
+    t.eq(f.steps().slice(priorTurns), ["plan", "facts 1", "facts 2", "draft", "review"],
+      "the mixed plan and the two sets of evidence are reused across the interruption");
   });
 
 

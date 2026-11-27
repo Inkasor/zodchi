@@ -1,11 +1,13 @@
 //! The design-brief effects: pinned sources, validated model output and publication of the approved Markdown.
 
 use crate::{
-    boundary::Launch, catalog::ProjectGate,
-    review_contract, design_material, executor, gateway,
+    boundary::Launch,
+    catalog::ProjectGate,
+    design_material::{self, Origin, Source},
+    executor, gateway,
     journal::{self, Journal},
     models::{self, Pick},
-    Exit,
+    review_contract, Exit,
 };
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -27,6 +29,10 @@ const FACTS: &str = include_str!("../flows/design-brief/v1/facts.json");
 const DRAFT: &str = include_str!("../flows/design-brief/v1/draft.json");
 const REQUIRED_HEADINGS: [&str; 2] = ["## Review boundary", "## Checks"];
 const ROLES: [&str; 2] = ["flow-brief", "architecture-review"];
+const EVIDENCE_STEP: &str = "repository evidence";
+const CONTINUE_ANYWAY: &str = "Continue anyway";
+const ADD_SOURCES: &str = "Add sources";
+const STOP: &str = "Stop";
 
 pub fn start(raw: &Value, launch: Option<Launch>, require_workflow: ProjectGate) -> Result<Exit> {
     match prepare(raw, require_workflow) {
@@ -223,6 +229,17 @@ pub fn resume(id: &str, given: Option<&Value>, rerun: Option<&str>) -> Result<Ex
     };
     let mut steps = journal.completed_steps();
     let owner = OwnerDecisions::from_journal(&journal);
+    let evidence_reply = EvidenceReply::from_journal(&journal);
+    // Earlier versions could start research on a plan that the new check would replace.
+    // Keep the original question order for any requests that were already recorded.
+    let mut research_started = journal.events().iter().any(|event| {
+        event["step"].as_str().is_some_and(|step| step.starts_with("facts "))
+    });
+    // A saved draft request or an earlier draft attempt must still be resumable.
+    let mut draft_started = journal
+        .events()
+        .iter()
+        .any(|event| event["step"] == "draft");
     for name in ["draft", "fix"] {
         if let Some(draft) = steps.get_mut(name) {
             owner.reconcile(name, draft);
@@ -231,18 +248,48 @@ pub fn resume(id: &str, given: Option<&Value>, rerun: Option<&str>) -> Result<Ex
     let context = json!({ "workflow": NAME, "runId": id, "journal": journal.dir, "label": run["label"], "models": run["pair"] });
 
     loop {
-        let call = match next_step(&material, &steps)? {
+        let call = match next_step(
+            &material,
+            &steps,
+            research_started,
+            draft_started,
+            evidence_reply,
+        )? {
             Next::Call(call) => call,
             Next::Wait(step) => {
-                return wait_for_owner(&mut journal, &run, step, &steps[step], context)
+                let draft = &steps[step];
+                let path = journal.write_text(&format!("{step}.md"), &brief(&run, draft))?;
+                return wait_for_owner(&mut journal, step, &draft["ownerDecisions"], Some(&path), context);
+            }
+            Next::NoRepositoryFacts(counts) => {
+                let mut result = context;
+                counts.report(&mut result, true);
+                return match evidence_reply {
+                    Some(EvidenceReply::AddSources) => refuse(&mut journal, result,
+                        "Start a new design-brief run with additional repository sources or file hints. This run's sources are pinned."),
+                    Some(EvidenceReply::Stop) => refuse(&mut journal, result, "The owner stopped before drafting."),
+                    _ => wait_for_owner(&mut journal, EVIDENCE_STEP, &json!([{
+                        "question": "No repository facts were verified. How should the brief proceed?",
+                        "options": [CONTINUE_ANYWAY, ADD_SOURCES, STOP],
+                        "default": ADD_SOURCES,
+                    }]), None, result),
+                };
+            }
+            Next::RefusePlan(gap) => {
+                let mut result = context;
+                FactCounts::default().report(&mut result, true);
+                result["offendingQuestions"] = json!(gap.questions);
+                return refuse(&mut journal, result, &gap.message());
             }
             Next::Finish(outcome) => {
-                return save_result(&mut journal, &run, &steps, context, outcome)
+                return save_result(&mut journal, &run, &material, &steps, context, outcome)
             }
         };
         let step = call.name().to_string();
         match model_step(&mut journal, &cfg, &material, &run, &steps, &owner, call) {
             Ok(data) => {
+                research_started |= step.starts_with("facts ");
+                draft_started |= step == "draft";
                 steps.insert(step, data);
             }
             Err(error) => {
@@ -276,7 +323,7 @@ pub fn resume(id: &str, given: Option<&Value>, rerun: Option<&str>) -> Result<Ex
 }
 
 enum ModelStep<'a> {
-    Plan,
+    Plan { feedback: Option<PlanGap<'a>> },
     Facts { name: String, question: &'a Value },
     Draft,
     Fix,
@@ -287,7 +334,8 @@ enum ModelStep<'a> {
 impl ModelStep<'_> {
     fn name(&self) -> &str {
         match self {
-            Self::Plan => "plan",
+            Self::Plan { feedback: None } => "plan",
+            Self::Plan { feedback: Some(_) } => "replan",
             Self::Facts { name, .. } => name,
             Self::Draft => "draft",
             Self::Fix => "fix",
@@ -298,7 +346,7 @@ impl ModelStep<'_> {
 
     fn role(&self) -> &'static str {
         match self {
-            Self::Plan | Self::Facts { .. } => "researcher",
+            Self::Plan { .. } | Self::Facts { .. } => "researcher",
             Self::Draft | Self::Fix => "writer",
             Self::Review | Self::ReviewFix => "architect",
         }
@@ -324,6 +372,10 @@ impl OwnerDecisions {
         let mut state = Self::default();
         let mut waiting = None;
         for event in journal.events() {
+            if event["step"] == EVIDENCE_STEP {
+                state.closed |= event["noNewDecisions"] == true;
+                continue;
+            }
             if event["kind"] == "waiting" && event["decisions"].is_array() {
                 waiting = Some(event);
             }
@@ -395,18 +447,73 @@ fn decision_key(question: &str) -> String {
     folded[..end].trim_end_matches([' ', '?', '.', ':']).to_string()
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EvidenceReply {
+    Continue,
+    AddSources,
+    Stop,
+}
+
+impl EvidenceReply {
+    fn from_journal(journal: &Journal) -> Option<Self> {
+        let answer = journal.events().iter().rev().find(|event| {
+            event["step"] == EVIDENCE_STEP && event["kind"] == "rerun"
+        })?["ownerAnswer"].as_str()?;
+        match answer.trim() {
+            CONTINUE_ANYWAY => Some(Self::Continue),
+            ADD_SOURCES => Some(Self::AddSources),
+            STOP => Some(Self::Stop),
+            _ => None,
+        }
+    }
+}
+
+struct PlanGap<'a> {
+    reason: &'static str,
+    questions: Vec<&'a str>,
+}
+
+impl PlanGap<'_> {
+    fn message(&self) -> String {
+        format!("{}\n- {}", self.reason, self.questions.join("\n- "))
+    }
+}
+
 enum Next<'a> {
     Call(ModelStep<'a>),
     Wait(&'static str),
+    NoRepositoryFacts(FactCounts),
+    RefusePlan(PlanGap<'a>),
     Finish(Outcome),
 }
 
-fn next_step<'a>(material: &'a Value, steps: &'a Map<String, Value>) -> Result<Next<'a>> {
+fn has_repositories(material: &Value) -> bool {
+    material["sources"].as_array().is_some_and(|sources| !sources.is_empty())
+}
+
+fn next_step<'a>(
+    material: &'a Value,
+    steps: &'a Map<String, Value>,
+    research_started: bool,
+    draft_started: bool,
+    evidence_reply: Option<EvidenceReply>,
+) -> Result<Next<'a>> {
     let questions = if material["needsPlan"] == true {
         let Some(plan) = steps.get("plan") else {
-            return Ok(Next::Call(ModelStep::Plan));
+            return Ok(Next::Call(ModelStep::Plan { feedback: None }));
         };
-        &plan["questions"]
+        let revised = steps.get("replan");
+        let questions = &revised.unwrap_or(plan)["questions"];
+        if has_repositories(material) && !research_started {
+            if let Some(gap) = plan_gap(material, questions) {
+                return Ok(if revised.is_some() {
+                    Next::RefusePlan(gap)
+                } else {
+                    Next::Call(ModelStep::Plan { feedback: Some(gap) })
+                });
+            }
+        }
+        questions
     } else {
         &material["questions"]
     };
@@ -417,6 +524,15 @@ fn next_step<'a>(material: &'a Value, steps: &'a Map<String, Value>) -> Result<N
         let name = format!("facts {}", index + 1);
         if !steps.contains_key(&name) {
             return Ok(Next::Call(ModelStep::Facts { name, question }));
+        }
+    }
+    if !draft_started
+        && has_repositories(material)
+        && evidence_reply != Some(EvidenceReply::Continue)
+    {
+        let counts = FactCounts::from_steps(material, steps);
+        if counts.repository == 0 {
+            return Ok(Next::NoRepositoryFacts(counts));
         }
     }
     for (draft_name, review_name, write, review) in [
@@ -450,14 +566,11 @@ fn next_step<'a>(material: &'a Value, steps: &'a Map<String, Value>) -> Result<N
 
 fn wait_for_owner(
     journal: &mut Journal,
-    run: &Value,
     step: &str,
-    draft: &Value,
+    questions: &Value,
+    draft: Option<&Path>,
     mut result: Value,
 ) -> Result<Exit> {
-    let markdown = brief(run, draft);
-    let path = journal.write_text(&format!("{step}.md"), &markdown)?;
-    let questions = &draft["ownerDecisions"];
     let prompt = questions
         .as_array()
         .into_iter()
@@ -471,13 +584,15 @@ fn wait_for_owner(
     {
         journal.append(
             json!({ "kind": "waiting", "step": step, "attempt": journal.attempt(step),
-            "question": prompt, "decisions": questions, "draft": path }),
+            "question": prompt, "decisions": questions, "draft": draft }),
         )?;
     }
     result["status"] = json!("waiting");
     result["question"] = json!(prompt);
     result["ownerDecisions"] = questions.clone();
-    result["draft"] = json!(path);
+    if let Some(path) = draft {
+        result["draft"] = json!(path);
+    }
     Ok(Exit { code: 2, result })
 }
 
@@ -515,9 +630,18 @@ fn model_step(
     let mut schema = DRAFT;
     let mut gateway_role = ROLES[0];
     match &call {
-        ModelStep::Plan => {
+        ModelStep::Plan { feedback } => {
             schema = PLAN;
-            preamble.push_str("Choose available aliases for each supplied question, keeping its text and order, or propose three to five research questions if the list is empty. Use context-N.md for attached extracts when they provide the relevant evidence. Large files are off the list. Return an empty files array for a question that needs an owner extract.");
+            preamble.push_str("Choose available aliases for each supplied question, keeping its text and order, or propose three to five research questions if the list is empty. Use context-N.md for attached extracts when they provide the relevant evidence.");
+            if let Some(gap) = feedback {
+                preamble.push_str("\n\nRevise the plan.\n");
+                preamble.push_str(&gap.message());
+            }
+            preamble.push_str(
+                "\n\nFor each question about code, set notCode to false and select at least one pinned repository file. \
+                 When a code question needs an owner extract, cite the original file alias. \
+                 Set notCode to true only for questions unrelated to code. Include at least one question about code.",
+            );
             attachments.push((
                 "questions.json".into(),
                 material["questions"].to_string().into_bytes(),
@@ -525,19 +649,40 @@ fn model_step(
             let inventory = material["inventory"]
                 .as_array()
                 .expect("pinned file inventory");
+            let alias_limit = 96 * 1024;
             let mut shown = String::new();
-            for alias in material["extracts"].as_object().into_iter().flatten().map(|(alias, _)| alias) {
+            for alias in material["extracts"]
+                .as_object()
+                .into_iter()
+                .flat_map(Map::keys)
+            {
                 shown.push_str(alias);
                 shown.push('\n');
             }
+            let mut oversized = String::new();
+            for alias in material["oversized"]
+                .as_object()
+                .into_iter()
+                .flat_map(Map::keys)
+            {
+                if shown.len() + oversized.len() + alias.len() + 1 > alias_limit {
+                    break;
+                }
+                oversized.push_str(alias);
+                oversized.push('\n');
+            }
             for file in inventory.iter().filter_map(Value::as_str) {
-                if shown.len() + file.len() > 96 * 1024 {
+                if shown.len() + oversized.len() + file.len() + 1 > alias_limit {
                     break;
                 }
                 shown.push_str(file);
                 shown.push('\n');
             }
             attachments.push(("available-files.txt".into(), shown.into_bytes()));
+            if !oversized.is_empty() {
+                preamble.push_str(" You can cite the pinned aliases in oversized-files.txt for files that need an extract.");
+                attachments.push(("oversized-files.txt".into(), oversized.into_bytes()));
+            }
         }
         ModelStep::Facts { question, .. } => {
             schema = FACTS;
@@ -554,8 +699,8 @@ fn model_step(
             }
             preamble.push_str(" A context or owner-source alias cites the supplied extract rather than the complete Git file.");
             sources = files;
-            for (file, text) in &sources {
-                let numbered = text
+            for (file, source) in &sources {
+                let numbered = source.text
                     .lines()
                     .enumerate()
                     .map(|(index, line)| format!("{} {line}", index + 1))
@@ -596,14 +741,22 @@ fn model_step(
         }
     }
     if schema == DRAFT || schema == review_contract::REVIEW_SCHEMA {
-        let findings: Vec<&Value> = steps
+        let findings: Vec<Value> = steps
             .iter()
             .filter(|(name, _)| name.starts_with("facts "))
-            .map(|(_, data)| data)
+            .map(|(_, data)| {
+                let mut data = data.clone();
+                if !material_sources.is_empty() {
+                    if let Some(fields) = data.as_object_mut() {
+                        fields.shift_remove("repositoryFacts");
+                    }
+                }
+                data
+            })
             .collect();
         attachments.push((
             "facts.json".into(),
-            json!(findings).to_string().into_bytes(),
+            Value::Array(findings).to_string().into_bytes(),
         ));
     }
     let using_extract = sources.keys().any(|name| material["extracts"].get(name).is_some());
@@ -631,8 +784,11 @@ fn model_step(
             match schema {
                 PLAN => validate_plan(material, answer),
                 FACTS => {
-                    design_material::retain_verified_facts(answer, &sources)?;
+                    let repository_facts = design_material::retain_verified_facts(answer, &sources)?;
                     screen_unknowns(answer, &clean);
+                    if !material_sources.is_empty() {
+                        answer["repositoryFacts"] = json!(repository_facts);
+                    }
                     Ok(())
                 }
                 DRAFT => {
@@ -696,12 +852,23 @@ fn recorded_sources(
     material: &Value,
     step: &str,
     question: &Value,
-) -> Result<(BTreeMap<String, String>, Vec<String>)> {
+) -> Result<(BTreeMap<String, Source>, Vec<String>)> {
     let attempt = journal.attempt(step);
     let name = format!("sources/{}-{attempt}.json", gateway::slug(step));
     if let Some(saved) = journal.last("sources", step, attempt) {
         let data = journal.read_verified(&name, &saved["digest"])?;
-        let files = serde_json::from_str(&data).map_err(|error| GatewayError(format!("Invalid saved sources: {error}")))?;
+        let text: BTreeMap<String, String> = serde_json::from_str(&data)
+            .map_err(|error| GatewayError(format!("Invalid saved sources: {error}")))?;
+        let repository_sources = saved["repositorySources"].as_array();
+        let files = text.into_iter().map(|(alias, text)| {
+            // Old source records contain only the supplied text. Resolve their aliases against the pinned material.
+            let repository = repository_sources.map_or_else(
+                || design_material::repository_alias(material, &alias),
+                |sources| sources.iter().any(|source| source.as_str() == Some(alias.as_str())),
+            );
+            let origin = if repository { Origin::Repository } else { Origin::Context };
+            (alias, Source { text, origin })
+        }).collect();
         let omitted = saved["omitted"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
         return Ok((files, omitted));
     }
@@ -713,21 +880,30 @@ fn recorded_sources(
         let places = design_material::places(cfg, material["sources"].as_array().expect("pinned sources"));
         let answer = design_material::clean(&scrubber, answer, &places, material["public"] == true);
         if answer.lines().any(|line| !line.trim().is_empty() && crate::input_common::withheld_lines(line) == 0) {
-            files.insert("owner-source.md".into(), answer);
+            files.insert("owner-source.md".into(), Source::context(answer));
         }
     }
-    let data = serde_json::to_string(&files).expect("source map is JSON");
+    let text: BTreeMap<_, _> = files.iter().map(|(alias, source)| (alias, &source.text)).collect();
+    let data = serde_json::to_string(&text).expect("source map is JSON");
     journal.write_text(&name, &data)?;
-    journal.append(
-        json!({ "kind": "sources", "step": step, "attempt": attempt, "digest": sha256_hex(&data), "omitted": omitted }),
-    )?;
+    let mut event = json!({ "kind": "sources", "step": step, "attempt": attempt, "digest": sha256_hex(&data), "omitted": omitted });
+    if has_repositories(material) {
+        event["repositorySources"] = json!(files.iter()
+            .filter(|(_, source)| source.origin == Origin::Repository)
+            .map(|(alias, _)| alias)
+            .collect::<Vec<_>>());
+    }
+    journal.append(event)?;
     Ok((files, omitted))
 }
 
-fn validate_plan(material: &Value, answer: &Value) -> std::result::Result<(), String> {
+fn validate_plan(material: &Value, answer: &mut Value) -> std::result::Result<(), String> {
     let given = material["questions"].as_array().expect("pinned questions");
-    let inventory = material["inventory"].as_array().expect("pinned inventory");
-    let Some(planned) = answer["questions"].as_array().filter(|list| {
+    let has_repos = has_repositories(material);
+    let available = |alias: &str| {
+        design_material::repository_alias(material, alias) || material["extracts"].get(alias).is_some()
+    };
+    let Some(planned) = answer["questions"].as_array_mut().filter(|list| {
         if given.is_empty() {
             (3..=5).contains(&list.len())
         } else {
@@ -736,17 +912,20 @@ fn validate_plan(material: &Value, answer: &Value) -> std::result::Result<(), St
     }) else {
         return Err("The plan returned a different number of questions.".into());
     };
-    for (index, item) in planned.iter().enumerate() {
+    for (index, item) in planned.iter_mut().enumerate() {
         let question = item["question"].as_str().unwrap_or("");
         let files = item["files"].as_array();
         if question.trim().is_empty()
-            || files.is_none_or(|files| files.iter().any(|file| file.as_str().is_none_or(|alias| {
-                !inventory.contains(file) && material["extracts"].get(alias).is_none() && material["oversized"].get(alias).is_none()
-            })))
+            || files.is_none_or(|files| files.iter().any(|file| {
+                file.as_str().is_none_or(|alias| !has_repos && !available(alias))
+            }))
         {
             return Err(
                 "The plan needs a question and available file aliases for every slot.".into(),
             );
+        }
+        if item.get("notCode").is_some_and(|value| !value.is_boolean()) {
+            return Err("A question's notCode must be true or false.".into());
         }
         if let Some(requested) = given.get(index) {
             if requested["question"] != question
@@ -761,8 +940,31 @@ fn validate_plan(material: &Value, answer: &Value) -> std::result::Result<(), St
                 );
             }
         }
+        if has_repos {
+            // Guessed paths outside the pinned inventory cannot supply evidence.
+            item["files"].as_array_mut().expect("has files")
+                .retain(|file| file.as_str().is_some_and(available));
+        }
     }
     Ok(())
+}
+
+fn plan_gap<'a>(material: &Value, questions: &'a Value) -> Option<PlanGap<'a>> {
+    let questions = questions.as_array()?;
+    let all_not_code = questions.iter().all(|item| item["notCode"] == true);
+    let offending: Vec<_> = questions.iter().filter(|item| {
+        all_not_code || (item["notCode"] != true
+            && !item["files"].as_array().into_iter().flatten().filter_map(Value::as_str)
+                .any(|alias| design_material::repository_alias(material, alias)))
+    }).filter_map(|item| item["question"].as_str()).collect();
+    (!offending.is_empty()).then_some(PlanGap {
+        reason: if all_not_code {
+            "Every planned question is marked notCode."
+        } else {
+            "These research questions need a file from a pinned repository."
+        },
+        questions: offending,
+    })
 }
 
 fn normalize_draft(answer: &mut Value) -> std::result::Result<(), String> {
@@ -848,9 +1050,53 @@ fn output(path: &Path) -> Result<Option<String>> {
     }
 }
 
+#[derive(Default)]
+struct FactCounts {
+    accepted: usize,
+    rejected: usize,
+    repository: usize,
+}
+
+impl FactCounts {
+    fn from_steps(material: &Value, steps: &Map<String, Value>) -> Self {
+        let mut counts = Self::default();
+        for (_, data) in steps.iter().filter(|(name, _)| name.starts_with("facts ")) {
+            let facts = data["facts"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+            counts.accepted += facts.len();
+            counts.rejected += data["rejectedFacts"].as_array().map(Vec::len).unwrap_or(0);
+            counts.repository += data["repositoryFacts"].as_u64()
+                .and_then(|count| usize::try_from(count).ok())
+                .filter(|&count| count <= facts.len())
+                .unwrap_or_else(|| {
+                    // Older verified answers have no count. Use the source selection in their pinned inputs.
+                    facts.iter().filter_map(|fact| fact["file"].as_str())
+                        .filter(|alias| design_material::repository_alias(material, alias)).count()
+                });
+        }
+        counts
+    }
+
+    fn report(&self, result: &mut Value, has_repos: bool) {
+        result["facts"] = json!(self.accepted);
+        result["rejectedFacts"] = json!(self.rejected);
+        if has_repos {
+            result["repositoryFacts"] = json!(self.repository);
+            result["contextFacts"] = json!(self.accepted - self.repository);
+        }
+    }
+}
+
+fn refuse(journal: &mut Journal, mut result: Value, reason: &str) -> Result<Exit> {
+    result["approved"] = json!(false);
+    result["refused"] = json!(reason);
+    journal.write_value("result.json", &result)?;
+    finish(journal, result)
+}
+
 fn save_result(
     journal: &mut Journal,
     run: &Value,
+    material: &Value,
     steps: &Map<String, Value>,
     mut result: Value,
     decision: Outcome,
@@ -861,16 +1107,7 @@ fn save_result(
     result["review"] = steps[decision.review].clone();
     result["reviewedSha256"] = json!(digest);
     result["candidate"] = json!(candidate);
-    result["facts"] = json!(steps
-        .iter()
-        .filter(|(name, _)| name.starts_with("facts "))
-        .map(|(_, facts)| facts["facts"].as_array().map(Vec::len).unwrap_or(0))
-        .sum::<usize>());
-    result["rejectedFacts"] = json!(steps
-        .iter()
-        .filter(|(name, _)| name.starts_with("facts "))
-        .map(|(_, facts)| facts["rejectedFacts"].as_array().map(Vec::len).unwrap_or(0))
-        .sum::<usize>());
+    FactCounts::from_steps(material, steps).report(&mut result, has_repositories(material));
     result["approved"] = json!(decision.approved);
     result["verdict"] = json!(if decision.approved {
         "approved"

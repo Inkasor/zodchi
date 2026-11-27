@@ -8,10 +8,11 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["question", "files"],
+        "required": ["question", "files", "notCode"],
         "properties": {
           "question": { "type": "string" },
-          "files": { "type": "array", "items": { "type": "string" } }
+          "files": { "type": "array", "items": { "type": "string" } },
+          "notCode": { "type": "boolean", "description": "True for a question unrelated to repository code." }
         }
       }
     }

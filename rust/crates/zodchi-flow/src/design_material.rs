@@ -18,6 +18,23 @@ enum SourceText {
     Unavailable,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Origin {
+    Repository,
+    Context,
+}
+
+pub(crate) struct Source {
+    pub text: String,
+    pub origin: Origin,
+}
+
+impl Source {
+    pub fn context(text: String) -> Self {
+        Self { text, origin: Origin::Context }
+    }
+}
+
 pub fn absolute(value: &Value, name: &str) -> Result<PathBuf> {
     value
         .as_str()
@@ -359,11 +376,18 @@ fn source_size_error(name: &str, bytes: usize) -> String {
     format!("The question file {name} has {bytes} bytes (limit {MAX_SOURCE}). Select a smaller source or put a focused extract in args.context.")
 }
 
-pub fn question_sources(
+pub(crate) fn repository_alias(material: &Value, alias: &str) -> bool {
+    material["extracts"].get(alias).is_none()
+        && (material["oversized"].get(alias).is_some()
+            || material["inventory"].as_array()
+                .is_some_and(|files| files.iter().any(|file| file.as_str() == Some(alias))))
+}
+
+pub(crate) fn question_sources(
     cfg: &Config,
     material: &Value,
     question: &Value,
-) -> Result<(BTreeMap<String, String>, Vec<String>)> {
+) -> Result<(BTreeMap<String, Source>, Vec<String>)> {
     let available = material["sources"].as_array().expect("pinned Git sources");
     let scrubber = scrubber(cfg, material)?;
     let places = places(cfg, available);
@@ -372,7 +396,7 @@ pub fn question_sources(
     let mut omitted = Vec::new();
     for file in text_list(&question["files"], "question.files")? {
         if let Some(extract) = material["extracts"][&file].as_str() {
-            sources.insert(file, extract.to_owned());
+            sources.insert(file, Source::context(extract.to_owned()));
             continue;
         }
         if let Some(bytes) = material["oversized"][&file].as_u64() {
@@ -380,7 +404,9 @@ pub fn question_sources(
             continue;
         }
         match read_source(available, &file, &screen)? {
-            SourceText::Screened(text) => { sources.insert(file, text); }
+            SourceText::Screened(text) => {
+                sources.insert(file, Source { text, origin: Origin::Repository });
+            }
             SourceText::TooLarge(bytes) => omitted.push(source_size_error(&file, bytes)),
             SourceText::Unavailable => omitted.push(format!("The question file {file} is unavailable as screened text.")),
         }
@@ -388,17 +414,17 @@ pub fn question_sources(
     if sources.is_empty() || !omitted.is_empty() {
         for (file, value) in material["extracts"].as_object().into_iter().flatten() {
             if let Some(text) = value.as_str() {
-                sources.entry(file.clone()).or_insert_with(|| text.to_owned());
+                sources.entry(file.clone()).or_insert_with(|| Source::context(text.to_owned()));
             }
         }
     }
     Ok((sources, omitted))
 }
 
-pub fn retain_verified_facts(
+pub(crate) fn retain_verified_facts(
     data: &mut Value,
-    sources: &BTreeMap<String, String>,
-) -> std::result::Result<(), String> {
+    sources: &BTreeMap<String, Source>,
+) -> std::result::Result<usize, String> {
     if !data["unknowns"]
         .as_array()
         .is_some_and(|items| items.iter().all(Value::is_string))
@@ -410,9 +436,13 @@ pub fn retain_verified_facts(
     };
     let mut accepted = Vec::with_capacity(facts.len());
     let mut rejected = Vec::new();
+    let mut repository_facts = 0;
     for (index, mut fact) in facts.drain(..).enumerate() {
         match cited_line(&fact, sources) {
-            Ok(line) => {
+            Ok((line, origin)) => {
+                if origin == Origin::Repository {
+                    repository_facts += 1;
+                }
                 fact["quote"] = json!(line);
                 accepted.push(fact);
             }
@@ -429,20 +459,20 @@ pub fn retain_verified_facts(
         }
         data["rejectedFacts"] = json!(rejected);
     }
-    Ok(())
+    Ok(repository_facts)
 }
 
 fn cited_line<'a>(
     fact: &Value,
-    sources: &'a BTreeMap<String, String>,
-) -> std::result::Result<&'a str, &'static str> {
+    sources: &'a BTreeMap<String, Source>,
+) -> std::result::Result<(&'a str, Origin), &'static str> {
     if fact["claim"]
         .as_str()
         .is_none_or(|claim| claim.trim().is_empty())
     {
         return Err("missing claim");
     }
-    let text = fact["file"]
+    let source = fact["file"]
         .as_str()
         .and_then(|name| sources.get(name))
         .ok_or("source unavailable")?;
@@ -451,7 +481,7 @@ fn cited_line<'a>(
         .and_then(|n| usize::try_from(n).ok())
         .filter(|n| *n > 0)
         .ok_or("invalid line number")?;
-    let line = text
+    let line = source.text
         .lines()
         .nth(number - 1)
         .map(str::trim)
@@ -467,7 +497,7 @@ fn cited_line<'a>(
         .filter(|quote| !quote.is_empty())
         .ok_or("missing quote")?;
     if line.contains(quote) {
-        return Ok(line);
+        return Ok((line, source.origin));
     }
     // The source attachment displays each line with its number before the text.
     let prefix = format!("{number} ");
@@ -475,7 +505,7 @@ fn cited_line<'a>(
     if !excerpt.is_empty()
         && (line.contains(excerpt) || line.contains(&excerpt.replace("\\`", "`")))
     {
-        Ok(line)
+        Ok((line, source.origin))
     } else {
         Err("quote does not match the stated line")
     }

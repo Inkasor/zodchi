@@ -11,7 +11,7 @@
         "required": ["claim", "file", "line", "quote"],
         "properties": {
           "claim": { "type": "string" },
-          "file": { "type": "string" },
+          "file": { "type": "string", "description": "The alias of the supplied source attachment." },
           "line": { "type": "integer" },
           "quote": { "type": "string" }
         }
