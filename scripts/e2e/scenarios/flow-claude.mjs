@@ -60,6 +60,10 @@ export default function register({ scenario, flowWorld, gitOut, ROOT, STUB }) {
   scenario("flow-claude-writer", "resume a Claude writer from one tool-free call without the API key, then approve with the Codex reviewer", async (t) => {
     const c = claudeWorld(t, "flow-claude-writer");
     const { f } = c;
+    const claudeConfig = path.join(f.w.dir, "claude-config");
+    fs.mkdirSync(claudeConfig);
+    const profile = { HOME: f.w.home, USERPROFILE: f.w.home, CLAUDE_CONFIG_DIR: claudeConfig };
+    Object.assign(f.w.env, profile, { FAKE_CLAUDE_LOG_PROFILE: "1" });
     const models = { expertWriter: { candidates: [{ provider: "claude", model: "haiku" }] } };
     c.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
     f.answer("review 1", f.review("approved"));
@@ -71,9 +75,15 @@ export default function register({ scenario, flowWorld, gitOut, ROOT, STUB }) {
     const bound = res.json.models.expertWriter.account;
     t.ok(/^claude-[0-9a-f]{16}$/.test(bound || ""), "the Claude writer is bound to the account of its sign-in at the gate, as a digest");
     t.eq(res.json.models, { expertWriter: { provider: "claude", model: "haiku", effort: "high", account: bound }, reviewer: { provider: "codex", model: "fake-writer", effort: "medium" } }, "the pair uses the default Haiku effort and a distinct Codex reviewer");
-    t.eq(c.calls().map((x) => x.step), ["preflight", "write"], "Claude ran the preflight at the gate and the write step once");
+    const calls = c.calls();
+    t.eq(calls.map((x) => x.step), ["preflight", "write"], "Claude ran the preflight at the gate and the write step once");
     t.eq([c.calls("version").length, c.calls("auth").length], [1, 2], "the program was checked once; its sign-in at the gate and again right before the call");
-    const write = c.calls()[1];
+    for (const call of calls) {
+      t.ok(call.args.includes("-p") && call.args.includes("--no-session-persistence"),
+        `the ${call.step} call uses -p and --no-session-persistence`);
+      t.eq(call.profile, profile, `the ${call.step} call sees the temporary HOME, USERPROFILE and CLAUDE_CONFIG_DIR`);
+    }
+    const write = calls[1];
     t.eq([write.model, write.effort, write.apiKey], ["haiku", "high", false], "the call has the pinned model and effort, and no ANTHROPIC_ variable");
     t.eq(JSON.parse(fs.readFileSync(write.args[write.args.indexOf("--settings") + 1], "utf8")), { disableAllHooks: true },
       "the tool-free Haiku call lets Claude Code choose its default auto-compaction window");
@@ -82,6 +92,12 @@ export default function register({ scenario, flowWorld, gitOut, ROOT, STUB }) {
     t.eq(f.steps(), ["review 1"], "Codex ran the review only");
     t.eq([f.commits().length, fs.readFileSync(path.join(f.r, "src", "math.mjs"), "utf8")], [1, FIXED], "the patch of the Claude writer is committed");
     const events = c.events(res);
+    const claim = events.find((e) => e.kind === "done" && e.step === "claim").result.file;
+    const claimFile = path.relative(f.w.home, claim);
+    t.eq(fs.readdirSync(f.w.home, { recursive: true }).sort(),
+      [".zodchi", path.join(".zodchi", "packages"), path.dirname(claimFile), claimFile].sort(),
+      "the temporary HOME and USERPROFILE contain only Flow's package claim and its parent directories");
+    t.eq(fs.readdirSync(claudeConfig), [], "the temporary CLAUDE_CONFIG_DIR stays empty");
     const intents = events.filter((e) => e.kind === "intent" && e.step === "write");
     t.eq(intents.length, 1, "one intent for the write step");
     const [intent] = intents;

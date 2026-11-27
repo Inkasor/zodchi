@@ -96,8 +96,8 @@ claude -p --model <m> --effort <e> --output-format json --tools "" --strict-mcp-
 - The message goes on stdin with the installed role's frame, the step's screened prompt and its JSON Schema.
   Flow uses the same 512 KiB limit for journaled text prompts on both executors.
 - No tools (`--tools ""`), no MCP servers (`--strict-mcp-config` and none given), no hooks (`disableAllHooks` in the
-  settings file), no skills, plugins, CLAUDE.md or other customizations (`--safe-mode`), no session kept. It runs in
-  an empty folder of the job.
+  settings file), no skills, plugins, CLAUDE.md or other customizations (`--safe-mode`). It runs in an empty working
+  folder of the job.
 - No API-key fallback and no other account: the child gets the caller's environment without `ANTHROPIC_*`,
   `CLAUDE_CODE_USE_*` and variables whose names hold `API_KEY`, `TOKEN`, `SECRET` or `PASSWORD`
   (`CLAUDE_CODE_OAUTH_TOKEN`, the person's own subscription sign-in for headless use, is kept). No
@@ -127,6 +127,18 @@ The folder of a key is created exclusively, so a key is called at most once. The
 into it, is synced together with its folder entry (on POSIX the parent folder is synced too), so after a power cut
 the folder of a call that started is still there. A folder without `job.json` is a key that was reserved and never
 started: the step is asked again under the next key.
+
+## Where Claude calls store data
+
+Flow keeps its call records in the run journal and passes `--no-session-persistence` to Claude Code.
+
+On 2026-11-27, one Haiku call at low effort completed with Claude Code 2.1.332 on Windows using the executor's flags,
+a fresh working directory and `CLAUDE_CONFIG_DIR` set. The JSON answer included a `session_id`. The before-and-after
+comparison of the config directory excluded the operator's live transcript and found no new `projects/<cwd-slug>/`
+folder or session `.jsonl` file. The only observed changes were to two existing files. `.claude.json` was rewritten
+with no entry for the working directory, and a plugin store updated the value of a single key to the latest session ID.
+
+Files left by a Claude process killed mid-call remain unverified.
 
 ## Outcomes
 
