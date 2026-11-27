@@ -5,11 +5,6 @@ mod process;
 mod candidate;
 mod fixture;
 
-use crate::{
-    boundary::Launch, catalog::ProjectGate,
-    checks, executor::local::pinned_image, input_common, journal::Journal, video_media as media,
-    Exit,
-};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -22,6 +17,12 @@ use zodchi_core::{
     job::{self, Request},
     role::check_role,
     util::{fail, sha256_hex, GatewayError, Result},
+};
+use zodchi_flow_engine::{
+    boundary::{self, Launch},
+    catalog::ProjectGate,
+    checks, executor::local::pinned_image, gateway, input_common, journal::Journal,
+    video_media as media, Exit,
 };
 
 pub const PLAYER: &str = "player-acceptance";
@@ -60,7 +61,7 @@ pub fn start(workflow: &str, args: &Value, launch: Option<Launch>, require_workf
     }
 }
 
-pub(crate) fn handoff(id: &str, run: &Value, current: &Value, result: &Value, result_path: &Path) -> Value {
+pub fn handoff(id: &str, run: &Value, current: &Value, result: &Value, result_path: &Path) -> Value {
     let scenarios: Vec<_> = result["scenarios"].as_array().into_iter().flatten()
         .map(|s| json!({ "id": s["id"], "status": s["status"] })).collect();
     json!({ "runId": id, "workflow": current["workflow"], "version": current["version"],
@@ -440,7 +441,7 @@ impl Engine {
             return Ok(event["result"].clone());
         }
         let id = text(&self.run, "runId");
-        let key = crate::gateway::base_key(id, step, 1);
+        let key = gateway::base_key(id, step, 1);
         let mut role = self.plan()["role"].clone();
         if self.journal.last("intent", step, 1).is_none() {
             role["outputSchema"] = schema;
@@ -489,11 +490,11 @@ impl Engine {
                     self.journal.append(
                         json!({ "kind": "done", "step": step, "attempt": 1, "result": result }),
                     )?;
-                    crate::boundary::cut(&format!("acceptance model {step}"));
+                    boundary::cut(&format!("acceptance model {step}"));
                     return Ok(result);
                 }
                 zodchi_core::appserver::SAFETY_BLOCKED => {
-                    crate::gateway::record_safety_block(&mut self.journal, step, 1, &key, "codex")?;
+                    gateway::record_safety_block(&mut self.journal, step, 1, &key, "codex")?;
                     return fail(zodchi_core::appserver::SAFETY_MESSAGE);
                 }
                 status if job::is_terminal(status) => {
@@ -522,7 +523,7 @@ impl Engine {
 
     fn persist(&mut self, step: &str, receipt: &str, result: Value) -> Result<Value> {
         self.journal.write_value(receipt, &result)?;
-        crate::boundary::cut(&format!("acceptance receipt {step}"));
+        boundary::cut(&format!("acceptance receipt {step}"));
         self.journal
             .append(json!({ "kind": "done", "step": step, "attempt": 1, "result": result }))?;
         Ok(result)

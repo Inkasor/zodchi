@@ -1,4 +1,3 @@
-use crate::{checks, journal::Journal};
 use serde_json::{json, Value};
 use std::{
     fs::File,
@@ -11,6 +10,7 @@ use zodchi_core::{
     process::{command_without_window, kill_tree, process_start},
     util::{fail, Result},
 };
+use zodchi_flow_engine::{checks, journal::Journal};
 
 #[cfg(windows)]
 #[path = "desktop.rs"]

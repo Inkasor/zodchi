@@ -21,10 +21,10 @@ pub(super) fn node_path(path: &std::path::Path) -> std::path::PathBuf {
     path.to_path_buf()
 }
 use super::plan;
-use crate::{checks, git::Git, video_media as media};
 use serde_json::{json, Value};
 use std::{fs, path::Path};
 use zodchi_core::util::{fail, Result};
+use zodchi_flow_engine::{boundary, checks, git::Git, video_media as media};
 
 pub(super) fn browser_plan(raw: &Value, repo: &Path) -> Result<Value> {
     let browser = &raw["browser"];
@@ -69,7 +69,7 @@ pub(super) fn scenario(git: &Git, head: &str, raw: &Value) -> Result<Value> {
 /// Create a private Git checkout with the actual commit as HEAD and only local object reads.
 pub(super) fn checkout(repo: &Path, dir: &Path, head: &str, tree: &str) -> Result<()> {
     fs::create_dir(dir)?;
-    crate::boundary::cut("acceptance checkout staging");
+    boundary::cut("acceptance checkout staging");
     let snapshot = Git::new(repo).init_snapshot(dir)?;
     snapshot.run(&["reset", "--hard", "--quiet", "--no-recurse-submodules", head])?;
     check_checkout(dir, head, tree)

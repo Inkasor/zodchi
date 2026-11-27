@@ -1,5 +1,4 @@
 use super::{candidate, fixture, CANDIDATE, PLAYER, RELEASE};
-use crate::{catalog::ProjectGate, git::Git, input_common, journal, models, video_media as media};
 use serde_json::{json, Map, Value};
 use std::{
     fs,
@@ -10,6 +9,9 @@ use zodchi_core::{
     job,
     role::{load_role, Overrides},
     util::{fail, iso, sha256_hex, GatewayError, Result},
+};
+use zodchi_flow_engine::{
+    catalog::ProjectGate, git::Git, input_common, journal, models, patch, video_media as media,
 };
 
 pub(super) fn list<'a>(value: &'a Value, at: &str, min: usize, max: usize) -> Result<&'a [Value]> {
@@ -59,7 +61,7 @@ fn pointer(value: &Value, at: &str) -> Result<()> {
 
 pub(super) fn relative(value: &Value, at: &str) -> Result<()> {
     let s = media::text(value, at)?;
-    if !crate::patch::plain(s) || s.contains('\\') {
+    if !patch::plain(s) || s.contains('\\') {
         return fail(format!("{at} needs a relative file path."));
     }
     Ok(())

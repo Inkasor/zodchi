@@ -1,6 +1,5 @@
 //! Managed local fixture process support for candidate acceptance.
 use super::{candidate, plan, process};
-use crate::{git::Git, journal::Journal, video_media as media};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -14,6 +13,7 @@ use zodchi_core::{
     process::{command_without_window, kill_tree, process_start},
     util::{fail, GatewayError, Result},
 };
+use zodchi_flow_engine::{boundary, git::Git, journal::Journal, video_media as media};
 
 pub(super) fn plan(raw: &Value, repo: &Path, git: &Git, head: &str) -> Result<Value> {
     media::fields(
@@ -202,9 +202,9 @@ child.on('exit', (code) => process.exit(code === null ? 1 : code));"#;
     };
     let start = process_start(pid).ok_or_else(|| GatewayError("Could not identify fixture process before startup.".into()))?;
     journal.append(json!({"kind":"check started", "step":step, "attempt":1, "pid":pid, "start":start}))?;
-    crate::boundary::cut("fixture recorded before start");
+    boundary::cut("fixture recorded before start");
     fixture.child.stdin.as_mut().unwrap().write_all(&[1])?;
-    crate::boundary::cut("fixture started before readiness");
+    boundary::cut("fixture started before readiness");
     let (send, receive) = mpsc::channel();
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);

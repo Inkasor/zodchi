@@ -1,8 +1,6 @@
-use super::{
-    candidate_acceptance_entry::{acceptance, entry},
-    require_workflow, Entry,
-};
+use super::{candidate_acceptance_entry::entry, require_workflow, Entry};
+use zodchi_flow_acceptance as workflow;
 
-pub(super) const ENTRY: Entry = entry(acceptance::PLAYER, |args, launch| {
-    acceptance::start(acceptance::PLAYER, args, launch, require_workflow)
+pub(super) const ENTRY: Entry = entry(workflow::PLAYER, |args, launch| {
+    workflow::start(workflow::PLAYER, args, launch, require_workflow)
 });
