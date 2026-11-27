@@ -231,3 +231,13 @@ The writer ran on Windows 10.0.26300 with Windows PowerShell 5.1, Rust/Cargo 1.1
 | `node scripts/e2e.mjs --no-build --bin-dir <writer-target>/debug --out .agent-tmp/p01/e2e-server-isolated-checks flow-server-approve` | Exit 0 with `ZODCHI_CHECK_SLOT_DIR` set to a writer scratch directory and `ZODCHI_BASH` set to a temporary fixture launcher. The launcher accepts only preflight and the two original Node check commands, waits for the engine's start gate, and forwards each command's exit code. All server reattachment and local commit assertions passed. The Git Bash and default slot paths remain unverified in this diagnostic. See `.agent-tmp/p01/e2e-server-isolated-checks/flow-server-approve.log`. |
 | `cargo test --workspace --locked --manifest-path rust/Cargo.toml` | Authoritative workspace gate on the project runner. The writer used the focused integration test command above. |
 | `node scripts/e2e.mjs` | Full suite reserved for release under the owner's test rule. |
+
+## P27 rebuild measurement (2026-11-28, Windows, debug profile, CARGO_BUILD_JOBS=4, warm target)
+
+| Touched file | Crates Cargo recompiled | Wall time |
+| --- | --- | --- |
+| `zodchi-flow-research/src/research.rs` | `zodchi-flow-research`, `zodchi-flow`, `zodchi-cli` | 6 s |
+| `zodchi-flow-code-package/src/code_package.rs` | `zodchi-flow-code-package`, `zodchi-flow`, `zodchi-cli` | 5 s |
+| `zodchi-flow-engine/src/journal.rs` | the engine, all 15 workflow crates, `zodchi-flow`, `zodchi-cli` | 9 s |
+
+This matches the P01 expectation: touching a workflow rebuilds that workflow crate, the facade and the CLI. The engine, its sibling workflows and the server stay fresh. `tests/dependency_graph.rs` keeps the graph from regressing.
