@@ -1,8 +1,9 @@
 //! Capture Git sources for design-brief. Models receive aliases, screened material, and actual cited lines.
 
 use crate::{args, checks, claims, git::Git, input_common, patch};
+use input_common::{Scrubber, Withholding};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -11,6 +12,7 @@ use zodchi_core::job::{compose_prompt, LIMIT_PROMPT};
 use zodchi_core::util::{fail, GatewayError, Result};
 
 const MAX_SOURCE: usize = LIMIT_PROMPT / 3;
+const PRIVATE_PATH: &str = "[private path removed]";
 
 enum SourceText {
     Screened(String),
@@ -89,7 +91,11 @@ pub fn capture(raw: &Value, cfg: &Config) -> Result<Value> {
         let head = git.rev("HEAD^{commit}")?;
         let paths = git.run(&["ls-tree", "-r", "--full-tree", "-l", "-z", &head])?;
         for (entry, file) in paths.split('\0').filter_map(|row| row.split_once('\t')) {
-            if !entry.starts_with("100") || !source_path(file) || scrubber.private(file) {
+            if !entry.starts_with("100")
+                || !source_path(file)
+                || scrubber.private(file)
+                || scrubber.answer_is_private(file)
+            {
                 continue;
             }
             let Some(size) = entry.split_ascii_whitespace().nth(3).and_then(|size| size.parse::<usize>().ok()) else {
@@ -106,13 +112,13 @@ pub fn capture(raw: &Value, cfg: &Config) -> Result<Value> {
     }
     let places = places(cfg, &sources);
     let screen = |text: &str| clean(&scrubber, text, &places, public);
+    let mut task = TaskScreening::new(&scrubber, &places, public);
     let goal = raw["goal"]
         .as_str()
         .filter(|goal| !goal.trim().is_empty())
         .ok_or_else(|| GatewayError("Design brief needs args.goal.".into()))?;
-    let goal = screen(goal);
+    let goal = task.screen("goal", goal);
     let mut documents = Vec::new();
-    let mut extracts = BTreeMap::new();
     for key in ["context", "template"] {
         if let Some(files) = raw.get(key) {
             for (index, value) in text_list(files, key)?.into_iter().enumerate() {
@@ -134,12 +140,9 @@ pub fn capture(raw: &Value, cfg: &Config) -> Result<Value> {
                         "A design input document is larger than the supported prompt material.",
                     );
                 }
-                let text = screen(&text);
                 let alias = format!("{key}-{}.md", index + 1);
-                if key == "context" {
-                    extracts.insert(alias.clone(), text.clone());
-                }
-                documents.push((alias, text.into_bytes()));
+                let text = task.screen(&alias, &text);
+                documents.push((alias, key == "context", text));
             }
         }
     }
@@ -149,24 +152,10 @@ pub fn capture(raw: &Value, cfg: &Config) -> Result<Value> {
             let name = format!("{alias}/{path}");
             if inventory.contains(&name) {
                 if let SourceText::Screened(text) = read_source(&sources, &name, &screen)? {
-                    documents.push((name, text.into_bytes()));
+                    documents.push((name, false, TaskText::same(text)));
                 }
             }
         }
-    }
-    let context = compose_prompt(&goal, &documents)?;
-    let research_context = if extracts.is_empty() {
-        None
-    } else {
-        let other: Vec<_> = documents.iter().filter(|(name, _)| !extracts.contains_key(name)).cloned().collect();
-        Some(compose_prompt(&goal, &other)?)
-    };
-    let max_context = LIMIT_PROMPT / 2;
-    if context.len() > max_context {
-        return fail(format!(
-            "The goal and screened context need {} UTF-8 bytes (limit {max_context}). Shorten the goal or the input documents.",
-            context.len()
-        ));
     }
     let mut questions = Vec::new();
     if let Some(input_questions) = raw.get("questions") {
@@ -178,7 +167,7 @@ pub fn capture(raw: &Value, cfg: &Config) -> Result<Value> {
                 "Design brief handles up to eight supplied questions in a single package.",
             );
         }
-        for question in list {
+        for (index, question) in list.iter().enumerate() {
             let text = question
                 .as_str()
                 .or_else(|| question["question"].as_str())
@@ -221,18 +210,141 @@ pub fn capture(raw: &Value, cfg: &Config) -> Result<Value> {
                     }
                 }
             }
-            questions.push(json!({ "question": screen(text), "files": files }));
+            questions.push((task.screen(&format!("questions[{}]", index + 1), text), files));
         }
     }
-    let needs_plan = questions.is_empty()
-        || questions
-            .iter()
-            .any(|question| question["files"].as_array().is_some_and(Vec::is_empty));
-    Ok(
-        json!({ "context": context, "inventory": inventory, "sources": sources, "questions": questions,
-        "needsPlan": needs_plan, "public": public, "allowPrivateWords": allowed,
-        "oversized": oversized, "extracts": extracts, "researchContext": research_context }),
-    )
+    let mut material = task_material(&goal, &documents, &questions, false)?;
+    if task.locations.is_empty() {
+        if let Some(problem) = material["taskProblem"].as_str() {
+            return fail(problem);
+        }
+    } else {
+        let with_words = if task.words.is_empty() {
+            None
+        } else {
+            Some(task_material(&goal, &documents, &questions, true)?)
+        };
+        material["taskScreening"] = json!({ "locations": task.locations, "words": task.words, "withWords": with_words });
+    }
+    material["inventory"] = json!(inventory);
+    material["sources"] = json!(sources);
+    material["public"] = json!(public);
+    material["allowPrivateWords"] = json!(allowed);
+    material["oversized"] = json!(oversized);
+    Ok(material)
+}
+
+struct TaskText {
+    screened: String,
+    with_words: Option<String>,
+    affected: bool,
+}
+
+impl TaskText {
+    fn same(screened: String) -> Self {
+        Self { screened, with_words: None, affected: false }
+    }
+
+    fn select(&self, allow: bool) -> &str {
+        self.with_words.as_deref().filter(|_| allow).unwrap_or(&self.screened)
+    }
+
+    fn usable(&self, allow: bool) -> bool {
+        !self.affected || self.select(allow).lines().map(str::trim)
+            .any(|line| !line.is_empty() && !withheld_line(line))
+    }
+}
+
+struct TaskScreening<'a> {
+    scrubber: &'a Scrubber,
+    places: &'a [(String, &'static str)],
+    public: bool,
+    locations: Vec<String>,
+    words: BTreeSet<String>,
+}
+
+impl<'a> TaskScreening<'a> {
+    fn new(scrubber: &'a Scrubber, places: &'a [(String, &'static str)], public: bool) -> Self {
+        Self { scrubber, places, public, locations: Vec::new(), words: BTreeSet::new() }
+    }
+
+    fn screen(&mut self, name: &str, raw: &str) -> TaskText {
+        let prior = self.locations.len();
+        let paths = screen_public_paths(checks::screen_paths(raw.lines(), self.places), self.public);
+        let mut screened = Vec::new();
+        let mut with_words = Vec::new();
+        for (index, ((line, reason), path_screened)) in self.scrubber.design_lines(raw)
+            .zip(paths.split('\n')).enumerate()
+        {
+            let location = index + 1;
+            // Apply the existing task line rule even when a line also matches a private word.
+            let reason = match reason {
+                None | Some(Withholding::PrivateWord) if checks::credential_line(line) => {
+                    Some(Withholding::Value)
+                }
+                reason => reason,
+            };
+            let (visible, allowed) = match (reason, line != path_screened) {
+                (Some(Withholding::PrivateWord) | None, true) => {
+                    self.locations.push(format!("{name}:{location} (private-path)"));
+                    (PRIVATE_PATH, PRIVATE_PATH)
+                }
+                (Some(reason), _) => {
+                    self.locations.push(format!("{name}:{location} ({})", reason.reason()));
+                    let marker = reason.marker();
+                    let allowed = if self.public && matches!(reason, Withholding::PrivateWord) {
+                        self.words.extend(self.scrubber.matching_words(line).map(String::from));
+                        line
+                    } else {
+                        marker
+                    };
+                    (marker, allowed)
+                }
+                (None, false) => (line, line),
+            };
+            screened.push(visible);
+            with_words.push(allowed);
+        }
+        TaskText {
+            with_words: (screened != with_words).then(|| join_screened(with_words, self.public)),
+            screened: join_screened(screened, self.public),
+            affected: self.locations.len() != prior,
+        }
+    }
+}
+
+fn task_material(
+    goal: &TaskText,
+    documents: &[(String, bool, TaskText)],
+    questions: &[(TaskText, Vec<String>)],
+    allow: bool,
+) -> Result<Value> {
+    let documents_for = |include_extracts| documents.iter()
+        .filter(|(_, extract, _)| include_extracts || !*extract)
+        .map(|(name, _, text)| (name.clone(), text.select(allow).as_bytes().to_vec()))
+        .collect::<Vec<_>>();
+    let context = compose_prompt(goal.select(allow), &documents_for(true))?;
+    let extracts: BTreeMap<_, _> = documents.iter().filter(|(_, extract, _)| *extract)
+        .map(|(name, _, text)| (name, text.select(allow))).collect();
+    let research_context = if extracts.is_empty() { None } else {
+        Some(compose_prompt(goal.select(allow), &documents_for(false))?)
+    };
+    let questions: Vec<_> = questions.iter().filter(|(text, _)| text.usable(allow))
+        .map(|(text, files)| json!({ "question": text.select(allow), "files": files })).collect();
+    let needs_plan = questions.is_empty() || questions.iter()
+        .any(|question| question["files"].as_array().is_some_and(Vec::is_empty));
+    let mut material = json!({ "context": context, "researchContext": research_context,
+        "extracts": extracts, "questions": questions, "needsPlan": needs_plan });
+    let max_context = LIMIT_PROMPT / 2;
+    if !goal.usable(allow) {
+        material["taskProblem"] = json!("No goal remains after screening. Start a new design-brief run with a rephrased goal.");
+    } else if context.len() > max_context {
+        material["taskProblem"] = json!(format!(
+            "The goal and screened context need {} UTF-8 bytes (limit {max_context}). Shorten the goal or the input documents.",
+            context.len()
+        ));
+    }
+    Ok(material)
 }
 
 fn allowed_words(value: &Value, public: bool) -> Result<Vec<String>> {
@@ -315,21 +427,80 @@ pub fn clean(
     places: &[(String, &str)],
     public: bool,
 ) -> String {
-    let screened = scrubber.text(text, places);
-    if public {
-        screened
-            .lines()
-            .map(|line| {
-                if public_path(line) {
-                    "[private path removed]"
-                } else {
-                    line
+    let mut screened = screen_public_paths(scrubber.text(text, places), public);
+    if public && screened.ends_with('\n') {
+        screened.pop();
+    }
+    screened
+}
+
+fn screen_public_paths(screened: String, public: bool) -> String {
+    if !public {
+        return screened;
+    }
+    screened.split('\n')
+        .map(|line| if public_path(line) { PRIVATE_PATH } else { line })
+        .collect::<Vec<_>>().join("\n")
+}
+
+fn join_screened(mut lines: Vec<&str>, public: bool) -> String {
+    if public && lines.last() == Some(&"") {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
+fn withheld_line(line: &str) -> bool {
+    line.starts_with("[private ")
+        || matches!(line, checks::WITHHELD_LINE | checks::LEGACY_WITHHELD_LINE)
+}
+
+pub(crate) struct AnswerScreening<'a> {
+    pub scrubber: &'a Scrubber,
+    pub places: &'a [(String, &'static str)],
+    pub public: bool,
+    pub supplied: &'a BTreeSet<&'a str>,
+    pub rejected: Vec<Value>,
+}
+
+impl AnswerScreening<'_> {
+    fn is_supplied(&self, line: &str) -> bool {
+        let line = line.trim();
+        let quoted = line.strip_prefix("> ").map(str::trim_start).unwrap_or(line);
+        self.supplied.contains(line)
+            || self.supplied.contains(quoted)
+            || quoted.strip_prefix('`').and_then(|quote| quote.strip_suffix('`'))
+                .is_some_and(|quote| self.supplied.contains(quote))
+    }
+
+    fn withholdings(&self, text: &str) -> Vec<(usize, &'static str)> {
+        let paths = screen_public_paths(checks::screen_paths(text.lines(), self.places), self.public);
+        self.scrubber.design_lines(text).zip(paths.split('\n')).enumerate()
+            .filter_map(|(index, ((line, reason), path_screened))| {
+                if self.is_supplied(line) {
+                    return None;
                 }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    } else {
-        screened
+                let reason = reason.or_else(|| checks::credential_line(line).then_some(Withholding::Value));
+                reason.map(|reason| reason.reason()).or_else(|| (line != path_screened).then_some("private-path"))
+                    .map(|reason| (index + 1, reason))
+            }).collect()
+    }
+
+    pub fn keep_lines(&mut self, field: &str, text: &str) -> String {
+        let mut omitted = self.withholdings(text).into_iter().peekable();
+        text.split_inclusive('\n').enumerate().filter_map(|(index, line)| {
+            let number = index + 1;
+            if let Some((_, reason)) = omitted.next_if(|(at, _)| *at == number) {
+                self.rejected.push(json!({ "field": field, "line": number, "reason": reason }));
+                None
+            } else {
+                Some(line)
+            }
+        }).collect()
+    }
+
+    fn reason(&self, text: &Value) -> Option<&'static str> {
+        self.withholdings(text.as_str()?).first().map(|(_, reason)| *reason)
     }
 }
 
@@ -424,6 +595,7 @@ pub(crate) fn question_sources(
 pub(crate) fn retain_verified_facts(
     data: &mut Value,
     sources: &BTreeMap<String, Source>,
+    screening: &AnswerScreening<'_>,
 ) -> std::result::Result<usize, String> {
     if !data["unknowns"]
         .as_array()
@@ -438,11 +610,23 @@ pub(crate) fn retain_verified_facts(
     let mut rejected = Vec::new();
     let mut repository_facts = 0;
     for (index, mut fact) in facts.drain(..).enumerate() {
-        match cited_line(&fact, sources) {
+        let claim_reason = screening.reason(&fact["claim"]);
+        let verified = match cited_line(&fact, sources) {
+            Ok(citation) => claim_reason.map_or(Ok(citation), Err),
+            Err(citation_reason) => Err(claim_reason
+                .or_else(|| screening.reason(&fact["quote"]))
+                .or_else(|| screening.reason(&fact["file"]))
+                .unwrap_or(citation_reason)),
+        };
+        match verified {
             Ok((line, origin)) => {
                 if origin == Origin::Repository {
                     repository_facts += 1;
                 }
+                fact.as_object_mut().expect("verified fields").retain(|field, _| {
+                    matches!(field.as_str(), "claim" | "file" | "line" | "quote")
+                });
+                // This is the supplied line, even when the answer used a verbatim excerpt.
                 fact["quote"] = json!(line);
                 accepted.push(fact);
             }
@@ -450,13 +634,10 @@ pub(crate) fn retain_verified_facts(
         }
     }
     *facts = accepted;
+    data.as_object_mut().expect("validated fact response").retain(|field, _| {
+        matches!(field.as_str(), "facts" | "unknowns")
+    });
     if !rejected.is_empty() {
-        if facts.is_empty() {
-            data["unknowns"]
-                .as_array_mut()
-                .expect("validated unknowns")
-                .push(json!("No cited facts could be verified for this question."));
-        }
         data["rejectedFacts"] = json!(rejected);
     }
     Ok(repository_facts)
@@ -486,9 +667,7 @@ fn cited_line<'a>(
         .nth(number - 1)
         .map(str::trim)
         .ok_or("line unavailable")?;
-    if line.starts_with("[private ")
-        || matches!(line, checks::WITHHELD_LINE | checks::LEGACY_WITHHELD_LINE)
-    {
+    if withheld_line(line) {
         return Err("source line withheld");
     }
     let quote = fact["quote"]

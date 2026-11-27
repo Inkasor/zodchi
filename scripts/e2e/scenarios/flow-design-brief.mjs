@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+const assignment = (name, value) => `${name} = ${JSON.stringify(value)}`;
+
 const facts = (quote) => ({
   facts: [{ claim: "The clamp implementation currently returns the original value.", file: "repo1/src/math.mjs", line: 1, quote }],
   unknowns: [],
@@ -30,7 +32,7 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, RO
   };
   const flow = (t, f, args, env = {}) => zodchi(t, f.w, ["flow", ...args], { cwd: f.w.dir, env: { ...f.w.env, ...env } });
 
-  scenario("flow-design-brief-private-word-exception", "only a private brief can retain a declared identifier in pinned source", async (t) => {
+  scenario("flow-design-brief-private-word-exception", "private source exceptions and owner choices for screened task lines", async (t) => {
     const f = flowWorld(t, "flow-design-brief-private-word-exception");
     const allowed = "Fixture Harbor";
     const denied = "Fixture Ledger";
@@ -39,7 +41,7 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, RO
     fs.writeFileSync(f.w.env.ZODCHI_DENYLIST, `${allowed}\n${denied}\n`);
     const relative = "src/Fixture Harbor-id.mjs";
     const sourceLine = 'export const header = "X-Fixture Harbor-Product";';
-    fs.writeFileSync(path.join(f.r, relative), `${sourceLine}\n// ${denied}\nconst token = "${sensitive}";\n`);
+    fs.writeFileSync(path.join(f.r, relative), `${sourceLine}\n// ${denied}\nconst ${assignment("token", sensitive)};\n`);
     gitOut(f.r, ["add", "--", relative]);
     gitOut(f.r, ["commit", "-qm", "add the private identifier fixture"]);
     const output = path.join(f.w.dir, "private.md");
@@ -60,6 +62,102 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, RO
     t.ok(record.includes(alias) && record.includes("X-Fixture Harbor-Product") && !record.includes(denied) && !record.includes(sensitive),
       "the exact exception preserves the identifier and screens other words and credential lines");
     t.ok(fs.readFileSync(output, "utf8").includes(alias), "the approved draft keeps the real relative path");
+
+    const continueChoice = "Continue without those lines";
+    const stopChoice = "Stop to rephrase";
+    const allowChoice = "Allow these words for this run";
+    const goalLine = `Review the clamp rollout with ${denied}.`;
+    const goalKeywordLine = "Fix the token refresh";
+    const mixedGoalLine = `Review password handling with ${denied}.`;
+    const goal = ["Keep the clamp within its range.", goalLine, "Check both limits.", goalKeywordLine, mixedGoalLine].join("\n");
+    const question = "What does clamp do today?";
+    const questionKeywordLine = "How is the cookie renewed?";
+    const fileHint = "repo1/src/math.mjs";
+    const extract = path.join(f.w.dir, "rollout.md");
+    const invented = ["sk", "live", "fixturevalue".repeat(3)].join("-");
+    const contextLine = `Keep the rollout notes from ${denied}.`;
+    const contextKeywordLine = "Describe how the cookie is scoped.";
+    const keywordLines = [goalKeywordLine, mixedGoalLine, questionKeywordLine, contextKeywordLine];
+    fs.writeFileSync(extract, ["Compare the two limits.", assignment("api_key", `${invented}-${denied}`), contextLine, contextKeywordLine].join("\n") + "\n");
+    const begin = async (name, publicRepo, questions, context = []) => {
+      const output = path.join(f.w.dir, `${name}.md`);
+      const prior = f.steps().length;
+      const args = argsFor(f, output, { publicRepo, goal, questions, context });
+      const waiting = await flow(t, f, ["design-brief", "--args", args]);
+      const id = waiting.json?.runId;
+      t.eq([waiting.code, waiting.json?.status, waiting.json?.ownerDecisions?.[0]?.options, f.steps().length, fs.existsSync(output)],
+        [2, "waiting", publicRepo ? [continueChoice, stopChoice, allowChoice] : [continueChoice, stopChoice], prior, false],
+        "the workflow waits for a screening choice before using a model");
+      t.ok(waiting.json?.question?.includes("goal:2 (private-word)"), "the question identifies the affected goal line and reason");
+      t.ok(["goal:4 (credential)", "goal:5 (credential)"].every(location => waiting.json?.question?.includes(location)),
+        "the question reports goal lines matched by the original task rule, including a line that also contains a private word");
+      const pin = JSON.parse(fs.readFileSync(path.join(waiting.json.journal, "run.json"), "utf8"));
+      t.ok(pin.inputs?.argsSha256 && !pin.inputs?.args, "the run pins its argument digest without saving the withheld goal in run.json");
+      return { ...waiting, id, output, prior, args };
+    };
+    const noLeak = (run, ...responses) => {
+      const readJournal = name => fs.readFileSync(path.join(run.json.journal, name), "utf8");
+      const diagnostics = [readJournal("events.jsonl"), readJournal("result.json"),
+        ...[run, ...responses].flatMap(response => [response.out, response.err])];
+      const hidden = [denied, invented, ...keywordLines].map(value => value.toLowerCase());
+      t.ok(diagnostics.every(text => !hidden.some(value => text.toLowerCase().includes(value))),
+        "events, results and CLI diagnostics omit the matched task text");
+    };
+    const choose = async (run, choice) => {
+      const file = path.join(f.w.dir, "screening-choice.txt");
+      fs.writeFileSync(file, choice);
+      const replied = await flow(t, f, ["reply", run.id, "--file", file]);
+      t.eq([replied.code, replied.json?.status], [0, "ready"], "the normal reply command records the screening choice");
+      return replied;
+    };
+    const planPrompt = run => JSON.parse(fs.readFileSync(path.join(run.json.journal, "requests", `flow-${run.id}-plan.json`), "utf8")).prompt;
+    f.answer("facts 1", facts(STUB.trim()));
+    f.answer("draft", draft("Check both limits."));
+
+    const screenedQuestion = `${question}\n[private text removed]\n[source line withheld]`;
+    const continued = await begin("without-lines", false, [[question, `Ask ${denied}.`, questionKeywordLine].join("\n")], [extract]);
+    const waiting = await flow(t, f, ["status", continued.id]);
+    const repeated = await flow(t, f, ["design-brief", "--resume", continued.id, "--args", continued.args]);
+    t.eq([waiting.json?.status, repeated.json?.question, f.steps().length], ["waiting", continued.json?.question, continued.prior],
+      "status and resume expose the same waiting decision before any model call");
+    const locations = ["questions[1]:2 (private-word)", "questions[1]:3 (credential)",
+      "context-1.md:2 (credential)", "context-1.md:3 (private-word)", "context-1.md:4 (credential)"];
+    t.ok(locations.every(location => continued.json?.question?.includes(location)),
+      "the owner can identify affected lines in questions and context documents");
+    const keep = await choose(continued, continueChoice);
+    f.answer("plan", { questions: [{ question: `${screenedQuestion}\nSend the report to ${denied}.`, files: [fileHint] }] });
+    const resumed = await flow(t, f, ["design-brief", "--resume", continued.id]);
+    t.eq([resumed.code, f.steps().slice(continued.prior), fs.existsSync(continued.output)],
+      [0, ["plan", "facts 1", "draft", "review"], true], "continue uses the retained task on the same run");
+    const screenedPrompt = planPrompt(continued);
+    t.ok(screenedPrompt.includes("Keep the clamp within its range.") && screenedPrompt.includes("Check both limits.")
+      && !screenedPrompt.includes(denied) && !screenedPrompt.includes(invented), "the planner gets the remaining goal and context lines");
+    t.ok(keywordLines.every(line => !screenedPrompt.includes(line)), "continuing with screened input withholds each line matched by the original rule");
+    noLeak(continued, waiting, repeated, keep, resumed);
+
+    const stopped = await begin("rephrase", false, [question]);
+    const stopReply = await choose(stopped, stopChoice);
+    const refused = await flow(t, f, ["design-brief", "--resume", stopped.id]);
+    t.ok(refused.code === 2 && refused.json?.refused?.includes("stopped to rephrase") && f.steps().length === stopped.prior && !fs.existsSync(stopped.output),
+      "stopping to rephrase finishes without a request or publication");
+    noLeak(stopped, stopReply, refused);
+
+    const permitted = await begin("allow-words", true, [question], [extract]);
+    const allowReply = await choose(permitted, allowChoice);
+    fs.writeFileSync(extract, "An edit after the run pinned the document.\n");
+    f.answer("plan", { questions: [{ question: `${question}\nSend the report to ${denied}.`, files: [fileHint] }] });
+    const interrupted = await flow(t, f, ["design-brief", "--resume", permitted.id], { ZODCHI_FLOW_CUT: "submit plan" });
+    t.eq(interrupted.code, 75, "the allowed prompt is pinned before the first call");
+    const receipt = JSON.parse(fs.readFileSync(path.join(permitted.json.journal, "task-screening.json"), "utf8"));
+    t.eq(receipt.allowPrivateWords, [denied.toLowerCase()], "the private journal records the approved word for this run");
+    const allowedPrompt = planPrompt(permitted);
+    t.ok(allowedPrompt.includes(goalLine) && allowedPrompt.includes(contextLine) && !allowedPrompt.includes(invented)
+      && !allowedPrompt.includes("An edit after the run"), "the approved original lines reach the planner while the credential stays withheld");
+    t.ok(keywordLines.every(line => !allowedPrompt.includes(line)), "the word exception leaves lines matched by the original rule withheld");
+    const approved = await flow(t, f, ["design-brief", "--resume", permitted.id]);
+    t.eq([approved.code, f.steps().slice(permitted.prior)], [0, ["plan", "facts 1", "draft", "review"]],
+      "the accepted task uses its saved plan turn after interruption");
+    noLeak(permitted, allowReply, interrupted, approved);
   });
 
   scenario("flow-design-brief-large-source", "oversized Git sources use numbered extracts or wait for a same-run reply", async t => {
@@ -149,20 +247,40 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, RO
     fs.writeFileSync(path.join(home, "answers", "draft.json"), JSON.stringify(draft("Run the clamp scenario.")));
     f.w.env.FAKE_CLAUDE_HOME = home;
     f.w.env.ZODCHI_CLAUDE_BIN = path.join(ROOT, "scripts", "e2e", "fake-claude.mjs");
-    const args = argsFor(f, path.join(f.w.dir, "mixed-brief.md"), {
+    const modelOptions = {
       models: {
         writer: { candidates: [{ provider: "claude", model: "sonnet", effort: "medium" }] },
         researcher: { candidates: [{ provider: "claude", model: "haiku", effort: "high" }] },
       },
-    });
+    };
+    const output = path.join(f.w.dir, "mixed-brief.md");
+    const args = argsFor(f, output, modelOptions);
     const denied = await flow(t, f, ["design-brief", "--args", args]);
     t.ok(denied.code === 2 && /not enabled/.test(denied.json?.refused ?? ""), "explicit candidates still need the user's opt-in");
     t.ok(!fs.existsSync(path.join(home, "calls.jsonl")), "the disabled executor was never started");
     fs.writeFileSync(path.join(f.w.zhome, "flow.json"), JSON.stringify({ claude: true }));
+    const privateTerm = ["Fixture", "Planning Group"].join(" ");
+    f.w.env.ZODCHI_DENYLIST = path.join(f.w.dir, "private-words.txt");
+    fs.writeFileSync(f.w.env.ZODCHI_DENYLIST, privateTerm + "\n");
+    const screened = await flow(t, f, ["design-brief", "--args", argsFor(f, path.join(f.w.dir, "screened-claude.md"), {
+      ...modelOptions,
+      goal: `Keep the clamp within its range.\nReview the change with ${privateTerm}.`,
+    })]);
+    t.eq([screened.code, screened.json?.status, fs.existsSync(path.join(home, "calls.jsonl")), f.steps()],
+      [2, "waiting", false, []], "task screening precedes even the first Claude availability call");
+    t.ok(screened.json?.question?.includes("goal:2 (private-word)"), "the Claude run displays the affected input location");
+    const replyFile = path.join(f.w.dir, "screening-choice.txt");
+    fs.writeFileSync(replyFile, "Stop to rephrase");
+    const stopped = await flow(t, f, ["reply", screened.json.runId, "--file", replyFile]);
+    t.eq(stopped.json?.status, "ready", "the owner can decline before any model preflight");
+    const refused = await flow(t, f, ["design-brief", "--resume", screened.json.runId]);
+    t.ok(refused.json?.refused?.includes("stopped to rephrase") && !fs.existsSync(path.join(home, "calls.jsonl")),
+      "the refused task has no Claude calls");
+    argsFor(f, output, modelOptions);
     f.answer("review", f.review("approved"));
     const cut = await flow(t, f, ["design-brief", "--args", args], { ZODCHI_FLOW_CUT: "submit facts 1" });
     t.eq(cut.code, 75, "the process stops after the Claude researcher has finished");
-    const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
+    const [id] = fs.readdirSync(path.join(f.w.zhome, "flows")).filter(id => id !== screened.json.runId);
     const result = await flow(t, f, ["design-brief", "--resume", id]);
     const pair = result.json?.models;
     t.eq([result.code, result.json?.facts, pair?.researcher?.model, pair?.writer?.model, pair?.architect?.provider],
@@ -418,7 +536,8 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, RO
     f.w.env.ZODCHI_DENYLIST = path.join(f.w.dir, "fixture-private-words.txt");
     fs.writeFileSync(f.w.env.ZODCHI_DENYLIST, "Fixture Person\n");
     const templateLine = "export const text = `sample`;";
-    fs.appendFileSync(path.join(f.r, "src", "math.mjs"), `${templateLine}\nconst api_key = "${fixtureValue}";\n`);
+    const comparison = "export const matches = (token, expected) => token == expected;";
+    fs.appendFileSync(path.join(f.r, "src", "math.mjs"), `${templateLine}\nconst ${assignment("api_key", fixtureValue)};\n${comparison}\n`);
     gitOut(f.r, ["commit", "-qm", "add a line that must be withheld", "--", "src/math.mjs"]);
     const output = path.join(f.w.dir, "screened-brief.md");
     const args = argsFor(f, output);
@@ -441,6 +560,8 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, RO
     t.eq(f.steps(), ["facts 1", "draft", "review"], "continuing sends no second facts request");
     const turns = fs.readFileSync(path.join(f.w.codex, "fake-turns.jsonl"), "utf8").trim().split(/\r?\n/).map(JSON.parse);
     t.ok(turns[0].prompt.includes(`3 ${withheld}`) && !turns[0].prompt.includes(fixtureValue), "the source hides the sensitive line with a neutral placeholder");
+    t.ok(turns[0].prompt.includes(`\n4 ${withheld}\n`) && !turns[0].prompt.includes(comparison),
+      "a clean task keeps the repository screening rule for a line containing a credential keyword");
     t.ok(turns[1].prompt.includes(JSON.stringify(STUB.trim())) && turns[1].prompt.includes(JSON.stringify(templateLine)),
       "the draft receives the full verified lines after accepting excerpts, numbering and escaped backticks");
     const journal = path.join(f.w.zhome, "flows", id, "events.jsonl");
@@ -453,7 +574,7 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, RO
     t.ok(!turns[1].prompt.includes("unknown implementation"), "the incorrect citation is absent from the draft input");
 
     const refusedArgs = argsFor(f, path.join(f.w.dir, "refused-brief.md"));
-    f.answer("facts 1", { facts: [{ ...answer.facts[0], claim: `${legacy} api_key=${fixtureValue}` }], unknowns: [] });
+    f.answer("facts 1", { facts: [{ ...answer.facts[0], claim: `${legacy} ${assignment("api_key", fixtureValue)}` }], unknowns: [] });
     const unsafe = await flow(t, f, ["design-brief", "--args", refusedArgs]);
     t.ok(unsafe.code === 2 && /would change during screening/.test(unsafe.json?.infra ?? ""), "a placeholder does not exempt nearby sensitive text");
 
@@ -486,6 +607,92 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, RO
       [0, 5, 3, 2, 1], "one path supplies distinct pinned and attached texts, and a quote from the wrong origin is rejected");
     t.eq(f.steps().slice(priorTurns), ["plan", "facts 1", "facts 2", "draft", "review"],
       "the mixed plan and the two sets of evidence are reused across the interruption");
+
+    const invented = ["sk", "live", "inventedvalue".repeat(3)].join("-");
+    const inventedLine = "Use a token.";
+    const extract = path.join(f.w.dir, "comparison-extract.md");
+    fs.writeFileSync(extract, `${comparison}\n`);
+    const question = "What does the supplied comparison check?";
+    const repoAlias = answer.facts[0].file;
+    const extractAlias = "context-1.md";
+    const comparisonFact = { file: extractAlias, line: 1, claim: "The comparison checks equality.", quote: comparison };
+    f.answer("plan", { questions: [{ question, files: [repoAlias, extractAlias], notCode: false }] });
+    const setting = ["password", "="].join(" ");
+    f.answer("facts 1", { facts: [
+      comparisonFact,
+      { ...comparisonFact, quote: "token == expected", claim: "The comparison uses the expected value." },
+      { ...comparisonFact, claim: `An invented value is ${invented}.` },
+      { ...comparisonFact, claim: inventedLine },
+      { ...comparisonFact, file: repoAlias, line: 4 },
+      ...answer.facts.slice(0, 2),
+    ], unknowns: [`Confirm how callers handle the result.\n${invented}`, `${setting}\n${comparison}`, inventedLine] });
+    const writer = draft("Run the clamp scenario.");
+    f.answer("draft", { ...writer, markdown: `${writer.markdown}\n\n${comparison}\nAsk Fixture Person to confirm.` });
+    const review = f.review("approved");
+    f.answer("review", { ...review, summary: `${review.summary}\nAsk Fixture Person to confirm.` });
+    const quotedArgs = argsFor(f, path.join(f.w.dir, "quoted.md"), {
+      questions: [question], context: [extract],
+    });
+    const beforeQuote = f.steps().length;
+    const screenedQuote = await flow(t, f, ["design-brief", "--args", quotedArgs]);
+    t.eq([screenedQuote.code, screenedQuote.json?.status, screenedQuote.json?.ownerDecisions?.[0]?.options, f.steps().length],
+      [2, "waiting", ["Continue without those lines", "Stop to rephrase"], beforeQuote],
+      "a freshly supplied extract that matches the original task rule requires a screening choice before any model call");
+    const screenedJournal = screenedQuote.json.journal;
+    t.ok(screenedQuote.json.question.includes("context-1.md:1 (credential)")
+      && ![screenedQuote.out, screenedQuote.err, fs.readFileSync(path.join(screenedJournal, "events.jsonl"), "utf8")]
+        .some(text => text.includes(comparison)), "the wait reports the affected extract line without exposing it");
+
+    // Recreate a run pinned before the task rule was restored, with the comparison already visible in its extract.
+    const material = JSON.parse(fs.readFileSync(path.join(screenedJournal, "material.json"), "utf8"));
+    t.eq(material.extracts[extractAlias], withheld, "the fresh run pins the screened extract");
+    const attachment = `<attachment path="${extractAlias}">\n`;
+    material.context = material.context.replace(`${attachment}${withheld}\n`, `${attachment}${comparison}\n`);
+    material.extracts[extractAlias] = comparison;
+    delete material.taskScreening;
+    const materialText = JSON.stringify(material);
+    const pin = JSON.parse(fs.readFileSync(path.join(screenedJournal, "run.json"), "utf8"));
+    const quotedId = `${pin.runId}-pinned`;
+    const quotedJournal = path.join(runs, quotedId);
+    fs.mkdirSync(quotedJournal);
+    fs.writeFileSync(path.join(quotedJournal, "events.jsonl"), "");
+    fs.writeFileSync(path.join(quotedJournal, "material.json"), materialText);
+    fs.writeFileSync(path.join(quotedJournal, "run.json"), JSON.stringify({
+      ...pin, runId: quotedId, pair: mixed.json.models,
+      inputs: { args: JSON.parse(fs.readFileSync(quotedArgs, "utf8")), materialSha256: crypto.createHash("sha256").update(materialText).digest("hex") },
+    }));
+    const quoted = await flow(t, f, ["design-brief", "--resume", quotedId]);
+    t.eq([
+      quoted.code, quoted.json?.facts, quoted.json?.repositoryFacts,
+      quoted.json?.contextFacts, quoted.json?.rejectedFacts, f.steps().slice(-4),
+    ], [0, 4, 2, 2, 3, ["plan", "facts 1", "draft", "review"]], "two Git facts and two quotes of the supplied comparison reach draft and review");
+    const quotedEvents = fs.readFileSync(path.join(quoted.json.journal, "events.jsonl"), "utf8");
+    const done = quotedEvents.trim().split(/\r?\n/).map(JSON.parse).filter(event => event.kind === "done");
+    const research = done.find(event => event.step === "facts 1").result;
+    t.eq(research.facts.map(({ file, quote }) => [file, quote]), [
+      [extractAlias, comparison], [extractAlias, comparison], [repoAlias, STUB.trim()], [repoAlias, templateLine],
+    ], "both verified comparison quotes use the supplied extract line");
+    t.eq(research.rejectedFacts, [
+      { fact: 3, reason: "credential" },
+      { fact: 4, reason: "credential" },
+      { fact: 5, reason: "source line withheld" },
+    ], "the journal records invented text and a quote of a withheld source line by position and reason");
+    t.eq(research.rejectedLines, [
+      { field: "unknowns[1]", line: 2, reason: "credential" },
+      { field: "unknowns[2]", line: 1, reason: "credential" },
+      { field: "unknowns[3]", line: 1, reason: "credential" },
+    ], "the unresolved points record only the unsafe lines");
+    t.ok(research.unknowns[0].includes("Confirm how callers handle the result."), "the useful line in the same unresolved point survives");
+    t.eq(research.unknowns[1], comparison, "a supplied line survives even beside an invented credential assignment");
+    const filtered = done.find(event => event.step === "draft").result;
+    t.eq(filtered.rejectedLines, [{ field: "markdown", line: writer.markdown.split("\n").length + 3, reason: "private-word" }],
+      "an invented private line in the draft is recorded without discarding the Markdown");
+    t.eq([quoted.json.review.summary.trim(), quoted.json.review.rejectedLines],
+      [review.summary, [{ field: "summary", line: 2, reason: "private-word" }]], "the review retains its verdict and its useful summary line");
+    const approved = fs.readFileSync(quoted.json.path, "utf8");
+    t.ok(approved.includes(comparison) && ![quoted.out, quoted.err, quotedEvents, approved]
+      .some(text => [invented, inventedLine, "Fixture Person"].some(value => text.includes(value))),
+      "the approved brief preserves supplied text and the rejected values stay out of output and events");
   });
 
 

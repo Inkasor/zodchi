@@ -237,8 +237,9 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     const privateBrief = "fixture-brief-internal-shorthand";
     const privateFile = "fixture-file-internal-shorthand";
     const shapedValue = "ghp_" + "fixturevalue".repeat(3);
-    const apiValue = "sk-live-" + "fixturevalue".repeat(3);
+    const apiValue = ["sk", "live", "fixturevalue".repeat(3)].join("-");
     const urlValue = "fixture-url-inline-value";
+    const credentialUrl = ["https", `fixture:${urlValue}@example.invalid/`].join("://");
     const keyType = ["PRIVATE", "KEY"].join(" ");
     const keyBody = "fixture-key-body";
     const cleanBrief = fs.readFileSync(screened.brief, "utf8");
@@ -265,9 +266,9 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     const baseFiles = ["src/notes.txt", "src/settings.txt"];
     fs.writeFileSync(path.join(screened.r, baseFiles[0]), `Notes\n${privateFile}\n`);
     fs.writeFileSync(path.join(screened.r, baseFiles[1]), [
-      "Settings", shapedValue, `https://fixture:${urlValue}@example.invalid/`,
+      "Settings", shapedValue, credentialUrl,
       `-----BEGIN ${keyType}-----`, keyBody, `-----END ${keyType}-----`,
-      `api_key = "${apiValue}"`, "Visible footer", "",
+      ["api_key", JSON.stringify(apiValue)].join(" = "), "Visible footer", "",
     ].join("\n"));
     const baseBinary = "src/task-list.bin";
     fs.writeFileSync(path.join(screened.r, baseBinary), Buffer.from([0, ...Buffer.from(shapedValue), 255]));
@@ -278,7 +279,8 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     ], [privateFile, shapedValue, apiValue, urlValue, keyBody]);
 
     const inlineValue = "fixture-added-inline-value";
-    screened.answer("write", report("done", { "src/math.mjs": `${FIXED}\nconst token = "${inlineValue}";\n` }));
+    const inlineSetting = ["token", JSON.stringify(inlineValue)].join(" = ");
+    screened.answer("write", report("done", { "src/math.mjs": `${FIXED}\nconst ${inlineSetting};\n` }));
     screened.answer("review 1", screened.review("approved"));
     const withheld = await runScreened(["src/math.mjs", baseBinary]);
     t.eq([withheld.code, withheld.json?.verdict, screened.steps()], [2, "blocked", ["write"]],
