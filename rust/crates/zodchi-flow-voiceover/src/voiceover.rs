@@ -1,6 +1,6 @@
 //! Render the approved wording of each timed cue as speech, then place the cues in a WAV.
 
-use crate::{
+use zodchi_flow_engine::{
     boundary::Launch,
     input_common,
     journal::{new_run_id, Journal},
@@ -228,7 +228,7 @@ pub fn preview(raw: &Value) -> Result<Exit> {
     })
 }
 
-pub(crate) fn project_stop_status(run: &Value, last: &Value, result: &mut Value) {
+pub fn project_stop_status(run: &Value, last: &Value, result: &mut Value) {
     if run["workflow"] == NAME {
         result["errorKind"] = last["errorKind"].clone();
         result["mayHaveBeenCharged"] = last["mayHaveBeenCharged"].clone();
