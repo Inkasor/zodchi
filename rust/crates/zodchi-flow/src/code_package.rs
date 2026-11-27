@@ -25,6 +25,7 @@ use crate::patch::{self, Patch, Refusal};
 use crate::review_contract::check_review;
 use crate::review_source::{self, FileLine};
 use serde_json::{json, Map, Value};
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -51,6 +52,10 @@ const REVIEW: &str = include_str!("../flows/code-package/v1/review.md");
 const PATCH_SCHEMA_V1: &str = include_str!("../flows/code-package/v1/patch.schema.json");
 const PATCH_SCHEMA_V2: &str = include_str!("../flows/code-package/v2/patch.schema.json");
 pub(crate) const REVIEW_SCHEMA: &str = include_str!("../flows/code-package/v1/review.schema.json");
+const WAVE_INTEGRATION: &str = "wave-integration";
+const WAVE_WRITER_RULE: &str = "Do not build or run tests. The lead builds and runs end-to-end verification after integration.";
+const WRITER_NO_PROGRESS: &str = "writer no progress";
+const MAX_STALLED_TURNS: u64 = 2;
 
 fn exit_of(result: Value) -> Exit {
     let code = if result["approved"] == json!(true) { 0 } else { 2 };
@@ -156,6 +161,14 @@ fn finish_result(journal: &mut Journal, args: &Args, id: &str, mut result: Value
 
 fn refused(label: &str, why: String) -> Exit {
     exit_of(json!({ "label": label, "mode": "expert", "workflow": WORKFLOW, "version": VERSION, "rounds": [], "openFindings": [], "verifiedBy": "none", "refused": why }))
+}
+
+fn claim_keys(files: &[String]) -> Vec<String> {
+    files.iter().map(|file| file.to_lowercase()).collect()
+}
+
+fn claim_refusal(dir: &Path, conflicts: &[String]) -> String {
+    format!("Open packages claim the same files: {}. Finish them, or close a stale one (status \"closed\" in {}).", conflicts.join("; "), dir.display())
 }
 
 fn render(template: &str, vars: &[(&str, String)]) -> String {
@@ -450,10 +463,23 @@ fn check_rules(args: &Args, plan: &crate::verify::Plan) -> String {
     ])
 }
 
+fn expert_rules(args: &Args) -> String {
+    let wave = if args.wave { format!("\n\n{WAVE_WRITER_RULE}") } else { String::new() };
+    RULES.replace("{{waveRules}}", &wave)
+}
+
+fn agent_rules(wave: bool) -> Cow<'static, str> {
+    if wave {
+        Cow::Owned(AGENT_RULES.replace("Run relevant checks from this workspace before handing off.", WAVE_WRITER_RULE))
+    } else {
+        Cow::Borrowed(AGENT_RULES)
+    }
+}
+
 fn expert_preamble(
-    template: &str, step: &str, id: &str, files: String, checks: &str, vars: Vec<(&str, String)>,
+    template: &str, step: &str, id: &str, files: String, rules: &str, checks: &str, vars: Vec<(&str, String)>,
 ) -> String {
-    let rules = format!("{RULES}\n{checks}");
+    let rules = format!("{rules}\n{checks}");
     let mut all = vec![("step", step.to_string()), ("run", id.to_string()), ("files", files), ("rules", rules)];
     all.extend(vars);
     render(template, &all)
@@ -464,11 +490,16 @@ fn agent_boundary(files: &[String]) -> String {
 }
 
 fn agent_preamble(
-    turn: &str, id: &str, boundary: &str, checks: &str, notes: &str, has_setup: bool, browser: &Value,
+    turn: &str, id: &str, boundary: &str, notes: &str, browser: &Value, args: &Args, plan: &crate::verify::Plan,
 ) -> String {
-    let mut text = format!("Step: {turn} (code-package v1, run {id})\n\n{AGENT_RULES}\nAllowed files:\n{boundary}\n\n{checks}\n\n{notes}");
-    if has_setup {
-        text.push_str("\n\nThe engine completed the configured setup in this workspace. Use the prepared dependencies for your checks.");
+    let checks = check_rules(args, plan);
+    let rules = agent_rules(args.wave);
+    let mut text = format!("Step: {turn} (code-package v1, run {id})\n\n{rules}\nAllowed files:\n{boundary}\n\n{checks}\n\n{notes}");
+    if !plan.setup.is_empty() {
+        text.push_str("\n\nThe engine completed the configured setup in this workspace.");
+        if !args.wave {
+            text.push_str(" Use the prepared dependencies for your checks.");
+        }
     }
     if let Some(variable) = browser["variable"].as_str() {
         text.push_str(&format!("\n\nThe pinned browser executable is available in the shell variable {variable}. Project tests choose headless mode."));
@@ -537,12 +568,13 @@ fn preview_writer_prompt(
     let checks = check_rules(args, plan);
     let (preamble, files, rules) = if args.agent {
         let files = agent_boundary(&args.files);
-        let text = agent_preamble("write", id, &files, &checks, "", !plan.setup.is_empty(), browser);
-        (text, files.len(), AGENT_RULES.len())
+        let text = agent_preamble("write", id, &files, "", browser, args, plan);
+        (text, files.len(), agent_rules(args.wave).len())
     } else {
         let files = expert_file_sizes(git, seed, args, &mut attachments)?;
         let size = files.len();
-        (expert_preamble(WRITE, "write", id, files, &checks, vec![]), size, RULES.len())
+        let rules = expert_rules(args);
+        (expert_preamble(WRITE, "write", id, files, &rules, &checks, vec![]), size, rules.len())
     };
     let instructions = preamble.len().saturating_sub(files + rules + checks.len());
     Ok(json!({
@@ -556,14 +588,34 @@ fn preview_writer_prompt(
     }))
 }
 
-fn preview_pick(pick: &Pick, server: Option<&str>) -> Value {
-    let route = match (pick.provider.as_str(), server) {
+/// Separate the origin displayed in the preview from the endpoint used for its read-only preflight.
+/// Keep a reverse proxy's path prefix on the endpoint, and discard URL components it does not use.
+fn preview_server(url: &str) -> Option<(String, String)> {
+    let (scheme, rest) = url.split_once("://")?;
+    if !matches!(scheme, "http" | "https") {
+        return None;
+    }
+    let (authority, suffix) = rest.split_at(rest.find(['/', '?', '#']).unwrap_or(rest.len()));
+    if authority.bytes().any(|byte| !byte.is_ascii_graphic() || matches!(byte, b'\\' | b'\'' | b'"')) {
+        return None;
+    }
+    let host = match authority.split_once('@') {
+        Some((_, host)) if !host.contains('@') => host,
+        Some(_) => return None,
+        None => authority,
+    };
+    if host.is_empty() {
+        return None;
+    }
+    let path = suffix.split(['?', '#']).next().unwrap_or("");
+    let origin = format!("{scheme}://{host}");
+    Some((format!("{origin}{path}"), origin))
+}
+
+fn preview_pick(pick: &Pick, origin: Option<&str>) -> Value {
+    let route = match (pick.provider.as_str(), origin) {
         ("claude", _) => "claude cli".into(),
-        (_, Some(url)) => {
-            let (scheme, address) = url.split_once("://").expect("preflight validated the server URL");
-            let host = address.split('/').next().expect("server authority");
-            format!("company server {scheme}://{host}")
-        }
+        (_, Some(origin)) => format!("company server {origin}"),
         _ => "local codex gateway".into(),
     };
     json!({ "provider": pick.provider, "model": pick.model, "effort": pick.effort, "route": route })
@@ -722,10 +774,15 @@ pub(crate) fn start_run(
         }
     }
     let check_paths = checks::ProjectPaths::new(&cfg.home, &git)?;
-    let verify_plan = match crate::verify::Plan::load(&git, &seed, &args, &check_paths) {
+    let mut verify_plan = match crate::verify::Plan::load(&git, &seed, &args, &check_paths) {
         Ok(plan) => plan,
         Err(error) => return Ok(refused(&label, error.0)),
     };
+    if args.wave {
+        verify_plan.verify.clear();
+        verify_plan.full_local.clear();
+        verify_plan.full_in_ci = false;
+    }
     if !verify_plan.setup.is_empty() || !verify_plan.checks.is_empty() || !verify_plan.verify.is_empty() || !verify_plan.full_local.is_empty() {
         if let Err(error) = checks::preflight() {
             return Ok(refused(&label, error.0));
@@ -766,9 +823,24 @@ pub(crate) fn start_run(
             }
         }
     }
+    let mut preview_origin = None;
     if let Some(url) = server.as_ref().filter(|_| on_server(&writer) || on_server(&reviewer)) {
-        if let Err(e) = executor::server::Server::new(cfg.clone(), url.clone()).preflight(&[WRITER_GATEWAY_ROLE, REVIEWER_GATEWAY_ROLE]) {
-            return Ok(refused(&label, e.0));
+        let url = if dry_run {
+            let Some((endpoint, origin)) = preview_server(url) else {
+                return Ok(refused(&label, "The flow server named in flow.json (\"server\") needs an HTTP or HTTPS origin.".into()));
+            };
+            preview_origin = Some(origin);
+            endpoint
+        } else {
+            url.clone()
+        };
+        let server = executor::server::Server::new(cfg.clone(), url.clone());
+        if let Err(error) = server.preflight(&[WRITER_GATEWAY_ROLE, REVIEWER_GATEWAY_ROLE]) {
+            let why = match &preview_origin {
+                Some(origin) => error.0.replace(url.trim_end_matches('/'), origin),
+                None => error.0,
+            };
+            return Ok(refused(&label, why));
         }
     }
     let executors = if server.is_some() { "codex via server" } else { "codex only" };
@@ -786,14 +858,22 @@ pub(crate) fn start_run(
     let screening = json!({ "brief": "screened", "files": "screened", "agentWorkspace": args.agent.then_some("not screened") });
     // A preview leaves the shared gate before creating the journal, launching a worker, or claiming the files.
     if dry_run {
+        let dir = claims::claims_dir(&args.repo_norm);
+        let conflicts = claims::preview_conflicts(&dir, &label, &id, &claim_keys(&args.files));
+        if !conflicts.is_empty() {
+            let mut exit = refused(&label, claim_refusal(&dir, &conflicts));
+            exit.result["mode"] = json!(args.mode());
+            exit.result["conflicts"] = json!(conflicts);
+            return Ok(exit);
+        }
         let places = private_places(&cfg, &args, &crate::journal::flows_dir(&cfg.home).join(&id), &check_paths, &browser);
         let prompt = preview_writer_prompt(&args, &verify_plan, &id, &browser, &git, &seed, &brief, &history, &places)?;
         return Ok(Exit { code: 0, result: json!({
             "dryRun": true, "label": args.label, "repo": args.repo, "branch": branch, "base": base,
             "files": args.files, "protected": args.protected_paths(), "allowCheckChanges": args.allow_check_changes,
             "models": {
-                (args.writer_role()): preview_pick(&writer, server.as_deref()),
-                "reviewer": preview_pick(&reviewer, server.as_deref()),
+                (args.writer_role()): preview_pick(&writer, preview_origin.as_deref()),
+                "reviewer": preview_pick(&reviewer, preview_origin.as_deref()),
             },
             "prompt": prompt, "screening": screening, "checks": verify_plan.checks, "verify": verify_plan.verify,
             "budget": { "rounds": args.rounds, "fixes": args.fixes, "continuations": args.continuations },
@@ -1011,7 +1091,7 @@ impl Run {
         };
         if !conflicts.is_empty() {
             self.out.insert("conflicts".into(), json!(conflicts));
-            self.out.insert("refused".into(), json!(format!("Open packages claim the same files: {}. Finish them, or close a stale one (status \"closed\" in {}).", conflicts.join("; "), self.claims_dir.display())));
+            self.out.insert("refused".into(), json!(claim_refusal(&self.claims_dir, &conflicts)));
             return self.finish(false);
         }
         if let Some(project) = &self.project {
@@ -1037,6 +1117,17 @@ impl Run {
         if let Some(budget) = self.args.budget {
             self.out.insert("budget".into(), budget.report(self.journal.events()));
         }
+        let events = self.journal.events();
+        if let Some(credits) = gateway::credits_report(events, None) {
+            self.out.insert("credits".into(), credits);
+            if let Some(Value::Array(rounds)) = self.out.get_mut("rounds") {
+                for round in rounds {
+                    if let Some(credits) = round["n"].as_u64().and_then(|n| gateway::credits_report(events, Some(n))) {
+                        round["credits"] = credits;
+                    }
+                }
+            }
+        }
         let open = self.out["openFindings"].as_array().map(|a| a.len()).unwrap_or(0);
         if open > 0 && !self.out.contains_key("next") {
             self.out.insert("next".into(), json!(format!("The last review left {open} finding(s) open (openFindings): close them with the writer, or decide on them.")));
@@ -1044,6 +1135,7 @@ impl Run {
         if self.keep_claim {
             return Ok(exit_of(Value::Object(self.out)));
         }
+        self.pin_replacement_writers()?;
         // The intent first: a cut before the saved result runs the machine again from the journal with the claim
         // still open; a cut after it finds both.
         let result = Value::Object(self.out);
@@ -1053,16 +1145,44 @@ impl Run {
         finish_result(&mut self.journal, &self.args, &self.id, result)
     }
 
+    fn pin_replacement_writers(&self) -> Result<()> {
+        if !self.args.agent {
+            return Ok(());
+        }
+        let replacements: HashSet<_> = self.journal.events().iter()
+            .filter(|event| event["kind"] == "intent" && event["role"] == agent::ROLE)
+            .filter_map(|event| event["model"].as_str().filter(|model| *model != self.writer.model.as_str()))
+            .collect();
+        if replacements.is_empty() {
+            return Ok(());
+        }
+        // A successor must keep its reviewer independent of everyone who could have edited its seed.
+        // Preserve the pinned pair for replay and include the other authors in the existing provenance list.
+        let mut run = self.journal.read_value("run.json")
+            .ok_or_else(|| GatewayError("The run pin is missing.".into()))?;
+        let mut authors = strings(&run["priorWriters"]);
+        let mut replacements: Vec<_> = replacements.into_iter().collect();
+        replacements.sort_unstable();
+        for model in replacements {
+            let name = format!("codex/{model}");
+            if !authors.contains(&name) {
+                authors.push(name);
+            }
+        }
+        run["priorWriters"] = json!(authors);
+        self.journal.write_value("run.json", &run)?;
+        Ok(())
+    }
+
     fn claim(&mut self) -> Result<Vec<String>> {
+        let keys = claim_keys(&self.claimed);
         if let Some(done) = self.done("claim") {
             let conflicts = strings(&done["conflicts"]);
-            let keys: Vec<String> = self.claimed.iter().map(|f| f.to_lowercase()).collect();
             if conflicts.is_empty() && !claims::holds(&self.claims_dir, &self.args.label, &self.id, &keys) {
                 return Ok(vec![format!("{}: the claim is no longer the open claim of run {} (it was closed or taken over meanwhile)", self.args.label, self.id)]);
             }
             return Ok(conflicts);
         }
-        let keys: Vec<String> = self.claimed.iter().map(|f| f.to_lowercase()).collect();
         let conflicts = claims::open(&self.claims_dir, &self.args.label, &self.id, &keys, &self.args.brief, &self.base)?;
         self.record_done("claim", 0, json!({ "conflicts": conflicts, "file": claims::file(&self.claims_dir, &self.args.label).display().to_string() }))?;
         Ok(conflicts)
@@ -1100,7 +1220,7 @@ impl Run {
                 self.out.insert("next".into(), json!(format!("The checks failed after the change and the writer's fixes ({}): see the logs in verification.evidence. Nothing of round {n} was committed; the work stays in the work tree. Fix it, or decide that the check is flaky (args.allowCheckChanges).", failed)));
                 return Err(Halt);
             }
-            let verification = verification(&checks, !self.verify_plan.verify.is_empty(), !self.verify_plan.checks.is_empty());
+            let verification = verification(&checks, &self.verify_plan, self.args.wave);
             self.out.insert("verifiedBy".into(), verification["verifiedBy"].clone());
             self.out.insert("verification".into(), verification.clone());
             let mut receipt = self.commit(n, &checks, verification["stamp"].as_str().unwrap_or("Verified: none"))?;
@@ -1403,7 +1523,7 @@ impl Run {
                 if !omissions.is_empty() {
                     return Ok(ScreenedPrompt::Withheld(omissions));
                 }
-                let text = expert_preamble(template, step, &self.id, files, &check_rules(&self.args, &self.verify_plan), vars);
+                let text = expert_preamble(template, step, &self.id, files, &expert_rules(&self.args), &check_rules(&self.args, &self.verify_plan), vars);
                 let brief = input_attachment(&self.brief, &places);
                 let mut attachments = vec![("brief".to_string(), brief)];
                 attachments.extend(extra);
@@ -1525,6 +1645,137 @@ impl Run {
         Err(Halt)
     }
 
+    fn wait_for_writer_progress<T>(&mut self, turn: &str, round: u32, note: Option<&str>) -> Step<T> {
+        let options = ["continue", "close", "rerun"];
+        let mut question = format!(
+            "The writer made no progress in two consecutive turns at {turn}. Choose continue to reset the counter, \
+             close to close the run, or rerun to use another writer from the role table."
+        );
+        if let Some(note) = note {
+            question.push_str(&format!(" {note}"));
+        }
+        self.out.insert("status".into(), json!("waiting"));
+        self.out.insert("stoppedAt".into(), json!(format!("{WRITER_NO_PROGRESS} at {turn}")));
+        self.out.insert("question".into(), json!(question));
+        self.out.insert("options".into(), json!(options));
+        self.out.insert("next".into(), json!(format!(
+            "For continue or rerun, put that word in a file and use zodchi flow reply {} --file <text>, then resume. \
+             To close, use zodchi flow close {} --reason <text>.", self.id, self.id,
+        )));
+        self.keep_claim = true;
+        let attempt = self.attempt(turn);
+        if !self.journal.last("waiting", turn, attempt).is_some_and(|event| event["reason"] == WRITER_NO_PROGRESS) {
+            let recorded = self.journal.append(json!({
+                "kind": "waiting", "step": turn, "round": round, "attempt": attempt, "reason": WRITER_NO_PROGRESS,
+                "noProgress": MAX_STALLED_TURNS, "question": question, "options": options, "note": note,
+            }));
+            self.infra(turn, recorded)?;
+        }
+        Err(Halt)
+    }
+
+    fn resume_stalled_writer(&mut self, step: &str, turn: &str, round: u32, writer: &mut Pick) -> Step<()> {
+        let resumed = self.journal.events().iter().rfind(|event| event["kind"] == "writer resumed" && event["step"] == turn);
+        let resumed_seq = if let Some(event) = resumed {
+            *writer = Pick::from_json(&event["writer"]);
+            event["seq"].as_u64().unwrap_or(0)
+        } else {
+            0
+        };
+        let Some(waiting) = self.journal.events().iter().rfind(|event| {
+            event["kind"] == "waiting" && event["step"] == turn && event["reason"] == WRITER_NO_PROGRESS
+                && event["seq"].as_u64().unwrap_or(0) > resumed_seq
+        }) else {
+            return Ok(());
+        };
+        let waiting_seq = waiting["seq"].as_u64().unwrap_or(0);
+        let answer = self.journal.events().iter().rfind(|event| event["kind"] == "rerun" && event["step"] == turn
+            && event["seq"].as_u64().unwrap_or(0) > waiting_seq)
+            .and_then(|event| event["ownerAnswer"].as_str()).map(|answer| answer.trim().to_ascii_lowercase());
+        let choice = match answer.as_deref() {
+            Some("continue") => "continue",
+            Some("rerun") => {
+                match self.replacement_writer(writer) {
+                    Ok(next) => *writer = next,
+                    Err(why) => return self.wait_for_writer_progress(turn, round, Some(&why)),
+                }
+                "rerun"
+            }
+            Some(_) => return self.wait_for_writer_progress(turn, round, Some("Reply with continue or rerun, or close the run with flow close.")),
+            None => {
+                let note = waiting["note"].as_str().map(String::from);
+                return self.wait_for_writer_progress(turn, round, note.as_deref());
+            }
+        };
+        let attempt = self.attempt(turn);
+        let recorded = self.journal.append(json!({
+            "kind": "writer resumed", "step": turn, "writerStep": step, "round": round, "attempt": attempt,
+            "choice": choice, "writer": writer.to_json(), "noProgress": 0,
+        }));
+        self.infra(turn, recorded)
+    }
+
+    fn replacement_writer(&self, current: &Pick) -> std::result::Result<Pick, String> {
+        let table = models::table(&self.cfg, Path::new(&self.args.repo), &self.args.models)?;
+        models::candidates(&table, self.args.writer_role())?.into_iter().find(|pick| {
+            pick.provider == "codex" && !pick.model.is_empty() && pick.model != current.model
+                && (pick.provider != self.reviewer.provider || pick.model != self.reviewer.model)
+        }).ok_or_else(|| "The role table has no other local Codex writer distinct from the reviewer.".into())
+    }
+
+    fn record_writer_start(&mut self, step: &str, turn: &str, round: u32, root: &Path, allowed: &[String]) -> Step<()> {
+        let captured = agent::workspace_snapshot(root, allowed);
+        let snapshot = self.infra(turn, captured)?;
+        let attempt = self.attempt(turn);
+        // A stop before scheduling a job can leave a start receipt. Refresh it only if its bytes changed.
+        if !self.journal.last("writer turn started", turn, attempt).is_some_and(|event| event["snapshot"] == snapshot) {
+            let mut event = json!({
+                "kind": "writer turn started", "step": turn, "writerStep": step, "round": round, "attempt": attempt,
+                "snapshot": snapshot,
+            });
+            if self.last_writer_answer(turn).is_some_and(|done|
+                done["result"]["status"] != "more" || done["result"]["questions"].as_array().is_some_and(|questions| !questions.is_empty())
+            ) {
+                event["noProgress"] = json!(0);
+            }
+            let recorded = self.journal.append(event);
+            self.infra(turn, recorded)?;
+        }
+        Ok(())
+    }
+
+    fn last_writer_answer(&self, turn: &str) -> Option<&Value> {
+        self.journal.events().iter().rfind(|event| event["kind"] == "done" && event["step"] == turn)
+    }
+
+    fn writer_progress(&mut self, step: &str, turn: &str, round: u32, root: &Path, allowed: &[String]) -> Step<u64> {
+        let attempt = self.attempt(turn);
+        if let Some(event) = self.journal.last("writer progress", turn, attempt) {
+            return Ok(event["noProgress"].as_u64().unwrap_or(0));
+        }
+        // An earlier engine may have submitted a turn without its starting snapshot. Its work is still replayable.
+        if self.journal.last("writer turn started", turn, attempt).is_none() {
+            return Ok(0);
+        }
+        let captured = agent::workspace_snapshot(root, allowed);
+        let snapshot = self.infra(turn, captured)?;
+        let prior: Vec<_> = self.journal.events().iter().filter(|event| event["writerStep"] == step).collect();
+        // The current turn's starting bytes are included. Restoring earlier bytes, or removing an unclaimed
+        // scratch edit from the dirty list, cannot by itself count as new work.
+        let changed = snapshot.as_object().expect("workspace snapshot").iter().any(|(path, signature)| {
+            prior.iter().all(|event| event["snapshot"].get(path) != Some(signature))
+        });
+        let no_progress = if changed { 0 } else {
+            1 + prior.iter().rev().find_map(|event| event["noProgress"].as_u64()).unwrap_or(0)
+        };
+        let recorded = self.journal.append(json!({
+            "kind": "writer progress", "step": turn, "writerStep": step, "round": round, "attempt": attempt,
+            "snapshot": snapshot, "noProgress": no_progress,
+        }));
+        self.infra(turn, recorded)?;
+        Ok(no_progress)
+    }
+
     fn agent_turn(&mut self, step: &str, round: u32, vars: Vec<(&str, String)>, extra: Vec<(String, Vec<u8>)>) -> Step<Patch> {
         let apply_step = format!("apply {step}");
         let applied = self.done(&apply_step).is_some();
@@ -1535,7 +1786,7 @@ impl Run {
             let root = agent::workspace(&snapshot);
             self.infra(step, root)?
         };
-        let writer = self.writer.clone();
+        let mut writer = self.writer.clone();
         let output_schema = schema(agent::SCHEMA);
         let mut allowed = self.claimed.clone();
         allowed.extend(self.approved_paths(&apply_step));
@@ -1545,20 +1796,22 @@ impl Run {
         let continuations = if self.args.budget.is_some() { u32::MAX } else { self.args.continuations };
         for n in 0..=continuations {
             let turn = if n == 0 { step.to_string() } else { format!("{step} continue {n}") };
+            if !applied {
+                self.resume_stalled_writer(step, &turn, round, &mut writer)?;
+            }
             let attempt = self.attempt(&turn);
             let prompt = if self.done(&turn).is_some() || !self.journal.all("intent", &turn, attempt).is_empty() {
                 String::new()
             } else {
                 if attempt > 1 {
-                    if let Some(summary) = self.journal.last("done", &turn, attempt - 1)
+                    if let Some(summary) = self.last_writer_answer(&turn)
                         .and_then(|done| done["result"]["summary"].as_str())
                     {
                         previous_summary = Some(summary.to_string());
                     }
                 }
                 let mut preamble = agent_preamble(
-                    &turn, &self.id, &boundary, &check_rules(&self.args, &self.verify_plan), &notes,
-                    !self.verify_plan.setup.is_empty(), &self.browser,
+                    &turn, &self.id, &boundary, &notes, &self.browser, &self.args, &self.verify_plan,
                 );
                 if n > 0 || attempt > 1 {
                     preamble.push_str("\n\nContinue the writer's work in this same private workspace. Inspect its current files and preserve edits that are already complete.");
@@ -1578,7 +1831,9 @@ impl Run {
                 let mut attachments = vec![("brief".into(), brief)];
                 attachments.extend(extra.iter().cloned());
                 let prompt = compose_prompt(&preamble, &attachments);
-                self.infra(&turn, prompt)?
+                let prompt = self.infra(&turn, prompt)?;
+                self.record_writer_start(step, &turn, round, &root, &allowed)?;
+                prompt
             };
             let data = self.ask(&turn, round, agent::ROLE, &writer, &output_schema, prompt,
                 Some(&root), agent::validate)?;
@@ -1589,9 +1844,14 @@ impl Run {
             }).collect();
             let summary = data["summary"].as_str().unwrap_or("").to_string();
             let status = data["status"].as_str().unwrap_or("");
-            if status == "more" && questions.is_empty() && n < continuations {
-                previous_summary = Some(summary);
-                continue;
+            if status == "more" && questions.is_empty() {
+                if !applied && self.writer_progress(step, &turn, round, &root, &allowed)? >= MAX_STALLED_TURNS {
+                    return self.wait_for_writer_progress(&turn, round, None);
+                }
+                if n < continuations {
+                    previous_summary = Some(summary);
+                    continue;
+                }
             }
             let mut changes = Vec::new();
             if status == "done" && questions.is_empty() && !applied {
@@ -2668,6 +2928,9 @@ impl Run {
             ("step", step.to_string()), ("run", self.id.clone()), ("base", self.base.clone()), ("summary", summary),
             ("unverified", if unverified.is_empty() { "nothing named".into() } else { unverified.join("; ") }),
             ("verification", how), ("history", history), ("focus", focus.to_string()),
+            ("wave", if self.args.wave {
+                "End-to-end verification runs at wave integration. Missing local end-to-end evidence alone is not an important finding.\n".into()
+            } else { String::new() }),
         ]);
         let brief = input_attachment(&self.brief, &places);
         let mut required = vec![("change.diff".to_string(), diff.into_bytes()), ("brief".to_string(), brief)];
@@ -2757,7 +3020,7 @@ fn merge(a: &Value, b: &Value) -> Value {
 
 /// What verified a round: the slowest source that ran and passed, from the real exit codes. The stamp names the
 /// sources and exit codes only, never a command.
-fn verification(checks: &Value, has_verify: bool, has_checks: bool) -> Value {
+fn verification(checks: &Value, plan: &crate::verify::Plan, wave: bool) -> Value {
     let evidence = checks["evidence"].as_array().map(Vec::as_slice).unwrap_or_default();
     let receipts = !evidence.is_empty() && evidence.iter().all(|e| e["exitCode"].is_i64());
     let mut sources: Vec<(String, Vec<i64>)> = Vec::new();
@@ -2784,6 +3047,40 @@ fn verification(checks: &Value, has_verify: bool, has_checks: bool) -> Value {
     } else {
         format!("Verified: {}", sources.iter().map(|(s, c)| format!("{s} exit {}", c.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("/"))).collect::<Vec<_>>().join("; "))
     };
-    let note = if by != "none" { String::new() } else if !has_verify && !has_checks { "not verified by running: no args.verify and no checks".into() } else { "not verified by running: a command has no exit code".into() };
+    let note = if wave {
+        "End-to-end verification is deferred to wave integration."
+    } else if by != "none" {
+        ""
+    } else if plan.verify.is_empty() && plan.checks.is_empty() {
+        "not verified by running: no args.verify and no checks"
+    } else {
+        "not verified by running: a command has no exit code"
+    };
+    let by = if wave { WAVE_INTEGRATION } else { by };
     json!({ "verifiedBy": by, "evidence": evidence, "note": note, "stamp": stamp, "tree": checks["tree"], "checkout": checks["checkout"] })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preview_server;
+
+    #[test]
+    fn server_preview_routes() {
+        let cases = [
+            ("https://gw.example.org", "https://gw.example.org", "https://gw.example.org"),
+            ("https://gw.example.org/prefix/route", "https://gw.example.org/prefix/route", "https://gw.example.org"),
+            ("http://[::1]:8080/?a=1#b", "http://[::1]:8080/", "http://[::1]:8080"),
+            (concat!("https://fixture:pass", "@", "gw.example.org:8443/prefix?query#fragment"), "https://gw.example.org:8443/prefix", "https://gw.example.org:8443"),
+            ("https://gw.example.org?query", "https://gw.example.org", "https://gw.example.org"),
+            ("https://gw.example.org#fragment", "https://gw.example.org", "https://gw.example.org"),
+        ];
+        for (url, endpoint, origin) in cases {
+            assert_eq!(preview_server(url), Some((endpoint.into(), origin.into())));
+        }
+        let user_info = format!("https://fixture:{}@/", "pass");
+        let escaped_at = format!("https://bad\\{}example.org", "@");
+        for url in ["", "ftp://gw.example.org", "https:///prefix", user_info.as_str(), escaped_at.as_str()] {
+            assert_eq!(preview_server(url), None);
+        }
+    }
 }

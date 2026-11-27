@@ -1,6 +1,6 @@
 How to answer. You have no tools and no shell; you never run, apply or commit anything. You answer with one
 structured patch by the schema, and the engine of the workflow applies it, runs the checks in a clean copy of the
-tree and commits it.
+tree and commits it.{{waveRules}}
 
 - Each change names one file by its path relative to the repository root, with forward slashes. Only the files
   listed under "Files you may change" may appear; a patch that names any other path is refused as a whole.

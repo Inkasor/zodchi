@@ -3,9 +3,10 @@
 
 use crate::{git::Git, input_common::Scrubber, patch, verify::WriterSettings};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::{io, path::{Path, PathBuf}};
 use zodchi_core::util::{fail, GatewayError, Result};
 
 pub const ROLE: &str = "flow-work";
@@ -116,6 +117,36 @@ pub fn workspace(receipt: &Value) -> Result<PathBuf> {
                 "The saved writer workspace is missing. Its recorded model calls were kept.".into(),
             )
         })
+}
+
+/// Fingerprint the claimed files and any other paths the writer dirtied. Git's list excludes scratch
+/// and installed dependencies. Hash the working bytes so repeated writes of the same content compare equal.
+pub(crate) fn workspace_snapshot(root: &Path, files: &[String]) -> Result<Value> {
+    let dirty = Git::new(root).dirty()?;
+    let paths: BTreeSet<_> = files.iter().chain(&dirty).collect();
+    let mut snapshot = BTreeMap::new();
+    for path in paths {
+        let signature = if !patch::no_links(root, path) {
+            "link".into()
+        } else {
+            let file = root.join(path);
+            match fs::symlink_metadata(&file) {
+                Ok(info) if info.is_file() => {
+                    let mut digest = Sha256::new();
+                    io::copy(&mut fs::File::open(file)?, &mut digest)
+                        .map_err(|error| GatewayError(format!("Cannot snapshot writer path {path}: {error}")))?;
+                    format!("{:x}", digest.finalize())
+                }
+                Ok(_) => "non-file".into(),
+                Err(error) if matches!(error.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory) => {
+                    "missing".into()
+                }
+                Err(error) => return fail(format!("Cannot snapshot writer path {path}: {error}")),
+            }
+        };
+        snapshot.insert(path, signature);
+    }
+    Ok(json!(snapshot))
 }
 
 pub enum Changes {

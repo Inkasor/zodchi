@@ -2,7 +2,7 @@ use crate::{
     acceptance,
     asset_round::{self, ChildWorkflow, Children},
     boundary, branch_review, budget, checks, child_package, cleanup, code_package, design_brief,
-    incident_triage, input, input_common::args_match,
+    gateway, incident_triage, input, input_common::args_match,
     journal::{self, safety_block, Journal, StatusHooks, SHUTDOWN_REQUEST},
     method_question, ops_script, research, rubric_probe, unity_check, video, voiceover,
     workspace_audit, youtube_publish, Exit,
@@ -60,6 +60,11 @@ pub fn status(id: &str) -> Result<Exit> {
             details: Some(|run, events, result| {
                 video::project_status(run, events, result);
                 youtube_publish::project_status(run, events, result);
+                if run["workflow"] == boundary::WORKFLOW {
+                    if let Some(credits) = gateway::credits_report(events, None) {
+                        result["credits"] = credits;
+                    }
+                }
             }),
             stop_details: Some(voiceover::project_stop_status),
         },

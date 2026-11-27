@@ -16,6 +16,7 @@ pub struct Args {
     pub files: Vec<String>,
     pub review_context: Vec<String>,
     pub agent: bool,
+    pub wave: bool,
     pub browser: Option<(String, String)>,
     pub isolated: bool,
     pub(crate) budget: Option<crate::budget::Budget>,
@@ -40,7 +41,7 @@ pub(crate) const BUILTIN_PROTECTED: &[&str] = &[
 
 const SUPPORTED: &[&str] = &[
     "label", "brief", "repo", "files", "tmp", "mode", "rounds", "fixes", "setup", "checks", "verify", "protect", "allowCheckChanges",
-    "models", "commit", "extendClaim", "checkTimeoutMin", "continuations", "isolated", "budget", "sourceRun", "reviewContext", "browser",
+    "models", "commit", "extendClaim", "checkTimeoutMin", "continuations", "isolated", "budget", "sourceRun", "reviewContext", "browser", "wave",
 ];
 
 const UNSUPPORTED: [(&str, &str); 5] = [
@@ -201,6 +202,9 @@ pub fn parse(a: &Value) -> Result<Args, String> {
     if o.get("isolated").is_some_and(|v| !v.is_boolean()) {
         return Err("args.isolated is true or false".into());
     }
+    if o.get("wave").is_some_and(|v| !v.is_boolean()) {
+        return Err("args.wave is true or false".into());
+    }
     let isolated = o.get("isolated") == Some(&json!(true));
     let source_run = o.get("sourceRun").map(|v| v.as_str().filter(|id| crate::journal::is_run_id(id))
         .map(String::from).ok_or("args.sourceRun is a code-package run ID")).transpose()?;
@@ -220,6 +224,7 @@ pub fn parse(a: &Value) -> Result<Args, String> {
         files,
         review_context,
         agent,
+        wave: o.get("wave") == Some(&json!(true)),
         browser,
         isolated,
         budget: o.get("budget").map(crate::budget::Budget::parse).transpose()?,

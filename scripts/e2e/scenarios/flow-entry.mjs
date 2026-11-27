@@ -210,6 +210,52 @@ export default function register(h) {
     };
   }
 
+  async function checkDryRunClaims(t) {
+    const f = flowWorld(t, "flow-entry-claimed-preview");
+    f.answer("write", { ...f.patch([]), status: "blocked", questions: ["Please confirm the edit."] });
+    const held = await f.flow(["--args", f.args()]);
+    t.eq([held.code, held.json?.status, f.claim()?.status], [2, "waiting", "open"], "the first run holds the file claim without editing the checkout");
+    for (const [overlap, conflict] of [
+      [{ label: "another-clamp" }, `clamp (run ${held.json.runId}): src/math.mjs`],
+      [{ files: ["src/other.mjs"] }, `clamp (run ${held.json.runId}): an open package of this label`],
+    ]) {
+      const args = f.args(overlap);
+      const before = dryRunState(f);
+      const dry = await f.flow(["--args", args, "--dry-run"]);
+      t.eq(dryRunState(f), before, "a dry-run claim refusal writes no claim or journal and calls no model");
+      t.ok(dry.code === 2 && dry.json?.refused?.includes(conflict), "the preview names the open claim and its conflict");
+      const real = await f.flow(["--args", args]);
+      t.eq([real.code, real.json?.refused, real.json?.conflicts, f.steps()],
+        [dry.code, dry.json?.refused, dry.json?.conflicts, ["write"]], "preview and real start report the same conflict");
+    }
+  }
+
+  async function checkWave(t) {
+    const f = flowWorld(t, "flow-entry-wave");
+    const config = path.join(f.r, ".zodchi", "verify.json");
+    fs.mkdirSync(path.dirname(config), { recursive: true });
+    fs.writeFileSync(config, JSON.stringify({ full: { run: "local", commands: ["node smoke.mjs --fail"] } }));
+    gitOut(f.r, ["add", ".zodchi/verify.json"]);
+    gitOut(f.r, ["commit", "-qm", "Declare full verification"]);
+    const args = f.args({ wave: true, mode: "agent", verify: ["node smoke.mjs --fail"] });
+    f.answer("write", { status: "done", summary: "Clamp is ready for integration.", criteria: [], questions: [],
+      changedFiles: [], checks: [], flowWrites: { "src/math.mjs": FIXED } });
+    f.answer("review 1", f.review("approved"));
+    const res = await f.flow(["--args", args]);
+    t.eq([res.code, res.json?.approved, res.json?.verifiedBy, res.json?.rounds?.[0]?.verification?.verifiedBy],
+      [0, true, "wave-integration", "wave-integration"], "wave integration owns verification of the approved package");
+    t.eq(res.json?.verification?.evidence?.map(e => [e.source, e.exitCode]), [["checks", 0]],
+      "wave still runs checks and skips the failing verify command");
+    t.ok(!res.json?.fullVerification, "full verification also waits for wave integration");
+    const [writer, reviewer] = readJsonl(path.join(f.w.codex, "fake-turns.jsonl"));
+    t.ok(writer.prompt.includes("Do not build or run tests") && writer.prompt.includes("The lead builds")
+      && !writer.prompt.includes("Run relevant checks from this workspace before handing off"),
+      "the writer leaves builds and tests to the lead");
+    t.ok(reviewer.prompt.includes("End-to-end verification runs at wave integration.")
+      && reviewer.prompt.includes("Missing local end-to-end evidence alone is not an important finding."),
+      "the review prompt explains the deferred evidence");
+  }
+
   function expectEnvelope(t, result, kind, code) {
     t.eq(result.code, code, "the process returns the envelope's exit code");
     t.ok(/^[^\r\n]+\r?\n$/.test(result.err), "stderr contains exactly one envelope line");
@@ -484,6 +530,8 @@ export default function register(h) {
     const agentRefused = await startBySkill(t, f, skill, { env: { ZODCHI_AGENT: "1" }, args: { branch: "elsewhere" } });
     t.eq([agentRefused.code, agentRefused.json, agentRefused.err],
       [2, refused.json, ""], "a workflow refusal remains a structured stdout result in agent mode");
+    await checkDryRunClaims(t);
+    await checkWave(t);
   });
 
   scenario("flow-entry-cut", "the Claude Code skill resumes a run cut after writer submission and after commit, with one turn per step and one commit", async (t) => {
@@ -564,6 +612,25 @@ export default function register(h) {
       [0, route, route, []], "the dry run preflights the server route without asking a model");
     t.eq(dryRunState(f), before, "server preflight leaves the local state unchanged");
     t.ok(!dry.out.includes(s.u.token), "the preview prints the server origin without the token");
+    const config = path.join(f.w.zhome, "flow.json");
+    const settings = fs.readFileSync(config, "utf8");
+    const address = new URL(s.origin);
+    address.username = "preview-user";
+    address.password = "preview-password";
+    address.search = "fixture-query";
+    address.hash = "fixture-fragment";
+    fs.writeFileSync(config, JSON.stringify({ ...JSON.parse(settings), server: address.href }));
+    try {
+      const configured = dryRunState(f);
+      const sanitized = await f.flow(["--args", file, "--dry-run"]);
+      t.eq([sanitized.code, sanitized.json?.models?.expertWriter?.route, sanitized.json?.models?.reviewer?.route, s.steps()],
+        [0, route, route, []], "the preview with user info, query and fragment shows only the server origin");
+      t.ok([address.username, address.password, address.search.slice(1), address.hash.slice(1), s.u.token]
+        .every(secret => !sanitized.out.includes(secret) && !sanitized.err.includes(secret)), "the omitted URL parts reach neither output stream");
+      t.eq(dryRunState(f), configured, "sanitizing the preview leaves the configured server intact");
+    } finally {
+      fs.writeFileSync(config, settings);
+    }
     const res = await startBySkill(t, f, skill);
     readLikeSkill(t, f, skill, res);
     t.eq(s.steps(), ["write", "review 1"], "the writer and the reviewer ran on the server");
@@ -597,7 +664,9 @@ export default function register(h) {
     c.answer("write", "Here is the patch: clamp now uses Math.min and Math.max.");
     f.answer("review 1", f.review("approved"));
     const file = skillArgs(t, f, skill, {});
-    const previewArgs = ["--args", file, "--dry-run"];
+    // Keep previewing the same role pair while the main run holds its claim.
+    const preview = { ...JSON.parse(fs.readFileSync(file, "utf8")), label: "clamp-preview", files: ["src/other.mjs"] };
+    const previewArgs = ["--args", f.args(preview), "--dry-run"];
     const before = dryRunState(f);
     const dry = await f.flow(previewArgs);
     t.ok(dry.code === 1 && /Claude preflight receipt for opus with effort high.*new model call/.test(dry.json?.refused),
@@ -620,7 +689,7 @@ export default function register(h) {
       { provider: "codex", model: "fake-writer", effort: "medium", route: "local codex gateway" },
     ], "a fresh receipt resolves the Claude writer without exposing its account binding");
     t.eq([dryRunState(f), c.calls()], [warm, calls], "a warm preview leaves the journal, claim, receipt, checkout and model calls unchanged");
-    const otherEffort = f.args({ models: { expertWriter: { candidates: [
+    const otherEffort = f.args({ ...preview, models: { expertWriter: { candidates: [
       { provider: "claude", model: "opus", effort: "medium" }, { provider: "codex", model: "fake-writer" },
     ] } } });
     const missing = await f.flow(["--args", otherEffort, "--dry-run"]);

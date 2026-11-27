@@ -1,6 +1,6 @@
 //! A model step records its exact request before submission, then reattaches to its recorded job by key.
 
-use crate::{agent, budget::Budget, checks, executor::{self, Executor}, input_common, journal::Journal, models::Pick, verify::WriterSettings};
+use crate::{agent, boundary::{REVIEWER_GATEWAY_ROLE, WRITER_GATEWAY_ROLE}, budget::Budget, checks, executor::{self, Executor}, input_common, journal::Journal, models::Pick, verify::WriterSettings};
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 use zodchi_core::{appserver::{SAFETY_BLOCKED, SAFETY_MESSAGE}, config::Config, job::LIMIT_PROMPT, util::{sha256_hex, GatewayError, Result}};
@@ -116,6 +116,41 @@ pub fn base_key(run: &str, step: &str, attempt: u32) -> String {
 
 pub fn summary(final_job: &Value) -> Value {
     json!({ "key": final_job["key"], "status": final_job["status"], "error": final_job["error"], "account": final_job["account"] })
+}
+
+fn credit_balances(final_job: &Value) -> Option<Value> {
+    let credits = final_job["credits"].as_object()?;
+    (credits.get("limitUsedUp").and_then(Value::as_bool) == Some(true)).then(|| {
+        Value::Object(["balanceBefore", "balanceAfter"].into_iter()
+            .filter_map(|key| credits.get(key).map(|value| (key.to_string(), value.clone())))
+            .collect())
+    })
+}
+
+pub(crate) fn credits_report(events: &[Value], round: Option<u64>) -> Option<Value> {
+    let balance = |value: &Value| value.as_f64().or_else(|| value.as_str()?.trim().parse::<f64>().ok())
+        .filter(|balance| balance.is_finite());
+    let mut steps = Vec::new();
+    let mut spent = Some(0.0);
+    for event in events.iter().filter(|event| matches!(event["kind"].as_str(), Some("done" | "job credits"))) {
+        let Some(balances) = event["credits"].as_object() else { continue };
+        let recorded_round = event["round"].as_u64().unwrap_or(0);
+        // Include the initial write (recorded as round zero) with the first review round.
+        if round.is_some_and(|n| n != recorded_round.max(1)) {
+            continue;
+        }
+        let delta = balances.get("balanceBefore").and_then(balance).zip(balances.get("balanceAfter").and_then(balance))
+            .map(|(before, after)| before - after).filter(|delta| delta.is_finite() && *delta >= 0.0);
+        // Keep the reported balances and leave the total unknown when a balance is absent or went up.
+        spent = spent.zip(delta).map(|(total, delta)| total + delta).filter(|total| total.is_finite());
+        let mut step = Map::new();
+        for field in ["step", "round", "attempt"] {
+            step.insert(field.into(), event[field].clone());
+        }
+        step.extend(balances.clone());
+        steps.push(Value::Object(step));
+    }
+    (!steps.is_empty()).then(|| json!({ "spent": spent, "steps": steps }))
 }
 
 pub(crate) fn record_safety_block(journal: &mut Journal, step: &str, attempt: u32, key: &str, provider: &str) -> Result<()> {
@@ -353,6 +388,25 @@ fn run_call(
         }
         let fin = exec.wait_final(&key).map_err(infra)?;
         let status = fin["status"].as_str().unwrap_or("");
+        let timed_out_writer = writer_workspace.is_some() && status == "timeout" && fin["turnStartedAt"].is_string();
+        let credits = if exec.name() == "local-gateway" && pick.provider == "codex"
+            && matches!(role, agent::ROLE | WRITER_GATEWAY_ROLE | REVIEWER_GATEWAY_ROLE)
+        {
+            credit_balances(&fin)
+        } else {
+            None
+        };
+        let record_credits_without_result = |journal: &mut Journal| -> Result<()> {
+            if let Some(credits) = &credits {
+                if !journal.events().iter().any(|event| event["kind"] == "job credits" && event["key"] == key) {
+                    journal.append(json!({ "kind": "job credits", "step": step, "round": round, "attempt": attempt, "key": key, "credits": credits }))?;
+                }
+            }
+            Ok(())
+        };
+        if status != "succeeded" && !timed_out_writer {
+            record_credits_without_result(journal).map_err(infra)?;
+        }
         if status == SAFETY_BLOCKED {
             record_safety_block(journal, step, attempt, &key, &pick.provider).map_err(infra)?;
             return Err(stop("provider safety", SAFETY_MESSAGE.into()));
@@ -362,9 +416,12 @@ fn run_call(
             if decision.is_some() && data.is_object() {
                 data["inputTokens"] = fin["tokens"]["inputTokens"].clone();
             }
-            validate(&mut data).map_err(|reason| stop("invalid answer", format!("the answer of job {key} does not hold: {reason}")))?;
+            if let Err(reason) = validate(&mut data) {
+                record_credits_without_result(journal).map_err(infra)?;
+                return Err(stop("invalid answer", format!("the answer of job {key} does not hold: {reason}")));
+            }
             data
-        } else if writer_workspace.is_some() && status == "timeout" && fin["turnStartedAt"].is_string() {
+        } else if timed_out_writer {
             json!({ "status": "more", "summary": "The writer's turn timed out. Inspect the private workspace for edits written before the timeout.", "questions": [] })
         } else if allow_resubmission && exec.died_before_turn(&fin) && retries < 2 {
             if matches!(local, Some(LocalMode::Drain(_))) {
@@ -393,7 +450,11 @@ fn run_call(
             let kind = if status == "unknown" { "unknown outcome".to_string() } else { format!("gateway {status}") };
             return Err(stop(&kind, format!("job {key}: {}", fin["error"].as_str().unwrap_or(status))));
         };
-        journal.append(json!({ "kind": "done", "step": step, "round": round, "attempt": attempt, "result": data })).map_err(infra)?;
+        let mut done = json!({ "kind": "done", "step": step, "round": round, "attempt": attempt, "result": data });
+        if let Some(credits) = credits {
+            done["credits"] = credits;
+        }
+        journal.append(done).map_err(infra)?;
         return Ok(Step::Done(data));
     }
 }

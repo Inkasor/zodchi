@@ -347,6 +347,86 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
       "the same run succeeds with the explicit args setup and a clean writer copy");
   });
 
+  async function checkWriterProgress(t) {
+    const f = flowWorld(t, "flow-agent-continue-no-progress");
+    const candidate = model => ({ provider: "codex", model, effort: "medium" });
+    const models = { writer: { candidates: ["fake-writer", "fake-reviewer", "second-writer"].map(candidate) },
+      reviewer: { candidates: [candidate("fake-reviewer")] } };
+    const other = "export const other = 2;\n";
+    const flow = (args) => zodchi(t, f.w, ["flow", ...args], { cwd: f.r, env: f.w.env });
+    f.answer("write", report("more", {}));
+    f.answer("write continue 1", report("more", {}));
+    const cut = await f.flow(["--args", f.args({ mode: "agent", continuations: 8, models,
+      files: ["src/math.mjs", "src/other.mjs"] })], { ZODCHI_FLOW_CUT: "submit write continue 1" });
+    t.eq(cut.code, 75, "cut after submitting the second unchanged turn");
+    const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
+    const journal = path.join(f.w.zhome, "flows", id);
+    const events = () => fs.readFileSync(path.join(journal, "events.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+    const progress = () => events().filter(e => e.kind === "writer progress").map(e => [e.step, e.attempt, e.noProgress]);
+
+    const key = events().find(e => e.kind === "intent" && e.step === "write continue 1").key;
+    const workspace = events().find(e => e.kind === "writer prepared").snapshot.workspace;
+    // Restore the export's exact bytes even when Git checked it out with CRLF.
+    const originalMath = fs.readFileSync(path.join(workspace, "src", "math.mjs"), "utf8");
+    const ended = await zodchi(t, f.w, ["wait", "--key", key, "--wait-sec", "60"], { cwd: workspace, env: f.w.env });
+    t.eq([ended.code, ended.json?.job?.status], [0, "succeeded"], "the cut job has a finished state");
+    const balances = { balanceBefore: "11.5", balanceAfter: "8" };
+    const final = path.join(workspace, ".agent-tmp", "gateway", key, "final.json");
+    fs.writeFileSync(final, JSON.stringify({ ...ended.json.job, credits: { ...ended.json.job.credits, limitUsedUp: true, ...balances } }));
+    const credits = { spent: 3.5, steps: [{ step: "write continue 1", round: 0, attempt: 1, ...balances }] };
+
+    const stopped = await f.flow(["--resume", id]);
+    t.eq([stopped.code, stopped.json?.status, f.steps(), f.claim()?.status],
+      [2, "waiting", ["write", "write continue 1"], "open"], "two unchanged turns stop before another call");
+    t.eq(stopped.json?.options, ["continue", "close", "rerun"], "the owner can continue, close or change writer");
+    t.ok(stopped.json?.question?.includes("two consecutive turns") && stopped.json?.question?.includes("role table"),
+      "the question explains the stop and how the next writer is chosen");
+    const firstTwo = [["write", 1, 1], ["write continue 1", 1, 2]];
+    t.eq(progress(), firstTwo, "the journal records both unchanged turns across the cut");
+    t.eq(events().find(e => e.kind === "done" && e.step === "write continue 1").credits, balances,
+      "the done receipt copies balances from the completed job");
+    t.eq(stopped.json?.credits, credits, "the paused run reports observed credit spend");
+    const inspected = await flow(["status", id]);
+    t.eq(inspected.json?.question, stopped.json?.question, "status shows the owner question");
+    t.eq(inspected.json?.credits, credits, "flow status shows the credit report while awaiting an owner reply");
+    const parked = await f.flow(["--resume", id]);
+    t.eq([parked.json?.status, f.steps(), progress()], ["waiting", ["write", "write continue 1"], firstTwo],
+      "resuming without a reply neither calls a writer nor counts old turns again");
+
+    const input = path.join(f.w.dir, "progress-reply.txt");
+    const reply = async (choice) => {
+      fs.writeFileSync(input, choice);
+      t.eq((await flow(["reply", id, "--file", input])).code, 0, `the owner can reply ${choice}`);
+      return f.flow(["--resume", id]);
+    };
+    f.answer("write continue 2", report("more", { "src/math.mjs": FIXED, "src/other.mjs": other }));
+    f.answer("write continue 3", report("more", { "src/math.mjs": originalMath }));
+    f.answer("write continue 4", report("more", { "src/other.mjs": other }));
+    const continued = await reply("continue");
+    t.eq([continued.code, continued.json?.status, progress()], [2, "waiting", [...firstTwo,
+      ["write continue 1", 2, 1], ["write continue 2", 1, 0], ["write continue 3", 1, 1], ["write continue 4", 1, 2],
+    ]], "continue resets the count, fresh content resets it again, and a partial revert and identical rewrite count as stalls");
+    t.eq(f.commits().length, 0, "the stalls leave the candidate in the private workspace");
+
+    f.answer("write continue 4", report("done", { "src/math.mjs": FIXED }));
+    f.answer("review 1", f.review("approved"));
+    const completed = await reply("rerun");
+    t.eq([completed.code, completed.json?.approved, f.commits().length], [0, true, 1], "a replacement writer finishes the same package");
+    t.eq(events().filter(e => e.kind === "intent" && e.step === "write continue 4").map(e => e.model),
+      ["fake-writer", "second-writer"], "the rerun uses a different role-table writer and keeps the reviewer independent");
+    const pin = JSON.parse(fs.readFileSync(path.join(journal, "run.json"), "utf8"));
+    t.eq(pin.priorWriters, ["codex/second-writer"], "a successor package can keep its reviewer independent of the replacement writer");
+    t.eq(fs.readFileSync(path.join(f.r, "src/other.mjs"), "utf8"), other, "changing writers preserves the private edits");
+    t.eq(events().filter(e => e.kind === "done" && Object.hasOwn(e, "credits")).map(e => [e.step, e.attempt]),
+      [["write continue 1", 1]], "only the job that used credits has a credit receipt");
+    const saved = JSON.parse(fs.readFileSync(path.join(journal, "result.json"), "utf8"));
+    t.eq([saved.credits, saved.rounds[0]?.credits], [credits, credits], "the result and its first round carry the credited step once");
+    t.ok(!fs.existsSync(workspace), "the private workspace and gateway job are removed after completion");
+    const finished = await flow(["status", id]);
+    t.eq(finished.json?.result?.credits, credits, "flow status retains the finished credit report after cleanup");
+    t.eq(finished.json?.credits, credits, "flow status shows the credit report at the top level after cleanup");
+  }
+
   scenario("flow-agent-continue", "a cut during the next ephemeral writer turn preserves the working copy and handoff summary", async (t) => {
     const screened = flowWorld(t, "flow-agent-continue-screening");
     const privateBrief = "fixture-brief-internal-shorthand";
@@ -555,8 +635,8 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     const summary = "The math change and binary output are in the private workspace.";
     f.answer("write", { ...report("more", { "src/math.mjs": FIXED, [binaryPath]: { bytes: binary } }), summary });
     f.answer("write continue 1", report("more", {}));
-    f.answer("write continue 2", report("more", {}));
-    f.answer("write continue 3", report("done", {}));
+    f.answer("write continue 2", report("more", { "src/math.mjs": "// Keep values in range.\n" + FIXED }));
+    f.answer("write continue 3", report("done", { "src/math.mjs": FIXED }));
     f.answer("review 1", f.review("approved"));
     const badContext = await f.flow(["--args", f.args({ mode: "agent", reviewContext: ["src/missing.mjs"] })]);
     t.ok(badContext.code === 2 && /review context file src\/missing\.mjs/.test(badContext.json?.refused ?? "") && !badContext.json?.runId,
@@ -602,6 +682,12 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     t.eq(fs.readFileSync(fromOtherPackage, "utf8"), "local work outside this package\n", "the other work in the checkout is preserved");
     const files = gitOut(f.r, ["diff", "--name-only", f.base, "HEAD"]).split("\n");
     t.eq(files, ["src/math.mjs", binaryPath], "only the scope is committed");
+    t.ok(!Object.hasOwn(result.json, "credits") && !Object.hasOwn(result.json.rounds[0], "credits"),
+      "unused credits create no result fields");
+    const inspected = await zodchi(t, f.w, ["flow", "status", id], { cwd: f.r, env: f.w.env });
+    t.eq(inspected.code, 0, "the completed run can be inspected");
+    t.ok(!Object.hasOwn(inspected.json, "credits"), "unused credits create no status field");
+    await checkWriterProgress(t);
   });
 
   scenario("flow-agent-scope", "outside changes pause before application, and a reply continues in the same private workspace", async (t) => {

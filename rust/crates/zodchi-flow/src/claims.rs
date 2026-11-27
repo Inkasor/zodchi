@@ -106,6 +106,7 @@ fn conflicts(dir: &Path, label: &str, keys: &[String]) -> Vec<String> {
             }
         }
     }
+    found.sort();
     found
 }
 
@@ -113,25 +114,42 @@ pub fn file(dir: &Path, label: &str) -> PathBuf {
     dir.join(format!("{label}.json"))
 }
 
+enum Opening {
+    Existing,
+    Available,
+    Conflicts(Vec<String>),
+}
+
+fn opening(dir: &Path, label: &str, run: &str, keys: &[String]) -> Opening {
+    if let Some(existing) = read_stored(&file(dir, label)).filter(|claim| claim["status"] == "open") {
+        if existing["run"] == run {
+            return Opening::Existing;
+        }
+        let run = existing["run"].as_str().map(|id| format!(" (run {id})")).unwrap_or_default();
+        return Opening::Conflicts(vec![format!("{label}{run}: an open package of this label (close it, or pick another label)")]);
+    }
+    let found = conflicts(dir, label, keys);
+    if found.is_empty() { Opening::Available } else { Opening::Conflicts(found) }
+}
+
+/// The same conflict probe as open, without creating the claims directory or taking its lock.
+pub(crate) fn preview_conflicts(dir: &Path, label: &str, run: &str, keys: &[String]) -> Vec<String> {
+    match opening(dir, label, run, keys) {
+        Opening::Conflicts(found) => found,
+        Opening::Existing | Opening::Available => vec![],
+    }
+}
+
 /// Opens the claim of a run. Returns the conflicts; none means the claim is written. A claim of this label that is
 /// open for another run is a conflict too; one already open for this run is kept as it is.
 pub fn open(dir: &Path, label: &str, run: &str, keys: &[String], brief: &str, base: &str) -> Result<Vec<String>> {
     with_lock(dir, || {
-        let own = file(dir, label);
-        if let Some(existing) = read_stored(&own) {
-            if existing["status"] == json!("open") {
-                if existing["run"] == json!(run) {
-                    return Ok(vec![]);
-                }
-                let run = existing["run"].as_str().map(|id| format!(" (run {id})")).unwrap_or_default();
-                return Ok(vec![format!("{label}{run}: an open package of this label (close it, or pick another label)")]);
-            }
+        match opening(dir, label, run, keys) {
+            Opening::Existing => return Ok(vec![]),
+            Opening::Conflicts(found) => return Ok(found),
+            Opening::Available => {}
         }
-        let found = conflicts(dir, label, keys);
-        if !found.is_empty() {
-            return Ok(found);
-        }
-        write_json_atomic(&own, &json!({ "label": label, "status": "open", "files": keys, "brief": brief, "base": base, "run": run, "openedAt": iso() }))?;
+        write_json_atomic(&file(dir, label), &json!({ "label": label, "status": "open", "files": keys, "brief": brief, "base": base, "run": run, "openedAt": iso() }))?;
         Ok(vec![])
     })
 }
