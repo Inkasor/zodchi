@@ -1,10 +1,6 @@
 //! Desktop authorization runs separately from a publication worker.
 
 use super::api::{self, Google, READ_SCOPE, UPLOAD_SCOPE};
-use crate::{
-    agent_requested, control::NO_CONSENT_TERMINAL, controlling_terminal, video_media as media,
-    Exit,
-};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::{rngs::OsRng, RngCore};
 use serde_json::{json, Value};
@@ -18,9 +14,10 @@ use std::{
     time::{Duration, Instant},
 };
 use zodchi_core::{
-    config::Config,
+    config::{agent_requested, Config},
     util::{fail, sha256_hex, GatewayError, Result},
 };
+use zodchi_flow_engine::{video_media as media, Exit};
 
 pub(super) trait Vault {
     fn get(&self, key: &str) -> Result<Option<String>>;
@@ -210,7 +207,7 @@ pub(super) fn token(
     refresh(google, &grant)
 }
 
-pub(crate) fn whoami(name: &str) -> Result<Exit> {
+pub fn whoami(name: &str) -> Result<Exit> {
     let vault = SystemVault::new(&Config::new(None)?.home)?;
     let input = json!(name);
     let profile = profile(&input)?;
@@ -223,7 +220,11 @@ pub(crate) fn whoami(name: &str) -> Result<Exit> {
     })
 }
 
-pub(crate) fn connect(args: &Value) -> Result<Exit> {
+pub fn connect(
+    args: &Value,
+    controlling_terminal: fn() -> io::Result<fs::File>,
+    no_consent_terminal: &str,
+) -> Result<Exit> {
     media::fields(
         args,
         &["profile", "channelId", "clientFile"],
@@ -235,7 +236,7 @@ pub(crate) fn connect(args: &Value) -> Result<Exit> {
     if !client_file.is_absolute() {
         return fail("clientFile must be an absolute path to the downloaded Desktop app JSON.");
     }
-    let terminal_error = |_| GatewayError(NO_CONSENT_TERMINAL.into());
+    let terminal_error = |_| GatewayError(no_consent_terminal.into());
     let terminal = if agent_requested() {
         Some(controlling_terminal().map_err(terminal_error)?)
     } else {

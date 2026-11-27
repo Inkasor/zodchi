@@ -5,6 +5,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
 };
 use zodchi_core::util::{fail, GatewayError, Result};
+use zodchi_flow_engine::video_media;
 
 const CHUNK: usize = 8 * 1024 * 1024;
 const MAX_BYTES: u64 = 256 * 1024 * 1024 * 1024;
@@ -19,7 +20,7 @@ pub(super) struct Artifact {
 
 impl Artifact {
     pub(super) fn open(pin: &Value) -> Result<Self> {
-        let path = crate::video_media::text(&pin["path"], "accepted MP4 path")?;
+        let path = video_media::text(&pin["path"], "accepted MP4 path")?;
         let size = pin["bytes"]
             .as_u64()
             .filter(|n| (1..=MAX_BYTES).contains(n))

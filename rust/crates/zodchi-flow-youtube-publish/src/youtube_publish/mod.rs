@@ -12,7 +12,6 @@ use self::{
     artifact::Artifact,
     auth::{SystemVault, Vault},
 };
-use crate::{accepted_media, input_common as input, journal::Journal, video_media as media, Exit};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -22,12 +21,17 @@ use zodchi_core::{
     config::Config,
     util::{fail, iso, publish, sha256_hex, GatewayError, Result},
 };
+use zodchi_flow_engine::{
+    accepted_media, input_common as input,
+    journal::{self, Journal},
+    video_media as media, Exit,
+};
 
-pub(crate) use auth::{connect, whoami};
+pub use auth::{connect, whoami};
 pub const NAME: &str = "youtube-publish";
 const VERSION: &str = "1";
 const APPROVAL: &str = "approve private upload";
-pub(crate) const REPLY_WAITING_ONLY: &str =
+pub const REPLY_WAITING_ONLY: &str =
     "The upload has its decision. Resolve the reported issue and resume the same YouTube run.";
 
 pub fn start(raw: &Value) -> Result<Exit> {
@@ -96,7 +100,7 @@ fn prepare(raw: &Value) -> Result<Exit> {
     }
     let plan = json!({ "artifact": artifact, "videoRun": video_run, "profile": profile,
         "channelId": channel, "metadata": metadata, "notifySubscribers": false });
-    let id = crate::journal::new_run_id();
+    let id = journal::new_run_id();
     let run = json!({
         "runId": id, "workflow": NAME, "version": VERSION, "release": env!("CARGO_PKG_VERSION"),
         "createdAt": iso(), "repo": dir, "label": metadata["snippet"]["title"],
@@ -148,13 +152,13 @@ pub fn record_reply(waiting: &Value, raw: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn project_status(run: &Value, events: &[Value], result: &mut Value) {
+pub fn project_status(run: &Value, events: &[Value], result: &mut Value) {
     if run["workflow"] == NAME {
         result["youtube"] = status_detail(run, events);
     }
 }
 
-pub(crate) fn handoff(id: &str, run: &Value, current: &Value, result: &Value, result_path: &Path) -> Value {
+pub fn handoff(id: &str, run: &Value, current: &Value, result: &Value, result_path: &Path) -> Value {
     json!({ "runId": id, "workflow": run["workflow"], "version": run["version"],
         "status": current["status"], "step": current["step"], "journal": current["journal"],
         "question": current["question"], "reason": result.get("reason").unwrap_or(&current["infra"]),
@@ -351,7 +355,7 @@ impl Publication<'_> {
         if let Some(saved) = reservation.as_ref().filter(|saved| saved["runId"] != id) {
             let existing = saved["runId"]
                 .as_str()
-                .filter(|id| crate::journal::is_run_id(id))
+                .filter(|id| journal::is_run_id(id))
                 .unwrap_or("unknown");
             return fail(format!(
                 "This MP4 and channel are already reserved by YouTube run {existing}."
