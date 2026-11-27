@@ -1,13 +1,14 @@
-#[path = "../unity_check.rs"]
-mod unity_check;
+use super::{require_workflow, Entry, Launch};
+use crate::Exit;
+use serde_json::Value;
+use zodchi_core::util::Result;
+use zodchi_flow_unity_check as workflow;
 
-pub(super) use unity_check::{start_child, NAME};
+pub(crate) use workflow::start_child;
+pub(super) use workflow::NAME;
 
-use super::{require_workflow, Entry};
+pub(super) const ENTRY: Entry = Entry::new(NAME, "1", start, workflow::resume);
 
-pub(super) const ENTRY: Entry = Entry::new(
-    unity_check::NAME,
-    "1",
-    |args, launch| unity_check::start(args, launch, require_workflow),
-    unity_check::resume,
-);
+pub fn start(args: &Value, launch: Option<Launch>) -> Result<Exit> {
+    workflow::start(args, launch, require_workflow)
+}

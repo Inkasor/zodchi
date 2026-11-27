@@ -1,6 +1,5 @@
 //! Verify a named, already running Unity Editor by executing a pinned list of CLI commands.
 
-use crate::{boundary::Launch, catalog::ProjectGate, git::Git, input_common, journal::Journal, patch, Exit};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -15,6 +14,14 @@ use zodchi_core::{
     process::command_without_window,
     util::{fail, iso, sha256_hex, GatewayError, Result},
 };
+use zodchi_flow_engine::{
+    boundary::{self, Launch},
+    catalog::ProjectGate,
+    git::Git,
+    input_common,
+    journal::{self, Journal},
+    patch, Exit,
+};
 
 pub const NAME: &str = "unity-check";
 const VERSION: &str = "1";
@@ -25,7 +32,7 @@ pub fn start(raw: &Value, launch: Option<Launch>, require_workflow: ProjectGate)
     start_with(raw, launch, require_workflow, None)
 }
 
-pub(crate) fn start_child(raw: &Value, id: &str, require_workflow: ProjectGate) -> Result<Exit> {
+pub fn start_child(raw: &Value, id: &str, require_workflow: ProjectGate) -> Result<Exit> {
     start_with(raw, None, require_workflow, Some(id))
 }
 
@@ -197,7 +204,7 @@ fn prepare(raw: &Value, id: Option<&str>, require_workflow: ProjectGate) -> Resu
         return fail("args.tmp crosses a link.");
     }
     fs::create_dir_all(&tmp)?;
-    let id = id.map(String::from).unwrap_or_else(crate::journal::new_run_id);
+    let id = id.map(String::from).unwrap_or_else(journal::new_run_id);
     let out = fs::canonicalize(tmp)?.join(format!("unity-{id}"));
     fs::create_dir(&out)?;
     let note = raw["note"].as_str().map(|note| scrubber.text(note, &[]));
@@ -534,7 +541,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
             Ok(answer) => answer,
             Err(error) => return stop(&mut journal, result, &step, &error.0, true),
         };
-        crate::boundary::cut(&format!("unity {step}"));
+        boundary::cut(&format!("unity {step}"));
         let differs: Vec<_> = spec["expect"]
             .as_object()
             .into_iter()
@@ -575,7 +582,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
             "ownsPlay": owns_play, "ownsDirty": owns_dirty, "differs": differs, "readback": answer_text,
         });
         journal.append(json!({ "kind": "done", "step": step, "attempt": 1, "result": receipt }))?;
-        crate::boundary::cut(&format!("done unity {step}"));
+        boundary::cut(&format!("done unity {step}"));
         records.push(receipt);
         if !differs.is_empty() {
             return finish_difference(&mut journal, result, &step, records, json!(differs));
