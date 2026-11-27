@@ -41,6 +41,7 @@ pub mod journal;
 pub mod models;
 pub mod patch;
 mod rubric_probe;
+mod runs;
 mod unity_check;
 pub mod verify;
 mod video;
@@ -61,6 +62,8 @@ pub const USAGE: &str = "Usage: zodchi flow <workflow> --args <file.json> [--det
        zodchi flow <workflow> --resume <run-id> [--args <file.json>] [--rerun <step>] [--detach]
        zodchi flow status <run-id>
        zodchi flow status <run-id> --handoff
+       zodchi flow runs [--active]
+       zodchi flow wait <run-id>... | --all [--timeout-min N]
        zodchi flow apply <run-id>
        zodchi flow cleanup [--apply] [--journals] [--retention-days <n>] [--claims]
        zodchi flow budget <run-id> [--add-calls <n>] [--add-minutes <n>]
@@ -90,8 +93,11 @@ fn require_workflow(git: &git::Git, base: &str, workflow: &str) -> Result<()> {
 /// `zodchi flow <workflow> ...`: the result of the run.
 pub fn cli(args: &[String]) -> Result<Exit> {
     let Some(workflow) = args.first() else { return fail(USAGE) };
-    if workflow == "cleanup" {
-        return cleanup::cli(&args[1..]);
+    match workflow.as_str() {
+        "cleanup" => return cleanup::cli(&args[1..]),
+        "runs" => return runs::list(&args[1..]),
+        "wait" => return runs::wait(&args[1..]),
+        _ => {}
     }
     match args {
         [flag] if flag == "--help" || flag == "-h" => return Ok(Exit { code: 0, result: serde_json::json!({ "usage": USAGE, "catalog": compiled_catalog() }) }),

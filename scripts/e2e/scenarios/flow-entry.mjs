@@ -16,7 +16,7 @@ const KEY = "not-a-real-key-for-the-flow-entry-scenarios";
 const readJsonl = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 
 const SKILLS = { codex: "plugins/codex/skills/zodchi-flow/SKILL.md", claude: "plugins/claude-code/core/skills/zodchi-flow/SKILL.md" };
-// The only commands a skill tells an agent to run, in the order of its steps.
+// The foreground examples in the skill, in the order of its steps.
 const COMMANDS = [
   'zodchi flow code-package --args "<args-file>"',
   "zodchi flow code-package --resume <run-id>",
@@ -191,10 +191,23 @@ export default function register(h) {
     t.eq([codex.front.name, claude.front.name], ["zodchi-flow", "zodchi-flow"], "both skills are named zodchi-flow, as their folders");
     t.ok(codex.front.description && claude.front.description && codex.front.description !== claude.front.description, "each has its own description (a Codex session, a Claude Code session)");
     t.ok(codex.body === claude.body, "the two skills share one body");
+    const detachedRule = (body) => body.match(/^After a detached start or resume .*\n\n(?:- .*\n)+/m)?.[0];
+    const portable = fs.readFileSync(path.join(ROOT, "skills/zodchi-flow/SKILL.md"), "utf8").replace(/\r\n/g, "\n");
+    const rule = detachedRule(codex.body);
+    t.ok(rule?.includes("start waiting right away") && rule.includes("`--detach`"), "detached starts and resumes are followed by a wait");
+    t.ok(rule.includes("In Claude Code, start `zodchi flow wait <run-id>` as a background command") && rule.includes("Claude Code notifies you")
+      && rule.includes("Report the result to the person"), "Claude Code waits in the background and reports after notification");
+    t.ok(rule.includes("In Codex, run `zodchi flow wait <run-id> --timeout-min N` in the foreground")
+      && rule.includes("repeat while the command exits 3"), "Codex repeats the bounded foreground wait on timeout");
+    t.ok(rule.includes("`zodchi flow runs --active`") && rule.includes("they never have to ask for status"),
+      "the skill uses runs --active for discovery and keeps the person informed");
+    t.ok(rule.includes("After the wait ends, use `zodchi flow status <run-id>`"),
+      "the skill reads detailed status after the wait");
+    t.eq([detachedRule(claude.body), detachedRule(portable)], [rule, rule], "all three skills give the same detached-run instructions");
     for (const s of [codex, claude]) {
-      t.eq(s.lines, COMMANDS, `${s.rel}: the commands the skill tells an agent to run are exactly the run, the resume and the rerun`);
+      t.eq(s.lines, COMMANDS, `${s.rel}: the foreground examples are exactly the run, the resume and the rerun`);
       t.ok(s.lines[0].includes('--args "<args-file>"'), `${s.rel}: the args file placeholder of the run command is in quotes, so a path with a space stays one word`);
-      t.ok(s.lines.every((l) => !/[&|;<>]\s*$|nohup|\bstart\b|\bdisown\b/.test(l.replace(/<[a-z-]+>/g, ""))), `${s.rel}: no command is backgrounded or detached`);
+      t.ok(s.lines.every((l) => !/[&|;<>]\s*$|nohup|\bstart\b|\bdisown\b/.test(l.replace(/<[a-z-]+>/g, ""))), `${s.rel}: the examples stay in the foreground`);
       t.ok(/foreground/i.test(s.body) && /no `&`/.test(s.body) && /no `nohup`/.test(s.body), `${s.rel}: it says to run in the foreground, with no &, no nohup`);
       t.ok(/timeout/i.test(s.body), `${s.rel}: it says to set the longest timeout the shell tool allows`);
       t.ok(/Do not edit, delete or add files in the journal/.test(s.body), `${s.rel}: it forbids editing the journal`);

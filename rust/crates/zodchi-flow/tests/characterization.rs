@@ -434,6 +434,7 @@ fn cli_catalog_controls_and_invalid_calls() {
     assert_eq!(help["catalog"], *list);
     let recorded = baseline();
     assert_eq!(help["usage"], recorded["usage"]);
+    let usage = recorded["usage"].as_str().unwrap();
     assert_eq!(
         sha256_hex(list.to_string()),
         recorded["catalogSha256"].as_str().unwrap()
@@ -507,7 +508,22 @@ fn cli_catalog_controls_and_invalid_calls() {
         ),
         (&["status", "/invalid"][..], "Not a run id"),
     ] {
-        w.flow(args).wrong(message);
+        let call = w.flow(args);
+        call.wrong(message);
+        let prefix = match args {
+            [] => Some(String::new()),
+            ["list", "--bad"] | ["unknown-workflow"] | ["status"] => Some(format!(
+                "No workflow {:?} in zodchi flow. Run zodchi flow list for the catalog.\n",
+                args[0]
+            )),
+            ["code-package", "--args"] | ["research", "--detach", "--detach"] => {
+                Some(format!("Unexpected argument: {}\n", args[1]))
+            }
+            _ => None,
+        };
+        if let Some(prefix) = prefix {
+            assert_eq!(call.err.trim_end(), format!("{prefix}{usage}"));
+        }
     }
     let invalid = w.put("invalid.json", "not json");
     w.flow(&["research", "--args", invalid.to_str().unwrap()])

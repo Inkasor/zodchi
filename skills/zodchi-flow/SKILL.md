@@ -23,7 +23,14 @@ Use the default expert mode for a focused patch. Use `"mode": "agent"` when the 
 
 For a package that must stay separate from the working checkout before approval, pass `"isolated": true`. Report the candidate SHA and application status. Apply an approved candidate on the recorded branch and base with `zodchi flow apply <run-id>` when the task calls for integrating it. For a budgeted package, inspect `flow status` for a budget decision and add calls or time with `zodchi flow budget <run-id> --add-calls <n>` or `--add-minutes <n>` before resuming.
 
-Start with `zodchi flow <workflow> --args "<file>" --detach`. Save the returned run ID. Use `zodchi flow status <run-id>` to get the phase and evidence. The same commands work in another chat and use the same local journal.
+Start with `zodchi flow <workflow> --args "<file>" --detach`.
+
+After a detached start or resume (`--detach`), save the returned run ID and start waiting right away.
+
+- In Claude Code, start `zodchi flow wait <run-id>` as a background command. Claude Code notifies you when the wait ends. Report the result to the person.
+- In Codex, run `zodchi flow wait <run-id> --timeout-min N` in the foreground. Choose `N` to fit the shell tool's timeout and repeat while the command exits 3. Report the result when the wait ends.
+- Use `zodchi flow runs --active` to find running or waiting runs. Keep the person informed so they never have to ask for status.
+- After the wait ends, use `zodchi flow status <run-id>` for detailed journal evidence.
 
 For `design-brief`, use [the brief arguments](../../docs/design-brief.md) with absolute source checkout paths and an output path. Use `zodchi flow design-brief --args "<file>" --detach` in either client. Resume the same run ID after an interruption to reuse accepted facts. The engine stores local jobs in the Zodchi home directory.
 

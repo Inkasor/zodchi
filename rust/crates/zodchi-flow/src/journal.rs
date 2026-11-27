@@ -12,6 +12,7 @@ use serde_json::{json, Map, Value};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 use zodchi_core::config::Config;
 use zodchi_core::process::{alive, process_start};
 use zodchi_core::util::{fail, iso, pretty, read_stored, sha256_hex, write_json_atomic, GatewayError, Result};
@@ -23,6 +24,16 @@ pub struct Journal {
 
 pub fn flows_dir(home: &Path) -> PathBuf {
     home.join("flows")
+}
+
+pub(crate) fn last_write(dir: &Path) -> Option<SystemTime> {
+    ["events.jsonl", "run.json", "result.json"]
+        .into_iter()
+        .filter_map(|name| {
+            let meta = fs::metadata(dir.join(name)).ok()?;
+            meta.is_file().then(|| meta.modified().ok()).flatten()
+        })
+        .max()
 }
 
 pub(crate) const CANDIDATE_WORKSPACES: &str = "flow-candidates";
@@ -92,21 +103,7 @@ pub(crate) fn status(id: &str, hooks: StatusHooks) -> Result<Exit> {
         result
     });
     let last = last_state_event(&events).unwrap_or(&Value::Null);
-    let outcome = if final_result.is_some() {
-        "finished"
-    } else if active {
-        "running"
-    } else if last["kind"] == "waiting" {
-        "waiting"
-    } else if last["kind"] == "youtube processing" {
-        "processing"
-    } else if last["kind"] == "scope allowed" || last["kind"] == "budget extended" || (last["kind"] == "rerun" && last.get("ownerAnswer").is_some()) {
-        "ready"
-    } else if receipt.is_some() || last["kind"] == "stop" {
-        "stopped"
-    } else {
-        "interrupted"
-    };
+    let outcome = status_outcome(last, final_result.is_some(), active, receipt.is_some());
     let mut result = json!({
         "runId": id, "workflow": run["workflow"], "version": run["version"], "release": run["release"], "repo": run["repo"],
         "status": outcome, "step": last["step"], "event": last["kind"], "models": run["pair"],
@@ -153,6 +150,32 @@ pub(crate) fn status(id: &str, hooks: StatusHooks) -> Result<Exit> {
         }
     }
     Ok(Exit { result, code: 0 })
+}
+
+pub(crate) fn status_outcome(
+    last: &Value,
+    finished: bool,
+    active: bool,
+    has_receipt: bool,
+) -> &'static str {
+    if finished {
+        "finished"
+    } else if active {
+        "running"
+    } else if last["kind"] == "waiting" {
+        "waiting"
+    } else if last["kind"] == "youtube processing" {
+        "processing"
+    } else if last["kind"] == "scope allowed"
+        || last["kind"] == "budget extended"
+        || (last["kind"] == "rerun" && last.get("ownerAnswer").is_some())
+    {
+        "ready"
+    } else if has_receipt || last["kind"] == "stop" {
+        "stopped"
+    } else {
+        "interrupted"
+    }
 }
 
 /// An inaccessible process still owns its receipt unless its PID was demonstrably reused.
@@ -271,8 +294,12 @@ impl Journal {
     }
 
     pub fn active(&self) -> bool {
+        Self::active_at(&self.dir)
+    }
+
+    pub(crate) fn active_at(dir: &Path) -> bool {
         ["lock/owner.json", "worker.json"].iter()
-            .filter_map(|name| self.read_value(name))
+            .filter_map(|name| read_stored(&dir.join(name)))
             .any(|owner| live_pid(&owner).is_some())
     }
 
