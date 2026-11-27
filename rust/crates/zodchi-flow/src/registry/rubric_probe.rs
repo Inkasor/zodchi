@@ -1,16 +1,17 @@
-#[path = "../rubric_probe.rs"]
-mod rubric_probe;
+use super::{require_workflow, Entry, Launch};
+use crate::Exit;
+use serde_json::Value;
+use zodchi_core::util::Result;
+use zodchi_flow_rubric_probe as workflow;
 
-pub(super) use rubric_probe::{start_child, NAME};
-
-use super::{require_workflow, Entry};
+pub(crate) use workflow::start_child;
+pub(super) use workflow::NAME;
 
 pub(super) const ENTRY: Entry = Entry {
     allows_paid_worker: true,
-    ..Entry::new(
-        rubric_probe::NAME,
-        "1",
-        |args, launch| rubric_probe::start(args, launch, require_workflow),
-        rubric_probe::resume,
-    )
+    ..Entry::new(NAME, "1", start, workflow::resume)
 };
+
+pub fn start(args: &Value, launch: Option<Launch>) -> Result<Exit> {
+    workflow::start(args, launch, require_workflow)
+}

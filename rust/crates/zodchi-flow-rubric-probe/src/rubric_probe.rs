@@ -1,10 +1,5 @@
 //! Probe a Decisions rubric against fixed sound and defective frames.
 
-use crate::{
-    boundary::Launch, catalog::ProjectGate,
-    executor::local::pinned_image, gateway, git::Git, input_common,
-    journal::Journal, models::Pick, Exit,
-};
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,
@@ -17,7 +12,18 @@ use zodchi_core::{
     role::{load_role, Overrides},
     util::{fail, is_key, iso, sha256_hex, GatewayError, Result},
 };
-use zodchi_flow_engine::publish::publish;
+use zodchi_flow_engine::{
+    boundary::Launch,
+    catalog::ProjectGate,
+    executor::local::pinned_image,
+    gateway,
+    git::Git,
+    input_common,
+    journal::{new_run_id, Journal},
+    models::Pick,
+    publish::publish,
+    Exit,
+};
 
 pub const NAME: &str = "rubric-probe";
 const VERSION: &str = "1";
@@ -26,7 +32,7 @@ pub fn start(raw: &Value, launch: Option<Launch>, require_workflow: ProjectGate)
     start_with(raw, launch, require_workflow, None)
 }
 
-pub(crate) fn start_child(raw: &Value, id: &str, require_workflow: ProjectGate) -> Result<Exit> {
+pub fn start_child(raw: &Value, id: &str, require_workflow: ProjectGate) -> Result<Exit> {
     start_with(raw, None, require_workflow, Some(id))
 }
 
@@ -183,7 +189,7 @@ fn prepare(raw: &Value, id: Option<&str>, require_workflow: ProjectGate) -> Resu
         return fail("args.tmp crosses a link.");
     }
     fs::create_dir_all(&tmp)?;
-    let id = id.map(String::from).unwrap_or_else(crate::journal::new_run_id);
+    let id = id.map(String::from).unwrap_or_else(new_run_id);
     let output = fs::canonicalize(&tmp)?.join(format!("rubric-{id}"));
     fs::create_dir(&output)?;
     let material =
