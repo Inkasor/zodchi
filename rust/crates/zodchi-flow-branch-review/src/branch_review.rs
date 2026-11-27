@@ -1,15 +1,5 @@
 //! Branch review pins the committed trees and authors, then runs independent reviews through the shared journal.
 
-use crate::{
-    boundary::Launch, catalog::ProjectGate,
-    args, checks, review_contract, executor, gateway,
-    git::Git,
-    input_common,
-    journal::Journal,
-    models::{self, Pick},
-    package_source::Source,
-    patch, review_source, verify::ProjectSettings, Exit,
-};
 use serde_json::{json, Map, Value};
 use std::{fs, io::Read};
 use std::path::{Path, PathBuf};
@@ -19,6 +9,20 @@ use zodchi_core::{
     job::{self, compose_prompt, LIMIT_PROMPT},
     role::{load_role, Overrides},
     util::{fail, iso, sha256_hex, GatewayError, Result},
+};
+use zodchi_flow_engine::{
+    args,
+    boundary::Launch,
+    catalog::ProjectGate,
+    checks, executor, gateway,
+    git::Git,
+    input_common,
+    journal::{self, Journal},
+    models::{self, Pick},
+    package_source::Source,
+    patch, review_contract, review_source,
+    verify::ProjectSettings,
+    Exit,
 };
 
 pub const NAME: &str = "branch-review";
@@ -208,7 +212,7 @@ fn review_history(raw: &Value, cfg: &Config, repo: &Path, base: &str) -> Result<
     let Some(previous) = raw.get("previousReview") else {
         return Ok(ReviewHistory { previous: None, round: 1, limit: declared.unwrap_or(MAX_ROUNDS), reviews: Vec::new() });
     };
-    let id = previous.as_str().filter(|id| crate::journal::is_run_id(id))
+    let id = previous.as_str().filter(|id| journal::is_run_id(id))
         .ok_or_else(|| GatewayError("args.previousReview needs a branch-review run ID.".into()))?;
     let (journal, run) = Journal::open(&cfg.home, id)?;
     let prior_repo = run["repo"].as_str().and_then(|path| fs::canonicalize(path).ok());
@@ -291,7 +295,7 @@ fn verify_candidate(journal: &mut Journal, run: &Value, cfg: &Config, available:
     Ok(result)
 }
 
-pub(crate) fn project_handoff(run: &Value, result: &Value, handoff: &mut Value) {
+pub fn project_handoff(run: &Value, result: &Value, handoff: &mut Value) {
     handoff["head"] = run["head"].clone();
     handoff["screening"] = run["screening"].clone();
     for key in ["previousReview", "reviewRound", "reviewLimit", "verificationReceipt"] {
@@ -621,7 +625,7 @@ fn prepare(raw: &Value, require_workflow: ProjectGate) -> Result<(String, Journa
         load_role(&cfg, review.gateway_role, &Overrides::default()).map_err(|error| error.0)?;
         Ok(())
     })?;
-    let id = crate::journal::new_run_id();
+    let id = journal::new_run_id();
     let run = json!({
         "runId": id, "workflow": NAME, "version": VERSION, "release": env!("CARGO_PKG_VERSION"), "createdAt": iso(),
         "label": label, "repo": repo, "base": base, "head": head, "files": files, "architecture": architecture,
