@@ -80,6 +80,7 @@ struct SecretPatterns {
     input_shapes: Regex,
     input_setting: Regex,
     input_reversed: Regex,
+    input_operands: Regex,
 }
 
 fn matched_ranges<'a>(pattern: &'a Regex, text: &'a str) -> impl Iterator<Item = Range<usize>> + 'a {
@@ -107,16 +108,36 @@ fn reference_syntax(value: &str) -> bool {
     REFERENCE.is_match(value)
 }
 
-fn opaque_bare_value(value: &str) -> bool {
+fn opaque_bare_value(value: &str, allow_letter_only_base64: bool) -> bool {
     let bytes = value.as_bytes();
     let mixed = value.chars().count() >= 20
         && value.chars().all(char::is_alphanumeric)
         && value.chars().any(char::is_alphabetic)
         && value.chars().any(char::is_numeric);
-    mixed || (bytes.len() >= 24 && (bytes.iter().all(u8::is_ascii_hexdigit) || {
-        let engine = if value.ends_with('=') { &STANDARD } else { &STANDARD_NO_PAD };
-        engine.decode(value).is_ok()
-    }))
+    if mixed || (bytes.len() >= 24 && bytes.iter().all(u8::is_ascii_hexdigit)) {
+        return true;
+    }
+    // A long letters-only identifier can decode as base64.
+    bytes.len() >= 24
+        && (allow_letter_only_base64
+            || bytes.iter().any(|&byte| byte.is_ascii_digit() || matches!(byte, b'+' | b'/')))
+        && {
+            let engine = if value.ends_with('=') { &STANDARD } else { &STANDARD_NO_PAD };
+            engine.decode(value).is_ok()
+        }
+}
+
+fn mixed_prefixed_value(value: &str) -> bool {
+    value.rsplit_once('_').is_some_and(|(prefix, suffix)| {
+        let bytes = suffix.as_bytes();
+        bytes.len() >= 20
+            && !prefix.is_empty()
+            && prefix.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            && bytes.iter().all(u8::is_ascii_alphanumeric)
+            && bytes.iter().any(u8::is_ascii_lowercase)
+            && bytes.iter().any(u8::is_ascii_uppercase)
+            && bytes.iter().any(u8::is_ascii_digit)
+    })
 }
 
 fn looks_like_input_secret(value: &str, quoted: bool) -> bool {
@@ -128,7 +149,7 @@ fn looks_like_input_secret(value: &str, quoted: bool) -> bool {
     });
     // A bare comparison operand can end at a Python suite colon.
     let bare = value.strip_suffix(':').filter(|value| !value.ends_with(':')).unwrap_or(value);
-    (!quoted && opaque_bare_value(bare)
+    (!quoted && (opaque_bare_value(bare, false) || mixed_prefixed_value(bare))
         || (value.chars().count() >= 12
             && !value.chars().any(char::is_whitespace)
             && !value.chars().all(|c| c.is_lowercase() || matches!(c, '-' | '_'))
@@ -143,7 +164,13 @@ fn identifier_comparison(line: &str) -> bool {
         )).expect("constant comparison of two identifiers")
     });
     COMPARISON.captures(line).is_some_and(|comparison| {
-        !opaque_bare_value(&comparison["left"]) && !opaque_bare_value(&comparison["right"])
+        ["left", "right"].into_iter().all(|operand| {
+            let value = &comparison[operand];
+            // Repository excerpts use the stricter base64 rule for this exception.
+            !opaque_bare_value(value, true)
+                && !mixed_prefixed_value(value)
+                && !Scrubber::secret_patterns().input_shapes.is_match(value)
+        })
     })
 }
 
@@ -435,14 +462,19 @@ impl Scrubber {
             let input_reversed = Regex::new(&format!(
                 r#"(?i){boundary}(?:{INPUT_QUOTED}|(?P<bare>[^\s,;&|<>(){{}}\[\]"'`=!]+)(?:(?P<padding>={{1,2}})\s+)?){after_literal}"#,
             )).expect("constant input comparison pattern");
+            // An assignment or comparison can carry a prefixed token under an ordinary name.
+            let input_operands = Regex::new(&format!(
+                r"(?m)(?:^|[ \t(])(?P<left>{IDENTIFIER})[ \t]*(?P<op>{operator}|=)[ \t]*(?P<right>{IDENTIFIER})(?:[ \t,;&|)\]}}]|:(?:[ \t]|\r?$)|\r?$)"
+            )).expect("constant bare input operands pattern");
             // The header label identifies Bearer values that would look like prose without it.
             let bearer_header = format!(
                 r#"\b(?i:authorization["'`]?[ \t]*:[ \t]*["'`]?bearer)[ \t]+{AUTHORIZATION_VALUE}"#,
             );
-            let input_shapes: Vec<_> = shapes.into_iter().chain([bearer_header.as_str()]).collect();
+            let stripe = r"(?:^|[^A-Za-z0-9_])(?:sk_live_|sk_test_|rk_live_|pk_live_)[A-Za-z0-9]{16,}(?:$|[^A-Za-z0-9_])";
+            let input_shapes: Vec<_> = shapes.into_iter().chain([bearer_header.as_str(), stripe]).collect();
             SecretPatterns {
                 answer, option, raw_start, after_raw, input_shapes: alternatives(&input_shapes),
-                input_setting, input_reversed,
+                input_setting, input_reversed, input_operands,
             }
         });
         &PATTERNS
@@ -514,9 +546,22 @@ impl Scrubber {
 
     fn input_value_ranges(text: &str) -> impl Iterator<Item = Range<usize>> + '_ {
         let patterns = Self::secret_patterns();
+        let mut at = 0;
+        let operands = std::iter::from_fn(move || {
+            let capture = patterns.input_operands.captures_at(text, at)?;
+            // The delimiter after the right operand can start the next match.
+            at = capture.name("right").expect("right operand").end();
+            Some(capture)
+        });
         // Scan shapes independently so a rejected name heuristic cannot mask a recognizable credential.
         matched_ranges(&patterns.input_shapes, text)
             .chain(Self::authorization_value_ranges(text))
+            .chain(operands.flat_map(|capture| {
+                let left = capture.name("left").filter(|_| &capture["op"] != "=");
+                left.into_iter().chain(capture.name("right")).filter_map(|operand| {
+                    mixed_prefixed_value(operand.as_str()).then(|| operand.range())
+                })
+            }))
             .chain(patterns.input_setting.find_iter(text).filter_map(|setting| {
                 let tail = &text[setting.end()..];
                 let literal = tail.trim_start();
@@ -744,7 +789,7 @@ mod tests {
         let bare_value = format!(concat!("to", "ken: {}"), mixed_value);
         let long_mixed = concat!("A1b2C3d4", "E5f6G7h8", "J9k0");
         let lower_hex = concat!("abcdefab", "cdefabcd", "efabcdef");
-        let base64 = STANDARD.encode("ABC".repeat(6));
+        let base64 = STANDARD.encode("AB~".repeat(6));
         let padded_base64 = STANDARD.encode("ABC".repeat(5) + "AB");
         let github_pat = format!("github_pat_{}", "a_".repeat(20));
         let slack = format!("xoxb-{}", "a".repeat(10));
@@ -800,6 +845,65 @@ mod tests {
             let found: Vec<_> = scrubber.input_withholdings(text).map(|(line, reason)| (line, reason.reason())).collect();
             assert_eq!(found, expected, "{text:?}");
         }
+    }
+
+    #[test]
+    fn package_gate_refuses_prefixed_tokens_in_bare_operands() {
+        let scrubber = Scrubber { words: vec![] };
+        let stripe_payload = "a".repeat(16);
+        let slack_payload = "1-".repeat(4) + "12";
+        let github_payload = "a".repeat(20);
+        let mixed_payload = concat!("A0b1C2d3", "E4f5G6h7", "J8k9");
+        for value in [
+            format!("sk_live_{stripe_payload}"),
+            format!("sk_test_{stripe_payload}"),
+            format!("rk_live_{stripe_payload}"),
+            format!("pk_live_{stripe_payload}"),
+            format!("xoxb-{slack_payload}"),
+            format!("xoxp-{slack_payload}"),
+            format!("gho_{github_payload}"),
+            format!("ghs_{github_payload}"),
+            format!("ghu_{github_payload}"),
+            format!("ghr_{github_payload}"),
+            format!("fixture_provider_{mixed_payload}"),
+        ] {
+            for text in [
+                format!("KEY={value}"),
+                format!("NODE_ENV=production API={value} node app.js"),
+                format!("if expected == {value}:"),
+                format!("return {value}!==expected;"),
+            ] {
+                let found: Vec<_> = scrubber.input_withholdings(&text)
+                    .map(|(line, reason)| (line, reason.reason())).collect();
+                assert_eq!(found.as_slice(), &[(1, "credential")], "{text:?}");
+            }
+            assert!(!identifier_comparison(&format!("password == {value}")), "{value:?}");
+            assert!(!identifier_comparison(&format!("{value} == password")), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn package_gate_preserves_ordinary_bare_identifiers() {
+        let scrubber = Scrubber { words: vec![] };
+        let camel_case = concat!("Gateway", "Configuration", "Type");
+        let letters_only_base64 = STANDARD.encode("ABC".repeat(6));
+        let mixed_payload = concat!("A0b1C2d3", "E4f5G6h7", "J8k9");
+        for text in [
+            format!("token={camel_case}"),
+            format!("if password == {camel_case}:"),
+            format!("if {camel_case} == password:"),
+            format!("token={letters_only_base64}"),
+            format!("token=sk_live_{}", "a".repeat(15)),
+            format!("token=fixture_{}", &mixed_payload[..19]),
+            format!("token=fixture_{}", "abc1".repeat(5)),
+            format!("token=fixture_{}", "ABC1".repeat(5)),
+            format!("token=Settings::fixture_{mixed_payload}"),
+            format!("fixture_{mixed_payload} = expected"),
+            format!("Document the fixture_{mixed_payload} identifier."),
+        ] {
+            assert!(scrubber.input_withholdings(&text).next().is_none(), "{text:?}");
+        }
+        assert!(identifier_comparison("password == expected_password"));
     }
 
     #[test]
