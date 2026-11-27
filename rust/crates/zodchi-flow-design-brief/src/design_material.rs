@@ -1,7 +1,5 @@
 //! Capture Git sources for design-brief. Models receive aliases, screened material, and actual cited lines.
 
-use crate::{args, checks, claims, git::Git, input_common, review_source::source_path};
-use input_common::{Scrubber, Withholding};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -10,6 +8,12 @@ use std::path::{Component, Path, PathBuf};
 use zodchi_core::config::Config;
 use zodchi_core::job::{compose_prompt, LIMIT_PROMPT};
 use zodchi_core::util::{fail, sha256_hex, GatewayError, Result};
+use zodchi_flow_engine::{
+    args, checks, claims,
+    git::Git,
+    input_common::{self, Scrubber, Withholding},
+    review_source::source_path,
+};
 
 const MAX_SOURCE: usize = LIMIT_PROMPT / 3;
 const PRIVATE_PATH: &str = "[private path removed]";

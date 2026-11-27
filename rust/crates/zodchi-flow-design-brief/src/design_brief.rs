@@ -1,9 +1,9 @@
 //! The design-brief effects: pinned sources, validated model output and publication of the approved Markdown.
 
-use crate::{
+use crate::design_material::{self, AnswerScreening, Origin, Source};
+use engine::{
     boundary::Launch,
     catalog::ProjectGate,
-    design_material::{self, AnswerScreening, Origin, Source},
     executor, gateway,
     input_common::{args_digest, args_match, TASK_SCREENING_STEP},
     journal::{self, Journal},
@@ -21,6 +21,7 @@ use zodchi_core::{
     role::{load_role, Overrides},
     util::{fail, iso, sha256_hex, GatewayError, Result},
 };
+use zodchi_flow_engine as engine;
 
 pub const NAME: &str = "design-brief";
 const VERSION: &str = "2";
@@ -103,7 +104,7 @@ fn prepare(raw: &Value, require_workflow: ProjectGate) -> Result<(String, Journa
     let selected = &material["sources"][0];
     let target = design_material::absolute(&selected["root"], "target repository")?;
     require_workflow(
-        &crate::git::Git::new(&target),
+        &engine::git::Git::new(&target),
         selected["head"].as_str().expect("captured source commit"),
         NAME,
     )?;
@@ -112,7 +113,7 @@ fn prepare(raw: &Value, require_workflow: ProjectGate) -> Result<(String, Journa
             .unwrap_or(&material["sources"][0]["root"]),
         "gatewayRepo",
     )?;
-    let git = crate::git::Git::new(&root);
+    let git = engine::git::Git::new(&root);
     if fs::canonicalize(git.run(&["rev-parse", "--show-toplevel"])?.trim())?
         != fs::canonicalize(&root)?
     {
@@ -457,7 +458,7 @@ fn approved_task_words(
             return Ok(None);
         }
         journal.write_text(file, &text)?;
-        crate::boundary::cut("pin approved task words");
+        engine::boundary::cut("pin approved task words");
         snapshot
     };
     match snapshot["withWords"].take() {
@@ -1189,7 +1190,7 @@ fn recorded_sources(
         let scrubber = design_material::scrubber(cfg, material)?;
         let places = design_material::places(cfg, material["sources"].as_array().expect("pinned sources"));
         let answer = design_material::clean(&scrubber, answer, &places, material["public"] == true);
-        if answer.lines().any(|line| !line.trim().is_empty() && crate::input_common::withheld_lines(line) == 0) {
+        if answer.lines().any(|line| !line.trim().is_empty() && engine::input_common::withheld_lines(line) == 0) {
             files.insert("owner-source.md".into(), Source::context(answer));
         }
     }
@@ -1470,7 +1471,7 @@ fn save_result(
                     result["infra"] = json!(error.0);
                     return Ok(Exit { code: 2, result });
                 }
-                crate::boundary::cut("publish design brief");
+                engine::boundary::cut("publish design brief");
             }
         }
         if result["approved"] == true {
@@ -1481,7 +1482,7 @@ fn save_result(
     finish(journal, result)
 }
 
-pub(crate) fn publish(path: &Path, text: &str, replace: bool) -> Result<()> {
+pub fn publish(path: &Path, text: &str, replace: bool) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| GatewayError("The brief has no parent directory.".into()))?;
