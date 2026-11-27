@@ -492,7 +492,10 @@ fn main_inner(args: Vec<String>) -> Result<u8> {
         return Ok(0);
     }
     if command == "release" {
-        print(&release::cli(&args[1..])?);
+        match release::cli(&args[1..])? {
+            release::Output::Json(value) => print(&value),
+            release::Output::Text(text) => println!("{text}"),
+        }
         return Ok(0);
     }
     if command == "flow" {

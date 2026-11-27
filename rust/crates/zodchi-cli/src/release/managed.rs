@@ -394,15 +394,21 @@ pub(super) fn install(archive: &Path, digest: &str, selected: Option<&str>) -> R
     Ok(json!({ "launcher": launcher, "version": version, "root": root }))
 }
 
-pub(super) fn register(selected: &str) -> Result<Value> {
-    let clients = clients(Some(selected))?;
+pub(super) fn packaged_root() -> Result<PathBuf> {
+    // The managed launcher has already selected the executable for this command.
     let binary = env::current_exe()?;
     let root = binary
         .parent()
         .and_then(Path::parent)
         .ok_or_else(|| GatewayError("Use the binary inside the packaged release.".into()))?;
     bundle::executable(root, VERSION)?;
-    configure(root, &clients, plugin)?;
+    Ok(root.to_path_buf())
+}
+
+pub(super) fn register(selected: &str) -> Result<Value> {
+    let clients = clients(Some(selected))?;
+    let root = packaged_root()?;
+    configure(&root, &clients, plugin)?;
     Ok(json!({ "root": root, "version": VERSION }))
 }
 

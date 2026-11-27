@@ -5,7 +5,7 @@ import zlib from "node:zlib";
 import { pathToFileURL } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
 
-export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, run, FIXED, STUB, zodchi, FAKE_FLOW }) {
+export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, run, FIXED, STUB, zodchi, FAKE_FLOW, samePath }) {
   const release = (args) => JSON.parse(execFileSync(ZODCHI, ["release", ...args], {
     cwd: ROOT, encoding: "utf8", windowsHide: true,
   }));
@@ -274,7 +274,8 @@ export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, r
     const read = (file) => JSON.parse(fs.readFileSync(path.join(output, "marketplace", "plugins", "zodchi", file), "utf8"));
     t.eq([read(".codex-plugin/plugin.json").version, read(".claude-plugin/plugin.json").version, receipt.version],
       Array(3).fill(built.version), "the CLI builder required the same version used by both client manifests");
-    const check = (file, digest) => crypto.createHash("sha256").update(fs.readFileSync(path.join(output, file))).digest("hex") === digest;
+    const sha256 = bytes => crypto.createHash("sha256").update(bytes).digest("hex");
+    const check = (file, digest) => sha256(fs.readFileSync(path.join(output, file))) === digest;
     t.ok(receipt.sha256[built.cli] && Object.entries(receipt.sha256).every(([file, digest]) => check(file, digest)),
       "the bundle records the digest of its CLI and each bundled file");
     const env = { ...process.env, ZODCHI_HOME: path.join(scratch, "empty-bundle-home") };
@@ -303,6 +304,60 @@ export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, r
     t.eq(call(["--version"]).trim(), "zodchi " + version, "the launcher starts the verified native binary");
     t.eq(JSON.parse(call(["flow", "list"])), JSON.parse(fs.readFileSync(path.join(ROOT, "workflows/catalog.json"), "utf8")), "the installed CLI uses the packaged catalog");
     t.ok(call(["roles"]).includes("code-review"), "installed roles travel with the executable");
+
+    // Give the installed fixture distinct bytes to verify that skill export reads the selected release.
+    const skillFile = "marketplace/plugins/zodchi/skills/zodchi-flow/SKILL.md";
+    const installedSkill = path.join(root, skillFile);
+    const skillBytes = Buffer.from(
+      `${fs.readFileSync(installedSkill, "utf8")}\nInstalled fixture instructions.\n`.replace(/\r?\n/g, "\r\n"),
+    );
+    fs.writeFileSync(installedSkill, skillBytes);
+    receipt.sha256[skillFile] = sha256(skillBytes);
+    fs.writeFileSync(path.join(root, "release.json"), JSON.stringify(receipt));
+
+    const invoke = (program, ...args) => run(t, program, ["release", ...args], { cwd: scratch, env });
+    const expectPrint = (result, bytes, label) => {
+      const body = bytes.toString("utf8").replace(/\r\n/g, "\n").replace(/^---\n[\s\S]*?\n---\n/, "").trim();
+      const sourceOfTruth = "`zodchi flow list` and `zodchi flow <workflow> --help` are the source of truth.";
+      t.eq(result.code, 0, label);
+      t.eq(result.out.replace(/\r\n/g, "\n"), `# Zodchi ${version}\n\n${body}\n\n${sourceOfTruth}\n`,
+        "print includes the heading, that release's skill body without front matter, and the CLI hints");
+    };
+    expectPrint(await invoke(launcher, "skill", "--print"), skillBytes, "the installed release prints its fixture skill");
+    expectPrint(await invoke(path.join(output, built.cli), "skill", "--print"), fs.readFileSync(path.join(output, skillFile)),
+      "the portable executable prints its own skill even with an installed release in ZODCHI_HOME");
+
+    const skillsDir = "other agent skills";
+    fs.mkdirSync(path.join(scratch, skillsDir));
+    const exportedFile = path.join(scratch, skillsDir, "zodchi-flow", "SKILL.md");
+    const exported = await invoke(launcher, "skill", "--into", skillsDir);
+    t.eq([exported.code, exported.json?.version], [0, version], "export reports the installed version");
+    t.ok(samePath(exported.json.skill, exportedFile), "export reports the destination file");
+    t.ok(fs.readFileSync(exportedFile).equals(skillBytes), "export copies the installed bytes including front matter");
+    fs.utimesSync(exportedFile, 946684800, 946684800);
+    const mtime = fs.statSync(exportedFile).mtimeMs;
+    const repeated = await invoke(launcher, "skill", "--into", skillsDir);
+    t.eq([repeated.code, repeated.json, fs.statSync(exportedFile).mtimeMs], [0, exported.json, mtime],
+      "an identical skill returns the same receipt without rewriting the file");
+
+    fs.writeFileSync(exportedFile, "Custom instructions.\n");
+    const refused = await invoke(launcher, "skill", "--into", skillsDir);
+    t.eq([refused.code, fs.readFileSync(exportedFile, "utf8")], [1, "Custom instructions.\n"], "an edited skill is left intact");
+    t.ok(refused.err.includes(exported.json.skill), "the refusal names the conflicting file");
+    const forced = await invoke(launcher, "skill", "--into", skillsDir, "--force");
+    t.eq([forced.code, forced.json], [0, exported.json], "force exports to the same destination");
+    t.ok(fs.readFileSync(exportedFile).equals(skillBytes), "force replaces the edited skill with the installed bytes");
+
+    const missingDir = path.join(scratch, "missing skills directory");
+    const missing = await invoke(launcher, "skill", "--into", missingDir);
+    t.eq([missing.code, fs.existsSync(missingDir)], [1, false], "export requires an existing skills directory");
+    const usage = "zodchi release skill --print | --into <skills-dir> [--force]";
+    for (const args of [["--print", "--into", skillsDir], ["--print", "--force"], ["--into"]]) {
+      const invalid = await invoke(launcher, "skill", ...args);
+      t.eq([invalid.code, invalid.err.includes(usage)], [1, true], `wrong call lists the skill usage (${args.join(" ")})`);
+    }
+    const help = await invoke(launcher, "--help");
+    t.ok((help.out + help.err).includes(usage), "release help lists both skill export modes");
   });
 
   scenario("flow-dev-revision", "the local launcher selects the newest DEV archive and an existing run keeps its build", async (t) => {

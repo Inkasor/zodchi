@@ -4,7 +4,7 @@ use serde_json::{json, Map, Value};
 use std::{
     collections::{BTreeMap, HashSet},
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{self, ErrorKind, Read, Write},
     path::{Path, PathBuf},
 };
 use zodchi_core::{
@@ -37,6 +37,7 @@ const ARCH: &str = if cfg!(target_arch = "x86_64") {
 };
 const PLUGIN: &str = "marketplace/plugins/zodchi";
 const BUILD_INFO: &str = "marketplace/plugins/zodchi/zodchi-build.json";
+const FLOW_SKILL: &str = "marketplace/plugins/zodchi/skills/zodchi-flow/SKILL.md";
 const SKILLS: &[&str] = &["verify", "zodchi-flow"];
 const REQUIRED: &[&str] = &[
     CLI,
@@ -48,7 +49,7 @@ const REQUIRED: &[&str] = &[
     "marketplace/plugins/zodchi/.claude-plugin/plugin.json",
     "marketplace/plugins/zodchi/assets/workflows/catalog.json",
     "marketplace/plugins/zodchi/skills/verify/SKILL.md",
-    "marketplace/plugins/zodchi/skills/zodchi-flow/SKILL.md",
+    FLOW_SKILL,
 ];
 
 pub(super) fn artifact_name() -> String {
@@ -511,6 +512,62 @@ pub(super) fn executable(root: &Path, version: &str) -> Result<PathBuf> {
         return fail(format!("The pinned release {version} has no executable."));
     }
     Ok(executable)
+}
+
+pub(super) fn read_flow_skill(root: &Path) -> Result<Vec<u8>> {
+    let file = root.join(FLOW_SKILL);
+    regular(&file).map_err(|error| {
+        GatewayError(format!(
+            "Cannot read the packaged skill at {}: {error}",
+            file.display()
+        ))
+    })
+}
+
+pub(super) fn write_flow_skill(dir: &Path, bytes: &[u8], force: bool) -> Result<PathBuf> {
+    if !dir.is_dir() {
+        return fail(format!(
+            "Expected an existing skills directory at {}.",
+            dir.display()
+        ));
+    }
+    let folder = dir.join("zodchi-flow");
+    let file = folder.join("SKILL.md");
+    let conflict = || {
+        GatewayError(format!(
+            "{} differs from the packaged skill. Use --force to replace it.",
+            file.display()
+        ))
+    };
+    match fs::read(&file) {
+        Ok(current) if current == bytes => return Ok(file),
+        Ok(_) if !force => return Err(conflict()),
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return fail(format!("Cannot read {}: {error}", file.display())),
+    }
+    let write_error =
+        |error: io::Error| GatewayError(format!("Cannot write {}: {error}", file.display()));
+    match fs::create_dir(&folder) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(write_error(error)),
+    }
+    let mut staged = tempfile::NamedTempFile::new_in(&folder).map_err(&write_error)?;
+    staged.write_all(bytes).map_err(&write_error)?;
+    if force {
+        staged
+            .persist(&file)
+            .map_err(|error| write_error(error.error))?;
+    } else if let Err(error) = staged.persist_noclobber(&file) {
+        if error.error.kind() != ErrorKind::AlreadyExists {
+            return Err(write_error(error.error));
+        }
+        if !fs::read(&file).is_ok_and(|current| current == bytes) {
+            return Err(conflict());
+        }
+    }
+    Ok(file)
 }
 
 pub(super) fn copy_launcher(source: &Path, launcher: &Path) -> Result<()> {
