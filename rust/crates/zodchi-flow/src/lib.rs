@@ -12,24 +12,11 @@ macro_rules! eprintln {
     };
 }
 
-mod accepted_media;
-mod agent;
-pub mod args;
-mod boundary;
-mod budget;
 mod candidate;
-mod package_source;
-mod review_contract;
-mod review_source;
-mod catalog;
-pub mod checks;
-pub mod claims;
 mod child_package;
-mod cleanup;
 mod control;
 mod design_material;
 mod input;
-mod input_common;
 mod incident_adapter;
 mod incident_draft;
 // The subprocess tests select their fixtures by the exact ops_script::tests path.
@@ -37,19 +24,85 @@ mod incident_draft;
 mod ops_script;
 mod research_lists;
 mod research_material;
-pub mod executor;
-pub mod gateway;
-pub mod git;
-pub mod journal;
-pub mod models;
-pub mod patch;
 mod registry;
 mod runs;
-pub mod verify;
 mod video_manifest;
-mod video_media;
 mod video_metrics;
 mod video_research;
+
+use zodchi_flow_engine::{
+    accepted_media, agent, boundary, budget, catalog, cleanup, input_common, package_source,
+    review_contract, review_source, video_media,
+};
+pub use zodchi_flow_engine::git;
+
+// Keep the facade's public imports separate from the engine API used by workflows.
+pub mod args {
+    pub use zodchi_flow_engine::args::{is_project_configuration, is_protected, parse, rel, Args};
+    pub(crate) use zodchi_flow_engine::args::{commands, BUILTIN_PROTECTED};
+}
+
+pub mod checks {
+    pub use zodchi_flow_engine::checks::{
+        end_group, find_bash, name, passed, preflight, preflight_tools, remove, result, review_output,
+        run_list, sanitize, tail, temp_dir, Phase,
+    };
+    pub(crate) use zodchi_flow_engine::checks::*;
+}
+
+pub mod claims {
+    pub use zodchi_flow_engine::claims::{
+        caseless, claims_dir, close, extend, file, fold, holds, norm, open,
+    };
+    pub(crate) use zodchi_flow_engine::claims::preview_conflicts;
+}
+
+pub mod executor {
+    pub use zodchi_flow_engine::executor::{flow_credits, flow_server, for_pick, server, Executor};
+
+    pub mod claude {
+        pub use zodchi_flow_engine::executor::claude::{
+            call, find_program, message, signed_in, version, Claude, Program, Sent,
+        };
+        pub(crate) use zodchi_flow_engine::executor::claude::ask_screened;
+    }
+
+    pub mod local {
+        pub use zodchi_flow_engine::executor::local::LocalGateway;
+        pub(crate) use zodchi_flow_engine::executor::local::pinned_image;
+    }
+}
+
+pub mod gateway {
+    pub use zodchi_flow_engine::gateway::{ask, base_key, slug, summary, Call, CallError};
+    pub(crate) use zodchi_flow_engine::gateway::*;
+}
+
+pub mod journal {
+    pub use zodchi_flow_engine::journal::{flows_dir, is_run_id, new_run_id, Journal, RunLock};
+    pub(crate) use zodchi_flow_engine::journal::*;
+}
+
+pub mod models {
+    pub use zodchi_flow_engine::models::{
+        claude_enabled, codex_usable, local_codex_usable, resolve, table, ClaudeGate, Pick,
+        CLAUDE_ENTRY, REVIEWER_ROLE, WRITER_ROLE,
+    };
+    pub(crate) use zodchi_flow_engine::models::*;
+}
+
+pub mod patch {
+    pub use zodchi_flow_engine::patch::{
+        apply, apply_recoverable, claimed_as, no_links, outside, parse, plan, reconcile, Change, Edit,
+        Patch, Plan, Refusal,
+    };
+    pub(crate) use zodchi_flow_engine::patch::plain;
+}
+
+pub mod verify {
+    pub use zodchi_flow_engine::verify::{Plan, CONFIG, LEGACY_SKILL, PROJECT_SKILL};
+    pub(crate) use zodchi_flow_engine::verify::ProjectSettings;
+}
 
 pub use control::{sign_in_required, SignIn};
 pub use registry::code_package;

@@ -11,7 +11,7 @@ pub const LEGACY_SKILL: &str = ".claude/skills/verify/SKILL.md";
 pub const PROJECT_SKILL: &str = ".agents/skills/verify/SKILL.md";
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ProjectSettings {
+pub struct ProjectSettings {
     pub cache: Vec<String>,
     pub env: BTreeMap<String, String>,
     pub tools: Vec<String>,
@@ -67,7 +67,7 @@ impl ProjectSettings {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct WriterSettings {
+pub struct WriterSettings {
     pub env: BTreeMap<String, String>,
     pub cache: Option<PathBuf>,
 }
@@ -102,8 +102,8 @@ pub struct Plan {
     pub setup_source: &'static str,
     pub checks: Vec<String>,
     pub verify: Vec<String>,
-    pub(crate) project: ProjectSettings,
-    pub(crate) writer: WriterSettings,
+    project: ProjectSettings,
+    writer: WriterSettings,
     pub check_source: &'static str,
     pub verify_source: &'static str,
     pub full_local: Vec<String>,
@@ -111,6 +111,16 @@ pub struct Plan {
 }
 
 impl Plan {
+    #[doc(hidden)]
+    pub fn project(&self) -> &ProjectSettings {
+        &self.project
+    }
+
+    #[doc(hidden)]
+    pub fn writer(&self) -> &WriterSettings {
+        &self.writer
+    }
+
     pub fn legacy(args: &Args) -> Self {
         Self {
             setup: args.setup.clone(), setup_source: "args.setup",
@@ -120,7 +130,8 @@ impl Plan {
         }
     }
 
-    pub(crate) fn load(git: &Git, base: &str, args: &Args, paths: &ProjectPaths) -> Result<Self> {
+    #[doc(hidden)]
+    pub fn load(git: &Git, base: &str, args: &Args, paths: &ProjectPaths) -> Result<Self> {
         let mut plan = Self::legacy(args);
         let Some(value) = config_at(git, base)? else {
             if args.verify.is_empty() {
@@ -178,7 +189,8 @@ impl Plan {
         Ok(plan)
     }
 
-    pub(crate) fn setup_environment(&self) -> BTreeMap<String, String> {
+    #[doc(hidden)]
+    pub fn setup_environment(&self) -> BTreeMap<String, String> {
         let mut env = self.project.env.clone();
         for (name, value) in &self.writer.env {
             if cfg!(windows) {

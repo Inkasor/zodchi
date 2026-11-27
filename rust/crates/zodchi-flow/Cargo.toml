@@ -11,11 +11,15 @@ base64.workspace = true
 form_urlencoded = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 zodchi-core = { path = "../zodchi-core" }
+zodchi-flow-engine = { path = "../zodchi-flow-engine" }
 serde_json.workspace = true
 rand.workspace = true
 regex = "1"
 regress = { version = "0.12", features = ["utf16"] }
 sha2.workspace = true
+
+[dev-dependencies]
+zodchi-flow-engine = { path = "../zodchi-flow-engine", features = ["test-support"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

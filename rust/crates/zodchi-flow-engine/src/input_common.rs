@@ -14,13 +14,13 @@ use std::sync::LazyLock;
 use zodchi_core::config::Config;
 use zodchi_core::util::{fail, Result};
 
-pub(crate) fn args_digest(raw: &Value) -> String {
+pub fn args_digest(raw: &Value) -> String {
     let mut canonical = raw.clone();
     canonical.sort_all_objects();
     zodchi_core::util::sha256_hex(canonical.to_string())
 }
 
-pub(crate) fn args_match(inputs: &Value, raw: &Value) -> bool {
+pub fn args_match(inputs: &Value, raw: &Value) -> bool {
     match inputs["argsSha256"].as_str() {
         Some(digest) => args_digest(raw) == digest,
         None => raw == &inputs["args"],
@@ -36,7 +36,7 @@ pub struct Scrubber {
 }
 
 pub(crate) const PRIVATE_WITHHELD: &str = "[private text removed]";
-pub(crate) const TASK_SCREENING_STEP: &str = "task screening";
+pub const TASK_SCREENING_STEP: &str = "task screening";
 const PRIVATE_KEY_MARKER: &str = r"(?i)-----(BEGIN|END) (?:[A-Z0-9-]+ )*PRIVATE KEY-----";
 // Only user info in the authority counts. The path and query may contain an @.
 const CREDENTIAL_URL: &str = concat!(r"[A-Za-z][A-Za-z0-9+.-]*:", r"//[^\s/?#@]+@[^\s/?#@]+");
@@ -45,7 +45,7 @@ const AUTHORIZATION_VALUE: &str = r"[A-Za-z0-9._~+/-]{8,}={0,2}";
 const IDENTIFIER: &str = r"(?:r#)?[$_\p{XID_Start}][$\p{XID_Continue}]*";
 
 #[derive(Clone, Copy)]
-pub(crate) enum Withholding {
+pub enum Withholding {
     PrivateWord,
     KeyBlock,
     KeyOrShape,
@@ -53,18 +53,18 @@ pub(crate) enum Withholding {
 }
 
 impl Withholding {
-    pub(crate) fn reason(&self) -> &'static str {
+    pub fn reason(&self) -> &'static str {
         match self {
             Self::PrivateWord => "private-word",
             Self::KeyBlock | Self::KeyOrShape | Self::Value => "credential",
         }
     }
 
-    pub(crate) fn allows_input_exception(&self) -> bool {
+    pub fn allows_input_exception(&self) -> bool {
         matches!(self, Self::KeyOrShape | Self::Value)
     }
 
-    pub(crate) fn marker(&self) -> &'static str {
+    pub fn marker(&self) -> &'static str {
         match self {
             Self::PrivateWord | Self::KeyBlock | Self::KeyOrShape => PRIVATE_WITHHELD,
             Self::Value => checks::WITHHELD_LINE,
@@ -208,12 +208,12 @@ pub(crate) fn key_or_credential_shape() -> impl FnMut(&str) -> bool {
     }
 }
 
-pub(crate) fn private_words(contents: &str) -> Vec<String> {
+pub fn private_words(contents: &str) -> Vec<String> {
     contents.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#'))
         .map(str::to_lowercase).collect()
 }
 
-pub(crate) fn withheld_lines(text: &str) -> usize {
+pub fn withheld_lines(text: &str) -> usize {
     text.lines().filter(|line| matches!(*line, PRIVATE_WITHHELD | checks::WITHHELD_LINE)).count()
 }
 
@@ -353,12 +353,13 @@ impl Scrubber {
         Ok(Self { words: private_words(&contents) })
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_private_words(contents: &str) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn with_private_words(contents: &str) -> Self {
         Self { words: private_words(contents) }
     }
 
-    pub(crate) fn allow_words(mut self, words: &[String]) -> Self {
+    pub fn allow_words(mut self, words: &[String]) -> Self {
         self.words.retain(|word| !words.contains(word));
         self
     }
@@ -371,7 +372,7 @@ impl Scrubber {
         self.matching_words(line).next().is_some()
     }
 
-    pub(crate) fn matching_words(&self, line: &str) -> impl Iterator<Item = &str> {
+    pub fn matching_words(&self, line: &str) -> impl Iterator<Item = &str> {
         let lower = line.to_lowercase();
         self.words.iter().map(String::as_str).filter(move |word| lower.contains(*word))
     }
@@ -586,7 +587,7 @@ impl Scrubber {
     }
 
     /// Check model output for private words and recognizable credential values.
-    pub(crate) fn answer_is_private(&self, text: &str) -> bool {
+    pub fn answer_is_private(&self, text: &str) -> bool {
         self.has_private_word(text)
             || Self::secret_value_ranges(text).next().is_some()
             || scan_credential_options(text, &Self::secret_patterns().option, |_, _| ControlFlow::Break(())).is_break()
@@ -673,7 +674,7 @@ impl Scrubber {
     }
 
     /// Briefs can discuss identifiers. Screen values and key blocks before considering word exceptions.
-    pub(crate) fn design_lines<'a>(&'a self, raw: &'a str) -> impl Iterator<Item = (&'a str, Option<Withholding>)> + 'a {
+    pub fn design_lines<'a>(&'a self, raw: &'a str) -> impl Iterator<Item = (&'a str, Option<Withholding>)> + 'a {
         let mut key_or_shape = key_or_credential_shape();
         Self::value_lines(raw, false).map(move |(line, key_line, has_value)| {
             let withholding = if key_or_shape(line) || key_line {
@@ -689,14 +690,14 @@ impl Scrubber {
         })
     }
 
-    pub(crate) fn input_withholdings<'a>(&'a self, raw: &'a str) -> impl Iterator<Item = (usize, Withholding)> + 'a {
+    pub fn input_withholdings<'a>(&'a self, raw: &'a str) -> impl Iterator<Item = (usize, Withholding)> + 'a {
         self.input_lines(raw).enumerate().filter_map(|(index, (_, withholding))| {
             withholding.map(|withholding| (index + 1, withholding))
         })
     }
 
     /// An editable preview keeps the visible fragments and their original line endings.
-    pub(crate) fn redact_lines(raw: &str, withheld: &[(usize, Withholding)]) -> String {
+    pub fn redact_lines(raw: &str, withheld: &[(usize, Withholding)]) -> String {
         let mut preview = String::new();
         let mut withheld = withheld.iter().peekable();
         for (index, (line, original)) in raw.lines().zip(raw.split_inclusive('\n')).enumerate() {
@@ -718,7 +719,7 @@ impl Scrubber {
         checks::screen_paths(lines, places)
     }
 
-    pub(crate) fn repository_text(&self, raw: &str, places: &[(String, &str)]) -> String {
+    pub fn repository_text(&self, raw: &str, places: &[(String, &str)]) -> String {
         // Keep the repository keyword rule except for standalone identifier comparisons.
         // The value scan still covers the complete source, including multiline literals.
         let lines = self.screened_lines(raw).zip(self.design_lines(raw))

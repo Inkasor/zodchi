@@ -12,7 +12,7 @@ use zodchi_core::util::{fail, GatewayError, Result};
 pub const ROLE: &str = "flow-work";
 pub const SCHEMA: &str = include_str!("../../../../roles/package-result.schema.json");
 
-pub(crate) fn check_writer_role(role: &Value) -> Result<()> {
+pub fn check_writer_role(role: &Value) -> Result<()> {
     if role["mode"] != "work"
         || role["sandbox"] != "workspace-write"
         || role["mcpServers"] != json!([])
@@ -24,7 +24,7 @@ pub(crate) fn check_writer_role(role: &Value) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn create_writer_cache(settings: &WriterSettings) -> Result<()> {
+pub fn create_writer_cache(settings: &WriterSettings) -> Result<()> {
     if let Some(cache) = &settings.cache {
         fs::create_dir_all(cache)
             .map_err(|error| GatewayError(format!("Cannot create the writer cache: {error}")))?;
@@ -121,7 +121,7 @@ pub fn workspace(receipt: &Value) -> Result<PathBuf> {
 
 /// Fingerprint the claimed files and any other paths the writer dirtied. Git's list excludes scratch
 /// and installed dependencies. Hash the working bytes so repeated writes of the same content compare equal.
-pub(crate) fn workspace_snapshot(root: &Path, files: &[String]) -> Result<Value> {
+pub fn workspace_snapshot(root: &Path, files: &[String]) -> Result<Value> {
     let dirty = Git::new(root).dirty()?;
     let paths: BTreeSet<_> = files.iter().chain(&dirty).collect();
     let mut snapshot = BTreeMap::new();

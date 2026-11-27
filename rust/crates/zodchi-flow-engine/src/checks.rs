@@ -19,16 +19,16 @@ use zodchi_core::util::{fail, pause, read_stored, sha256_hex, write_json_atomic,
 
 /// What a check command may see of the caller's environment: where programs and the user's tool chains are, the
 /// temporary folder and the locale. Nothing else passes.
-pub(crate) const KEEP: [&str; 30] = [
+pub const KEEP: [&str; 30] = [
     "PATH", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE",
     "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
     "COMMONPROGRAMFILES", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS", "USER", "USERNAME", "LOGNAME", "CARGO_HOME", "RUSTUP_HOME",
 ];
 
-pub(crate) const DEFAULT_BROWSER_VARIABLE: &str = "ZODCHI_ACCEPTANCE_CHROMIUM";
+pub const DEFAULT_BROWSER_VARIABLE: &str = "ZODCHI_ACCEPTANCE_CHROMIUM";
 
 /// A browser override must leave inherited check variables and the frame output directory available.
-pub(crate) fn valid_browser_variable(variable: &str) -> bool {
+pub fn valid_browser_variable(variable: &str) -> bool {
     !variable.is_empty()
         && variable.len() <= 128
         && variable.bytes().enumerate().all(|(i, b)| {
@@ -38,8 +38,9 @@ pub(crate) fn valid_browser_variable(variable: &str) -> bool {
         && variable != "ZODCHI_ACCEPTANCE_FRAMES"
 }
 
-#[cfg(test)]
-pub(crate) fn browser_variable_cases() -> Vec<(String, bool)> {
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn browser_variable_cases() -> Vec<(String, bool)> {
     let mut cases = vec![
         (DEFAULT_BROWSER_VARIABLE.into(), true),
         ("APP_TEST_CHROME".into(), true),
@@ -212,7 +213,7 @@ pub(crate) fn live_slot_owners() -> Result<Vec<Value>> {
 
 /// The kernel lock is the authority. The adjacent receipt can be read while a Windows file lock is held.
 /// It names the holder and, until a command is settled, the child to stop before any other run can use the slot.
-pub(crate) struct CheckSlot {
+pub struct CheckSlot {
     files: Vec<SlotFiles>,
     owner: Value,
 }
@@ -371,7 +372,7 @@ impl Drop for CheckSlot {
     }
 }
 
-pub(crate) struct ProjectPaths {
+pub struct ProjectPaths {
     pub cache: PathBuf,
     parent: PathBuf,
 }
@@ -696,7 +697,7 @@ pub enum Phase {
     Ended,
 }
 
-pub(crate) fn record_process(journal: &mut crate::journal::Journal, step: &str, attempt: u32, phase: Phase, pid: u32) -> bool {
+pub fn record_process(journal: &mut crate::journal::Journal, step: &str, attempt: u32, phase: Phase, pid: u32) -> bool {
     let event = match phase {
         Phase::Started => json!({ "kind": "check started", "step": step, "attempt": attempt, "pid": pid, "start": process_start(pid) }),
         Phase::Ended => json!({ "kind": "check ended", "step": step, "attempt": attempt, "pid": pid }),
@@ -726,7 +727,7 @@ pub fn end_group(pid: u32) -> std::result::Result<(), String> {
 }
 
 /// Settle commands from earlier attempts before executing checks again.
-pub(crate) fn reap_unended(journal: &mut crate::journal::Journal) -> Result<()> {
+pub fn reap_unended(journal: &mut crate::journal::Journal) -> Result<()> {
     let events = journal.events();
     let open: Vec<_> = events.iter().filter(|start| start["kind"] == "check started")
         .filter(|start| !events.iter().any(|end| {
@@ -761,7 +762,7 @@ fn settle_process(event: &Value, step: &str) -> Result<&'static str> {
 }
 
 #[derive(Default)]
-pub(crate) struct CommandEnvironment<'a> {
+pub struct CommandEnvironment<'a> {
     pub repo: Option<&'a Path>,
     pub extra: Option<&'a BTreeMap<String, String>>,
 }
@@ -876,7 +877,7 @@ pub fn run_list(cmds: &[String], source: &str, cwd: &Path, logs: &Path, limit: D
     run_legacy_commands(cmds, source, cwd, logs, limit, false, on)
 }
 
-pub(crate) fn run_setup(cmds: &[String], source: &str, cwd: &Path, logs: &Path, limit: Duration, on: &mut dyn FnMut(Phase, u32) -> bool) -> (Vec<Value>, bool) {
+pub fn run_setup(cmds: &[String], source: &str, cwd: &Path, logs: &Path, limit: Duration, on: &mut dyn FnMut(Phase, u32) -> bool) -> (Vec<Value>, bool) {
     run_legacy_commands(cmds, source, cwd, logs, limit, true, on)
 }
 
@@ -887,7 +888,7 @@ fn run_legacy_commands(cmds: &[String], source: &str, cwd: &Path, logs: &Path, l
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_commands(cmds: &[String], source: &str, cwd: &Path, logs: &Path, limit: Duration, environment: &CommandEnvironment<'_>, stop_on_failure: bool, on: &mut dyn FnMut(Phase, u32, Option<&str>) -> Result<()>) -> (Vec<Value>, bool) {
+pub fn run_commands(cmds: &[String], source: &str, cwd: &Path, logs: &Path, limit: Duration, environment: &CommandEnvironment<'_>, stop_on_failure: bool, on: &mut dyn FnMut(Phase, u32, Option<&str>) -> Result<()>) -> (Vec<Value>, bool) {
     let bash = find_bash();
     let _ = fs::create_dir_all(logs);
     let mut out = Vec::new();
@@ -1228,7 +1229,7 @@ mod windows_job {
     }
 }
 
-pub(crate) struct CheckBatch<'a> {
+pub struct CheckBatch<'a> {
     pub step: &'a str,
     pub round: u32,
     pub attempt: u32,
@@ -1241,7 +1242,7 @@ pub(crate) struct CheckBatch<'a> {
     pub verify: (&'a str, &'a [String]),
 }
 
-pub(crate) enum CheckOutcome {
+pub enum CheckOutcome {
     Finished { checkout: PathBuf, evidence: Vec<Value> },
     Unknown(String),
 }
@@ -1366,8 +1367,8 @@ pub fn name(evidence: &[Value], i: usize) -> String {
     format!("{source} #{n}")
 }
 
-pub(crate) const WITHHELD_LINE: &str = "[source line withheld]";
-pub(crate) const LEGACY_WITHHELD_LINE: &str = "[a line that may hold a credential is left out]";
+pub const WITHHELD_LINE: &str = "[source line withheld]";
+pub const LEGACY_WITHHELD_LINE: &str = "[a line that may hold a credential is left out]";
 
 /// Output of a check made fit for a model: the known private folders (`places`: a path and the word that stands for
 /// it) replaced in any spelling of the path, and every line that may hold a credential (a password, token, key,
@@ -1381,13 +1382,13 @@ pub(crate) fn credential_url(line: &str) -> bool {
     line.match_indices("://").any(|(i, _)| line[i..].split_whitespace().next().is_some_and(|u| u.contains('@')))
 }
 
-pub(crate) fn credential_line(line: &str) -> bool {
+pub fn credential_line(line: &str) -> bool {
     const MARKERS: [&str; 12] = ["password", "passwd", "secret", "token", "api_key", "apikey", "api-key", "authorization", "bearer", "private key", "credential", "cookie"];
     let low = line.to_ascii_lowercase().replace(LEGACY_WITHHELD_LINE, WITHHELD_LINE);
     credential_url(&low) || MARKERS.iter().any(|m| low.contains(m))
 }
 
-pub(crate) fn screen_paths<'a>(text: impl Iterator<Item = &'a str>, places: &[(String, &str)]) -> String {
+pub fn screen_paths<'a>(text: impl Iterator<Item = &'a str>, places: &[(String, &str)]) -> String {
     let mut spellings: Vec<(String, &str)> = Vec::new();
     for (path, word) in places {
         let mut add = |fwd: &str| {

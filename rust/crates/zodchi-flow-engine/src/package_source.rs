@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::{fs, path::Path};
 use zodchi_core::util::{fail, GatewayError, Result};
 
-pub(crate) struct Source {
+pub struct Source {
     pub id: String,
     pub run: Value,
     pub result: Value,

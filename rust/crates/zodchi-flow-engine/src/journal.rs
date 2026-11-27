@@ -24,14 +24,14 @@ pub struct Journal {
 }
 
 // A durable journal event that can be written while events.jsonl is held by the worker.
-pub(crate) const SHUTDOWN_REQUEST: &str = "shutdown-request.json";
-pub(crate) const PENDING_REMARKS: &str = "pending-remarks";
+pub const SHUTDOWN_REQUEST: &str = "shutdown-request.json";
+pub const PENDING_REMARKS: &str = "pending-remarks";
 
 pub fn flows_dir(home: &Path) -> PathBuf {
     home.join("flows")
 }
 
-pub(crate) fn last_write(dir: &Path) -> Option<SystemTime> {
+pub fn last_write(dir: &Path) -> Option<SystemTime> {
     ["events.jsonl", "run.json", "result.json"]
         .into_iter()
         .filter_map(|name| {
@@ -43,11 +43,11 @@ pub(crate) fn last_write(dir: &Path) -> Option<SystemTime> {
 
 pub(crate) const CANDIDATE_WORKSPACES: &str = "flow-candidates";
 
-pub(crate) fn candidate_workspace(home: &Path, id: &str) -> PathBuf {
+pub fn candidate_workspace(home: &Path, id: &str) -> PathBuf {
     home.join(CANDIDATE_WORKSPACES).join(id)
 }
 
-pub(crate) fn candidate_applied(events: &[Value]) -> Option<Value> {
+pub fn candidate_applied(events: &[Value]) -> Option<Value> {
     events
         .iter()
         .rev()
@@ -55,7 +55,7 @@ pub(crate) fn candidate_applied(events: &[Value]) -> Option<Value> {
         .map(|event| event["result"].clone())
 }
 
-pub(crate) fn application_status(events: &[Value]) -> Option<Value> {
+pub fn application_status(events: &[Value]) -> Option<Value> {
     candidate_applied(events).or_else(|| {
         events
             .iter()
@@ -65,7 +65,7 @@ pub(crate) fn application_status(events: &[Value]) -> Option<Value> {
 }
 
 /// Administrative events leave the stopped step in place.
-pub(crate) fn last_state_event(events: &[Value]) -> Option<&Value> {
+pub fn last_state_event(events: &[Value]) -> Option<&Value> {
     events.iter().rev().find(|event| {
         match event["kind"].as_str() {
             Some("owner clarification" | "cleanup" | "cancel requested" | "remarks attached") => false,
@@ -76,14 +76,14 @@ pub(crate) fn last_state_event(events: &[Value]) -> Option<&Value> {
     })
 }
 
-pub(crate) fn scope_approvals(events: &[Value]) -> impl Iterator<Item = &Value> {
+pub fn scope_approvals(events: &[Value]) -> impl Iterator<Item = &Value> {
     events.iter().filter_map(|event| {
         if event["kind"] == "scope allowed" { Some(event) } else { event.get("scopeApproval") }
     })
 }
 
 /// Legacy waiting and approval events may predate the round field.
-pub(crate) fn scope_round(event: &Value) -> u64 {
+pub fn scope_round(event: &Value) -> u64 {
     let step = event["step"].as_str().unwrap_or("");
     event["round"].as_u64().or_else(|| {
         step.strip_prefix("apply ").unwrap_or(step).split_whitespace().nth(1)?
@@ -91,14 +91,14 @@ pub(crate) fn scope_round(event: &Value) -> u64 {
     }).unwrap_or(1).max(1)
 }
 
-pub(crate) struct PendingRemark {
+pub struct PendingRemark {
     pub id: String,
     pub text: String,
     pub after_step: Option<String>,
 }
 
 /// Completion requires both a finished event and a stored result with a closed claim.
-pub(crate) fn finished_event<'a>(events: &'a [Value], result: Option<&Value>) -> Option<&'a Value> {
+pub fn finished_event<'a>(events: &'a [Value], result: Option<&Value>) -> Option<&'a Value> {
     let result = result.filter(|result| result.is_object() && result.get("claimLeftOpen").is_none())?;
     events.iter().rfind(|event| {
         event["kind"] == "finished" && (event["verdict"] == "closed") == (result["verdict"] == "closed")
@@ -106,7 +106,7 @@ pub(crate) fn finished_event<'a>(events: &'a [Value], result: Option<&Value>) ->
 }
 
 /// A model request can reach its executor before the `submitted` record is durable.
-pub(crate) fn unknown_model_step(events: &[Value]) -> Option<&str> {
+pub fn unknown_model_step(events: &[Value]) -> Option<&str> {
     let mut settled = HashSet::new();
     for event in events.iter().rev() {
         let (Some(step), Some(attempt)) = (event["step"].as_str(), event["attempt"].as_u64()) else {
@@ -132,7 +132,7 @@ fn known_model_stop(event: &Value) -> bool {
     })
 }
 
-pub(crate) fn safety_block(events: &[Value]) -> Option<Value> {
+pub fn safety_block(events: &[Value]) -> Option<Value> {
     events.iter().rev().find(|event| event["kind"] == "safety blocked").map(|event| {
         json!({ "step": event["step"], "jobKey": event["key"], "provider": event["provider"] })
     })
@@ -140,13 +140,13 @@ pub(crate) fn safety_block(events: &[Value]) -> Option<Value> {
 
 /// Optional workflow projections applied at the same points as the common status fields.
 #[derive(Default)]
-pub(crate) struct StatusHooks {
+pub struct StatusHooks {
     pub check_result: Option<fn(&Value, Value) -> Value>,
     pub details: Option<fn(&Value, &[Value], &mut Value)>,
     pub stop_details: Option<fn(&Value, &Value, &mut Value)>,
 }
 
-pub(crate) fn status(id: &str, hooks: StatusHooks) -> Result<Exit> {
+pub fn status(id: &str, hooks: StatusHooks) -> Result<Exit> {
     let (journal, run) = Journal::open(&Config::new(None)?.home, id)?;
     // The finished event precedes the completion receipt. Sample worker state first
     // so that a completion receipt cannot be paired with a pre-finish snapshot.
@@ -220,7 +220,7 @@ pub(crate) fn status(id: &str, hooks: StatusHooks) -> Result<Exit> {
     Ok(Exit { result, code: 0 })
 }
 
-pub(crate) fn status_outcome(
+pub fn status_outcome(
     last: &Value,
     finished: bool,
     active: bool,
@@ -249,7 +249,7 @@ pub(crate) fn status_outcome(
 }
 
 /// An inaccessible process still owns its receipt unless its PID was demonstrably reused.
-pub(crate) fn live_pid(owner: &Value) -> Option<u32> {
+pub fn live_pid(owner: &Value) -> Option<u32> {
     let pid = owner_pid(owner)?;
     if !alive(pid) {
         return None;
@@ -346,7 +346,8 @@ impl Journal {
         Ok(())
     }
 
-    pub(crate) fn load_for_shutdown(&mut self) -> Result<()> {
+    #[doc(hidden)]
+    pub fn load_for_shutdown(&mut self) -> Result<()> {
         let file = self.dir.join("events.jsonl");
         let bytes = fs::read(&file).map_err(|e| GatewayError(format!("Cannot read the journal {}: {e}", file.display())))?;
         let (events, end) = Self::decode_events(&file, &bytes)?;
@@ -366,7 +367,8 @@ impl Journal {
         Self::decode_events(&file, &bytes).map(|(events, _)| events)
     }
 
-    pub(crate) fn finished(&self, events: &[Value]) -> bool {
+    #[doc(hidden)]
+    pub fn finished(&self, events: &[Value]) -> bool {
         finished_event(events, self.read_value("result.json").as_ref()).is_some()
     }
 
@@ -389,11 +391,13 @@ impl Journal {
         Self::active_at(&self.dir)
     }
 
-    pub(crate) fn active_at(dir: &Path) -> bool {
+    #[doc(hidden)]
+    pub fn active_at(dir: &Path) -> bool {
         Self::live_owner_at(dir, None).is_some()
     }
 
-    pub(crate) fn live_owner(&self, ignore_pid: Option<u32>) -> Option<(u32, Value)> {
+    #[doc(hidden)]
+    pub fn live_owner(&self, ignore_pid: Option<u32>) -> Option<(u32, Value)> {
         Self::live_owner_at(&self.dir, ignore_pid)
     }
 
@@ -412,7 +416,8 @@ impl Journal {
         Self::lock_directory(self.dir.join("lock"))
     }
 
-    pub(crate) fn lock_directory(dir: PathBuf) -> Result<RunLock> {
+    #[doc(hidden)]
+    pub fn lock_directory(dir: PathBuf) -> Result<RunLock> {
         for _ in 0..2 {
             match fs::create_dir(&dir) {
                 Ok(()) => {
@@ -449,7 +454,8 @@ impl Journal {
 
     /// A pinned request is replayed verbatim on resume. Only a `done` or `safety blocked`
     /// event marks the remarks attached to that attempt as delivered.
-    pub(crate) fn pending_remarks(&self, events: &[Value]) -> Result<Vec<PendingRemark>> {
+    #[doc(hidden)]
+    pub fn pending_remarks(&self, events: &[Value]) -> Result<Vec<PendingRemark>> {
         let files = match fs::read_dir(self.file(PENDING_REMARKS)) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
@@ -487,7 +493,8 @@ impl Journal {
         Ok(pending)
     }
 
-    pub(crate) fn unknown_file_step(&self) -> Option<(&str, Value)> {
+    #[doc(hidden)]
+    pub fn unknown_file_step(&self) -> Option<(&str, Value)> {
         let mut settled = HashSet::new();
         for event in self.events.iter().rev() {
             let (Some(step), Some(attempt)) = (event["step"].as_str(), event["attempt"].as_u64()) else {
@@ -551,7 +558,8 @@ impl Journal {
         self.write_bytes(name, text.as_bytes())
     }
 
-    pub(crate) fn write_bytes(&self, name: &str, bytes: &[u8]) -> Result<PathBuf> {
+    #[doc(hidden)]
+    pub fn write_bytes(&self, name: &str, bytes: &[u8]) -> Result<PathBuf> {
         let file = self.dir.join(name);
         if let Some(parent) = file.parent() {
             fs::create_dir_all(parent)?;
@@ -586,7 +594,8 @@ impl Journal {
     }
 
     /// The Rust port can replay the known version-one definition using the same steps and receipts.
-    pub(crate) fn verify_legacy_workflow(&self, run: &Value, expected_digest: &str) -> Result<()> {
+    #[doc(hidden)]
+    pub fn verify_legacy_workflow(&self, run: &Value, expected_digest: &str) -> Result<()> {
         let digest = &run["inputs"]["definitionSha256"];
         if digest != expected_digest {
             return fail("The journal identifies an unrecognized version-one workflow.");
@@ -595,7 +604,8 @@ impl Journal {
         Ok(())
     }
 
-    pub(crate) fn completed_steps(&self) -> Map<String, Value> {
+    #[doc(hidden)]
+    pub fn completed_steps(&self) -> Map<String, Value> {
         self.events.iter().filter_map(|event| {
             let step = event["step"].as_str()?;
             if event["kind"] != "done" || event["attempt"].as_u64()? != u64::from(self.attempt(step)) {

@@ -23,7 +23,8 @@ impl Git {
     }
 
     /// Use read-only Git settings for the preview's synchronous gates, including commands issued by shared helpers.
-    pub(crate) fn with_preview<T>(run: impl FnOnce() -> T) -> T {
+    #[doc(hidden)]
+    pub fn with_preview<T>(run: impl FnOnce() -> T) -> T {
         struct Restore(bool);
         impl Drop for Restore {
             fn drop(&mut self) {
@@ -196,7 +197,8 @@ impl Git {
     }
 
     /// Overlay exact candidate entries on the target tree through an alternate index.
-    pub(crate) fn overlay_tree(&self, parent: &str, candidate: &str, paths: &[String], scratch: &Path) -> Result<String> {
+    #[doc(hidden)]
+    pub fn overlay_tree(&self, parent: &str, candidate: &str, paths: &[String], scratch: &Path) -> Result<String> {
         let mut entries = String::new();
         let zero = "0".repeat(parent.len());
         for path in paths {
@@ -227,7 +229,8 @@ impl Git {
     }
 
     /// The pinned candidate is an unsigned, single-parent commit. Copy its metadata and message byte for byte.
-    pub(crate) fn copy_commit(&self, candidate: &str, base: &str, candidate_tree: &str, parent: &str, tree: &str) -> Result<String> {
+    #[doc(hidden)]
+    pub fn copy_commit(&self, candidate: &str, base: &str, candidate_tree: &str, parent: &str, tree: &str) -> Result<String> {
         let original = self.output(&["cat-file", "commit", candidate], &[], None)?;
         let prefix = format!("tree {candidate_tree}\nparent {base}\n");
         let Some(metadata) = original.stdout.strip_prefix(prefix.as_bytes()).filter(|_| original.status.success()) else {
@@ -337,7 +340,8 @@ impl Git {
         Ok(snapshot)
     }
 
-    pub(crate) fn is_fork(&self) -> Result<bool> {
+    #[doc(hidden)]
+    pub fn is_fork(&self) -> Result<bool> {
         Ok(self.run(&["remote"])?.lines().any(|name| name == "upstream"))
     }
 

@@ -133,7 +133,7 @@ fn opening(dir: &Path, label: &str, run: &str, keys: &[String]) -> Opening {
 }
 
 /// The same conflict probe as open, without creating the claims directory or taking its lock.
-pub(crate) fn preview_conflicts(dir: &Path, label: &str, run: &str, keys: &[String]) -> Vec<String> {
+pub fn preview_conflicts(dir: &Path, label: &str, run: &str, keys: &[String]) -> Vec<String> {
     match opening(dir, label, run, keys) {
         Opening::Conflicts(found) => found,
         Opening::Existing | Opening::Available => vec![],

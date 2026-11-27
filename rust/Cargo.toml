@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/zodchi-core", "crates/zodchi-cli", "crates/zodchi-server", "crates/zodchi-flow"]
+members = ["crates/zodchi-core", "crates/zodchi-cli", "crates/zodchi-server", "crates/zodchi-flow", "crates/zodchi-flow-engine"]
 
 [workspace.package]
 version = "1.0.3"

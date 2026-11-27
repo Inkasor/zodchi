@@ -161,9 +161,7 @@ pub(crate) fn for_run(run: &Value) -> Option<&'static Entry> {
 fn catalog() -> &'static Value {
     static CATALOG: OnceLock<Value> = OnceLock::new();
     CATALOG.get_or_init(|| {
-        let mut catalog: Value =
-            serde_json::from_str(include_str!("../../../../../workflows/catalog.json"))
-                .expect("workflow catalog");
+        let mut catalog: Value = serde_json::from_str(catalog::SHIPPED).expect("workflow catalog");
         for item in catalog["workflows"].as_array_mut().expect("workflows") {
             if let Some(entry) = item["name"].as_str().and_then(get) {
                 item["version"] = Value::from(entry.catalog_version);

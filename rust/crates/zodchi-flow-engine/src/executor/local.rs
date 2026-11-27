@@ -22,7 +22,7 @@ impl LocalGateway {
     }
 }
 
-pub(crate) fn pinned_image(file: &Path) -> Result<Vec<u8>> {
+pub fn pinned_image(file: &Path) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     File::open(file)?.take((job::LIMIT_IMAGE_BYTES + 1) as u64).read_to_end(&mut bytes)?;
     if bytes.len() > job::LIMIT_IMAGE_BYTES

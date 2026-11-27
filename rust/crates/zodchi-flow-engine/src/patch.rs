@@ -216,7 +216,7 @@ fn mode_ok(root: &Path, path: &str, mode: Option<u32>) -> bool {
 
 /// A plain relative path: forward slashes, no empty, "." or ".." segment, no drive, nothing under .git/ or
 /// .agent-tmp/, no characters Windows or Git cannot hold.
-pub(crate) fn plain(path: &str) -> bool {
+pub fn plain(path: &str) -> bool {
     !path.is_empty()
         && !path.starts_with('/')
         && !path.contains('\\')

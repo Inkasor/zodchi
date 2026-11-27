@@ -991,7 +991,7 @@ pub(crate) fn start_run(
             return Ok(refused(&label, error.0));
         }
     }
-    if let Err(error) = checks::preflight_tools(&verify_plan.project.tools) {
+    if let Err(error) = checks::preflight_tools(&verify_plan.project().tools) {
         return Ok(refused(&label, error.0));
     }
     let review_md = git.show(&base, "REVIEW.md")?.map(|b| String::from_utf8_lossy(&b).into_owned());
@@ -1318,7 +1318,7 @@ impl Run {
     /// close are in the journal before the claim changes, so a resume after a cut there returns the result and closes
     /// the claim, instead of reading its own closed claim as a conflict.
     fn finish(mut self, close: bool) -> Result<Exit> {
-        if let Some(budget) = self.args.budget {
+        if let Some(budget) = self.args.budget() {
             self.out.insert("budget".into(), budget.report(self.journal.events()));
         }
         let events = self.journal.events();
@@ -1836,9 +1836,9 @@ impl Run {
         let slot = checks::CheckSlot::acquire(&self.cfg.home, &mut self.journal, step, attempt);
         let mut slot = self.infra(step, slot)?;
         self.reap_checks(step)?;
-        let env_cache = self.check_paths.create_env_cache(&self.verify_plan.project.env);
+        let env_cache = self.check_paths.create_env_cache(&self.verify_plan.project().env);
         self.infra(step, env_cache)?;
-        let writer_cache = agent::create_writer_cache(&self.verify_plan.writer);
+        let writer_cache = agent::create_writer_cache(self.verify_plan.writer());
         self.infra(step, writer_cache)?;
         let start = self.journal.events().iter().filter(|e| e["kind"] == "intent" && e["step"] == step).count() + 1;
         let logs = self.journal.file(&format!("logs/{}-{start}", gateway::slug(step)));
@@ -2038,7 +2038,7 @@ impl Run {
         let boundary = agent_boundary(&allowed);
         let notes = vars.into_iter().map(|(_, note)| note).collect::<Vec<_>>().join("\n\n");
         let mut previous_summary: Option<String> = None;
-        let continuations = if self.args.budget.is_some() { u32::MAX } else { self.args.continuations };
+        let continuations = if self.args.budget().is_some() { u32::MAX } else { self.args.continuations };
         for n in 0..=continuations {
             let turn = if n == 0 { step.to_string() } else { format!("{step} continue {n}") };
             if !applied {
@@ -2144,7 +2144,7 @@ impl Run {
             .filter_map(|key| self.browser[key].as_str().filter(|path| !path.is_empty()))
             .map(|path| (path.to_string(), "<browser>"))
             .collect();
-        let result = gateway::ask_budgeted(&mut self.journal, &self.cfg, call, self.args.budget, browser, &owner_private_places, validate);
+        let result = gateway::ask_budgeted(&mut self.journal, &self.cfg, call, self.args.budget(), browser, &owner_private_places, validate);
         self.call_result(step, round, result)
     }
 
@@ -2401,7 +2401,7 @@ impl Run {
                 result["evidence"].as_array().into_iter().flatten().filter(|e| e["exitCode"] != 0)
                     .map(|e| (e["command"].clone(), e["exitCode"].clone(), checks::sanitize(&checks::tail(e["log"].as_str().unwrap_or(""), 8192), &places))).collect()
             };
-            if self.args.budget.is_some() && next["ok"] == false && next["tree"].is_string()
+            if self.args.budget().is_some() && next["ok"] == false && next["tree"].is_string()
                 && next["tree"] == res["tree"] && failure_shape(&next) == failure_shape(&res)
             {
                 res = next;
@@ -2468,14 +2468,14 @@ impl Run {
             limit: Duration::from_secs_f64(self.args.check_timeout_min * 60.0),
             environment: checks::CommandEnvironment {
                 repo: Some(Path::new(&self.args.repo)),
-                extra: Some(&self.verify_plan.project.env),
+                extra: Some(&self.verify_plan.project().env),
             },
             checks: if full { ("project.full", &self.verify_plan.full_local) } else {
                 (self.verify_plan.check_source, &self.verify_plan.checks)
             },
             verify: (self.verify_plan.verify_source, if full { &[] } else { &self.verify_plan.verify }),
         };
-        let run = batch.run(&mut slot, &mut self.journal, &self.check_paths, &self.verify_plan.project.cache,
+        let run = batch.run(&mut slot, &mut self.journal, &self.check_paths, &self.verify_plan.project().cache,
             |staging| self.git.checkout_for_checks(&tree, staging));
         let (checkout, evidence) = match self.infra(step, run)? {
             checks::CheckOutcome::Finished { checkout, evidence } => (checkout, evidence),
@@ -2877,7 +2877,7 @@ impl Run {
         let infra = |error: GatewayError| stop("infrastructure", error.0);
         if self.done(step).is_none() && self.journal.last("safety blocked", step, attempt).is_none() {
             let intent = self.journal.last("intent", step, attempt);
-            if intent.is_none() && self.args.budget.is_some_and(|budget| budget.exhausted(&self.journal)) {
+            if intent.is_none() && self.args.budget().is_some_and(|budget| budget.exhausted(&self.journal)) {
                 return Err(stop("budget", "The package budget for new model calls is exhausted.".into()));
             }
             let key = gateway::base_key(&self.id, step, attempt);
@@ -3330,6 +3330,19 @@ fn verification(checks: &Value, plan: &crate::verify::Plan, wave: bool) -> Value
 #[cfg(test)]
 mod tests {
     use super::preview_server;
+    use serde_json::{json, Value};
+    use zodchi_core::claude::conforms;
+
+    #[test]
+    fn the_flow_schemas_are_checked() {
+        let patch: Value = serde_json::from_str(include_str!("../flows/code-package/v1/patch.schema.json")).unwrap();
+        let ok = json!({ "status": "done", "summary": "s", "unverified": [], "questions": [],
+            "changes": [{ "op": "modify", "path": "a", "from": null, "baseBlob": "b", "content": "c" }] });
+        assert!(conforms(&ok, &patch, "answer").is_ok());
+        let mut bad = ok.clone();
+        bad["changes"][0]["op"] = json!("chmod");
+        assert!(conforms(&bad, &patch, "answer").unwrap_err().contains("answer.changes[0].op"));
+    }
 
     #[test]
     fn server_preview_routes() {

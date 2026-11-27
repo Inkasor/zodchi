@@ -38,7 +38,7 @@ const ROLE_ACCOUNT: &str = "claudeAccount";
 /// Research screens the complete prompt, including owner updates, against both the current and
 /// pinned privacy rules. Its local scheduler submits to Codex only. Prepare the screened Claude
 /// request here, then let the common gateway code consume the intent, receipt and validated answer.
-pub(crate) fn ask_screened(
+pub fn ask_screened(
     journal: &mut Journal,
     cfg: &Config,
     call: gateway::Call<'_>,
@@ -310,18 +310,6 @@ impl Executor for Claude {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zodchi_core::claude::conforms;
-
-    #[test]
-    fn the_flow_schemas_are_checked() {
-        let patch: Value = serde_json::from_str(include_str!("../../flows/code-package/v1/patch.schema.json")).unwrap();
-        let ok = json!({ "status": "done", "summary": "s", "unverified": [], "questions": [],
-            "changes": [{ "op": "modify", "path": "a", "from": null, "baseBlob": "b", "content": "c" }] });
-        assert!(conforms(&ok, &patch, "answer").is_ok());
-        let mut bad = ok.clone();
-        bad["changes"][0]["op"] = json!("chmod");
-        assert!(conforms(&bad, &patch, "answer").unwrap_err().contains("answer.changes[0].op"));
-    }
 
     #[test]
     fn a_cut_job_is_read_by_how_far_it_came() {

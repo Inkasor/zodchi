@@ -5,7 +5,7 @@ use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 use zodchi_core::{appserver::{SAFETY_BLOCKED, SAFETY_MESSAGE}, config::Config, job::LIMIT_PROMPT, util::{sha256_hex, GatewayError, Result}};
 
-pub(crate) fn pin_browser(variable: &str, path: &Path) -> std::result::Result<Value, String> {
+pub fn pin_browser(variable: &str, path: &Path) -> std::result::Result<Value, String> {
     if !checks::valid_browser_variable(variable) || !path.is_absolute() {
         return Err("Invalid pinned browser variable or path".into());
     }
@@ -127,7 +127,7 @@ fn credit_balances(final_job: &Value) -> Option<Value> {
     })
 }
 
-pub(crate) fn credits_report(events: &[Value], round: Option<u64>) -> Option<Value> {
+pub fn credits_report(events: &[Value], round: Option<u64>) -> Option<Value> {
     let balance = |value: &Value| value.as_f64().or_else(|| value.as_str()?.trim().parse::<f64>().ok())
         .filter(|balance| balance.is_finite());
     let mut steps = Vec::new();
@@ -153,7 +153,7 @@ pub(crate) fn credits_report(events: &[Value], round: Option<u64>) -> Option<Val
     (!steps.is_empty()).then(|| json!({ "spent": spent, "steps": steps }))
 }
 
-pub(crate) fn record_safety_block(journal: &mut Journal, step: &str, attempt: u32, key: &str, provider: &str) -> Result<()> {
+pub fn record_safety_block(journal: &mut Journal, step: &str, attempt: u32, key: &str, provider: &str) -> Result<()> {
     if journal.last("safety blocked", step, attempt).is_none() {
         journal.append(json!({
             "kind": "safety blocked", "step": step, "attempt": attempt, "key": key, "provider": provider
@@ -178,7 +178,7 @@ pub enum CallError {
     Context { bytes: usize },
 }
 
-pub(crate) struct Decision<'a> {
+pub struct Decision<'a> {
     pub role: &'a Value,
     pub image: PathBuf,
     pub sha256: &'a str,
@@ -188,12 +188,12 @@ pub fn ask(journal: &mut Journal, cfg: &Config, call: Call<'_>, validate: impl F
     ask_normalizing(journal, cfg, call, |data| validate(data))
 }
 
-pub(crate) fn ask_without_resubmission(journal: &mut Journal, cfg: &Config, call: Call<'_>, validate: impl Fn(&Value) -> std::result::Result<(), String>) -> std::result::Result<Value, CallError> {
+pub fn ask_without_resubmission(journal: &mut Journal, cfg: &Config, call: Call<'_>, validate: impl Fn(&Value) -> std::result::Result<(), String>) -> std::result::Result<Value, CallError> {
     run_call(journal, cfg, call, None, None, None, &[], None, None, false, |data| validate(data))
         .map(Step::completed)
 }
 
-pub(crate) fn ask_normalizing(
+pub fn ask_normalizing(
     journal: &mut Journal,
     cfg: &Config,
     call: Call<'_>,
@@ -202,11 +202,11 @@ pub(crate) fn ask_normalizing(
     ask_with(journal, cfg, call, None, None, None, &[], validate)
 }
 
-pub(crate) fn ask_budgeted(journal: &mut Journal, cfg: &Config, call: Call<'_>, budget: Option<Budget>, browser: Option<&Value>, owner_private_places: &[(String, &str)], validate: impl Fn(&Value) -> std::result::Result<(), String>) -> std::result::Result<Value, CallError> {
+pub fn ask_budgeted(journal: &mut Journal, cfg: &Config, call: Call<'_>, budget: Option<Budget>, browser: Option<&Value>, owner_private_places: &[(String, &str)], validate: impl Fn(&Value) -> std::result::Result<(), String>) -> std::result::Result<Value, CallError> {
     ask_with(journal, cfg, call, None, budget, browser, owner_private_places, |data| validate(data))
 }
 
-pub(crate) fn ask_decision(
+pub fn ask_decision(
     journal: &mut Journal, cfg: &Config, call: Call<'_>, material: Decision<'_>,
     validate: impl Fn(&Value) -> std::result::Result<(), String>,
 ) -> std::result::Result<Value, CallError> {
@@ -221,7 +221,7 @@ fn ask_with(
         .map(Step::completed)
 }
 
-pub(crate) enum Step {
+pub enum Step {
     Done(Value),
     Pending(String),
     Retryable(String),
@@ -237,20 +237,20 @@ impl Step {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum LocalMode<'a> {
+pub enum LocalMode<'a> {
     Schedule,
     Drain(&'a str),
     Retry(&'a str),
 }
 
-pub(crate) fn local_step(
+pub fn local_step(
     journal: &mut Journal, cfg: &Config, call: Call<'_>, mode: LocalMode<'_>, scrub: &dyn Fn(&str) -> String,
     validate: impl Fn(&Value) -> std::result::Result<(), String>,
 ) -> std::result::Result<Step, CallError> {
     run_call(journal, cfg, call, None, None, None, &[], Some(mode), Some(scrub), true, |data| validate(data))
 }
 
-pub(crate) fn owner_suffix(journal: &Journal, cfg: &Config, private_places: &[(String, &str)]) -> Result<String> {
+pub fn owner_suffix(journal: &Journal, cfg: &Config, private_places: &[(String, &str)]) -> Result<String> {
     let context = input_common::model_context(journal)?;
     if context.is_empty() {
         return Ok(String::new());

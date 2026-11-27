@@ -4,8 +4,9 @@ use std::path::Path;
 use zodchi_core::util::{fail, GatewayError, Result};
 
 pub const PROJECT: &str = ".zodchi/workflows.json";
+pub const SHIPPED: &str = include_str!("../../../../workflows/catalog.json");
 
-pub(crate) type ProjectGate = fn(&Git, &str, &str) -> Result<()>;
+pub type ProjectGate = fn(&Git, &str, &str) -> Result<()>;
 
 fn configured_domains(git: &Git, base: &str) -> Result<Option<Vec<String>>> {
     let Some(bytes) = git.show(base, PROJECT)? else {

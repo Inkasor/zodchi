@@ -36,7 +36,8 @@ impl Pick {
         let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
         Pick { provider: s("provider"), model: s("model"), effort: s("effort"), account: s("account") }
     }
-    pub(crate) fn name(&self) -> String {
+    #[doc(hidden)]
+    pub fn name(&self) -> String {
         format!("{}/{}", self.provider, self.model)
     }
 }
@@ -68,7 +69,7 @@ pub fn table(cfg: &Config, repo: &Path, args_models: &Map<String, Value>) -> Res
 
 pub use zodchi_core::claude::enabled as claude_enabled;
 
-pub(crate) fn candidates(table: &Map<String, Value>, role: &str) -> Result<Vec<Pick>, String> {
+pub fn candidates(table: &Map<String, Value>, role: &str) -> Result<Vec<Pick>, String> {
     let Some(list) = table.get(role).and_then(|r| r.get("candidates")).and_then(Value::as_array) else {
         return Err(format!("Role {role} is not in the role table (~/.zodchi/models.json, .zodchi/models.json or args.models)"));
     };
@@ -115,7 +116,7 @@ pub fn local_codex_usable(cfg: &Config) -> Result<(), String> {
 }
 
 /// Check the local subscription only if the walk reaches a Codex candidate, at most once per gate.
-pub(crate) fn local_codex<'a>(cfg: &'a Config, server_refusal: &'static str) -> impl Fn() -> Result<(), String> + 'a {
+pub fn local_codex<'a>(cfg: &'a Config, server_refusal: &'static str) -> impl Fn() -> Result<(), String> + 'a {
     let availability = std::cell::OnceCell::new();
     move || availability.get_or_init(|| {
         if crate::executor::flow_server(cfg).is_some() {
@@ -133,7 +134,7 @@ const PREFLIGHT_LIMIT: Duration = Duration::from_secs(180);
 const PREFLIGHT_PROMPT: &str = "Step: preflight (zodchi flow)\n\nThis call only checks that the model answers in the asked form. Answer {\"ok\": true}.";
 
 #[derive(Clone, Debug)]
-pub(crate) enum ResolveError {
+pub enum ResolveError {
     Unavailable(String),
     // A preview cannot safely choose a fallback while this candidate's availability is unknown.
     PreflightRequired(String),
@@ -176,7 +177,8 @@ impl ClaudeGate {
 
     /// Resolve a one-shot role in table order. Check workflow restrictions before running a preflight.
     /// Some roles have historically used the installed Codex role if the table has no entry.
-    pub(crate) fn one_shot(
+    #[doc(hidden)]
+    pub fn one_shot(
         &mut self,
         table: &Map<String, Value>,
         role: &str,
@@ -287,8 +289,9 @@ impl ClaudeGate {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn test_one_shot_gate(roles: &[&str], enabled: bool) -> (Map<String, Value>, ClaudeGate) {
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn test_one_shot_gate(roles: &[&str], enabled: bool) -> (Map<String, Value>, ClaudeGate) {
     let mut table = Map::new();
     for role in roles {
         table.insert((*role).into(), json!({ "candidates": [
@@ -311,7 +314,7 @@ pub fn resolve(table: &Map<String, Value>, codex: &Result<(), String>, writer_ro
     resolve_pair(table, codex, writer_role, local_writer, prior_writers, false).map_err(ResolveError::reason)
 }
 
-pub(crate) fn resolve_pair(
+pub fn resolve_pair(
     table: &Map<String, Value>, codex: &Result<(), String>, writer_role: &str, local_writer: bool,
     prior_writers: &[String], dry_run: bool,
 ) -> Result<(Pick, Pick, Vec<String>), ResolveError> {

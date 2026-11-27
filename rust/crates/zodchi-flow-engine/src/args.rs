@@ -21,7 +21,7 @@ pub struct Args {
     pub wave: bool,
     pub browser: Option<(String, String)>,
     pub isolated: bool,
-    pub(crate) budget: Option<crate::budget::Budget>,
+    budget: Option<crate::budget::Budget>,
     pub source_run: Option<String>,
     pub continuations: u32,
     pub rounds: u32,
@@ -37,7 +37,7 @@ pub struct Args {
     pub check_timeout_min: f64,
 }
 
-pub(crate) const BUILTIN_PROTECTED: &[&str] = &[
+pub const BUILTIN_PROTECTED: &[&str] = &[
     "test/", "tests/", "e2e/", ".claude/skills/verify/", ".agents/skills/verify/",
     "skills/verify/", crate::verify::CONFIG, "REVIEW.md",
 ];
@@ -69,7 +69,7 @@ pub fn rel(repo_norm: &str, path: &str) -> Result<String, String> {
     Ok(full[repo_norm.len() + 1..].to_string())
 }
 
-pub(crate) fn commands(value: Option<&Value>, name: &str) -> Result<Vec<String>, String> {
+pub fn commands(value: Option<&Value>, name: &str) -> Result<Vec<String>, String> {
     let list = match value {
         None | Some(Value::Null) => return Ok(vec![]),
         Some(Value::Array(a)) => a.clone(),
@@ -188,7 +188,7 @@ pub fn parse(a: &Value) -> Result<Args, String> {
         return Err("code-package needs args.files: the files the package may change".into());
     }
     let mut review_context = strings(o.get("reviewContext"), "reviewContext")?;
-    if review_context.iter().any(|path| !crate::design_material::source_path(path)) {
+    if review_context.iter().any(|path| !crate::review_source::source_path(path)) {
         return Err("args.reviewContext needs relative paths to regular, non-credential Git source files.".into());
     }
     review_context.sort();
@@ -255,6 +255,11 @@ pub fn parse(a: &Value) -> Result<Args, String> {
 }
 
 impl Args {
+    #[doc(hidden)]
+    pub fn budget(&self) -> Option<crate::budget::Budget> {
+        self.budget
+    }
+
     pub fn writer_role(&self) -> &'static str {
         if self.analysis { "hardWriter" } else if self.agent { "writer" } else { crate::models::WRITER_ROLE }
     }
@@ -263,14 +268,16 @@ impl Args {
         if self.agent { "agent" } else { "expert" }
     }
 
-    pub(crate) fn protected_paths(&self) -> Vec<&str> {
+    #[doc(hidden)]
+    pub fn protected_paths(&self) -> Vec<&str> {
         let mut paths: Vec<&str> = BUILTIN_PROTECTED.to_vec();
         paths.push(crate::catalog::PROJECT);
         paths.extend(self.protect.iter().map(String::as_str));
         paths
     }
 
-    pub(crate) fn allow_owner_check_changes(&mut self, events: &[Value]) {
+    #[doc(hidden)]
+    pub fn allow_owner_check_changes(&mut self, events: &[Value]) {
         let repo = &self.repo_norm;
         self.owner_check_changes.extend(crate::journal::scope_approvals(events)
             .flat_map(|approval| approval.get("allowCheckChanges").unwrap_or(&approval["files"]).as_array().into_iter().flatten())

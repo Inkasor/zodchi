@@ -1,6 +1,6 @@
 //! Capture Git sources for design-brief. Models receive aliases, screened material, and actual cited lines.
 
-use crate::{args, checks, claims, git::Git, input_common, patch};
+use crate::{args, checks, claims, git::Git, input_common, review_source::source_path};
 use input_common::{Scrubber, Withholding};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -423,18 +423,6 @@ fn paths_equal(a: &str, b: &str) -> bool {
         (Ok(a), Ok(b)) => claims::fold(&a, &a) == claims::fold(&a, &b),
         _ => false,
     }
-}
-
-pub(crate) fn source_path(path: &str) -> bool {
-    if !patch::plain(path) {
-        return false;
-    }
-    let name = path.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
-    !name.starts_with(".env")
-        && !["auth.json", "credentials.json", "id_rsa", "id_ed25519"].contains(&name.as_str())
-        && ![".pem", ".key", ".pfx", ".p12"]
-            .iter()
-            .any(|extension| name.ends_with(extension))
 }
 
 pub fn places(cfg: &Config, sources: &[Value]) -> Vec<(String, &'static str)> {

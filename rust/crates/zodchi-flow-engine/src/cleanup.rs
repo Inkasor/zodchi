@@ -230,7 +230,7 @@ pub(crate) fn lock_sources(home: &Path, shared: bool) -> Result<File> {
 
 /// A cancellation may need to signal the run lock's owner. Serialize those commands
 /// separately, so one closer can never mistake another closer for the worker.
-pub(crate) fn lock_shutdown(journal: &Journal) -> Result<Option<File>> {
+pub fn lock_shutdown(journal: &Journal) -> Result<Option<File>> {
     let lock = open_lock(&journal.file(".shutdown.lock"))?;
     match lock.try_lock() {
         Ok(()) => Ok(Some(lock)),
@@ -918,7 +918,7 @@ fn record_package_home(home: &Path, packages: &Path, id: &str) -> Result<()> {
 
 /// Keep ownership evidence in the profile even if a journal disappears. Legacy claim writers can
 /// keep reading and writing their original JSON format. Missing evidence leaves the claim in place.
-pub(crate) fn note_package_home(home: &Path, id: &str) {
+pub fn note_package_home(home: &Path, id: &str) {
     if let Err(error) = profile_packages().and_then(|root| record_package_home(home, &root, id)) {
         eprintln!("Could not record the package journal home for {id}: {error}");
     }
@@ -1509,7 +1509,7 @@ fn remove_build(home: &Path, path: &Path) -> Result<()> {
     remove_tree(path)
 }
 
-pub(crate) struct ClaimLock {
+pub struct ClaimLock {
     dir: PathBuf,
     directory_id: String,
     owner: File,
@@ -1520,7 +1520,7 @@ impl ClaimLock {
         Self::wait(repo, Duration::ZERO)
     }
 
-    pub(crate) fn wait(repo: &Path, timeout: Duration) -> Result<Self> {
+    pub fn wait(repo: &Path, timeout: Duration) -> Result<Self> {
         let deadline = Instant::now() + timeout;
         loop {
             match Self::try_acquire(repo)? {
@@ -1679,7 +1679,7 @@ fn archive_package(
 }
 
 /// The workflow call has released its lock and any processes it used. Cleanup has its own receipt.
-pub(crate) fn after_run(exit: Exit) -> Exit {
+pub fn after_run(exit: Exit) -> Exit {
     if exit.result["status"] != "submitted" && exit.result.get("claimLeftOpen").is_none() {
         if let Some(id) = exit.result["runId"].as_str() {
             clean_after_run(id);

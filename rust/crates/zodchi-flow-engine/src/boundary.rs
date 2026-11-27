@@ -18,16 +18,16 @@ pub struct Exit {
 }
 
 /// A cut on purpose, for recovery tests: `ZODCHI_FLOW_CUT=<point>` exits without running destructors.
-pub(crate) fn cut(point: &str) {
+pub fn cut(point: &str) {
     if std::env::var("ZODCHI_FLOW_CUT").ok().as_deref() == Some(point) {
         eprintln!("zodchi flow: cut after {point} (ZODCHI_FLOW_CUT)");
         std::process::exit(CUT_EXIT);
     }
 }
 
-pub(crate) type Launch = fn(&Journal, &str) -> Result<Exit>;
+pub type Launch = fn(&Journal, &str) -> Result<Exit>;
 
-pub(crate) fn launch(
+pub fn launch(
     journal: &Journal,
     id: &str,
     rerun: Option<&str>,

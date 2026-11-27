@@ -10,7 +10,7 @@ use zodchi_core::{
 const MINUTE: i128 = 60_000;
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Budget {
+pub struct Budget {
     calls: u32,
     minutes: Option<u32>,
 }
@@ -94,7 +94,7 @@ impl Budget {
     }
 }
 
-pub(crate) fn extend(
+pub fn extend(
     id: &str,
     calls: Option<u32>,
     minutes: Option<u32>,

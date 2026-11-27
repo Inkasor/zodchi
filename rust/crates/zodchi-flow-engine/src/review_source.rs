@@ -4,24 +4,37 @@
 use crate::{
     checks,
     input_common::{key_or_credential_shape, Scrubber, PRIVATE_WITHHELD},
+    patch,
 };
 use serde_json::{json, Value};
 use std::path::Path;
 
 const LITERAL: &str = "[literal withheld]";
 
-pub(crate) struct File<'a> {
+pub fn source_path(path: &str) -> bool {
+    if !patch::plain(path) {
+        return false;
+    }
+    let name = path.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
+    !name.starts_with(".env")
+        && !["auth.json", "credentials.json", "id_rsa", "id_ed25519"].contains(&name.as_str())
+        && ![".pem", ".key", ".pfx", ".p12"]
+            .iter()
+            .any(|extension| name.ends_with(extension))
+}
+
+pub struct File<'a> {
     pub path: &'a str,
     pub regular: bool,
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum FileLine {
+pub enum FileLine {
     Base(usize),
     Candidate(usize),
 }
 
-pub(crate) struct Omission<'a> {
+pub struct Omission<'a> {
     pub file: Option<&'a str>,
     pub diff_line: usize,
     pub reason: &'static str,
@@ -62,7 +75,7 @@ fn source_file(file: &File<'_>) -> bool {
         )
 }
 
-pub(crate) fn screen(
+pub fn screen(
     diff: &str,
     files: &[File<'_>],
     scrubber: &Scrubber,
@@ -76,7 +89,7 @@ pub(crate) fn screen(
     (text, receipt)
 }
 
-pub(crate) fn screen_with_locations<'a>(
+pub fn screen_with_locations<'a>(
     diff: &str,
     files: &[File<'a>],
     scrubber: &Scrubber,

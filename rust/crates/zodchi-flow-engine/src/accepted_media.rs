@@ -9,11 +9,11 @@ use zodchi_core::{
 };
 
 pub const NAME: &str = "video";
-pub(crate) const VERSION: &str = "1";
-pub(crate) const MARKER: &str = ".zodchi-video-run.json";
-pub(crate) const MANIFEST: &str = "manifest.json";
+pub const VERSION: &str = "1";
+pub const MARKER: &str = ".zodchi-video-run.json";
+pub const MANIFEST: &str = "manifest.json";
 
-pub(crate) struct VideoFiles {
+pub struct VideoFiles {
     pub journal: Journal,
     pub run: Value,
     pub dir: PathBuf,
@@ -21,7 +21,7 @@ pub(crate) struct VideoFiles {
     pub manifest: Value,
 }
 
-pub(crate) fn open(id: &str) -> Result<(VideoFiles, RunLock)> {
+pub fn open(id: &str) -> Result<(VideoFiles, RunLock)> {
     let (mut journal, run) = Journal::open(&Config::new(None)?.home, id)?;
     if run["workflow"] != NAME
         || run["version"] != VERSION
@@ -40,7 +40,7 @@ pub(crate) fn open(id: &str) -> Result<(VideoFiles, RunLock)> {
     Ok((VideoFiles { journal, run, dir, cfg, manifest }, lock))
 }
 
-pub(crate) fn encoded(value: &Value) -> String {
+pub fn encoded(value: &Value) -> String {
     pretty(value) + "\n"
 }
 
@@ -70,7 +70,7 @@ fn load_manifest(journal: &Journal, run: &Value, dir: &Path) -> Result<Value> {
     Ok(body.clone())
 }
 
-pub(crate) fn assert_artifact(dir: &Path, artifact: &Value) -> Result<()> {
+pub fn assert_artifact(dir: &Path, artifact: &Value) -> Result<()> {
     let relative = media::text(&artifact["relativePath"], "recorded render path")?;
     let path = media::owned(dir, relative)?;
     if media::checked(artifact)? != path {
@@ -79,7 +79,7 @@ pub(crate) fn assert_artifact(dir: &Path, artifact: &Value) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn accepted_upload(id: &str) -> Result<(PathBuf, Value)> {
+pub fn accepted_upload(id: &str) -> Result<(PathBuf, Value)> {
     let (video, _lock) = open(id)?;
     let result = video.journal.read_value("result.json")
         .filter(|result| result["verdict"] == "approved" && video.manifest["status"] == "accepted")
