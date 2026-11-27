@@ -1,4 +1,3 @@
-use crate::input_common;
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeSet, HashSet},
@@ -10,6 +9,7 @@ use zodchi_core::{
     config::Config,
     util::{fail, sha256_hex, GatewayError, Result},
 };
+use zodchi_flow_engine::{checks, input_common};
 
 pub fn path(value: &Value, field: &str) -> Result<PathBuf> {
     value
@@ -110,7 +110,7 @@ impl Privacy {
             for prefixes in [&remark_places, &research_prefixes] {
                 let exact_prefix = screen_exact_paths(spelling, prefixes);
                 for value in [spelling, exact_prefix.as_str()] {
-                    let alias = crate::checks::screen_paths(std::iter::once(value), prefixes);
+                    let alias = checks::screen_paths(std::iter::once(value), prefixes);
                     if alias != spelling && alias != "<repo>" && alias != "<zodchi-home>" {
                         places.push((alias, "<research>"));
                     }
@@ -158,7 +158,7 @@ impl Privacy {
         self.current.answer_is_private(text)
             || text.lines().any(|line| self.matches(&line.to_lowercase()))
             || screen_exact_paths(text, &self.places) != text
-            || crate::checks::screen_paths(std::iter::once(text), &self.places) != text
+            || checks::screen_paths(std::iter::once(text), &self.places) != text
     }
 
     fn matches(&self, text: &str) -> bool {

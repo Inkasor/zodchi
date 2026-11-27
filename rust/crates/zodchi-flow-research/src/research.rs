@@ -1,15 +1,8 @@
 //! One native research round, with a snapshot of project material and an owner decision gate.
 
 use crate::{
-    boundary::Launch, catalog::ProjectGate,
-    executor, gateway,
-    git::Git,
-    input_common,
-    journal::Journal,
-    models::{self, Pick},
     research_lists as lists,
     research_material::{self as material, Privacy},
-    Exit,
 };
 use serde_json::{json, Map, Value};
 use std::{
@@ -24,6 +17,16 @@ use zodchi_core::{
     job::{self, compose_prompt, LIMIT_PROMPT},
     role::{load_role, Overrides},
     util::{fail, is_key, iso, sha256_hex, write_json_atomic, GatewayError, Result},
+};
+use zodchi_flow_engine::{
+    boundary::{cut, Launch},
+    catalog::ProjectGate,
+    executor, gateway,
+    git::Git,
+    input_common,
+    journal::{new_run_id, Journal},
+    models::{self, Pick},
+    Exit,
 };
 
 pub const NAME: &str = "research";
@@ -178,7 +181,7 @@ fn prepare(raw: &Value, require_workflow: ProjectGate) -> Result<(String, Journa
     fs::create_dir_all(&tmp)?;
     let tmp = fs::canonicalize(tmp)?;
     let id = (0..16)
-        .map(|_| crate::journal::new_run_id())
+        .map(|_| new_run_id())
         .find(|id| privacy.text(id) == *id)
         .ok_or_else(|| {
             GatewayError("No usable research run identifier after sixteen draws.".into())
@@ -276,7 +279,7 @@ fn lock(path: &Path, id: &str) -> Result<()> {
     file.write_all(id.as_bytes())?;
     file.sync_all()?;
     drop(file);
-    crate::boundary::cut("research lock prepared");
+    cut("research lock prepared");
     let published = fs::hard_link(&temporary, path);
     match published {
         Ok(()) => {}
@@ -287,7 +290,7 @@ fn lock(path: &Path, id: &str) -> Result<()> {
         }
         Err(error) => return Err(error.into()),
     }
-    crate::boundary::cut("research lock published");
+    cut("research lock published");
     fs::remove_file(temporary)?;
     Ok(())
 }
@@ -550,7 +553,7 @@ impl Research<'_> {
     fn finish(&mut self, result: Value) -> Result<Exit> {
         self.journal.write_value("result.json", &result)?;
         release(&self.lock, self.run["runId"].as_str().expect("run id"))?;
-        crate::boundary::cut("research lock released");
+        cut("research lock released");
         finish_event(self.journal)?;
         Ok(exit(result))
     }
@@ -1276,7 +1279,7 @@ fn cite<'a>(
 }
 
 /// A research reply may contain a correction for every line of the owner's list.
-pub(crate) fn reply_text(journal: &Journal, cfg: &Config, run: &Value, file: &Path) -> Result<String> {
+pub fn reply_text(journal: &Journal, cfg: &Config, run: &Value, file: &Path) -> Result<String> {
     if !journal.last_event().is_some_and(|event| event["step"] == OWNER) {
         return fail("The research round must be waiting for owner decisions.");
     }
@@ -1380,7 +1383,7 @@ fn decide(research: &mut Research<'_>, tmp: &Path, pin: &Value, list: &Value) ->
             )?;
         }
         write_json_atomic(&file, &next)?;
-        crate::boundary::cut("research decisions");
+        cut("research decisions");
         next
     };
     let summary = research.journal.write_text(
