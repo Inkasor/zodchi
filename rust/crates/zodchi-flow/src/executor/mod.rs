@@ -38,6 +38,13 @@ pub fn flow_server(cfg: &Config) -> Option<String> {
     v.get("server").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
 }
 
+/// Whether local Codex steps may spend ChatGPT credits when the subscription limit is used up: `"credits": true`
+/// in `~/.zodchi/flow.json`. Off unless set. A flow server decides this for itself.
+pub fn flow_credits(cfg: &Config) -> bool {
+    let Ok(text) = std::fs::read_to_string(cfg.home.join("flow.json")) else { return false };
+    serde_json::from_str::<Value>(&text).ok().and_then(|v| v.get("credits").and_then(Value::as_bool)).unwrap_or(false)
+}
+
 /// The executor of a pick: codex without a server is the local gateway, codex with one is the server, claude is Claude.
 pub fn for_pick(cfg: &Config, pick: &Pick) -> std::result::Result<Box<dyn Executor>, String> {
     match pick.provider.as_str() {

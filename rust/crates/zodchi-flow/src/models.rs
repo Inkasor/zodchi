@@ -99,6 +99,21 @@ pub fn codex_usable(account: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether the local Codex gateway can take calls now: the subscription has limit left, or the limit is used up and
+/// `flow.json` allows credits and the account has credits.
+pub fn local_codex_usable(cfg: &Config) -> Result<(), String> {
+    let account = zodchi_core::job::account(cfg);
+    let usable = codex_usable(&account);
+    if usable.is_err() && account["connected"] == json!(true) && crate::executor::flow_credits(cfg) {
+        let wallet = &account["credits"];
+        if wallet["hasCredits"] == json!(true) || wallet["unlimited"] == json!(true) {
+            return Ok(());
+        }
+        return Err("the Codex subscription has no limit left and no credits (zodchi account)".into());
+    }
+    usable
+}
+
 /// Check the local subscription only if the walk reaches a Codex candidate, at most once per gate.
 pub(crate) fn local_codex<'a>(cfg: &'a Config, server_refusal: &'static str) -> impl Fn() -> Result<(), String> + 'a {
     let availability = std::cell::OnceCell::new();
@@ -106,7 +121,7 @@ pub(crate) fn local_codex<'a>(cfg: &'a Config, server_refusal: &'static str) -> 
         if crate::executor::flow_server(cfg).is_some() {
             Err(server_refusal.into())
         } else {
-            codex_usable(&zodchi_core::job::account(cfg))
+            local_codex_usable(cfg)
         }
     }).clone()
 }

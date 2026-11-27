@@ -51,7 +51,7 @@ fn request(key: &str, stored: &Value) -> Result<Request> {
         prompt: stored["prompt"].as_str().unwrap_or("").to_string(),
         paid: !images.is_empty(),
         images,
-        credits: false,
+        credits: stored["credits"] == json!(true),
         resume: stored["resume"].as_str().map(String::from),
         keep_thread: stored["keepThread"].as_bool(),
         fingerprint: None,

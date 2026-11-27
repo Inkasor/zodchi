@@ -18,7 +18,7 @@ use crate::executor;
 use crate::gateway;
 use crate::git::Git;
 use crate::input::{GapDecision, GapOption, REVIEW_GAPS};
-use crate::input_common::{self, Scrubber};
+use crate::input_common::Scrubber;
 use crate::journal::{application_status, candidate_workspace, Journal};
 use crate::models::{self, Pick};
 use crate::patch::{self, Patch, Refusal};
@@ -28,7 +28,7 @@ use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use zodchi_core::config::Config;
-use zodchi_core::job::{self, compose_prompt, LIMIT_PROMPT};
+use zodchi_core::job::{compose_prompt, LIMIT_PROMPT};
 use zodchi_core::role::load_role;
 use zodchi_core::role::Overrides;
 use zodchi_core::util::{fail, iso, now_ms, parse_iso_ms, sha256_hex, GatewayError, Result};
@@ -453,7 +453,7 @@ pub(crate) fn start_run(
         Err(why) => return Ok(refused(&label, why)),
     };
     let codex = match &server {
-        None => models::codex_usable(&job::account(&cfg)),
+        None => models::local_codex_usable(&cfg),
         Some(_) => Ok(()),
     };
     let (writer, reviewer, skipped) = match models::resolve(&table, &codex, args.writer_role(), args.agent, &prior_writers) {

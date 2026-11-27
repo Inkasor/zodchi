@@ -17,7 +17,7 @@ use std::io::Write;
 use std::path::Path;
 use zodchi_core::{
     config::Config,
-    job::{self, compose_prompt},
+    job::compose_prompt,
     role::{load_role, Overrides},
     util::{fail, iso, sha256_hex, GatewayError, Result},
 };
@@ -154,7 +154,7 @@ fn select_models(cfg: &Config, root: &Path, overrides: &Value) -> Result<Value> 
         for name in ROLES {
             load_role(cfg, name, &Overrides::default())?;
         }
-        models::codex_usable(&job::account(cfg))
+        models::local_codex_usable(cfg)
     };
     let mut claude = models::ClaudeGate::of(&table);
     let mut pair = Map::new();

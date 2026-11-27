@@ -408,7 +408,7 @@ fn role(raw: &Value, cfg: &Config, repo: &Path, skipped: &mut Vec<String>) -> Re
         None => Map::new(),
     };
     let table = models::table(cfg, repo, &args_models).map_err(GatewayError)?;
-    let pick = acceptor_pick(&table, skipped, || models::codex_usable(&job::account(cfg)))?;
+    let pick = acceptor_pick(&table, skipped, || models::local_codex_usable(cfg))?;
     let role = load_role(
         cfg,
         "acceptance-observer",

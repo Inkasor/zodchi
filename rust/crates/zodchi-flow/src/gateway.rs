@@ -322,6 +322,9 @@ fn run_call(
         if stored["role"]["mode"] == "work" {
             stored["keepThread"] = json!(false);
         }
+        if exec.name() == "local-gateway" && executor::flow_credits(cfg) {
+            stored["credits"] = json!(true);
+        }
         journal.write_value(&file, &stored).map_err(infra)?;
         journal.append(json!({
             "kind": "intent", "step": step, "round": round, "attempt": attempt, "effect": "gateway job",
