@@ -1,11 +1,8 @@
 use crate::{
-    acceptance,
-    asset_round::{self, ChildWorkflow, Children},
-    boundary, branch_review, budget, candidate, checks, child_package, cleanup, code_package, design_brief,
-    gateway, git::Git, incident_triage, input, input_common::args_match,
-    journal::{self, safety_block, Journal, StatusHooks, SHUTDOWN_REQUEST},
-    method_question, ops_script, research, rubric_probe, unity_check, video, voiceover,
-    workspace_audit, youtube_publish, Exit,
+    boundary, budget, checks, cleanup, input, input_common::args_match,
+    journal::{self, safety_block, Journal, SHUTDOWN_REQUEST},
+    registry::{self, ShutdownClaim},
+    Exit,
 };
 use serde_json::{json, Value};
 use std::{
@@ -19,56 +16,8 @@ use zodchi_core::{
     util::{fail, iso, GatewayError, Result},
 };
 
-pub(crate) const ASSET_CHILDREN: Children = Children {
-    package: ChildWorkflow {
-        name: boundary::WORKFLOW,
-        start: child_package::start,
-        resume: child_package::resume,
-    },
-    unity: ChildWorkflow {
-        name: unity_check::NAME,
-        start: |args, id| unity_check::start_child(args, id, crate::require_workflow),
-        resume: |id, args| resume(unity_check::NAME, id, Some(args), None, false),
-    },
-    rubric: ChildWorkflow {
-        name: rubric_probe::NAME,
-        start: |args, id| rubric_probe::start_child(args, id, crate::require_workflow),
-        resume: |id, args| resume(rubric_probe::NAME, id, Some(args), None, false),
-    },
-};
-
-pub(crate) fn reply_policy(run: &Value) -> input::ReplyPolicy {
-    let mut policy = input::ReplyPolicy::default();
-    match run["workflow"].as_str() {
-        Some(research::NAME) => policy.read_text = Some(research::reply_text),
-        Some(design_brief::NAME) => policy.decision_flags = true,
-        Some(video::NAME) => policy.media_decision = Some(video::record_reply),
-        Some(youtube_publish::NAME) => {
-            policy.media_decision = Some(youtube_publish::record_reply);
-            policy.waiting_only_error = Some(youtube_publish::REPLY_WAITING_ONLY);
-        }
-        _ => {}
-    }
-    policy
-}
-
 pub fn status(id: &str) -> Result<Exit> {
-    journal::status(
-        id,
-        StatusHooks {
-            check_result: Some(ops_script::project_status_result),
-            details: Some(|run, events, result| {
-                video::project_status(run, events, result);
-                youtube_publish::project_status(run, events, result);
-                if run["workflow"] == boundary::WORKFLOW {
-                    if let Some(credits) = gateway::credits_report(events, None) {
-                        result["credits"] = credits;
-                    }
-                }
-            }),
-            stop_details: Some(voiceover::project_stop_status),
-        },
-    )
+    journal::status(id, registry::status_hooks())
 }
 
 #[derive(Clone, Copy)]
@@ -124,8 +73,10 @@ fn stop_sign_in(result: &Value) -> Option<SignIn> {
     if result["status"] == "closed" || result["verdict"] == "closed" {
         return None;
     }
-    if result["workflow"] == voiceover::NAME && result["errorKind"] == "auth_required" {
-        return Some(SignIn::ApiKey);
+    if let Some(sign_in) = registry::for_run(result).and_then(|entry| entry.stop_sign_in)
+        .and_then(|detect| detect(result))
+    {
+        return Some(sign_in);
     }
     let stopped = result["stoppedAt"].as_str().unwrap_or_default();
     let why = result["infra"].as_str().or_else(|| result["reason"].as_str()).unwrap_or_default();
@@ -194,7 +145,7 @@ pub(crate) fn stop_run(id: &str, reason: &str, cancel: bool) -> Result<Exit> {
             return fail(live_error(pid));
         }
     }
-    let claim = code_package::PinnedClaim::for_shutdown(&run, id)?;
+    let claim = registry::shutdown_claim(&run, id)?;
     let places = [
         (cfg.home.to_string_lossy().into_owned(), "<zodchi-home>"),
         (run["repo"].as_str().unwrap_or("").to_owned(), "<repo>"),
@@ -245,7 +196,7 @@ pub(crate) fn stop_run(id: &str, reason: &str, cancel: bool) -> Result<Exit> {
 
 fn cancel_worker(
     journal: &Journal,
-    claim: Option<&code_package::PinnedClaim<'_>>,
+    claim: Option<&ShutdownClaim<'_>>,
     id: &str,
     (pid, owner): (u32, &Value),
     reason: &str,
@@ -321,7 +272,7 @@ fn finish_shutdown(
     journal: &mut Journal,
     run: &Value,
     id: &str,
-    claim: Option<&code_package::PinnedClaim<'_>>,
+    claim: Option<&ShutdownClaim<'_>>,
     request: &Value,
     stored: Option<&Value>,
 ) -> Result<Value> {
@@ -337,6 +288,7 @@ fn finish_shutdown(
     } else {
         let worker = journal.read_value("worker-result.json");
         let prior = stored.or(worker.as_ref()).unwrap_or(&Value::Null);
+        let shutdown = registry::for_run(run).and_then(|entry| entry.shutdown.as_ref());
         let step = journal
             .last_event()
             .and_then(|event| event["step"].as_str())
@@ -345,13 +297,7 @@ fn finish_shutdown(
             .unwrap_or("start");
         let findings = stored
             .and_then(|result| result.get("openFindings").cloned())
-            .or_else(|| {
-                if run["workflow"] == code_package::WORKFLOW {
-                    code_package::recorded_findings(journal.events()).map(|findings| json!(findings))
-                } else {
-                    None
-                }
-            })
+            .or_else(|| shutdown.and_then(|hooks| (hooks.findings)(journal.events())).map(|findings| json!(findings)))
             .or_else(|| prior.get("openFindings").cloned())
             .unwrap_or_else(|| json!([]));
         let mut result = json!({
@@ -360,11 +306,7 @@ fn finish_shutdown(
             "stoppedAt": step, "reason": request["reason"],
             "openFindings": findings,
         });
-        let files = if run["workflow"] == code_package::WORKFLOW && run["inputs"]["args"]["isolated"] != true {
-            journal.unknown_file_step()
-        } else {
-            None
-        };
+        let files = shutdown.and_then(|hooks| (hooks.unknown_files)(journal, run));
         if let Some((step, paths)) = files {
             result["unknownOutcome"] = json!(step);
             result["unknownOutcomeFiles"] = paths;
@@ -376,11 +318,9 @@ fn finish_shutdown(
                 result[key] = value.clone();
             }
         }
-        if run["workflow"] == code_package::WORKFLOW && stored.is_none_or(|result| result["candidate"].is_null()) {
-            if let Some(repo) = run["repo"].as_str() {
-                if let Some(candidate) = candidate::latest(&Git::new(Path::new(repo)), id).ok().flatten() {
-                    result["candidate"] = candidate;
-                }
+        if let Some(hooks) = shutdown.filter(|_| stored.is_none_or(|result| result["candidate"].is_null())) {
+            if let Some(candidate) = (hooks.candidate)(run, id) {
+                result["candidate"] = candidate;
             }
         }
         // A cut worker can leave independently contained checks. Settle the recorded
@@ -435,7 +375,7 @@ fn resume_shutdown(journal: &mut Journal, run: &Value, id: &str, rerun: Option<&
     if journal::finished_event(journal.events(), stored.as_ref()).is_some() {
         return saved_shutdown(id, stored, rerun, code);
     }
-    let claim = code_package::PinnedClaim::for_shutdown(run, id)?;
+    let claim = registry::shutdown_claim(run, id)?;
     let result = finish_shutdown(journal, run, id, claim.as_ref(), &request, stored.as_ref())?;
     drop(lock);
     Ok(Some(cleanup::after_run(Exit { code, result })))
@@ -455,11 +395,11 @@ pub fn handoff(id: &str) -> Result<Exit> {
         .collect();
     let result_file = if current.get("result").is_some() { "result.json" } else { "worker-result.json" };
     let result_path = Path::new(current["journal"].as_str().unwrap()).join(result_file);
-    if run["workflow"] == youtube_publish::NAME {
-        return Ok(Exit { code: 0, result: youtube_publish::handoff(id, &run, &current, result, &result_path) });
-    }
-    if [acceptance::RELEASE, acceptance::PLAYER, acceptance::CANDIDATE].iter().any(|name| current["workflow"] == *name) {
-        return Ok(Exit { code: 0, result: acceptance::handoff(id, &run, &current, result, &result_path) });
+    let entry = registry::for_run(&run);
+    let handoff = entry.and_then(|entry| entry.handoff_from_run)
+        .or_else(|| registry::for_run(&current).and_then(|entry| entry.handoff_from_status));
+    if let Some(handoff) = handoff {
+        return Ok(Exit { code: 0, result: handoff(id, &run, &current, result, &result_path) });
     }
     let mut handoff = json!({
         "runId": id, "workflow": current["workflow"], "version": current["version"], "repo": current["repo"],
@@ -473,25 +413,10 @@ pub fn handoff(id: &str) -> Result<Exit> {
         "application": { "status": result["application"]["status"] },
         "safetyBlock": current["safetyBlock"],
     });
-    if run["workflow"] == branch_review::NAME {
-        branch_review::project_handoff(&run, result, &mut handoff);
+    if let Some(project_handoff) = entry.and_then(|entry| entry.project_handoff) {
+        project_handoff(&run, result, &mut handoff);
     }
     Ok(Exit { code: 0, result: handoff })
-}
-
-/// Starts a new run from its arguments: the gate, then the journal, the claim and the machine.
-pub fn start_package(raw: &Value) -> Result<Exit> {
-    code_package::start_run(raw, code_package::StartMode::Foreground, crate::require_workflow)
-}
-
-pub fn start_package_detached(raw: &Value) -> Result<Exit> {
-    code_package::start_run(raw, code_package::StartMode::Detached(launch_start), crate::require_workflow)
-}
-
-pub(crate) fn dry_run_package(raw: &Value) -> Result<Exit> {
-    crate::git::Git::with_preview(|| {
-        code_package::start_run(raw, code_package::StartMode::DryRun, crate::require_workflow)
-    })
 }
 
 pub(crate) fn launch_start(journal: &Journal, id: &str) -> Result<Exit> {
@@ -503,9 +428,7 @@ fn launch(journal: &Journal, id: &str, rerun: Option<&str>) -> Result<Exit> {
         journal,
         id,
         rerun,
-        |run| [rubric_probe::NAME, asset_round::NAME, voiceover::NAME]
-            .iter()
-            .any(|name| run["workflow"] == *name),
+        |run| registry::for_run(run).is_some_and(|entry| entry.allows_paid_worker),
         status,
     )
 }
@@ -533,7 +456,9 @@ pub fn extend_budget(id: &str, options: &[String]) -> Result<Exit> {
             return fail(crate::USAGE);
         }
     }
-    budget::extend(id, calls, minutes, |run| run["workflow"] == boundary::WORKFLOW)
+    budget::extend(id, calls, minutes, |run| {
+        registry::for_run(run).is_some_and(|entry| entry.allows_budget_extension)
+    })
 }
 
 fn refused_rerun(journal: &Journal, id: &str, rerun: Option<&str>) -> Result<Option<Exit>> {
@@ -568,7 +493,7 @@ pub fn resume(workflow: &str, id: &str, given: Option<&Value>, rerun: Option<&st
     if detach && !journal.file("result.json").is_file() && !journal.active() {
         return launch(&journal, id, rerun);
     }
-    resume_workflow(workflow, id, given, rerun).map(cleanup::after_run)
+    registry::resume(workflow, id, given, rerun).map(cleanup::after_run)
 }
 
 pub fn worker(id: &str, rerun: Option<&str>) -> Result<Exit> {
@@ -579,31 +504,14 @@ pub fn worker(id: &str, rerun: Option<&str>) -> Result<Exit> {
     if let Some(exit) = refused_rerun(&journal, id, rerun)? {
         return Ok(exit);
     }
-    let exit = match resume_workflow(run["workflow"].as_str().unwrap_or(""), id, None, rerun) {
+    let exit = match registry::resume(run["workflow"].as_str().unwrap_or(""), id, None, rerun) {
         Ok(exit) => cleanup::after_run(exit),
-        Err(error) => Exit { result: json!({ "runId": id, "status": "stopped", "stoppedAt": "worker", "infra": if run["workflow"] == ops_script::NAME { "ops-script worker failed; inspect the run locally".to_owned() } else { error.0 } }), code: 2 },
+        Err(error) => {
+            let infra = registry::for_run(&run).and_then(|entry| entry.worker_error)
+                .map(str::to_owned).unwrap_or(error.0);
+            Exit { result: json!({ "runId": id, "status": "stopped", "stoppedAt": "worker", "infra": infra }), code: 2 }
+        }
     };
     journal.write_value("worker-result.json", &exit.result)?;
     Ok(exit)
-}
-
-fn resume_workflow(workflow: &str, id: &str, given: Option<&Value>, rerun: Option<&str>) -> Result<Exit> {
-    match workflow {
-        ops_script::NAME => ops_script::resume(id, given, rerun),
-        code_package::WORKFLOW => code_package::resume(id, given, rerun),
-        branch_review::NAME => branch_review::resume(id, given, rerun),
-        design_brief::NAME => design_brief::resume(id, given, rerun),
-        incident_triage::NAME => incident_triage::resume(id, given, rerun),
-        method_question::NAME => method_question::resume(id, given, rerun),
-        rubric_probe::NAME => rubric_probe::resume(id, given, rerun),
-        unity_check::NAME => unity_check::resume(id, given, rerun),
-        workspace_audit::NAME => workspace_audit::resume(id, given, rerun),
-        asset_round::NAME => asset_round::resume(id, given, rerun, &ASSET_CHILDREN),
-        research::NAME => research::resume(id, given, rerun),
-        video::NAME => video::resume(id, given, rerun),
-        voiceover::NAME => voiceover::resume(id, rerun),
-        youtube_publish::NAME => youtube_publish::resume(id, given, rerun),
-        acceptance::RELEASE | acceptance::PLAYER | acceptance::CANDIDATE => acceptance::resume(id, rerun),
-        _ => zodchi_core::util::fail(format!("Workflow {workflow:?} is not available in this installation.")),
-    }
 }

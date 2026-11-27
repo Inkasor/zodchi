@@ -17,9 +17,9 @@ use crate::claims;
 use crate::executor;
 use crate::gateway;
 use crate::git::Git;
-use crate::input::{GapDecision, GapOption, REVIEW_GAPS};
+use crate::input::{self, Reply, ReplyPolicy, ReplyRun};
 use crate::input_common::{args_digest, args_match, Scrubber, Withholding};
-use crate::journal::{application_status, candidate_workspace, Journal};
+use crate::journal::{self, application_status, candidate_workspace, Journal};
 use crate::models::{self, Pick};
 use crate::patch::{self, Patch, Refusal};
 use crate::review_contract::check_review;
@@ -27,6 +27,7 @@ use crate::review_source::{self, FileLine};
 use serde_json::{json, Map, Value};
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use zodchi_core::config::Config;
@@ -38,8 +39,6 @@ use zodchi_core::util::{fail, iso, now_ms, parse_iso_ms, sha256_hex, GatewayErro
 pub use crate::boundary::{Exit, CUT_EXIT, REVIEWER_GATEWAY_ROLE, WORKFLOW, WRITER_GATEWAY_ROLE};
 #[allow(unused_imports)]
 pub(crate) use crate::boundary::cut;
-pub use crate::control::{start_package as start, start_package_detached as start_detached};
-
 pub const VERSION: &str = "1";
 
 const RULES: &str = include_str!("../flows/code-package/v1/rules.md");
@@ -118,6 +117,197 @@ pub(crate) fn recorded_findings(events: &[Value]) -> Option<Vec<String>> {
         .map(|gap| gap_finding_text(
             gap["id"].as_str().unwrap_or(""), gap["what"].as_str().unwrap_or(""), gap["why"].as_str().unwrap_or(""),
         )).collect())
+}
+
+const REVIEW_GAPS: &str = "review gaps";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GapOption {
+    Accept,
+    Attach,
+    ReviewAgain,
+}
+
+impl GapOption {
+    const ALL: [Self; 3] = [Self::Accept, Self::Attach, Self::ReviewAgain];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Accept => "accept",
+            Self::Attach => "attach context or verification",
+            Self::ReviewAgain => "review again",
+        }
+    }
+
+    fn parse(label: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|option| option.label() == label)
+    }
+}
+
+struct GapDecision {
+    id: String,
+    option: GapOption,
+    material: String,
+}
+
+impl GapDecision {
+    fn to_json(&self) -> Value {
+        json!({ "id": self.id, "option": self.option.label(), "material": self.material })
+    }
+
+    fn from_json(decision: &Value) -> Option<Self> {
+        Some(Self {
+            id: decision["id"].as_str()?.to_string(),
+            option: GapOption::parse(decision["option"].as_str()?)?,
+            material: decision["material"].as_str()?.to_string(),
+        })
+    }
+}
+
+fn gap_decisions(text: &str, gaps: &[Value]) -> Result<Vec<GapDecision>> {
+    let mut decisions: Vec<GapDecision> = Vec::new();
+    for line in text.trim_start_matches('\u{feff}').lines() {
+        let header = line.split_once(':').filter(|(id, _)| is_gap_id(id.trim()));
+        if let Some((id, option)) = header {
+            let id = id.trim();
+            if !gaps.iter().any(|gap| gap["id"] == id) {
+                return fail(format!("Unknown review gap {id}."));
+            }
+            if decisions.iter().any(|decision| decision.id == id) {
+                return fail(format!("Repeated review gap {id}."));
+            }
+            let option = GapOption::parse(option.trim()).ok_or_else(|| {
+                GatewayError(format!(
+                    "For {id}, choose accept, attach context or verification, or review again."
+                ))
+            })?;
+            decisions.push(GapDecision { id: id.to_string(), option, material: String::new() });
+        } else if let Some(decision) = decisions.last_mut() {
+            decision.material.push_str(line);
+            decision.material.push('\n');
+        } else if !line.trim().is_empty() {
+            return fail("Start the reply with a line of the form <gap id>: <option>.");
+        }
+    }
+    for gap in gaps {
+        let id = gap["id"].as_str().expect("waiting review gap has an id");
+        if !decisions.iter().any(|decision| decision.id == id) {
+            return fail(format!("Missing decision for review gap {id}."));
+        }
+    }
+    Ok(decisions)
+}
+
+fn is_gap_id(id: &str) -> bool {
+    id.strip_prefix('g').and_then(|rest| rest.split_once('-'))
+        .is_some_and(|(review, index)| [review, index].into_iter().all(|part| {
+            !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
+        }))
+}
+
+pub(crate) fn queue_remark(journal: &Journal, name: &str, text: &str, result: &mut Value) -> Result<bool> {
+    let live = journal.active();
+    let events = journal.snapshot()?;
+    let last = journal::last_state_event(&events).unwrap_or(&Value::Null);
+    let awaiting_model = last["kind"] == "submitted" || (last["kind"] == "intent" && last["effect"] == "gateway job");
+    result["step"] = json!("next model step");
+    if live || awaiting_model {
+        result["afterStep"] = last["step"].clone();
+        journal.write_value(&format!("{}/{name}.json", journal::PENDING_REMARKS), &json!({
+            "text": text, "afterStep": last["step"],
+        }))?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+pub(crate) fn handle_reply(journal: &mut Journal, target: &ReplyRun<'_>, reply: &Reply<'_>) -> Result<Exit> {
+    let &ReplyRun { id, config, run } = target;
+    let wait = journal::last_state_event(&journal.snapshot()?).filter(|event| event["kind"] == "waiting").cloned();
+    let gap_wait = wait.as_ref().filter(|event| event["reason"] == REVIEW_GAPS);
+    if gap_wait.is_none() {
+        journal.load()?;
+    }
+    input::check_reply_open(journal, id)?;
+    let approval = reply.allow_files.map(|scope| {
+        let wait = wait.as_ref().ok_or_else(|| input::no_scope_wait(id))?;
+        scope_approval(journal, run, wait, scope)
+    }).transpose()?;
+    let Some(file) = reply.file else {
+        let mut approval = approval.expect("reply has an answer or a scope file");
+        let awaiting_reply = !wait.as_ref().is_some_and(|event| event["scope"].is_array());
+        approval["kind"] = json!("scope allowed");
+        approval["awaitingReply"] = json!(awaiting_reply);
+        let result = json!({
+            "runId": id, "status": if awaiting_reply { "waiting" } else { "ready" },
+            "step": approval["step"], "allowFiles": approval["files"],
+        });
+        if gap_wait.is_some() {
+            journal.load()?;
+        }
+        journal.append(approval)?;
+        return Ok(Exit { result, code: 0 });
+    };
+    if let Some(waiting) = gap_wait {
+        // Validate the entire gap reply before appending or repairing the journal.
+        if reply.answered.is_some() || reply.no_new_decisions {
+            return fail("--answered and --no-new-decisions apply only to design-brief.");
+        }
+        let gaps = waiting["gaps"].as_array().expect("waiting review gaps");
+        let mut decisions = gap_decisions(&input::read_input(file, false)?, gaps)?;
+        let scrubber = Scrubber::new(config)?;
+        let places = input::private_places(config, run);
+        for decision in &mut decisions {
+            decision.material = scrubber.text(decision.material.trim_end_matches('\n'), &places);
+        }
+        let step = &waiting["step"];
+        journal.load()?;
+        let event = json!({
+            "kind": "rerun", "step": step, "attempt": waiting["attempt"],
+            "ownerAnswer": decisions.iter().map(GapDecision::to_json).collect::<Vec<_>>(),
+        });
+        let result = input::record_answer(journal, id, event, approval)?;
+        cut("review gap reply");
+        return Ok(result);
+    }
+    input::record_standard_reply(journal, target, file, reply, ReplyPolicy::TEXT, approval)
+}
+
+fn scope_approval(journal: &Journal, run: &Value, wait: &Value, file: &str) -> Result<Value> {
+    let mut raw = String::new();
+    std::fs::File::open(file)?.take(32769).read_to_string(&mut raw)?;
+    let mut keys = HashSet::new();
+    let fold = |path: &str| crate::claims::fold(run["repo"].as_str().unwrap_or(""), path);
+    let names: Vec<String> = serde_json::from_str(raw.trim_start_matches('\u{feff}'))
+        .ok().filter(|names: &Vec<String>| raw.len() <= 32768 && !names.is_empty()
+            && names.iter().all(|path| patch::plain(path) && keys.insert(fold(path))))
+        .ok_or_else(|| GatewayError("The scope decision file must be a JSON array of distinct relative file paths.".into()))?;
+    let files = if let Some(pending) = wait["scope"].as_array() {
+        if names.len() != pending.len() || pending.iter().any(|path| path.as_str().is_none_or(|path| !keys.contains(&fold(path)))) {
+            return fail("Approve precisely the proposed paths, or reply in text to ask the writer to adjust its proposal.");
+        }
+        wait["scope"].clone()
+    } else {
+        json!(names)
+    };
+    let step = wait["step"].as_str().unwrap_or("");
+    Ok(json!({
+        "step": step, "attempt": wait["attempt"].as_u64().unwrap_or_else(|| u64::from(journal.attempt(step))),
+        "round": journal::scope_round(wait), "files": files, "allowCheckChanges": files,
+    }))
+}
+
+pub(crate) fn unknown_shutdown_files<'a>(journal: &'a Journal, run: &Value) -> Option<(&'a str, Value)> {
+    if run["inputs"]["args"]["isolated"] != true {
+        journal.unknown_file_step()
+    } else {
+        None
+    }
+}
+
+pub(crate) fn shutdown_candidate(run: &Value, id: &str) -> Option<Value> {
+    let repo = run["repo"].as_str()?;
+    candidate::latest(&Git::new(Path::new(repo)), id).ok().flatten()
 }
 
 /// A saved result provides the verdict after the claim can be closed. Keep it for a later resume if closure fails.
@@ -665,6 +855,19 @@ fn review_context(git: &Git, commit: &str, files: &[String]) -> Result<Vec<(Stri
         context.push((file.clone(), text));
     }
     Ok(context)
+}
+
+/// Starts a new run from its arguments: the gate, then the journal, the claim and the machine.
+pub fn start(raw: &Value) -> Result<Exit> {
+    start_run(raw, StartMode::Foreground, crate::require_workflow)
+}
+
+pub fn start_detached(raw: &Value) -> Result<Exit> {
+    start_run(raw, StartMode::Detached(crate::control::launch_start), crate::require_workflow)
+}
+
+pub(crate) fn dry_run(raw: &Value) -> Result<Exit> {
+    Git::with_preview(|| start_run(raw, StartMode::DryRun, crate::require_workflow))
 }
 
 pub(crate) fn start_child(raw: &Value, id: &str, require_workflow: ProjectGate) -> Result<Exit> {

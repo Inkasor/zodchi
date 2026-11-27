@@ -1,9 +1,8 @@
 //! Read-only discovery and waiting for Flow journals.
 
 use crate::{
-    acceptance,
     journal::{self, finished_event, last_state_event, status_outcome, Journal},
-    ops_script, voiceover, workspace_audit, youtube_publish, Exit, USAGE,
+    registry, Exit, USAGE,
 };
 use serde_json::{json, Value};
 use std::{
@@ -68,15 +67,9 @@ fn read_result(journal: &Journal) -> Result<Option<Value>> {
 }
 
 fn finished_approved(workflow: &str, result: &Value) -> bool {
-    // Several workflows record their successful outcome under a workflow-specific field.
-    match workflow {
-        acceptance::CANDIDATE | acceptance::PLAYER | acceptance::RELEASE => {
-            result["verdict"] == "pass"
-        }
-        ops_script::NAME => result["ready"] == true,
-        voiceover::NAME => result["status"] == "rendered",
-        youtube_publish::NAME => result["verdict"] == "private_verified",
-        _ => result["approved"]
+    match registry::get(workflow).and_then(|entry| entry.finished_approved) {
+        Some(approved) => approved(result),
+        None => result["approved"]
             .as_bool()
             .unwrap_or(result["verdict"] == "approved"),
     }
@@ -113,7 +106,9 @@ fn read_state(home: &Path, id: &str, live: bool, details: bool, row: &mut Value)
             .iter()
             .any(|field| !last[*field].is_null())
             || last["reason"] == "budget"
-            || (workflow == workspace_audit::NAME && last["step"] == "owner decisions");
+            || registry::get(workflow)
+                .and_then(|entry| entry.waiting_decision)
+                .is_some_and(|is_decision| is_decision(last));
         row["waiting"] = json!(if decision { "decision" } else { "question" });
     }
     if details {

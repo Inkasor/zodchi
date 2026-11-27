@@ -12,13 +12,10 @@ macro_rules! eprintln {
     };
 }
 
-mod acceptance;
 mod accepted_media;
 mod agent;
 pub mod args;
-mod asset_round;
 mod boundary;
-mod branch_review;
 mod budget;
 mod candidate;
 mod package_source;
@@ -29,18 +26,15 @@ pub mod checks;
 pub mod claims;
 mod child_package;
 mod cleanup;
-pub mod code_package;
 mod control;
-mod design_brief;
 mod design_material;
 mod input;
 mod input_common;
 mod incident_adapter;
 mod incident_draft;
-mod incident_triage;
-mod method_question;
+// The subprocess tests select their fixtures by the exact ops_script::tests path.
+#[cfg(test)]
 mod ops_script;
-mod research;
 mod research_lists;
 mod research_material;
 pub mod executor;
@@ -49,22 +43,20 @@ pub mod git;
 pub mod journal;
 pub mod models;
 pub mod patch;
-mod rubric_probe;
+mod registry;
 mod runs;
-mod unity_check;
 pub mod verify;
-mod video;
 mod video_manifest;
 mod video_media;
 mod video_metrics;
 mod video_research;
-mod voiceover;
-mod workspace_audit;
-mod youtube_publish;
 
-pub use code_package::{Exit, CUT_EXIT};
 pub use control::{sign_in_required, SignIn};
+pub use registry::code_package;
+pub use code_package::{Exit, CUT_EXIT};
 
+pub(crate) use registry::design_brief;
+use registry::{compiled_catalog, require_workflow};
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
@@ -109,15 +101,6 @@ Prints the result JSON. The journal is ~/.zodchi/flows/<run-id>/.
 Exit codes: 0 success, approved or closed by the owner, 1 a wrong call or command failure, 2 refused, stopped or not approved.
 In agent mode, exit 3 means sign-in required. For flow wait, exit 3 also covers a timeout (status: timeout).";
 
-fn compiled_catalog() -> Value {
-    serde_json::from_str(include_str!("../../../../workflows/catalog.json"))
-        .expect("workflow catalog")
-}
-
-fn require_workflow(git: &git::Git, base: &str, workflow: &str) -> Result<()> {
-    catalog::require(git, base, workflow, &compiled_catalog())
-}
-
 const RUN_FLAGS: &[(&str, &str)] = &[
     ("--args", "json-file"),
     ("--resume", "run-id"),
@@ -127,10 +110,7 @@ const RUN_FLAGS: &[(&str, &str)] = &[
 ];
 
 const HELP_FLAGS: [&str; 2] = ["--help", "-h"];
-
-fn workflows(catalog: &Value) -> &[Value] {
-    catalog["workflows"].as_array().expect("workflows")
-}
+const DRY_RUN_UNSUPPORTED: &str = "--dry-run is supported only by code-package.";
 
 #[derive(Default)]
 struct UsageCommand<'a> {
@@ -193,12 +173,12 @@ fn documented_commands<'a>(usage: &'a str, prefix: &str) -> BTreeMap<&'a str, Us
 /// Command and workflow options from this installation's catalog and parser.
 pub fn usage() -> Value {
     let mut commands = documented_commands(USAGE, "zodchi flow ");
-    let catalog = compiled_catalog();
-    for entry in workflows(&catalog) {
+    for entry in registry::catalog_entries() {
         let name = entry["name"].as_str().expect("workflow name");
         let command = commands.entry(name).or_default();
+        let supports_preview = registry::get(name).is_some_and(|entry| entry.dry_run.is_some());
         command.flags.extend(RUN_FLAGS.iter().copied().filter(|(flag, _)| {
-            *flag != "--dry-run" || name == code_package::WORKFLOW
+            *flag != "--dry-run" || supports_preview
         }));
         command.flags.extend(HELP_FLAGS.map(|name| (name, "boolean")));
     }
@@ -246,11 +226,11 @@ fn unexpected(flag: &str) -> GatewayError {
 
 /// Recognize a start before selecting the release that will resolve the workflow name.
 pub fn starts_run(args: &[String]) -> bool {
-    let Some((workflow, tail)) = args.split_first() else { return false };
+    let Some((name, tail)) = args.split_first() else { return false };
     // The launcher may predate workflows in the next release.
-    if !workflow.starts_with(|c: char| c.is_ascii_lowercase())
-        || !workflow.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        || matches!(workflow.as_str(),
+    if !name.starts_with(|c: char| c.is_ascii_lowercase())
+        || !name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        || matches!(name.as_str(),
             "cleanup" | "runs" | "wait" | "cancel" | "close" | "list" | "status"
                 | "apply" | "budget" | "remark" | "reply")
     {
@@ -279,8 +259,9 @@ pub fn requests_dry_run(args: &[String]) -> bool {
 
 /// Whether a flow call opens the interactive YouTube consent prompt.
 pub fn requests_consent(args: &[String]) -> bool {
-    matches!(args, [workflow, command, flag, _]
-        if workflow == youtube_publish::NAME && command == "connect" && flag == "--args")
+    let Some((name, tail)) = args.split_first() else { return false };
+    registry::get(name).and_then(|entry| entry.requests_consent)
+        .is_some_and(|requests_consent| requests_consent(tail))
 }
 
 /// Open the attached terminal even when the standard streams are redirected.
@@ -295,11 +276,13 @@ pub fn controlling_terminal() -> io::Result<fs::File> {
 
 /// `zodchi flow <workflow> ...`: the result of the run.
 pub fn cli(args: &[String]) -> Result<Exit> {
-    let Some(workflow) = args.first() else { return fail(USAGE) };
-    if workflow != code_package::WORKFLOW && requests_dry_run(args) {
-        return fail("--dry-run is supported only by code-package.");
+    let Some(name) = args.first() else { return fail(USAGE) };
+    let entry = registry::get(name);
+    let preview = entry.and_then(|entry| entry.dry_run);
+    if preview.is_none() && requests_dry_run(args) {
+        return fail(DRY_RUN_UNSUPPORTED);
     }
-    match workflow.as_str() {
+    match name.as_str() {
         "cleanup" => return cleanup::cli(&args[1..]),
         "runs" => return runs::list(&args[1..]),
         "wait" => return runs::wait(&args[1..]),
@@ -308,16 +291,14 @@ pub fn cli(args: &[String]) -> Result<Exit> {
             if flag != "--reason" {
                 return fail(USAGE);
             }
-            return control::stop_run(id, reason, workflow == "cancel");
+            return control::stop_run(id, reason, name == "cancel");
         }
         _ => {}
     }
     match args {
         [flag] if HELP_FLAGS.contains(&flag.as_str()) => return Ok(Exit { code: 0, result: serde_json::json!({ "usage": USAGE, "catalog": compiled_catalog() }) }),
         [name, flag] if HELP_FLAGS.contains(&flag.as_str()) => {
-            let catalog = compiled_catalog();
-            let entry = workflows(&catalog).iter()
-                .find(|item| item["name"] == name.as_str())
+            let entry = registry::catalog_entry(name)
                 .ok_or_else(|| GatewayError(format!("No workflow {name:?} in zodchi flow. Run zodchi flow list for the catalog.")))?;
             return Ok(Exit { code: 0, result: entry.clone() });
         }
@@ -332,30 +313,16 @@ pub fn cli(args: &[String]) -> Result<Exit> {
         [command, id, flag, file] if command == "remark" && flag == "--file" => {
             return input::remark(id, file);
         }
-        [command, id, rest @ ..] if command == "reply" => return input::reply(id, rest, control::reply_policy),
+        [command, id, rest @ ..] if command == "reply" => return input::reply(id, rest),
         [command, id] if command == "_worker" => return control::worker(id, None),
         [command, id, rerun] if command == "_worker" => return control::worker(id, Some(rerun)),
-        [workflow, command, flag, file] if workflow == video::NAME && command == "research" && flag == "--args" => {
-            return video_research::capture(&video_media::read_json(std::path::Path::new(file))?);
-        }
-        [workflow, command, id, flag, file] if workflow == video::NAME && ["publish", "stats"].contains(&command.as_str()) && flag == "--file" => {
-            let payload = video_media::read_json(std::path::Path::new(file))?;
-            return if command == "publish" { video::record_publication(id, &payload) } else { video::record_stats(id, &payload) };
-        }
-        [workflow, command] if workflow == voiceover::NAME && command == "voices" => return Ok(voiceover::voices()),
-        [workflow, command, flag, file] if workflow == voiceover::NAME && command == "plan" && flag == "--args" => {
-            return voiceover::preview(&video_media::read_json(std::path::Path::new(file))?);
-        }
-        [_, _, _, file] if requests_consent(args) => {
-            return youtube_publish::connect(&video_media::read_json(std::path::Path::new(file))?);
-        }
-        [workflow, command, flag, profile] if workflow == youtube_publish::NAME && command == "whoami" && flag == "--profile" => {
-            return youtube_publish::whoami(profile);
-        }
         _ => {}
     }
-    if !workflows(&compiled_catalog()).iter().any(|entry| entry["name"] == workflow.as_str()) {
-        return fail(format!("No workflow {workflow:?} in zodchi flow. Run zodchi flow list for the catalog.\n{USAGE}"));
+    if let Some(result) = entry.and_then(|entry| entry.special).and_then(|special| special(&args[1..])) {
+        return result;
+    }
+    if registry::catalog_entry(name).is_none() {
+        return fail(format!("No workflow {name:?} in zodchi flow. Run zodchi flow list for the catalog.\n{USAGE}"));
     }
     let RunOptions { file, resume, rerun, detach, dry_run } = run_options(&args[1..])?;
     let given = match file {
@@ -366,48 +333,17 @@ pub fn cli(args: &[String]) -> Result<Exit> {
         None => None,
     };
     match (resume, given) {
-        (Some(id), given) => control::resume(workflow, id, given.as_ref(), rerun, detach),
+        (Some(id), given) => control::resume(name, id, given.as_ref(), rerun, detach),
         (None, Some(given)) => {
             if rerun.is_some() {
                 return fail("--rerun goes with --resume <run-id>");
             }
             if dry_run {
-                return control::dry_run_package(&given);
+                let preview = preview.ok_or_else(|| GatewayError(DRY_RUN_UNSUPPORTED.into()))?;
+                return preview(&given);
             }
             let launch = detach.then_some(control::launch_start as boundary::Launch);
-            let exit = if workflow == research::NAME {
-                research::start(&given, launch, require_workflow)
-            } else if workflow == ops_script::NAME {
-                ops_script::start(&given, launch)
-            } else if workflow == branch_review::NAME {
-                branch_review::start(&given, launch, require_workflow)
-            } else if workflow == design_brief::NAME {
-                design_brief::start(&given, launch, require_workflow)
-            } else if workflow == incident_triage::NAME {
-                incident_triage::start(&given, launch, require_workflow)
-            } else if workflow == method_question::NAME {
-                method_question::start(&given, launch, require_workflow)
-            } else if workflow == rubric_probe::NAME {
-                rubric_probe::start(&given, launch, require_workflow)
-            } else if workflow == unity_check::NAME {
-                unity_check::start(&given, launch, require_workflow)
-            } else if workflow == workspace_audit::NAME {
-                workspace_audit::start(&given, launch)
-            } else if workflow == asset_round::NAME {
-                asset_round::start(&given, launch, require_workflow, &control::ASSET_CHILDREN)
-            } else if workflow == video::NAME {
-                video::start(&given, launch)
-            } else if workflow == voiceover::NAME {
-                voiceover::start(&given, launch)
-            } else if workflow == youtube_publish::NAME {
-                youtube_publish::start(&given)
-            } else if [acceptance::RELEASE, acceptance::PLAYER, acceptance::CANDIDATE].contains(&workflow.as_str()) {
-                acceptance::start(workflow, &given, launch, require_workflow)
-            } else if detach {
-                code_package::start_detached(&given)
-            } else {
-                code_package::start(&given)
-            }?;
+            let exit = registry::start(entry, &given, launch)?;
             Ok(cleanup::after_run(exit))
         }
         (None, None) => fail(USAGE),
