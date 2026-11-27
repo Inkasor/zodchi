@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -243,8 +244,8 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     const keyType = ["PRIVATE", "KEY"].join(" ");
     const keyBody = "fixture-key-body";
     const cleanBrief = fs.readFileSync(screened.brief, "utf8");
-    const runScreened = (files = ["src/math.mjs"], env = {}) => screened.flow([
-      "--args", screened.args({ mode: "agent", files, checks: [], verify: [] }),
+    const runScreened = (files = ["src/math.mjs"], env = {}, extra = {}) => screened.flow([
+      "--args", screened.args({ mode: "agent", files, checks: [], verify: [], ...extra }),
     ], env);
     const assertRefused = (result, locations, hidden) => {
       t.ok(result.code === 2 && locations.every(location => result.json?.refused?.includes(location)),
@@ -277,8 +278,15 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     assertRefused(await runScreened(baseFiles, { ZODCHI_DENYLIST: denylist }), [
       `${baseFiles[0]}:2 (private-word)`, ...[2, 3, 4, 5, 6, 7].map(line => `${baseFiles[1]}:${line} (credential)`),
     ], [privateFile, shapedValue, apiValue, urlValue, keyBody]);
+    for (const entry of ["src/missing.txt:1", `${baseFiles[1]}:99`, `${baseFiles[1]}:1`, `${baseFiles[0]}:2`, `${baseFiles[1]}:5`]) {
+      const invalid = await runScreened(baseFiles, { ZODCHI_DENYLIST: denylist }, { allowInputLines: [entry] });
+      t.ok(invalid.code === 1 && invalid.err.includes("allowInputLines"), `the allowance ${entry} is a wrong call`);
+      t.ok(![invalid.out, invalid.err].some(text => text.includes(privateFile) || text.includes(keyBody)),
+        "the allowance error leaves private text out of its diagnostics");
+    }
+    t.eq([screened.claim(), screened.steps()], [null, []], "a wrong allowance creates no claim and submits no model call");
 
-    const inlineValue = "fixture-added-inline-value";
+    const inlineValue = ["fixture-added", "9X3f7D2e"].join("-");
     const inlineSetting = ["token", JSON.stringify(inlineValue)].join(" = ");
     screened.answer("write", report("done", { "src/math.mjs": `${FIXED}\nconst ${inlineSetting};\n` }));
     screened.answer("review 1", screened.review("approved"));
@@ -300,8 +308,45 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
       && ![withheld.out, withheld.err, events].some(text => text.includes(inlineValue)),
       "the stop creates no review request and keeps the value out of diagnostics and events");
 
-    const expert = flowWorld(t, "flow-agent-continue-expert");
+    const allowed = flowWorld(t, "flow-agent-continue-allowed-line");
     const source = "src/math.mjs";
+    const fixtureValue = ["8d2f097c", "7b3a512e", "b1fc5098", "7e463ad2"].join("");
+    const fixtureLine = ["const lockToken", JSON.stringify(fixtureValue)].join(" = ") + ";";
+    const seeded = `${STUB}${fixtureLine}\n`;
+    const moved = `// Keep clamp in range.\n${FIXED}`;
+    fs.writeFileSync(path.join(allowed.r, source), seeded);
+    gitOut(allowed.r, ["add", "--", source]);
+    gitOut(allowed.r, ["commit", "-qm", "Add the lock fixture"]);
+    const needsAllowance = await allowed.flow(["--args", allowed.args()]);
+    t.ok(needsAllowance.code === 2 && [`${source}:2 (credential)`, "or list the lines in allowInputLines after checking they are not secrets"]
+      .every(part => needsAllowance.json?.refused?.includes(part)), "the base fixture is refused with the allowance hint");
+    allowed.answer("write", allowed.patch([{
+      ...allowed.modify(source, seeded, null), edits: [{ old: STUB, new: moved }],
+    }]));
+    allowed.answer("review 1", allowed.review("approved"));
+    const allowedArgs = allowed.args({ allowInputLines: [`${source}:2`] });
+    const allowanceCut = await allowed.flow(["--args", allowedArgs], { ZODCHI_FLOW_CUT: "commit 1" });
+    t.eq([allowanceCut.code, allowed.steps()], [75, ["write"]], "the allowance admits the base and the expert writer attachment");
+    const allowanceRun = await allowed.flow(["--resume", allowed.claim().run, "--args", allowedArgs]);
+    t.eq([allowanceRun.code, allowanceRun.json?.approved, allowed.steps()], [0, true, ["write", "review 1"]],
+      "the allowance follows the unchanged fixture line through the resumed review");
+    t.eq(fs.readFileSync(path.join(allowed.r, source), "utf8"), `${moved}${fixtureLine}\n`, "the line moved down in the patch");
+    const receipt = fs.readFileSync(path.join(allowanceRun.json.journal, "run.json"), "utf8");
+    t.eq(JSON.parse(receipt).inputs.allowInputLines, [{
+      path: source, line: 2, sha256: createHash("sha256").update(fixtureLine).digest("hex"),
+    }], "the allowance receipt pins the base path, line number and content digest");
+    const allowanceEvents = fs.readFileSync(path.join(allowanceRun.json.journal, "events.jsonl"), "utf8");
+    t.ok(![receipt, allowanceEvents, allowanceRun.out, allowanceRun.err].some(text => text.includes(fixtureValue)),
+      "the allowance receipt and result omit the approved content");
+
+    const changedLine = fixtureLine.replace(fixtureValue, "0" + fixtureValue.slice(1));
+    allowed.answer("write", report("done", { [source]: `${moved}${changedLine}\n` }));
+    const changedFixture = await allowed.flow(["--args", allowed.args({ mode: "agent", allowInputLines: [`${source}:3`] })]);
+    t.eq([changedFixture.code, changedFixture.json?.stoppedAt, allowed.steps()],
+      [2, "privacy screening at review 1", ["write", "review 1", "write"]], "editing the literal invalidates the allowance");
+    t.ok(changedFixture.json?.question?.includes(`${source}:3 (credential)`), "the stop names the changed line");
+
+    const expert = flowWorld(t, "flow-agent-continue-expert");
     const sourcePath = path.join(expert.r, source);
     const sourceFolder = `${expert.r.replaceAll("\\", "/")}/input`;
     const note = `// Read fixtures from ${sourceFolder}`;

@@ -18,13 +18,14 @@ use crate::executor;
 use crate::gateway;
 use crate::git::Git;
 use crate::input::{GapDecision, GapOption, REVIEW_GAPS};
-use crate::input_common::Scrubber;
+use crate::input_common::{args_digest, args_match, Scrubber, Withholding};
 use crate::journal::{application_status, candidate_workspace, Journal};
 use crate::models::{self, Pick};
 use crate::patch::{self, Patch, Refusal};
 use crate::review_contract::check_review;
 use crate::review_source::{self, FileLine};
 use serde_json::{json, Map, Value};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use zodchi_core::config::Config;
@@ -243,6 +244,7 @@ struct Run {
     history: Value,
     branch: String,
     brief: String,
+    allowed_input_digests: HashSet<String>,
     review_md: Option<String>,
     patch_schema: &'static str,
     verify_plan: crate::verify::Plan,
@@ -267,31 +269,85 @@ struct Run {
 
 // ------------------------------------------------------------------------------------------------- start, resume
 
-fn text_omissions(scrubber: &Scrubber, name: &str, text: &str) -> Vec<String> {
-    scrubber.input_withholdings(text).map(|(line, reason)| format!("{name}:{line} ({reason})")).collect()
+fn input_lines_with_bytes<'a>(
+    scrubber: &'a Scrubber, text: &'a str, bytes: &'a [u8],
+) -> impl Iterator<Item = (usize, &'a [u8], Withholding)> + 'a {
+    // Screen decoded text, but hash the exact bytes of the line, excluding LF or CRLF.
+    let mut lines = bytes.split_inclusive(|&b| b == b'\n').enumerate();
+    scrubber.input_withholdings(text).map(move |(number, reason)| {
+        let (_, original) = lines.find(|(index, _)| *index + 1 == number)
+            .expect("decoded text preserves line boundaries");
+        let content = original.strip_suffix(b"\r\n").or_else(|| original.strip_suffix(b"\n")).unwrap_or(original);
+        (number, content, reason)
+    })
 }
 
-fn file_omissions(scrubber: &Scrubber, name: &str, bytes: &[u8]) -> Vec<String> {
-    // NUL-containing blobs cannot be sent as text attachments.
-    if bytes.contains(&0) {
-        return Vec::new();
+fn withheld_input_lines(scrubber: &Scrubber, bytes: &[u8], allowed: &HashSet<String>) -> Vec<(usize, Withholding)> {
+    input_lines_with_bytes(scrubber, &String::from_utf8_lossy(bytes), bytes).filter_map(|(line, content, reason)| {
+        let exempt = reason.allows_input_exception() && !allowed.is_empty() && allowed.contains(&sha256_hex(content));
+        (!exempt).then_some((line, reason))
+    }).collect()
+}
+
+fn input_locations<'a>(
+    name: &'a str, suffix: &'a str, lines: Vec<(usize, Withholding)>,
+) -> impl Iterator<Item = String> + 'a {
+    lines.into_iter().map(move |(line, reason)| format!("{name}:{line}{suffix} ({})", reason.reason()))
+}
+
+fn pin_input_allowances(git: &Git, base: &str, repo: &str, value: &Value, scrubber: &Scrubber) -> Result<Vec<Value>> {
+    let entries = value.as_array()
+        .ok_or_else(|| GatewayError("args.allowInputLines must be an array of path:line strings.".into()))?;
+    let mut receipts = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        let at = format!("args.allowInputLines entry {}", index + 1);
+        let invalid = || GatewayError(format!("{at} must name a repository file and positive line number as path:line."));
+        let (path, line) = entry.as_str().and_then(|s| s.rsplit_once(':')).ok_or_else(invalid)?;
+        let path = args::rel(repo, path).map_err(|_| invalid())?;
+        let line = line.parse::<usize>().ok().filter(|n| *n > 0).ok_or_else(invalid)?;
+        if scrubber.input_withholdings(&path).next().is_some() {
+            return fail(format!("{at} names a file whose path would be withheld."));
+        }
+        let bytes = git.show(base, &path)?
+            .filter(|bytes| !bytes.contains(&0))
+            .ok_or_else(|| GatewayError(format!("{at} does not name a regular text file in the base commit.")))?;
+        let text = String::from_utf8_lossy(&bytes);
+        if text.lines().nth(line - 1).is_none() {
+            return fail(format!("{at} is outside the file in the base commit."));
+        }
+        let (_, content, reason) = input_lines_with_bytes(scrubber, &text, &bytes).find(|(number, _, _)| *number == line)
+            .ok_or_else(|| GatewayError(format!("{at} names a line the input gate would pass.")))?;
+        if !reason.allows_input_exception() {
+            return fail(format!("{at} names a private word or private-key block. These lines cannot be allowed."));
+        }
+        receipts.push(json!({ "path": path, "line": line, "sha256": sha256_hex(content) }));
     }
-    text_omissions(scrubber, name, &String::from_utf8_lossy(bytes))
+    Ok(receipts)
 }
 
-fn input_omissions(git: &Git, base: &str, files: &[String], brief: &str, scrubber: &Scrubber) -> Result<Vec<String>> {
-    let mut omissions = text_omissions(scrubber, "the brief", brief);
+fn input_allowance_digests(receipts: &[Value]) -> Result<HashSet<String>> {
+    receipts.iter().map(|receipt| {
+        receipt["sha256"].as_str().filter(|digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()))
+            .map(String::from).ok_or_else(|| GatewayError("The journal has an invalid input line allowance digest.".into()))
+    }).collect()
+}
+
+fn input_omissions(
+    git: &Git, base: &str, files: &[String], brief: &str, scrubber: &Scrubber, allowed: &HashSet<String>,
+) -> Result<Vec<String>> {
+    let mut omissions: Vec<_> = input_locations("the brief", "", withheld_input_lines(scrubber, brief.as_bytes(), allowed)).collect();
     for (index, file) in files.iter().enumerate() {
         let private_name = scrubber.input_withholdings(file).next();
         let display = if let Some((_, reason)) = private_name {
             let entry = format!("args.files entry {}", index + 1);
-            omissions.push(format!("{entry} (file name, {reason})"));
+            omissions.push(format!("{entry} (file name, {})", reason.reason()));
             entry
         } else {
             file.clone()
         };
-        if let Some(bytes) = git.show(base, file)? {
-            omissions.extend(file_omissions(scrubber, &display, &bytes));
+        // NUL-containing blobs cannot be sent as text attachments.
+        if let Some(bytes) = git.show(base, file)?.filter(|bytes| !bytes.contains(&0)) {
+            omissions.extend(input_locations(&display, "", withheld_input_lines(scrubber, &bytes, allowed)));
         }
     }
     Ok(omissions)
@@ -347,7 +403,10 @@ pub(crate) fn start_run(
     require_workflow: ProjectGate,
 ) -> Result<Exit> {
     let label = raw["label"].as_str().unwrap_or("").to_string();
-    let args = match args::parse(raw) {
+    // Resolve this gate-specific field against Git before journaling the normal execution args.
+    let mut package_args = raw.clone();
+    let allowances = package_args.as_object_mut().and_then(|args| args.remove("allowInputLines"));
+    let args = match args::parse(&package_args) {
         Ok(a) => a,
         Err(why) => return Ok(refused(&label, why)),
     };
@@ -380,13 +439,16 @@ pub(crate) fn start_run(
         Ok(scrubber) => scrubber,
         Err(error) => return Ok(refused(&label, error.0)),
     };
-    let omissions = match input_omissions(&git, &base, &args.files, &brief, &scrubber) {
+    let allowances = allowances.as_ref()
+        .map(|value| pin_input_allowances(&git, &base, &args.repo_norm, value, &scrubber)).transpose()?;
+    let allowed_input_digests = input_allowance_digests(allowances.as_deref().unwrap_or_default())?;
+    let omissions = match input_omissions(&git, &base, &args.files, &brief, &scrubber, &allowed_input_digests) {
         Ok(omissions) => omissions,
         Err(error) => return Ok(refused(&label, error.0)),
     };
     if !omissions.is_empty() {
         return Ok(refused(&label, format!(
-            "Package inputs contain lines that would be withheld: {}. Rewrite the brief or remove the marked files from the claim.",
+            "Package inputs contain lines that would be withheld: {}. Rewrite the brief, remove the marked files from the claim, or list the lines in allowInputLines after checking they are not secrets.",
             omissions.join(", "),
         )));
     }
@@ -487,13 +549,18 @@ pub(crate) fn start_run(
         },
         None => Value::Null,
     };
+    let mut inputs = json!({ "args": package_args, "brief": args.brief, "briefSha256": sha256_hex(&brief), "reviewMd": review_md.is_some() });
+    if let Some(receipts) = allowances {
+        inputs["allowInputLines"] = json!(receipts);
+        inputs["argsSha256"] = json!(args_digest(raw));
+    }
     let run = json!({
         "runId": id, "workflow": WORKFLOW, "version": VERSION, "mode": args.mode(), "patchSchema": 2,
         "release": env!("CARGO_PKG_VERSION"), "createdAt": iso(),
         "repo": args.repo, "base": base, "branch": branch, "isolated": args.isolated,
         "seed": seed, "history": history, "priorWriters": prior_writers,
         "screening": { "brief": "screened", "files": "screened", "agentWorkspace": args.agent.then_some("not screened") },
-        "inputs": { "args": raw, "brief": args.brief, "briefSha256": sha256_hex(&brief), "reviewMd": review_md.is_some() },
+        "inputs": inputs,
         "pair": { (args.writer_role()): writer.to_json(), "reviewer": reviewer.to_json(), "skipped": skipped },
         "verificationPlan": verify_plan.to_json(), "reviewContext": args.review_context, "browser": browser,
         "policy": { "rounds": args.rounds, "fixes": args.fixes, "protected": [
@@ -562,7 +629,7 @@ pub fn resume(id: &str, given: Option<&Value>, rerun: Option<&str>) -> Result<Ex
     }
     let raw = run["inputs"]["args"].clone();
     if let Some(g) = given {
-        if g != &raw {
+        if !args_match(&run["inputs"], g) {
             return Err(GatewayError(format!("The args differ from those run {id} started with; resume without --args, or start a new run.")));
         }
     }
@@ -654,13 +721,18 @@ impl Run {
             (git, None, run["branch"].as_str().unwrap_or("").to_string())
         };
         let verify_plan = crate::verify::Plan::from_run(run, &args)?;
+        let allowed_input_digests = match run["inputs"].get("allowInputLines") {
+            Some(value) => input_allowance_digests(value.as_array()
+                .ok_or_else(|| GatewayError("The journal has invalid input line allowances.".into()))?)?,
+            None => HashSet::new(),
+        };
         Ok(Run {
             claims_dir: claims::claims_dir(&args.repo_norm),
             claimed: args.files.clone(),
             head: seed.clone(),
             branch,
             patch_schema: if run["patchSchema"] == json!(2) { PATCH_SCHEMA_V2 } else { PATCH_SCHEMA_V1 },
-            verify_plan, check_paths,
+            verify_plan, check_paths, allowed_input_digests,
             browser: run["browser"].clone(),
             id, args, cfg, git, project, journal, base, seed, history, brief, review_md, writer, reviewer, out,
             review_number: 0,
@@ -998,6 +1070,11 @@ impl Run {
 
     // --------------------------------------------------------------------------------------------- model calls
 
+    fn withheld_brief(&self, scrubber: &Scrubber) -> Vec<String> {
+        let withheld = withheld_input_lines(scrubber, self.brief.as_bytes(), &self.allowed_input_digests);
+        input_locations("the brief", "", withheld).collect()
+    }
+
     /// The claimed paths and current blob IDs, editable attachments, and any omissions that block sending them.
     fn files_view(&self, scrubber: &Scrubber, failed_tree: Option<&str>) -> Result<(String, Attachments, Vec<String>)> {
         let mut lines = Vec::new();
@@ -1005,7 +1082,7 @@ impl Run {
         let mut omissions = Vec::new();
         for (index, p) in self.claimed.iter().enumerate() {
             if let Some((_, reason)) = scrubber.input_withholdings(p).next() {
-                omissions.push(format!("claimed file #{} (file name, {reason})", index + 1));
+                omissions.push(format!("claimed file #{} (file name, {})", index + 1, reason.reason()));
                 continue;
             }
             // A link would show the writer a file from outside the repository, or its target (a tracked link that
@@ -1018,7 +1095,11 @@ impl Run {
             }
             match std::fs::read(self.git.root.join(p)) {
                 Ok(bytes) => {
-                    let withheld = file_omissions(scrubber, p, &bytes);
+                    let withheld = if bytes.contains(&0) {
+                        Vec::new()
+                    } else {
+                        withheld_input_lines(scrubber, &bytes, &self.allowed_input_digests)
+                    };
                     let blob = self.git.blob_of(&bytes)?;
                     let (bytes, note) = if withheld.is_empty() {
                         (bytes, "")
@@ -1031,10 +1112,10 @@ impl Run {
                             None => false,
                         };
                         if !matches_failed_tree {
-                            omissions.extend(withheld);
+                            omissions.extend(input_locations(p, "", withheld));
                             continue;
                         }
-                        let preview = scrubber.redact_lines(&String::from_utf8_lossy(&bytes));
+                        let preview = Scrubber::redact_lines(&String::from_utf8_lossy(&bytes), &withheld);
                         (preview.into_bytes(), " (screened preview. Use only visible text in exact old fragments. \
                             Give complete replacement content to remove or replace withheld lines.)")
                     };
@@ -1102,7 +1183,7 @@ impl Run {
                 let scrubber = Scrubber::new(&self.cfg)?;
                 let places = self.private_places();
                 let (files, attached, mut omissions) = self.files_view(&scrubber, failed_tree)?;
-                omissions.extend(text_omissions(&scrubber, "the brief", &self.brief));
+                omissions.extend(self.withheld_brief(&scrubber));
                 if !omissions.is_empty() {
                     return Ok(ScreenedPrompt::Withheld(omissions));
                 }
@@ -1280,7 +1361,7 @@ impl Run {
                     preamble.push_str("\n\nPrevious writer summary (work status):\n");
                     preamble.push_str(&scrubber.text(summary, &places));
                 }
-                let omissions = text_omissions(&scrubber, "the brief", &self.brief);
+                let omissions = self.withheld_brief(&scrubber);
                 if !omissions.is_empty() {
                     return self.stop_screening(&turn, "The brief contains material that would be withheld", &omissions);
                 }
@@ -2251,7 +2332,7 @@ impl Run {
         let mut omissions = Vec::new();
         for (index, file) in self.claimed.iter().enumerate() {
             if let Some((_, reason)) = scrubber.input_withholdings(file).next() {
-                omissions.push(format!("claimed file #{} (file name, {reason})", index + 1));
+                omissions.push(format!("claimed file #{} (file name, {})", index + 1, reason.reason()));
                 continue;
             }
             // The diff can include both deleted lines and unchanged context. Screen the whole blobs so
@@ -2261,8 +2342,8 @@ impl Run {
                     if bytes.contains(&0) {
                         binary.push(file.as_str());
                     } else {
-                        omissions.extend(scrubber.input_withholdings(&String::from_utf8_lossy(&bytes))
-                            .map(|(line, reason)| format!("{file}:{line} in the base ({reason})")));
+                        let withheld = withheld_input_lines(scrubber, &bytes, &self.allowed_input_digests);
+                        omissions.extend(input_locations(file, " in the base", withheld));
                     }
                 }
             }
@@ -2270,7 +2351,8 @@ impl Run {
                 if bytes.contains(&0) {
                     binary.push(file.as_str());
                 } else {
-                    omissions.extend(file_omissions(scrubber, file, &bytes));
+                    let withheld = withheld_input_lines(scrubber, &bytes, &self.allowed_input_digests);
+                    omissions.extend(input_locations(file, "", withheld));
                     if patch::claimed_as(&self.args.review_context, file).is_none() {
                         attachments.push((file.clone(), input_attachment(&String::from_utf8_lossy(&bytes), places)));
                     }
@@ -2345,7 +2427,7 @@ impl Run {
         let ReviewRound { candidate, summary, unverified, verification, .. } = *round;
         let scrubber = Scrubber::new(&self.cfg)?;
         let places = self.private_places();
-        let omissions = text_omissions(&scrubber, "the brief", &self.brief);
+        let omissions = self.withheld_brief(&scrubber);
         if !omissions.is_empty() {
             return Ok(ScreenedPrompt::Withheld(omissions));
         }

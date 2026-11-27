@@ -183,6 +183,8 @@ function world(name, { signedIn = true, maxParallelJobs } = {}) {
   write("builder.json", { mode: "work", model: "fake-model", effort: "low", sandbox: "workspace-write", mcpServers: [] });
   write("judge.json", { kind: "decisions", mode: "expert", model: "fake-model", timeoutMin: 5 });
   const env = { ...process.env, ZODCHI_CODEX_BIN: FAKE, ZODCHI_HOME: zhome, ZODCHI_ROLES: roles, CODEX_HOME: codex, HOME: home, USERPROFILE: home };
+  // The enclosing Flow run can already hold the machine-wide check slot.
+  env.ZODCHI_CHECK_SLOT_DIR = path.join(dir, "check-slot");
   delete env.OPENAI_API_KEY;
   delete env.ZODCHI_DENYLIST;
   return { dir, home, zhome, codex, roles, env };
