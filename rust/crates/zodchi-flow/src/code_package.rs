@@ -369,6 +369,160 @@ fn input_attachment(text: &str, places: &[(String, &str)]) -> Vec<u8> {
     checks::screen_paths(text.split('\n'), places).into_bytes()
 }
 
+/// The checks are named by source and number in the prompt, since a command may contain private material.
+fn check_rules(args: &Args, plan: &crate::verify::Plan) -> String {
+    let list = |v: &[String]| v.iter().map(|x| format!("{x:?}")).collect::<Vec<_>>().join(", ");
+    let mut cmds: Vec<String> = (1..=plan.checks.len()).map(|i| format!("{} #{i}", plan.check_source)).collect();
+    cmds.extend((1..=plan.verify.len()).map(|i| format!("{} #{i} (verify)", plan.verify_source)));
+    render(CHECK_RULES, &[
+        ("protect", if args.protect.is_empty() { String::new() } else { format!(", or under {}", list(&args.protect)) }),
+        ("allowed", if args.allow_check_changes.is_empty() { String::new() } else { format!(", except {}, which the lead allowed", list(&args.allow_check_changes)) }),
+        ("checks", if cmds.is_empty() { "none are given, so nothing is verified by running".into() } else { format!("{} (the brief may say what they are; the engine does not pass their command lines)", cmds.join(", ")) }),
+    ])
+}
+
+fn expert_preamble(
+    template: &str, step: &str, id: &str, files: String, checks: &str, vars: Vec<(&str, String)>,
+) -> String {
+    let rules = format!("{RULES}\n{checks}");
+    let mut all = vec![("step", step.to_string()), ("run", id.to_string()), ("files", files), ("rules", rules)];
+    all.extend(vars);
+    render(template, &all)
+}
+
+fn agent_boundary(files: &[String]) -> String {
+    files.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n")
+}
+
+fn agent_preamble(
+    turn: &str, id: &str, boundary: &str, checks: &str, notes: &str, has_setup: bool, browser: &Value,
+) -> String {
+    let mut text = format!("Step: {turn} (code-package v1, run {id})\n\n{AGENT_RULES}\nAllowed files:\n{boundary}\n\n{checks}\n\n{notes}");
+    if has_setup {
+        text.push_str("\n\nThe engine completed the configured setup in this workspace. Use the prepared dependencies for your checks.");
+    }
+    if let Some(variable) = browser["variable"].as_str() {
+        text.push_str(&format!("\n\nThe pinned browser executable is available in the shell variable {variable}. Project tests choose headless mode."));
+    }
+    text
+}
+
+fn writer_file_line(path: &str, blob: Option<&str>, note: &str) -> String {
+    match blob {
+        Some(blob) => format!("- {path}  blob {blob}{note}"),
+        None => format!("- {path}  none (it does not exist)"),
+    }
+}
+
+fn writer_worktree_path(git: &Git, head: &str, path: &str) -> Result<PathBuf> {
+    // On a checkout with core.symlinks=false, the file can look regular but actually hold a link's target.
+    if !patch::no_links(&git.root, path) {
+        return fail(format!("{path}: a link or reparse point lies on its way, so it is not read"));
+    }
+    if git.tracked_link(head, path)? {
+        return fail(format!("{path}: Git keeps it as a link, so it is not read"));
+    }
+    Ok(git.root.join(path))
+}
+
+fn expert_file_sizes(git: &Git, seed: &str, args: &Args, attachments: &mut Vec<Value>) -> Result<String> {
+    let mut lines = Vec::new();
+    for path in &args.files {
+        let file = if args.isolated {
+            // The future private checkout does not exist during preview. Read source sizes from its pinned tree.
+            let entry = git.entry_at(seed, path)?.filter(|(mode, kind, _)| mode.starts_with("100") && kind == "blob");
+            if let Some((_, _, blob)) = entry {
+                let size = git.run(&["cat-file", "-s", &blob])?.trim().parse::<u64>()
+                    .map_err(|_| GatewayError(format!("Git could not report the size of {path}.")))?;
+                Some(size)
+            } else {
+                None
+            }
+        } else {
+            // A file the writer cannot read has no attachment to size.
+            writer_worktree_path(git, seed, path).ok()
+                .and_then(|path| path.metadata().ok())
+                .filter(std::fs::Metadata::is_file)
+                .map(|file| file.len())
+        };
+        if let Some(bytes) = file {
+            // Each blob ID in the manifest has the same byte length as the seed commit ID.
+            lines.push(writer_file_line(path, Some(seed), ""));
+            attachments.push(json!({ "path": path, "bytes": bytes }));
+        } else {
+            lines.push(writer_file_line(path, None, ""));
+        }
+    }
+    Ok(lines.join("\n"))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn preview_writer_prompt(
+    args: &Args, plan: &crate::verify::Plan, id: &str, browser: &Value, git: &Git, seed: &str,
+    brief: &str, history: &Value, places: &[(String, &str)],
+) -> Result<Value> {
+    let mut attachments = vec![json!({ "path": "brief", "bytes": input_attachment(brief, places).len() })];
+    if history.is_object() {
+        attachments.push(json!({ "path": "previous-package.json", "bytes": history.to_string().len() }));
+    }
+    let checks = check_rules(args, plan);
+    let (preamble, files, rules) = if args.agent {
+        let files = agent_boundary(&args.files);
+        let text = agent_preamble("write", id, &files, &checks, "", !plan.setup.is_empty(), browser);
+        (text, files.len(), AGENT_RULES.len())
+    } else {
+        let files = expert_file_sizes(git, seed, args, &mut attachments)?;
+        let size = files.len();
+        (expert_preamble(WRITE, "write", id, files, &checks, vec![]), size, RULES.len())
+    };
+    let instructions = preamble.len().saturating_sub(files + rules + checks.len());
+    Ok(json!({
+        "sections": [
+            { "name": "instructions", "bytes": instructions },
+            { "name": "files", "bytes": files },
+            { "name": "rules", "bytes": rules },
+            { "name": "checkRules", "bytes": checks.len() },
+        ],
+        "attachments": attachments,
+    }))
+}
+
+fn preview_pick(pick: &Pick, server: Option<&str>) -> Value {
+    let route = match (pick.provider.as_str(), server) {
+        ("claude", _) => "claude cli".into(),
+        (_, Some(url)) => {
+            let (scheme, address) = url.split_once("://").expect("preflight validated the server URL");
+            let host = address.split('/').next().expect("server authority");
+            format!("company server {scheme}://{host}")
+        }
+        _ => "local codex gateway".into(),
+    };
+    json!({ "provider": pick.provider, "model": pick.model, "effort": pick.effort, "route": route })
+}
+
+fn private_places(
+    cfg: &Config, args: &Args, journal: &Path, check_paths: &checks::ProjectPaths, browser: &Value,
+) -> Vec<(String, &'static str)> {
+    let mut v = vec![
+        (std::env::temp_dir().display().to_string(), "<tmp>"),
+        (journal.display().to_string(), "<journal>"),
+        (cfg.home.display().to_string(), "<zodchi-home>"),
+        (args.repo_norm.clone(), "<repo>"),
+    ];
+    v.extend(check_paths.private_places());
+    for key in ["configuredPath", "path"] {
+        if let Some(path) = browser[key].as_str().filter(|s| !s.is_empty()) {
+            v.push((path.to_string(), "<browser>"));
+        }
+    }
+    for k in ["HOME", "USERPROFILE"] {
+        if let Some(h) = std::env::var_os(k).filter(|h| !h.is_empty()) {
+            v.push((h.to_string_lossy().into_owned(), "~"));
+        }
+    }
+    v
+}
+
 fn review_context(git: &Git, commit: &str, files: &[String]) -> Result<Vec<(String, String)>> {
     let mut context = Vec::with_capacity(files.len());
     let mut size = 0;
@@ -393,15 +547,23 @@ fn review_context(git: &Git, commit: &str, files: &[String]) -> Result<Vec<(Stri
 }
 
 pub(crate) fn start_child(raw: &Value, id: &str, require_workflow: ProjectGate) -> Result<Exit> {
-    start_run(raw, Some(id), None, require_workflow)
+    start_run(raw, StartMode::Child(id), require_workflow)
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum StartMode<'a> {
+    Foreground,
+    Detached(Launch),
+    Child(&'a str),
+    DryRun,
 }
 
 pub(crate) fn start_run(
     raw: &Value,
-    id: Option<&str>,
-    launch: Option<Launch>,
+    mode: StartMode<'_>,
     require_workflow: ProjectGate,
 ) -> Result<Exit> {
+    let dry_run = matches!(mode, StartMode::DryRun);
     let label = raw["label"].as_str().unwrap_or("").to_string();
     // Resolve this gate-specific field against Git before journaling the normal execution args.
     let mut package_args = raw.clone();
@@ -518,9 +680,10 @@ pub(crate) fn start_run(
         None => models::local_codex_usable(&cfg),
         Some(_) => Ok(()),
     };
-    let (writer, reviewer, skipped) = match models::resolve(&table, &codex, args.writer_role(), args.agent, &prior_writers) {
+    let (writer, reviewer, skipped) = match models::resolve_pair(&table, &codex, args.writer_role(), args.agent, &prior_writers, dry_run) {
         Ok(p) => p,
-        Err(why) => return Ok(refused(&label, why)),
+        Err(models::ResolveError::Unavailable(why)) => return Ok(refused(&label, why)),
+        Err(models::ResolveError::PreflightRequired(why)) => return Ok(Exit { code: 1, ..refused(&label, why) }),
     };
     let writer_gateway_role = if args.agent { agent::ROLE } else { WRITER_GATEWAY_ROLE };
     let on_server = |p: &Pick| server.is_some() && p.provider == "codex";
@@ -540,8 +703,10 @@ pub(crate) fn start_run(
         }
     }
     let executors = if server.is_some() { "codex via server" } else { "codex only" };
-    let is_child = id.is_some();
-    let id = id.map(String::from).unwrap_or_else(crate::journal::new_run_id);
+    let id = match mode {
+        StartMode::Child(id) => id.to_string(),
+        _ => crate::journal::new_run_id(),
+    };
     let browser = match &args.browser {
         Some((variable, path)) => match gateway::pin_browser(variable, Path::new(path)) {
             Ok(pin) => pin,
@@ -549,6 +714,23 @@ pub(crate) fn start_run(
         },
         None => Value::Null,
     };
+    let screening = json!({ "brief": "screened", "files": "screened", "agentWorkspace": args.agent.then_some("not screened") });
+    // A preview leaves the shared gate before creating the journal, launching a worker, or claiming the files.
+    if dry_run {
+        let places = private_places(&cfg, &args, &crate::journal::flows_dir(&cfg.home).join(&id), &check_paths, &browser);
+        let prompt = preview_writer_prompt(&args, &verify_plan, &id, &browser, &git, &seed, &brief, &history, &places)?;
+        return Ok(Exit { code: 0, result: json!({
+            "dryRun": true, "label": args.label, "repo": args.repo, "branch": branch, "base": base,
+            "files": args.files, "protected": args.protected_paths(), "allowCheckChanges": args.allow_check_changes,
+            "models": {
+                (args.writer_role()): preview_pick(&writer, server.as_deref()),
+                "reviewer": preview_pick(&reviewer, server.as_deref()),
+            },
+            "prompt": prompt, "screening": screening, "checks": verify_plan.checks, "verify": verify_plan.verify,
+            "budget": { "rounds": args.rounds, "fixes": args.fixes, "continuations": args.continuations },
+        }) });
+    }
+    let is_child = matches!(mode, StartMode::Child(_));
     let mut inputs = json!({ "args": package_args, "brief": args.brief, "briefSha256": sha256_hex(&brief), "reviewMd": review_md.is_some() });
     if let Some(receipts) = allowances {
         inputs["allowInputLines"] = json!(receipts);
@@ -559,12 +741,11 @@ pub(crate) fn start_run(
         "release": env!("CARGO_PKG_VERSION"), "createdAt": iso(),
         "repo": args.repo, "base": base, "branch": branch, "isolated": args.isolated,
         "seed": seed, "history": history, "priorWriters": prior_writers,
-        "screening": { "brief": "screened", "files": "screened", "agentWorkspace": args.agent.then_some("not screened") },
+        "screening": screening,
         "inputs": inputs,
         "pair": { (args.writer_role()): writer.to_json(), "reviewer": reviewer.to_json(), "skipped": skipped },
         "verificationPlan": verify_plan.to_json(), "reviewContext": args.review_context, "browser": browser,
-        "policy": { "rounds": args.rounds, "fixes": args.fixes, "protected": [
-            "test/", "tests/", "e2e/", ".claude/skills/verify/", ".agents/skills/verify/", "skills/verify/", crate::verify::CONFIG, "REVIEW.md"],
+        "policy": { "rounds": args.rounds, "fixes": args.fixes, "protected": args::BUILTIN_PROTECTED,
             "protect": args.protect, "allowCheckChanges": args.allow_check_changes, "extendClaim": args.extend_claim,
             "checkTimeoutMin": args.check_timeout_min, "continuations": args.continuations,
             "executors": executors, "checksEnvironment": "exported candidate tree, reduced environment" },
@@ -576,7 +757,7 @@ pub(crate) fn start_run(
         journal.write_text("REVIEW.base.md", text)?;
     }
     if is_child { journal.write_text("initialized", "1\n")?; }
-    if let Some(launch) = launch {
+    if let StartMode::Detached(launch) = mode {
         return launch(&journal, &id);
     }
     let lock = journal.lock()?;
@@ -1085,15 +1266,7 @@ impl Run {
                 omissions.push(format!("claimed file #{} (file name, {})", index + 1, reason.reason()));
                 continue;
             }
-            // A link would show the writer a file from outside the repository, or its target (a tracked link that
-            // the work tree holds as a text file when core.symlinks is false).
-            if !patch::no_links(&self.git.root, p) {
-                return fail(format!("{p}: a link or reparse point lies on its way, so it is not read"));
-            }
-            if self.git.tracked_link(&self.head, p)? {
-                return fail(format!("{p}: Git keeps it as a link, so it is not read"));
-            }
-            match std::fs::read(self.git.root.join(p)) {
+            match std::fs::read(writer_worktree_path(&self.git, &self.head, p)?) {
                 Ok(bytes) => {
                     let withheld = if bytes.contains(&0) {
                         Vec::new()
@@ -1119,48 +1292,18 @@ impl Run {
                         (preview.into_bytes(), " (screened preview. Use only visible text in exact old fragments. \
                             Give complete replacement content to remove or replace withheld lines.)")
                     };
-                    lines.push(format!("- {p}  blob {blob}{note}"));
+                    lines.push(writer_file_line(p, Some(&blob), note));
                     attached.push((p.clone(), bytes));
                 }
-                Err(_) => lines.push(format!("- {p}  none (it does not exist)")),
+                Err(_) => lines.push(writer_file_line(p, None, "")),
             }
         }
         Ok((lines.join("\n"), attached, omissions))
     }
 
-    /// The rules of a writer turn. The checks are named by source and number: their command lines stay with the engine,
-    /// since one may hold a private path or a credential.
-    fn check_rules(&self) -> String {
-        let list = |v: &[String]| v.iter().map(|x| format!("{x:?}")).collect::<Vec<_>>().join(", ");
-        let mut cmds: Vec<String> = (1..=self.verify_plan.checks.len()).map(|i| format!("{} #{i}", self.verify_plan.check_source)).collect();
-        cmds.extend((1..=self.verify_plan.verify.len()).map(|i| format!("{} #{i} (verify)", self.verify_plan.verify_source)));
-        render(CHECK_RULES, &[
-            ("protect", if self.args.protect.is_empty() { String::new() } else { format!(", or under {}", list(&self.args.protect)) }),
-            ("allowed", if self.args.allow_check_changes.is_empty() { String::new() } else { format!(", except {}, which the lead allowed", list(&self.args.allow_check_changes)) }),
-            ("checks", if cmds.is_empty() { "none are given, so nothing is verified by running".into() } else { format!("{} (the brief may say what they are; the engine does not pass their command lines)", cmds.join(", ")) }),
-        ])
-    }
-
     /// The private folders a check's output may name, each with the word a model sees instead.
     fn private_places(&self) -> Vec<(String, &'static str)> {
-        let mut v = vec![
-            (std::env::temp_dir().display().to_string(), "<tmp>"),
-            (self.journal.dir.display().to_string(), "<journal>"),
-            (self.cfg.home.display().to_string(), "<zodchi-home>"),
-            (self.args.repo_norm.clone(), "<repo>"),
-        ];
-        v.extend(self.check_paths.private_places());
-        for key in ["configuredPath", "path"] {
-            if let Some(path) = self.browser[key].as_str().filter(|s| !s.is_empty()) {
-                v.push((path.to_string(), "<browser>"));
-            }
-        }
-        for k in ["HOME", "USERPROFILE"] {
-            if let Some(h) = std::env::var_os(k).filter(|h| !h.is_empty()) {
-                v.push((h.to_string_lossy().into_owned(), "~"));
-            }
-        }
-        v
+        private_places(&self.cfg, &self.args, &self.journal.dir, &self.check_paths, &self.browser)
     }
 
     /// One writer turn: the prompt from its template, the brief, the claimed files and `extra` attachments; the
@@ -1187,10 +1330,7 @@ impl Run {
                 if !omissions.is_empty() {
                     return Ok(ScreenedPrompt::Withheld(omissions));
                 }
-                let rules = format!("{RULES}\n{}", self.check_rules());
-                let mut all = vec![("step", step.to_string()), ("run", self.id.clone()), ("files", files), ("rules", rules)];
-                all.extend(vars);
-                let text = render(template, &all);
+                let text = expert_preamble(template, step, &self.id, files, &check_rules(&self.args, &self.verify_plan), vars);
                 let brief = input_attachment(&self.brief, &places);
                 let mut attachments = vec![("brief".to_string(), brief)];
                 attachments.extend(extra);
@@ -1326,7 +1466,7 @@ impl Run {
         let output_schema = schema(agent::SCHEMA);
         let mut allowed = self.claimed.clone();
         allowed.extend(self.approved_paths(&apply_step));
-        let boundary = allowed.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n");
+        let boundary = agent_boundary(&allowed);
         let notes = vars.into_iter().map(|(_, note)| note).collect::<Vec<_>>().join("\n\n");
         let mut previous_summary: Option<String> = None;
         let continuations = if self.args.budget.is_some() { u32::MAX } else { self.args.continuations };
@@ -1343,14 +1483,10 @@ impl Run {
                         previous_summary = Some(summary.to_string());
                     }
                 }
-                let mut preamble = format!("Step: {turn} (code-package v1, run {})\n\n{AGENT_RULES}\nAllowed files:\n{boundary}\n\n{}\n\n{notes}",
-                    self.id, self.check_rules());
-                if !self.verify_plan.setup.is_empty() {
-                    preamble.push_str("\n\nThe engine completed the configured setup in this workspace. Use the prepared dependencies for your checks.");
-                }
-                if let Some(variable) = self.browser["variable"].as_str() {
-                    preamble.push_str(&format!("\n\nThe pinned browser executable is available in the shell variable {variable}. Project tests choose headless mode."));
-                }
+                let mut preamble = agent_preamble(
+                    &turn, &self.id, &boundary, &check_rules(&self.args, &self.verify_plan), &notes,
+                    !self.verify_plan.setup.is_empty(), &self.browser,
+                );
                 if n > 0 || attempt > 1 {
                     preamble.push_str("\n\nContinue the writer's work in this same private workspace. Inspect its current files and preserve edits that are already complete.");
                 }

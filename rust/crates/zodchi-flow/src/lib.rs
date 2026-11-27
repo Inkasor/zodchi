@@ -59,6 +59,7 @@ use serde_json::Value;
 use zodchi_core::util::{fail, GatewayError, Result};
 
 pub const USAGE: &str = "Usage: zodchi flow <workflow> --args <file.json> [--detach]
+       zodchi flow code-package --args <file.json> --dry-run
        zodchi flow <workflow> --resume <run-id> [--args <file.json>] [--rerun <step>] [--detach]
        zodchi flow status <run-id>
        zodchi flow status <run-id> --handoff
@@ -91,9 +92,27 @@ fn require_workflow(git: &git::Git, base: &str, workflow: &str) -> Result<()> {
     catalog::require(git, base, workflow, &compiled_catalog())
 }
 
+/// Whether the arguments after `flow` include the preview switch. The launcher checks this before any updates.
+pub fn requests_dry_run(args: &[String]) -> bool {
+    let mut options = args.iter().skip(1);
+    while let Some(arg) = options.next() {
+        match arg.as_str() {
+            "--dry-run" => return true,
+            "--args" | "--resume" | "--rerun" | "--file" | "--allow-files" | "--profile" | "--repo" => {
+                options.next();
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// `zodchi flow <workflow> ...`: the result of the run.
 pub fn cli(args: &[String]) -> Result<Exit> {
     let Some(workflow) = args.first() else { return fail(USAGE) };
+    if workflow != code_package::WORKFLOW && requests_dry_run(args) {
+        return fail("--dry-run is supported only by code-package.");
+    }
     match workflow.as_str() {
         "cleanup" => return cleanup::cli(&args[1..]),
         "runs" => return runs::list(&args[1..]),
@@ -150,10 +169,16 @@ pub fn cli(args: &[String]) -> Result<Exit> {
     let mut resume = None;
     let mut rerun = None;
     let mut detach = false;
+    let mut dry_run = false;
     let mut i = 1;
     while i < args.len() {
-        if args[i] == "--detach" && !detach {
-            detach = true;
+        let switch = match args[i].as_str() {
+            "--detach" if !detach => Some(&mut detach),
+            "--dry-run" if !dry_run => Some(&mut dry_run),
+            _ => None,
+        };
+        if let Some(switch) = switch {
+            *switch = true;
             i += 1;
             continue;
         }
@@ -165,6 +190,9 @@ pub fn cli(args: &[String]) -> Result<Exit> {
             _ => return fail(format!("Unexpected argument: {}\n{USAGE}", args[i])),
         }
         i += 2;
+    }
+    if dry_run && (resume.is_some() || detach) {
+        return fail("--dry-run cannot be used with --resume or --detach.");
     }
     let given = match &file {
         Some(f) => {
@@ -178,6 +206,9 @@ pub fn cli(args: &[String]) -> Result<Exit> {
         (None, Some(given)) => {
             if rerun.is_some() {
                 return fail("--rerun goes with --resume <run-id>");
+            }
+            if dry_run {
+                return control::dry_run_package(&given);
             }
             let launch = detach.then_some(control::launch_start as boundary::Launch);
             let exit = if workflow == research::NAME {

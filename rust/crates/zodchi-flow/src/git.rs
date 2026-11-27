@@ -1,6 +1,7 @@
 //! Git, run as a program in the repository of the run. Every call names its arguments exactly (no shell), and an
 //! alternate index (`GIT_INDEX_FILE`) keeps the candidate tree and the export away from the user's own index.
 
+use std::cell::Cell;
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -12,9 +13,25 @@ pub struct Git {
     pub root: PathBuf,
 }
 
+thread_local! {
+    static PREVIEW: Cell<bool> = const { Cell::new(false) };
+}
+
 impl Git {
     pub fn new(root: &Path) -> Git {
         Git { root: root.to_path_buf() }
+    }
+
+    /// Use read-only Git settings for the preview's synchronous gates, including commands issued by shared helpers.
+    pub(crate) fn with_preview<T>(run: impl FnOnce() -> T) -> T {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                PREVIEW.set(self.0);
+            }
+        }
+        let _restore = Restore(PREVIEW.replace(true));
+        run()
     }
 
     fn command(&self, env: &[(&str, OsString)]) -> Command {
@@ -27,6 +44,11 @@ impl Git {
         }
         for (k, v) in env {
             c.env(k, v);
+        }
+        if PREVIEW.get() {
+            // Status can otherwise refresh the user's index, and Git can fetch missing objects in partial clones.
+            // Use a direct scan instead of starting or calling the repository's filesystem monitor.
+            c.env("GIT_OPTIONAL_LOCKS", "0").env("GIT_NO_LAZY_FETCH", "1").args(["-c", "core.fsmonitor=false"]);
         }
         c
     }

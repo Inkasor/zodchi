@@ -9,6 +9,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 const WIN = process.platform === "win32";
 const FIXED = "export const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));\n";
@@ -28,7 +29,7 @@ const FIELDS = ["verdict", "approved", "openFindings", "verifiedBy", "verificati
 const STOP_FIELDS = ["refused", "stoppedAt", "next", "question", "questions", "infra"];
 
 export default function register(h) {
-  const { scenario, flowWorld, serve, user, run, ZODCHI, gitOut, samePath, STUB, ROOT } = h;
+  const { scenario, flowWorld, serve, user, run, zodchi, ZODCHI, gitOut, samePath, STUB, ROOT } = h;
   const FAKE_CLAUDE = path.join(ROOT, "scripts", "e2e", "fake-claude.mjs");
 
   // ------------------------------------------------------------------------------------------------ the skills
@@ -100,10 +101,8 @@ export default function register(h) {
     return null;
   }
 
-  /** The steps of a skill, as an agent does them in a flow world: the brief from the template, the args from the
-   *  example, the run command from any other folder. `env` is added to the run's environment (for a simulated cut).
-   *  The files are in a folder with a space in its name, as an agent's may be, and the command is run by bash. */
-  async function startBySkill(t, f, skill, { env = {}, args = {} } = {}) {
+  /** The brief from the skill template and the args from its example, in a folder with a space in its name. */
+  function skillArgs(t, f, skill, args) {
     const dir = path.join(f.r, ".agent-tmp", "flow", "two words");
     fs.mkdirSync(dir, { recursive: true });
     const brief = path.join(dir, "clamp-brief.md");
@@ -113,8 +112,12 @@ export default function register(h) {
     fs.writeFileSync(file, JSON.stringify(given, null, 2));
     t.eq(gitOut(f.r, ["status", "--porcelain"]), "", "the brief and the args are in the ignored .agent-tmp/: the work tree is clean");
     t.ok(/ /.test(file), "the args file is at a path with a space in it");
-    return byShell(t, f, skill, COMMANDS[0], { "<args-file>": file }, { env });
+    return file;
   }
+
+  /** Start from another folder through the skill's shell command, with an optional environment override for cuts. */
+  const startBySkill = (t, f, skill, { env = {}, args = {} } = {}) =>
+    byShell(t, f, skill, COMMANDS[0], { "<args-file>": skillArgs(t, f, skill, args) }, { env });
 
   /** The resume command of the skill. */
   const resumeBySkill = (t, f, skill, id, extra = {}) => byShell(t, f, skill, COMMANDS[1], { "<run-id>": id }, { env: extra });
@@ -171,19 +174,41 @@ export default function register(h) {
     const data = path.join(f.w.dir, "server-data");
     const u = await user(t, f.w, data, "Flow user");
     const server = await serve(t, f.w, data);
+    const origin = `http://${server.address}`;
     const tokenFile = path.join(f.w.dir, "flow-token");
     fs.writeFileSync(tokenFile, `${u.token}\n`);
-    fs.writeFileSync(path.join(f.w.zhome, "flow.json"), JSON.stringify({ server: `http://${server.address}`, tokenFile }));
+    fs.writeFileSync(path.join(f.w.zhome, "flow.json"), JSON.stringify({ server: origin, tokenFile }));
     fs.rmSync(path.join(f.w.codex, "fake-auth.json"), { force: true });
     const answer = (step, value) => {
       fs.mkdirSync(path.join(u.home, "fake-flow"), { recursive: true });
       fs.writeFileSync(path.join(u.home, "fake-flow", `${step.replace(/ /g, "-")}.json`), JSON.stringify(value));
     };
     const steps = () => readJsonl(path.join(u.home, "fake-turns.jsonl")).map((x) => x.step);
-    return { f, u, answer, steps };
+    return { f, u, origin, answer, steps };
   }
 
   // ------------------------------------------------------------------------------------------------ scenarios
+
+  function directorySnapshot(dir) {
+    if (!fs.existsSync(dir)) return null;
+    const entries = fs.readdirSync(dir).sort().map(name => {
+      const file = path.join(dir, name);
+      return [name, fs.statSync(file).isDirectory()
+        ? directorySnapshot(file)
+        : createHash("sha256").update(fs.readFileSync(file)).digest("hex")];
+    });
+    return createHash("sha256").update(JSON.stringify(entries)).digest("hex");
+  }
+
+  function dryRunState(f) {
+    return {
+      zodchiHome: directorySnapshot(f.w.zhome),
+      packages: directorySnapshot(path.join(f.w.home, ".zodchi", "packages")),
+      repo: directorySnapshot(f.r),
+      status: gitOut(f.r, ["--no-optional-locks", "status", "--porcelain=v1", "-z", "-uall"]),
+      turns: f.steps(),
+    };
+  }
 
   function checkSkillContract(t) {
     const codex = readSkill(SKILLS.codex);
@@ -230,6 +255,74 @@ export default function register(h) {
     const f = flowWorld(t, "flow-entry-local");
     f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
     f.answer("review 1", f.review("approved"));
+    const file = skillArgs(t, f, skill, {});
+    const start = ["--args", file];
+    const previewArgs = [...start, "--dry-run"];
+    const source = path.join(f.r, "src", "math.mjs");
+    const brief = JSON.parse(fs.readFileSync(file, "utf8")).brief;
+    // A status probe using optional locks would refresh Git's index for this unchanged file.
+    const past = new Date("2000-01-01T00:00:00Z");
+    fs.utimesSync(source, past, past);
+    const before = dryRunState(f);
+    const dry = await f.flow(previewArgs);
+    t.eq([dry.code, dry.json?.dryRun, dry.json?.label, dry.json?.branch, dry.json?.base],
+      [0, true, "clamp", "refs/heads/main", f.base], "dry run prints a single JSON plan for the package");
+    const plan = dry.json;
+    t.ok(samePath(plan.repo, f.r), "the preview names the checkout");
+    t.eq([plan.files, plan.protected, plan.allowCheckChanges], [["src/math.mjs"], [
+      "test/", "tests/", "e2e/", ".claude/skills/verify/", ".agents/skills/verify/", "skills/verify/",
+      ".zodchi/verify.json", "REVIEW.md", ".zodchi/workflows.json",
+    ], []], "the preview describes the claim and its protected checks");
+    t.eq(plan.models, {
+      expertWriter: { provider: "codex", model: "fake-writer", effort: "medium", route: "local codex gateway" },
+      reviewer: { provider: "codex", model: "fake-reviewer", effort: "high", route: "local codex gateway" },
+    }, "the preview identifies both roles and their routes");
+    t.eq(plan.prompt.attachments, [
+      { path: "brief", bytes: fs.statSync(brief).size },
+      { path: "src/math.mjs", bytes: Buffer.byteLength(STUB) },
+    ], "attachments expose paths and byte counts");
+    t.eq(plan.prompt.sections.map(section => section.name), ["instructions", "files", "rules", "checkRules"],
+      "the preview lists the writer instructions, file manifest and rules");
+    t.ok(plan.prompt.sections.every(section => Object.keys(section).length === 2 && Number.isSafeInteger(section.bytes) && section.bytes > 0),
+      "the named sections expose byte counts only");
+    t.ok(!dry.out.includes("a clamp that lets a value out of its range") && !dry.out.includes(STUB.trim()),
+      "neither the brief nor the claimed file content appears in the preview");
+    t.eq([plan.screening, plan.checks, plan.verify, plan.budget], [
+      { brief: "screened", files: "screened", agentWorkspace: null },
+      ["node test/math.test.mjs"], ["node smoke.mjs"], { rounds: 3, fixes: 1, continuations: 0 },
+    ], "the preview reports screening, ordered verification commands and the package budget");
+    t.eq(dryRunState(f), before, "the Zodchi home, claims, Git index and checkout are byte-identical and no model ran");
+    t.eq(f.steps(), [], "the fake Codex received zero model calls");
+
+    for (const flag of [["--detach"], ["--resume", "unused-run"]]) {
+      const wrong = await f.flow([...previewArgs, ...flag]);
+      t.ok(wrong.code === 1 && wrong.err.includes("--dry-run"), `dry run combined with ${flag[0]} is a wrong call`);
+    }
+    const unsupported = await zodchi(t, f.w, ["flow", "research", ...previewArgs], { cwd: f.r });
+    t.ok(unsupported.code === 1 && unsupported.err.includes("code-package"), "research names code-package as the supported workflow");
+    t.eq(dryRunState(f), before, "rejected command lines leave the same state");
+
+    const denylist = path.join(f.w.dir, "preview-denylist.txt");
+    fs.writeFileSync(denylist, "Make clamp\nexport const clamp\n");
+    const screeningEnv = { ZODCHI_DENYLIST: denylist };
+    const screened = await f.flow(previewArgs, screeningEnv);
+    const screenedStart = await f.flow(start, screeningEnv);
+    t.eq([screened.code, screened.json], [screenedStart.code, screenedStart.json], "dry run and start return the same privacy refusal");
+    t.eq(screened.code, 2, "the input screening refusal exits 2");
+    t.ok(/would be withheld: the brief:\d+ \(private-word\), src\/math\.mjs:\d+ \(private-word\)\./.test(screened.json?.refused),
+      "the same input screening checks the brief and the claimed file");
+    t.eq(dryRunState(f), before, "screening refuses before leaving any local effects");
+
+    fs.writeFileSync(source, FIXED);
+    const dirty = dryRunState(f);
+    const dirtyPreview = await f.flow(previewArgs);
+    t.eq(dryRunState(f), dirty, "a preview does not change a dirty checkout or Zodchi state");
+    const dirtyStart = await f.flow(start);
+    t.eq([dirtyPreview.code, dirtyPreview.json], [dirtyStart.code, dirtyStart.json], "preview and start refuse a dirty claimed file identically");
+    t.ok(dirtyPreview.code === 2 && /Uncommitted changes in package files: src\/math\.mjs/.test(dirtyPreview.json?.refused),
+      "the refusal names the dirty claimed file");
+    fs.writeFileSync(source, STUB);
+
     const res = await startBySkill(t, f, skill);
     readLikeSkill(t, f, skill, res);
     t.eq([res.json.rounds.length, res.json.verifiedBy, res.json.openFindings], [1, "args.verify", []], "one round, verified by args.verify, nothing open");
@@ -326,6 +419,14 @@ export default function register(h) {
     const { f } = s;
     s.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
     s.answer("review 1", f.review("approved"));
+    const file = skillArgs(t, f, skill, {});
+    const before = dryRunState(f);
+    const dry = await f.flow(["--args", file, "--dry-run"]);
+    const route = `company server ${s.origin}`;
+    t.eq([dry.code, dry.json?.models?.expertWriter?.route, dry.json?.models?.reviewer?.route, s.steps()],
+      [0, route, route, []], "the dry run preflights the server route without asking a model");
+    t.eq(dryRunState(f), before, "server preflight leaves the local state unchanged");
+    t.ok(!dry.out.includes(s.u.token), "the preview prints the server origin without the token");
     const res = await startBySkill(t, f, skill);
     readLikeSkill(t, f, skill, res);
     t.eq(s.steps(), ["write", "review 1"], "the writer and the reviewer ran on the server");
@@ -341,10 +442,37 @@ export default function register(h) {
     const { f } = c;
     c.answer("write", "Here is the patch: clamp now uses Math.min and Math.max.");
     f.answer("review 1", f.review("approved"));
+    const file = skillArgs(t, f, skill, {});
+    const previewArgs = ["--args", file, "--dry-run"];
+    const before = dryRunState(f);
+    const dry = await f.flow(previewArgs);
+    t.ok(dry.code === 1 && /Claude preflight receipt for opus with effort high.*new model call/.test(dry.json?.refused),
+      "a missing receipt explains why the exact Claude candidate needs a model call");
+    t.eq([dryRunState(f), c.calls()], [before, []], "a cold Claude preview uses no model and creates no local state");
+    const codexOnly = f.args({ models: { expertWriter: { candidates: [{ provider: "codex", model: "fake-writer", effort: "medium" }] } } });
+    const codexPreview = await f.flow(["--args", codexOnly, "--dry-run"]);
+    t.eq([codexPreview.code, codexPreview.json?.models?.expertWriter?.route], [0, "local codex gateway"],
+      "enabling Claude leaves a Codex-only pair previewable without a Claude receipt");
+    t.eq([dryRunState(f), c.calls()], [before, []], "previewing the Codex pair also leaves local state unchanged");
     const stop = await startBySkill(t, f, skill);
     t.eq([stop.code, stop.json.stoppedAt], [2, "gateway failed at write"], "an answer outside the schema stops the run at the write step: exit 2");
     t.ok(stop.json.infra && stop.json.next && stop.json.runId, "the stop result carries infra, next and the run id the skill says to read");
     t.eq([f.commits().length, f.claim().status], [0, "open"], "nothing committed, the claim open (a plain resume would stop there again)");
+    const warm = dryRunState(f);
+    const calls = c.calls();
+    const cachedPreview = await f.flow(previewArgs);
+    t.eq([cachedPreview.code, cachedPreview.json?.models?.expertWriter, cachedPreview.json?.models?.reviewer], [0,
+      { provider: "claude", model: "opus", effort: "high", route: "claude cli" },
+      { provider: "codex", model: "fake-writer", effort: "medium", route: "local codex gateway" },
+    ], "a fresh receipt resolves the Claude writer without exposing its account binding");
+    t.eq([dryRunState(f), c.calls()], [warm, calls], "a warm preview leaves the journal, claim, receipt, checkout and model calls unchanged");
+    const otherEffort = f.args({ models: { expertWriter: { candidates: [
+      { provider: "claude", model: "opus", effort: "medium" }, { provider: "codex", model: "fake-writer" },
+    ] } } });
+    const missing = await f.flow(["--args", otherEffort, "--dry-run"]);
+    t.ok(missing.code === 1 && /Claude preflight receipt for opus with effort medium.*new model call/.test(missing.json?.refused),
+      "the high-effort receipt leaves the medium-effort candidate unresolved even with a Codex fallback");
+    t.eq([dryRunState(f), c.calls()], [warm, calls], "the unresolved candidate leaves local state and model calls unchanged");
     const step = (stop.json.stoppedAt.match(/ at (.+)$/) || [])[1];
     t.eq(step, "write", "the step is the one the stop names");
     c.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));

@@ -132,6 +132,21 @@ const PREFLIGHT_LIMIT: Duration = Duration::from_secs(180);
 /// The prompt of the tiny structured call; it carries nothing of the run.
 const PREFLIGHT_PROMPT: &str = "Step: preflight (zodchi flow)\n\nThis call only checks that the model answers in the asked form. Answer {\"ok\": true}.";
 
+#[derive(Clone, Debug)]
+pub(crate) enum ResolveError {
+    Unavailable(String),
+    // A preview cannot safely choose a fallback while this candidate's availability is unknown.
+    PreflightRequired(String),
+}
+
+impl ResolveError {
+    fn reason(self) -> String {
+        match self {
+            Self::Unavailable(why) | Self::PreflightRequired(why) => why,
+        }
+    }
+}
+
 /// The preflight of Claude on this machine at the gate, before anything is claimed: the program runs
 /// (`claude --version`), it is signed in with a Claude subscription (`claude auth status`), and a tiny structured
 /// call with the candidate's model and effort answers in its schema. The call is skipped when one of this CLI
@@ -141,9 +156,10 @@ const PREFLIGHT_PROMPT: &str = "Step: preflight (zodchi flow)\n\nThis call only 
 pub struct ClaudeGate {
     enabled: bool,
     home: PathBuf,
+    dry_run: bool,
     /// The program, its version and the account binding of its sign-in.
     program: Option<Result<(claude::Program, String, String), String>>,
-    picks: HashMap<(String, String), Result<String, String>>,
+    picks: HashMap<(String, String), Result<String, ResolveError>>,
 }
 
 impl ClaudeGate {
@@ -152,6 +168,7 @@ impl ClaudeGate {
         ClaudeGate {
             enabled: entry.and_then(|e| e.get("enabled")) == Some(&json!(true)),
             home: PathBuf::from(entry.and_then(|e| e.get("home")).and_then(Value::as_str).unwrap_or("")),
+            dry_run: false,
             program: None,
             picks: HashMap::new(),
         }
@@ -198,20 +215,24 @@ impl ClaudeGate {
 
     /// Whether a Claude candidate may run: the account it is bound to, or the reason when it may not.
     pub fn usable(&mut self, p: &Pick) -> Result<String, String> {
+        self.check_candidate(p).map_err(ResolveError::reason)
+    }
+
+    fn check_candidate(&mut self, p: &Pick) -> Result<String, ResolveError> {
         if !self.enabled || self.home.as_os_str().is_empty() {
-            return Err("Claude is not an executor of this run: not enabled (\"claude\": true in ~/.zodchi/flow.json)".into());
+            return Err(ResolveError::Unavailable("Claude is not an executor of this run: not enabled (\"claude\": true in ~/.zodchi/flow.json)".into()));
         }
         // The model goes into the request's role, which takes a plain model name: anything else would pass the
         // preflight and fail only at the first step.
         let plain = |s: &str| s.len() <= 64 && s.starts_with(|c: char| c.is_ascii_alphanumeric()) && s.chars().all(|c| c.is_ascii_alphanumeric() || ".-_".contains(c));
         if !plain(&p.model) {
-            return Err("a Claude candidate needs a plain model name (letters, digits, . - _)".into());
+            return Err(ResolveError::Unavailable("a Claude candidate needs a plain model name (letters, digits, . - _)".into()));
         }
         let k = (p.model.clone(), p.effort.clone());
         if let Some(r) = self.picks.get(&k) {
             return r.clone();
         }
-        let r = self.check(p).map_err(|why| format!("Claude preflight: {why}"));
+        let r = self.check(p);
         self.picks.insert(k, r.clone());
         r
     }
@@ -222,24 +243,34 @@ impl ClaudeGate {
         Ok(dir)
     }
 
-    fn check(&mut self, p: &Pick) -> Result<String, String> {
+    fn check(&mut self, p: &Pick) -> Result<String, ResolveError> {
+        let unavailable = |why| ResolveError::Unavailable(format!("Claude preflight: {why}"));
         if self.program.is_none() {
             let found = claude::find_program().and_then(|program| {
-                let dir = self.scratch()?;
+                // Version and sign-in are read-only probes. A preview runs them outside the checkout without scratch.
+                let dir = if self.dry_run { std::env::temp_dir() } else { self.scratch()? };
                 let r = claude::version(&program, &dir).and_then(|v| claude::signed_in(&program, &dir).map(|a| (v, a)));
-                let _ = std::fs::remove_dir_all(&dir);
+                if !self.dry_run {
+                    let _ = std::fs::remove_dir_all(&dir);
+                }
                 r.map(|(v, a)| (program, v, a))
             });
             self.program = Some(found);
         }
-        let (program, version, account) = self.program.clone().expect("set above")?;
+        let (program, version, account) = self.program.clone().expect("set above").map_err(unavailable)?;
         let cache = self.home.join("claude-preflight.json");
         let id = format!("{version}|{account}|{}|{}", p.model, p.effort);
         let passed = read_stored(&cache).and_then(|c| c.get(&id).and_then(Value::as_str).and_then(parse_iso_ms));
         if passed.is_some_and(|at| (0..PREFLIGHT_FRESH_MS).contains(&(now_ms() - at))) {
             return Ok(account);
         }
-        let dir = self.scratch()?;
+        if self.dry_run {
+            return Err(ResolveError::PreflightRequired(format!(
+                "--dry-run needs a fresh Claude preflight receipt for {} with effort {}. Checking this candidate would require a new model call.",
+                p.model, p.effort,
+            )));
+        }
+        let dir = self.scratch().map_err(unavailable)?;
         let schema = json!({ "type": "object", "additionalProperties": false, "required": ["ok"], "properties": { "ok": { "type": "boolean", "const": true } } });
         let text = claude::message("", PREFLIGHT_PROMPT, &schema);
         let r = claude::call(&program, &dir, &p.model, &p.effort, &text, &schema, PREFLIGHT_LIMIT, || Ok(()));
@@ -251,7 +282,7 @@ impl ClaudeGate {
                 let _ = write_json_atomic(&cache, &c);
                 Ok(account)
             }
-            Err((_, why, _)) => Err(format!("{} with effort {} did not answer a tiny structured call: {why}", p.model, p.effort)),
+            Err((_, why, _)) => Err(unavailable(format!("{} with effort {} did not answer a tiny structured call: {why}", p.model, p.effort))),
         }
     }
 }
@@ -277,15 +308,23 @@ pub(crate) fn test_one_shot_gate(roles: &[&str], enabled: bool) -> (Map<String, 
 /// preflight passed, run only for the candidates the walk reaches; a Claude pick comes back bound to the account of
 /// its preflight. Returns the pair and every candidate skipped with its reason, or the refusal with those reasons.
 pub fn resolve(table: &Map<String, Value>, codex: &Result<(), String>, writer_role: &str, local_writer: bool, prior_writers: &[String]) -> Result<(Pick, Pick, Vec<String>), String> {
-    let writers = candidates(table, writer_role)?;
-    let reviewers = candidates(table, REVIEWER_ROLE)?;
+    resolve_pair(table, codex, writer_role, local_writer, prior_writers, false).map_err(ResolveError::reason)
+}
+
+pub(crate) fn resolve_pair(
+    table: &Map<String, Value>, codex: &Result<(), String>, writer_role: &str, local_writer: bool,
+    prior_writers: &[String], dry_run: bool,
+) -> Result<(Pick, Pick, Vec<String>), ResolveError> {
+    let writers = candidates(table, writer_role).map_err(ResolveError::Unavailable)?;
+    let reviewers = candidates(table, REVIEWER_ROLE).map_err(ResolveError::Unavailable)?;
     let mut gate = ClaudeGate::of(table);
+    gate.dry_run = dry_run;
     let mut skipped = Vec::new();
-    let mut usable = |p: &Pick| -> Result<String, String> {
+    let mut usable = |p: &Pick| -> Result<String, ResolveError> {
         match p.provider.as_str() {
-            "claude" => gate.usable(p),
-            "codex" if !p.model.is_empty() => codex.clone().map(|_| String::new()),
-            _ => Err("not a Codex or Claude candidate with a model".into()),
+            "claude" => gate.check_candidate(p),
+            "codex" if !p.model.is_empty() => codex.clone().map(|_| String::new()).map_err(ResolveError::Unavailable),
+            _ => Err(ResolveError::Unavailable("not a Codex or Claude candidate with a model".into())),
         }
     };
     for w in &writers {
@@ -295,10 +334,11 @@ pub fn resolve(table: &Map<String, Value>, codex: &Result<(), String>, writer_ro
         }
         let w_account = match usable(w) {
             Ok(a) => a,
-            Err(why) => {
+            Err(ResolveError::Unavailable(why)) => {
                 skipped.push(format!("{writer_role} {}: {why}", w.name()));
                 continue;
             }
+            Err(required @ ResolveError::PreflightRequired(_)) => return Err(required),
         };
         let mut reasons = Vec::new();
         for r in &reviewers {
@@ -312,10 +352,11 @@ pub fn resolve(table: &Map<String, Value>, codex: &Result<(), String>, writer_ro
             }
             let r_account = match usable(r) {
                 Ok(a) => a,
-                Err(why) => {
+                Err(ResolveError::Unavailable(why)) => {
                     reasons.push(format!("{REVIEWER_ROLE} {}: {why}", r.name()));
                     continue;
                 }
+                Err(required @ ResolveError::PreflightRequired(_)) => return Err(required),
             };
             skipped.extend(reasons);
             let (mut w, mut r) = (w.clone(), r.clone());
@@ -324,7 +365,7 @@ pub fn resolve(table: &Map<String, Value>, codex: &Result<(), String>, writer_ro
         }
         skipped.push(format!("{writer_role} {}: no independent reviewer ({})", w.name(), reasons.join("; ")));
     }
-    Err(format!("No writer/reviewer pair of distinct models: {}", skipped.join("; ")))
+    Err(ResolveError::Unavailable(format!("No writer/reviewer pair of distinct models: {}", skipped.join("; "))))
 }
 
 #[cfg(test)]

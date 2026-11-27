@@ -413,7 +413,8 @@ pub(super) fn register(selected: &str) -> Result<Value> {
 }
 
 pub(super) fn existing_run(args: &[String]) -> Option<&str> {
-    if args.first().is_none_or(|command| command != "flow") {
+    let (command, flow_args) = args.split_first()?;
+    if command != "flow" || zodchi_flow::requests_dry_run(flow_args) {
         return None;
     }
     if let Some(flag) = args.iter().position(|arg| arg == "--resume") {
@@ -502,6 +503,7 @@ pub(super) fn route(args: &[String]) -> Result<Option<u8>> {
     let version = if let Some(id) = existing_run(args) {
         pinned_version(home, id, &state)?
     } else if args.first().is_some_and(|command| command == "flow")
+        && !zodchi_flow::requests_dry_run(&args[1..])
         && args.iter().any(|arg| arg == "--args")
     {
         match update(home, &state) {

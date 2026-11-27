@@ -33,6 +33,7 @@
         "files"
       ],
       "docs": "docs/flow.md#running-it",
+      "dryRun": "zodchi flow code-package --args <file.json> --dry-run",
       "example": {
         "repo": "/project",
         "brief": "/tmp/brief.md",

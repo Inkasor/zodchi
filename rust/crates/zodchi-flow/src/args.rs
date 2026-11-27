@@ -33,6 +33,11 @@ pub struct Args {
     pub check_timeout_min: f64,
 }
 
+pub(crate) const BUILTIN_PROTECTED: &[&str] = &[
+    "test/", "tests/", "e2e/", ".claude/skills/verify/", ".agents/skills/verify/",
+    "skills/verify/", crate::verify::CONFIG, "REVIEW.md",
+];
+
 const SUPPORTED: &[&str] = &[
     "label", "brief", "repo", "files", "tmp", "mode", "rounds", "fixes", "setup", "checks", "verify", "protect", "allowCheckChanges",
     "models", "commit", "extendClaim", "checkTimeoutMin", "continuations", "isolated", "budget", "sourceRun", "reviewContext", "browser",
@@ -240,6 +245,13 @@ impl Args {
 
     pub fn mode(&self) -> &'static str {
         if self.agent { "agent" } else { "expert" }
+    }
+
+    pub(crate) fn protected_paths(&self) -> Vec<&str> {
+        let mut paths: Vec<&str> = BUILTIN_PROTECTED.to_vec();
+        paths.push(crate::catalog::PROJECT);
+        paths.extend(self.protect.iter().map(String::as_str));
+        paths
     }
 }
 

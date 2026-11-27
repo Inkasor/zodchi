@@ -457,6 +457,12 @@ fn cli_catalog_controls_and_invalid_calls() {
     for entry in entries {
         let name = entry["name"].as_str().unwrap();
         assert_eq!(w.flow(&[name, "--help"]).code(0).result, *entry);
+        if name == "code-package" {
+            assert_eq!(
+                entry["dryRun"],
+                "zodchi flow code-package --args <file.json> --dry-run"
+            );
+        }
     }
     let repo = w.repo.to_str().unwrap();
     assert_eq!(w.flow(&["list", "--repo", repo]).code(0).result, *list);

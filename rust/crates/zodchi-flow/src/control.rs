@@ -97,13 +97,19 @@ pub fn handoff(id: &str) -> Result<Exit> {
     Ok(Exit { code: 0, result: handoff })
 }
 
-/// Starts a new run from its arguments: the gate (no effect), then the journal, the claim and the machine.
+/// Starts a new run from its arguments: the gate, then the journal, the claim and the machine.
 pub fn start_package(raw: &Value) -> Result<Exit> {
-    code_package::start_run(raw, None, None, crate::require_workflow)
+    code_package::start_run(raw, code_package::StartMode::Foreground, crate::require_workflow)
 }
 
 pub fn start_package_detached(raw: &Value) -> Result<Exit> {
-    code_package::start_run(raw, None, Some(launch_start), crate::require_workflow)
+    code_package::start_run(raw, code_package::StartMode::Detached(launch_start), crate::require_workflow)
+}
+
+pub(crate) fn dry_run_package(raw: &Value) -> Result<Exit> {
+    crate::git::Git::with_preview(|| {
+        code_package::start_run(raw, code_package::StartMode::DryRun, crate::require_workflow)
+    })
 }
 
 pub(crate) fn launch_start(journal: &Journal, id: &str) -> Result<Exit> {
