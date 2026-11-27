@@ -2,7 +2,7 @@
 //! Pattern compilation, argument screening and execution must succeed separately before a
 //! validated adapter can be used for collection.
 
-use crate::input_common::Scrubber;
+use zodchi_flow_engine::input_common::Scrubber;
 use regex::Regex;
 use serde_json::json;
 use serde_json::Value;
@@ -989,7 +989,7 @@ pub(super) fn collect(item: &Value, cwd: &Path, outcomes: &Value, scrubber: &Scr
                     let mut child = spawned;
                     #[cfg(windows)]
                     {
-                        crate::boundary::cut("incident read contained");
+                        zodchi_flow_engine::boundary::cut("incident read contained");
                         if group.resume(&child).is_err() {
                             group.stop();
                             let _ = child.wait();
@@ -1031,7 +1031,7 @@ pub(super) fn collect(item: &Value, cwd: &Path, outcomes: &Value, scrubber: &Scr
                     group.stop();
                     #[cfg(unix)]
                     {
-                        let _ = crate::checks::end_group(child.id());
+                        let _ = zodchi_flow_engine::checks::end_group(child.id());
                     }
                     let (stdout, out_cut) = out.join().unwrap_or_default();
                     let (stderr, err_cut) = err.join().unwrap_or_default();
