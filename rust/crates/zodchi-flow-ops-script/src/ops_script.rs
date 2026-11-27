@@ -17,11 +17,21 @@ use std::time::Duration;
 use std::time::Instant;
 use serde_json::{json, Value};
 use zodchi_core::util::sha256_hex;
-use crate::{boundary::Launch, child_package, input_common, journal::{self, Journal}, Exit};
 use zodchi_core::{config::Config, util::{fail, iso, GatewayError}};
+use zodchi_flow_engine::{
+    boundary::{self, Launch},
+    checks, input_common,
+    journal::{self, Journal},
+    models, Exit,
+};
 
 pub const NAME: &str = "ops-script";
 const VERSION: &str = "1";
+
+pub struct RepairHooks {
+    pub start: fn(&Value, &str) -> zodchi_core::util::Result<Exit>,
+    pub resume: fn(&str, &Value) -> zodchi_core::util::Result<Exit>,
+}
 
 fn reject_privileged(privileged: bool) -> Result<(), String> {
     if privileged { Err("The dry run must not run as root or elevated".into()) } else { Ok(()) }
@@ -369,7 +379,7 @@ fn run_unix_command(program: &Path, startup_executable: &Path, args: &[std::ffi:
     };
     // On Unix, also stop children that survived a successfully exited leader.
     #[cfg(unix)]
-    crate::checks::end_group(pid)?;
+    checks::end_group(pid)?;
     let status = status.map_err(|error| format!("Cannot wait for the check process: {error}"))?;
     let stdout = stdout.recv_timeout(Duration::from_secs(2)).map_err(|_| "The process output did not close")?;
     let stderr = stderr.recv_timeout(Duration::from_secs(2)).map_err(|_| "The process error output did not close")?;
@@ -514,7 +524,7 @@ fn working_python(program: &Path, cwd: &Path) -> bool {
 /// Resolve and try required tools before a snapshot or a remote side effect.
 fn preflight_tools(args: &Args) -> Result<Tools, String> {
     validate_direct(&args.check, &args.inputs[0])?;
-    let configured_bash = crate::checks::find_bash();
+    let configured_bash = checks::find_bash();
     let bash = find_tool(configured_bash.to_str().ok_or("Bash path is not Unicode")?)
         .ok_or("Bash is required")?;
     let checksum = find_checksum_tool(&bash).ok_or("sha256sum is required for the operator command")?;
@@ -699,7 +709,7 @@ fn outcome(result: Value) -> Exit {
     Exit { code: if result["ready"] == true { 0 } else { 2 }, result }
 }
 
-pub(crate) fn project_status_result(run: &Value, result: Value) -> Value {
+pub fn project_status_result(run: &Value, result: Value) -> Value {
     if run["workflow"] == NAME {
         checked_result(run, result)
     } else {
@@ -720,7 +730,7 @@ fn checked_result(run: &Value, mut result: Value) -> Value {
     result
 }
 
-pub fn start(raw: &Value, launch: Option<Launch>) -> zodchi_core::util::Result<Exit> {
+pub fn start(raw: &Value, launch: Option<Launch>, repair: &RepairHooks) -> zodchi_core::util::Result<Exit> {
     let prepared = (|| -> Result<(Args, Tools), String> {
         let args = Args::parse(raw)?;
         if args.remote.is_some() {
@@ -739,7 +749,7 @@ pub fn start(raw: &Value, launch: Option<Launch>) -> zodchi_core::util::Result<E
     let run = json!({ "runId": id, "workflow": NAME, "version": VERSION, "release": env!("CARGO_PKG_VERSION"),
         "createdAt": iso(), "repo": args.repo, "inputs": { "args": raw } });
     let journal = Journal::create(&cfg.home, &id, &run)?;
-    if let Some(launch) = launch { launch(&journal, &id) } else { resume(&id, None, None) }
+    if let Some(launch) = launch { launch(&journal, &id) } else { resume(&id, None, None, repair) }
 }
 
 /// Journal the intention before the effect. A recorded start without a result
@@ -751,11 +761,11 @@ where F: FnOnce() -> Value {
         EffectState::Unresolved => Ok(None),
         EffectState::Pending => {
             journal.append(json!({ "kind": "ops-start", "step": step }))?;
-            crate::boundary::cut(&format!("ops-start {step}"));
+            boundary::cut(&format!("ops-start {step}"));
             let value = run();
-            crate::boundary::cut(&format!("ops-effect {step}"));
+            boundary::cut(&format!("ops-effect {step}"));
             journal.append(json!({ "kind": "ops-done", "step": step, "result": value }))?;
-            crate::boundary::cut(&format!("ops-done {step}"));
+            boundary::cut(&format!("ops-done {step}"));
             Ok(Some(value))
         }
     }
@@ -792,7 +802,7 @@ fn repair_scope(args: &Args) -> Option<(PathBuf, Vec<String>)> {
         let relative = path.strip_prefix(&repo).ok()?;
         if relative.as_os_str().is_empty() || fs::OpenOptions::new().write(true).open(&path).is_err() { return None; }
         let text = String::from_utf8(regular_bytes(&path).ok()?).ok()?;
-        if text.lines().any(|line| scrubber.private(line) || crate::checks::credential_line(line)
+        if text.lines().any(|line| scrubber.private(line) || checks::credential_line(line)
             || (line.to_ascii_uppercase().contains("-----BEGIN ") && line.to_ascii_uppercase().contains("PRIVATE KEY-----"))) {
             return None;
         }
@@ -863,7 +873,15 @@ fn repairable_failure(step: &str, detail: &Value) -> bool {
     step.starts_with("dry ") && (detail["timedOut"] == true || nonzero_check_exit(&detail["code"]))
 }
 
-fn failed(journal: &mut Journal, id: &str, args: &Args, attempt: u64, step: &str, detail: Value) -> zodchi_core::util::Result<Exit> {
+fn failed(
+    journal: &mut Journal,
+    id: &str,
+    args: &Args,
+    attempt: u64,
+    step: &str,
+    detail: Value,
+    repair: &RepairHooks,
+) -> zodchi_core::util::Result<Exit> {
     let prior = journal.events().iter().find(|event| event["kind"] == "ops-repair" && event["attempt"] == attempt).cloned();
     if attempt >= args.fixes || (prior.is_none() && !repairable_failure(step, &detail)) {
         return finish(journal, json!({ "workflow": NAME, "runId": id, "ready": false, "status": "failed", "step": step, "detail": detail }));
@@ -918,17 +936,17 @@ fn failed(journal: &mut Journal, id: &str, args: &Args, attempt: u64, step: &str
                 "files": files, "rounds": 1, "fixes": 0, "models": models });
             let event = json!({ "kind": "ops-repair", "attempt": attempt, "child": child, "args": raw });
             journal.append(event.clone())?;
-            crate::boundary::cut(&format!("ops-repair {attempt}"));
+            boundary::cut(&format!("ops-repair {attempt}"));
             event
         };
         let child = event["child"].as_str().ok_or_else(|| GatewayError("Missing repair child id".into()))?;
         let cfg = Config::new(None)?;
         let child_dir = journal::flows_dir(&cfg.home).join(child);
         let result = if first {
-            child_package::start(&event["args"], child)
+            (repair.start)(&event["args"], child)
         } else if child_dir.join("initialized").is_file() {
             // Preserve the initialized repair's direct lock acquisition and result handling.
-            crate::code_package::resume(child, Some(&event["args"]), None)
+            (repair.resume)(child, &event["args"])
         } else {
             // A cut in the code-package gate may have interrupted a model
             // preflight before the child journal existed; never repeat it.
@@ -959,19 +977,36 @@ fn failed(journal: &mut Journal, id: &str, args: &Args, attempt: u64, step: &str
         "question": question, "detail": detail, "files": args.inputs })))
 }
 
-pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> zodchi_core::util::Result<Exit> {
+pub fn resume(
+    id: &str,
+    given: Option<&Value>,
+    retry: Option<&str>,
+    repair: &RepairHooks,
+) -> zodchi_core::util::Result<Exit> {
     loop {
-        let exit = resume_once(id, given, retry)?;
+        let exit = resume_once(id, given, retry, repair)?;
         if exit.result["status"] != "retry" { return Ok(exit); }
     }
 }
 
-fn resume_once(id: &str, given: Option<&Value>, retry: Option<&str>) -> zodchi_core::util::Result<Exit> {
+fn resume_once(
+    id: &str,
+    given: Option<&Value>,
+    retry: Option<&str>,
+    repair: &RepairHooks,
+) -> zodchi_core::util::Result<Exit> {
     let cfg = Config::new(None)?;
-    resume_guarded(id, given, retry, &cfg, unprivileged)
+    resume_guarded_with_repair(id, given, retry, &cfg, unprivileged, repair)
 }
 
-fn resume_guarded(id: &str, given: Option<&Value>, retry: Option<&str>, cfg: &Config, guard: impl FnOnce() -> Result<(), String>) -> zodchi_core::util::Result<Exit> {
+fn resume_guarded_with_repair(
+    id: &str,
+    given: Option<&Value>,
+    retry: Option<&str>,
+    cfg: &Config,
+    guard: impl FnOnce() -> Result<(), String>,
+    repair: &RepairHooks,
+) -> zodchi_core::util::Result<Exit> {
     let (mut journal, run) = Journal::open(&cfg.home, id)?;
     if run["workflow"] != NAME || run["version"] != VERSION || given.is_some_and(|value| value != &run["inputs"]["args"]) {
         return fail("The run does not match this ops-script command.");
@@ -1003,7 +1038,7 @@ fn resume_guarded(id: &str, given: Option<&Value>, retry: Option<&str>, cfg: &Co
     if let Some((ref step, ref detail)) = recorded_failure {
         if journal.events().iter().any(|event| event["kind"] == "ops-repair" && event["attempt"] == attempt) {
             let args = Args::parse_mode(&run["inputs"]["args"], false).map_err(GatewayError)?;
-            return failed(&mut journal, id, &args, attempt, step, detail.clone());
+            return failed(&mut journal, id, &args, attempt, step, detail.clone(), repair);
         }
     }
     let mut args = match Args::parse_mode(&run["inputs"]["args"], false) {
@@ -1019,7 +1054,7 @@ fn resume_guarded(id: &str, given: Option<&Value>, retry: Option<&str>, cfg: &Co
     if args.remote.is_some() { return fail("Remote mode is not available in this build."); }
     // A recorded failure or interrupted effect must survive even if that effect
     // damaged the snapshot. Never restore or run a new check before this audit.
-    if let Some((step, detail)) = recorded_failure { return failed(&mut journal, id, &args, attempt, &step, detail); }
+    if let Some((step, detail)) = recorded_failure { return failed(&mut journal, id, &args, attempt, &step, detail, repair); }
     let scrubber = input_common::Scrubber::new(cfg)?;
     let mut places: Vec<(String, &str)> = args.inputs.iter().map(|path| (path.display().to_string(), "[input]")).collect();
     places.push((args.tmp.display().to_string(), "[tmp]"));
@@ -1031,7 +1066,7 @@ fn resume_guarded(id: &str, given: Option<&Value>, retry: Option<&str>, cfg: &Co
         Ok(receipt) => json!({ "ok": true, "snapshot": receipt }),
         Err(error) => json!({ "ok": false, "error": clean(&error) }),
     })? else { return Ok(unresolved(id, &step)); };
-    if made["ok"] != true { return failed(&mut journal, id, &args, attempt, &step, made); }
+    if made["ok"] != true { return failed(&mut journal, id, &args, attempt, &step, made, repair); }
     let restored = Snapshot::restore(&made["snapshot"], &args.tmp, &args.inputs).and_then(|snapshot| {
         if run["inputs"]["args"].get("check").is_none() {
             let interpreter = if script_kind(&snapshot.dir.join(&snapshot.files[0].name))? == Some("python") { "python3" } else { "bash" };
@@ -1042,7 +1077,7 @@ fn resume_guarded(id: &str, given: Option<&Value>, retry: Option<&str>, cfg: &Co
     });
     let snapshot = match restored {
         Ok(snapshot) => snapshot,
-        Err(error) => return failed(&mut journal, id, &args, attempt, &step, json!({ "ok": false, "error": clean(&error) })),
+        Err(error) => return failed(&mut journal, id, &args, attempt, &step, json!({ "ok": false, "error": clean(&error) }), repair),
     };
     let mut snapshot_args = args.clone();
     snapshot_args.inputs = snapshot.files.iter().map(|file| snapshot.dir.join(&file.name)).collect();
@@ -1060,7 +1095,7 @@ fn resume_guarded(id: &str, given: Option<&Value>, retry: Option<&str>, cfg: &Co
             "shellcheck": if applicable == 0 { "not applicable" } else if tools.shellcheck.is_none() { "not installed" } else if ran == applicable { "checked" } else { "not reached" } }),
         Err(error) => json!({ "ok": false, "error": clean(&error) }),
     })? else { return Ok(unresolved(id, &step)); };
-    if checked["ok"] != true { return failed(&mut journal, id, &args, attempt, &step, checked); }
+    if checked["ok"] != true { return failed(&mut journal, id, &args, attempt, &step, checked, repair); }
     let step = format!("dry {attempt}");
     let Some(dry) = effect(&mut journal, &step, || match (|| -> Result<_, String> {
         validate_direct(&args.check, &snapshot_args.inputs[0])?;
@@ -1077,7 +1112,7 @@ fn resume_guarded(id: &str, given: Option<&Value>, retry: Option<&str>, cfg: &Co
             "stdout": clean(&r.stdout), "stderr": clean(&r.stderr), "interpreter": interpreter }),
         Err(error) => json!({ "ok": false, "error": clean(&error) }),
     })? else { return Ok(unresolved(id, &step)); };
-    if dry["ok"] != true { return failed(&mut journal, id, &args, attempt, &step, dry); }
+    if dry["ok"] != true { return failed(&mut journal, id, &args, attempt, &step, dry, repair); }
     let interpreter = dry["interpreter"].as_str().map(Path::new);
     if args.check[0] != "{copy}" && interpreter.is_none() { return Err(GatewayError("Dry-run receipt lacks the resolved interpreter".into())); }
     let command = local_human_command(&snapshot, &args.sudo, interpreter).map_err(GatewayError)?;
@@ -1246,7 +1281,7 @@ impl Args {
             if role != "expertWriter" && role != "reviewer" {
                 return Err(format!("Unsupported ops-script repair role: {role}"));
             }
-            if crate::models::candidates(&models, role)?.is_empty() {
+            if models::candidates(&models, role)?.is_empty() {
                 return Err(format!("args.models.{role} needs at least one candidate"));
             }
         }
@@ -1610,6 +1645,8 @@ pub(crate) fn valid_remote(remote: &str) -> bool {
         })
 }
 
+#[cfg(test)]
+crate::ops_script_tests! {
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2189,4 +2226,5 @@ mod tests {
         }
         fs::remove_dir_all(&base).unwrap();
     }
+}
 }
