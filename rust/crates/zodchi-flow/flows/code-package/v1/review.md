@@ -12,6 +12,7 @@ When present, writer-checks.json carries the current round's writer report of co
 writer workspace. Use verification.json for the engine's verification of the reviewed tree.
 {{history}}
 {{focus}}
+If a file attachment contains withheld-line markers, treat those lines as missing evidence.
 
 Every finding has a severity: "important" (a real defect the change brings in; it blocks approval), "nit" (worth
 fixing, does not block) or "pre-existing" (it was there before the change; does not block). verdict "approved"

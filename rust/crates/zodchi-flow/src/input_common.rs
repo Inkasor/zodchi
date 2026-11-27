@@ -36,6 +36,44 @@ pub struct Scrubber {
 
 pub(crate) const PRIVATE_WITHHELD: &str = "[private text removed]";
 
+enum Withholding {
+    PrivateWord,
+    KeyOrShape,
+    Credential,
+}
+
+impl Withholding {
+    fn reason(&self) -> &'static str {
+        match self {
+            Self::PrivateWord => "private-word",
+            Self::KeyOrShape | Self::Credential => "credential",
+        }
+    }
+
+    fn marker(&self) -> &'static str {
+        match self {
+            Self::PrivateWord | Self::KeyOrShape => PRIVATE_WITHHELD,
+            Self::Credential => checks::WITHHELD_LINE,
+        }
+    }
+}
+
+/// A line-by-line scan of recognizable credential shapes and complete private-key blocks.
+pub(crate) fn key_or_credential_shape() -> impl FnMut(&str) -> bool {
+    let mut private_key = false;
+    move |line| {
+        let upper = line.to_ascii_uppercase();
+        if upper.contains("-----BEGIN ") && upper.contains("PRIVATE KEY-----") {
+            private_key = true;
+        }
+        let hidden = private_key || Scrubber::credential_shape(line);
+        if upper.contains("-----END ") && upper.contains("PRIVATE KEY-----") {
+            private_key = false;
+        }
+        hidden
+    }
+}
+
 pub(crate) fn private_words(contents: &str) -> Vec<String> {
     contents.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#'))
         .map(str::to_lowercase).collect()
@@ -352,20 +390,47 @@ impl Scrubber {
         }
     }
 
+    fn screened_lines<'a>(&'a self, raw: &'a str) -> impl Iterator<Item = (&'a str, Option<Withholding>)> {
+        let mut key_or_shape = key_or_credential_shape();
+        raw.lines().map(move |line| {
+            let withholding = if key_or_shape(line) {
+                Some(Withholding::KeyOrShape)
+            } else if self.has_private_word(line) {
+                Some(Withholding::PrivateWord)
+            } else if checks::credential_line(line) {
+                Some(Withholding::Credential)
+            } else {
+                None
+            };
+            (line, withholding)
+        })
+    }
+
+    pub(crate) fn withholdings<'a>(&'a self, raw: &'a str) -> impl Iterator<Item = (usize, &'static str)> + 'a {
+        self.screened_lines(raw).enumerate().filter_map(|(index, (_, withholding))| {
+            withholding.map(|withholding| (index + 1, withholding.reason()))
+        })
+    }
+
+    /// An editable preview keeps the visible fragments and their original line endings.
+    pub(crate) fn redact_lines(&self, raw: &str) -> String {
+        let mut preview = String::new();
+        for ((line, withholding), original) in self.screened_lines(raw).zip(raw.split_inclusive('\n')) {
+            if let Some(withholding) = withholding {
+                preview.push_str(withholding.marker());
+                preview.push_str(&original[line.len()..]);
+            } else {
+                preview.push_str(original);
+            }
+        }
+        preview
+    }
+
     pub fn text(&self, raw: &str, places: &[(String, &str)]) -> String {
-        let mut private_key = false;
-        let lines = raw.lines().map(|line| {
-            let upper = line.to_ascii_uppercase();
-            if upper.contains("-----BEGIN ") && upper.contains("PRIVATE KEY-----") {
-                private_key = true;
-            }
-            let hidden = private_key || self.private(line);
-            if upper.contains("-----END ") && upper.contains("PRIVATE KEY-----") {
-                private_key = false;
-            }
-            if hidden { PRIVATE_WITHHELD } else { line }
-        }).collect::<Vec<_>>().join("\n");
-        checks::sanitize(&lines, places)
+        let lines = self.screened_lines(raw).map(|(line, withholding)| {
+            withholding.map_or(line, |withholding| withholding.marker())
+        });
+        checks::screen_paths(lines, places)
     }
 }
 

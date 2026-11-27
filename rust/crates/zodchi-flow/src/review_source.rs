@@ -3,9 +3,9 @@
 
 use crate::{
     checks,
-    input_common::{PRIVATE_WITHHELD, Scrubber},
+    input_common::{key_or_credential_shape, Scrubber, PRIVATE_WITHHELD},
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::path::Path;
 
 const LITERAL: &str = "[literal withheld]";
@@ -13,6 +13,43 @@ const LITERAL: &str = "[literal withheld]";
 pub(crate) struct File<'a> {
     pub path: &'a str,
     pub regular: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum FileLine {
+    Base(usize),
+    Candidate(usize),
+}
+
+pub(crate) struct Omission<'a> {
+    pub file: Option<&'a str>,
+    pub diff_line: usize,
+    pub reason: &'static str,
+    scope: &'static str,
+    pub file_line: Option<FileLine>,
+}
+
+fn hunk_start(header: &str) -> Option<(usize, usize)> {
+    let mut fields = header.strip_prefix("@@ ")?.split_ascii_whitespace();
+    let start = |field: &str, prefix: char| field.strip_prefix(prefix)?.split(',').next()?.parse::<usize>().ok();
+    Some((start(fields.next()?, '-')?, start(fields.next()?, '+')?))
+}
+
+fn hunk_line((base, candidate): &mut (usize, usize), line: &str) -> Option<FileLine> {
+    match *line.as_bytes().first()? {
+        b'-' => {
+            let location = FileLine::Base(*base);
+            *base += 1;
+            Some(location)
+        }
+        b'+' | b' ' => {
+            let location = FileLine::Candidate(*candidate);
+            *candidate += 1;
+            *base += line.starts_with(' ') as usize;
+            Some(location)
+        }
+        _ => None,
+    }
 }
 
 fn source_file(file: &File<'_>) -> bool {
@@ -31,6 +68,20 @@ pub(crate) fn screen(
     scrubber: &Scrubber,
     places: &[(String, &str)],
 ) -> (String, Vec<Value>) {
+    let (text, omissions) = screen_with_locations(diff, files, scrubber, places);
+    let receipt = omissions.into_iter().map(|omission| json!({
+        "file": omission.file, "diffLine": omission.diff_line,
+        "reason": omission.reason, "scope": omission.scope,
+    })).collect();
+    (text, receipt)
+}
+
+pub(crate) fn screen_with_locations<'a>(
+    diff: &str,
+    files: &[File<'a>],
+    scrubber: &Scrubber,
+    places: &[(String, &str)],
+) -> (String, Vec<Omission<'a>>) {
     let aligned = diff
         .lines()
         .filter(|line| line.starts_with("diff --git "))
@@ -39,36 +90,34 @@ pub(crate) fn screen(
     let mut next = files.iter();
     let mut file = None;
     let mut hunk = false;
-    let mut private_key = false;
+    let mut position = None;
+    let mut key_or_shape = key_or_credential_shape();
     let mut withheld = Vec::new();
     let mut screened = Vec::new();
     for (index, line) in diff.lines().enumerate() {
         if line.starts_with("diff --git ") {
             file = if aligned { next.next() } else { None };
             hunk = false;
+            position = None;
         } else if line.starts_with("@@ ") {
             hunk = true;
+            position = hunk_start(line);
         }
-        let upper = line.to_ascii_uppercase();
-        if upper.contains("-----BEGIN ") && upper.contains("PRIVATE KEY-----") {
-            private_key = true;
-        }
+        let file_line = position.as_mut().and_then(|position| hunk_line(position, line));
         let reason =
-            if private_key || Scrubber::credential_shape(line) || checks::credential_url(line) {
+            if key_or_shape(line) || checks::credential_url(line) {
                 Some("credential")
             } else if scrubber.has_private_word(line) {
                 Some("private-word")
             } else {
                 None
             };
-        if upper.contains("-----END ") && upper.contains("PRIVATE KEY-----") {
-            private_key = false;
-        }
-        let record = |reason, scope| {
-            json!({
-                "file": file.map(|entry| entry.path), "diffLine": index + 1,
-                "reason": reason, "scope": scope,
-            })
+        let record = |reason, scope| Omission {
+            file: file.map(|entry| entry.path),
+            diff_line: index + 1,
+            reason,
+            scope,
+            file_line,
         };
         let hide = |reason| {
             let marker = if reason == "private-word" {

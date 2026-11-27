@@ -233,7 +233,124 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
   });
 
   scenario("flow-agent-continue", "a cut during the next ephemeral writer turn preserves the working copy and handoff summary", async (t) => {
+    const screened = flowWorld(t, "flow-agent-continue-screening");
+    const privateBrief = "fixture-brief-internal-shorthand";
+    const privateFile = "fixture-file-internal-shorthand";
+    const shapedValue = "ghp_" + "fixturevalue".repeat(3);
+    const urlValue = "fixture-url-inline-value";
+    const keyType = ["PRIVATE", "KEY"].join(" ");
+    const keyBody = "fixture-key-body";
+    const cleanBrief = fs.readFileSync(screened.brief, "utf8");
+    const runScreened = (files = ["src/math.mjs"], env = {}) => screened.flow([
+      "--args", screened.args({ mode: "agent", files, checks: [], verify: [] }),
+    ], env);
+    const assertRefused = (result, locations, hidden) => {
+      t.ok(result.code === 2 && locations.every(location => result.json?.refused?.includes(location)),
+        "the gate refuses with the file, line, and reason for each omission");
+      t.ok(hidden.every(value => !result.out.includes(value) && !result.err.includes(value)),
+        "the refusal leaves the matched text out of its diagnostics");
+      t.eq([
+        fs.existsSync(path.join(screened.w.zhome, "flows")),
+        fs.existsSync(path.join(screened.w.home, ".zodchi", "packages")), screened.steps(),
+      ], [false, false, []], "the refusal creates no journal or claim and submits no model call");
+    };
+    fs.writeFileSync(path.join(screened.w.zhome, "private-words.txt"), privateBrief + "\n");
+    fs.writeFileSync(screened.brief, `# Screening fixture\n${privateBrief}\n`);
+    assertRefused(await runScreened(), ["the brief:2 (private-word)"], [privateBrief]);
+    fs.writeFileSync(screened.brief, cleanBrief);
+
+    const denylist = path.join(screened.w.dir, "omit.txt");
+    fs.writeFileSync(denylist, privateFile + "\n");
+    const baseFiles = ["src/notes.txt", "src/settings.txt"];
+    fs.writeFileSync(path.join(screened.r, baseFiles[0]), `Notes\n${privateFile}\n`);
+    fs.writeFileSync(path.join(screened.r, baseFiles[1]), [
+      "Settings", shapedValue, `https://fixture:${urlValue}@example.invalid/`,
+      `-----BEGIN ${keyType}-----`, keyBody, `-----END ${keyType}-----`, "Visible footer", "",
+    ].join("\n"));
+    const baseBinary = "src/base.bin";
+    fs.writeFileSync(path.join(screened.r, baseBinary), Buffer.from([0, ...Buffer.from(shapedValue), 255]));
+    gitOut(screened.r, ["add", "--", ...baseFiles, baseBinary]);
+    gitOut(screened.r, ["commit", "-qm", "Add screening fixtures"]);
+    assertRefused(await runScreened(baseFiles, { ZODCHI_DENYLIST: denylist }), [
+      `${baseFiles[0]}:2 (private-word)`, ...[2, 3, 4, 5, 6].map(line => `${baseFiles[1]}:${line} (credential)`),
+    ], [privateFile, shapedValue, urlValue, keyBody]);
+
+    const inlineValue = "fixture-added-inline-value";
+    screened.answer("write", report("done", { "src/math.mjs": `${FIXED}\nconst token = "${inlineValue}";\n` }));
+    screened.answer("review 1", screened.review("approved"));
+    const withheld = await runScreened(["src/math.mjs", baseBinary]);
+    t.eq([withheld.code, withheld.json?.verdict, screened.steps()], [2, "blocked", ["write"]],
+      "a writer-created credential stops the package before calling the reviewer");
+    t.ok(withheld.json?.runId && !withheld.json?.refused,
+      "the credential-shaped bytes in the claimed base binary pass the gate");
+    t.ok(withheld.json?.question?.includes("src/math.mjs:3 (credential)"), "the owner question locates the candidate line");
+    const events = fs.readFileSync(path.join(withheld.json.journal, "events.jsonl"), "utf8");
+    t.ok(!fs.existsSync(path.join(withheld.json.journal, "requests", `flow-${withheld.json.runId}-review-1.json`))
+      && ![withheld.out, withheld.err, events].some(text => text.includes(inlineValue)),
+      "the stop creates no review request and keeps the value out of diagnostics and events");
+
+    const expert = flowWorld(t, "flow-agent-continue-expert");
+    const source = "src/math.mjs";
+    const sourcePath = path.join(expert.r, source);
+    const sourceFolder = `${expert.r.replaceAll("\\", "/")}/input`;
+    const note = `// Read fixtures from ${sourceFolder}`;
+    const before = `${note}\r\n${STUB.trimEnd()}`;
+    const after = `${note}\r\n${FIXED.trimEnd()}`;
+    gitOut(expert.r, ["config", "core.autocrlf", "false"]);
+    fs.writeFileSync(sourcePath, `${before}\r\n`);
+    gitOut(expert.r, ["add", "--", source]);
+    gitOut(expert.r, ["commit", "-qm", "Record the fixture location"]);
+    expert.answer("write", expert.patch([{
+      ...expert.modify(source, `${before}\r\n`, null), edits: [{ old: before, new: after }],
+    }]));
+    expert.answer("review 1", expert.review("approved"));
+    const exact = await expert.flow(["--args", expert.args()]);
+    t.eq([exact.code, exact.json?.approved, expert.steps()], [0, true, ["write", "review 1"]],
+      "the expert's exact edit passes checks and review");
+    t.eq(exact.json?.screening, { brief: "screened", files: "screened", agentWorkspace: null },
+      "the expert package records screening without an agent workspace");
+    const [writeTurn, reviewTurn] = turns(expert);
+    t.ok(writeTurn.prompt.includes(`<attachment path="${source}">\n${before}\n</attachment>`),
+      "the writer sees the original path and CRLF in the editable fragment");
+    t.eq(fs.readFileSync(sourcePath, "utf8"), `${after}\r\n`, "the edit preserves the path and line endings on disk");
+    t.ok(reviewTurn.prompt.includes("<repo>/input") && !reviewTurn.prompt.includes(sourceFolder),
+      "the reviewer still sees the machine path rewritten");
+
+    expert.answer("write", expert.patch([]));
+    const cut = await expert.flow(["--args", expert.args({ checks: ["node smoke.mjs --fail"], verify: [] })],
+      { ZODCHI_FLOW_CUT: "checks 1" });
+    t.eq(cut.code, 75, "the second expert run cuts after the failing check");
+    fs.appendFileSync(sourcePath, `${shapedValue}\r\n`);
+    const stopped = await expert.flow(["--resume", expert.claim().run]);
+    t.eq([stopped.code, stopped.json?.verdict, stopped.json?.stoppedAt, expert.steps()],
+      [2, "blocked", "privacy screening at fix 1.1", ["write", "review 1", "write"]],
+      "the expert fix stops before sending a worktree file with a withheld line");
+    const stopEvents = fs.readFileSync(path.join(stopped.json.journal, "events.jsonl"), "utf8");
+    t.ok(stopped.json?.question?.includes(`${source}:3 (credential)`)
+      && ![stopped.out, stopped.err, stopEvents].some(text => text.includes(shapedValue)),
+      "the worktree stop reports the location without the matched text");
+
+    const repair = flowWorld(t, "flow-agent-continue-expert-repair");
+    gitOut(repair.r, ["config", "core.autocrlf", "false"]);
+    const comment = "// Keep this note.";
+    const broken = `${comment}\r\n${STUB.trimEnd()}\r\n// ${shapedValue}\r\n`;
+    const repaired = `${comment}\r\n${FIXED.trimEnd()}\r\n`;
+    const repairChange = repair.modify(source, broken, repaired);
+    repair.answer("write", repair.patch([repair.modify(source, STUB, broken)]));
+    repair.answer("fix 1.1", repair.patch([repairChange]));
+    repair.answer("review 1", repair.review("approved"));
+    const fixed = await repair.flow(["--args", repair.args({ fixes: 1 })]);
+    t.eq([fixed.code, fixed.json?.approved, repair.steps()], [0, true, ["write", "fix 1.1", "review 1"]],
+      "the expert repairs a failed candidate with a withheld line before review");
+    const repairTurns = turns(repair);
+    t.ok(repairTurns[1].prompt.includes(`- ${source}  blob ${repairChange.baseBlob} (screened preview`)
+      && repairTurns[1].prompt.includes(`<attachment path="${source}">\n${comment}\r\n${STUB.trimEnd()}\r\n[private text removed]\n</attachment>`)
+      && repairTurns.every(turn => !turn.prompt.includes(shapedValue)),
+      "the fixing writer gets the exact base blob and visible lines without the withheld value");
+    t.eq(fs.readFileSync(path.join(repair.r, source), "utf8"), repaired, "the fix writes the replacement with its CRLF line endings");
+
     const f = flowWorld(t, "flow-agent-continue");
+    fs.appendFileSync(f.brief, `Workspace folders: ${f.r} and ${f.w.zhome}\n`);
     const binary = [8, 0, 255];
     const fromOtherPackage = path.join(f.r, "src", "other.mjs");
     fs.writeFileSync(fromOtherPackage, "local work outside this package\n");
@@ -271,6 +388,8 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
     const result = await f.flow(["--resume", id]);
     t.eq([result.code, result.json?.approved, f.claim()?.status, f.commits().length], [0, true, "done", 1], "the original run applies and reviews once");
+    t.eq(result.json?.screening, { brief: "screened", files: "screened", agentWorkspace: "not screened" },
+      "the result discloses the workspace that the agent can read");
     const observed = turns(f);
     t.eq(observed.map(turn => turn.step), ["write", "write continue 1", "write continue 2", "write continue 3", "review 1"],
       "a declared limit beyond the default continues without another owner answer");
@@ -282,6 +401,10 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     t.eq(requestFor("write-continue-1").role.config, limits, "the resumed writer keeps the project window");
     t.ok(requestFor("review-1").role.config === undefined, "the expert review uses its model window");
     const reviewPrompt = requestFor("review-1").prompt;
+    for (const prompt of [requestFor("write").prompt, reviewPrompt]) {
+      t.ok(prompt.includes("Workspace folders: <repo> and <zodchi-home>") && !prompt.includes(f.w.zhome),
+        "machine path rewrites reach both prompts without refusing the brief");
+    }
     t.ok(reviewPrompt.includes('<attachment path="src/other.mjs">')
       && reviewPrompt.includes("export const other = 1;") && !reviewPrompt.includes("local work outside this package"),
     "the reviewer sees pinned read-only context without the adjacent local edits");

@@ -10,3 +10,4 @@ tree and commits it.
   for a new path and a null baseBlob. Delete gives baseBlob and null content. Rename gives the old path in from,
   its baseBlob, and complete content or null to keep it. Keep the file's style and line endings.
 - status "blocked" when the task cannot be done from what you were given: name the missing file or fact.
+- When behaviour changes, first find and change the existing e2e scenarios of that area; add a new scenario only when none fits. Unit tests only for rule tables and platform-specific behaviour.

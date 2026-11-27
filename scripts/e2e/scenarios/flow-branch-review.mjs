@@ -45,6 +45,10 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, FIXED })
     t.eq(internal.json.screening.withheld.map(({ file, reason, scope }) => [file, reason, scope]),
       [[allow, "private-word", "line"], [currentPath, "private-word", "line"], [currentPath, "credential", "literal"]],
       "each omission identifies the file, reason and scope in the local result");
+    const diffLines = gitOut(f.r, ["diff", "--no-color", "--no-ext-diff", "--no-textconv", base, "HEAD"]).split(/\r?\n/);
+    t.eq(internal.json.screening.withheld.map(({ diffLine }) => diffLine),
+      [`+${otherWord}`, `+// ${otherWord}`, `+const token = "${marked}";`].map(line => diffLines.indexOf(line) + 1),
+      "the receipt keeps the original unified diff line numbers");
     const receipt = text.match(/<attachment path="verification\.json">\n([\s\S]*?)\n<\/attachment>/);
     t.ok(JSON.parse(receipt[1]).commands[0].output.includes(`${ownWord} check`), "the verification JSON preserves the same allowed wording");
     const handoff = await cli(["status", internal.json.runId, "--handoff"]);
@@ -261,6 +265,8 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, FIXED })
     f.answer("review 1", f.review("changes_requested", [f.finding("F35")]));
     const original = await f.flow(["--args", f.args({ rounds: 1 })]);
     t.eq(original.json?.verdict ?? null, "changes_requested", "the original package finished without approval");
+    t.eq(original.json?.screening, { brief: "screened", files: "screened", agentWorkspace: null },
+      "the expert package records screening and has no agent workspace");
     const reviewOnly = (fields) => {
       const args = path.join(f.w.dir, "rereview.json");
       fs.writeFileSync(args, JSON.stringify({ label: "rereview", repo: f.r, sourceRun: original.json.runId, ...fields }));
