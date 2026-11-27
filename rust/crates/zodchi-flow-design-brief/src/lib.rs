@@ -8,6 +8,6 @@ mod design_material;
 pub use design_brief::{resume, start, NAME};
 
 #[doc(hidden)]
-pub use design_brief::publish;
+pub use zodchi_flow_engine::publish::publish;
 #[doc(hidden)]
-pub use design_material::places;
+pub use zodchi_flow_engine::input_common::places;

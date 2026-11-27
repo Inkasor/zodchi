@@ -2,7 +2,7 @@
 
 use crate::{
     boundary::Launch, catalog::ProjectGate,
-    design_brief, executor::local::pinned_image, gateway, git::Git, input_common,
+    executor::local::pinned_image, gateway, git::Git, input_common,
     journal::Journal, models::Pick, Exit,
 };
 use serde_json::{json, Value};
@@ -17,6 +17,7 @@ use zodchi_core::{
     role::{load_role, Overrides},
     util::{fail, is_key, iso, sha256_hex, GatewayError, Result},
 };
+use zodchi_flow_engine::publish::publish;
 
 pub const NAME: &str = "rubric-probe";
 const VERSION: &str = "1";
@@ -330,7 +331,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
         Ok(meta) if meta.is_file() && fs::read_to_string(&path).is_ok_and(|old| old == text) => {}
         Ok(_) => return fail("The rubric artifact has been replaced or edited."),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            design_brief::publish(&path, &text, false)?
+            publish(&path, &text, false)?
         }
         Err(error) => return Err(error.into()),
     }

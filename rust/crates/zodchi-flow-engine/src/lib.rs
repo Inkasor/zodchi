@@ -28,6 +28,7 @@ pub mod journal;
 pub mod models;
 pub mod package_source;
 pub mod patch;
+pub mod publish;
 pub mod review_contract;
 pub mod review_source;
 pub mod verify;

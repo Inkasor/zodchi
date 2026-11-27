@@ -11,7 +11,7 @@ use zodchi_core::util::{fail, sha256_hex, GatewayError, Result};
 use zodchi_flow_engine::{
     args, checks, claims,
     git::Git,
-    input_common::{self, Scrubber, Withholding},
+    input_common::{self, places, Scrubber, Withholding},
     review_source::source_path,
 };
 
@@ -427,21 +427,6 @@ fn paths_equal(a: &str, b: &str) -> bool {
         (Ok(a), Ok(b)) => claims::fold(&a, &a) == claims::fold(&a, &b),
         _ => false,
     }
-}
-
-pub fn places(cfg: &Config, sources: &[Value]) -> Vec<(String, &'static str)> {
-    let mut places = vec![(cfg.home.to_string_lossy().into_owned(), "<zodchi-home>")];
-    for source in sources {
-        if let Some(root) = source["root"].as_str() {
-            places.push((root.to_string(), "<repo>"));
-        }
-    }
-    for name in ["HOME", "USERPROFILE"] {
-        if let Ok(path) = std::env::var(name) {
-            places.push((path, "<home>"));
-        }
-    }
-    places
 }
 
 pub fn public_path(line: &str) -> bool {

@@ -694,7 +694,7 @@ impl Engine {
 
     fn screen_browser_receipt(&self, data: &mut Value) -> Result<()> {
         let places =
-            crate::design_material::places(&self.cfg, &[json!({ "root": self.run["repo"] })]);
+            input_common::places(&self.cfg, &[json!({ "root": self.run["repo"] })]);
         let scrubber = input_common::Scrubber::new(&self.cfg)?;
         for key in ["network", "console"] {
             for event in data[key].as_array_mut().into_iter().flatten() {

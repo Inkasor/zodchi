@@ -2,7 +2,7 @@
 
 use crate::{
     boundary::Launch, catalog::ProjectGate,
-    design_brief, gateway,
+    gateway,
     git::Git,
     input_common,
     journal::Journal,
@@ -21,6 +21,7 @@ use zodchi_core::{
     role::{load_role, Overrides},
     util::{fail, is_key, iso, sha256_hex, GatewayError, Result},
 };
+use zodchi_flow_engine::publish::publish;
 
 pub const NAME: &str = "method-question";
 const VERSION: &str = "1";
@@ -432,7 +433,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
                     .is_ok_and(|previous| sha256_hex(previous) == digest) => {}
         Ok(_) => return fail("The method options sheet was replaced or edited."),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            design_brief::publish(&out, &markdown, false)?;
+            publish(&out, &markdown, false)?;
         }
         Err(error) => return Err(error.into()),
     }

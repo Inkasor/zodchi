@@ -14,9 +14,6 @@ macro_rules! eprintln {
 
 mod child_package;
 mod control;
-mod design_material {
-    pub(crate) use zodchi_flow_design_brief::places;
-}
 mod input;
 // The subprocess tests select their fixtures by the exact ops_script::tests path.
 #[cfg(test)]
@@ -106,9 +103,6 @@ pub mod code_package {
 
 pub use code_package::{Exit, CUT_EXIT};
 
-pub(crate) mod design_brief {
-    pub(crate) use zodchi_flow_design_brief::publish;
-}
 use registry::{compiled_catalog, require_workflow};
 use serde_json::{json, Value};
 use std::{

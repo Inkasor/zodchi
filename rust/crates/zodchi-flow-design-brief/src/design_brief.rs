@@ -5,15 +5,15 @@ use engine::{
     boundary::Launch,
     catalog::ProjectGate,
     executor, gateway,
-    input_common::{args_digest, args_match, TASK_SCREENING_STEP},
+    input_common::{args_digest, args_match, places, TASK_SCREENING_STEP},
     journal::{self, Journal},
     models::{self, Pick},
+    publish::publish,
     review_contract, Exit,
 };
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 use zodchi_core::{
     config::Config,
@@ -784,7 +784,7 @@ fn model_step(
     let mut attachments = Vec::new();
     let mut sources = BTreeMap::new();
     let material_sources = material["sources"].as_array().expect("pinned Git sources");
-    let places = design_material::places(cfg, material_sources);
+    let places = places(cfg, material_sources);
     let scrubber = design_material::scrubber(cfg, material).map_err(stop)?;
     let clean =
         |text: &str| design_material::clean(&scrubber, text, &places, material["public"] == true);
@@ -1188,7 +1188,7 @@ fn recorded_sources(
         .and_then(|event| event["ownerAnswer"].as_str())
     {
         let scrubber = design_material::scrubber(cfg, material)?;
-        let places = design_material::places(cfg, material["sources"].as_array().expect("pinned sources"));
+        let places = places(cfg, material["sources"].as_array().expect("pinned sources"));
         let answer = design_material::clean(&scrubber, answer, &places, material["public"] == true);
         if answer.lines().any(|line| !line.trim().is_empty() && engine::input_common::withheld_lines(line) == 0) {
             files.insert("owner-source.md".into(), Source::context(answer));
@@ -1480,29 +1480,6 @@ fn save_result(
     }
     journal.write_value("result.json", &result)?;
     finish(journal, result)
-}
-
-pub fn publish(path: &Path, text: &str, replace: bool) -> Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| GatewayError("The brief has no parent directory.".into()))?;
-    fs::create_dir_all(parent)?;
-    let staged = parent.join(format!(".zodchi-brief-{:016x}.tmp", rand::random::<u64>()));
-    let mut file = fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&staged)?;
-    file.write_all(text.as_bytes())?;
-    file.sync_all()?;
-    drop(file);
-    if replace {
-        fs::rename(&staged, path)?;
-    } else {
-        let written = fs::hard_link(&staged, path);
-        let _ = fs::remove_file(&staged);
-        written?;
-    }
-    Ok(())
 }
 
 fn finish(journal: &mut Journal, result: Value) -> Result<Exit> {

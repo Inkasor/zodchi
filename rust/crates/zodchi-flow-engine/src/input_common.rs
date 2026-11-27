@@ -27,6 +27,21 @@ pub fn args_match(inputs: &Value, raw: &Value) -> bool {
     }
 }
 
+pub fn places(cfg: &Config, sources: &[Value]) -> Vec<(String, &'static str)> {
+    let mut places = vec![(cfg.home.to_string_lossy().into_owned(), "<zodchi-home>")];
+    for source in sources {
+        if let Some(root) = source["root"].as_str() {
+            places.push((root.to_string(), "<repo>"));
+        }
+    }
+    for name in ["HOME", "USERPROFILE"] {
+        if let Ok(path) = std::env::var(name) {
+            places.push((path, "<home>"));
+        }
+    }
+    places
+}
+
 pub fn scrub(config: &Config, raw: &str, places: &[(String, &str)]) -> Result<String> {
     Ok(Scrubber::new(config)?.text(raw, places))
 }
