@@ -6,12 +6,6 @@
 mod child_package;
 mod control;
 mod input;
-// The subprocess tests select their fixtures by the exact ops_script::tests path.
-#[cfg(test)]
-#[path = "../../zodchi-flow-ops-script/src/ops_script.rs"]
-mod ops_script;
-#[cfg(test)]
-use registry::ops_script_entry::ops_script_tests;
 mod registry;
 mod runs;
 
@@ -28,7 +22,7 @@ pub mod checks {
         end_group, find_bash, name, passed, preflight, preflight_tools, remove, result, review_output,
         run_list, sanitize, tail, temp_dir, Phase,
     };
-    pub(crate) use zodchi_flow_engine::checks::*;
+    pub(crate) use zodchi_flow_engine::checks::{reap_unended, DEFAULT_BROWSER_VARIABLE, KEEP};
 }
 
 pub mod claims {
@@ -38,7 +32,7 @@ pub mod claims {
 }
 
 pub mod executor {
-    pub use zodchi_flow_engine::executor::{flow_credits, flow_server, for_pick, server, Executor};
+    pub use zodchi_flow_engine::executor::{flow_server, for_pick, server, Executor};
 
     pub mod claude {
         pub use zodchi_flow_engine::executor::claude::{
@@ -57,13 +51,16 @@ pub mod gateway {
 
 pub mod journal {
     pub use zodchi_flow_engine::journal::{flows_dir, is_run_id, new_run_id, Journal, RunLock};
-    pub(crate) use zodchi_flow_engine::journal::*;
+    pub(crate) use zodchi_flow_engine::journal::{
+        finished_event, last_state_event, last_write, live_pid, safety_block, status, status_outcome,
+        unknown_model_step, StatusHooks, SHUTDOWN_REQUEST,
+    };
 }
 
 pub mod models {
     pub use zodchi_flow_engine::models::{
-        claude_enabled, codex_usable, local_codex_usable, resolve, table, ClaudeGate, Pick,
-        CLAUDE_ENTRY, REVIEWER_ROLE, WRITER_ROLE,
+        claude_enabled, codex_usable, resolve, table, ClaudeGate, Pick, CLAUDE_ENTRY, REVIEWER_ROLE,
+        WRITER_ROLE,
     };
 }
 

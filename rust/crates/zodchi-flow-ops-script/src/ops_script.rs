@@ -996,10 +996,10 @@ fn resume_once(
     repair: &RepairHooks,
 ) -> zodchi_core::util::Result<Exit> {
     let cfg = Config::new(None)?;
-    resume_guarded_with_repair(id, given, retry, &cfg, unprivileged, repair)
+    resume_guarded(id, given, retry, &cfg, unprivileged, repair)
 }
 
-fn resume_guarded_with_repair(
+fn resume_guarded(
     id: &str,
     given: Option<&Value>,
     retry: Option<&str>,
@@ -1646,10 +1646,35 @@ pub(crate) fn valid_remote(remote: &str) -> bool {
 }
 
 #[cfg(test)]
-crate::ops_script_tests! {
-#[cfg(test)]
 mod tests {
     use super::*;
+
+    const NO_REPAIR: RepairHooks = RepairHooks {
+        start: |_, id| panic!("unexpected repair start for {id}"),
+        resume: |id, _| panic!("unexpected repair resume for {id}"),
+    };
+
+    // Simulate a child gate refusal before a child journal is created.
+    const REPAIR_REFUSAL: &str = "fixture refused to start the repair child";
+    const REFUSED_REPAIR: RepairHooks = RepairHooks {
+        start: |args, id| {
+            assert!(journal::is_run_id(id));
+            assert_eq!(args["files"], json!(["script.py"]));
+            Ok(Exit { code: 2, result: json!({ "refused": REPAIR_REFUSAL }) })
+        },
+        ..NO_REPAIR
+    };
+
+    #[cfg(any(target_os = "linux", windows))]
+    fn worker_command(test: &str) -> std::process::Command {
+        // libtest uses the module path without the crate name.
+        let (_, module) = module_path!().split_once("::").expect("ops-script test module");
+        let mut command = zodchi_core::process::command_without_window(
+            std::env::current_exe().expect("ops-script unit test binary"),
+        );
+        command.arg("--exact").arg(format!("{module}::{test}")).arg("--nocapture");
+        command
+    }
 
     #[test]
     fn resumed_child_requires_parent_privilege_guard() {
@@ -1663,7 +1688,7 @@ mod tests {
         journal.append(json!({ "kind": "ops-done", "step": "dry 0", "result": { "ok": false } })).unwrap();
         journal.append(json!({ "kind": "ops-repair", "attempt": 0, "child": "child", "args": {} })).unwrap();
         let before = journal.snapshot().unwrap();
-        let error = match resume_guarded("guard-test", None, None, &cfg, || Err("guard denied".into())) {
+        let error = match resume_guarded("guard-test", None, None, &cfg, || Err("guard denied".into()), &NO_REPAIR) {
             Err(error) => error,
             Ok(_) => panic!("repair continued despite a denied guard"),
         };
@@ -1671,7 +1696,7 @@ mod tests {
         assert_eq!(journal.snapshot().unwrap(), before);
         assert!(!journal::flows_dir(&cfg.home).join("child").exists());
         journal.write_value("result.json", &json!({ "workflow": NAME, "ready": false, "status": "failed" })).unwrap();
-        let result = resume_guarded("guard-test", None, None, &cfg, || Err("guard denied".into())).unwrap();
+        let result = resume_guarded("guard-test", None, None, &cfg, || Err("guard denied".into()), &NO_REPAIR).unwrap();
         assert_eq!(result.result["status"], "failed");
         fs::remove_dir_all(base).unwrap();
     }
@@ -1750,7 +1775,6 @@ mod tests {
     #[test]
     fn recorded_failures_repair_only_script_defects() {
         let base = std::env::current_dir().unwrap().join(".agent-tmp").join(format!("ops-failure-{:016x}", rand::random::<u64>()));
-        // The child gate refuses a folder that is not a Git work tree root.
         let repo = base.join("repo");
         fs::create_dir_all(&repo).unwrap();
         let script = repo.join("script.py");
@@ -1768,7 +1792,8 @@ mod tests {
             cfg.home = base.join(id);
             let mut journal = Journal::create(&cfg.home, id, &run).unwrap();
             record(&mut journal, step, detail.clone());
-            let exit = resume_guarded(id, None, None, &cfg, || Ok(())).unwrap();
+            let repair = if expect_repair { &REFUSED_REPAIR } else { &NO_REPAIR };
+            let exit = resume_guarded(id, None, None, &cfg, || Ok(()), repair).unwrap();
             let events = journal.snapshot().unwrap();
             let repairs: Vec<_> = events.iter().filter(|event| event["kind"] == "ops-repair").collect();
             assert_eq!(exit.code, 2, "{id}");
@@ -1779,6 +1804,7 @@ mod tests {
             if expect_repair {
                 assert_eq!(exit.result["status"], "waiting", "{id}");
                 assert_eq!(exit.result["childRunId"], repairs[0]["child"], "{id}");
+                assert_eq!(exit.result["reason"], REPAIR_REFUSAL, "{id}");
             } else {
                 assert_eq!(exit.result["status"], "failed", "{id}");
                 assert_eq!(journal.read_value("result.json"), Some(exit.result), "{id}");
@@ -1792,7 +1818,7 @@ mod tests {
         let mut journal = Journal::create(&cfg.home, id, &run).unwrap();
         journal.append(json!({ "kind": "ops-start", "step": "snapshot 0" })).unwrap();
         let before = journal.snapshot().unwrap();
-        let exit = resume_guarded(id, None, None, &cfg, || Ok(())).unwrap();
+        let exit = resume_guarded(id, None, None, &cfg, || Ok(()), &NO_REPAIR).unwrap();
         assert_eq!(exit.result["status"], "unresolved");
         assert_eq!(exit.result["step"], "snapshot 0");
         assert_eq!(journal.snapshot().unwrap(), before);
@@ -1804,7 +1830,7 @@ mod tests {
         let child = journal::new_run_id();
         journal.append(json!({ "kind": "ops-repair", "attempt": 0, "child": child, "args": {} })).unwrap();
         let before = journal.snapshot().unwrap();
-        let exit = resume_guarded(id, None, None, &cfg, || Ok(())).unwrap();
+        let exit = resume_guarded(id, None, None, &cfg, || Ok(()), &NO_REPAIR).unwrap();
         assert_eq!(exit.result["status"], "unresolved");
         assert_eq!(exit.result["step"], format!("repair 0 ({child})"));
         assert_eq!(journal.snapshot().unwrap(), before);
@@ -1815,7 +1841,7 @@ mod tests {
         let snapshot = capture_snapshot(&base, &[script]).unwrap().receipt().unwrap();
         record(&mut journal, "snapshot 0", json!({ "ok": true, "snapshot": snapshot }));
         record(&mut journal, "static 0", json!({ "ok": true, "bash": base.join("bash"), "python": null }));
-        let exit = resume_guarded(id, None, None, &cfg, || Ok(())).unwrap();
+        let exit = resume_guarded(id, None, None, &cfg, || Ok(()), &NO_REPAIR).unwrap();
         assert_eq!(exit.result["status"], "failed");
         assert_eq!(exit.result["step"], "dry 0");
         assert_eq!(exit.result["detail"]["error"], "Static receipt lacks the resolved Python executable");
@@ -1913,7 +1939,7 @@ mod tests {
         fs::create_dir_all(&base).unwrap();
         let source = base.join("script with spaces.sh");
         fs::write(&source, b"#!/bin/bash\nprintf '%s\\n' ok\n").unwrap();
-        let configured_bash = crate::checks::find_bash();
+        let configured_bash = checks::find_bash();
         let bash = find_tool(configured_bash.to_str().unwrap()).expect("the flow engine requires bash");
         let tools = Tools { bash, python: None, shellcheck: None };
         let snapshot = capture_snapshot(&base, &[source.clone()]).unwrap();
@@ -2144,8 +2170,7 @@ mod tests {
         }
         let dir = std::env::current_dir().unwrap().join(".agent-tmp").join(format!("ops-watch-{:016x}", rand::random::<u64>()));
         fs::create_dir_all(&dir).unwrap();
-        let mut worker = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "ops_script::tests::linux_worker_death_stops_check_descendants", "--nocapture"])
+        let mut worker = worker_command(stringify!(linux_worker_death_stops_check_descendants))
             .env("OPS_CONTAINMENT_TEST_DIR", &dir).spawn().unwrap();
         let start = Instant::now();
         while !dir.join("ready").exists() && start.elapsed() < Duration::from_secs(10) {
@@ -2187,8 +2212,7 @@ mod tests {
         }
         let dir = std::env::current_dir().unwrap().join(".agent-tmp").join(format!("ops windows watch {:016x}", rand::random::<u64>()));
         fs::create_dir_all(&dir).unwrap();
-        let mut worker = zodchi_core::process::command_without_window(std::env::current_exe().unwrap());
-        let mut worker = worker.args(["--exact", "ops_script::tests::windows_worker_death_stops_contained_check", "--nocapture"])
+        let mut worker = worker_command(stringify!(windows_worker_death_stops_contained_check))
             .env("OPS_WINDOWS_TEST_DIR", &dir).spawn().unwrap();
         let start = std::time::Instant::now();
         while !dir.join("ready").exists() && start.elapsed() < Duration::from_secs(10) { std::thread::sleep(Duration::from_millis(20)); }
@@ -2209,7 +2233,7 @@ mod tests {
         fs::write(&data, b"#!/bin/bash\nexit 0\n").unwrap();
         let snapshot = capture_snapshot(&base, &[script, data]).unwrap();
         let gate = local_human_command(&snapshot, &["true".into(), "{script}".into()], None).unwrap();
-        let bash = find_tool(crate::checks::find_bash().to_str().unwrap()).unwrap();
+        let bash = find_tool(checks::find_bash().to_str().unwrap()).unwrap();
         let run = || run_command(&bash, &["-c".into(), gate.clone().into()], &base, &[], Duration::from_secs(10)).unwrap().code;
         assert_eq!(run(), Some(0));
         fs::write(snapshot.dir.join("extra"), b"extra").unwrap();
@@ -2226,5 +2250,4 @@ mod tests {
         }
         fs::remove_dir_all(&base).unwrap();
     }
-}
 }

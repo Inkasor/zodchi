@@ -28,7 +28,7 @@ mod incident_triage_entry;
 #[path = "method_question.rs"]
 mod method_question_entry;
 #[path = "ops_script.rs"]
-pub(crate) mod ops_script_entry;
+mod ops_script_entry;
 #[path = "player_acceptance.rs"]
 mod player_acceptance_entry;
 #[path = "release_acceptance.rs"]
@@ -159,10 +159,15 @@ pub(crate) fn for_run(run: &Value) -> Option<&'static Entry> {
 fn catalog() -> &'static Value {
     static CATALOG: OnceLock<Value> = OnceLock::new();
     CATALOG.get_or_init(|| {
-        let mut catalog: Value = serde_json::from_str(catalog::SHIPPED).expect("workflow catalog");
-        for item in catalog["workflows"].as_array_mut().expect("workflows") {
+        let catalog: Value = serde_json::from_str(catalog::SHIPPED).expect("workflow catalog");
+        for item in catalog["workflows"].as_array().expect("workflows") {
             if let Some(entry) = item["name"].as_str().and_then(get) {
-                item["version"] = Value::from(entry.catalog_version);
+                assert_eq!(
+                    item["version"].as_str(),
+                    Some(entry.catalog_version),
+                    "workflow {:?} version in the shipped catalog",
+                    entry.name,
+                );
             }
         }
         catalog
@@ -229,5 +234,22 @@ pub(crate) fn shutdown_claim<'a>(run: &'a Value, id: &str) -> Result<Option<Shut
     match for_run(run).and_then(|entry| entry.shutdown.as_ref()) {
         Some(hooks) => (hooks.pin_claim)(run, id),
         None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compiled_catalog_matches_shipped_catalog() {
+        let shipped: Value = serde_json::from_str(catalog::SHIPPED).expect("workflow catalog");
+        assert_eq!(compiled_catalog().to_string(), shipped.to_string());
+        for entry in ENTRIES {
+            let item = catalog_entry(entry.name).unwrap_or_else(|| {
+                panic!("workflow {:?} is missing from the shipped catalog", entry.name)
+            });
+            assert_eq!(item["version"].as_str(), Some(entry.catalog_version), "{}", entry.name);
+        }
     }
 }
