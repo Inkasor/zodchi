@@ -12,6 +12,21 @@ form_urlencoded = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 zodchi-core = { path = "../zodchi-core" }
 zodchi-flow-engine = { path = "../zodchi-flow-engine" }
+zodchi-flow-code-package = { path = "../zodchi-flow-code-package" }
+zodchi-flow-asset-round = { path = "../zodchi-flow-asset-round" }
+zodchi-flow-branch-review = { path = "../zodchi-flow-branch-review" }
+zodchi-flow-design-brief = { path = "../zodchi-flow-design-brief" }
+zodchi-flow-incident-triage = { path = "../zodchi-flow-incident-triage" }
+zodchi-flow-method-question = { path = "../zodchi-flow-method-question" }
+zodchi-flow-ops-script = { path = "../zodchi-flow-ops-script" }
+zodchi-flow-research = { path = "../zodchi-flow-research" }
+zodchi-flow-rubric-probe = { path = "../zodchi-flow-rubric-probe" }
+zodchi-flow-unity-check = { path = "../zodchi-flow-unity-check" }
+zodchi-flow-workspace-audit = { path = "../zodchi-flow-workspace-audit" }
+zodchi-flow-video = { path = "../zodchi-flow-video" }
+zodchi-flow-voiceover = { path = "../zodchi-flow-voiceover" }
+zodchi-flow-youtube-publish = { path = "../zodchi-flow-youtube-publish" }
+zodchi-flow-acceptance = { path = "../zodchi-flow-acceptance" }
 serde_json.workspace = true
 rand.workspace = true
 regex = "1"

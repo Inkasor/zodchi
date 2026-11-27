@@ -1,6 +1,27 @@
 [workspace]
 resolver = "2"
-members = ["crates/zodchi-core", "crates/zodchi-cli", "crates/zodchi-server", "crates/zodchi-flow", "crates/zodchi-flow-engine"]
+members = [
+    "crates/zodchi-core",
+    "crates/zodchi-cli",
+    "crates/zodchi-server",
+    "crates/zodchi-flow",
+    "crates/zodchi-flow-engine",
+    "crates/zodchi-flow-code-package",
+    "crates/zodchi-flow-asset-round",
+    "crates/zodchi-flow-branch-review",
+    "crates/zodchi-flow-design-brief",
+    "crates/zodchi-flow-incident-triage",
+    "crates/zodchi-flow-method-question",
+    "crates/zodchi-flow-ops-script",
+    "crates/zodchi-flow-research",
+    "crates/zodchi-flow-rubric-probe",
+    "crates/zodchi-flow-unity-check",
+    "crates/zodchi-flow-workspace-audit",
+    "crates/zodchi-flow-video",
+    "crates/zodchi-flow-voiceover",
+    "crates/zodchi-flow-youtube-publish",
+    "crates/zodchi-flow-acceptance",
+]
 
 [workspace.package]
 version = "1.0.3"

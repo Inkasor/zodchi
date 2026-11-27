@@ -1,0 +1,11 @@
+[package]
+name = "zodchi-flow-voiceover"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+zodchi-core = { path = "../zodchi-core" }
+zodchi-flow-engine = { path = "../zodchi-flow-engine" }
