@@ -20,7 +20,7 @@ mod branch_review_entry;
 #[path = "candidate_acceptance.rs"]
 mod candidate_acceptance_entry;
 #[path = "code_package.rs"]
-mod code_package_entry;
+pub(crate) mod code_package_entry;
 #[path = "design_brief.rs"]
 mod design_brief_entry;
 #[path = "incident_triage.rs"]
@@ -48,9 +48,8 @@ mod workspace_audit_entry;
 #[path = "youtube_publish.rs"]
 mod youtube_publish_entry;
 
-pub(crate) use code_package::PinnedClaim as ShutdownClaim;
-pub use code_package_entry::code_package;
 pub(crate) use design_brief_entry::design_brief;
+pub(crate) use zodchi_flow_code_package::PinnedClaim as ShutdownClaim;
 
 type Start = fn(&Value, Option<Launch>) -> Result<Exit>;
 type Resume = fn(&str, Option<&Value>, Option<&str>) -> Result<Exit>;

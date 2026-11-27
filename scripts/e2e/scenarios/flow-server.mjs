@@ -80,7 +80,7 @@ export default function (h) {
     return { ...f, data, u, o, server, tokenFile, jobsDir, answer, steps, turn, jobs, request, runId, events, noToken };
   }
 
-  const schemaOf = (name, version = "v1") => JSON.parse(fs.readFileSync(path.join(ROOT, "rust", "crates", "zodchi-flow", "flows", "code-package", version, name), "utf8"));
+  const schemaOf = (name, version = "v1") => JSON.parse(fs.readFileSync(path.join(ROOT, "rust", "crates", "zodchi-flow-code-package", "flows", "code-package", version, name), "utf8"));
 
   scenario("flow-server-approve", "resume a server-backed code package after posting the writer job: one server turn per step with the flow schemas, local checks and commit, no token in the journal, output or commit", async (t) => {
     const s = await serverWorld(t, "flow-server-approve");

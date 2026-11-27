@@ -12,7 +12,6 @@ macro_rules! eprintln {
     };
 }
 
-mod candidate;
 mod child_package;
 mod control;
 mod design_material;
@@ -105,7 +104,15 @@ pub mod verify {
 }
 
 pub use control::{sign_in_required, SignIn};
-pub use registry::code_package;
+
+pub mod code_package {
+    pub(crate) use crate::registry::code_package_entry::start_child;
+    pub use crate::registry::code_package_entry::{start, start_detached};
+    pub use zodchi_flow_code_package::{
+        resume, Exit, CUT_EXIT, REVIEWER_GATEWAY_ROLE, VERSION, WORKFLOW, WRITER_GATEWAY_ROLE,
+    };
+}
+
 pub use code_package::{Exit, CUT_EXIT};
 
 pub(crate) use registry::design_brief;
@@ -361,7 +368,7 @@ pub fn cli(args: &[String]) -> Result<Exit> {
         }
         [command, id] if command == "status" => return control::status(id),
         [command, id, flag] if command == "status" && flag == "--handoff" => return control::handoff(id),
-        [command, id] if command == "apply" => return candidate::apply(id),
+        [command, id] if command == "apply" => return zodchi_flow_code_package::apply(id),
         [command, id, rest @ ..] if command == "budget" => return control::extend_budget(id, rest),
         [command, id, flag, file] if command == "remark" && flag == "--file" => {
             return input::remark(id, file);

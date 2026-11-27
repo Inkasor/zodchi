@@ -1,44 +1,77 @@
-#[path = "../code_package.rs"]
-pub mod code_package;
-
-use super::{Entry, Launch, ShutdownClaim, ShutdownHooks, StatusHooks, NO_STATUS};
-use crate::{gateway, Exit};
+use super::{require_workflow, Entry, Launch, ShutdownClaim, ShutdownHooks, StatusHooks, NO_STATUS};
+use crate::{
+    control,
+    input::{self, Reply, ReplyPolicy, ReplyRun},
+    journal::Journal,
+    Exit,
+};
 use serde_json::Value;
 use zodchi_core::util::Result;
+use zodchi_flow_code_package as package;
+
+pub(crate) use package::start_child;
 
 pub(super) const ENTRY: Entry = Entry {
-    dry_run: Some(code_package::dry_run),
+    dry_run: Some(|args| package::dry_run(args, require_workflow)),
     status: StatusHooks {
-        details: Some(credits),
+        details: Some(package::credits),
         ..NO_STATUS
     },
-    handle_reply: Some(code_package::handle_reply),
-    remark: Some(code_package::queue_remark),
+    handle_reply: Some(handle_reply),
+    remark: Some(package::queue_remark),
     allows_budget_extension: true,
     shutdown: Some(ShutdownHooks {
         pin_claim: |run, id| ShutdownClaim::for_shutdown(run, id),
-        findings: code_package::recorded_findings,
-        unknown_files: code_package::unknown_shutdown_files,
-        candidate: code_package::shutdown_candidate,
+        findings: package::recorded_findings,
+        unknown_files: package::unknown_shutdown_files,
+        candidate: package::shutdown_candidate,
     }),
     ..Entry::new(
-        code_package::WORKFLOW,
-        code_package::VERSION,
-        start,
-        code_package::resume,
+        package::WORKFLOW,
+        package::VERSION,
+        start_entry,
+        package::resume,
     )
 };
 
-fn start(args: &Value, launch: Option<Launch>) -> Result<Exit> {
+/// Starts a new run from its arguments: the gate, then the journal, the claim and the machine.
+pub fn start(args: &Value) -> Result<Exit> {
+    package::start(args, require_workflow)
+}
+
+pub fn start_detached(args: &Value) -> Result<Exit> {
+    package::start_detached(args, control::launch_start, require_workflow)
+}
+
+fn start_entry(args: &Value, launch: Option<Launch>) -> Result<Exit> {
     if launch.is_some() {
-        code_package::start_detached(args)
+        start_detached(args)
     } else {
-        code_package::start(args)
+        start(args)
     }
 }
 
-fn credits(_: &Value, events: &[Value], result: &mut Value) {
-    if let Some(credits) = gateway::credits_report(events, None) {
-        result["credits"] = credits;
-    }
+fn handle_reply(journal: &mut Journal, target: &ReplyRun<'_>, reply: &Reply<'_>) -> Result<Exit> {
+    package::handle_reply(
+        journal,
+        package::ReplyInput {
+            id: target.id,
+            config: target.config,
+            run: target.run,
+            file: reply.file,
+            allow_files: reply.allow_files,
+            answered: reply.answered,
+            no_new_decisions: reply.no_new_decisions,
+        },
+        &package::ReplyHooks {
+            check_reply_open: input::check_reply_open,
+            no_scope_wait: input::no_scope_wait,
+            read_input: input::read_input,
+            private_places: input::private_places,
+            record_answer: input::record_answer,
+        },
+        |journal, file, approval| {
+            input::record_standard_reply(journal, target, file, reply, ReplyPolicy::TEXT, approval)
+        },
+    )
 }

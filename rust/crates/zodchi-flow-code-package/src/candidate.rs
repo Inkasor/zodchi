@@ -1,13 +1,5 @@
 //! A private checkout for a package and an explicit, recoverable application of its reviewed commit.
 
-use crate::{
-    boundary::Exit,
-    checks, claims,
-    git::Git,
-    journal::{candidate_applied, Journal},
-    package_source::Source,
-    patch::{self, Plan},
-};
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
@@ -17,6 +9,14 @@ use std::{
 use zodchi_core::{
     config::Config,
     util::{fail, read_stored, sha256_hex, write_json_atomic, GatewayError, Result},
+};
+use zodchi_flow_engine::{
+    boundary::{cut, Exit},
+    checks, claims, cleanup,
+    git::Git,
+    journal::{candidate_applied, Journal},
+    package_source::Source,
+    patch::{self, Plan},
 };
 
 pub const BRANCH: &str = "refs/heads/flow-candidate";
@@ -249,7 +249,7 @@ fn apply_approved(id: &str) -> Result<Value> {
                 ));
             }
             // A package from an older release may be creating its first shared receipt now.
-            crate::cleanup::note_package_home(&home, id);
+            cleanup::note_package_home(&home, id);
             journal.write_value("plans/application.json", &plan.to_json())?;
             write_json_atomic(&pending, &json!({ "runId": id }))?;
             journal.append(json!({
@@ -267,7 +267,7 @@ fn apply_approved(id: &str) -> Result<Value> {
             "partial" => patch::apply_recoverable(&git, &plan)?,
             _ => return fail("A path of the application differs from both the original and approved states. Inspect the saved plan before resuming."),
         }
-        crate::boundary::cut("candidate files");
+        cut("candidate files");
         let verified = git.candidate_tree(&parent, &paths, &plan.exec, &journal.file("tmp"))?;
         if verified != landed_tree {
             return fail("The applied files do not reproduce the approved tree. The branch was not advanced.");
@@ -277,7 +277,7 @@ fn apply_approved(id: &str) -> Result<Value> {
         }
         let to_reset = index_transition(&git, &parent, &landed, &paths, intent.is_some())?;
         git.reset_index_paths(&landed, &to_reset)?;
-        crate::boundary::cut("candidate index");
+        cut("candidate index");
         if branch_tip(&git, branch)? != parent {
             return fail("The target branch moved before publishing the approved commit.");
         }
@@ -289,7 +289,7 @@ fn apply_approved(id: &str) -> Result<Value> {
             &landed,
             &parent,
         ])?;
-        crate::boundary::cut("candidate branch");
+        cut("candidate branch");
     }
     if journal
         .events()

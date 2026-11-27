@@ -7,23 +7,23 @@
 //! call by polling its key), or runs. An outcome that none of them can settle stops the run with
 //! `stoppedAt: "unknown outcome at <step>"` and keeps the claim.
 
-use crate::agent;
-use crate::args::{self, is_protected, Args};
-use crate::boundary::Launch;
 use crate::candidate;
-use crate::catalog::ProjectGate;
-use crate::checks;
-use crate::claims;
-use crate::executor;
-use crate::gateway;
-use crate::git::Git;
-use crate::input::{self, Reply, ReplyPolicy, ReplyRun};
-use crate::input_common::{args_digest, args_match, Scrubber, Withholding};
-use crate::journal::{self, application_status, candidate_workspace, Journal};
-use crate::models::{self, Pick};
-use crate::patch::{self, Patch, Refusal};
-use crate::review_contract::check_review;
-use crate::review_source::{self, FileLine};
+use engine::{
+    agent,
+    args::{self, is_protected, Args},
+    boundary::{cut, Launch},
+    catalog::ProjectGate,
+    checks, claims, executor, gateway,
+    git::Git,
+    input_common::{args_digest, args_match, Scrubber, Withholding},
+    journal::{self, application_status, candidate_workspace, Journal},
+    models::{self, Pick},
+    package_source,
+    patch::{self, Patch, Refusal},
+    review_contract::check_review,
+    review_source::{self, FileLine},
+    verify,
+};
 use serde_json::{json, Map, Value};
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -35,10 +35,9 @@ use zodchi_core::job::{compose_prompt, LIMIT_PROMPT};
 use zodchi_core::role::load_role;
 use zodchi_core::role::Overrides;
 use zodchi_core::util::{fail, iso, now_ms, parse_iso_ms, sha256_hex, GatewayError, Result};
+use zodchi_flow_engine as engine;
 
-pub use crate::boundary::{Exit, CUT_EXIT, REVIEWER_GATEWAY_ROLE, WORKFLOW, WRITER_GATEWAY_ROLE};
-#[allow(unused_imports)]
-pub(crate) use crate::boundary::cut;
+pub use engine::boundary::{Exit, CUT_EXIT, REVIEWER_GATEWAY_ROLE, WORKFLOW, WRITER_GATEWAY_ROLE};
 pub const VERSION: &str = "1";
 
 const RULES: &str = include_str!("../flows/code-package/v1/rules.md");
@@ -61,14 +60,20 @@ fn exit_of(result: Value) -> Exit {
     Exit { result, code }
 }
 
-pub(crate) struct PinnedClaim<'a> {
+pub fn credits(_: &Value, events: &[Value], result: &mut Value) {
+    if let Some(credits) = gateway::credits_report(events, None) {
+        result["credits"] = credits;
+    }
+}
+
+pub struct PinnedClaim<'a> {
     pub dir: PathBuf,
     label: &'a str,
 }
 
 impl<'a> PinnedClaim<'a> {
     /// Resolve the claim from the journal even if the checkout or brief is gone.
-    pub(crate) fn for_shutdown(run: &'a Value, id: &str) -> Result<Option<Self>> {
+    pub fn for_shutdown(run: &'a Value, id: &str) -> Result<Option<Self>> {
         if run["workflow"] != WORKFLOW {
             return Ok(None);
         }
@@ -90,7 +95,7 @@ impl<'a> PinnedClaim<'a> {
         Ok(Some(Self { dir, label }))
     }
 
-    pub(crate) fn close(&self, id: &str) -> Result<()> {
+    pub fn close(&self, id: &str) -> Result<()> {
         if self.dir.try_exists()? {
             claims::close(&self.dir, self.label, id, "closed")?;
         }
@@ -99,7 +104,7 @@ impl<'a> PinnedClaim<'a> {
 }
 
 /// Waiting foreground runs have no result file. The journal has their latest review and its evidence gaps.
-pub(crate) fn recorded_findings(events: &[Value]) -> Option<Vec<String>> {
+pub fn recorded_findings(events: &[Value]) -> Option<Vec<String>> {
     let (index, review) = events.iter().enumerate().rfind(|(_, event)| {
         event["kind"] == "done"
             && event["step"].as_str().is_some_and(|step| step.starts_with("review "))
@@ -205,7 +210,7 @@ fn is_gap_id(id: &str) -> bool {
         }))
 }
 
-pub(crate) fn queue_remark(journal: &Journal, name: &str, text: &str, result: &mut Value) -> Result<bool> {
+pub fn queue_remark(journal: &Journal, name: &str, text: &str, result: &mut Value) -> Result<bool> {
     let live = journal.active();
     let events = journal.snapshot()?;
     let last = journal::last_state_event(&events).unwrap_or(&Value::Null);
@@ -221,16 +226,40 @@ pub(crate) fn queue_remark(journal: &Journal, name: &str, text: &str, result: &m
     Ok(false)
 }
 
-pub(crate) fn handle_reply(journal: &mut Journal, target: &ReplyRun<'_>, reply: &Reply<'_>) -> Result<Exit> {
-    let &ReplyRun { id, config, run } = target;
+pub struct ReplyInput<'a> {
+    pub id: &'a str,
+    pub config: &'a Config,
+    pub run: &'a Value,
+    pub file: Option<&'a str>,
+    pub allow_files: Option<&'a str>,
+    pub answered: Option<&'a str>,
+    pub no_new_decisions: bool,
+}
+
+/// Shared owner-input operations supplied by the facade.
+pub struct ReplyHooks {
+    pub check_reply_open: fn(&Journal, &str) -> Result<()>,
+    pub no_scope_wait: fn(&str) -> GatewayError,
+    pub read_input: fn(&str, bool) -> Result<String>,
+    pub private_places: fn(&Config, &Value) -> [(String, &'static str); 2],
+    pub record_answer: fn(&mut Journal, &str, Value, Option<Value>) -> Result<Exit>,
+}
+
+pub fn handle_reply(
+    journal: &mut Journal,
+    reply: ReplyInput<'_>,
+    input: &ReplyHooks,
+    record_standard_reply: impl FnOnce(&mut Journal, &str, Option<Value>) -> Result<Exit>,
+) -> Result<Exit> {
+    let ReplyInput { id, config, run, .. } = reply;
     let wait = journal::last_state_event(&journal.snapshot()?).filter(|event| event["kind"] == "waiting").cloned();
     let gap_wait = wait.as_ref().filter(|event| event["reason"] == REVIEW_GAPS);
     if gap_wait.is_none() {
         journal.load()?;
     }
-    input::check_reply_open(journal, id)?;
+    (input.check_reply_open)(journal, id)?;
     let approval = reply.allow_files.map(|scope| {
-        let wait = wait.as_ref().ok_or_else(|| input::no_scope_wait(id))?;
+        let wait = wait.as_ref().ok_or_else(|| (input.no_scope_wait)(id))?;
         scope_approval(journal, run, wait, scope)
     }).transpose()?;
     let Some(file) = reply.file else {
@@ -254,9 +283,9 @@ pub(crate) fn handle_reply(journal: &mut Journal, target: &ReplyRun<'_>, reply: 
             return fail("--answered and --no-new-decisions apply only to design-brief.");
         }
         let gaps = waiting["gaps"].as_array().expect("waiting review gaps");
-        let mut decisions = gap_decisions(&input::read_input(file, false)?, gaps)?;
+        let mut decisions = gap_decisions(&(input.read_input)(file, false)?, gaps)?;
         let scrubber = Scrubber::new(config)?;
-        let places = input::private_places(config, run);
+        let places = (input.private_places)(config, run);
         for decision in &mut decisions {
             decision.material = scrubber.text(decision.material.trim_end_matches('\n'), &places);
         }
@@ -266,18 +295,18 @@ pub(crate) fn handle_reply(journal: &mut Journal, target: &ReplyRun<'_>, reply: 
             "kind": "rerun", "step": step, "attempt": waiting["attempt"],
             "ownerAnswer": decisions.iter().map(GapDecision::to_json).collect::<Vec<_>>(),
         });
-        let result = input::record_answer(journal, id, event, approval)?;
+        let result = (input.record_answer)(journal, id, event, approval)?;
         cut("review gap reply");
         return Ok(result);
     }
-    input::record_standard_reply(journal, target, file, reply, ReplyPolicy::TEXT, approval)
+    record_standard_reply(journal, file, approval)
 }
 
 fn scope_approval(journal: &Journal, run: &Value, wait: &Value, file: &str) -> Result<Value> {
     let mut raw = String::new();
     std::fs::File::open(file)?.take(32769).read_to_string(&mut raw)?;
     let mut keys = HashSet::new();
-    let fold = |path: &str| crate::claims::fold(run["repo"].as_str().unwrap_or(""), path);
+    let fold = |path: &str| claims::fold(run["repo"].as_str().unwrap_or(""), path);
     let names: Vec<String> = serde_json::from_str(raw.trim_start_matches('\u{feff}'))
         .ok().filter(|names: &Vec<String>| raw.len() <= 32768 && !names.is_empty()
             && names.iter().all(|path| patch::plain(path) && keys.insert(fold(path))))
@@ -297,7 +326,7 @@ fn scope_approval(journal: &Journal, run: &Value, wait: &Value, file: &str) -> R
     }))
 }
 
-pub(crate) fn unknown_shutdown_files<'a>(journal: &'a Journal, run: &Value) -> Option<(&'a str, Value)> {
+pub fn unknown_shutdown_files<'a>(journal: &'a Journal, run: &Value) -> Option<(&'a str, Value)> {
     if run["inputs"]["args"]["isolated"] != true {
         journal.unknown_file_step()
     } else {
@@ -305,7 +334,7 @@ pub(crate) fn unknown_shutdown_files<'a>(journal: &'a Journal, run: &Value) -> O
     }
 }
 
-pub(crate) fn shutdown_candidate(run: &Value, id: &str) -> Option<Value> {
+pub fn shutdown_candidate(run: &Value, id: &str) -> Option<Value> {
     let repo = run["repo"].as_str()?;
     candidate::latest(&Git::new(Path::new(repo)), id).ok().flatten()
 }
@@ -519,7 +548,7 @@ struct Run {
     allowed_input_digests: HashSet<String>,
     review_md: Option<String>,
     patch_schema: &'static str,
-    verify_plan: crate::verify::Plan,
+    verify_plan: verify::Plan,
     check_paths: checks::ProjectPaths,
     browser: Value,
     writer: Pick,
@@ -642,7 +671,7 @@ fn input_attachment(text: &str, places: &[(String, &str)]) -> Vec<u8> {
 }
 
 /// The checks are named by source and number in the prompt, since a command may contain private material.
-fn check_rules(args: &Args, plan: &crate::verify::Plan) -> String {
+fn check_rules(args: &Args, plan: &verify::Plan) -> String {
     let list = |v: &[String]| v.iter().map(|x| format!("{x:?}")).collect::<Vec<_>>().join(", ");
     let mut cmds: Vec<String> = (1..=plan.checks.len()).map(|i| format!("{} #{i}", plan.check_source)).collect();
     cmds.extend((1..=plan.verify.len()).map(|i| format!("{} #{i} (verify)", plan.verify_source)));
@@ -680,7 +709,7 @@ fn agent_boundary(files: &[String]) -> String {
 }
 
 fn agent_preamble(
-    turn: &str, id: &str, boundary: &str, notes: &str, browser: &Value, args: &Args, plan: &crate::verify::Plan,
+    turn: &str, id: &str, boundary: &str, notes: &str, browser: &Value, args: &Args, plan: &verify::Plan,
 ) -> String {
     let checks = check_rules(args, plan);
     let rules = agent_rules(args.wave);
@@ -748,7 +777,7 @@ fn expert_file_sizes(git: &Git, seed: &str, args: &Args, attachments: &mut Vec<V
 
 #[allow(clippy::too_many_arguments)]
 fn preview_writer_prompt(
-    args: &Args, plan: &crate::verify::Plan, id: &str, browser: &Value, git: &Git, seed: &str,
+    args: &Args, plan: &verify::Plan, id: &str, browser: &Value, git: &Git, seed: &str,
     brief: &str, history: &Value, places: &[(String, &str)],
 ) -> Result<Value> {
     let mut attachments = vec![json!({ "path": "brief", "bytes": input_attachment(brief, places).len() })];
@@ -858,19 +887,19 @@ fn review_context(git: &Git, commit: &str, files: &[String]) -> Result<Vec<(Stri
 }
 
 /// Starts a new run from its arguments: the gate, then the journal, the claim and the machine.
-pub fn start(raw: &Value) -> Result<Exit> {
-    start_run(raw, StartMode::Foreground, crate::require_workflow)
+pub fn start(raw: &Value, require_workflow: ProjectGate) -> Result<Exit> {
+    start_run(raw, StartMode::Foreground, require_workflow)
 }
 
-pub fn start_detached(raw: &Value) -> Result<Exit> {
-    start_run(raw, StartMode::Detached(crate::control::launch_start), crate::require_workflow)
+pub fn start_detached(raw: &Value, launch: Launch, require_workflow: ProjectGate) -> Result<Exit> {
+    start_run(raw, StartMode::Detached(launch), require_workflow)
 }
 
-pub(crate) fn dry_run(raw: &Value) -> Result<Exit> {
-    Git::with_preview(|| start_run(raw, StartMode::DryRun, crate::require_workflow))
+pub fn dry_run(raw: &Value, require_workflow: ProjectGate) -> Result<Exit> {
+    Git::with_preview(|| start_run(raw, StartMode::DryRun, require_workflow))
 }
 
-pub(crate) fn start_child(raw: &Value, id: &str, require_workflow: ProjectGate) -> Result<Exit> {
+pub fn start_child(raw: &Value, id: &str, require_workflow: ProjectGate) -> Result<Exit> {
     start_run(raw, StartMode::Child(id), require_workflow)
 }
 
@@ -941,7 +970,7 @@ pub(crate) fn start_run(
     let (seed, history, prior_writers) = match args.source_run.as_deref() {
         Some(source_id) => {
             let load = || -> Result<_> {
-                let source = crate::package_source::Source::load(&cfg.home, &repo, source_id)?;
+                let source = package_source::Source::load(&cfg.home, &repo, source_id)?;
                 let seed = source.seed(&git, &base, &branch, &args.files)?;
                 let mut context = source.review_context();
                 context["originalBrief"] = json!(String::from_utf8_lossy(source.initial_brief()));
@@ -977,7 +1006,7 @@ pub(crate) fn start_run(
         }
     }
     let check_paths = checks::ProjectPaths::new(&cfg.home, &git)?;
-    let mut verify_plan = match crate::verify::Plan::load(&git, &seed, &args, &check_paths) {
+    let mut verify_plan = match verify::Plan::load(&git, &seed, &args, &check_paths) {
         Ok(plan) => plan,
         Err(error) => return Ok(refused(&label, error.0)),
     };
@@ -1049,7 +1078,7 @@ pub(crate) fn start_run(
     let executors = if server.is_some() { "codex via server" } else { "codex only" };
     let id = match mode {
         StartMode::Child(id) => id.to_string(),
-        _ => crate::journal::new_run_id(),
+        _ => journal::new_run_id(),
     };
     let browser = match &args.browser {
         Some((variable, path)) => match gateway::pin_browser(variable, Path::new(path)) {
@@ -1069,7 +1098,7 @@ pub(crate) fn start_run(
             exit.result["conflicts"] = json!(conflicts);
             return Ok(exit);
         }
-        let places = private_places(&cfg, &args, &crate::journal::flows_dir(&cfg.home).join(&id), &check_paths, &browser);
+        let places = private_places(&cfg, &args, &journal::flows_dir(&cfg.home).join(&id), &check_paths, &browser);
         let prompt = preview_writer_prompt(&args, &verify_plan, &id, &browser, &git, &seed, &brief, &history, &places)?;
         return Ok(Exit { code: 0, result: json!({
             "dryRun": true, "label": args.label, "repo": args.repo, "branch": branch, "base": base,
@@ -1103,7 +1132,7 @@ pub(crate) fn start_run(
             "executors": executors, "checksEnvironment": "exported candidate tree, reduced environment" },
     });
     let mut journal = Journal::create(&cfg.home, &id, &run)?;
-    if is_child { crate::boundary::cut("code-package context"); }
+    if is_child { cut("code-package context"); }
     journal.write_text("brief.md", &brief)?;
     if let Some(text) = &review_md {
         journal.write_text("REVIEW.base.md", text)?;
@@ -1258,7 +1287,7 @@ impl Run {
         } else {
             (git, None, run["branch"].as_str().unwrap_or("").to_string())
         };
-        let verify_plan = crate::verify::Plan::from_run(run, &args)?;
+        let verify_plan = verify::Plan::from_run(run, &args)?;
         let allowed_input_digests = match run["inputs"].get("allowInputLines") {
             Some(value) => input_allowance_digests(value.as_array()
                 .ok_or_else(|| GatewayError("The journal has invalid input line allowances.".into()))?)?,
@@ -1345,7 +1374,7 @@ impl Run {
         let result = Value::Object(self.out);
         self.journal.append(json!({ "kind": "closing", "close": close, "status": self.claim_status }))?;
         self.journal.write_value("result.json", &result)?;
-        crate::boundary::cut("result");
+        cut("result");
         finish_result(&mut self.journal, &self.args, &self.id, result)
     }
 
@@ -1560,8 +1589,8 @@ impl Run {
 
     fn approved_paths(&self, round: u32) -> Vec<String> {
         let mut seen = HashSet::new();
-        crate::journal::scope_approvals(self.journal.events())
-            .filter(|approval| crate::journal::scope_round(approval) == u64::from(round.max(1)))
+        journal::scope_approvals(self.journal.events())
+            .filter(|approval| journal::scope_round(approval) == u64::from(round.max(1)))
             .flat_map(|approval| strings(&approval["files"]))
             .filter(|path| seen.insert(claims::fold(&self.args.repo_norm, path)))
             .collect()
@@ -2281,7 +2310,7 @@ impl Run {
         self.infra(step, r)?;
         let a = patch::apply(&self.git.root, &plan);
         self.infra(step, a)?;
-        crate::boundary::cut(step);
+        cut(step);
         let result = json!({ "paths": plan.after.keys().collect::<Vec<_>>(), "claimAdded": added, "exec": plan.exec });
         let r = self.record_done(step, round, result.clone());
         self.infra(step, r)?;
@@ -2487,7 +2516,7 @@ impl Run {
         let result = json!({ "ok": checks::passed(&evidence), "tree": tree, "checkout": checkout, "evidence": evidence });
         let r = self.record_done(step, round, result.clone());
         self.infra(step, r)?;
-        crate::boundary::cut(step);
+        cut(step);
         Ok(result)
     }
 
@@ -2618,7 +2647,7 @@ impl Run {
         self.infra(&step, r)?;
         let changed = self.git.reset_index_paths(&commit, &from_commit);
         self.infra(&step, changed)?;
-        crate::boundary::cut(&format!("index {n}"));
+        cut(&format!("index {n}"));
         let moved = self.git.run(&["update-ref", "-m", &format!("zodchi flow {}: round {n}", self.args.label), &self.branch, &commit, &parent]);
         if let Err(error) = moved {
             let tip = match self.git.rev(&self.branch) {
@@ -2640,7 +2669,7 @@ impl Run {
             self.halt_infra(&step, format!("{stop} at {step}"), why);
             return Err(Halt);
         }
-        crate::boundary::cut(&step);
+        cut(&step);
         self.commit_receipt(&step, n, &parent, &commit, &tree)
     }
 
@@ -2922,10 +2951,10 @@ impl Run {
                 Some(stored)
             };
             if let Some(stored) = dispatch {
-                crate::boundary::cut(&format!("intent {step}"));
+                cut(&format!("intent {step}"));
                 eprintln!("{}: {step} · {}/{} {} · {key}", self.id, pick.provider, pick.model, pick.effort);
                 let created = exec.submit(&key, &stored).map_err(infra)?;
-                crate::boundary::cut(&format!("submit {step}"));
+                cut(&format!("submit {step}"));
                 self.journal.append(json!({
                     "kind": "submitted", "step": step, "attempt": attempt, "key": key, "created": created,
                 })).map_err(infra)?;
@@ -3287,7 +3316,7 @@ fn merge(a: &Value, b: &Value) -> Value {
 
 /// What verified a round: the slowest source that ran and passed, from the real exit codes. The stamp names the
 /// sources and exit codes only, never a command.
-fn verification(checks: &Value, plan: &crate::verify::Plan, wave: bool) -> Value {
+fn verification(checks: &Value, plan: &verify::Plan, wave: bool) -> Value {
     let evidence = checks["evidence"].as_array().map(Vec::as_slice).unwrap_or_default();
     let receipts = !evidence.is_empty() && evidence.iter().all(|e| e["exitCode"].is_i64());
     let mut sources: Vec<(String, Vec<i64>)> = Vec::new();
