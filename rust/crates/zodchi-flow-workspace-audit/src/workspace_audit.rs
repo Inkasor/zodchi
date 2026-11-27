@@ -1,6 +1,5 @@
 //! Inventory a workspace, pin the owner's decisions, and create verified archive copies.
 
-use crate::{boundary::Launch, git::Git, input_common, journal::Journal, patch, Exit};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -14,6 +13,7 @@ use zodchi_core::{
     config::Config,
     util::{fail, iso, sha256_hex, GatewayError, Result},
 };
+use zodchi_flow_engine::{boundary::Launch, git::Git, input_common, journal::Journal, patch, Exit};
 
 pub const NAME: &str = "workspace-audit";
 const VERSION: &str = "1";
@@ -117,7 +117,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
     if fs::canonicalize(&cfg.home).is_ok_and(|home| home.starts_with(&root)) {
         return fail("The audit root contains the active Zodchi journal.");
     }
-    let id = crate::journal::new_run_id();
+    let id = zodchi_flow_engine::journal::new_run_id();
     let run = json!({
         "runId": id, "workflow": NAME, "version": VERSION, "release": env!("CARGO_PKG_VERSION"),
         "createdAt": iso(), "repo": root, "archive": archive,

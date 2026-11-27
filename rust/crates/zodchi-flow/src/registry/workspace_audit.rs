@@ -1,14 +1,7 @@
-#[path = "../workspace_audit.rs"]
-mod workspace_audit;
-
 use super::Entry;
+use zodchi_flow_workspace_audit as workflow;
 
 pub(super) const ENTRY: Entry = Entry {
     waiting_decision: Some(|last| last["step"] == "owner decisions"),
-    ..Entry::new(
-        workspace_audit::NAME,
-        "1",
-        workspace_audit::start,
-        workspace_audit::resume,
-    )
+    ..Entry::new(workflow::NAME, "1", workflow::start, workflow::resume)
 };
