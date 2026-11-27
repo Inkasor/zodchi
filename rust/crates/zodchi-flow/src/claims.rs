@@ -187,7 +187,7 @@ pub fn holds(dir: &Path, label: &str, run: &str, keys: &[String]) -> bool {
 
 /// Closes the claim of this run with a status; a claim that is gone or belongs to another run is left alone.
 pub fn close(dir: &Path, label: &str, run: &str, status: &str) -> Result<bool> {
-    let update = || {
+    with_lock(dir, || {
         let own = file(dir, label);
         let bytes = match std::fs::read(&own) {
             Ok(bytes) => bytes,
@@ -207,13 +207,5 @@ pub fn close(dir: &Path, label: &str, run: &str, status: &str) -> Result<bool> {
             write_json_atomic(&own, &claim)?;
         }
         Ok(true)
-    };
-    if status == "closed" {
-        // A cancel command may have been cut while using this same lock to stop the worker.
-        fs::create_dir_all(dir)?;
-        let _lock = crate::cleanup::ClaimLock::wait(dir, Duration::from_secs(120))?;
-        update()
-    } else {
-        with_lock(dir, update)
-    }
+    })
 }

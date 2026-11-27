@@ -95,7 +95,7 @@ pub const USAGE: &str = "Usage: zodchi flow <workflow> --args <file.json> [--det
        zodchi flow budget <run-id> [--add-calls <n>] [--add-minutes <n>]
        zodchi flow remark <run-id> --file <text>
        zodchi flow reply <run-id> --file <text> [--answered 1,2|all] [--no-new-decisions]
-       zodchi flow reply <run-id> --allow-files <file.json>
+       zodchi flow reply <run-id> --allow-files <file.json> [--file <text>]
        zodchi flow video research --args <file.json>
        zodchi flow video publish <run-id> --file <file.json>
        zodchi flow video stats <run-id> --file <file.json>
@@ -106,7 +106,7 @@ pub const USAGE: &str = "Usage: zodchi flow <workflow> --args <file.json> [--det
        zodchi flow list [--repo <directory>]
 For a code-package evidence gap reply, use one <gap id>: <option> line per gap. Put supporting text below that line.
 Prints the result JSON. The journal is ~/.zodchi/flows/<run-id>/.
-Exit codes: 0 success or approved, 1 a wrong call or command failure, 2 refused, stopped or not approved.
+Exit codes: 0 success, approved or closed by the owner, 1 a wrong call or command failure, 2 refused, stopped or not approved.
 In agent mode, exit 3 means sign-in required. For flow wait, exit 3 also covers a timeout (status: timeout).";
 
 fn compiled_catalog() -> Value {
@@ -332,7 +332,6 @@ pub fn cli(args: &[String]) -> Result<Exit> {
         [command, id, flag, file] if command == "remark" && flag == "--file" => {
             return input::remark(id, file);
         }
-        [command, id, flag, file] if command == "reply" && flag == "--allow-files" => return input::allow_scope(id, file),
         [command, id, rest @ ..] if command == "reply" => return input::reply(id, rest, control::reply_policy),
         [command, id] if command == "_worker" => return control::worker(id, None),
         [command, id, rerun] if command == "_worker" => return control::worker(id, Some(rerun)),

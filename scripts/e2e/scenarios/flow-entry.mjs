@@ -230,6 +230,23 @@ export default function register(h) {
     }
   }
 
+  async function checkAnalysisWriter(t) {
+    const f = flowWorld(t, "flow-entry-analysis-writer");
+    const hardWriter = { provider: "codex", model: "fixture-analysis-writer", effort: "high" };
+    const models = { hardWriter: { candidates: [hardWriter] } };
+    const invalid = await f.flow(["--args", f.args({ kind: "other", models }), "--dry-run"]);
+    t.ok(invalid.code === 2 && invalid.json?.refused?.includes("args.kind"), "unknown task kinds are refused");
+    const agent = await f.flow(["--args", f.args({ mode: "agent", kind: "analysis", models }), "--dry-run"]);
+    t.eq([agent.code, agent.json?.models?.hardWriter?.model], [0, hardWriter.model], "agent preview selects the hardWriter role for analysis");
+    f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
+    f.answer("review 1", f.review("approved"));
+    const result = await f.flow(["--args", f.args({ kind: "analysis", models })]);
+    t.eq([result.code, result.json?.approved, result.json?.models?.hardWriter, f.steps()],
+      [0, true, hardWriter, ["write", "review 1"]], "the analysis package runs with the hardWriter candidate");
+    const intent = readJsonl(path.join(result.json.journal, "events.jsonl")).find(event => event.kind === "intent" && event.step === "write");
+    t.eq(intent?.model, hardWriter.model, "the dispatched writer uses the selected candidate");
+  }
+
   async function checkWave(t) {
     const f = flowWorld(t, "flow-entry-wave");
     const config = path.join(f.r, ".zodchi", "verify.json");
@@ -531,6 +548,7 @@ export default function register(h) {
     t.eq([agentRefused.code, agentRefused.json, agentRefused.err],
       [2, refused.json, ""], "a workflow refusal remains a structured stdout result in agent mode");
     await checkDryRunClaims(t);
+    await checkAnalysisWriter(t);
     await checkWave(t);
   });
 

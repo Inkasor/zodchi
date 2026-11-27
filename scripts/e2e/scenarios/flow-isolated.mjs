@@ -45,6 +45,40 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, FIXED })
     t.eq([gitOut(f.r, ["show", `:${other}`]), get(f, other), f.steps()],
       ["// staged user work", "// unstaged user work\n", modelSteps], "application recovery preserves other staging, files and model receipts");
     t.eq((await cli(t, f, ["status", runId])).json?.result?.application?.status ?? null, "applied", "status records completion of application");
+
+    const moved = flowWorld(t, "flow-isolated-apply-moved");
+    gitOut(moved.r, ["config", "core.autocrlf", "false"]);
+    moved.answer("write", moved.patch([moved.modify(math, get(moved, math), FIXED)]));
+    moved.answer("review 1", moved.review("approved"));
+    const ready = await moved.flow(["--args", moved.args({ isolated: true })]);
+    t.eq(ready.code, 0, "a candidate is approved before the target moves");
+    const old = ready.json.candidate.commit;
+    gitOut(moved.r, ["commit", "-qm", "empty target commit", "--allow-empty"]);
+    const movingFile = "new-on-target.txt";
+    put(moved, movingFile, "Commit on the target.\n");
+    gitOut(moved.r, ["add", "--", movingFile]);
+    gitOut(moved.r, ["commit", "-qm", "unrelated target change"]);
+    const tip = gitOut(moved.r, ["rev-parse", "HEAD"]);
+    put(moved, other, "Staged work.\n");
+    gitOut(moved.r, ["add", "--", other]);
+    put(moved, other, "Unstaged work.\n");
+    const interrupted = await cli(t, moved, ["apply", ready.json.runId], { ZODCHI_FLOW_CUT: "candidate branch" });
+    t.eq(interrupted.code, 75, "the moved application can be interrupted after advancing the branch");
+    const landed = await cli(t, moved, ["apply", ready.json.runId]);
+    const head = gitOut(moved.r, ["rev-parse", "HEAD"]);
+    const parent = gitOut(moved.r, ["rev-parse", "HEAD^"]);
+    const tree = gitOut(moved.r, ["rev-parse", "HEAD^{tree}"]);
+    t.ok(head !== old, "the candidate is a new commit on the moved target");
+    t.eq([landed.code, landed.json?.commit, landed.json?.candidateCommit, landed.json?.tree, parent],
+      [0, head, old, tree, tip], "the result records both commits and the recovered tree");
+    t.eq(gitOut(moved.r, ["diff-tree", "--no-commit-id", "--name-only", "-r", tip, head]), math,
+      "the applied tree changes only the candidate path relative to the new parent");
+    t.eq(gitOut(moved.r, ["rev-parse", `HEAD:${math}`]), gitOut(moved.r, ["rev-parse", `${old}:${math}`]),
+      "the path uses the exact reviewed blob");
+    t.eq(gitOut(moved.r, ["show", "-s", "--format=%an%n%ae%n%aI%n%B", head]), gitOut(moved.r, ["show", "-s", "--format=%an%n%ae%n%aI%n%B", old]),
+      "the new commit preserves the author and message");
+    t.eq([get(moved, math), get(moved, movingFile), gitOut(moved.r, ["show", `:${other}`]), get(moved, other), moved.steps()],
+      [FIXED, "Commit on the target.\n", "Staged work.", "Unstaged work.\n", ["write", "review 1"]], "recovery preserves the target's files and local staging without a new review");
   });
 
   scenario("flow-isolated-stops", "failed checks, a refusal and target drift leave the live checkout alone", async (t) => {
@@ -64,10 +98,13 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, FIXED })
     f.answer("review 1", f.review("approved"));
     const ready = await f.flow(["--args", f.args({ isolated: true })]);
     t.eq(ready.code, 0, "another candidate is approved on the same base");
-    gitOut(f.r, ["commit", "-qm", "move the target after review", "--allow-empty"]);
+    put(f, math, `// Committed on the target after review.\n${original}`);
+    gitOut(f.r, ["add", "--", math]);
+    gitOut(f.r, ["commit", "-qm", "move the target after review"]);
     const moved = sameCheckout();
     const drift = await cli(t, f, ["apply", ready.json.runId]);
     t.ok(drift.json?.reason?.includes("target branch moved"), "application identifies the changed target");
+    t.ok(drift.code === 2 && drift.json?.reason?.includes(math), "application refuses and names the overlapping file");
     t.eq(sameCheckout(), moved, "application after branch drift changes neither files nor the index");
   });
 

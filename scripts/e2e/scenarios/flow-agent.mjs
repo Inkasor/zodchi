@@ -753,5 +753,39 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     const result = await f.flow(["--resume", initial.json.runId]);
     t.eq([result.code, result.json?.claimAdded, f.steps()], [0, ["src/other.mjs"], ["write", "review 1"]],
       "the engine applies the recorded workspace changes and reviews them in the original run");
+
+    const advance = flowWorld(t, "flow-agent-scope-in-advance");
+    gitOut(advance.r, ["config", "core.autocrlf", "false"]);
+    const check = "test/math.test.mjs";
+    const other = "src/other.mjs";
+    const originalCheck = fs.readFileSync(path.join(advance.r, check), "utf8");
+    const amendedCheck = `${originalCheck}// Keep the existing range assertions.\n`;
+    advance.answer("write", report("question", {}, [{ text: `May I edit ${check} and ${other}?`, options: [] }]));
+    const waiting = await advance.flow(["--args", advance.args({ mode: "agent", isolated: true, rounds: 2 })]);
+    t.eq([waiting.code, waiting.json?.status, waiting.json?.outsideClaim], [2, "waiting", undefined],
+      "the writer asks before making the extra changes");
+    const id = waiting.json.runId;
+    const answer = path.join(advance.w.dir, "reply.txt");
+    fs.writeFileSync(answer, "Keep the test assertions and update the other module when closing the review.");
+    const scope = path.join(advance.w.dir, "approved.json");
+    fs.writeFileSync(scope, JSON.stringify([check, other]));
+    const owner = (...args) => zodchi(t, advance.w, ["flow", ...args], { cwd: advance.r, env: advance.w.env });
+    const approved = await owner("reply", id, "--file", answer, "--allow-files", scope);
+    t.eq([approved.code, approved.json?.allowFiles], [0, [check, other]], "one reply records the answer and the named paths");
+    const events = fs.readFileSync(path.join(waiting.json.journal, "events.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+    const approval = events.at(-1)?.scopeApproval;
+    t.eq([approval?.round, approval?.files, approval?.allowCheckChanges], [1, [check, other], [check, other]],
+      "the journal records the round's scope approval and its exact check allowances");
+    advance.answer("write", report("done", { "src/math.mjs": FIXED, [check]: amendedCheck }));
+    advance.answer("review 1", advance.review("changes_requested", [advance.finding("F1")]));
+    advance.answer("close 1", report("done", { [other]: "export const other = 2;\n" }));
+    advance.answer("review 2", advance.review("approved"));
+    const resumed = await advance.flow(["--resume", id]);
+    t.eq([resumed.code, resumed.json?.approved, resumed.json?.claimAdded, advance.steps()],
+      [0, true, [check, other], ["write", "write", "review 1", "close 1", "review 2"]],
+      "the write and later step of the round use only the pre-approved paths and run verification");
+    t.ok(turns(advance)[1].prompt.includes("Keep the test assertions"), "the restarted writer also sees the text reply");
+    t.eq((await owner("apply", id)).code, 0, "the exact protected path is authorized when applying the approved isolated candidate");
+    t.eq(fs.readFileSync(path.join(advance.r, check), "utf8"), amendedCheck, "the authorized test edit lands with its assertions intact");
   });
 }

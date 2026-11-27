@@ -4,6 +4,7 @@
 use crate::checks;
 use crate::claims::{fold, norm};
 use serde_json::{json, Map, Value};
+use std::collections::HashSet;
 
 #[derive(Clone, Debug)]
 pub struct Args {
@@ -16,6 +17,7 @@ pub struct Args {
     pub files: Vec<String>,
     pub review_context: Vec<String>,
     pub agent: bool,
+    analysis: bool,
     pub wave: bool,
     pub browser: Option<(String, String)>,
     pub isolated: bool,
@@ -29,6 +31,7 @@ pub struct Args {
     pub verify: Vec<String>,
     pub protect: Vec<String>,
     pub allow_check_changes: Vec<String>,
+    owner_check_changes: HashSet<String>,
     pub models: Map<String, Value>,
     pub extend_claim: bool,
     pub check_timeout_min: f64,
@@ -41,11 +44,11 @@ pub(crate) const BUILTIN_PROTECTED: &[&str] = &[
 
 const SUPPORTED: &[&str] = &[
     "label", "brief", "repo", "files", "tmp", "mode", "rounds", "fixes", "setup", "checks", "verify", "protect", "allowCheckChanges",
-    "models", "commit", "extendClaim", "checkTimeoutMin", "continuations", "isolated", "budget", "sourceRun", "reviewContext", "browser", "wave",
+    "models", "commit", "extendClaim", "checkTimeoutMin", "continuations", "isolated", "budget", "sourceRun", "reviewContext", "browser", "wave", "kind",
 ];
 
 const UNSUPPORTED: [(&str, &str); 5] = [
-    ("hard", "a hard writer is chosen in the role table (expertWriter) in this version"),
+    ("hard", "use args.kind \"analysis\" to select the hardWriter role"),
     ("branch", "the run commits on the branch that is checked out; switch to it first"),
     ("fixIgnore", "add \".agent-tmp/\" to .gitignore and commit it first"),
     ("closeShouldFix", "nit findings stay in openFindings in this version"),
@@ -140,6 +143,12 @@ pub fn parse(a: &Value) -> Result<Args, String> {
         Some(mode) if mode == "agent" => true,
         Some(_) => return Err("args.mode is \"expert\" or \"agent\"".into()),
     };
+    let analysis = match o.get("kind") {
+        None => false,
+        Some(kind) if kind == "code" => false,
+        Some(kind) if kind == "analysis" => true,
+        Some(_) => return Err("args.kind is \"analysis\" or \"code\"".into()),
+    };
     let browser = match o.get("browser") {
         None | Some(Value::Null) => None,
         Some(Value::Object(b)) if agent && b.keys().all(|k| k == "variable" || k == "executable") => {
@@ -224,6 +233,7 @@ pub fn parse(a: &Value) -> Result<Args, String> {
         files,
         review_context,
         agent,
+        analysis,
         wave: o.get("wave") == Some(&json!(true)),
         browser,
         isolated,
@@ -237,6 +247,7 @@ pub fn parse(a: &Value) -> Result<Args, String> {
         verify: commands(o.get("verify"), "verify")?,
         protect,
         allow_check_changes,
+        owner_check_changes: HashSet::new(),
         models,
         extend_claim: o.get("extendClaim") == Some(&json!(true)),
         check_timeout_min,
@@ -245,7 +256,7 @@ pub fn parse(a: &Value) -> Result<Args, String> {
 
 impl Args {
     pub fn writer_role(&self) -> &'static str {
-        if self.agent { "writer" } else { crate::models::WRITER_ROLE }
+        if self.analysis { "hardWriter" } else if self.agent { "writer" } else { crate::models::WRITER_ROLE }
     }
 
     pub fn mode(&self) -> &'static str {
@@ -258,11 +269,22 @@ impl Args {
         paths.extend(self.protect.iter().map(String::as_str));
         paths
     }
+
+    pub(crate) fn allow_owner_check_changes(&mut self, events: &[Value]) {
+        let repo = &self.repo_norm;
+        self.owner_check_changes.extend(crate::journal::scope_approvals(events)
+            .flat_map(|approval| approval.get("allowCheckChanges").unwrap_or(&approval["files"]).as_array().into_iter().flatten())
+            .filter_map(Value::as_str)
+            .map(|path| fold(repo, path)));
+    }
 }
 
 /// Protected checks: an existing file under test/, tests/, e2e/ or .claude/skills/verify/, REVIEW.md, or under a
-/// path of args.protect.
+/// path of args.protect, excluding the exact paths approved by the owner during this run.
 pub fn is_protected(args: &Args, rel_path: &str) -> bool {
+    if args.owner_check_changes.contains(&fold(&args.repo_norm, rel_path)) {
+        return false;
+    }
     let l = rel_path.to_lowercase();
     let dirs: Vec<&str> = l.split('/').collect();
     dirs[..dirs.len() - 1].iter().any(|d| ["test", "tests", "e2e"].contains(d))

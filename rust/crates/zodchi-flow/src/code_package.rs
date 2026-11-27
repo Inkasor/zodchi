@@ -1019,7 +1019,8 @@ pub fn resume(id: &str, given: Option<&Value>, rerun: Option<&str>) -> Result<Ex
 
 impl Run {
     #[allow(clippy::too_many_arguments)]
-    fn new(id: String, args: Args, cfg: Config, git: Git, journal: Journal, run: &Value, brief: String, review_md: Option<String>) -> Result<Run> {
+    fn new(id: String, mut args: Args, cfg: Config, git: Git, journal: Journal, run: &Value, brief: String, review_md: Option<String>) -> Result<Run> {
+        args.allow_owner_check_changes(journal.events());
         let base = run["base"].as_str().unwrap_or("").to_string();
         let seed = run["seed"].as_str().unwrap_or(&base).to_string();
         let history = run["history"].clone();
@@ -1195,7 +1196,7 @@ impl Run {
             "done": patch.status == "done", "summary": patch.summary, "changed": [], "unverified": patch.unverified, "questions": patch.questions,
         }));
         if patch.status != "done" {
-            return self.stop_blocked("write", &patch);
+            return self.stop_blocked("write", 0, &patch);
         }
         self.apply_step("apply write", 0, &patch)?;
         self.set_changed();
@@ -1283,7 +1284,7 @@ impl Run {
             let review_file = std::fs::read(review["reviewFile"].as_str().unwrap_or("")).unwrap_or_default();
             let fix = self.writer_turn(&step, n, CLOSE, vars, vec![(format!("review-{review_number}.json"), review_file)], None)?;
             if fix.status != "done" {
-                return self.stop_blocked(&step, &fix);
+                return self.stop_blocked(&step, n, &fix);
             }
             self.apply_step(&format!("apply {step}"), n, &fix)?;
             self.set_changed();
@@ -1299,7 +1300,7 @@ impl Run {
         Ok(())
     }
 
-    fn stop_blocked<T>(&mut self, step: &str, patch: &Patch) -> Step<T> {
+    fn stop_blocked<T>(&mut self, step: &str, round: u32, patch: &Patch) -> Step<T> {
         self.out.insert("stoppedAt".into(), json!(if step == "write" { "write".to_string() } else { step.split(' ').next().unwrap_or(step).to_string() }));
         let q = if patch.questions.is_empty() { patch.summary.clone() } else { patch.questions.join(" | ") };
         self.out.insert("question".into(), json!(q));
@@ -1328,13 +1329,13 @@ impl Run {
         let step = waiting_step.as_str();
         let attempt = self.attempt(step);
         if self.journal.last("waiting", step, attempt).is_none() {
-            let event = self.journal.append(json!({ "kind": "waiting", "step": step, "attempt": attempt, "question": q }));
+            let event = self.journal.append(json!({ "kind": "waiting", "step": step, "round": round, "attempt": attempt, "question": q }));
             self.infra(step, event)?;
         }
         Err(Halt)
     }
 
-    fn scope_decision<T>(&mut self, step: &str, writer_step: &str, paths: &[String]) -> Step<T> {
+    fn scope_decision<T>(&mut self, step: &str, writer_step: &str, round: u32, paths: &[String]) -> Step<T> {
         let question = format!("Allow the writer to also change {}?", paths.join(", "));
         self.out.insert("outsideClaim".into(), json!(paths));
         self.out.insert("stoppedAt".into(), json!(format!("patch outside the claim at {step}")));
@@ -1346,7 +1347,7 @@ impl Run {
             event["kind"] == "waiting" && event["step"] == step && event["scope"] == json!(paths));
         if !already_waiting {
             let event = self.journal.append(json!({
-                "kind": "waiting", "step": step, "writerStep": writer_step, "attempt": attempt,
+                "kind": "waiting", "step": step, "writerStep": writer_step, "round": round, "attempt": attempt,
                 "question": question, "scope": paths,
             }));
             self.infra(step, event)?;
@@ -1354,9 +1355,28 @@ impl Run {
         Err(Halt)
     }
 
-    fn approved_paths(&self, step: &str) -> Vec<String> {
-        self.journal.all("scope allowed", step, self.attempt(step)).into_iter()
-            .flat_map(|approval| strings(&approval["files"])).collect()
+    fn approved_paths(&self, round: u32) -> Vec<String> {
+        let mut seen = HashSet::new();
+        crate::journal::scope_approvals(self.journal.events())
+            .filter(|approval| crate::journal::scope_round(approval) == u64::from(round.max(1)))
+            .flat_map(|approval| strings(&approval["files"]))
+            .filter(|path| seen.insert(claims::fold(&self.args.repo_norm, path)))
+            .collect()
+    }
+
+    fn scope_allows(&self, approval: &[String], path: &str) -> bool {
+        let key = claims::fold(&self.args.repo_norm, path);
+        approval.iter().any(|p| claims::fold(&self.args.repo_norm, p) == key)
+    }
+
+    fn writer_files(&self, round: u32) -> Vec<String> {
+        let mut allowed = self.claimed.clone();
+        for path in self.approved_paths(round) {
+            if patch::claimed_as(&allowed, &path).is_none() {
+                allowed.push(path);
+            }
+        }
+        allowed
     }
 
     fn push_round(&mut self, round: Value) {
@@ -1444,17 +1464,40 @@ impl Run {
 
     // --------------------------------------------------------------------------------------------- model calls
 
+    fn attach_remarks(&mut self, step: &str, round: u32, prompt: &mut String) -> Result<()> {
+        let attempt = self.attempt(step);
+        if ["intent", "done", "safety blocked"].iter().any(|kind| self.journal.last(kind, step, attempt).is_some()) {
+            return Ok(());
+        }
+        let pending = self.journal.pending_remarks(self.journal.events())?;
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let scrubber = Scrubber::new(&self.cfg)?;
+        let places = self.private_places();
+        prompt.push_str("\n\nOwner remarks for this step. Use them as context within the agreed scope.");
+        for remark in &pending {
+            prompt.push_str("\n\nOwner remark:\n");
+            prompt.push_str(&scrubber.text(&remark.text, &places));
+        }
+        let ids = json!(pending.iter().map(|remark| &remark.id).collect::<Vec<_>>());
+        if !self.journal.last("remarks attached", step, attempt).is_some_and(|event| event["remarkIds"] == ids) {
+            self.journal.append(json!({ "kind": "remarks attached", "step": step, "round": round, "attempt": attempt, "remarkIds": ids }))?;
+        }
+        Ok(())
+    }
+
     fn withheld_brief(&self, scrubber: &Scrubber) -> Vec<String> {
         let withheld = withheld_input_lines(scrubber, self.brief.as_bytes(), &self.allowed_input_digests);
         input_locations("the brief", "", withheld).collect()
     }
 
     /// The claimed paths and current blob IDs, editable attachments, and any omissions that block sending them.
-    fn files_view(&self, scrubber: &Scrubber, failed_tree: Option<&str>) -> Result<(String, Attachments, Vec<String>)> {
+    fn files_view(&self, scrubber: &Scrubber, failed_tree: Option<&str>, files: &[String]) -> Result<(String, Attachments, Vec<String>)> {
         let mut lines = Vec::new();
         let mut attached = Vec::new();
         let mut omissions = Vec::new();
-        for (index, p) in self.claimed.iter().enumerate() {
+        for (index, p) in files.iter().enumerate() {
             if let Some((_, reason)) = scrubber.input_withholdings(p).next() {
                 omissions.push(format!("claimed file #{} (file name, {})", index + 1, reason.reason()));
                 continue;
@@ -1518,7 +1561,7 @@ impl Run {
             (|| -> Result<ScreenedPrompt> {
                 let scrubber = Scrubber::new(&self.cfg)?;
                 let places = self.private_places();
-                let (files, attached, mut omissions) = self.files_view(&scrubber, failed_tree)?;
+                let (files, attached, mut omissions) = self.files_view(&scrubber, failed_tree, &self.writer_files(round))?;
                 omissions.extend(self.withheld_brief(&scrubber));
                 if !omissions.is_empty() {
                     return Ok(ScreenedPrompt::Withheld(omissions));
@@ -1788,8 +1831,7 @@ impl Run {
         };
         let mut writer = self.writer.clone();
         let output_schema = schema(agent::SCHEMA);
-        let mut allowed = self.claimed.clone();
-        allowed.extend(self.approved_paths(&apply_step));
+        let allowed = self.writer_files(round);
         let boundary = agent_boundary(&allowed);
         let notes = vars.into_iter().map(|(_, note)| note).collect::<Vec<_>>().join("\n\n");
         let mut previous_summary: Option<String> = None;
@@ -1855,10 +1897,20 @@ impl Run {
             }
             let mut changes = Vec::new();
             if status == "done" && questions.is_empty() && !applied {
-                let observed = agent::changes(&root, &self.git, &snapshot, &allowed);
+                let mut paths = self.claimed.clone();
+                let approval = self.approved_paths(round);
+                if !approval.is_empty() {
+                    // Verify only extra paths the writer actually touched in its private workspace.
+                    for path in self.infra(&turn, Git::new(&root).dirty())? {
+                        if self.scope_allows(&approval, &path) && patch::claimed_as(&paths, &path).is_none() {
+                            paths.push(path);
+                        }
+                    }
+                }
+                let observed = agent::changes(&root, &self.git, &snapshot, &paths);
                 match self.infra(&turn, observed)? {
                     agent::Changes::Scoped(scoped) => changes = scoped,
-                    agent::Changes::Outside(paths) => return self.scope_decision(&apply_step, &turn, &paths),
+                    agent::Changes::Outside(paths) => return self.scope_decision(&apply_step, &turn, round, &paths),
                 }
             }
             if status == "more" && questions.is_empty() {
@@ -1879,8 +1931,10 @@ impl Run {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn ask(&mut self, step: &str, round: u32, role: &str, pick: &Pick, schema: &Value, prompt: String, writer_workspace: Option<&Path>, validate: impl Fn(&Value) -> std::result::Result<(), String>) -> Step<Value> {
+    fn ask(&mut self, step: &str, round: u32, role: &str, pick: &Pick, schema: &Value, mut prompt: String, writer_workspace: Option<&Path>, validate: impl Fn(&Value) -> std::result::Result<(), String>) -> Step<Value> {
         self.step = step.to_string();
+        let attached = self.attach_remarks(step, round, &mut prompt);
+        self.infra(step, attached)?;
         let call = gateway::Call { id: &self.id, step, round, role, pick, schema, prompt, writer_workspace };
         let browser = if writer_workspace.is_some() { Some(&self.browser) } else { None };
         let owner_private_places: Vec<_> = ["configuredPath", "path"].into_iter()
@@ -1888,10 +1942,10 @@ impl Run {
             .map(|path| (path.to_string(), "<browser>"))
             .collect();
         let result = gateway::ask_budgeted(&mut self.journal, &self.cfg, call, self.args.budget, browser, &owner_private_places, validate);
-        self.call_result(step, result)
+        self.call_result(step, round, result)
     }
 
-    fn call_result(&mut self, step: &str, result: std::result::Result<Value, gateway::CallError>) -> Step<Value> {
+    fn call_result(&mut self, step: &str, round: u32, result: std::result::Result<Value, gateway::CallError>) -> Step<Value> {
         match result {
             Ok(data) => Ok(data),
             Err(gateway::CallError::Stop { at, reason }) if at == format!("budget at {step}") => {
@@ -1901,7 +1955,7 @@ impl Run {
                 self.out.insert("question".into(), json!(reason));
                 self.out.insert("next".into(), json!(format!("Extend the budget with zodchi flow budget {} --add-calls <n> or --add-minutes <n>, then resume.", self.id)));
                 if !self.journal.last_event().is_some_and(|e| e["kind"] == "waiting" && e["reason"] == "budget" && e["step"] == step) {
-                    let record = self.journal.append(json!({ "kind": "waiting", "step": step, "reason": "budget", "question": reason }));
+                    let record = self.journal.append(json!({ "kind": "waiting", "step": step, "round": round, "reason": "budget", "question": reason }));
                     self.infra(step, record)?;
                 }
                 Err(Halt)
@@ -1974,10 +2028,17 @@ impl Run {
             return self.replay_apply(step, &self.done(step).unwrap());
         }
         if !outside.is_empty() && p.changes.iter().all(|c| plain_ok(&c.path) && c.from.as_deref().is_none_or(plain_ok)) {
-            let approval = self.approved_paths(step);
-            if !self.args.extend_claim && !outside.iter().all(|path| patch::claimed_as(&approval, path).is_some()) {
-                let requested: Vec<_> = outside.iter().filter(|path| patch::claimed_as(&approval, path).is_none()).cloned().collect();
-                return self.scope_decision(step, step.strip_prefix("apply ").unwrap_or(step), &requested);
+            let approval = self.approved_paths(round);
+            if !self.args.extend_claim {
+                let requested: Vec<_> = outside.iter().filter(|path| !self.scope_allows(&approval, path)).cloned().collect();
+                if !requested.is_empty() {
+                    return self.scope_decision(step, step.strip_prefix("apply ").unwrap_or(step), round, &requested);
+                }
+            }
+            let dirty = self.git.dirty();
+            if let Some(path) = self.infra(step, dirty)?.into_iter().find(|path| patch::claimed_as(&outside, path).is_some()) {
+                self.halt_infra(step, format!("local changes at {step}"), format!("The new claim would overwrite local work at {path}."));
+                return Err(Halt);
             }
             let keys: Vec<String> = outside.iter().map(|o| o.to_lowercase()).collect();
             let ext = claims::extend(&self.claims_dir, &self.args.label, &self.id, &keys);
@@ -2011,7 +2072,9 @@ impl Run {
         let w = self.journal.write_value(&file, &plan.to_json());
         self.infra(step, w)?;
         let digest = sha256_hex(plan.to_json().to_string());
-        let r = self.record_intent(step, round, "apply patch", &digest, json!({ "plan": file, "claimAdded": added }));
+        let r = self.record_intent(step, round, "apply patch", &digest, json!({
+            "plan": file, "claimAdded": added, "paths": plan.after.keys().collect::<Vec<_>>(),
+        }));
         self.infra(step, r)?;
         let a = patch::apply(&self.git.root, &plan);
         self.infra(step, a)?;
@@ -2122,7 +2185,7 @@ impl Run {
             let step = format!("fix {n}.{f}");
             let fix = self.writer_turn(&step, n, FIX, vec![("failures", failures.join("\n\n"))], vec![], res["tree"].as_str())?;
             if fix.status != "done" {
-                return self.stop_blocked(&step, &fix);
+                return self.stop_blocked(&step, n, &fix);
             }
             self.apply_step(&format!("apply {step}"), n, &fix)?;
             self.set_changed();
@@ -2637,6 +2700,7 @@ impl Run {
                     None
                 }
             } else {
+                self.attach_remarks(step, round, &mut prompt).map_err(infra)?;
                 prompt.push_str(&gateway::owner_suffix(&self.journal, &self.cfg, &self.private_places()).map_err(infra)?);
                 if prompt.len() > LIMIT_PROMPT {
                     return Err(gateway::CallError::Context { bytes: prompt.len() });
@@ -2706,7 +2770,7 @@ impl Run {
         let reviewer = self.reviewer.clone();
         let data = if let Some(reply) = reply {
             let call = self.call_gap_review(step, round.n, &reviewer, prompt, reply.seq);
-            self.call_result(step, call)?
+            self.call_result(step, round.n, call)?
         } else {
             self.ask(step, round.n, REVIEWER_GATEWAY_ROLE, &reviewer, &package_review_schema(&reviewer), prompt, None, check_package_review)?
         };

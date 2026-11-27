@@ -21,6 +21,20 @@ use zodchi_core::{
 
 pub const BRANCH: &str = "refs/heads/flow-candidate";
 
+pub(crate) fn latest(project: &Git, id: &str) -> Result<Option<Value>> {
+    let prefix = format!("refs/zodchi/candidates/{id}/");
+    let refs = project.run(&["for-each-ref", "--format=%(refname)", &prefix])?;
+    let Some((round, reference)) = refs.lines()
+        .filter_map(|reference| Some((reference.strip_prefix(&prefix)?.parse::<u32>().ok()?, reference)))
+        .max_by_key(|(round, _)| *round)
+    else {
+        return Ok(None);
+    };
+    let commit = project.rev(reference)?;
+    let tree = project.rev(&format!("{commit}^{{tree}}"))?;
+    Ok(Some(json!({ "commit": commit, "tree": tree, "ref": reference, "round": round })))
+}
+
 pub fn prepare(project: &Git, stage: &Git, base: &str) -> Result<()> {
     if stage.root.exists() {
         let top = stage.run(&["rev-parse", "--show-toplevel"])?;
@@ -140,10 +154,11 @@ fn apply_approved(id: &str) -> Result<Value> {
         return Ok(result);
     }
     let repo = Path::new(text(&run, "repo")?);
-    let source = Source::load(&home, repo, id)?;
+    let mut source = Source::load(&home, repo, id)?;
     if !source.args.isolated || source.result["approved"] != true {
         return fail("Only an approved isolated package can be applied.");
     }
+    source.args.allow_owner_check_changes(journal.events());
     let base = source.base()?;
     let candidate = &source.result["candidate"];
     let commit = text(candidate, "commit")?;
@@ -181,12 +196,25 @@ fn apply_approved(id: &str) -> Result<Value> {
         .iter()
         .find(|e| e["kind"] == "application intent")
         .cloned();
-    if tip != base && tip != commit {
+    let target = if let Some(intent) = &intent {
+        // An older application intent always uses the original candidate on its base.
+        Application {
+            parent: intent["parent"].as_str().unwrap_or(base).to_owned(),
+            commit: intent["commit"].as_str().unwrap_or(commit).to_owned(),
+            tree: intent["tree"].as_str().unwrap_or(tree).to_owned(),
+        }
+    } else if tip == base || tip == commit {
+        Application { parent: base.to_owned(), commit: commit.to_owned(), tree: tree.to_owned() }
+    } else {
+        moved_application(&git, &source.args.repo_norm, base, &tip, commit, tree, &paths, &journal.file("tmp"))?
+    };
+    let Application { parent, commit: landed, tree: landed_tree } = target;
+    if tip != parent && tip != landed {
         return fail(format!(
-            "The target branch moved from {base} to {tip}. The approved candidate is {commit}."
+            "The target branch moved from {parent} to {tip} during an interrupted application. The planned commit is {landed}."
         ));
     }
-    if tip == base && commit != base {
+    if tip == parent && landed != parent {
         let keys: Vec<_> = source.files.iter().map(|p| p.to_lowercase()).collect();
         let plan = if let Some(intent) = &intent {
             if !claims::holds(&claims_dir, &source.args.label, id, &keys) {
@@ -203,7 +231,7 @@ fn apply_approved(id: &str) -> Result<Value> {
                 })?
         } else {
             let scratch = checks::temp_dir(id, "application")?;
-            let plan = plan_application(&git, base, commit, &paths, &scratch);
+            let plan = plan_application(&git, &parent, &landed, &paths, &scratch);
             checks::remove(&scratch);
             let plan = plan?;
             let conflicts = claims::open(
@@ -212,7 +240,7 @@ fn apply_approved(id: &str) -> Result<Value> {
                 id,
                 &keys,
                 &source.args.brief,
-                base,
+                &parent,
             )?;
             if !conflicts.is_empty() {
                 return fail(format!(
@@ -224,11 +252,14 @@ fn apply_approved(id: &str) -> Result<Value> {
             crate::cleanup::note_package_home(&home, id);
             journal.write_value("plans/application.json", &plan.to_json())?;
             write_json_atomic(&pending, &json!({ "runId": id }))?;
-            journal.append(json!({ "kind": "application intent", "step": "apply candidate", "digest": sha256_hex(plan.to_json().to_string()) }))?;
+            journal.append(json!({
+                "kind": "application intent", "step": "apply candidate", "digest": sha256_hex(plan.to_json().to_string()),
+                "parent": parent, "commit": landed, "tree": landed_tree,
+            }))?;
             plan
         };
-        index_transition(&git, base, commit, &paths, intent.is_some())?;
-        if branch_tip(&git, branch)? != base {
+        index_transition(&git, &parent, &landed, &paths, intent.is_some())?;
+        if branch_tip(&git, branch)? != parent {
             return fail("The target branch moved before candidate files were written.");
         }
         match patch::reconcile(&git, &plan)? {
@@ -237,17 +268,17 @@ fn apply_approved(id: &str) -> Result<Value> {
             _ => return fail("A path of the application differs from both the original and approved states. Inspect the saved plan before resuming."),
         }
         crate::boundary::cut("candidate files");
-        let verified = git.candidate_tree(base, &paths, &plan.exec, &journal.file("tmp"))?;
-        if verified != tree {
+        let verified = git.candidate_tree(&parent, &paths, &plan.exec, &journal.file("tmp"))?;
+        if verified != landed_tree {
             return fail("The applied files do not reproduce the approved tree. The branch was not advanced.");
         }
-        if branch_tip(&git, branch)? != base {
+        if branch_tip(&git, branch)? != parent {
             return fail("The target branch moved before updating the index.");
         }
-        let to_reset = index_transition(&git, base, commit, &paths, intent.is_some())?;
-        git.reset_index_paths(commit, &to_reset)?;
+        let to_reset = index_transition(&git, &parent, &landed, &paths, intent.is_some())?;
+        git.reset_index_paths(&landed, &to_reset)?;
         crate::boundary::cut("candidate index");
-        if branch_tip(&git, branch)? != base {
+        if branch_tip(&git, branch)? != parent {
             return fail("The target branch moved before publishing the approved commit.");
         }
         git.run(&[
@@ -255,8 +286,8 @@ fn apply_approved(id: &str) -> Result<Value> {
             "-m",
             "zodchi: apply approved candidate",
             branch,
-            commit,
-            base,
+            &landed,
+            &parent,
         ])?;
         crate::boundary::cut("candidate branch");
     }
@@ -268,11 +299,42 @@ fn apply_approved(id: &str) -> Result<Value> {
     {
         return fail("The commit landed, but the application claim could not be closed.");
     }
-    let result = json!({ "runId": id, "status": "applied", "branch": branch, "commit": commit, "tree": tree });
+    let mut result = json!({ "runId": id, "status": "applied", "branch": branch, "commit": landed, "tree": landed_tree });
+    if landed != commit {
+        result["candidateCommit"] = json!(commit);
+    }
     journal.append(
         json!({ "kind": "application finished", "step": "apply candidate", "result": result }),
     )?;
     Ok(result)
+}
+
+struct Application {
+    parent: String,
+    commit: String,
+    tree: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn moved_application(git: &Git, repo: &str, base: &str, tip: &str, commit: &str, tree: &str, paths: &[String], scratch: &Path) -> Result<Application> {
+    let folded = |path: &str| claims::fold(repo, path);
+    let changed: Vec<_> = git.changes(base, tip)?.into_iter().map(|(_, path)| folded(&path)).collect();
+    let within = |path: &str, prefix: &str| path.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('/'));
+    let overlapping: Vec<_> = paths.iter().filter(|path| {
+        let path = folded(path);
+        changed.iter().any(|other| *other == path || within(&path, other) || within(other, &path))
+    }).cloned().collect();
+    if !overlapping.is_empty() {
+        return fail(format!("The target branch moved from {base} to {tip}. Overlapping files: {}.", overlapping.join(", ")));
+    }
+    let (commit, tree) = if paths.is_empty() {
+        (tip.to_owned(), git.rev(&format!("{tip}^{{tree}}"))?)
+    } else {
+        let combined = git.overlay_tree(tip, commit, paths, scratch)?;
+        let rewritten = git.copy_commit(commit, base, tree, tip, &combined)?;
+        (rewritten, combined)
+    };
+    Ok(Application { parent: tip.to_owned(), commit, tree })
 }
 
 fn text<'a>(record: &'a Value, field: &str) -> Result<&'a str> {
@@ -316,7 +378,7 @@ fn plan_application(
     paths: &[String],
     scratch: &Path,
 ) -> Result<Plan> {
-    let dirty = git.dirty()?;
+    let dirty = Git::with_preview(|| git.dirty())?;
     let mut present = vec![];
     for path in paths {
         if patch::claimed_as(&dirty, path).is_some() || !patch::no_links(&git.root, path) {
@@ -378,8 +440,7 @@ fn plan_application(
         );
         plan.writes.insert(path.clone(), bytes);
     }
-    if let Some(path) = git
-        .dirty()?
+    if let Some(path) = Git::with_preview(|| git.dirty())?
         .iter()
         .find(|p| patch::claimed_as(paths, p).is_some())
     {

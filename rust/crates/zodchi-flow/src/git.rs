@@ -170,7 +170,7 @@ impl Git {
 
     pub fn reset_index_paths(&self, base: &str, paths: &[String]) -> Result<()> {
         if !paths.is_empty() {
-            let mut args = vec!["reset", "-q", base, "--"];
+            let mut args = vec!["reset", "-q", "--no-refresh", base, "--"];
             args.extend(paths.iter().map(String::as_str));
             self.run(&args)?;
         }
@@ -186,13 +186,59 @@ impl Git {
 
     /// The paths that differ between two tree-ishes, with their status letter (A, M, D, T), renames as add and delete.
     pub fn changes(&self, from: &str, to: &str) -> Result<Vec<(String, String)>> {
-        let out = self.run(&["diff-tree", "-r", "-z", "--name-status", "--no-renames", from, to])?;
+        let out = self.run(&["diff-tree", "-r", "-z", "--name-status", "--no-renames", "--ignore-submodules=none", from, to])?;
         let mut parts = out.split('\0').filter(|s| !s.is_empty());
         let mut list = Vec::new();
         while let (Some(status), Some(path)) = (parts.next(), parts.next()) {
             list.push((status.to_string(), path.to_string()));
         }
         Ok(list)
+    }
+
+    /// Overlay exact candidate entries on the target tree through an alternate index.
+    pub(crate) fn overlay_tree(&self, parent: &str, candidate: &str, paths: &[String], scratch: &Path) -> Result<String> {
+        let mut entries = String::new();
+        let zero = "0".repeat(parent.len());
+        for path in paths {
+            match self.entry_at(candidate, path)? {
+                Some((mode, kind, blob)) if kind == "blob" && matches!(mode.as_str(), "100644" | "100755") => {
+                    entries.push_str(&format!("{mode} {blob}\t{path}\0"));
+                }
+                None => entries.push_str(&format!("0 {zero}\t{path}\0")),
+                Some(_) => return fail(format!("Application requires a regular file at {path}.")),
+            }
+        }
+        std::fs::create_dir_all(scratch)?;
+        let index = scratch.join(format!("index-{}", rand::random::<u32>()));
+        let env = [("GIT_INDEX_FILE", index.clone().into_os_string())];
+        let tree = self.run_env(&["read-tree", parent], &env, None)
+            .and_then(|_| self.run_env(&["update-index", "-z", "--index-info"], &env, Some(entries.as_bytes())))
+            .and_then(|_| self.run_env(&["write-tree"], &env, None));
+        let _ = std::fs::remove_file(index);
+        let tree = tree?.trim().to_owned();
+        let mut changed: Vec<_> = self.changes(parent, &tree)?.into_iter().map(|(_, path)| path).collect();
+        changed.sort();
+        let mut expected = paths.to_vec();
+        expected.sort();
+        if changed != expected {
+            return fail("The combined tree does not change exactly the candidate's paths.");
+        }
+        Ok(tree)
+    }
+
+    /// The pinned candidate is an unsigned, single-parent commit. Copy its metadata and message byte for byte.
+    pub(crate) fn copy_commit(&self, candidate: &str, base: &str, candidate_tree: &str, parent: &str, tree: &str) -> Result<String> {
+        let original = self.output(&["cat-file", "commit", candidate], &[], None)?;
+        let prefix = format!("tree {candidate_tree}\nparent {base}\n");
+        let Some(metadata) = original.stdout.strip_prefix(prefix.as_bytes()).filter(|_| original.status.success()) else {
+            return fail("The approved candidate commit could not be read with its original tree and parent.");
+        };
+        if !metadata.starts_with(b"author ") {
+            return fail("The approved candidate is missing its author or has another parent.");
+        }
+        let mut bytes = format!("tree {tree}\nparent {parent}\n").into_bytes();
+        bytes.extend_from_slice(metadata);
+        Ok(self.run_env(&["hash-object", "-t", "commit", "-w", "--stdin"], &[], Some(&bytes))?.trim().to_owned())
     }
 
     /// The blob id of bytes as they are, without the filters of `git add` (the id a patch is written against).

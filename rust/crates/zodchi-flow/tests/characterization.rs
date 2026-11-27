@@ -433,10 +433,18 @@ fn cli_catalog_controls_and_invalid_calls() {
     let help = &help.code(0).result;
     assert_eq!(help["catalog"], *list);
     let recorded = baseline();
-    assert_eq!(help["usage"], recorded["usage"]);
-    let usage = recorded["usage"].as_str().unwrap();
+    let usage = recorded["usage"].as_str().unwrap()
+        .replace("--allow-files <file.json>\n", "--allow-files <file.json> [--file <text>]\n")
+        .replace("0 success or approved,", "0 success, approved or closed by the owner,");
+    assert_eq!(help["usage"], usage.as_str());
+    let mut prior_catalog = list.clone();
+    let package = prior_catalog["workflows"].as_array_mut().unwrap().iter_mut()
+        .find(|entry| entry["name"] == "code-package").unwrap();
+    let limits = package["limits"].as_str().unwrap()
+        .strip_suffix(" Set kind to analysis to select hardWriter (the default is code).").unwrap();
+    package["limits"] = json!(limits);
     assert_eq!(
-        sha256_hex(list.to_string()),
+        sha256_hex(prior_catalog.to_string()),
         recorded["catalogSha256"].as_str().unwrap()
     );
     let names: BTreeSet<_> = list["workflows"]

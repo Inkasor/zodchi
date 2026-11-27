@@ -1,8 +1,8 @@
 use crate::{
     acceptance,
     asset_round::{self, ChildWorkflow, Children},
-    boundary, branch_review, budget, checks, child_package, cleanup, code_package, design_brief,
-    gateway, incident_triage, input, input_common::args_match,
+    boundary, branch_review, budget, candidate, checks, child_package, cleanup, code_package, design_brief,
+    gateway, git::Git, incident_triage, input, input_common::args_match,
     journal::{self, safety_block, Journal, StatusHooks, SHUTDOWN_REQUEST},
     method_question, ops_script, research, rubric_probe, unity_check, video, voiceover,
     workspace_audit, youtube_publish, Exit,
@@ -233,7 +233,7 @@ pub(crate) fn stop_run(id: &str, reason: &str, cancel: bool) -> Result<Exit> {
     let request = match shutdown_request(&journal)? {
         Some(request) => request,
         None => {
-            let request = json!({ "kind": "close requested", "at": iso(), "reason": reason });
+            let request = json!({ "kind": "close requested", "at": iso(), "reason": reason, "cancel": cancel });
             journal.write_value(SHUTDOWN_REQUEST, &request)?;
             request
         }
@@ -360,12 +360,27 @@ fn finish_shutdown(
             "stoppedAt": step, "reason": request["reason"],
             "openFindings": findings,
         });
-        if let Some(step) = journal::unknown_model_step(journal.events()) {
+        let files = if run["workflow"] == code_package::WORKFLOW && run["inputs"]["args"]["isolated"] != true {
+            journal.unknown_file_step()
+        } else {
+            None
+        };
+        if let Some((step, paths)) = files {
+            result["unknownOutcome"] = json!(step);
+            result["unknownOutcomeFiles"] = paths;
+        } else if let Some(step) = journal::unknown_model_step(journal.events()) {
             result["unknownOutcome"] = json!(step);
         }
         for key in ["candidate", "claimAdded"] {
             if let Some(value) = prior.get(key) {
                 result[key] = value.clone();
+            }
+        }
+        if run["workflow"] == code_package::WORKFLOW && stored.is_none_or(|result| result["candidate"].is_null()) {
+            if let Some(repo) = run["repo"].as_str() {
+                if let Some(candidate) = candidate::latest(&Git::new(Path::new(repo)), id).ok().flatten() {
+                    result["candidate"] = candidate;
+                }
             }
         }
         // A cut worker can leave independently contained checks. Settle the recorded
@@ -376,6 +391,10 @@ fn finish_shutdown(
         result
     };
     if let Some(claim) = claim {
+        if request["kind"] == "cancel requested" && claim.dir.join(".lock").try_exists()? {
+            // Recover a cancel cut while it held the signalling lock before closing under the normal claim lock.
+            drop(cleanup::ClaimLock::wait(&claim.dir, Duration::from_secs(120))?);
+        }
         claim.close(id)?;
     }
     boundary::cut("flow close claim");
@@ -384,20 +403,21 @@ fn finish_shutdown(
     Ok(result)
 }
 
-fn saved_shutdown(id: &str, result: Option<Value>, rerun: Option<&str>) -> Result<Option<Exit>> {
+fn saved_shutdown(id: &str, result: Option<Value>, rerun: Option<&str>, code: u8) -> Result<Option<Exit>> {
     let Some(result) = result.filter(|result| result["verdict"] == "closed") else { return Ok(None) };
     if rerun.is_some() {
         return fail(format!("run {id} has finished"));
     }
-    Ok(Some(Exit { code: 2, result }))
+    Ok(Some(Exit { code, result }))
 }
 
 fn resume_shutdown(journal: &mut Journal, run: &Value, id: &str, rerun: Option<&str>) -> Result<Option<Exit>> {
     let Some(request) = shutdown_request(journal)? else { return Ok(None) };
+    let code = if request["kind"] == "close requested" && request["cancel"] != true { 0 } else { 2 };
     let events = journal.snapshot()?;
     let stored = journal.read_value("result.json");
     if journal::finished_event(&events, stored.as_ref()).is_some() {
-        return saved_shutdown(id, stored, rerun);
+        return saved_shutdown(id, stored, rerun, code);
     }
     if journal.live_owner(Some(std::process::id())).is_some() {
         return status(id).map(Some);
@@ -413,12 +433,12 @@ fn resume_shutdown(journal: &mut Journal, run: &Value, id: &str, rerun: Option<&
     journal.load_for_shutdown()?;
     let stored = journal.read_value("result.json");
     if journal::finished_event(journal.events(), stored.as_ref()).is_some() {
-        return saved_shutdown(id, stored, rerun);
+        return saved_shutdown(id, stored, rerun, code);
     }
     let claim = code_package::PinnedClaim::for_shutdown(run, id)?;
     let result = finish_shutdown(journal, run, id, claim.as_ref(), &request, stored.as_ref())?;
     drop(lock);
-    Ok(Some(cleanup::after_run(Exit { code: 2, result })))
+    Ok(Some(cleanup::after_run(Exit { code, result })))
 }
 
 /// The state a new executor needs to continue safely, without model responses, commands or log contents.

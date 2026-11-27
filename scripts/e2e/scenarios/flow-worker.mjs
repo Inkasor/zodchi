@@ -150,6 +150,89 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     t.eq([opsWait.code, opsWait.json?.status], [2, "closed"], "wait reports closure as an unapproved end");
   }
 
+  async function checkRemarkDuringWrite(t, { failReview = false } = {}) {
+    const f = flowWorld(t, failReview ? "flow-worker-remark-rerun" : "flow-worker-live-remark");
+    f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
+    const review = f.review("changes_requested", [f.finding("F1")]);
+    f.answer("review 1", failReview ? { flowError: { message: "Fixture review failed." } } : review);
+    f.answer("close 1", f.patch([f.modify("src/math.mjs", FIXED, `// Keep values in range.\n${FIXED}`)]));
+    f.answer("review 2", f.review("approved"));
+    const release = path.join(f.w.dir, "release-held-writer");
+    const wrapper = path.join(f.w.dir, "hold-writer.mjs");
+    fs.writeFileSync(wrapper, `
+      import fs from "node:fs";
+      const release = ${JSON.stringify(release)};
+      const write = process.stdout.write.bind(process.stdout);
+      process.stdout.write = (line, ...args) => {
+        if (!String(line).includes('"method":"turn/completed"') || fs.existsSync(release)) {
+          return write(line, ...args);
+        }
+        const poll = setInterval(() => {
+          if (fs.existsSync(release)) {
+            clearInterval(poll);
+            write(line, ...args);
+          }
+        }, 25);
+        return true;
+      };
+      await import(${JSON.stringify(pathToFileURL(f.w.env.ZODCHI_CODEX_BIN).href)});
+    `);
+    f.w.env.ZODCHI_CODEX_BIN = wrapper;
+    t.cleanups.push(() => fs.writeFileSync(release, ""));
+    const owner = (...args) => zodchi(t, f.w, ["flow", ...args], { cwd: f.r, env: f.w.env });
+    const started = await f.flow(["--args", f.args({ rounds: 2 }), "--detach"]);
+    t.eq([started.code, started.json?.status], [0, "submitted"], "the fake writer runs in the detached worker");
+    const id = started.json.runId;
+    await t.until("the fake writer has started its held turn", () => f.steps().includes("write"));
+    const message = "Check the upper bound before approving.";
+    const file = path.join(f.w.dir, "remark.txt");
+    fs.writeFileSync(file, message);
+    let remarkId;
+    try {
+      const remark = await owner("remark", id, "--file", file);
+      t.eq([remark.code, remark.json?.step, remark.json?.afterStep], [0, "next model step", "write"],
+        "remark explains that delivery follows the active writer turn");
+      remarkId = remark.json.remarkId;
+      const status = await owner("status", id);
+      t.eq([status.code, status.json?.status, status.json?.pendingRemarks?.map(row => [row.remarkId, row.text])],
+        [0, "running", [[remarkId, message]]], "status lists the remark while the writer is still running");
+    } finally {
+      fs.writeFileSync(release, "");
+    }
+    const waited = await owner("wait", id, "--timeout-min", "0.5");
+    if (failReview) {
+      t.eq([waited.code, waited.json?.status], [2, "stopped"], "the failed review leaves a resumable stop");
+      const stopped = await owner("status", id);
+      t.eq([stopped.code, stopped.json?.stoppedAt, stopped.json?.pendingRemarks?.map(row => [row.remarkId, row.text])],
+        [0, "gateway failed at review 1", [[remarkId, message]]], "status keeps the remark pending after the gateway failure");
+      f.answer("review 1", review);
+      const rerun = await f.flow(["--resume", id, "--rerun", "review 1"]);
+      t.eq([rerun.code, rerun.json?.approved], [0, true], "the rerun completes the package");
+    } else {
+      t.eq([waited.code, waited.json?.status], [0, "finished"], "the package completes after the fake writer is released");
+    }
+    const turns = fs.readFileSync(path.join(f.w.codex, "fake-turns.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+    const reviewTurns = failReview ? [["review 1", 1], ["review 1", 1]] : [["review 1", 1]];
+    t.eq(turns.map(turn => [turn.step, turn.prompt.split(message).length - 1]),
+      [["write", 0], ...reviewTurns, ["close 1", 0], ["review 2", 0]],
+      failReview ? "the failed review and its rerun each receive the remark once" : "exactly the next model step receives the remark once");
+    t.eq((await owner("status", id)).json?.pendingRemarks ?? [], [], "status clears the delivered remark");
+  }
+
+  async function checkCloseAfterFileIntent(t) {
+    for (const [cut, step] of [["apply write", "apply write"], ["index 1", "commit 1"]]) {
+      const f = flowWorld(t, `flow-worker-close-${cut.replaceAll(" ", "-")}`);
+      f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
+      const interrupted = await f.flow(["--args", f.args()], { ZODCHI_FLOW_CUT: cut });
+      t.eq(interrupted.code, 75, `the worker was cut at ${cut}`);
+      const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
+      const closed = await zodchi(t, f.w, ["flow", "close", id, "--reason", "The owner ended the interrupted run."], { cwd: f.r, env: f.w.env });
+      t.eq([closed.code, closed.json?.verdict, closed.json?.unknownOutcome, closed.json?.unknownOutcomeFiles],
+        [0, "closed", step, ["src/math.mjs"]], `close reports the step and paths with an unsettled ${cut} intent`);
+      t.eq([f.commits(), f.steps(), f.claim()?.status], [[], ["write"], "closed"], "closing leaves the file effects as recorded and makes no new call");
+    }
+  }
+
   scenario("flow-worker-reattach", "a detached flow keeps one run and a second caller can inspect and resume it", async (t) => {
     const f = flowWorld(t, "flow-worker-reattach");
     await checkJournalReaders(t, f);
@@ -284,6 +367,10 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     const applied = await cancel(["apply", cancelledId]);
     t.eq([applied.code, applied.json?.status, gitOut(heldReview.r, ["rev-parse", candidateRef]), heldReview.commits()],
       [2, "blocked", candidate, []], "a cancelled isolated candidate stays available and cannot be applied");
+    t.eq(cancelled.json?.candidate?.ref, candidateRef, "cancel records the retained candidate even without a saved result");
+    await checkRemarkDuringWrite(t);
+    await checkRemarkDuringWrite(t, { failReview: true });
+    await checkCloseAfterFileIntent(t);
   });
 
   scenario("flow-owner-reply", "the run waits for an answer, scrubs owner inputs before saving them and resumes the same claim", async (t) => {
@@ -346,6 +433,7 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     t.eq([closed.code, closed.json, saved.verdict, saved.reason, saved.stoppedAt, saved.openFindings, f.claim()?.status],
       [0, saved, "closed", savedReason, "close 1", waiting.json.openFindings, "closed"],
       "close preserves the stopped step and open findings and closes the claim with the screened reason");
+    t.eq(saved.candidate, waiting.json.candidate, "close recovers the newest retained candidate from its ref");
     const eventsText = fs.readFileSync(path.join(waitingJournal, "events.jsonl"), "utf8");
     const history = eventsText.trimEnd().split("\n").map(JSON.parse);
     const closing = history.find((event) => event.kind === "closed");
@@ -359,7 +447,7 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
       [0, "closed", "closed", saved, 0, "closed", false], "status and runs show the closed run");
     const restored = await caller(["code-package", "--resume", waitingId]);
     t.eq([restored.code, restored.json, f.steps(), homeState(path.join(f.w.zhome, "flows", id))],
-      [2, saved, before[2], earlier], "resume prints the saved result without a model call or touching the earlier run");
+      [0, saved, before[2], earlier], "resume prints the saved owner close without a model call or touching the earlier run");
     const afterClose = [homeState(waitingJournal), f.claim(), f.steps()];
     const repeated = await caller(["close", waitingId, "--reason", "A second reason."]);
     t.ok(repeated.code === 1 && repeated.err.includes(`run ${waitingId} has finished`),
@@ -393,7 +481,7 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     t.eq([closedStored.code, closedStored.json?.verdict, own.run, own.status, f.claim()],
       [0, "closed", storedId, "closed", afterClose[1]], "close releases the stored long-label claim and leaves the other claim alone");
     const restoredStored = await caller(["code-package", "--resume", storedId]);
-    t.eq([restoredStored.code, restoredStored.json, f.steps()], [2, closedStored.json, afterClose[2]],
+    t.eq([restoredStored.code, restoredStored.json, f.steps()], [0, closedStored.json, afterClose[2]],
       "resume returns the stored long-label result without a model call");
   });
 }

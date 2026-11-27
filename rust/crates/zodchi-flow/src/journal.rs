@@ -9,7 +9,7 @@ use crate::{
     budget::Budget,
 };
 use serde_json::{json, Map, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -25,6 +25,7 @@ pub struct Journal {
 
 // A durable journal event that can be written while events.jsonl is held by the worker.
 pub(crate) const SHUTDOWN_REQUEST: &str = "shutdown-request.json";
+pub(crate) const PENDING_REMARKS: &str = "pending-remarks";
 
 pub fn flows_dir(home: &Path) -> PathBuf {
     home.join("flows")
@@ -66,9 +67,34 @@ pub(crate) fn application_status(events: &[Value]) -> Option<Value> {
 /// Administrative events leave the stopped step in place.
 pub(crate) fn last_state_event(events: &[Value]) -> Option<&Value> {
     events.iter().rev().find(|event| {
-        !matches!(event["kind"].as_str(), Some("owner clarification" | "cleanup" | "cancel requested"))
-            && !(event["kind"] == "finished" && event["verdict"] == "closed")
+        match event["kind"].as_str() {
+            Some("owner clarification" | "cleanup" | "cancel requested" | "remarks attached") => false,
+            Some("scope allowed") => event["awaitingReply"] != true,
+            Some("finished") => event["verdict"] != "closed",
+            _ => true,
+        }
     })
+}
+
+pub(crate) fn scope_approvals(events: &[Value]) -> impl Iterator<Item = &Value> {
+    events.iter().filter_map(|event| {
+        if event["kind"] == "scope allowed" { Some(event) } else { event.get("scopeApproval") }
+    })
+}
+
+/// Legacy waiting and approval events may predate the round field.
+pub(crate) fn scope_round(event: &Value) -> u64 {
+    let step = event["step"].as_str().unwrap_or("");
+    event["round"].as_u64().or_else(|| {
+        step.strip_prefix("apply ").unwrap_or(step).split_whitespace().nth(1)?
+            .split('.').next()?.parse().ok()
+    }).unwrap_or(1).max(1)
+}
+
+pub(crate) struct PendingRemark {
+    pub id: String,
+    pub text: String,
+    pub after_step: Option<String>,
 }
 
 /// Completion requires both a finished event and a stored result with a closed claim.
@@ -87,11 +113,7 @@ pub(crate) fn unknown_model_step(events: &[Value]) -> Option<&str> {
             continue;
         };
         let call = (step, attempt);
-        let resolved = matches!(event["kind"].as_str(), Some("done" | "safety blocked"))
-            || (event["kind"] == "stop" && event["stoppedAt"].as_str().is_some_and(|at| {
-                (at.starts_with("gateway ") && !at.starts_with("gateway unknown"))
-                    || at.starts_with("invalid answer at ")
-            }));
+        let resolved = matches!(event["kind"].as_str(), Some("done" | "safety blocked")) || known_model_stop(event);
         let model_intent = event["kind"] == "intent"
             && (event["model"].is_string()
                 || matches!(event["effect"].as_str(), Some("gateway job" | "acceptor" | "expert job")));
@@ -102,6 +124,12 @@ pub(crate) fn unknown_model_step(events: &[Value]) -> Option<&str> {
         }
     }
     None
+}
+
+fn known_model_stop(event: &Value) -> bool {
+    event["kind"] == "stop" && event["stoppedAt"].as_str().is_some_and(|at| {
+        (at.starts_with("gateway ") && !at.starts_with("gateway unknown")) || at.starts_with("invalid answer at ")
+    })
 }
 
 pub(crate) fn safety_block(events: &[Value]) -> Option<Value> {
@@ -149,6 +177,14 @@ pub(crate) fn status(id: &str, hooks: StatusHooks) -> Result<Exit> {
     }
     if let Some(block) = safety_block(&events) {
         result["safetyBlock"] = block;
+    }
+    if run["workflow"] == WORKFLOW {
+        let pending = journal.pending_remarks(&events)?;
+        if !pending.is_empty() {
+            result["pendingRemarks"] = json!(pending.into_iter().map(|remark| json!({
+                "remarkId": remark.id, "text": remark.text, "afterStep": remark.after_step,
+            })).collect::<Vec<_>>());
+        }
     }
     if outcome == "waiting" {
         result["question"] = last["question"].clone();
@@ -409,6 +445,71 @@ impl Journal {
 
     pub fn events(&self) -> &[Value] {
         &self.events
+    }
+
+    /// A pinned request is replayed verbatim on resume. Only a `done` or `safety blocked`
+    /// event marks the remarks attached to that attempt as delivered.
+    pub(crate) fn pending_remarks(&self, events: &[Value]) -> Result<Vec<PendingRemark>> {
+        let files = match fs::read_dir(self.file(PENDING_REMARKS)) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(error) => return Err(error.into()),
+        };
+        let mut attached = HashMap::new();
+        let mut delivered = HashSet::new();
+        for event in events {
+            let (Some(step), Some(attempt)) = (event["step"].as_str(), event["attempt"].as_u64()) else {
+                continue;
+            };
+            let call = (step, attempt);
+            if event["kind"] == "remarks attached" {
+                attached.insert(call, &event["remarkIds"]);
+            } else if matches!(event["kind"].as_str(), Some("done" | "safety blocked")) {
+                if let Some(ids) = attached.remove(&call).and_then(Value::as_array) {
+                    delivered.extend(ids.iter().filter_map(Value::as_str));
+                }
+            }
+        }
+        let mut pending = Vec::new();
+        for entry in files {
+            let name = entry?.file_name();
+            let Some(id) = name.to_str().and_then(|name| name.strip_suffix(".json")) else { continue };
+            if delivered.contains(id) {
+                continue;
+            }
+            let Some(value) = self.read_value(&format!("{PENDING_REMARKS}/{id}.json")) else { continue };
+            let Some(text) = value["text"].as_str() else { continue };
+            pending.push(PendingRemark {
+                id: id.to_string(), text: text.to_string(), after_step: value["afterStep"].as_str().map(String::from),
+            });
+        }
+        pending.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(pending)
+    }
+
+    pub(crate) fn unknown_file_step(&self) -> Option<(&str, Value)> {
+        let mut settled = HashSet::new();
+        for event in self.events.iter().rev() {
+            let (Some(step), Some(attempt)) = (event["step"].as_str(), event["attempt"].as_u64()) else {
+                continue;
+            };
+            let call = (step, attempt);
+            if matches!(event["kind"].as_str(), Some("done" | "index restored")) {
+                settled.insert(call);
+            } else if !settled.contains(&call) {
+                let apply = event["kind"] == "intent" && event["effect"] == "apply patch";
+                if apply || event["kind"] == "index planned" {
+                    let paths = event.get("paths").cloned().or_else(|| {
+                        let plan = self.read_value(event["plan"].as_str()?)?;
+                        let plan = crate::patch::Plan::from_json(&plan)?;
+                        (event["digest"] == sha256_hex(plan.to_json().to_string()))
+                            .then(|| json!(plan.after.keys().collect::<Vec<_>>()))
+                    });
+                    return Some((step, paths.unwrap_or_else(|| json!([]))));
+                }
+            }
+        }
+        None
     }
 
     /// Appends one event and makes it durable before the effect it announces.

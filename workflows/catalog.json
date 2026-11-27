@@ -25,7 +25,7 @@
         "agent"
       ],
       "purpose": "Implement and independently review a bounded code change.",
-      "limits": "Verification runs on a private export; set isolated: true to keep changes off the target branch until explicit application. Agent browser pin is optional.",
+      "limits": "Verification runs on a private export; set isolated: true to keep changes off the target branch until explicit application. Agent browser pin is optional. Set kind to analysis to select hardWriter (the default is code).",
       "required": [
         "repo",
         "brief",
