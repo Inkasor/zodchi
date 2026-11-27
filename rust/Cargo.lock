@@ -2206,6 +2206,70 @@ dependencies = [
  "sha2",
  "ureq",
  "zodchi-core",
+ "zodchi-flow-acceptance",
+ "zodchi-flow-asset-round",
+ "zodchi-flow-branch-review",
+ "zodchi-flow-code-package",
+ "zodchi-flow-design-brief",
+ "zodchi-flow-engine",
+ "zodchi-flow-incident-triage",
+ "zodchi-flow-method-question",
+ "zodchi-flow-ops-script",
+ "zodchi-flow-research",
+ "zodchi-flow-rubric-probe",
+ "zodchi-flow-unity-check",
+ "zodchi-flow-video",
+ "zodchi-flow-voiceover",
+ "zodchi-flow-workspace-audit",
+ "zodchi-flow-youtube-publish",
+]
+
+[[package]]
+name = "zodchi-flow-acceptance"
+version = "1.0.3"
+dependencies = [
+ "image",
+ "rand 0.8.8",
+ "serde_json",
+ "zodchi-core",
+ "zodchi-flow-engine",
+]
+
+[[package]]
+name = "zodchi-flow-asset-round"
+version = "1.0.3"
+dependencies = [
+ "serde_json",
+ "zodchi-core",
+ "zodchi-flow-engine",
+]
+
+[[package]]
+name = "zodchi-flow-branch-review"
+version = "1.0.3"
+dependencies = [
+ "serde_json",
+ "zodchi-core",
+ "zodchi-flow-engine",
+]
+
+[[package]]
+name = "zodchi-flow-code-package"
+version = "1.0.3"
+dependencies = [
+ "rand 0.8.8",
+ "serde_json",
+ "zodchi-core",
+ "zodchi-flow-engine",
+]
+
+[[package]]
+name = "zodchi-flow-design-brief"
+version = "1.0.3"
+dependencies = [
+ "rand 0.8.8",
+ "serde_json",
+ "zodchi-core",
  "zodchi-flow-engine",
 ]
 
@@ -2220,6 +2284,112 @@ dependencies = [
  "serde_json",
  "sha2",
  "zodchi-core",
+]
+
+[[package]]
+name = "zodchi-flow-incident-triage"
+version = "1.0.3"
+dependencies = [
+ "libc",
+ "rand 0.8.8",
+ "regex",
+ "regress",
+ "rustix",
+ "serde_json",
+ "zodchi-core",
+ "zodchi-flow-engine",
+]
+
+[[package]]
+name = "zodchi-flow-method-question"
+version = "1.0.3"
+dependencies = [
+ "serde_json",
+ "zodchi-core",
+ "zodchi-flow-engine",
+]
+
+[[package]]
+name = "zodchi-flow-ops-script"
+version = "1.0.3"
+dependencies = [
+ "rand 0.8.8",
+ "serde_json",
+ "zodchi-core",
+ "zodchi-flow-engine",
+]
+
+[[package]]
+name = "zodchi-flow-research"
+version = "1.0.3"
+dependencies = [
+ "rand 0.8.8",
+ "serde_json",
+ "zodchi-core",
+ "zodchi-flow-engine",
+]
+
+[[package]]
+name = "zodchi-flow-rubric-probe"
+version = "1.0.3"
+dependencies = [
+ "image",
+ "serde_json",
+ "zodchi-core",
+ "zodchi-flow-engine",
+]
+
+[[package]]
+name = "zodchi-flow-unity-check"
+version = "1.0.3"
+dependencies = [
+ "serde_json",
+ "zodchi-core",
+ "zodchi-flow-engine",
+]
+
+[[package]]
+name = "zodchi-flow-video"
+version = "1.0.3"
+dependencies = [
+ "serde_json",
+ "zodchi-core",
+ "zodchi-flow-engine",
+]
+
+[[package]]
+name = "zodchi-flow-voiceover"
+version = "1.0.3"
+dependencies = [
+ "serde_json",
+ "zodchi-core",
+ "zodchi-flow-engine",
+]
+
+[[package]]
+name = "zodchi-flow-workspace-audit"
+version = "1.0.3"
+dependencies = [
+ "rand 0.8.8",
+ "serde_json",
+ "sha2",
+ "zodchi-core",
+ "zodchi-flow-engine",
+]
+
+[[package]]
+name = "zodchi-flow-youtube-publish"
+version = "1.0.3"
+dependencies = [
+ "base64 0.22.1",
+ "form_urlencoded",
+ "keyring",
+ "rand 0.8.8",
+ "serde_json",
+ "sha2",
+ "ureq",
+ "zodchi-core",
+ "zodchi-flow-engine",
 ]
 
 [[package]]
