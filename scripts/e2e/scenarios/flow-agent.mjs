@@ -237,6 +237,7 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     const privateBrief = "fixture-brief-internal-shorthand";
     const privateFile = "fixture-file-internal-shorthand";
     const shapedValue = "ghp_" + "fixturevalue".repeat(3);
+    const apiValue = "sk-live-" + "fixturevalue".repeat(3);
     const urlValue = "fixture-url-inline-value";
     const keyType = ["PRIVATE", "KEY"].join(" ");
     const keyBody = "fixture-key-body";
@@ -265,15 +266,16 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     fs.writeFileSync(path.join(screened.r, baseFiles[0]), `Notes\n${privateFile}\n`);
     fs.writeFileSync(path.join(screened.r, baseFiles[1]), [
       "Settings", shapedValue, `https://fixture:${urlValue}@example.invalid/`,
-      `-----BEGIN ${keyType}-----`, keyBody, `-----END ${keyType}-----`, "Visible footer", "",
+      `-----BEGIN ${keyType}-----`, keyBody, `-----END ${keyType}-----`,
+      `api_key = "${apiValue}"`, "Visible footer", "",
     ].join("\n"));
-    const baseBinary = "src/base.bin";
+    const baseBinary = "src/task-list.bin";
     fs.writeFileSync(path.join(screened.r, baseBinary), Buffer.from([0, ...Buffer.from(shapedValue), 255]));
     gitOut(screened.r, ["add", "--", ...baseFiles, baseBinary]);
     gitOut(screened.r, ["commit", "-qm", "Add screening fixtures"]);
     assertRefused(await runScreened(baseFiles, { ZODCHI_DENYLIST: denylist }), [
-      `${baseFiles[0]}:2 (private-word)`, ...[2, 3, 4, 5, 6].map(line => `${baseFiles[1]}:${line} (credential)`),
-    ], [privateFile, shapedValue, urlValue, keyBody]);
+      `${baseFiles[0]}:2 (private-word)`, ...[2, 3, 4, 5, 6, 7].map(line => `${baseFiles[1]}:${line} (credential)`),
+    ], [privateFile, shapedValue, apiValue, urlValue, keyBody]);
 
     const inlineValue = "fixture-added-inline-value";
     screened.answer("write", report("done", { "src/math.mjs": `${FIXED}\nconst token = "${inlineValue}";\n` }));
@@ -283,7 +285,14 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
       "a writer-created credential stops the package before calling the reviewer");
     t.ok(withheld.json?.runId && !withheld.json?.refused,
       "the credential-shaped bytes in the claimed base binary pass the gate");
-    t.ok(withheld.json?.question?.includes("src/math.mjs:3 (credential)"), "the owner question locates the candidate line");
+    const stoppedCommit = gitOut(screened.r, ["rev-parse", "HEAD"]);
+    const stoppedBranch = gitOut(screened.r, ["symbolic-ref", "HEAD"]);
+    t.eq(withheld.json?.rounds?.map(round => [round.n, round.commit?.commit]), [[1, stoppedCommit]],
+      "the blocked round retains the receipt for the commit on the branch");
+    t.ok(["round 1", stoppedCommit, "src/math.mjs:3 (credential)"].every(text => withheld.json?.question?.includes(text)),
+      "the owner question names the round, commit, and candidate line");
+    t.ok([stoppedCommit, stoppedBranch].every(text => withheld.json?.next?.includes(text)),
+      "the next step tells the owner which branch contains the commit");
     const events = fs.readFileSync(path.join(withheld.json.journal, "events.jsonl"), "utf8");
     t.ok(!fs.existsSync(path.join(withheld.json.journal, "requests", `flow-${withheld.json.runId}-review-1.json`))
       && ![withheld.out, withheld.err, events].some(text => text.includes(inlineValue)),
@@ -294,8 +303,12 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     const sourcePath = path.join(expert.r, source);
     const sourceFolder = `${expert.r.replaceAll("\\", "/")}/input`;
     const note = `// Read fixtures from ${sourceFolder}`;
-    const before = `${note}\r\n${STUB.trimEnd()}`;
-    const after = `${note}\r\n${FIXED.trimEnd()}`;
+    const tasks = 'const tasks = "task-list"; // disk-usage';
+    const vault = "Use the API key from the vault";
+    const prefix = [note, tasks, `// ${vault}`].join("\r\n");
+    const before = `${prefix}\r\n${STUB.trimEnd()}`;
+    const after = `${prefix}\r\n${FIXED.trimEnd()}`;
+    fs.appendFileSync(expert.brief, `\n${vault}\nKeep the task-list example.\n`);
     gitOut(expert.r, ["config", "core.autocrlf", "false"]);
     fs.writeFileSync(sourcePath, `${before}\r\n`);
     gitOut(expert.r, ["add", "--", source]);
@@ -311,10 +324,18 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
       "the expert package records screening without an agent workspace");
     const [writeTurn, reviewTurn] = turns(expert);
     t.ok(writeTurn.prompt.includes(`<attachment path="${source}">\n${before}\n</attachment>`),
-      "the writer sees the original path and CRLF in the editable fragment");
+      "the writer sees the ordinary lines, original path, and CRLF in the editable fragment");
     t.eq(fs.readFileSync(sourcePath, "utf8"), `${after}\r\n`, "the edit preserves the path and line endings on disk");
     t.ok(reviewTurn.prompt.includes("<repo>/input") && !reviewTurn.prompt.includes(sourceFolder),
       "the reviewer still sees the machine path rewritten");
+    t.ok(reviewTurn.prompt.includes(`<attachment path="${source}">\n${after.replace(sourceFolder, "<repo>/input")}\n</attachment>`),
+      "the reviewer receives the ordinary source lines with the machine path rewritten");
+    t.ok(reviewTurn.prompt.includes(` ${tasks}`) && reviewTurn.prompt.includes(` // ${vault}`),
+      "the diff keeps the ordinary context lines");
+    for (const { prompt } of [writeTurn, reviewTurn]) {
+      t.ok(prompt.includes(`\n${vault}\nKeep the task-list example.\n</attachment>`),
+        "the brief keeps both ordinary lines");
+    }
 
     expert.answer("write", expert.patch([]));
     const cut = await expert.flow(["--args", expert.args({ checks: ["node smoke.mjs --fail"], verify: [] })],
@@ -326,13 +347,13 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
       [2, "blocked", "privacy screening at fix 1.1", ["write", "review 1", "write"]],
       "the expert fix stops before sending a worktree file with a withheld line");
     const stopEvents = fs.readFileSync(path.join(stopped.json.journal, "events.jsonl"), "utf8");
-    t.ok(stopped.json?.question?.includes(`${source}:3 (credential)`)
+    t.ok(stopped.json?.question?.includes(`${source}:5 (credential)`)
       && ![stopped.out, stopped.err, stopEvents].some(text => text.includes(shapedValue)),
       "the worktree stop reports the location without the matched text");
 
     const repair = flowWorld(t, "flow-agent-continue-expert-repair");
     gitOut(repair.r, ["config", "core.autocrlf", "false"]);
-    const comment = "// Keep this note.";
+    const comment = "// Keep this task-list note.";
     const broken = `${comment}\r\n${STUB.trimEnd()}\r\n// ${shapedValue}\r\n`;
     const repaired = `${comment}\r\n${FIXED.trimEnd()}\r\n`;
     const repairChange = repair.modify(source, broken, repaired);
@@ -350,7 +371,8 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     t.eq(fs.readFileSync(path.join(repair.r, source), "utf8"), repaired, "the fix writes the replacement with its CRLF line endings");
 
     const f = flowWorld(t, "flow-agent-continue");
-    fs.appendFileSync(f.brief, `Workspace folders: ${f.r} and ${f.w.zhome}\n`);
+    fs.appendFileSync(f.brief, `Workspace folders: ${f.r} and ${f.w.zhome}\n${vault}\nKeep the task-list example.\n`);
+    const binaryPath = "task-list.bin";
     const binary = [8, 0, 255];
     const fromOtherPackage = path.join(f.r, "src", "other.mjs");
     fs.writeFileSync(fromOtherPackage, "local work outside this package\n");
@@ -370,7 +392,7 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     t.ok(badPermission.code === 2 && /exact paths.*tests\/math\.mjs/.test(badPermission.json?.refused ?? ""),
       "the gate explains the protected path array");
     const summary = "The math change and binary output are in the private workspace.";
-    f.answer("write", { ...report("more", { "src/math.mjs": FIXED, "output.bin": { bytes: binary } }), summary });
+    f.answer("write", { ...report("more", { "src/math.mjs": FIXED, [binaryPath]: { bytes: binary } }), summary });
     f.answer("write continue 1", report("more", {}));
     f.answer("write continue 2", report("more", {}));
     f.answer("write continue 3", report("done", {}));
@@ -379,7 +401,7 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     t.ok(badContext.code === 2 && /review context file src\/missing\.mjs/.test(badContext.json?.refused ?? "") && !badContext.json?.runId,
       "an absent review context file is refused before a model turn");
     const first = await f.flow(["--args", f.args({
-      mode: "agent", continuations: 12, files: ["src/math.mjs", "output.bin"], reviewContext: ["src/other.mjs"],
+      mode: "agent", continuations: 12, files: ["src/math.mjs", binaryPath], reviewContext: ["src/other.mjs"],
     })], {
       ZODCHI_FLOW_CUT: "submit write continue 1",
     });
@@ -404,6 +426,7 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     for (const prompt of [requestFor("write").prompt, reviewPrompt]) {
       t.ok(prompt.includes("Workspace folders: <repo> and <zodchi-home>") && !prompt.includes(f.w.zhome),
         "machine path rewrites reach both prompts without refusing the brief");
+      t.ok(prompt.includes(`${vault}\nKeep the task-list example.`), "agent mode keeps the ordinary brief lines");
     }
     t.ok(reviewPrompt.includes('<attachment path="src/other.mjs">')
       && reviewPrompt.includes("export const other = 1;") && !reviewPrompt.includes("local work outside this package"),
@@ -414,10 +437,10 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
       Array.from({ length: 5 }, () => [true, null]), "each writer and review turn starts an ephemeral Codex thread");
     t.ok(observed[1].prompt.includes(summary), "the continuation sees the recorded writer summary");
     t.ok(samePath(observed[0].cwd, observed[1].cwd) && !samePath(f.r, observed[0].cwd), "the writer turns use the same isolated copy");
-    t.eq([...fs.readFileSync(path.join(f.r, "output.bin"))], binary, "the engine copies binary output without a text round trip");
+    t.eq([...fs.readFileSync(path.join(f.r, binaryPath))], binary, "the engine copies binary output without a text round trip");
     t.eq(fs.readFileSync(fromOtherPackage, "utf8"), "local work outside this package\n", "the other work in the checkout is preserved");
     const files = gitOut(f.r, ["diff", "--name-only", f.base, "HEAD"]).split("\n");
-    t.eq(files, ["output.bin", "src/math.mjs"], "only the scope is committed");
+    t.eq(files, ["src/math.mjs", binaryPath], "only the scope is committed");
   });
 
   scenario("flow-agent-scope", "outside changes pause before application, and a reply continues in the same private workspace", async (t) => {

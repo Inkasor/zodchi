@@ -5,9 +5,10 @@ use base64::{
     engine::general_purpose::{STANDARD, STANDARD_NO_PAD},
     Engine,
 };
-use regex::{Regex, RegexSet};
+use regex::Regex;
 use serde_json::Value;
 use std::fs;
+use std::ops::{ControlFlow, Range};
 use std::path::PathBuf;
 use std::sync::LazyLock;
 use zodchi_core::config::Config;
@@ -35,6 +36,7 @@ pub struct Scrubber {
 }
 
 pub(crate) const PRIVATE_WITHHELD: &str = "[private text removed]";
+const PRIVATE_KEY_MARKER: &str = r"(?i)-----(BEGIN|END) (?:[A-Z0-9-]+ )*PRIVATE KEY-----";
 
 enum Withholding {
     PrivateWord,
@@ -83,7 +85,11 @@ pub(crate) fn withheld_lines(text: &str) -> usize {
     text.lines().filter(|line| matches!(*line, PRIVATE_WITHHELD | checks::WITHHELD_LINE)).count()
 }
 
-fn answer_has_credential_option(text: &str, option: &Regex) -> bool {
+fn scan_credential_options(
+    text: &str,
+    option: &Regex,
+    mut record: impl FnMut(Range<usize>) -> ControlFlow<()>,
+) -> ControlFlow<()> {
     const PROMPT_FLAGS: &[(&str, &str)] = &[("psql", "--password"), ("psql", "-W")];
     static COMMAND_TOKEN: LazyLock<Regex> = LazyLock::new(|| {
         // Keep quoted arguments together so a separator inside one cannot start a command.
@@ -186,7 +192,7 @@ fn answer_has_credential_option(text: &str, option: &Regex) -> bool {
                     && (arg.starts_with('\'') || !SHELL_VARIABLE.is_match(expansion))
             })
         {
-            return true;
+            record(word.range())?;
         }
     }
 
@@ -196,12 +202,12 @@ fn answer_has_credential_option(text: &str, option: &Regex) -> bool {
         if !flag.as_str().eq_ignore_ascii_case("--no-password")
             && prompt_offsets.binary_search(&flag.start()).is_err()
         {
-            return true;
+            record(capture.get(0).expect("matched credential option").range())?;
         }
         // Screen the text after the switch, including credential options in an argument.
         offset = flag.end();
     }
-    false
+    ControlFlow::Continue(())
 }
 
 impl Scrubber {
@@ -240,9 +246,8 @@ impl Scrubber {
         ["sk-", "ghp_", "github_pat_", "xoxb-", "akia", "eyj"].iter().any(|prefix| lower.contains(prefix))
     }
 
-    /// Check model output for private words and recognizable credential values.
-    pub(crate) fn answer_is_private(&self, text: &str) -> bool {
-        static PATTERNS: LazyLock<(RegexSet, Regex, Regex, Regex)> = LazyLock::new(|| {
+    fn secret_patterns() -> &'static (Regex, Regex, Regex, Regex) {
+        static PATTERNS: LazyLock<(Regex, Regex, Regex, Regex)> = LazyLock::new(|| {
             let qualifier = r"(?:[a-z_][a-z0-9_.-]*[._-]|_)";
             let names = concat!(
                 r"(?:password|passwd|pwd|secret|(?:access|refresh|id|session)?token|",
@@ -296,7 +301,7 @@ impl Scrubber {
                 credential = credential,
                 value = value,
             );
-            let secrets = RegexSet::new([
+            let patterns = [
                 equals.as_str(),
                 comparison.as_str(),
                 reversed_comparison.as_str(),
@@ -308,11 +313,12 @@ impl Scrubber {
                 r"(?:^|[^A-Za-z0-9])xox[abpr]-[A-Za-z0-9-]{10,}",
                 r"(?:^|[^A-Za-z0-9])AKIA[0-9A-Z]{16}(?:$|[^A-Za-z0-9])",
                 r"(?:^|[^A-Za-z0-9])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+",
-                r"(?i)-----(?:BEGIN|END) (?:[A-Z0-9-]+ )*PRIVATE KEY-----",
+                PRIVATE_KEY_MARKER,
                 // User info is in the authority. An @ in a path or query is ordinary URL text.
                 r"[A-Za-z][A-Za-z0-9+.-]*://[^\s/?#@]+@[^\s/?#@]+",
-            ])
-            .expect("constant credential patterns");
+            ];
+            let secrets = Regex::new(&format!("(?:{})", patterns.join(")|(?:")))
+                .expect("constant credential patterns");
             let raw_start = Regex::new(&format!(
                 r#"(?:(?i:(?P<credential_before>{before_literal}))|(?:^|[^\w]))b?r(?P<hashes>#*)""#,
             ))
@@ -321,6 +327,10 @@ impl Scrubber {
                 .expect("constant raw-string comparison suffix");
             (secrets, option, raw_start, after_raw)
         });
+        &PATTERNS
+    }
+
+    fn secret_value_ranges(text: &str) -> impl Iterator<Item = Range<usize>> + '_ {
         static AUTH_VALUE: LazyLock<Regex> = LazyLock::new(|| {
             Regex::new(
                 r"\b(?i:(?P<scheme>bearer|token))[ \t]+(?P<value>[A-Za-z0-9._~+/-]{8,}={0,2})",
@@ -331,26 +341,28 @@ impl Scrubber {
             Regex::new(r"\b(?i:basic)[ \t]+([A-Za-z0-9+/]{4,}={0,2})")
                 .expect("constant basic authentication pattern")
         });
-        let (secrets, option, raw_start, after_raw) = &*PATTERNS;
-        if self.has_private_word(text) || secrets.is_match(text) {
-            return true;
-        }
-        if answer_has_credential_option(text, option) {
-            return true;
-        }
-        raw_start
-            .captures_iter(text)
-            .any(|capture| {
+        let (secrets, _, raw_start, after_raw) = Self::secret_patterns();
+        let mut at = 0;
+        // Reuse a trailing delimiter when it is also the boundary before the next value.
+        std::iter::from_fn(move || {
+            let matched = secrets.find_at(text, at)?;
+            let (last, _) = matched.as_str().char_indices().next_back()?;
+            at = if last == 0 { matched.end() } else { matched.start() + last };
+            Some(matched.range())
+        })
+            .chain(raw_start.captures_iter(text).filter_map(move |capture| {
                 // An interior quote only closes a Rust raw string when the opening hashes follow it.
-                let content = &text[capture.get(0).expect("raw-string opener").end()..];
+                let opener = capture.get(0).expect("raw-string opener");
+                let content = &text[opener.end()..];
                 let closing = format!("\"{}", &capture["hashes"]);
-                content.find(&closing).is_some_and(|end| {
-                    end > 0
-                        && (capture.name("credential_before").is_some()
-                            || after_raw.is_match(&content[end + closing.len()..]))
-                })
-            })
-            || AUTH_VALUE.captures_iter(text).any(|capture| {
+                let end = content.find(&closing)?;
+                let tail = end + closing.len();
+                (end > 0
+                    && (capture.name("credential_before").is_some()
+                        || after_raw.is_match(&content[tail..])))
+                .then_some(opener.start()..opener.end() + tail)
+            }))
+            .chain(AUTH_VALUE.captures_iter(text).filter_map(|capture| {
                 // Without an Authorization label, look for features of an encoded value.
                 let value = &capture["value"];
                 let token_field = capture["scheme"].eq_ignore_ascii_case("token")
@@ -358,12 +370,13 @@ impl Scrubber {
                         .trim_end_matches('.')
                         .bytes()
                         .all(|b| b.is_ascii_lowercase() || b == b'_');
-                !token_field
+                let private = !token_field
                     && (value.bytes().any(|b| b.is_ascii_digit() || b"_~+/=".contains(&b))
                         || (value.bytes().skip(1).any(|b| b.is_ascii_uppercase())
-                            && value.bytes().any(|b| b.is_ascii_lowercase())))
-            })
-            || BASIC_VALUE.captures_iter(text).any(|capture| {
+                            && value.bytes().any(|b| b.is_ascii_lowercase())));
+                private.then(|| capture.get(0).expect("authorization value").range())
+            }))
+            .chain(BASIC_VALUE.captures_iter(text).filter_map(|capture| {
                 // A bare Basic credential encodes a user and password separated by a colon.
                 let encoded = &capture[1];
                 let engine = if encoded.ends_with('=') {
@@ -371,14 +384,22 @@ impl Scrubber {
                 } else {
                     &STANDARD_NO_PAD
                 };
-                engine
+                let private = engine
                     .decode(encoded)
                     .ok()
                     .and_then(|bytes| String::from_utf8(bytes).ok())
                     .is_some_and(|decoded| {
                         decoded.contains(':') && !decoded.chars().any(char::is_control)
-                    })
-            })
+                    });
+                private.then(|| capture.get(0).expect("basic authentication value").range())
+            }))
+    }
+
+    /// Check model output for private words and recognizable credential values.
+    pub(crate) fn answer_is_private(&self, text: &str) -> bool {
+        self.has_private_word(text)
+            || Self::secret_value_ranges(text).next().is_some()
+            || scan_credential_options(text, &Self::secret_patterns().1, |_| ControlFlow::Break(())).is_break()
     }
 
     pub fn value(&self, value: &mut Value, places: &[(String, &str)]) {
@@ -406,8 +427,50 @@ impl Scrubber {
         })
     }
 
-    pub(crate) fn withholdings<'a>(&'a self, raw: &'a str) -> impl Iterator<Item = (usize, &'static str)> + 'a {
-        self.screened_lines(raw).enumerate().filter_map(|(index, (_, withholding))| {
+    /// A package gate uses the answer rules for values, with line locations for local diagnostics.
+    fn input_lines<'a>(&'a self, raw: &'a str) -> impl Iterator<Item = (&'a str, Option<Withholding>)> + 'a {
+        static KEY_MARKER: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(PRIVATE_KEY_MARKER).expect("constant private-key marker pattern")
+        });
+        // Match values over the whole input so a line break in an assignment or raw string cannot hide it.
+        let mut values: Vec<_> = Self::secret_value_ranges(raw).collect();
+        let _ = scan_credential_options(raw, &Self::secret_patterns().1, |value| {
+            values.push(value);
+            ControlFlow::Continue(())
+        });
+        values.sort_unstable_by_key(|value| value.start);
+        let mut values = values.into_iter().peekable();
+        let mut offset = 0;
+        let mut in_key = false;
+        raw.lines().zip(raw.split_inclusive('\n')).map(move |(line, original)| {
+            let start = offset;
+            offset += original.len();
+            while values.peek().is_some_and(|value| value.end <= start) {
+                values.next();
+            }
+            let has_value = values.peek().is_some_and(|value| value.start < start + line.len());
+            let mut key_line = in_key;
+            for marker in KEY_MARKER.captures_iter(line) {
+                key_line = true;
+                in_key = marker[1].eq_ignore_ascii_case("BEGIN");
+            }
+            let withholding = if key_line {
+                Some(Withholding::KeyOrShape)
+            } else if self.has_private_word(line) {
+                Some(Withholding::PrivateWord)
+            } else if checks::credential_url(line) {
+                Some(Withholding::Credential)
+            } else if has_value {
+                Some(Withholding::KeyOrShape)
+            } else {
+                None
+            };
+            (line, withholding)
+        })
+    }
+
+    pub(crate) fn input_withholdings<'a>(&'a self, raw: &'a str) -> impl Iterator<Item = (usize, &'static str)> + 'a {
+        self.input_lines(raw).enumerate().filter_map(|(index, (_, withholding))| {
             withholding.map(|withholding| (index + 1, withholding.reason()))
         })
     }
@@ -415,7 +478,7 @@ impl Scrubber {
     /// An editable preview keeps the visible fragments and their original line endings.
     pub(crate) fn redact_lines(&self, raw: &str) -> String {
         let mut preview = String::new();
-        for ((line, withholding), original) in self.screened_lines(raw).zip(raw.split_inclusive('\n')) {
+        for ((line, withholding), original) in self.input_lines(raw).zip(raw.split_inclusive('\n')) {
             if let Some(withholding) = withholding {
                 preview.push_str(withholding.marker());
                 preview.push_str(&original[line.len()..]);
@@ -468,6 +531,37 @@ pub fn model_context(journal: &Journal) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn package_gate_reports_lines_with_private_material() {
+        let scrubber = Scrubber::with_private_words("fixture-private-word");
+        let key_block = [
+            "Before the key",
+            concat!("-----BEGIN OPENSSH ", "PRIVATE KEY-----"),
+            "fixture key body",
+            concat!("-----END OPENSSH ", "PRIVATE KEY-----"),
+            "After the key",
+        ].join("\r\n");
+        let api_key = format!(r#"api_key = "sk-live-{}""#, "fixturevalue".repeat(3));
+        let shaped_token = format!("ghp_{}", "fixturevalue".repeat(3));
+        let adjacent_keys = format!("{}\n{shaped_token}", concat!("AKIA", "0123456789ABCDEF"));
+        let cases: &[(&str, &[(usize, &str)])] = &[
+            (r#"const tasks = "task-list"; // disk-usage"#, &[]),
+            ("Use the API key from the vault", &[]),
+            ("Literal prefixes: sk-, ghp_, AKIA, eyJ", &[]),
+            ("A FIXTURE-PRIVATE-WORD appears.", &[(1, "private-word")]),
+            (&api_key, &[(1, "credential")]),
+            (&shaped_token, &[(1, "credential")]),
+            (&adjacent_keys, &[(1, "credential"), (2, "credential")]),
+            (r#"if password == "fixture-value" {}"#, &[(1, "credential")]),
+            ("https://fixture:fixture-value@localhost/", &[(1, "credential")]),
+            (&key_block, &[(2, "credential"), (3, "credential"), (4, "credential")]),
+            ("Notes\r\nconst token =\r\n    \"fixture-value\";\r\nFooter", &[(2, "credential"), (3, "credential")]),
+        ];
+        for &(text, expected) in cases {
+            assert_eq!(scrubber.input_withholdings(text).collect::<Vec<_>>(), expected, "{text:?}");
+        }
+    }
 
     #[test]
     fn answer_privacy_checks_literal_credential_comparisons_and_suffix_assignments() {

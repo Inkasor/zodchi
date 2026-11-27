@@ -268,7 +268,7 @@ struct Run {
 // ------------------------------------------------------------------------------------------------- start, resume
 
 fn text_omissions(scrubber: &Scrubber, name: &str, text: &str) -> Vec<String> {
-    scrubber.withholdings(text).map(|(line, reason)| format!("{name}:{line} ({reason})")).collect()
+    scrubber.input_withholdings(text).map(|(line, reason)| format!("{name}:{line} ({reason})")).collect()
 }
 
 fn file_omissions(scrubber: &Scrubber, name: &str, bytes: &[u8]) -> Vec<String> {
@@ -282,7 +282,7 @@ fn file_omissions(scrubber: &Scrubber, name: &str, bytes: &[u8]) -> Vec<String> 
 fn input_omissions(git: &Git, base: &str, files: &[String], brief: &str, scrubber: &Scrubber) -> Result<Vec<String>> {
     let mut omissions = text_omissions(scrubber, "the brief", brief);
     for (index, file) in files.iter().enumerate() {
-        let private_name = scrubber.withholdings(file).next();
+        let private_name = scrubber.input_withholdings(file).next();
         let display = if let Some((_, reason)) = private_name {
             let entry = format!("args.files entry {}", index + 1);
             omissions.push(format!("{entry} (file name, {reason})"));
@@ -297,7 +297,7 @@ fn input_omissions(git: &Git, base: &str, files: &[String], brief: &str, scrubbe
     Ok(omissions)
 }
 
-/// Screen a read-only attachment. Editable files keep the bytes used by the patch engine.
+/// Screen read-only material outside the package inputs with the outbound rules.
 fn screen_attachment(scrubber: &Scrubber, bytes: Vec<u8>, places: &[(String, &str)]) -> Vec<u8> {
     // Keep the existing handling of binary files and preserve line endings in unchanged text.
     if bytes.contains(&0) {
@@ -306,6 +306,11 @@ fn screen_attachment(scrubber: &Scrubber, bytes: Vec<u8>, places: &[(String, &st
     let text = String::from_utf8_lossy(&bytes);
     let screened = scrubber.text(&text, places);
     if text.lines().eq(screened.split('\n')) { bytes } else { screened.into_bytes() }
+}
+
+/// The gate has already checked this input. Keep the original text and line endings around path substitutions.
+fn input_attachment(text: &str, places: &[(String, &str)]) -> Vec<u8> {
+    checks::screen_paths(text.split('\n'), places).into_bytes()
 }
 
 fn review_context(git: &Git, commit: &str, files: &[String]) -> Result<Vec<(String, String)>> {
@@ -999,7 +1004,7 @@ impl Run {
         let mut attached = Vec::new();
         let mut omissions = Vec::new();
         for (index, p) in self.claimed.iter().enumerate() {
-            if let Some((_, reason)) = scrubber.withholdings(p).next() {
+            if let Some((_, reason)) = scrubber.input_withholdings(p).next() {
                 omissions.push(format!("claimed file #{} (file name, {reason})", index + 1));
                 continue;
             }
@@ -1096,7 +1101,8 @@ impl Run {
             (|| -> Result<ScreenedPrompt> {
                 let scrubber = Scrubber::new(&self.cfg)?;
                 let places = self.private_places();
-                let (files, attached, omissions) = self.files_view(&scrubber, failed_tree)?;
+                let (files, attached, mut omissions) = self.files_view(&scrubber, failed_tree)?;
+                omissions.extend(text_omissions(&scrubber, "the brief", &self.brief));
                 if !omissions.is_empty() {
                     return Ok(ScreenedPrompt::Withheld(omissions));
                 }
@@ -1104,7 +1110,7 @@ impl Run {
                 let mut all = vec![("step", step.to_string()), ("run", self.id.clone()), ("files", files), ("rules", rules)];
                 all.extend(vars);
                 let text = render(template, &all);
-                let brief = screen_attachment(&scrubber, self.brief.as_bytes().to_vec(), &places);
+                let brief = input_attachment(&self.brief, &places);
                 let mut attachments = vec![("brief".to_string(), brief)];
                 attachments.extend(extra);
                 attachments.extend(attached);
@@ -1114,7 +1120,7 @@ impl Run {
         let prompt = match built {
             Ok(ScreenedPrompt::Prompt(prompt)) => prompt,
             Ok(ScreenedPrompt::Withheld(locations)) => {
-                return self.stop_screening(step, "The claimed working files contain material that would be withheld", &locations);
+                return self.stop_screening(step, "The brief or claimed working files contain material that would be withheld", &locations);
             }
             Err(e) => {
                 // A binary claimed file cannot be shown to the expert.
@@ -1274,7 +1280,11 @@ impl Run {
                     preamble.push_str("\n\nPrevious writer summary (work status):\n");
                     preamble.push_str(&scrubber.text(summary, &places));
                 }
-                let brief = screen_attachment(&scrubber, self.brief.as_bytes().to_vec(), &places);
+                let omissions = text_omissions(&scrubber, "the brief", &self.brief);
+                if !omissions.is_empty() {
+                    return self.stop_screening(&turn, "The brief contains material that would be withheld", &omissions);
+                }
+                let brief = input_attachment(&self.brief, &places);
                 let mut attachments = vec![("brief".into(), brief)];
                 attachments.extend(extra.iter().cloned());
                 let prompt = compose_prompt(&preamble, &attachments);
@@ -2124,7 +2134,22 @@ impl Run {
             match self.infra(step, built)? {
                 ScreenedPrompt::Prompt(prompt) => prompt,
                 ScreenedPrompt::Withheld(locations) => {
-                    return self.stop_screening(step, "The candidate diff contains lines that would be withheld", &locations);
+                    self.push_round(json!({
+                        "n": round.n, "checks": round.checks, "commit": round.commit,
+                        "verification": round.verification, "verdict": "blocked",
+                    }));
+                    let commit = round.candidate;
+                    let n = round.n;
+                    let location = if self.args.isolated {
+                        format!("is retained at {}", self.out["candidate"]["ref"].as_str().expect("pinned candidate ref"))
+                    } else {
+                        format!("is on {}", self.branch)
+                    };
+                    self.out.insert("next".into(), json!(format!(
+                        "Commit {commit} for round {n} {location}. Inspect it locally and remove the marked material before starting a new package."
+                    )));
+                    let description = format!("The review material for round {n} at commit {commit} contains lines that would be withheld");
+                    return self.stop_screening(step, &description, &locations);
                 }
             }
         };
@@ -2214,7 +2239,53 @@ impl Run {
             .map(Some).map_err(|error| GatewayError(format!("Cannot encode the writer checks attachment: {error}")))
     }
 
-    fn review_diff(&self, candidate: &str, scrubber: &Scrubber, places: &[(String, &str)]) -> Result<(String, Vec<String>)> {
+    fn review_files(
+        &self,
+        candidate: &str,
+        changed: &[review_source::File<'_>],
+        scrubber: &Scrubber,
+        places: &[(String, &str)],
+    ) -> Result<(Attachments, Vec<&str>, Vec<String>)> {
+        let mut attachments = Vec::new();
+        let mut binary = Vec::new();
+        let mut omissions = Vec::new();
+        for (index, file) in self.claimed.iter().enumerate() {
+            if let Some((_, reason)) = scrubber.input_withholdings(file).next() {
+                omissions.push(format!("claimed file #{} (file name, {reason})", index + 1));
+                continue;
+            }
+            // The diff can include both deleted lines and unchanged context. Screen the whole blobs so
+            // a hunk boundary cannot hide part of a credential and full candidate attachments are safe.
+            if changed.iter().any(|entry| entry.path == file.as_str()) {
+                if let Some(bytes) = self.git.show(&self.base, file)? {
+                    if bytes.contains(&0) {
+                        binary.push(file.as_str());
+                    } else {
+                        omissions.extend(scrubber.input_withholdings(&String::from_utf8_lossy(&bytes))
+                            .map(|(line, reason)| format!("{file}:{line} in the base ({reason})")));
+                    }
+                }
+            }
+            if let Some(bytes) = self.git.show(candidate, file)? {
+                if bytes.contains(&0) {
+                    binary.push(file.as_str());
+                } else {
+                    omissions.extend(file_omissions(scrubber, file, &bytes));
+                    if patch::claimed_as(&self.args.review_context, file).is_none() {
+                        attachments.push((file.clone(), input_attachment(&String::from_utf8_lossy(&bytes), places)));
+                    }
+                }
+            }
+        }
+        Ok((attachments, binary, omissions))
+    }
+
+    fn review_material(
+        &self,
+        candidate: &str,
+        scrubber: &Scrubber,
+        places: &[(String, &str)],
+    ) -> Result<(String, Attachments, Vec<String>)> {
         let mut args = vec!["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", &self.base, candidate, "--"];
         args.extend(self.claimed.iter().map(String::as_str));
         let diff = self.git.run(&args)?;
@@ -2229,23 +2300,44 @@ impl Run {
                 && matches!(header.next(), Some("000000" | "100644" | "100755"));
             Some(review_source::File { path, regular })
         }).collect();
-        let (screened, omissions) = review_source::screen_with_locations(&diff, &files, scrubber, places);
-        let locations = omissions.into_iter().map(|omission| {
-            let file = match omission.file {
-                Some(file) if scrubber.withholdings(file).next().is_none() => file.to_string(),
-                Some(file) => self.claimed.iter().position(|path| path == file)
-                    .map_or_else(|| "claimed file".to_string(), |index| format!("claimed file #{}", index + 1)),
-                None => "candidate diff".to_string(),
-            };
-            let location = match omission.file_line {
-                Some(FileLine::Base(line)) => format!("{file}:{line} in the base"),
-                Some(FileLine::Candidate(line)) => format!("{file}:{line}"),
-                None => format!("{file} at diff line {}", omission.diff_line),
-            };
-            format!("{location} ({})", omission.reason)
-        }).collect();
-        let diff = if diff.lines().eq(screened.split('\n')) { diff } else { screened };
-        Ok((diff, locations))
+        let (attachments, binary, mut locations) = self.review_files(candidate, &files, scrubber, places)?;
+        if !locations.is_empty() {
+            return Ok((String::new(), attachments, locations));
+        }
+        // Keep the outbound rule for any diff payload that did not come from a screened text blob.
+        let needs_screening = |path| binary.contains(&path)
+            || !self.claimed.iter().any(|claimed| claimed.as_str() == path)
+            || !files.iter().any(|file| file.path == path && file.regular);
+        if files.iter().any(|file| needs_screening(file.path)) {
+            let (_, omissions) = review_source::screen_with_locations(&diff, &files, scrubber, places);
+            let lines: Vec<_> = diff.lines().collect();
+            locations.extend(omissions.into_iter()
+                .filter(|omission| {
+                    let Some(file) = omission.file else { return true };
+                    if !needs_screening(file) {
+                        return false;
+                    }
+                    // These headers contain only paths, which have already passed the input gate.
+                    omission.file_line.is_some() || !self.claimed.iter().any(|p| p.as_str() == file)
+                        || !["diff --git ", "--- ", "+++ ", "Binary files "].iter()
+                            .any(|prefix| lines[omission.diff_line - 1].starts_with(prefix))
+                })
+                .map(|omission| {
+                    let file = match omission.file {
+                        Some(file) if scrubber.input_withholdings(file).next().is_none() => file,
+                        Some(_) => "claimed file",
+                        None => "candidate diff",
+                    };
+                    let location = match omission.file_line {
+                        Some(FileLine::Base(line)) => format!("{file}:{line} in the base"),
+                        Some(FileLine::Candidate(line)) => format!("{file}:{line}"),
+                        None => format!("{file} at diff line {}", omission.diff_line),
+                    };
+                    format!("{location} ({})", omission.reason)
+                }));
+        }
+        let diff = checks::screen_paths(diff.split('\n'), places);
+        Ok((diff, attachments, locations))
     }
 
     fn review_prompt(&self, round: &ReviewRound<'_>, step: &str, previous_writer_review: u32, reply: Option<&GapReply>) -> Result<ScreenedPrompt> {
@@ -2253,7 +2345,11 @@ impl Run {
         let ReviewRound { candidate, summary, unverified, verification, .. } = *round;
         let scrubber = Scrubber::new(&self.cfg)?;
         let places = self.private_places();
-        let (diff, omissions) = self.review_diff(candidate, &scrubber, &places)?;
+        let omissions = text_omissions(&scrubber, "the brief", &self.brief);
+        if !omissions.is_empty() {
+            return Ok(ScreenedPrompt::Withheld(omissions));
+        }
+        let (diff, files, omissions) = self.review_material(candidate, &scrubber, &places)?;
         if !omissions.is_empty() {
             return Ok(ScreenedPrompt::Withheld(omissions));
         }
@@ -2282,7 +2378,7 @@ impl Run {
             ("unverified", if unverified.is_empty() { "nothing named".into() } else { unverified.join("; ") }),
             ("verification", how), ("history", history), ("focus", focus.to_string()),
         ]);
-        let brief = screen_attachment(&scrubber, self.brief.as_bytes().to_vec(), &places);
+        let brief = input_attachment(&self.brief, &places);
         let mut required = vec![("change.diff".to_string(), diff.into_bytes()), ("brief".to_string(), brief)];
         if self.history.is_object() {
             required.push(("previous-package.json".into(), self.history.to_string().into_bytes()));
@@ -2323,6 +2419,10 @@ impl Run {
         }
         if !self.args.review_context.is_empty() {
             for (number, (file, text)) in review_context(&self.git, candidate, &self.args.review_context)?.into_iter().enumerate() {
+                if self.claimed.contains(&file) {
+                    required.push((file, input_attachment(&text, &places)));
+                    continue;
+                }
                 let label = if scrubber.text(&file, &places) == file {
                     file
                 } else {
@@ -2336,17 +2436,7 @@ impl Run {
         if let Some(checks) = self.review_writer_checks(previous_writer_review)? {
             optional.push(("writer-checks.json".into(), checks));
         }
-        // Copies of the reviewed commit's blobs, never the live work tree.
-        for p in &self.claimed {
-            if patch::claimed_as(&self.args.review_context, p).is_some() {
-                continue;
-            }
-            if let Some(bytes) = self.git.show(candidate, p)? {
-                if !bytes.contains(&0) {
-                    optional.push((p.clone(), screen_attachment(&scrubber, bytes, &places)));
-                }
-            }
-        }
+        optional.extend(files);
         let mut dropped: Vec<String> = Vec::new();
         loop {
             let note = if dropped.is_empty() { String::new() } else { format!("\n\nNot attached for size: {}", dropped.join(", ")) };
