@@ -278,8 +278,14 @@ export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, r
     const check = (file, digest) => sha256(fs.readFileSync(path.join(output, file))) === digest;
     t.ok(receipt.sha256[built.cli] && Object.entries(receipt.sha256).every(([file, digest]) => check(file, digest)),
       "the bundle records the digest of its CLI and each bundled file");
+    t.eq(receipt.sha256[built.cli], sha256(fs.readFileSync(ZODCHI)), "the bundle contains the running executable");
     const env = { ...process.env, ZODCHI_HOME: path.join(scratch, "empty-bundle-home") };
     delete env.ZODCHI_ROLES;
+    const explicitOutput = path.join(scratch, "explicit-source-bundle");
+    const explicit = await run(t, ZODCHI, ["release", "build", "--source", ROOT, "--out", explicitOutput], { cwd: scratch, env });
+    t.eq(explicit.code, 0, "the executable from the source checkout can build with --source");
+    t.ok(fs.readFileSync(path.join(explicitOutput, built.cli)).equals(fs.readFileSync(ZODCHI)),
+      "the explicit-source bundle also contains the running executable");
     const roles = execFileSync(path.join(output, built.cli), ["roles"], { env, cwd: scratch, encoding: "utf8", windowsHide: true });
     t.ok(roles.includes("flow-work") && roles.includes("code-review"), "the bundled executable finds its own roles using an empty home");
 
@@ -366,29 +372,83 @@ export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, r
     fs.mkdirSync(location);
     const packed = releaseBundle();
     const sha256 = bytes => crypto.createHash("sha256").update(bytes).digest("hex");
-    const invoke = (program, args) => run(t, program, args, { cwd: f.r, env: f.w.env });
-    const activate = async (commit) => {
+    const invoke = (program, args) => run(t, program, args, { cwd: f.r, env: { ...f.w.env, ZODCHI_AGENT: "0" } });
+    const metadata = "marketplace/plugins/zodchi/zodchi-build.json";
+    const archiveFor = (commit, cli) => {
       const payload = JSON.parse(zlib.gunzipSync(fs.readFileSync(packed.archive)));
-      const metadata = "marketplace/plugins/zodchi/zodchi-build.json";
       const record = JSON.stringify({ sourceCommit: commit });
       payload.files[metadata] = Buffer.from(record).toString("base64");
       payload.manifest.sha256[metadata] = sha256(record);
+      payload.files[packed.cli] = cli.toString("base64");
+      payload.manifest.sha256[packed.cli] = sha256(cli);
       const archive = path.join(location, commit + ".json.gz");
       const bytes = zlib.gzipSync(JSON.stringify(payload));
       fs.writeFileSync(archive, bytes);
-      const result = await invoke(ZODCHI, ["release", "dev", "--archive", archive, "--sha256", sha256(bytes)]);
+      return ["release", "dev", "--archive", archive, "--sha256", sha256(bytes)];
+    };
+    const fixtureCli = (revision) => {
+      // Give each fixture its own executable revision without another Cargo build.
+      const cli = fs.readFileSync(path.join(packed.root, packed.cli));
+      const prefix = "\0ZODCHI_BUILD_COMMIT=";
+      const start = cli.indexOf(prefix);
+      const end = cli.indexOf(0, start + prefix.length);
+      t.ok(start >= 0 && end > start + prefix.length, "the CLI contains its build record");
+      const oldStamp = Buffer.from(cli.subarray(start, end + 1));
+      const stamp = Buffer.from(`${prefix}${revision}\0`);
+      const dirty = revision.endsWith("-dirty");
+      if (!dirty) t.ok(stamp.length <= oldStamp.length, "the fixture revision fits the embedded build record");
+      for (let at = start; at !== -1; at = cli.indexOf(oldStamp, at + oldStamp.length)) {
+        cli.fill(0, at, at + oldStamp.length);
+        if (!dirty) stamp.copy(cli, at);
+      }
+      // The archive validator only reads this fixture, so append the longer dirty stamp.
+      if (dirty) return Buffer.concat([cli, stamp]);
+      if (process.platform !== "darwin") return cli;
+      // macOS validates the modified executable's signature before running it.
+      const file = path.join(location, `fixture-${revision}`);
+      fs.writeFileSync(file, cli, { mode: 0o755 });
+      execFileSync("codesign", ["--force", "--sign", "-", file]);
+      return fs.readFileSync(file);
+    };
+    const activate = async (commit, args) => {
+      const result = await invoke(ZODCHI, args);
       t.eq(result.code, 0, "activate DEV build " + commit.slice(0, 7));
       return result.json;
     };
-    const firstCommit = "a".repeat(40);
-    const secondCommit = "b".repeat(40);
+    const sourceCommit = JSON.parse(fs.readFileSync(path.join(packed.root, metadata), "utf8")).sourceCommit;
+    const firstCommit = sourceCommit ?? "a".repeat(40);
+    const secondCommit = (firstCommit.startsWith("b") ? "c" : "b").repeat(firstCommit.length);
     const bin = path.join(f.w.zhome, "bin");
     const launcherName = process.platform === "win32" ? "zodchi.exe" : "zodchi";
     const backupName = process.platform === "win32" ? "zodchi-before-dev.exe" : "zodchi-before-dev";
     fs.mkdirSync(bin);
     fs.writeFileSync(path.join(bin, launcherName), "previous local executable");
-    const first = await activate(firstCommit);
+    const firstArchive = sourceCommit
+      ? ["release", "dev", "--archive", packed.archive, "--sha256", packed.sha256]
+      : archiveFor(firstCommit, fixtureCli(firstCommit));
+    const first = await activate(firstCommit, firstArchive);
     t.eq(fs.readFileSync(path.join(bin, backupName), "utf8"), "previous local executable", "the previous launcher is saved");
+
+    const wrongOutput = path.join(location, "wrong-source-bundle");
+    const wrongBuild = await invoke(first.launcher, ["release", "build", "--source", f.r, "--out", wrongOutput, "--archive"]);
+    t.eq([wrongBuild.code, fs.existsSync(wrongOutput)], [1, false], "a launcher from a different revision cannot package the source checkout");
+    t.ok(wrongBuild.err.includes(firstCommit) && wrongBuild.err.includes(f.base), "the refusal names the executable and checkout commits");
+    const freshCli = path.join(f.r, "rust", "target", "release", launcherName);
+    t.ok(wrongBuild.err.includes(freshCli) && wrongBuild.err.includes("release build"), "the refusal gives the command to run with the source checkout's executable");
+
+    const mislabeled = await invoke(ZODCHI, archiveFor(f.base, fs.readFileSync(first.cli)));
+    t.eq(mislabeled.code, 1, "a correct digest cannot make a mislabeled DEV executable installable");
+    t.ok(mislabeled.err.includes(firstCommit) && mislabeled.err.includes(f.base), "the refusal names the executable and archive commits");
+    t.ok(!fs.existsSync(path.join(f.w.zhome, "dev-builds", f.base)), "a mislabeled archive leaves no build directory");
+    const dirtyRevision = `${f.base}-dirty`;
+    const dirty = await invoke(ZODCHI, archiveFor(f.base, fixtureCli(dirtyRevision)));
+    t.eq([dirty.code, fs.existsSync(path.join(f.w.zhome, "dev-builds", f.base))], [1, false],
+      "a dirty CLI cannot install under its clean commit");
+    t.ok(dirty.err.includes(`sourceCommit is ${f.base}.`) && dirty.err.includes(dirtyRevision),
+      "the refusal names the clean archive commit and the dirty executable revision");
+    const stillFirst = await invoke(first.launcher, ["release", "current"]);
+    t.eq([stillFirst.code, stillFirst.json?.sourceCommit], [0, firstCommit], "a mislabeled archive leaves the selected build in place");
+
     f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
     f.answer("review 1", f.review("approved"));
     const runStart = await invoke(first.launcher, ["flow", "code-package", "--args", f.args()]);
@@ -397,7 +457,7 @@ export default function register({ scenario, scratch, ROOT, ZODCHI, flowWorld, r
     const journal = JSON.parse(fs.readFileSync(path.join(f.w.zhome, "flows", id, "run.json"), "utf8"));
     t.eq(journal.buildCommit, firstCommit, "the run records the source revision of its own binary");
 
-    const second = await activate(secondCommit);
+    const second = await activate(secondCommit, archiveFor(secondCommit, fixtureCli(secondCommit)));
     t.eq(second.launcher, first.launcher, "switching the DEV selection keeps the same launcher");
     const notes = await invoke(second.launcher, ["release", "notes"]);
     t.eq([notes.json.channel, notes.json.sourceCommit], ["dev", secondCommit], "notes identify the selected DEV child");

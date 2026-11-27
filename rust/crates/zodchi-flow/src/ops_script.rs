@@ -3,7 +3,7 @@
 //! A check template is argv, not shell. The string form is deliberately limited to
 //! whitespace-separated, unquoted words; callers needing spaces use an array.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 #[cfg(not(windows))]
@@ -11,6 +11,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 #[cfg(not(windows))]
 use std::process::Stdio;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 #[cfg(not(windows))]
 use std::time::Instant;
@@ -493,6 +494,23 @@ struct Tools {
     shellcheck: Option<PathBuf>,
 }
 
+fn working_python(program: &Path, cwd: &Path) -> bool {
+    static PROBES: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<bool>>>>> =
+        LazyLock::new(Mutex::default);
+    // Serialize probes of the same interpreter and retry failures on the next use.
+    let probe = PROBES.lock().unwrap().entry(program.to_owned()).or_default().clone();
+    let mut verified = probe.lock().unwrap();
+    if !*verified {
+        // Use the same import isolation as the static check.
+        let argv = ["-I".into(), "-B".into(), "-c".into(),
+            "import py_compile, sys; print('Python', sys.version.split()[0])".into()];
+        *verified = run_command(program, &argv, cwd, &[], Duration::from_secs(60))
+            .is_ok_and(|result| !result.timed_out && result.code == Some(0)
+                && result.stdout.lines().any(|line| line.starts_with("Python 3.")));
+    }
+    *verified
+}
+
 /// Resolve and try required tools before a snapshot or a remote side effect.
 fn preflight_tools(args: &Args) -> Result<Tools, String> {
     validate_direct(&args.check, &args.inputs[0])?;
@@ -503,7 +521,6 @@ fn preflight_tools(args: &Args) -> Result<Tools, String> {
     let needs_python = args.inputs.iter().any(|path| script_kind(path).is_ok_and(|kind| kind == Some("python")))
         || args.check.first().is_some_and(|word| word == "python" || word == "python3");
     let python = if needs_python {
-        let mut usable = None;
         let direct_python = if args.check.first().map(String::as_str) == Some("{copy}") && script_kind(&args.inputs[0])? == Some("python") {
             Some(direct_interpreter(&args.inputs[0])?)
         } else { None };
@@ -513,18 +530,8 @@ fn preflight_tools(args: &Args) -> Result<Tools, String> {
             _ => &["python3", "python"],
         };
         let candidates: Vec<PathBuf> = if let Some(path) = direct_python { vec![path] } else { names.iter().filter_map(|name| find_tool(name)).collect() };
-        // Probe the available compiler with the same import isolation as the static check.
-        let probe = ["-I".into(), "-B".into(), "-c".into(),
-            "import py_compile, sys; print('Python', sys.version.split()[0])".into()];
-        for candidate in candidates {
-            if run_command(&candidate, &probe, &args.tmp, &[], Duration::from_secs(10))
-                .is_ok_and(|result| !result.timed_out && result.code == Some(0)
-                    && result.stdout.lines().any(|line| line.starts_with("Python 3."))) {
-                usable = Some(candidate);
-                break;
-            }
-        }
-        Some(usable.ok_or("A working Python 3 interpreter with isolated py_compile is required")?)
+        Some(candidates.into_iter().find(|path| working_python(path, &args.tmp))
+            .ok_or("A working Python 3 interpreter with isolated py_compile is required")?)
     } else { None };
     let shellcheck = find_tool("shellcheck");
     let programs = [(&bash, "GNU bash"), (&checksum, "sha256sum")].into_iter()
@@ -1636,11 +1643,9 @@ mod tests {
     // Test fixtures require a real interpreter, independent of its command name.
     #[cfg(windows)]
     fn fixture_python(cwd: &Path) -> PathBuf {
-        ["python", "python3"].into_iter().filter_map(find_tool).find(|path| {
-            run_command(path, &["--version".into()], cwd, &[], Duration::from_secs(10))
-                .is_ok_and(|result| !result.timed_out && result.code == Some(0)
-                    && format!("{}{}", result.stdout, result.stderr).trim_start().starts_with("Python 3."))
-        }).expect("a working Python 3 is required for the fixture")
+        ["python", "python3"].into_iter().filter_map(find_tool)
+            .find(|path| working_python(path, cwd))
+            .expect("a working Python 3 is required for the fixture")
     }
 
     #[test]

@@ -123,12 +123,17 @@ pub fn cli(args: &[String]) -> Result<Output> {
     };
     let result = match command {
         Command::Build | Command::Marketplace => {
-            let source = options
-                .get("--source")
-                .map_or_else(env::current_dir, |path| std::path::absolute(path))?;
+            let source_arg = options.get("--source");
+            let source =
+                source_arg.map_or_else(env::current_dir, |path| std::path::absolute(path))?;
             let out = std::path::absolute(required("--out")?)?;
             if matches!(command, Command::Build) {
-                bundle::build_release(&out, &source, options.contains_key("--archive"))
+                bundle::build_release(
+                    &out,
+                    &source,
+                    source_arg.is_some(),
+                    options.contains_key("--archive"),
+                )
             } else {
                 bundle::build_marketplace(&out, &source)
             }

@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use zodchi_core::{
+    config::is_source_commit,
     process::command_without_window,
     util::{fail, sha256_hex, GatewayError, Result},
 };
@@ -37,6 +38,7 @@ const ARCH: &str = if cfg!(target_arch = "x86_64") {
 };
 const PLUGIN: &str = "marketplace/plugins/zodchi";
 const BUILD_INFO: &str = "marketplace/plugins/zodchi/zodchi-build.json";
+static BUILD_STAMP: &str = concat!("\0ZODCHI_BUILD_COMMIT=", env!("ZODCHI_BUILD_COMMIT"), "\0");
 const FLOW_SKILL: &str = "marketplace/plugins/zodchi/skills/zodchi-flow/SKILL.md";
 const SKILLS: &[&str] = &["verify", "zodchi-flow"];
 const REQUIRED: &[&str] = &[
@@ -134,27 +136,95 @@ fn write_json(path: &Path, value: &Value) -> Result<()> {
     write_new(path, &bytes, false)
 }
 
-fn source_commit(source: &Path) -> Option<String> {
-    let git = |args: &[&str]| {
-        let out = command_without_window("git")
-            .arg("-C")
-            .arg(source)
-            .args(args)
-            .output()
-            .ok()?;
-        out.status
-            .success()
-            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
-    };
-    if !git(&["rev-parse", "--show-prefix"])?.is_empty()
-        || !git(&["status", "--porcelain"])?.is_empty()
-    {
+fn git(source: &Path, args: &[&str]) -> Option<String> {
+    let mut command = command_without_window("git");
+    command.arg("-C").arg(source).env("GIT_OPTIONAL_LOCKS", "0");
+    for name in [
+        "GIT_DIR",
+        "GIT_COMMON_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+    ] {
+        command.env_remove(name);
+    }
+    let out = command.args(args).output().ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+fn source_head(source: &Path) -> Option<String> {
+    if !git(source, &["rev-parse", "--show-prefix"])?.is_empty() {
         return None;
     }
-    git(&["rev-parse", "--verify", "HEAD^{commit}"])
+    git(source, &["rev-parse", "--verify", "HEAD^{commit}"])
+        .filter(|commit| is_source_commit(commit))
+}
+
+fn source_is_clean(source: &Path) -> bool {
+    git(
+        source,
+        &["status", "--porcelain", "--untracked-files=normal"],
+    )
+    .is_some_and(|status| status.is_empty())
+}
+
+fn commit_id(stamp: &str) -> &str {
+    stamp.strip_suffix("-dirty").unwrap_or(stamp)
+}
+
+fn binary_revision(bytes: &[u8]) -> Option<&str> {
+    // Use the marker from the live record so the linker keeps the complete stamp in the CLI.
+    let (marker, _) = std::hint::black_box(BUILD_STAMP)[1..].split_once('=')?;
+    let mut stamps = bytes.split(|&byte| byte == 0).filter_map(|field| {
+        let stamp = field.strip_prefix(marker.as_bytes())?.strip_prefix(b"=")?;
+        let stamp = std::str::from_utf8(stamp).ok()?;
+        (stamp == "unknown" || is_source_commit(commit_id(stamp))).then_some(stamp)
+    });
+    let stamp = stamps.next()?;
+    stamps.all(|other| other == stamp).then_some(stamp)
+}
+
+fn quote_path(path: &Path) -> String {
+    let escape = if cfg!(windows) { "''" } else { "'\\''" };
+    format!("'{}'", path.display().to_string().replace('\'', escape))
+}
+
+fn check_build_source(
+    revision: &str,
+    head: Option<&str>,
+    source: &Path,
+    out: &Path,
+    archive: bool,
+) -> Result<()> {
+    if revision == "unknown" {
+        return fail("The running CLI build commit is unknown. Build Zodchi in a Git checkout with Git available, then use that checkout's release executable with --source.");
+    }
+    let Some(head) = head else {
+        return fail(format!("Cannot determine Git HEAD for --source {}. Use the root of a Git checkout with Git available.", source.display()));
+    };
+    if commit_id(revision) != head {
+        let executable = source
+            .join("rust")
+            .join("target")
+            .join("release")
+            .join(Path::new(CLI).file_name().expect("release CLI filename"));
+        let call = if cfg!(windows) { "& " } else { "" };
+        let archive = if archive { " --archive" } else { "" };
+        return fail(format!(
+            "The running CLI build revision is {revision}. The --source checkout HEAD is {head}. After building the checkout, run\n  {call}{} release build --source {} --out {}{archive}",
+            quote_path(&executable), quote_path(source), quote_path(out)
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn build_marketplace(root: &Path, source: &Path) -> Result<Value> {
+    let commit = source_head(source).filter(|_| source_is_clean(source));
+    write_marketplace(root, source, commit.as_deref())
+}
+
+fn write_marketplace(root: &Path, source: &Path, commit: Option<&str>) -> Result<Value> {
     let declared = read_json(&source.join("package.json"))?;
     if declared["version"] != VERSION {
         return fail("Build the CLI from the version being packaged.");
@@ -231,7 +301,7 @@ pub(super) fn build_marketplace(root: &Path, source: &Path) -> Result<Value> {
     )?;
     write_json(
         &plugin.join("zodchi-build.json"),
-        &json!({ "sourceCommit": source_commit(source) }),
+        &json!({ "sourceCommit": commit }),
     )?;
     let metadata = json!({
         "name": "zodchi", "version": VERSION,
@@ -284,15 +354,27 @@ fn files(root: &Path, prefix: &str, contents: &mut BTreeMap<String, Vec<u8>>) ->
     Ok(())
 }
 
-pub(super) fn build_release(root: &Path, source: &Path, archive: bool) -> Result<Value> {
+pub(super) fn build_release(
+    root: &Path,
+    source: &Path,
+    explicit_source: bool,
+    archive: bool,
+) -> Result<Value> {
+    let cli = fs::read(std::env::current_exe()?)?;
+    let revision = binary_revision(&cli).unwrap_or("unknown");
+    let head = source_head(source);
+    if explicit_source {
+        check_build_source(revision, head.as_deref(), source, root, archive)?;
+    }
+    let commit = head.filter(|head| head.as_str() == revision && source_is_clean(source));
     let mut contents = BTreeMap::new();
-    contents.insert(CLI.into(), fs::read(std::env::current_exe()?)?);
+    contents.insert(CLI.into(), cli);
     contents.insert("LICENSE".into(), regular(&source.join("LICENSE"))?);
     contents.insert("models.json".into(), regular(&source.join("models.json"))?);
     files(&source.join("roles"), "roles/", &mut contents)?;
     fs::create_dir(root)?;
     let marketplace = root.join("marketplace");
-    build_marketplace(&marketplace, source)?;
+    write_marketplace(&marketplace, source, commit.as_deref())?;
     for (file, bytes) in &contents {
         write_new(&root.join(file), bytes, file == CLI)?;
     }
@@ -450,7 +532,6 @@ impl Archive {
     }
 
     pub(super) fn install_dev(&self, home: &Path) -> Result<(PathBuf, String)> {
-        use zodchi_core::config::is_source_commit;
         if self.manifest["devJournalVersion"] != 1 {
             return fail("Build a DEV archive with support for recording its revision in Flow.");
         }
@@ -463,8 +544,14 @@ impl Archive {
             .as_str()
             .filter(|commit| is_source_commit(commit))
             .ok_or_else(|| {
-                GatewayError("Build the DEV bundle from a clean Git checkout.".into())
+                GatewayError("Build the CLI and DEV bundle from a clean Git checkout.".into())
             })?;
+        let revision = binary_revision(&self.contents[CLI]).unwrap_or("unknown");
+        if revision != commit {
+            return fail(format!(
+                "The DEV archive sourceCommit is {commit}. The embedded CLI build revision is {revision}. Rebuild the archive with the release executable from the source checkout."
+            ));
+        }
         Ok((
             self.install_at(&home.join("dev-builds"), commit)?,
             commit.into(),
