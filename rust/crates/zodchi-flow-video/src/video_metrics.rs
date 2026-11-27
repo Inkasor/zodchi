@@ -1,10 +1,10 @@
-use crate::{journal::Journal, video_media as media};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use zodchi_core::{
     config::Config,
     util::{fail, parse_iso_ms, GatewayError, Result},
 };
+use zodchi_flow_engine::{journal::Journal, video_media as media};
 
 pub fn prompt_summary(prior: &Value) -> Vec<Value> {
     prior.as_array().into_iter().flatten().map(|run| {

@@ -1,12 +1,12 @@
 //! Import and extend the evidence from the YouTube collector used by the video project.
 
-use crate::{journal::Journal, video_media as media, Exit};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
 };
 use zodchi_core::util::{fail, iso, write_json_atomic, GatewayError, Result};
+use zodchi_flow_engine::{journal::Journal, video_media as media, Exit};
 
 fn video_id(id: &str) -> bool {
     id.len() == 11

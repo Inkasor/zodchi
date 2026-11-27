@@ -1,12 +1,6 @@
 //! One video from scenario choice to an approved, verified file.
 
-use crate::{
-    accepted_media::{self, assert_artifact, VideoFiles, MARKER, VERSION},
-    boundary::Launch,
-    input_common,
-    journal::{self, Journal, StatusHooks},
-    video_manifest as manifest, video_media as media, video_metrics as metrics, video_research, Exit,
-};
+use crate::{video_manifest as manifest, video_metrics as metrics, video_research};
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,
@@ -22,8 +16,16 @@ use zodchi_core::{
     role::{load_role, Overrides},
     util::{fail, iso, publish, sha256_hex, GatewayError, Result},
 };
+use zodchi_flow_engine::{
+    accepted_media::{self, assert_artifact, VideoFiles, MARKER},
+    boundary::{self, Launch},
+    executor::local::pinned_image,
+    gateway, input_common,
+    journal::{self, Journal, RunLock, StatusHooks},
+    video_media as media, Exit,
+};
 
-pub use crate::accepted_media::NAME;
+pub use zodchi_flow_engine::accepted_media::{NAME, VERSION};
 const SCRIPT: &str = "choose scenario";
 const PROBE: &str = "accept probe";
 const FINAL: &str = "accept final";
@@ -133,7 +135,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
         }).collect::<Result<Vec<_>>>()?;
         (variants, brief)
     };
-    let run_id = crate::journal::new_run_id();
+    let run_id = journal::new_run_id();
     let mut research = raw
         .get("research")
         .map(|value| video_research::pin_report(&media::file(&dir, value, "research")?))
@@ -145,7 +147,7 @@ fn prepare(raw: &Value) -> Result<(String, Journal)> {
             return fail("The research report changed while it was being copied.");
         }
         pin["sourcePath"] = json!(source);
-        pin["path"] = json!(crate::journal::flows_dir(&cfg.home)
+        pin["path"] = json!(journal::flows_dir(&cfg.home)
             .join(&run_id)
             .join("video-research.json"));
         Some(bytes)
@@ -284,7 +286,7 @@ fn prepare_experts(
                 .ok_or_else(|| GatewayError("frames lists timestamps of a probe or final MP4 within the gateway image limit.".into())))
                 .transpose()?;
             for image in &images {
-                crate::executor::local::pinned_image(media::checked(image)?)?;
+                pinned_image(media::checked(image)?)?;
             }
             Ok(json!({ "stage": stage, "role": entry["role"], "provider": entry["provider"],
                 "model": entry["model"], "effort": entry["effort"], "definition": expert_role(cfg, entry, entry)?,
@@ -301,7 +303,7 @@ struct Video {
 }
 
 impl Video {
-    fn open(id: &str) -> Result<(Self, crate::journal::RunLock)> {
+    fn open(id: &str) -> Result<(Self, RunLock)> {
         let (VideoFiles { journal, run, dir, cfg, manifest }, lock) = accepted_media::open(id)?;
         Ok((Self { journal, run, dir, cfg, manifest }, lock))
     }
@@ -579,7 +581,7 @@ impl Video {
                 json!({ "kind": "render exited", "step": step, "attempt": attempt,
                 "exitCode": code, "timedOut": timed_out, "error": failure }),
             )?;
-            crate::boundary::cut(&format!("video {step} exited"));
+            boundary::cut(&format!("video {step} exited"));
             if let Some(message) = failure {
                 if manifest::update_render(
                     &mut self.manifest,
@@ -675,7 +677,7 @@ impl Video {
         pick: &Value,
         artifact: &Value,
     ) -> Result<Value> {
-        let key = crate::gateway::base_key(self.run["runId"].as_str().unwrap(), step, attempt);
+        let key = gateway::base_key(self.run["runId"].as_str().unwrap(), step, attempt);
         let intended = self.journal.last("intent", step, attempt).is_some();
         if !intended {
             let role = if pick == expert {
@@ -714,7 +716,7 @@ impl Video {
             pins.extend(self.frames(step, attempt, &expert["frames"], artifact)?);
             let images = pins
                 .iter()
-                .map(|pin| crate::executor::local::pinned_image(media::checked(pin)?))
+                .map(|pin| pinned_image(media::checked(pin)?))
                 .collect::<Result<Vec<_>>>()?;
             let provider = media::text(&pick["provider"], "provider")?;
             let request = Request {
@@ -751,7 +753,7 @@ impl Video {
                 return Ok(done);
             }
             if status == zodchi_core::appserver::SAFETY_BLOCKED {
-                crate::gateway::record_safety_block(&mut self.journal, step, attempt, &key, pick["provider"].as_str().unwrap_or("codex"))?;
+                gateway::record_safety_block(&mut self.journal, step, attempt, &key, pick["provider"].as_str().unwrap_or("codex"))?;
                 return fail(zodchi_core::appserver::SAFETY_MESSAGE);
             }
             if job::is_terminal(status) {
@@ -961,7 +963,7 @@ fn status(id: &str) -> Result<Exit> {
     )
 }
 
-pub(crate) fn project_status(run: &Value, events: &[Value], result: &mut Value) {
+pub fn project_status(run: &Value, events: &[Value], result: &mut Value) {
     if run["workflow"] == NAME {
         result["video"] = status_detail(run, events);
     }
