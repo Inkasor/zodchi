@@ -131,16 +131,27 @@ A repository without a skill can pass the same commands as `args.verify`.
 
 ## How zodchi itself is verified
 
-zodchi is checked by running it as its users do; there are no unit tests and no mock runs of workflows. Pull
-requests run, in `.github/workflows/ci.yml` on Windows, macOS and Linux:
+Every PR reports the required checks `test (windows-latest)`, `test (macos-latest)` and `test (ubuntu-latest)`
+from [the CI workflow](../.github/workflows/ci.yml). Each runs `node scripts/check.mjs` for the repository checks
+and publish guard, plus `node scripts/ci-select.test.mjs` for the coverage rules.
 
-1. `node scripts/check.mjs`: the static publish guard (workflows parse, agents, JSON, roles, no private paths or
-   secrets). Not a test.
-2. `cargo build --release --locked`, then `node scripts/e2e.mjs --no-build`: the end-to-end suite of the gateway. It
-   runs the release `zodchi` and `zodchi-server` against `scripts/e2e/fake-codex.mjs` (no model, no network beyond
-   127.0.0.1, nothing spent), one trace per scenario, kept as a CI artifact. Locally: `npm run e2e`, or the
-   repository's verify skill (`.claude/skills/verify/SKILL.md`), which calls the same command.
-3. The installer round trip in a scratch home.
+- PRs with only documentation, release notes or version bumps finish after the repository checks and coverage
+  selection. The selector compares the checked-out PR merge commit with its first parent. For version files it
+  checks the contents on both sides, including workspace package versions in the lockfile.
+- Code PRs run all locked workspace Rust tests. The gateway binaries and Rust tests share the `dev` profile
+  because the Rust integration tests also request binaries in that profile. The cache restores the Cargo registry,
+  git dependencies and `rust/target` by runner OS, Rust toolchain and lockfile contents.
+- A change in a mapped workflow crate or an e2e scenario file selects the scenarios that cover it. Changes to the
+  engine, facade, core, CLI, server, e2e driver or fixtures run the full suite. Unmapped paths also run the full
+  suite. Markdown used as workflow or plugin input follows those coverage rules.
+- Pushes to `main`, `codex/zodchi-v*` and tags, and manual runs, run the full suite on every OS. Check the full
+  run on the release revision before tagging it. Full runs split the registered scenario names by a stable hash
+  into two concurrent shards on each runner, with both results reported by that OS's required check.
+
+The CI driver runs the built binaries with `scripts/e2e/fake-codex.mjs`, including the installer round trip in a
+scratch home on full runs. The suite writes one trace per scenario, and CI uploads the shard directories together
+as the OS's trace artifact. To run the full suite locally, use `npm run e2e` or the
+[verify skill](../.claude/skills/verify/SKILL.md).
 
 Before a release, by hand: `npm run e2e:release -- --disposable` (`scripts/e2e-release.mjs`). A headless Claude Code
 session with the plugins of the working tree runs the real `code-package` on a throwaway fixture repository (a `clamp`
