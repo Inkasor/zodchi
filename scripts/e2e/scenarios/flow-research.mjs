@@ -99,6 +99,7 @@ export default function register({ scenario, flowWorld, zodchi, FAKE_FLOW }) {
     });
 
     const roleDir = file("roles");
+    fs.mkdirSync(roleDir, { recursive: true });
     for (const role of ["research-constraints", "research-expert", "research-fact-check"]) {
       for (const ext of [".json", ".md", ".schema.json"]) {
         const name = role + ext;
@@ -154,6 +155,29 @@ export default function register({ scenario, flowWorld, zodchi, FAKE_FLOW }) {
       const stopped = await bad.run(["research", "--args", bad.args]);
       t.eq([stopped.code, stopped.json?.stoppedAt, stopped.json?.reason],
         [2, "collect", "Question 1 has an invalid items line."], name + " keeps the original collect error");
+    }
+
+    for (const [name, peerItems, reason, recordedQuestions] of [
+      ["peer-error", [{ ...item(oneOver), replaces: ["missing"] }],
+        "A proposal replaces an unavailable decision.", [1]],
+      ["line-budget", [item(oneOver), item("Add a bracket.")],
+        "The proposals and assumptions exceed the round line budget.", [1, 2]],
+    ]) {
+      const wave = fixture(t, "flow-research-expert-line-" + name);
+      const spec = JSON.parse(fs.readFileSync(wave.args, "utf8"));
+      spec.questions.push({ ...spec.questions[0], title: "Brackets" });
+      spec.maxLines = 2;
+      fs.writeFileSync(wave.args, JSON.stringify(spec));
+      wave.f.answer("ask q1", { items: [item(oneOver)], assumptions: [], facts: [] });
+      wave.f.answer("ask q2", { items: peerItems, assumptions: [], facts: [] });
+      const stopped = await wave.run(["research", "--args", wave.args]);
+      t.eq([stopped.code, stopped.json?.stoppedAt, stopped.json?.reason], [2, "collect", reason], name + " stops collection");
+      const events = fs.readFileSync(path.join(stopped.json.journal, "events.jsonl"), "utf8")
+        .trim().split("\n").map(line => JSON.parse(line));
+      const records = shortening(events);
+      t.eq(records.map(e => e.question), recordedQuestions, name + " retains the validated answers' shortening records");
+      const peer = events.find(e => e.kind === "done" && e.step === "ask q2");
+      t.ok(records[0]?.seq < peer?.seq, name + " records the first answer before collecting the peer");
     }
   }
   scenario("flow-research-contradicted", "stop on a checked contradiction before presenting any list", async t => {

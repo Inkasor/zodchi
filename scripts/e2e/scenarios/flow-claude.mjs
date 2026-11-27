@@ -94,9 +94,10 @@ export default function register({ scenario, flowWorld, gitOut, ROOT, STUB }) {
     const events = c.events(res);
     const claim = events.find((e) => e.kind === "done" && e.step === "claim").result.file;
     const claimFile = path.relative(f.w.home, claim);
-    t.eq(fs.readdirSync(f.w.home, { recursive: true }).sort(),
-      [".zodchi", path.join(".zodchi", "packages"), path.dirname(claimFile), claimFile].sort(),
-      "the temporary HOME and USERPROFILE contain only Flow's package claim and its parent directories");
+    const homeEntries = fs.readdirSync(f.w.home, { recursive: true });
+    t.eq(homeEntries.filter((entry) => !entry.startsWith(`.zodchi${path.sep}`)).sort(), [".zodchi"],
+      "the temporary HOME and USERPROFILE contain only Flow's .zodchi directory and its contents");
+    t.ok(homeEntries.includes(claimFile), "the temporary home contains Flow's package claim");
     t.eq(fs.readdirSync(claudeConfig), [], "the temporary CLAUDE_CONFIG_DIR stays empty");
     const intents = events.filter((e) => e.kind === "intent" && e.step === "write");
     t.eq(intents.length, 1, "one intent for the write step");

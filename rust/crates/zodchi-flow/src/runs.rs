@@ -9,25 +9,17 @@ use serde_json::{json, Value};
 use std::{
     fs,
     io::ErrorKind,
-    path::{Path, PathBuf},
+    path::Path,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use zodchi_core::{
-    config::user_home,
+    config::Config,
     util::{fail, GatewayError, Result},
 };
 
 const STALE_SECONDS: u64 = 3600;
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
-
-fn journal_home() -> PathBuf {
-    // Follow Config's home resolution without loading accounts or repository configuration.
-    std::env::var_os("ZODCHI_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| user_home().join(".zodchi"))
-}
 
 fn run_ids(flows: &Path) -> Result<Vec<String>> {
     let entries = match fs::read_dir(flows) {
@@ -166,7 +158,7 @@ pub(crate) fn list(args: &[String]) -> Result<Exit> {
         [flag] if flag == "--active" => true,
         _ => return fail(USAGE),
     };
-    let home = journal_home();
+    let home = Config::new(None)?.home;
     let flows = journal::flows_dir(&home);
     let now = SystemTime::now();
     let mut rows = Vec::new();
@@ -301,7 +293,7 @@ impl<'a> WaitOptions<'a> {
 pub(crate) fn wait(args: &[String]) -> Result<Exit> {
     let options = WaitOptions::parse(args)?;
     let started = Instant::now();
-    let home = journal_home();
+    let home = Config::new(None)?.home;
     let flows = journal::flows_dir(&home);
     let ids = if options.all {
         let ids: Vec<_> = run_ids(&flows)?
@@ -314,7 +306,8 @@ pub(crate) fn wait(args: &[String]) -> Result<Exit> {
         ids
     } else {
         for id in &options.ids {
-            if !flows.join(id).is_dir() {
+            let dir = flows.join(id);
+            if !dir.is_dir() || matches!(dir.join("run.json").try_exists(), Ok(false)) {
                 return fail(format!("No run {id} in {}.", flows.display()));
             }
         }

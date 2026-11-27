@@ -163,7 +163,7 @@ it is a `claude` program on PATH; on Windows it is named by `ZODCHI_CLAUDE_BIN`)
 
 | Scenario | What a user would see |
 |---|---|
-| `flow-claude-writer` | the preflight at the gate, a Claude writer bound to its account (a digest, no name in the journal) with the fake-Codex reviewer to approval, the sign-in checked again before the call, the call without tools and without the caller's API key, the intent and the raw message in the journal, the preflight cached; a resumed finished run calls nothing |
+| `flow-claude-writer` | the preflight at the gate, a Claude writer bound to its account (a digest, no name in the journal) with the fake-Codex reviewer to approval, the sign-in checked again before the call, the call without tools and without the caller's API key, the intent and the raw message in the journal, the preflight cached; a resumed finished run calls nothing. Both Claude calls pass `-p` and `--no-session-persistence` and use the temporary profile paths. The temporary `HOME` and `USERPROFILE` contain only Flow's `.zodchi`, and the temporary `CLAUDE_CONFIG_DIR` stays empty. |
 | `flow-claude-cut` | a cut right after the Claude call: resume reads the saved answer, Claude asked once; a cut after the key was reserved and before `job.json`: resume goes on under `-r2`, Claude asked once |
 | `flow-claude-disabled` | Claude not enabled: the Codex-only pair, the Claude program never run |
 | `flow-claude-missing` | the program missing or not signed in: skipped with the reason, the Codex pair runs; no pair left: refused at the gate |

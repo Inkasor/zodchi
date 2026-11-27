@@ -310,9 +310,11 @@ struct Research<'a> {
     lock: PathBuf,
 }
 
+type WaveStop<'a> = (&'a str, String);
+
 #[derive(Default)]
 struct Wave<'a> {
-    stop: Option<(&'a str, String)>,
+    stop: Option<WaveStop<'a>>,
 }
 
 impl<'a> Wave<'a> {
@@ -322,8 +324,8 @@ impl<'a> Wave<'a> {
         step: &'a str,
         result: std::result::Result<gateway::Step, gateway::CallError>,
         pending: &mut Vec<(usize, String)>,
-        accept: impl FnOnce(Value) -> std::result::Result<(), (&'static str, String)>,
-    ) {
+        accept: impl FnOnce(Value) -> Result<Option<WaveStop<'static>>>,
+    ) -> Result<()> {
         // A withheld claim stops new work, but a failure found while draining a peer takes precedence.
         let may_replace_stop = self
             .stop
@@ -331,7 +333,7 @@ impl<'a> Wave<'a> {
             .is_none_or(|(_, reason)| reason == CLAIM_NOT_SENT);
         match result {
             Ok(gateway::Step::Done(value)) => {
-                if let Err(stop) = accept(value) {
+                if let Some(stop) = accept(value)? {
                     if may_replace_stop {
                         self.stop = Some(stop);
                     }
@@ -348,6 +350,7 @@ impl<'a> Wave<'a> {
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -489,19 +492,15 @@ impl Research<'_> {
         )
     }
 
-    /// Only this process writes the journal. Submit the wave first, then drain every
-    /// issued key before the caller validates the wave or decides to stop the run.
+    /// Only this process writes the journal. Drain issued keys before returning a
+    /// workflow stop. A journal write error returns immediately for recovery on resume.
     fn wave<'a>(
         &mut self,
         role: usize,
         schema: &str,
         calls: &'a [(String, String)],
-        mut accept: impl FnMut(
-            usize,
-            Value,
-            &Self,
-        ) -> std::result::Result<(), (&'static str, String)>,
-    ) -> Option<(&'a str, String)> {
+        mut accept: impl FnMut(usize, Value, &mut Self) -> Result<Option<WaveStop<'static>>>,
+    ) -> Result<Option<WaveStop<'a>>> {
         let mut wave = Wave::default();
         let mut pending = Vec::new();
         for (index, (step, prompt)) in calls.iter().enumerate() {
@@ -516,7 +515,7 @@ impl Research<'_> {
             let result = self.call(step, role, schema, prompt, gateway::LocalMode::Schedule, wave.stop.is_none());
             wave.record(index, step, result, &mut pending, |value| {
                 accept(index, value, self)
-            });
+            })?;
         }
         loop {
             let mut retryable = Vec::new();
@@ -525,10 +524,10 @@ impl Research<'_> {
                 let result = self.call(step, role, schema, "", gateway::LocalMode::Drain(&key), false);
                 wave.record(index, step, result, &mut retryable, |value| {
                     accept(index, value, self)
-                });
+                })?;
             }
             if retryable.is_empty() || wave.stop.is_some() {
-                return wave.stop;
+                return Ok(wave.stop);
             }
             for (index, key) in retryable {
                 if wave.stop.is_some() {
@@ -538,7 +537,7 @@ impl Research<'_> {
                 let result = self.call(step, role, schema, "", gateway::LocalMode::Retry(&key), true);
                 wave.record(index, step, result, &mut pending, |value| {
                     accept(index, value, self)
-                });
+                })?;
             }
         }
     }
@@ -751,8 +750,8 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
     let mut constraints = Value::Null;
     if let Some((step, reason)) = research.wave(0, CONSTRAINTS, &check, |_, answer, _| {
         constraints = answer;
-        Ok(())
-    }) {
+        Ok(None)
+    })? {
         return research.stopped(step, reason);
     }
     let Some(rows) = constraints["constraints"]
@@ -831,31 +830,20 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
         let mut line_count = lines.len();
         let stop = research.wave(1, EXPERT, wave, |offset, answer, research| {
             let index = wave_index * 2 + offset;
-            let answer = collect_answer(
+            let mut answer = match collect_answer(
                 &answer,
                 index + 1,
                 &titles[index],
                 prior,
                 &attachments,
                 &research.privacy,
-            )
-            .map_err(|err| ("collect", err.0))?;
-            line_count += answer.lines.len();
-            if line_count > limit {
-                return Err((
-                    "collect",
-                    "The proposals and assumptions exceed the round line budget.".into(),
-                ));
-            }
-            collected.insert(offset, answer);
-            Ok(())
-        });
-        if let Some((step, reason)) = stop {
-            return research.stopped(step, reason);
-        }
-        for answer in collected.into_values() {
-            for event in answer.shortened {
-                // A resume can collect the same saved answer before the list is written.
+            ) {
+                Ok(answer) => answer,
+                Err(error) => return Ok(Some(("collect", error.0))),
+            };
+            // Record accepted answers before a peer or the round budget can stop collection.
+            for event in answer.shortened.drain(..) {
+                // A resume can collect the same saved answer after a cut between records.
                 if !research.journal.events().iter().any(|recorded| {
                     recorded["kind"] == event["kind"]
                         && recorded["question"] == event["question"]
@@ -865,6 +853,20 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
                     research.journal.append(event)?;
                 }
             }
+            line_count += answer.lines.len();
+            if line_count > limit {
+                return Ok(Some((
+                    "collect",
+                    "The proposals and assumptions exceed the round line budget.".into(),
+                )));
+            }
+            collected.insert(offset, answer);
+            Ok(None)
+        })?;
+        if let Some((step, reason)) = stop {
+            return research.stopped(step, reason);
+        }
+        for answer in collected.into_values() {
             for mut proposal in answer.lines {
                 let n = lines.len() + 1;
                 proposal["n"] = json!(n);
@@ -944,12 +946,14 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>) -> Result<Ex
         let failure = research.wave(2, FACTS, &calls, |offset, answer, research| {
             let submitted = submitted_fact_batch(research.journal, &calls[offset].0)
                 .unwrap_or_default();
-            collect_verdicts(batches[offset], &answer, &mut reports, &mut extra_ids, |fact| {
-                let claim = fact["claim"].as_str().expect("fact claim");
-                let normalized = claim.lines().collect::<Vec<_>>().join("\n");
-                submitted.iter().any(|sent| sent["id"] == fact["id"] && sent["claim"] == normalized)
-            })
-        });
+            let verdicts =
+                collect_verdicts(batches[offset], &answer, &mut reports, &mut extra_ids, |fact| {
+                    let claim = fact["claim"].as_str().expect("fact claim");
+                    let normalized = claim.lines().collect::<Vec<_>>().join("\n");
+                    submitted.iter().any(|sent| sent["id"] == fact["id"] && sent["claim"] == normalized)
+                });
+            Ok(verdicts.err())
+        })?;
         if let Some((step, reason)) = failure {
             write_unchecked_report(
                 &research,
@@ -1567,15 +1571,17 @@ mod tests {
             "check f1",
             Ok(gateway::Step::Done(Value::Null)),
             &mut pending,
-            |_| Err(("facts", CLAIM_NOT_SENT.into())),
-        );
+            |_| Ok(Some(("facts", CLAIM_NOT_SENT.into()))),
+        )
+        .unwrap();
         wave.record(
             1,
             "check f2",
             Ok(gateway::Step::Done(Value::Null)),
             &mut pending,
-            |_| Err(("facts contradicted", "A checked fact contradicts the research answer.".into())),
-        );
+            |_| Ok(Some(("facts contradicted", "A checked fact contradicts the research answer.".into()))),
+        )
+        .unwrap();
         assert_eq!(wave.stop.unwrap().0, "facts contradicted");
     }
 }

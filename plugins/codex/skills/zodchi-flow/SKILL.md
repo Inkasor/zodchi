@@ -162,8 +162,9 @@ run is not lost: its journal keeps every step. Do not start a new run.
    can come after the result is saved and before the claim of the run is closed, and only a resume closes it. A resume
    of such a run prints the saved result and runs no model step. If the newest matching folder began before you ran
    the command (its name starts with the date and time), your command ended before it made a run: run it again.
-2. If the earlier command may still be running, use the wait instructions above. Let the worker end to avoid
-   interrupting a model step during submission.
+2. If the earlier command may still be running, use the wait instructions above. Resuming a run held by a live
+   process answers "Another process (pid ...) works on this run". Let the worker finish and never kill it,
+   because that could leave a model step half submitted.
 3. Resume:
 
 ```sh

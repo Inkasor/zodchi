@@ -32,6 +32,10 @@ After a detached start or resume (`--detach`), save the returned run ID and star
 - Use `zodchi flow runs --active` to find running or waiting runs. Keep the person informed so they never have to ask for status.
 - After the wait ends, use `zodchi flow status <run-id>` for detailed journal evidence.
 
+The same commands work in another chat and use the same local journal. If resuming reports
+"Another process (pid ...) works on this run", use the wait instructions above. Let the worker finish and never kill it,
+because that could leave a model step half submitted.
+
 For `design-brief`, use [the brief arguments](../../docs/design-brief.md) with absolute source checkout paths and an output path. Use `zodchi flow design-brief --args "<file>" --detach` in either client. Resume the same run ID after an interruption to reuse accepted facts. The engine stores local jobs in the Zodchi home directory.
 
 When the owner chooses a model or provider, set the workflow roles in `args.models` before the start. The same [model overrides](../../docs/model-roles.md) work from both clients. Use the recorded pair when resuming a run.
