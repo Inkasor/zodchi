@@ -1,6 +1,5 @@
 //! Advance one asset round using the ledger, scoped tools and the native child workflows.
 
-use crate::{boundary::Launch, catalog::ProjectGate, checks, git::Git, input_common, journal::Journal, patch, Exit};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -12,19 +11,29 @@ use zodchi_core::{
     config::Config,
     util::{fail, is_key, iso, sha256_hex, write_json_atomic, GatewayError, Result},
 };
+use zodchi_flow_engine::{
+    args,
+    boundary::{cut, Launch},
+    catalog::ProjectGate,
+    checks,
+    git::Git,
+    input_common,
+    journal::{new_run_id, Journal},
+    patch, Exit,
+};
 
 pub const NAME: &str = "asset-round";
 const VERSION: &str = "1";
 const OWNER: &str = "owner verdict";
 
 #[derive(Clone, Copy)]
-pub(crate) struct ChildWorkflow {
+pub struct ChildWorkflow {
     pub name: &'static str,
     pub start: fn(&Value, &str) -> Result<Exit>,
     pub resume: fn(&str, &Value) -> Result<Exit>,
 }
 
-pub(crate) struct Children {
+pub struct Children {
     pub package: ChildWorkflow,
     pub unity: ChildWorkflow,
     pub rubric: ChildWorkflow,
@@ -170,7 +179,7 @@ fn prepare(raw: &Value, require_workflow: ProjectGate) -> Result<(String, Journa
                 return fail(format!("args.{name} must target the same Git checkout."));
             }
             if name == "package" {
-                let package = crate::args::parse(&args).map_err(GatewayError)?;
+                let package = args::parse(&args).map_err(GatewayError)?;
                 let rel = ledger
                     .strip_prefix(&repo)
                     .expect("validated")
@@ -239,7 +248,7 @@ fn prepare(raw: &Value, require_workflow: ProjectGate) -> Result<(String, Journa
         checks::preflight()?;
     }
     fs::create_dir_all(&tmp)?;
-    let id = crate::journal::new_run_id();
+    let id = new_run_id();
     let path = fs::canonicalize(tmp)?.join(format!("asset-{id}"));
     fs::create_dir(&path)?;
     let plan = Value::Object(plan);
@@ -271,7 +280,7 @@ fn run_child(
         }
         intent["runId"].as_str().unwrap_or("").to_string()
     } else {
-        let id = crate::journal::new_run_id();
+        let id = new_run_id();
         journal.append(json!({ "kind": "child intent", "step": step, "attempt": 1, "runId": id, "workflow": name, "argsSha256": input_common::args_digest(args) }))?;
         id
     };
@@ -516,7 +525,7 @@ pub fn resume(id: &str, given: Option<&Value>, retry: Option<&str>, children: &C
     rows.push(row.clone());
     journal.write_value("round.json", &result)?;
     write_json_atomic(ledger, &current)?;
-    crate::boundary::cut("asset ledger");
+    cut("asset ledger");
     record_owner(&mut journal, ledger, &lock, current, &row, result)
 }
 
