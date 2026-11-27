@@ -14,31 +14,25 @@ macro_rules! eprintln {
 
 mod child_package;
 mod control;
-mod design_material;
+mod design_material {
+    pub(crate) use zodchi_flow_design_brief::places;
+}
 mod input;
-mod incident_adapter;
-mod incident_draft;
 // The subprocess tests select their fixtures by the exact ops_script::tests path.
 #[cfg(test)]
+#[path = "../../zodchi-flow-ops-script/src/ops_script.rs"]
 mod ops_script;
-mod research_lists;
-mod research_material;
+#[cfg(test)]
+use registry::ops_script_entry::ops_script_tests;
 mod registry;
 mod runs;
-mod video_manifest;
-mod video_metrics;
-mod video_research;
 
-use zodchi_flow_engine::{
-    accepted_media, agent, boundary, budget, catalog, cleanup, input_common, package_source,
-    review_contract, review_source, video_media,
-};
+use zodchi_flow_engine::{boundary, budget, catalog, cleanup, input_common, video_media};
 pub use zodchi_flow_engine::git;
 
 // Keep the facade's public imports separate from the engine API used by workflows.
 pub mod args {
     pub use zodchi_flow_engine::args::{is_project_configuration, is_protected, parse, rel, Args};
-    pub(crate) use zodchi_flow_engine::args::{commands, BUILTIN_PROTECTED};
 }
 
 pub mod checks {
@@ -53,7 +47,6 @@ pub mod claims {
     pub use zodchi_flow_engine::claims::{
         caseless, claims_dir, close, extend, file, fold, holds, norm, open,
     };
-    pub(crate) use zodchi_flow_engine::claims::preview_conflicts;
 }
 
 pub mod executor {
@@ -63,7 +56,6 @@ pub mod executor {
         pub use zodchi_flow_engine::executor::claude::{
             call, find_program, message, signed_in, version, Claude, Program, Sent,
         };
-        pub(crate) use zodchi_flow_engine::executor::claude::ask_screened;
     }
 
     pub mod local {
@@ -100,7 +92,6 @@ pub mod patch {
 
 pub mod verify {
     pub use zodchi_flow_engine::verify::{Plan, CONFIG, LEGACY_SKILL, PROJECT_SKILL};
-    pub(crate) use zodchi_flow_engine::verify::ProjectSettings;
 }
 
 pub use control::{sign_in_required, SignIn};
@@ -115,7 +106,9 @@ pub mod code_package {
 
 pub use code_package::{Exit, CUT_EXIT};
 
-pub(crate) use registry::design_brief;
+pub(crate) mod design_brief {
+    pub(crate) use zodchi_flow_design_brief::publish;
+}
 use registry::{compiled_catalog, require_workflow};
 use serde_json::{json, Value};
 use std::{

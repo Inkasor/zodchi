@@ -28,7 +28,7 @@ mod incident_triage_entry;
 #[path = "method_question.rs"]
 mod method_question_entry;
 #[path = "ops_script.rs"]
-mod ops_script_entry;
+pub(crate) mod ops_script_entry;
 #[path = "player_acceptance.rs"]
 mod player_acceptance_entry;
 #[path = "release_acceptance.rs"]
@@ -48,7 +48,6 @@ mod workspace_audit_entry;
 #[path = "youtube_publish.rs"]
 mod youtube_publish_entry;
 
-pub(crate) use design_brief_entry::design_brief;
 pub(crate) use zodchi_flow_code_package::PinnedClaim as ShutdownClaim;
 
 type Start = fn(&Value, Option<Launch>) -> Result<Exit>;
