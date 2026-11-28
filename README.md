@@ -8,9 +8,9 @@ Zodchi runs shared workflows for Codex and Claude Code. The Rust engine prepares
 
 ## Why Zodchi
 
-- **The program keeps the rules, not the prompt.** A writer never reviews its own change. Your checks must pass before review. The review is limited to the brief's review boundary, and the claim stops two runs from editing the same files. An agent cannot talk its way past them.
+- **The program keeps the rules, not the prompt.** A writer never reviews its own change, your checks must pass before review, and a claim stops two runs from editing the same files. An agent cannot talk its way past them. The reviewer is asked to apply the brief's review boundary and the repository's `REVIEW.md`.
 - **Interrupted work resumes.** Every model call, check and commit is journaled. A cut run continues from the last step, in the same or another client, without paying for a finished step twice.
-- **Cheaper on small and medium tasks.** In one early user's benchmark, the same tasks cost $0.21 instead of $1.05 and took 6 minutes instead of 20 on small changes. On large ones they cost $2.98 instead of $4.03, in about the same time.
+- **Cheaper in one early user's benchmark.** A small change cost $0.21 instead of $1.05 and took 6 minutes instead of 20. A large one cost $2.98 instead of $4.03, in about the same time.
 
 ## Install
 
@@ -22,13 +22,14 @@ Use the [source installation guide](docs/install-from-source.md) to build and ru
 
 1. Install (above) and start a new chat in your project.
 2. Say to your agent: **"Do this as a Zodchi code package: <the change you want>. Show me the dry run first."**
-3. The agent writes a brief and an arguments file, shows `--dry-run` (which models, which files, which checks — nothing is sent or claimed), then starts the run and waits for it:
+3. The agent writes a brief and an arguments file, shows `--dry-run` (which models, which files, which checks — nothing is sent or claimed), then runs the package in the foreground:
 
 ```sh
 zodchi flow code-package --args package.json --dry-run
-zodchi flow code-package --args package.json --detach
-zodchi flow wait <run-id>
+zodchi flow code-package --args package.json
 ```
+
+To run it in the background yourself, start it with `--detach` and wait with `zodchi flow wait <run-id>`.
 
 ```json
 {
@@ -40,14 +41,25 @@ zodchi flow wait <run-id>
 }
 ```
 
-A writer model makes the change, the engine runs your checks, an independent model reviews it against the brief's review boundary, and the approved change is committed. Read [Code package](docs/flow.md) for the full argument list and [Large work in packages](docs/large-work.md) for features that need several packages.
+A writer model makes the change, the engine runs your checks and commits the round on your branch, and an independent model reviews it against the brief. With `"isolated": true` the change stays on a candidate ref until it is approved, and `zodchi flow apply <run-id>` lands it. Read [Code package](docs/flow.md) for the full argument list and [Large work in packages](docs/large-work.md) for features that need several packages.
 
 Examples of what people run:
 - *"Add CSV export to the report page as a Zodchi package; claim the exporter and its test."*
 - *"Review my branch against main with Zodchi branch-review and our test suite."*
 - *"Turn this goal into a design brief with Zodchi, then split it into packages."*
 
-Everyday commands: `zodchi flow runs` lists live runs, `zodchi flow wait` blocks until a run needs you, `zodchi flow status <id>` shows one, `zodchi flow close|cancel <id> --reason …` ends one without another model step, and `zodchi flow verify <commit>` runs your project's checks without a model. Agents can set `ZODCHI_AGENT=1` for JSON errors on stderr, and `zodchi --usage` prints every command, flag, variable and setting as JSON. Exit codes: 0 success or approved, 1 failure, 2 wrong call or not approved, 3 sign-in required.
+Everyday commands:
+
+```sh
+zodchi flow runs --active                    # live runs
+zodchi flow wait <run-id>                    # block until the run ends or needs you (or --all)
+zodchi flow status <run-id>                  # one run in detail
+zodchi flow close <run-id> --reason "..."    # end a waiting or stopped run, no model step
+zodchi flow cancel <run-id> --reason "..."   # stop a live run, no model step
+zodchi flow verify <commit>                  # your project's checks on a commit, no model
+```
+
+Agents can set `ZODCHI_AGENT=1` for JSON errors on stderr, and `zodchi --usage` prints every command, flag, variable and setting as JSON. Exit codes of `zodchi flow`: 0 success, approved or closed by the owner; 1 a wrong call or command failure; 2 refused, stopped or not approved. In agent mode, 3 means sign-in required; for `flow wait`, 3 also means it timed out (`status: timeout`).
 
 **Pin the version in CI.** Install a fixed release in CI and in shared machines (see [Installation guide](docs/install.md)). Workflow versions are recorded in every journal, but a moving install changes prompts and checks under you.
 
@@ -104,7 +116,7 @@ Everything Zodchi stores — journals with full prompts, writer copies, candidat
 | --- | --- |
 | [rust](rust/README.md) | Cargo workspace with the CLI, workflow engine, model gateway and server |
 | [rust/crates/zodchi-flow-engine](rust/crates/zodchi-flow-engine) | Workflow engine: journal, claims, checks, model routes, screening |
-| `rust/crates/zodchi-flow-<workflow>` | One crate per workflow with its prompts and schemas; a change rebuilds only that crate, the facade and the CLI |
+| `rust/crates/zodchi-flow-<workflow>` | One crate per packaged workflow with its prompts and schemas; editing one rebuilds that crate, the facade and the CLI. `flow verify` lives in the engine |
 | [rust/crates/zodchi-flow](rust/crates/zodchi-flow) | Facade: CLI dispatch and the workflow registry |
 | [workflows](workflows/catalog.json) | Shared workflow catalog |
 | [skills](skills) | Shared instructions packaged for both clients |
