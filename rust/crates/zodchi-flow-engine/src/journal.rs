@@ -15,7 +15,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use zodchi_core::config::Config;
-use zodchi_core::process::{alive, process_start};
+use zodchi_core::process::{alive, foreign, process_start};
 use zodchi_core::util::{fail, iso, pretty, read_stored, sha256_hex, write_json_atomic, GatewayError, Result};
 
 pub struct Journal {
@@ -252,6 +252,12 @@ pub fn status_outcome(
 pub fn live_pid(owner: &Value) -> Option<u32> {
     let pid = owner_pid(owner)?;
     if !alive(pid) {
+        return None;
+    }
+    // A worker always runs as the engine's own user. A pid that this user may not query (Windows) or signal (Unix)
+    // was reused by another user's or a protected system process after the worker ended, for example after a
+    // reboot gave the pid to csrss. Its start time cannot be read, so this is the only evidence available.
+    if foreign(pid) {
         return None;
     }
     // A detached process may have exited without being reaped yet. It can no longer hold the lock.
@@ -634,5 +640,28 @@ impl RunLock {
 impl Drop for RunLock {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+#[cfg(test)]
+mod owner_tests {
+    use super::*;
+
+    /// A pid of another user or of a protected system process: Windows System (4), Unix init (1).
+    const FOREIGN: u32 = if cfg!(windows) { 4 } else { 1 };
+
+    #[test]
+    fn a_foreign_process_is_no_worker() {
+        let own = std::process::id();
+        let start = process_start(own).unwrap();
+        assert_eq!(live_pid(&json!({"pid": own, "start": start})), Some(own));
+        assert!(!foreign(own));
+        if !foreign(FOREIGN) {
+            eprintln!("skipping: pid {FOREIGN} is accessible to this user (elevated or root)");
+            return;
+        }
+        assert!(alive(FOREIGN));
+        // The recorded start is the test process's own: only the access check can reject the reused pid.
+        assert_eq!(live_pid(&json!({"pid": FOREIGN, "start": start})), None);
+        assert_eq!(live_pid(&json!({"pid": FOREIGN})), None);
     }
 }

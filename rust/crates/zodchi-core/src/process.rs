@@ -103,6 +103,12 @@ mod imp {
         start_of(&open(pid, PROCESS_QUERY_LIMITED_INFORMATION).ok()?)
     }
 
+    /// The pid belongs to another user or is a protected system process: Windows gives a process's own user at
+    /// least limited query access, also when that process is elevated, and refuses it here.
+    pub fn foreign(pid: u32) -> bool {
+        matches!(open(pid, PROCESS_QUERY_LIMITED_INFORMATION), Err(Probe::Alive))
+    }
+
     /// One handle is held from the check to the kill: while it is open the system gives the pid to nobody else, so
     /// what is killed is what was checked.
     pub fn stop_process(pid: u32, start: &str) -> &'static str {
@@ -158,6 +164,13 @@ mod imp {
         }
     }
 
+    /// The pid belongs to another user: a process of the caller's own user can always be signalled.
+    pub fn foreign(pid: u32) -> bool {
+        pid <= i32::MAX as u32
+            && unsafe { kill(pid as i32, 0) } != 0
+            && std::io::Error::last_os_error().raw_os_error() == Some(EPERM)
+    }
+
     pub fn process_start(pid: u32) -> Option<String> {
         let out = Command::new("ps").args(["-o", "lstart=", "-p", &pid.to_string()]).output().ok()?;
         if !out.status.success() {
@@ -191,7 +204,7 @@ mod imp {
     }
 }
 
-pub use imp::{probe, process_start};
+pub use imp::{foreign, probe, process_start};
 
 /// True unless the system clearly says there is no such process: an unknown answer counts as alive, so that nothing
 /// is decided about a process that may still run.
