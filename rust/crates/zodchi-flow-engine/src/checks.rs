@@ -368,7 +368,9 @@ impl Drop for CheckSlot {
         }
         // On macOS, a concurrent fork can keep the flock held through an inherited descriptor.
         #[cfg(unix)]
-        let _ = self._lock.unlock();
+        for files in &self.files {
+            let _ = files.lock.unlock();
+        }
     }
 }
 
