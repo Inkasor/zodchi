@@ -600,7 +600,7 @@ impl Scrubber {
                     && patterns.input_after_raw_left.is_match(&text[left.start() + length..]))
                     .then_some(left.start()..left.start() + length)
             }))
-            .chain(operands.flat_map(|capture| {
+            .chain(operands.flat_map(move |capture| {
                 let left = capture.name("left").filter(|_| matches!(&capture["op"], "==" | "===" | "!=" | "!=="));
                 let raw = capture.name("raw");
                 left.into_iter().chain(capture.name("right")).chain(raw).filter_map(move |operand| {

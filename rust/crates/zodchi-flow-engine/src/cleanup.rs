@@ -1615,7 +1615,13 @@ fn claim_lock_identity(meta: &Metadata) -> String {
         use std::os::windows::fs::MetadataExt;
         format!("{}:{}", meta.creation_time(), meta.last_write_time())
     }
-    #[cfg(unix)]
+    #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // Older ctime receipts are intentionally unrecognised and use the ten-minute recovery rule.
+        format!("{}:{}:{:?}", meta.dev(), meta.ino(), meta.created().ok())
+    }
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))))]
     {
         use std::os::unix::fs::MetadataExt;
         format!(
