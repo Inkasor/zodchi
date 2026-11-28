@@ -250,6 +250,14 @@ pub fn local_step(
     run_call(journal, cfg, call, None, None, None, &[], Some(mode), Some(scrub), true, |data| validate(data))
 }
 
+/// Every request a workflow stores for the local gateway asks for credits when the owner allowed them in flow.json,
+/// also requests built outside `call` (for example a review after the owner answered its evidence gaps).
+pub fn allow_credits(exec: &dyn Executor, cfg: &Config, stored: &mut Value) {
+    if exec.name() == "local-gateway" && executor::flow_credits(cfg) {
+        stored["credits"] = json!(true);
+    }
+}
+
 pub fn owner_suffix(journal: &Journal, cfg: &Config, private_places: &[(String, &str)]) -> Result<String> {
     let context = input_common::model_context(journal)?;
     if context.is_empty() {
@@ -357,9 +365,7 @@ fn run_call(
         if stored["role"]["mode"] == "work" {
             stored["keepThread"] = json!(false);
         }
-        if exec.name() == "local-gateway" && executor::flow_credits(cfg) {
-            stored["credits"] = json!(true);
-        }
+        allow_credits(exec.as_ref(), cfg, &mut stored);
         journal.write_value(&file, &stored).map_err(infra)?;
         journal.append(json!({
             "kind": "intent", "step": step, "round": round, "attempt": attempt, "effect": "gateway job",
