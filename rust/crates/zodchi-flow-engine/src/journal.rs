@@ -15,7 +15,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use zodchi_core::config::Config;
-use zodchi_core::process::{alive, foreign, process_start};
+use zodchi_core::process::{alive, process_start, reused_after_reboot};
 use zodchi_core::util::{fail, iso, pretty, read_stored, sha256_hex, write_json_atomic, GatewayError, Result};
 
 pub struct Journal {
@@ -254,10 +254,8 @@ pub fn live_pid(owner: &Value) -> Option<u32> {
     if !alive(pid) {
         return None;
     }
-    // A worker always runs as the engine's own user. A pid that this user may not query (Windows) or signal (Unix)
-    // was reused by another user's or a protected system process after the worker ended, for example after a
-    // reboot gave the pid to csrss. Its start time cannot be read, so this is the only evidence available.
-    if foreign(pid) {
+    // A reboot can give the pid to a protected system process (csrss), whose start this user cannot read.
+    if owner["start"].as_str().is_some_and(|start| reused_after_reboot(pid, start)) {
         return None;
     }
     // A detached process may have exited without being reaped yet. It can no longer hold the lock.
@@ -642,26 +640,30 @@ impl Drop for RunLock {
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod owner_tests {
     use super::*;
 
-    /// A pid of another user or of a protected system process: Windows System (4), Unix init (1).
-    const FOREIGN: u32 = if cfg!(windows) { 4 } else { 1 };
+    /// The System process: this user is denied even a limited query unless the test runs elevated.
+    const SYSTEM: u32 = 4;
 
     #[test]
-    fn a_foreign_process_is_no_worker() {
+    fn a_system_pid_with_a_start_before_boot_is_no_worker() {
         let own = std::process::id();
         let start = process_start(own).unwrap();
         assert_eq!(live_pid(&json!({"pid": own, "start": start})), Some(own));
-        assert!(!foreign(own));
-        if !foreign(FOREIGN) {
-            eprintln!("skipping: pid {FOREIGN} is accessible to this user (elevated or root)");
+        if process_start(SYSTEM).is_some() {
+            eprintln!("skipping: the System process is readable (elevated test run)");
             return;
         }
-        assert!(alive(FOREIGN));
-        // The recorded start is the test process's own: only the access check can reject the reused pid.
-        assert_eq!(live_pid(&json!({"pid": FOREIGN, "start": start})), None);
-        assert_eq!(live_pid(&json!({"pid": FOREIGN})), None);
+        assert!(alive(SYSTEM));
+        // 2020-01-01 as FILETIME: before any boot of a machine running these tests.
+        let before_boot = 132_223_104_000_000_000u64.to_string();
+        let legacy = (before_boot.parse::<u64>().unwrap() + 504_911_232_000_000_000).to_string();
+        assert_eq!(live_pid(&json!({"pid": SYSTEM, "start": before_boot})), None);
+        assert_eq!(live_pid(&json!({"pid": SYSTEM, "start": legacy})), None);
+        // A start in this boot, or none, keeps the conservative answer for an unreadable process.
+        assert_eq!(live_pid(&json!({"pid": SYSTEM, "start": start})), Some(SYSTEM));
+        assert_eq!(live_pid(&json!({"pid": SYSTEM})), Some(SYSTEM));
     }
 }

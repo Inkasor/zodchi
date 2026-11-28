@@ -50,6 +50,8 @@ mod imp {
         fn GetExitCodeProcess(handle: HANDLE, code: *mut u32) -> i32;
         fn GetProcessTimes(handle: HANDLE, created: *mut FILETIME, exited: *mut FILETIME, kernel: *mut FILETIME, user: *mut FILETIME) -> i32;
         fn WaitForSingleObject(handle: HANDLE, ms: u32) -> u32;
+        fn GetSystemTimeAsFileTime(time: *mut FILETIME);
+        fn GetTickCount64() -> u64;
     }
 
     struct Handle(HANDLE);
@@ -103,10 +105,28 @@ mod imp {
         start_of(&open(pid, PROCESS_QUERY_LIMITED_INFORMATION).ok()?)
     }
 
-    /// The pid belongs to another user or is a protected system process: Windows gives a process's own user at
-    /// least limited query access, also when that process is elevated, and refuses it here.
-    pub fn foreign(pid: u32) -> bool {
-        matches!(open(pid, PROCESS_QUERY_LIMITED_INFORMATION), Err(Probe::Alive))
+    /// The process that wrote `start` cannot be the one now holding `pid`: this user is denied even a limited
+    /// query on the pid, and `start` lies more than an hour before the current boot. Either fact alone is no proof:
+    /// a restricted token can be denied a query on a live worker, and a clock correction moves the boot estimate
+    /// (now minus uptime). Both together leave only a pid that a reboot gave to another user's or a system process.
+    pub fn reused_after_reboot(pid: u32, start: &str) -> bool {
+        const HOUR: u64 = 3600 * 10_000_000;
+        // The reference gateway stored .NET ticks (since year 1); FILETIME counts from 1601.
+        const DOTNET_OFFSET: u64 = 504_911_232_000_000_000;
+        let Ok(mut recorded) = start.parse::<u64>() else { return false };
+        if recorded >= DOTNET_OFFSET {
+            recorded -= DOTNET_OFFSET;
+        }
+        if !matches!(open(pid, PROCESS_QUERY_LIMITED_INFORMATION), Err(Probe::Alive)) {
+            return false;
+        }
+        let mut now = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        unsafe { GetSystemTimeAsFileTime(&mut now) };
+        let now = ((now.dwHighDateTime as u64) << 32) | now.dwLowDateTime as u64;
+        let Some(boot) = unsafe { GetTickCount64() }.checked_mul(10_000).and_then(|uptime| now.checked_sub(uptime)) else {
+            return false;
+        };
+        recorded.saturating_add(HOUR) < boot
     }
 
     /// One handle is held from the check to the kill: while it is open the system gives the pid to nobody else, so
@@ -164,11 +184,10 @@ mod imp {
         }
     }
 
-    /// The pid belongs to another user: a process of the caller's own user can always be signalled.
-    pub fn foreign(pid: u32) -> bool {
-        pid <= i32::MAX as u32
-            && unsafe { kill(pid as i32, 0) } != 0
-            && std::io::Error::last_os_error().raw_os_error() == Some(EPERM)
+    /// Unix keeps the conservative answer: `ps lstart` is local time without an offset, and a sandbox can deny a
+    /// signal to a live worker of the same user.
+    pub fn reused_after_reboot(_pid: u32, _start: &str) -> bool {
+        false
     }
 
     pub fn process_start(pid: u32) -> Option<String> {
@@ -204,7 +223,7 @@ mod imp {
     }
 }
 
-pub use imp::{foreign, probe, process_start};
+pub use imp::{probe, process_start, reused_after_reboot};
 
 /// True unless the system clearly says there is no such process: an unknown answer counts as alive, so that nothing
 /// is decided about a process that may still run.
