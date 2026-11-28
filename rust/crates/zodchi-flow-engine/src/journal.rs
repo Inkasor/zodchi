@@ -652,6 +652,8 @@ mod owner_tests {
         let own = std::process::id();
         let start = process_start(own).unwrap();
         assert_eq!(live_pid(&json!({"pid": own, "start": start})), Some(own));
+        // A readable process with another start is the existing proof of reuse.
+        assert_eq!(live_pid(&json!({"pid": own, "start": "132223104000000000"})), None);
         if process_start(SYSTEM).is_some() {
             eprintln!("skipping: the System process is readable (elevated test run)");
             return;
