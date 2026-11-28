@@ -1,7 +1,6 @@
 {
   "highlights": [
-    "code-package now screens its brief and claimed files before any claim or model call; --dry-run shows which models, files and checks a package would use without spending anything; zodchi flow close, cancel, runs, wait and verify end, follow and check runs without a model step.",
-    "Agents get JSON errors with ZODCHI_AGENT=1, exit 3 for sign-in, and zodchi --usage; local Codex steps can spend ChatGPT credits with \"credits\": true in ~/.zodchi/flow.json, and flow status shows what each step spent.",
-    "The workflow engine and each workflow are separate crates, so a change to one workflow rebuilds only that workflow, and CI runs the scenarios of the changed area."
+    "Discover workflows with zodchi flow list and zodchi flow <workflow> --help. Use candidate-acceptance for a candidate build and release-acceptance for a deployed release.",
+    "1.0.4: code-package screens its inputs before any model call; try --dry-run, flow runs/wait, close/cancel and verify; ZODCHI_AGENT=1 gives JSON errors."
   ]
 }
