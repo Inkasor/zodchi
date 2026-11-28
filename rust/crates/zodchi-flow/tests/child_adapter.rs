@@ -64,7 +64,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let root = env::temp_dir().join(format!("zodchi-child-{}", new_run_id()));
+        let root = temp_root().join(format!("zodchi-child-{}", new_run_id()));
         let fixture = Self {
             repo: root.join("repo"),
             flows: root.join("zodchi/flows"),
@@ -363,12 +363,35 @@ fn asset_child_reenters_through_control_after_context_cut() {
     assert_eq!(steps, ["write", "review 1"]);
 }
 
+#[cfg(windows)]
+fn windows_elevated() -> bool {
+    // The same probe as the ops-script e2e scenarios: CI runners on Windows run elevated.
+    let out = std::process::Command::new("powershell.exe")
+        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+            "$p = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()); $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"])
+        .output()
+        .expect("cannot detect Windows elevation");
+    match String::from_utf8_lossy(&out.stdout).trim() {
+        "True" => true,
+        "False" => false,
+        other => panic!("cannot detect Windows elevation: {other}"),
+    }
+}
+
+/// The system temp folder without its own links (macOS keeps it under the /var link).
+fn temp_root() -> PathBuf {
+    let base = env::temp_dir();
+    #[cfg(unix)]
+    let base = base.canonicalize().unwrap();
+    base
+}
+
 fn ops_host_refusal() -> Option<&'static str> {
     #[cfg(target_os = "linux")]
     return (unsafe { libc::getuid() == 0 || libc::geteuid() == 0 })
         .then_some("must not run as root or elevated");
     #[cfg(windows)]
-    return None;
+    return windows_elevated().then_some("must not run as root or elevated");
     #[cfg(all(unix, not(target_os = "linux")))]
     return Some("cannot enforce the local dry-run privilege boundary");
     #[cfg(not(any(unix, windows)))]

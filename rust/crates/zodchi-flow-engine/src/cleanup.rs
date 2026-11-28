@@ -95,11 +95,11 @@ pub fn cli(args: &[String]) -> Result<Exit> {
         });
     }
     let options = Options::parse(args)?;
-    let home = zodchi_home()?;
+    let home = trusted_root(zodchi_home()?);
     let profile_packages = profile_packages()?;
     let report = collect(
         &home,
-        &std::env::temp_dir(),
+        &trusted_root(std::env::temp_dir()),
         Some(&profile_packages),
         &options,
         checks::live_slot_owners,
@@ -108,6 +108,16 @@ pub fn cli(args: &[String]) -> Result<Exit> {
         code: if report.errors.is_empty() { 0 } else { 2 },
         result: report.json(options.apply),
     })
+}
+
+/// The home and the system temp folder are roots the owner chose; links inside them are still refused.
+/// On macOS the temp folder sits under the /var link, so its own links are resolved first.
+fn trusted_root(path: PathBuf) -> PathBuf {
+    #[cfg(unix)]
+    if let Ok(real) = fs::canonicalize(&path) {
+        return real;
+    }
+    path
 }
 
 fn linked(meta: &Metadata) -> bool {

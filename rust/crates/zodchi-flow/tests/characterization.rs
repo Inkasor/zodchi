@@ -72,7 +72,7 @@ struct World {
 impl World {
     fn new() -> Self {
         // Workspace audit requires its output to be outside every Git checkout.
-        let dir = env::temp_dir().join(format!("zodchi-split-{}", new_run_id()));
+        let dir = temp_root().join(format!("zodchi-split-{}", new_run_id()));
         let home = dir.join("zodchi");
         let codex = dir.join("codex");
         let repo = dir.join("repo");
@@ -586,12 +586,35 @@ fn voiceover(w: &World) -> Value {
     json!({"dir":w.repo,"language":"en-US","paid":true,"cues":[{"startMs":0,"endMs":2000,"text":"A shelf."}]})
 }
 
+#[cfg(windows)]
+fn windows_elevated() -> bool {
+    // The same probe as the ops-script e2e scenarios: CI runners on Windows run elevated.
+    let out = std::process::Command::new("powershell.exe")
+        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+            "$p = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()); $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"])
+        .output()
+        .expect("cannot detect Windows elevation");
+    match String::from_utf8_lossy(&out.stdout).trim() {
+        "True" => true,
+        "False" => false,
+        other => panic!("cannot detect Windows elevation: {other}"),
+    }
+}
+
+/// The system temp folder without its own links (macOS keeps it under the /var link).
+fn temp_root() -> PathBuf {
+    let base = env::temp_dir();
+    #[cfg(unix)]
+    let base = base.canonicalize().unwrap();
+    base
+}
+
 fn assert_ops_host_refusal(w: &World) -> bool {
     #[cfg(target_os = "linux")]
     let reason = (unsafe { libc::getuid() == 0 || libc::geteuid() == 0 })
         .then_some("must not run as root or elevated");
     #[cfg(windows)]
-    let reason: Option<&str> = None;
+    let reason = windows_elevated().then_some("must not run as root or elevated");
     #[cfg(all(unix, not(target_os = "linux")))]
     let reason = Some("cannot enforce the local dry-run privilege boundary");
     #[cfg(not(any(unix, windows)))]
@@ -914,7 +937,9 @@ fn check_start(name: &str) {
     }
     let response = start_fixture(&w, name);
     if name == "player-acceptance" && !cfg!(windows) {
-        assert!(response.code(2).result["refused"]
+        let result = &response.code(2).result;
+        assert_eq!(result["status"], "refused");
+        assert!(result["reason"]
             .as_str()
             .unwrap()
             .contains("Windows host"));
