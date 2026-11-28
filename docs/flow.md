@@ -65,6 +65,9 @@ The engine validates arguments before claiming files.
 | `models` | role table entries for this run (`expertWriter` in expert mode, `writer` in agent mode, `reviewer` in either) |
 | `extendClaim` | `true`: legacy preauthorization in expert mode. The default waits for an explicit scope decision before application |
 | `checkTimeoutMin` | time limit in minutes of one setup or check command, default 60 |
+| `allowInputLines` | `["path:line", …]` lines at the base commit that the input check refuses but the owner has checked are not secrets (a test fixture, for example). The engine keeps their content digests, allows the same content at every gate of the run, and journals path, line and digest, never the text. Private words and key blocks cannot be allowed |
+| `wave` | `true` for a package in a parallel wave: the writer is told not to build, `verify` is skipped (checks still run), the reviewer knows the lead verifies after integration, and the result says `verifiedBy: "wave-integration"` |
+| `kind` | `"code"` (default) or `"analysis"`; analysis tasks take the `hardWriter` pick of the role table |
 | `tmp`, `commit: true` | accepted for compatibility; the journal replaces `tmp` |
 
 Refused in version 1, each with its reason: `hard`, `branch` (check out the
@@ -120,6 +123,15 @@ sandbox cannot launch the browser, report the writer check as failed with the la
 candidate-acceptance check on the project's runner.
 
 ## Managing a run
+
+Before a run, `zodchi flow code-package --args <file> --dry-run` runs every gate of a real start (arguments, repository, claim conflicts, input check, verification plan, model table and routes) and prints what would happen: the claim, the models with their routes, the prompt sections with byte sizes, and the checks. It makes no model call, no claim and no journal, and refuses exactly as a real start would.
+
+To end a run without another model step, use `zodchi flow close <run-id> --reason <text>` for a waiting or stopped run, or `zodchi flow cancel <run-id> --reason <text>` for a live one. Both close the claim and write a `closed` result. If a model step was submitted and has no outcome, the result says `unknownOutcome` and nothing is retried. `zodchi flow runs --active` lists live runs, and `zodchi flow wait <run-id>` (or `--all`) blocks until a run finishes, stops or needs the owner.
+
+While a run waits on any owner question, `zodchi flow reply <run-id> --allow-files <file.json>` approves extra paths for the current round in advance. The apply step then goes on without a second stop, and an approved protected path counts as `allowCheckChanges` for this run. A `flow remark` sent while a model step runs reaches the next model step of the run; `flow status` lists pending remarks.
+
+Local Codex steps can spend ChatGPT credits once the subscription limit is used up, when `~/.zodchi/flow.json` has `"credits": true` (off by default; a flow server decides this for itself). Each step's balance before and after is copied into the journal, and `result.credits` and `flow status` show what the run spent.
+
 
 `zodchi flow list` lists available workflows. Add `--detach` to start a worker and receive a run ID immediately.
 `zodchi flow list --repo <directory>` applies the project's committed
