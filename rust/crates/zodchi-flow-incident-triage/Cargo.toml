@@ -1,0 +1,23 @@
+[package]
+name = "zodchi-flow-incident-triage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rand.workspace = true
+regex = "1"
+regress = { version = "0.12", features = ["utf16"] }
+serde_json.workspace = true
+zodchi-core = { path = "../zodchi-core" }
+zodchi-flow-engine = { path = "../zodchi-flow-engine" }
+
+[dev-dependencies]
+zodchi-flow-engine = { path = "../zodchi-flow-engine", features = ["test-support"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+rustix = { version = "1", features = ["fs"] }

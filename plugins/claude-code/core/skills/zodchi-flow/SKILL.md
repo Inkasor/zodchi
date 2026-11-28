@@ -5,7 +5,7 @@ description: Run a code task as a zodchi flow code-package from a Claude Code se
 
 # zodchi flow: a code task as one package
 
-To design a brief, use `zodchi flow design-brief --args "<file>" --detach`. Include `label`, `goal`, `repos` and `out` in the JSON file. Use absolute paths for the source checkouts and the output. Use `zodchi flow status <run-id>` to inspect the run and `zodchi flow design-brief --resume <run-id>` to reuse its accepted research.
+To design a brief, use `zodchi flow design-brief --args "<file>" --detach`. Include `label`, `goal`, `repos` and `out` in the JSON file. Use absolute paths for the source checkouts and the output. Follow the detached-run instructions below and use `zodchi flow design-brief --resume <run-id>` to reuse the accepted research.
 
 `zodchi flow code-package` carries one code change from a brief to a reviewed commit: a gate, a claim on the files,
 a writer that answers with a patch, the engine applying it, the checks, the commit, an independent review, and a
@@ -113,7 +113,7 @@ redirection (a Windows shell writes the wrong encoding). The paths in `brief` an
 zodchi flow code-package --args "<args-file>"
 ```
 
-- Run it in the foreground and wait for it to end: no `&`, no `nohup`, no background mode of your shell tool, no
+- Run the command shown above in the foreground and wait for it to end: no `&`, no `nohup`, no background mode of your shell tool, no
   detaching, no polling loop that starts it again. A run takes minutes to an hour, so set the longest timeout your
   shell tool allows (the Claude Code Bash tool: `timeout` 600000; the Codex shell tool: its longest command timeout).
 - It prints the result JSON and exits 0 when the change is approved, 2 for any other end (refused, stopped, changes
@@ -121,9 +121,16 @@ zodchi flow code-package --args "<args-file>"
 - Put the absolute path of the args file in the quotes, as it is: a path with a space in it must stay one word.
 - Start it from any folder; the repository is the one in the args.
 
+After a detached start or resume (`--detach`), save the returned run ID and start waiting right away.
+
+- In Claude Code, start `zodchi flow wait <run-id>` as a background command. Claude Code notifies you when the wait ends. Report the result to the person.
+- In Codex, run `zodchi flow wait <run-id> --timeout-min N` in the foreground. Choose `N` to fit the shell tool's timeout and repeat while the command exits 3. Report the result when the wait ends.
+- Use `zodchi flow runs --active` to find running or waiting runs. Keep the person informed so they never have to ask for status.
+- After the wait ends, use `zodchi flow status <run-id>` for detailed journal evidence.
+
 ## 5. Read the result
 
-The output is one JSON object. Read these fields and quote them as they are:
+The workflow result is one JSON object. Read these fields and quote them as they are:
 
 - `verdict` (`approved`, `changes_requested`, `blocked`) and `approved`.
 - `refused`: the gate refused; nothing was claimed or written. Fix the cause it names and run again.
@@ -155,8 +162,9 @@ run is not lost: its journal keeps every step. Do not start a new run.
    can come after the result is saved and before the claim of the run is closed, and only a resume closes it. A resume
    of such a run prints the saved result and runs no model step. If the newest matching folder began before you ran
    the command (its name starts with the date and time), your command ended before it made a run: run it again.
-2. If the earlier command may still be running, let it end: a resume of a run held by a live process answers
-   "Another process (pid ...) works on this run". Wait and look again; never kill it, because that could leave a model step half submitted.
+2. If the earlier command may still be running, use the wait instructions above. Resuming a run held by a live
+   process answers "Another process (pid ...) works on this run". Let the worker finish and never kill it,
+   because that could leave a model step half submitted.
 3. Resume:
 
 ```sh

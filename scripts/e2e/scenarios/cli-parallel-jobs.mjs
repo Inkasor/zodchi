@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 export default function ({ scenario, world, repo, prompt, zodchi }) {
-  scenario("cli-parallel-jobs", "the configured limit bounds readers, the default admits five, and writers take turns", async (t) => {
+  scenario("cli-parallel-jobs", "the configured limit queues readers in submission order, the default admits five, and writers take turns", async (t) => {
     const w = world("cli-parallel-jobs", { maxParallelJobs: 3 });
     const cwd = repo(t, w);
     const cli = (args) => zodchi(t, w, args, { cwd });
@@ -15,6 +15,7 @@ export default function ({ scenario, world, repo, prompt, zodchi }) {
       const result = await cli(["submit", "--role", role, "--key", key, "--prompt", prompt(w, key, `HOLD:${key}`)]);
       t.eq(result.code, 0, `submitted ${key}`);
       t.eq(result.json.job.writes, role === "builder", `write access for ${key}`);
+      return result.json.job;
     }
     async function finish(key) {
       release(key);
@@ -33,12 +34,22 @@ export default function ({ scenario, world, repo, prompt, zodchi }) {
     const readers = ["reader-1", "reader-2", "reader-3"];
     for (const key of readers) await submit(key);
     await t.until("three readers are running together", () => readers.every(entered));
-    await submit("reader-4");
+    const queued = ["reader-4", "m-second", "a-third"];
+    for (const key of queued) {
+      const job = await submit(key);
+      t.eq(job.status, "queued", `${key} waits while all slots are occupied`);
+    }
     await expectQueued("reader-4");
     const first = await finish(readers[0]);
-    await t.until("the fourth reader takes the freed slot", () => entered("reader-4"));
-    const fourth = await finish("reader-4");
-    t.ok(Date.parse(fourth.startedAt) >= Date.parse(first.finishedAt), "the fourth reader started after a slot was free");
+    for (const [i, key] of queued.entries()) {
+      const pending = queued.slice(i);
+      await t.until("a waiting reader entered", () => pending.some(entered));
+      t.eq(pending.filter(entered), [key], `only ${key} takes the free slot`);
+      const job = await finish(key);
+      if (i === 0) {
+        t.ok(Date.parse(job.startedAt) >= Date.parse(first.finishedAt), "the fourth reader started after a slot was free");
+      }
+    }
     for (const key of readers.slice(1)) await finish(key);
 
     configure({});

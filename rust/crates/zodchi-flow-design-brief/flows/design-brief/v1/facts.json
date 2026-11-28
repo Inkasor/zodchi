@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["facts", "unknowns"],
+  "properties": {
+    "facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim", "file", "line", "quote"],
+        "properties": {
+          "claim": { "type": "string" },
+          "file": { "type": "string", "description": "The alias of the supplied source attachment." },
+          "line": { "type": "integer" },
+          "quote": {
+            "type": "string",
+            "description": "A verbatim excerpt from the visible source line, without its displayed line number. Cite visible code comparisons as written and report withheld lines in unknowns."
+          }
+        }
+      }
+    },
+    "unknowns": { "type": "array", "items": { "type": "string" } }
+  }
+}

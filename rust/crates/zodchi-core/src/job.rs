@@ -31,6 +31,15 @@ const STALE_MS: i128 = 90_000;
 const UNSPENT: &str = "the model was not asked and nothing was spent.";
 pub const LOGIN_HINT: &str = "Codex is not signed in to a ChatGPT subscription. Sign in yourself: codex login (with CODEX_HOME set to the account's home).";
 
+fn codex_auth_required(error: &TurnFailed) -> bool {
+    error.code == "auth_required"
+        || (error.code == "failed" && error.rpc.as_ref().is_some_and(|rpc| {
+            [rpc, &rpc["data"]].into_iter().any(|error| {
+                crate::appserver::classify_error(error) == "auth_required"
+            })
+        }))
+}
+
 pub fn is_terminal(status: &str) -> bool {
     TERMINAL.contains(&status)
 }
@@ -831,7 +840,11 @@ impl Call {
         for account in &candidates {
             let server = self.server_for(account)?;
             self.started(&server)?;
-            let info = server.account()?;
+            let info = match server.account() {
+                Ok(info) => info,
+                Err(error) if codex_auth_required(&error) => Value::Null,
+                Err(error) => return Err(error),
+            };
             if info.get("type").and_then(Value::as_str) != Some("chatgpt") {
                 skipped.push(json!({ "account": account.name, "reason": "not signed in to a ChatGPT subscription" }));
                 server.stop();
@@ -907,7 +920,13 @@ impl Call {
         let mut on_turn_start = || state_s.keep(json!({ "turnStartedAt": iso() }));
         let result = server.run_turn(self.request["prompt"].as_str().unwrap_or(""), &self.role, &model, &effort, &cwd, &images,
             resume.as_deref(), keep_thread, Duration::from_millis(self.timeout_ms),
-            TurnHooks { on_thread: &mut on_thread, on_turn_request: &mut on_turn_request, on_turn_start: &mut on_turn_start })?;
+            TurnHooks { on_thread: &mut on_thread, on_turn_request: &mut on_turn_request, on_turn_start: &mut on_turn_start })
+            .map_err(|mut error| {
+                if codex_auth_required(&error) {
+                    error.code = "auth_required";
+                }
+                error
+            })?;
         // ChatGPT settles the balance some time after the call, so this figure may still be the old one.
         let after = server.rate_limits().ok().and_then(|l| l.get("rateLimits").and_then(|r| r.get("credits")).and_then(|c| c.get("balance")).cloned()).unwrap_or(Value::Null);
         let _ = self.state.save(json!({ "credits": merge(&self.state.get()["credits"], &json!({ "balanceAfter": after })) }));

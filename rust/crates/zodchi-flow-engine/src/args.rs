@@ -1,0 +1,333 @@
+//! The arguments of `zodchi flow code-package`: the supported subset of the JavaScript workflow's arguments, checked
+//! before anything is claimed. An option this version does not support is refused, never ignored.
+
+use crate::checks;
+use crate::claims::{fold, norm};
+use serde_json::{json, Map, Value};
+use std::collections::HashSet;
+
+#[derive(Clone, Debug)]
+pub struct Args {
+    pub label: String,
+    pub brief: String,
+    pub repo: String,
+    /// The repository path normalized (forward slashes, no dot segments).
+    pub repo_norm: String,
+    /// The claimed files, relative to the repository, in the case given.
+    pub files: Vec<String>,
+    pub review_context: Vec<String>,
+    pub agent: bool,
+    analysis: bool,
+    pub wave: bool,
+    pub browser: Option<(String, String)>,
+    pub isolated: bool,
+    budget: Option<crate::budget::Budget>,
+    pub source_run: Option<String>,
+    pub continuations: u32,
+    pub rounds: u32,
+    pub fixes: u32,
+    pub setup: Vec<String>,
+    pub checks: Vec<String>,
+    pub verify: Vec<String>,
+    pub protect: Vec<String>,
+    pub allow_check_changes: Vec<String>,
+    owner_check_changes: HashSet<String>,
+    pub models: Map<String, Value>,
+    pub extend_claim: bool,
+    pub check_timeout_min: f64,
+}
+
+pub const BUILTIN_PROTECTED: &[&str] = &[
+    "test/", "tests/", "e2e/", ".claude/skills/verify/", ".agents/skills/verify/",
+    "skills/verify/", crate::verify::CONFIG, "REVIEW.md",
+];
+
+const SUPPORTED: &[&str] = &[
+    "label", "brief", "repo", "files", "tmp", "mode", "rounds", "fixes", "setup", "checks", "verify", "protect", "allowCheckChanges",
+    "models", "commit", "extendClaim", "checkTimeoutMin", "continuations", "isolated", "budget", "sourceRun", "reviewContext", "browser", "wave", "kind",
+];
+
+const UNSUPPORTED: [(&str, &str); 5] = [
+    ("hard", "use args.kind \"analysis\" to select the hardWriter role"),
+    ("branch", "the run commits on the branch that is checked out; switch to it first"),
+    ("fixIgnore", "add \".agent-tmp/\" to .gitignore and commit it first"),
+    ("closeShouldFix", "nit findings stay in openFindings in this version"),
+    ("rerun", "use --resume <run-id> --rerun <step>"),
+];
+
+/// A path of the repository, relative to it, in the case given; refuses one outside it.
+pub fn rel(repo_norm: &str, path: &str) -> Result<String, String> {
+    let s = path.replace('\\', "/");
+    let absolute = s.starts_with('/') || (s.len() >= 3 && s.as_bytes()[1] == b':' && s.as_bytes()[0].is_ascii_alphabetic());
+    let full = norm(&if absolute { s.clone() } else { format!("{repo_norm}/{s}") }).map_err(|e| e.0)?;
+    if fold(repo_norm, &full) == fold(repo_norm, repo_norm) {
+        return Err(format!("path {path} is the repository itself, not a file in it"));
+    }
+    if !fold(repo_norm, &full).starts_with(&(fold(repo_norm, repo_norm) + "/")) {
+        return Err(format!("path {path} is outside the repository"));
+    }
+    Ok(full[repo_norm.len() + 1..].to_string())
+}
+
+pub fn commands(value: Option<&Value>, name: &str) -> Result<Vec<String>, String> {
+    let list = match value {
+        None | Some(Value::Null) => return Ok(vec![]),
+        Some(Value::Array(a)) => a.clone(),
+        Some(other) => vec![other.clone()],
+    };
+    let mut out = Vec::new();
+    for item in list {
+        match &item {
+            Value::String(s) if !s.trim().is_empty() => out.push(s.clone()),
+            Value::Object(o) => {
+                let cmd = o.get("cmd").and_then(Value::as_str).unwrap_or("");
+                let pass = o.get("pass").and_then(Value::as_str).unwrap_or("exit code 0");
+                if cmd.trim().is_empty() || o.keys().any(|k| k != "cmd" && k != "pass") {
+                    return Err(format!("args.{name}: an entry is a command string or {{\"cmd\": ...}}"));
+                }
+                if pass != "exit code 0" {
+                    return Err(format!("args.{name}: the engine judges a command by its exit code only; \"pass\": {pass:?} is not supported (make the command exit non-zero on failure)"));
+                }
+                out.push(cmd.to_string());
+            }
+            _ => return Err(format!("args.{name}: an entry is a command string or {{\"cmd\": ...}}")),
+        }
+    }
+    Ok(out)
+}
+
+fn strings(value: Option<&Value>, name: &str) -> Result<Vec<String>, String> {
+    match value {
+        None | Some(Value::Null) => Ok(vec![]),
+        Some(Value::String(s)) => Ok(vec![s.clone()]),
+        Some(Value::Array(a)) => a.iter().map(|v| v.as_str().map(String::from).ok_or(format!("args.{name} is a list of strings"))).collect(),
+        Some(_) => Err(format!("args.{name} is a list of strings")),
+    }
+}
+
+fn count(value: Option<&Value>, name: &str, default: u32, min: u32, max: u32) -> Result<u32, String> {
+    match value {
+        None | Some(Value::Null) => Ok(default),
+        Some(v) => match v.as_u64() {
+            Some(n) if n >= min as u64 && n <= max as u64 => Ok(n as u32),
+            _ => Err(format!("args.{name} is a whole number from {min} to {max}")),
+        },
+    }
+}
+
+pub fn parse(a: &Value) -> Result<Args, String> {
+    let Some(o) = a.as_object() else { return Err("the args are a JSON object".into()) };
+    for (k, why) in UNSUPPORTED {
+        if o.get(k).is_some_and(|v| !v.is_null() && v != &json!(false)) {
+            return Err(format!("args.{k} is not supported by zodchi flow code-package v1: {why}"));
+        }
+    }
+    for k in o.keys() {
+        if !SUPPORTED.contains(&k.as_str()) && !UNSUPPORTED.iter().any(|(u, _)| u == k) {
+            return Err(format!("args.{k} is not an option of zodchi flow code-package v1"));
+        }
+    }
+    let text = |k: &str| o.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    for k in ["label", "brief", "repo"] {
+        if text(k).trim().is_empty() {
+            return Err(format!("code-package needs args.{k}"));
+        }
+    }
+    let label = text("label");
+    if label.len() > 40 || !label.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) {
+        return Err("args.label may hold letters, digits, \".\", \"_\" and \"-\" only, at most 40".into());
+    }
+    let agent = match o.get("mode").filter(|v| !v.is_null()) {
+        None => false,
+        Some(mode) if mode == "expert" => false,
+        Some(mode) if mode == "agent" => true,
+        Some(_) => return Err("args.mode is \"expert\" or \"agent\"".into()),
+    };
+    let analysis = match o.get("kind") {
+        None => false,
+        Some(kind) if kind == "code" => false,
+        Some(kind) if kind == "analysis" => true,
+        Some(_) => return Err("args.kind is \"analysis\" or \"code\"".into()),
+    };
+    let browser = match o.get("browser") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(b)) if agent && b.keys().all(|k| k == "variable" || k == "executable") => {
+            let variable = b.get("variable").map_or(Some(checks::DEFAULT_BROWSER_VARIABLE), Value::as_str).unwrap_or("");
+            let path = b.get("executable").and_then(Value::as_str).unwrap_or("");
+            if !checks::valid_browser_variable(variable) {
+                return Err("args.browser.variable must be a distinct uppercase environment variable name".into());
+            }
+            if !std::path::Path::new(path).is_absolute() {
+                return Err("args.browser.executable must be an absolute path".into());
+            }
+            Some((variable.to_string(), path.to_string()))
+        }
+        _ => return Err("args.browser is an agent-mode object with executable and optional variable".into()),
+    };
+    if !agent && o.get("continuations").is_some_and(|v| !v.is_null() && v != &json!(false)) {
+        return Err("args.continuations applies to agent mode".into());
+    }
+    let setup = commands(o.get("setup"), "setup")?;
+    if !agent && !setup.is_empty() {
+        return Err("args.setup applies to agent mode".into());
+    }
+    if o.get("commit").is_some_and(|v| v != &json!(true)) {
+        return Err("args.commit: only true is supported; the engine commits each checked round (it never pushes)".into());
+    }
+    let repo = text("repo");
+    let repo_abs = std::path::absolute(&repo).map_err(|e| format!("args.repo: {e}"))?;
+    let repo_norm = norm(&repo_abs.display().to_string()).map_err(|e| e.0)?;
+    let mut files: Vec<String> = Vec::new();
+    for f in strings(o.get("files"), "files")? {
+        let r = rel(&repo_norm, &f)?;
+        if !files.iter().any(|x| x.to_lowercase() == r.to_lowercase()) {
+            files.push(r);
+        }
+    }
+    if files.is_empty() {
+        return Err("code-package needs args.files: the files the package may change".into());
+    }
+    let mut review_context = strings(o.get("reviewContext"), "reviewContext")?;
+    if review_context.iter().any(|path| !crate::review_source::source_path(path)) {
+        return Err("args.reviewContext needs relative paths to regular, non-credential Git source files.".into());
+    }
+    review_context.sort();
+    review_context.dedup();
+    let protect = strings(o.get("protect"), "protect")?.iter().map(|p| rel(&repo_norm, p).map(|r| r.to_lowercase())).collect::<Result<Vec<_>, _>>()?;
+    let allow_raw = match o.get("allowCheckChanges") {
+        Some(Value::Object(m)) => m.keys().cloned().collect(),
+        Some(Value::Bool(_)) => return Err("args.allowCheckChanges needs exact paths, for example [\"tests/math.mjs\"].".into()),
+        other => strings(other, "allowCheckChanges")?,
+    };
+    let allow_check_changes = allow_raw.iter().map(|p| rel(&repo_norm, p).map(|r| r.to_lowercase())).collect::<Result<Vec<_>, _>>()?;
+    let models = match o.get("models") {
+        None | Some(Value::Null) => Map::new(),
+        Some(Value::Object(m)) => m.clone(),
+        Some(_) => return Err("args.models is an object of roles".into()),
+    };
+    if o.get("extendClaim").is_some_and(|v| !v.is_boolean()) {
+        return Err("args.extendClaim is true or false".into());
+    }
+    if o.get("isolated").is_some_and(|v| !v.is_boolean()) {
+        return Err("args.isolated is true or false".into());
+    }
+    if o.get("wave").is_some_and(|v| !v.is_boolean()) {
+        return Err("args.wave is true or false".into());
+    }
+    let isolated = o.get("isolated") == Some(&json!(true));
+    let source_run = o.get("sourceRun").map(|v| v.as_str().filter(|id| crate::journal::is_run_id(id))
+        .map(String::from).ok_or("args.sourceRun is a code-package run ID")).transpose()?;
+    if source_run.is_some() && !isolated { return Err("args.sourceRun needs isolated mode for the retained candidate".into()); }
+    let check_timeout_min = match o.get("checkTimeoutMin") {
+        None | Some(Value::Null) => 60.0,
+        Some(v) => match v.as_f64() {
+            Some(n) if n.is_finite() && n > 0.0 && n <= 600.0 => n,
+            _ => return Err("args.checkTimeoutMin is a number of minutes up to 600".into()),
+        },
+    };
+    Ok(Args {
+        label,
+        brief: text("brief"),
+        repo: repo_abs.display().to_string(),
+        repo_norm,
+        files,
+        review_context,
+        agent,
+        analysis,
+        wave: o.get("wave") == Some(&json!(true)),
+        browser,
+        isolated,
+        budget: o.get("budget").map(crate::budget::Budget::parse).transpose()?,
+        source_run,
+        continuations: if agent { count(o.get("continuations"), "continuations", 2, 0, 32)? } else { 0 },
+        rounds: count(o.get("rounds"), "rounds", 3, 1, 10)?,
+        fixes: count(o.get("fixes"), "fixes", 1, 0, 5)?,
+        setup,
+        checks: commands(o.get("checks"), "checks")?,
+        verify: commands(o.get("verify"), "verify")?,
+        protect,
+        allow_check_changes,
+        owner_check_changes: HashSet::new(),
+        models,
+        extend_claim: o.get("extendClaim") == Some(&json!(true)),
+        check_timeout_min,
+    })
+}
+
+impl Args {
+    #[doc(hidden)]
+    pub fn budget(&self) -> Option<crate::budget::Budget> {
+        self.budget
+    }
+
+    pub fn writer_role(&self) -> &'static str {
+        if self.analysis { "hardWriter" } else if self.agent { "writer" } else { crate::models::WRITER_ROLE }
+    }
+
+    pub fn mode(&self) -> &'static str {
+        if self.agent { "agent" } else { "expert" }
+    }
+
+    #[doc(hidden)]
+    pub fn protected_paths(&self) -> Vec<&str> {
+        let mut paths: Vec<&str> = BUILTIN_PROTECTED.to_vec();
+        paths.push(crate::catalog::PROJECT);
+        paths.extend(self.protect.iter().map(String::as_str));
+        paths
+    }
+
+    #[doc(hidden)]
+    pub fn allow_owner_check_changes(&mut self, events: &[Value]) {
+        let repo = &self.repo_norm;
+        self.owner_check_changes.extend(crate::journal::scope_approvals(events)
+            .flat_map(|approval| approval.get("allowCheckChanges").unwrap_or(&approval["files"]).as_array().into_iter().flatten())
+            .filter_map(Value::as_str)
+            .map(|path| fold(repo, path)));
+    }
+}
+
+/// Protected checks: an existing file under test/, tests/, e2e/ or .claude/skills/verify/, REVIEW.md, or under a
+/// path of args.protect, excluding the exact paths approved by the owner during this run.
+pub fn is_protected(args: &Args, rel_path: &str) -> bool {
+    if args.owner_check_changes.contains(&fold(&args.repo_norm, rel_path)) {
+        return false;
+    }
+    let l = rel_path.to_lowercase();
+    let dirs: Vec<&str> = l.split('/').collect();
+    dirs[..dirs.len() - 1].iter().any(|d| ["test", "tests", "e2e"].contains(d))
+        || l == "review.md"
+        || is_project_configuration(&l)
+        || l.starts_with(".agents/skills/verify/")
+        || l.starts_with("skills/verify/")
+        || l.starts_with(".claude/skills/verify/")
+        || args.protect.iter().any(|p| l == *p || l.starts_with(&format!("{p}/")))
+}
+
+pub fn is_project_configuration(path: &str) -> bool {
+    [crate::verify::CONFIG, crate::catalog::PROJECT].iter().any(|file| path.eq_ignore_ascii_case(file))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn parses_browser_variable_names() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut raw = json!({
+            "label": "browser", "brief": "brief.md", "repo": repo, "files": ["Cargo.toml"],
+            "mode": "agent", "browser": { "executable": repo.join("Cargo.toml") }
+        });
+        assert_eq!(parse(&raw).unwrap().browser.unwrap().0, "ZODCHI_ACCEPTANCE_CHROMIUM");
+
+        for (variable, accepted) in checks::browser_variable_cases() {
+            raw["browser"]["variable"] = json!(variable);
+            let result = parse(&raw);
+            assert_eq!(result.is_ok(), accepted, "{variable:?}: {result:?}");
+            if let Ok(args) = result {
+                assert_eq!(args.browser.unwrap().0, variable);
+            }
+        }
+    }
+}

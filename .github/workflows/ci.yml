@@ -3,7 +3,8 @@ name: Checks
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, 'codex/zodchi-v*']
+    tags: ['**']
   pull_request:
 
 permissions:
@@ -20,22 +21,47 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      # Integration tests invoke cargo build in dev. Use that profile throughout CI.
+      CARGO_PROFILE_DEV_DEBUG: '0'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
       - name: Repository checks (workflows, agents, JSON, roles, publish guard)
         run: node scripts/check.mjs
+      - name: CI selector tests
+        run: node scripts/ci-select.test.mjs
+      - name: Select Rust and end-to-end coverage
+        id: coverage
+        run: node scripts/ci-select.mjs select
+      - name: Cache Cargo dependencies and build artifacts
+        if: steps.coverage.outputs.mode != 'skip'
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+        with:
+          workspaces: rust -> target
+          key: ${{ runner.os }}-dev-debug0-${{ hashFiles('rust/Cargo.lock') }}
+          cache-workspace-crates: true
+          cache-bin: false
+          save-if: ${{ github.event_name != 'pull_request' && github.ref_type == 'branch' }}
+      - name: Build the two gateway binaries in the test profile
+        if: steps.coverage.outputs.mode != 'skip'
+        run: cargo build --profile dev --locked --manifest-path rust/Cargo.toml -p zodchi-cli -p zodchi-server --bins
       - name: Rust tests
-        run: cargo test --workspace --locked --manifest-path rust/Cargo.toml
-      - name: Build the gateway (release binaries, the candidate the end-to-end suite runs)
-        run: cargo build --release --locked --manifest-path rust/Cargo.toml
+        if: steps.coverage.outputs.mode != 'skip'
+        run: cargo test --workspace --profile dev --locked --manifest-path rust/Cargo.toml
       - name: End-to-end suite of the gateway (fake Codex, no model spend)
-        run: node scripts/e2e.mjs --no-build --out "$RUNNER_TEMP/e2e-traces"
+        if: steps.coverage.outputs.mode != 'skip'
+        env:
+          CI_E2E_PLAN: ${{ steps.coverage.outputs.plan }}
+        run: node scripts/ci-select.mjs run "$RUNNER_TEMP/e2e-traces"
       - name: Keep the traces of the end-to-end suite
-        if: always()
-        uses: actions/upload-artifact@v4
+        if: always() && steps.coverage.outputs.mode != 'skip'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: e2e-traces-${{ matrix.os }}
           path: ${{ runner.temp }}/e2e-traces

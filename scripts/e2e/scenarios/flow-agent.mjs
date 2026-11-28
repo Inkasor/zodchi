@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -6,7 +7,121 @@ const report = (status, flowWrites, questions = []) => ({
 });
 const turns = (f) => fs.readFileSync(path.join(f.w.codex, "fake-turns.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
 
-export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FIXED, samePath }) {
+export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FIXED, samePath, FAKE }) {
+  function authRpcFixture(dir) {
+    const fake = path.join(dir, "fake-codex-auth-rpc.mjs");
+    fs.writeFileSync(fake, `import path from "node:path";
+import readline from "node:readline";
+
+if (process.argv[2] !== "app-server") process.exit(0);
+const expired = path.basename(process.env.CODEX_HOME) === "expired-codex";
+const results = {
+  initialize: {},
+  "account/read": { account: { type: "chatgpt" } },
+  "account/rateLimits/read": { ordinaryUsageAllowed: true },
+  "config/read": { config: {} },
+};
+for await (const line of readline.createInterface({ input: process.stdin })) {
+  const { id, method } = JSON.parse(line);
+  if (id == null) continue;
+  const denied = (expired && method === "account/read") || method === "thread/start";
+  const error = denied
+    ? { code: -32000, message: "Expired private-token-fixture", data: { codexErrorInfo: "unauthorized" } }
+    : { code: -32601, message: "Unexpected fixture method " + method };
+  const response = !denied && Object.hasOwn(results, method) ? { id, result: results[method] } : { id, error };
+  console.log(JSON.stringify(response));
+}
+`);
+    return fake;
+  }
+
+  async function checkSignIn(t) {
+    const f = flowWorld(t, "flow-agent-cli-sign-in");
+    const auth = path.join(f.w.codex, "fake-auth.json");
+    const agent = { ZODCHI_AGENT: "1" };
+    const invoke = (args, override = {}) => zodchi(t, f.w, args, { cwd: f.r, env: { ...f.w.env, ...agent, ...override } });
+    const assertSignIn = (result, note) => {
+      t.ok(/^[^\r\n]+\r?\n$/.test(result.err), `${note}: stderr has one line`);
+      const { error } = JSON.parse(result.err);
+      t.eq([result.code, error.kind, error.exitCode], [3, "sign-in", 3], `${note}: code 3 is a sign-in failure`);
+      t.ok(error.hint.includes("codex login") && !result.err.includes("private-token-fixture"),
+        `${note}: the sign-in hint omits provider diagnostics`);
+    };
+    const run = (key, seconds, file = f.brief, role = "text") =>
+      ["run", "--role", role, "--key", key, "--prompt", file, "--wait-sec", seconds];
+    const start = ["--args", f.args({ mode: "agent" })];
+
+    fs.unlinkSync(auth);
+    const unsigned = await invoke(run("unsigned-codex", "60"));
+    assertSignIn(unsigned, "unsigned Codex job");
+    t.eq(unsigned.json?.job?.status, "auth_required", "run still prints the terminal job record");
+    for (const command of ["wait", "job"]) {
+      const observation = await invoke([command, "--key", "unsigned-codex"]);
+      t.eq([observation.code, observation.json?.job?.status, observation.err],
+        [2, "auth_required", ""], `${command} reports a terminal job status`);
+    }
+    const refused = await f.flow(start, agent);
+    assertSignIn(refused, "unsigned Flow start");
+    t.ok(refused.json?.refused?.includes("Codex is not signed in"), "the Flow gate still prints its refusal result");
+    const plain = await f.flow(start, { ZODCHI_AGENT: "0" });
+    t.eq([plain.code, plain.out, plain.err], [2, refused.out, ""], "plain mode keeps the existing Flow refusal and exit code");
+    t.eq([f.claim(), f.steps()], [null, []], "no claim or model turn without sign-in");
+
+    fs.writeFileSync(auth, "{}");
+    f.answer("write", { flowError: { codexErrorInfo: "unauthorized", message: "Expired private-token-fixture" } });
+    const stopped = await f.flow(start, agent);
+    assertSignIn(stopped, "sign-in expires during a Flow run");
+    t.eq(stopped.json?.stoppedAt, "gateway auth_required at write", "the Flow result keeps the gateway stop");
+    const waited = await invoke(["flow", "wait", stopped.json.runId, "--timeout-min", "0"]);
+    assertSignIn(waited, "wait observes a Flow run stopped for auth_required");
+    t.eq(waited.json?.runId, stopped.json.runId, "wait still prints the observed run");
+
+    const accounts = path.join(f.w.zhome, "accounts.json");
+    const expiredHome = path.join(f.w.dir, "expired-codex");
+    fs.mkdirSync(expiredHome);
+    fs.writeFileSync(accounts, JSON.stringify({ accounts: [
+      { name: "expired", codexHome: expiredHome },
+      { name: "default", codexHome: f.w.codex },
+    ] }));
+    const rpc = await invoke(run("codex-auth-rpc", "60"), { ZODCHI_CODEX_BIN: authRpcFixture(f.w.dir) });
+    assertSignIn(rpc, "Codex RPC authentication failure");
+    t.eq([rpc.json?.job?.status, rpc.json?.job?.account, rpc.json?.job?.accountsSkipped],
+      ["auth_required", "default", [{ account: "expired", reason: "not signed in to a ChatGPT subscription" }]],
+      "the gateway skips an unauthorized account/read and records unauthorized thread/start as auth_required");
+    t.eq(rpc.json?.job?.error, "thread/start: Expired private-token-fixture", "the job result retains its provider diagnostic");
+    fs.unlinkSync(accounts);
+
+    // A real pending job holds at the fake model until released, so even a slow runner sees code 3 here.
+    const prompt = path.join(f.w.dir, "held-prompt.txt");
+    fs.writeFileSync(prompt, "HOLD:agent-exit-code");
+    const role = path.join(f.w.dir, "kept-thread.json");
+    fs.writeFileSync(role, JSON.stringify({ mode: "work", model: "fake-model", effort: "low", sandbox: "read-only" }));
+    const fake = { ZODCHI_CODEX_BIN: FAKE };
+    const key = "held-codex";
+    const release = () => fs.writeFileSync(path.join(f.w.codex, "fake-release-agent-exit-code"), "");
+    try {
+      const pending = await invoke([...run(key, "0", prompt, role), "--keep-thread"], fake);
+      t.eq([pending.code, pending.err], [3, ""], "a live job returns code 3 with no sign-in envelope");
+      t.ok(["queued", "running"].includes(pending.json?.job?.status), "the stdout job record is pending");
+      for (const args of [["job", "--key", key], ["wait", "--key", key, "--wait-sec", "0"]]) {
+        const observed = await invoke(args);
+        t.eq([observed.code, observed.err], [3, ""], `${args[0]} retains code 3 for a pending job`);
+        t.ok(["queued", "running"].includes(observed.json?.job?.status), `${args[0]} prints the pending job record`);
+      }
+    } finally {
+      release();
+    }
+    const finished = await invoke(["wait", "--key", key, "--wait-sec", "60"]);
+    t.eq([finished.code, finished.json?.job?.account, finished.json?.job?.threadId],
+      [0, "default", "thread-1"], "the pending job finishes and keeps its thread on the selected account");
+
+    fs.writeFileSync(accounts, JSON.stringify({ accounts: [{ name: "replacement", codexHome: f.w.codex }] }));
+    const missingAccount = await invoke([...run("removed-thread-account", "60", f.brief, role), "--resume", key], fake);
+    t.eq([missingAccount.code, missingAccount.json?.job?.status, missingAccount.err],
+      [2, "auth_required", ""], "a removed resume account retains the terminal status without a sign-in envelope");
+    t.ok(missingAccount.json?.job?.error?.includes("accounts.json no longer lists"), "the job result explains how the account is missing");
+  }
+
   scenario("flow-agent-browser-input", "the writer browser input is pinned across continuation and resume", async (t) => {
     const f = flowWorld(t, "flow-agent-browser-input");
     const browser = path.join(f.w.dir, "chromium-fixture");
@@ -71,13 +186,14 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     const { checks } = JSON.parse(attached);
     t.ok(checks.some(check => check.result.includes("browserType.launch") && !check.result.includes(browser)), "review check attachment redacts the browser path");
   });
-  scenario("flow-agent-browser-reply-redaction", "an owner reply receives a redacted writer handoff", async (t) => {
+  scenario("flow-agent-browser-reply-redaction", "an alternate browser variable reaches the writer and its path is redacted from the reply handoff", async (t) => {
     const f = flowWorld(t, "flow-agent-browser-reply-redaction");
     const browser = path.join(f.w.zhome, "chromium-fixture");
+    const variable = "APP_TEST_CHROME";
     fs.writeFileSync(browser, "browser fixture");
     const summary = `Launch failed at ${browser}`;
     f.answer("write", { ...report("blocked", {}), summary });
-    const first = await f.flow(["--args", f.args({ mode: "agent", browser: { executable: browser } })]);
+    const first = await f.flow(["--args", f.args({ mode: "agent", browser: { executable: browser, variable } })]);
     t.eq(first.json?.status, "waiting", "the writer waits for a reply");
     const events = fs.readFileSync(path.join(first.json.journal, "events.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
     t.eq(events.find(e => e.kind === "done" && e.step === "write").result.summary, summary, "the original journal receipt is preserved");
@@ -89,21 +205,11 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     f.answer("review 1", f.review("approved"));
     const resumed = await f.flow(["--resume", first.json.runId]);
     t.eq([resumed.code, resumed.json?.approved], [0, true], "the reply resumes the writer");
-    const prompt = turns(f)[1].prompt;
-    t.ok(prompt.includes("Launch failed at") && !prompt.includes(browser), "the reply handoff redacts the browser path");
-  });
-  scenario("flow-agent-browser-alternate", "an alternate browser variable is passed only to the writer", async (t) => {
-    const f = flowWorld(t, "flow-agent-browser-alternate");
-    const browser = path.join(f.w.zhome, "chromium-fixture");
-    const variable = "APP_TEST_CHROME";
-    fs.writeFileSync(browser, "browser fixture");
-    f.answer("write", report("done", { "src/math.mjs": FIXED }));
-    f.answer("review 1", f.review("approved"));
-    const res = await f.flow(["--args", f.args({ mode: "agent", browser: { executable: browser, variable } })]);
-    t.eq([res.code, res.json?.approved], [0, true], "alternate variable is accepted");
     const calls = turns(f);
     t.ok(samePath(calls.find(c => c.step === "write").config["shell_environment_policy.set"][variable], fs.realpathSync(browser)), "writer receives the alternate variable");
     t.ok(!JSON.stringify(calls.find(c => c.step === "review 1").config).includes(variable), "review does not receive the alternate variable");
+    const prompt = calls[1].prompt;
+    t.ok(prompt.includes("Launch failed at") && !prompt.includes(browser), "the reply handoff redacts the browser path");
   });
   scenario("flow-agent-prerequisite-superseded", "earlier prerequisite evidence does not explain a later block", async (t) => {
     const f = flowWorld(t, "flow-agent-prerequisite-superseded");
@@ -241,8 +347,273 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
       "the same run succeeds with the explicit args setup and a clean writer copy");
   });
 
+  async function checkWriterProgress(t) {
+    const f = flowWorld(t, "flow-agent-continue-no-progress");
+    const candidate = model => ({ provider: "codex", model, effort: "medium" });
+    const models = { writer: { candidates: ["fake-writer", "fake-reviewer", "second-writer"].map(candidate) },
+      reviewer: { candidates: [candidate("fake-reviewer")] } };
+    const other = "export const other = 2;\n";
+    const flow = (args) => zodchi(t, f.w, ["flow", ...args], { cwd: f.r, env: f.w.env });
+    f.answer("write", report("more", {}));
+    f.answer("write continue 1", report("more", {}));
+    const cut = await f.flow(["--args", f.args({ mode: "agent", continuations: 8, models,
+      files: ["src/math.mjs", "src/other.mjs"] })], { ZODCHI_FLOW_CUT: "submit write continue 1" });
+    t.eq(cut.code, 75, "cut after submitting the second unchanged turn");
+    const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
+    const journal = path.join(f.w.zhome, "flows", id);
+    const events = () => fs.readFileSync(path.join(journal, "events.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+    const progress = () => events().filter(e => e.kind === "writer progress").map(e => [e.step, e.attempt, e.noProgress]);
+
+    const key = events().find(e => e.kind === "intent" && e.step === "write continue 1").key;
+    const workspace = events().find(e => e.kind === "writer prepared").snapshot.workspace;
+    // Restore the export's exact bytes even when Git checked it out with CRLF.
+    const originalMath = fs.readFileSync(path.join(workspace, "src", "math.mjs"), "utf8");
+    const ended = await zodchi(t, f.w, ["wait", "--key", key, "--wait-sec", "60"], { cwd: workspace, env: f.w.env });
+    t.eq([ended.code, ended.json?.job?.status], [0, "succeeded"], "the cut job has a finished state");
+    const balances = { balanceBefore: "11.5", balanceAfter: "8" };
+    const final = path.join(workspace, ".agent-tmp", "gateway", key, "final.json");
+    fs.writeFileSync(final, JSON.stringify({ ...ended.json.job, credits: { ...ended.json.job.credits, limitUsedUp: true, ...balances } }));
+    const credits = { spent: 3.5, steps: [{ step: "write continue 1", round: 0, attempt: 1, ...balances }] };
+
+    const stopped = await f.flow(["--resume", id]);
+    t.eq([stopped.code, stopped.json?.status, f.steps(), f.claim()?.status],
+      [2, "waiting", ["write", "write continue 1"], "open"], "two unchanged turns stop before another call");
+    t.eq(stopped.json?.options, ["continue", "close", "rerun"], "the owner can continue, close or change writer");
+    t.ok(stopped.json?.question?.includes("two consecutive turns") && stopped.json?.question?.includes("role table"),
+      "the question explains the stop and how the next writer is chosen");
+    const firstTwo = [["write", 1, 1], ["write continue 1", 1, 2]];
+    t.eq(progress(), firstTwo, "the journal records both unchanged turns across the cut");
+    t.eq(events().find(e => e.kind === "done" && e.step === "write continue 1").credits, balances,
+      "the done receipt copies balances from the completed job");
+    t.eq(stopped.json?.credits, credits, "the paused run reports observed credit spend");
+    const inspected = await flow(["status", id]);
+    t.eq(inspected.json?.question, stopped.json?.question, "status shows the owner question");
+    t.eq(inspected.json?.credits, credits, "flow status shows the credit report while awaiting an owner reply");
+    const parked = await f.flow(["--resume", id]);
+    t.eq([parked.json?.status, f.steps(), progress()], ["waiting", ["write", "write continue 1"], firstTwo],
+      "resuming without a reply neither calls a writer nor counts old turns again");
+
+    const input = path.join(f.w.dir, "progress-reply.txt");
+    const reply = async (choice) => {
+      fs.writeFileSync(input, choice);
+      t.eq((await flow(["reply", id, "--file", input])).code, 0, `the owner can reply ${choice}`);
+      return f.flow(["--resume", id]);
+    };
+    f.answer("write continue 2", report("more", { "src/math.mjs": FIXED, "src/other.mjs": other }));
+    f.answer("write continue 3", report("more", { "src/math.mjs": originalMath }));
+    f.answer("write continue 4", report("more", { "src/other.mjs": other }));
+    const continued = await reply("continue");
+    t.eq([continued.code, continued.json?.status, progress()], [2, "waiting", [...firstTwo,
+      ["write continue 1", 2, 1], ["write continue 2", 1, 0], ["write continue 3", 1, 1], ["write continue 4", 1, 2],
+    ]], "continue resets the count, fresh content resets it again, and a partial revert and identical rewrite count as stalls");
+    t.eq(f.commits().length, 0, "the stalls leave the candidate in the private workspace");
+
+    f.answer("write continue 4", report("done", { "src/math.mjs": FIXED }));
+    f.answer("review 1", f.review("approved"));
+    const completed = await reply("rerun");
+    t.eq([completed.code, completed.json?.approved, f.commits().length], [0, true, 1], "a replacement writer finishes the same package");
+    t.eq(events().filter(e => e.kind === "intent" && e.step === "write continue 4").map(e => e.model),
+      ["fake-writer", "second-writer"], "the rerun uses a different role-table writer and keeps the reviewer independent");
+    const pin = JSON.parse(fs.readFileSync(path.join(journal, "run.json"), "utf8"));
+    t.eq(pin.priorWriters, ["codex/second-writer"], "a successor package can keep its reviewer independent of the replacement writer");
+    t.eq(fs.readFileSync(path.join(f.r, "src/other.mjs"), "utf8"), other, "changing writers preserves the private edits");
+    t.eq(events().filter(e => e.kind === "done" && Object.hasOwn(e, "credits")).map(e => [e.step, e.attempt]),
+      [["write continue 1", 1]], "only the job that used credits has a credit receipt");
+    const saved = JSON.parse(fs.readFileSync(path.join(journal, "result.json"), "utf8"));
+    t.eq([saved.credits, saved.rounds[0]?.credits], [credits, credits], "the result and its first round carry the credited step once");
+    t.ok(!fs.existsSync(workspace), "the private workspace and gateway job are removed after completion");
+    const finished = await flow(["status", id]);
+    t.eq(finished.json?.result?.credits, credits, "flow status retains the finished credit report after cleanup");
+    t.eq(finished.json?.credits, credits, "flow status shows the credit report at the top level after cleanup");
+  }
+
   scenario("flow-agent-continue", "a cut during the next ephemeral writer turn preserves the working copy and handoff summary", async (t) => {
+    const screened = flowWorld(t, "flow-agent-continue-screening");
+    const privateBrief = "fixture-brief-internal-shorthand";
+    const privateFile = "fixture-file-internal-shorthand";
+    const shapedValue = "ghp_" + "fixturevalue".repeat(3);
+    const apiValue = ["sk", "live", "fixturevalue".repeat(3)].join("-");
+    const urlValue = "fixture-url-inline-value";
+    const credentialUrl = ["https", `fixture:${urlValue}@example.invalid/`].join("://");
+    const keyType = ["PRIVATE", "KEY"].join(" ");
+    const keyBody = "fixture-key-body";
+    const cleanBrief = fs.readFileSync(screened.brief, "utf8");
+    const runScreened = (files = ["src/math.mjs"], env = {}, extra = {}) => screened.flow([
+      "--args", screened.args({ mode: "agent", files, checks: [], verify: [], ...extra }),
+    ], env);
+    const assertRefused = (result, locations, hidden) => {
+      t.ok(result.code === 2 && locations.every(location => result.json?.refused?.includes(location)),
+        "the gate refuses with the file, line, and reason for each omission");
+      t.ok(hidden.every(value => !result.out.includes(value) && !result.err.includes(value)),
+        "the refusal leaves the matched text out of its diagnostics");
+      t.eq([
+        fs.existsSync(path.join(screened.w.zhome, "flows")),
+        fs.existsSync(path.join(screened.w.home, ".zodchi", "packages")), screened.steps(),
+      ], [false, false, []], "the refusal creates no journal or claim and submits no model call");
+    };
+    fs.writeFileSync(path.join(screened.w.zhome, "private-words.txt"), privateBrief + "\n");
+    fs.writeFileSync(screened.brief, `# Screening fixture\n${privateBrief}\n`);
+    assertRefused(await runScreened(), ["the brief:2 (private-word)"], [privateBrief]);
+    fs.writeFileSync(screened.brief, cleanBrief);
+
+    const denylist = path.join(screened.w.dir, "omit.txt");
+    fs.writeFileSync(denylist, privateFile + "\n");
+    const baseFiles = ["src/notes.txt", "src/settings.txt"];
+    fs.writeFileSync(path.join(screened.r, baseFiles[0]), `Notes\n${privateFile}\n`);
+    fs.writeFileSync(path.join(screened.r, baseFiles[1]), [
+      "Settings", shapedValue, credentialUrl,
+      `-----BEGIN ${keyType}-----`, keyBody, `-----END ${keyType}-----`,
+      ["api_key", JSON.stringify(apiValue)].join(" = "), "Visible footer", "",
+    ].join("\n"));
+    const baseBinary = "src/task-list.bin";
+    fs.writeFileSync(path.join(screened.r, baseBinary), Buffer.from([0, ...Buffer.from(shapedValue), 255]));
+    gitOut(screened.r, ["add", "--", ...baseFiles, baseBinary]);
+    gitOut(screened.r, ["commit", "-qm", "Add screening fixtures"]);
+    assertRefused(await runScreened(baseFiles, { ZODCHI_DENYLIST: denylist }), [
+      `${baseFiles[0]}:2 (private-word)`, ...[2, 3, 4, 5, 6, 7].map(line => `${baseFiles[1]}:${line} (credential)`),
+    ], [privateFile, shapedValue, apiValue, urlValue, keyBody]);
+    for (const entry of ["src/missing.txt:1", `${baseFiles[1]}:99`, `${baseFiles[1]}:1`, `${baseFiles[0]}:2`, `${baseFiles[1]}:5`]) {
+      const invalid = await runScreened(baseFiles, { ZODCHI_DENYLIST: denylist }, { allowInputLines: [entry] });
+      t.ok(invalid.code === 1 && invalid.err.includes("allowInputLines"), `the allowance ${entry} is a wrong call`);
+      t.ok(![invalid.out, invalid.err].some(text => text.includes(privateFile) || text.includes(keyBody)),
+        "the allowance error leaves private text out of its diagnostics");
+    }
+    t.eq([screened.claim(), screened.steps()], [null, []], "a wrong allowance creates no claim and submits no model call");
+
+    const inlineValue = ["fixture-added", "9X3f7D2e"].join("-");
+    const inlineSetting = ["token", JSON.stringify(inlineValue)].join(" = ");
+    screened.answer("write", report("done", { "src/math.mjs": `${FIXED}\nconst ${inlineSetting};\n` }));
+    screened.answer("review 1", screened.review("approved"));
+    const withheld = await runScreened(["src/math.mjs", baseBinary]);
+    t.eq([withheld.code, withheld.json?.verdict, screened.steps()], [2, "blocked", ["write"]],
+      "a writer-created credential stops the package before calling the reviewer");
+    t.ok(withheld.json?.runId && !withheld.json?.refused,
+      "the credential-shaped bytes in the claimed base binary pass the gate");
+    const stoppedCommit = gitOut(screened.r, ["rev-parse", "HEAD"]);
+    const stoppedBranch = gitOut(screened.r, ["symbolic-ref", "HEAD"]);
+    t.eq(withheld.json?.rounds?.map(round => [round.n, round.commit?.commit]), [[1, stoppedCommit]],
+      "the blocked round retains the receipt for the commit on the branch");
+    t.ok(["round 1", stoppedCommit, "src/math.mjs:3 (credential)"].every(text => withheld.json?.question?.includes(text)),
+      "the owner question names the round, commit, and candidate line");
+    t.ok([stoppedCommit, stoppedBranch].every(text => withheld.json?.next?.includes(text)),
+      "the next step tells the owner which branch contains the commit");
+    const events = fs.readFileSync(path.join(withheld.json.journal, "events.jsonl"), "utf8");
+    t.ok(!fs.existsSync(path.join(withheld.json.journal, "requests", `flow-${withheld.json.runId}-review-1.json`))
+      && ![withheld.out, withheld.err, events].some(text => text.includes(inlineValue)),
+      "the stop creates no review request and keeps the value out of diagnostics and events");
+
+    const allowed = flowWorld(t, "flow-agent-continue-allowed-line");
+    const source = "src/math.mjs";
+    const fixtureValue = ["8d2f097c", "7b3a512e", "b1fc5098", "7e463ad2"].join("");
+    const fixtureLine = ["const lockToken", JSON.stringify(fixtureValue)].join(" = ") + ";";
+    const seeded = `${STUB}${fixtureLine}\n`;
+    const moved = `// Keep clamp in range.\n${FIXED}`;
+    fs.writeFileSync(path.join(allowed.r, source), seeded);
+    gitOut(allowed.r, ["add", "--", source]);
+    gitOut(allowed.r, ["commit", "-qm", "Add the lock fixture"]);
+    const needsAllowance = await allowed.flow(["--args", allowed.args()]);
+    t.ok(needsAllowance.code === 2 && [`${source}:2 (credential)`, "or list the lines in allowInputLines after checking they are not secrets"]
+      .every(part => needsAllowance.json?.refused?.includes(part)), "the base fixture is refused with the allowance hint");
+    allowed.answer("write", allowed.patch([{
+      ...allowed.modify(source, seeded, null), edits: [{ old: STUB, new: moved }],
+    }]));
+    allowed.answer("review 1", allowed.review("approved"));
+    const allowedArgs = allowed.args({ allowInputLines: [`${source}:2`] });
+    const allowanceCut = await allowed.flow(["--args", allowedArgs], { ZODCHI_FLOW_CUT: "commit 1" });
+    t.eq([allowanceCut.code, allowed.steps()], [75, ["write"]], "the allowance admits the base and the expert writer attachment");
+    const allowanceRun = await allowed.flow(["--resume", allowed.claim().run, "--args", allowedArgs]);
+    t.eq([allowanceRun.code, allowanceRun.json?.approved, allowed.steps()], [0, true, ["write", "review 1"]],
+      "the allowance follows the unchanged fixture line through the resumed review");
+    t.eq(fs.readFileSync(path.join(allowed.r, source), "utf8"), `${moved}${fixtureLine}\n`, "the line moved down in the patch");
+    const receipt = fs.readFileSync(path.join(allowanceRun.json.journal, "run.json"), "utf8");
+    t.eq(JSON.parse(receipt).inputs.allowInputLines, [{
+      path: source, line: 2, sha256: createHash("sha256").update(fixtureLine).digest("hex"),
+    }], "the allowance receipt pins the base path, line number and content digest");
+    const allowanceEvents = fs.readFileSync(path.join(allowanceRun.json.journal, "events.jsonl"), "utf8");
+    t.ok(![receipt, allowanceEvents, allowanceRun.out, allowanceRun.err].some(text => text.includes(fixtureValue)),
+      "the allowance receipt and result omit the approved content");
+
+    const changedLine = fixtureLine.replace(fixtureValue, "0" + fixtureValue.slice(1));
+    allowed.answer("write", report("done", { [source]: `${moved}${changedLine}\n` }));
+    const changedFixture = await allowed.flow(["--args", allowed.args({ mode: "agent", allowInputLines: [`${source}:3`] })]);
+    t.eq([changedFixture.code, changedFixture.json?.stoppedAt, allowed.steps()],
+      [2, "privacy screening at review 1", ["write", "review 1", "write"]], "editing the literal invalidates the allowance");
+    t.ok(changedFixture.json?.question?.includes(`${source}:3 (credential)`), "the stop names the changed line");
+
+    const expert = flowWorld(t, "flow-agent-continue-expert");
+    const sourcePath = path.join(expert.r, source);
+    const sourceFolder = `${expert.r.replaceAll("\\", "/")}/input`;
+    const note = `// Read fixtures from ${sourceFolder}`;
+    const tasks = 'const tasks = "task-list"; // disk-usage';
+    const vault = "Use the API key from the vault";
+    const prefix = [note, tasks, `// ${vault}`].join("\r\n");
+    const before = `${prefix}\r\n${STUB.trimEnd()}`;
+    const after = `${prefix}\r\n${FIXED.trimEnd()}`;
+    fs.appendFileSync(expert.brief, `\n${vault}\nKeep the task-list example.\n`);
+    gitOut(expert.r, ["config", "core.autocrlf", "false"]);
+    fs.writeFileSync(sourcePath, `${before}\r\n`);
+    gitOut(expert.r, ["add", "--", source]);
+    gitOut(expert.r, ["commit", "-qm", "Record the fixture location"]);
+    expert.answer("write", expert.patch([{
+      ...expert.modify(source, `${before}\r\n`, null), edits: [{ old: before, new: after }],
+    }]));
+    expert.answer("review 1", expert.review("approved"));
+    const exact = await expert.flow(["--args", expert.args()]);
+    t.eq([exact.code, exact.json?.approved, expert.steps()], [0, true, ["write", "review 1"]],
+      "the expert's exact edit passes checks and review");
+    t.eq(exact.json?.screening, { brief: "screened", files: "screened", agentWorkspace: null },
+      "the expert package records screening without an agent workspace");
+    const [writeTurn, reviewTurn] = turns(expert);
+    t.ok(writeTurn.prompt.includes(`<attachment path="${source}">\n${before}\n</attachment>`),
+      "the writer sees the ordinary lines, original path, and CRLF in the editable fragment");
+    t.eq(fs.readFileSync(sourcePath, "utf8"), `${after}\r\n`, "the edit preserves the path and line endings on disk");
+    t.ok(reviewTurn.prompt.includes("<repo>/input") && !reviewTurn.prompt.includes(sourceFolder),
+      "the reviewer still sees the machine path rewritten");
+    t.ok(reviewTurn.prompt.includes(`<attachment path="${source}">\n${after.replace(sourceFolder, "<repo>/input")}\n</attachment>`),
+      "the reviewer receives the ordinary source lines with the machine path rewritten");
+    t.ok(reviewTurn.prompt.includes(` ${tasks}`) && reviewTurn.prompt.includes(` // ${vault}`),
+      "the diff keeps the ordinary context lines");
+    for (const { prompt } of [writeTurn, reviewTurn]) {
+      t.ok(prompt.includes(`\n${vault}\nKeep the task-list example.\n</attachment>`),
+        "the brief keeps both ordinary lines");
+    }
+
+    expert.answer("write", expert.patch([]));
+    const cut = await expert.flow(["--args", expert.args({ checks: ["node smoke.mjs --fail"], verify: [] })],
+      { ZODCHI_FLOW_CUT: "checks 1" });
+    t.eq(cut.code, 75, "the second expert run cuts after the failing check");
+    fs.appendFileSync(sourcePath, `${shapedValue}\r\n`);
+    const stopped = await expert.flow(["--resume", expert.claim().run]);
+    t.eq([stopped.code, stopped.json?.verdict, stopped.json?.stoppedAt, expert.steps()],
+      [2, "blocked", "privacy screening at fix 1.1", ["write", "review 1", "write"]],
+      "the expert fix stops before sending a worktree file with a withheld line");
+    const stopEvents = fs.readFileSync(path.join(stopped.json.journal, "events.jsonl"), "utf8");
+    t.ok(stopped.json?.question?.includes(`${source}:5 (credential)`)
+      && ![stopped.out, stopped.err, stopEvents].some(text => text.includes(shapedValue)),
+      "the worktree stop reports the location without the matched text");
+
+    const repair = flowWorld(t, "flow-agent-continue-expert-repair");
+    gitOut(repair.r, ["config", "core.autocrlf", "false"]);
+    const comment = "// Keep this task-list note.";
+    const broken = `${comment}\r\n${STUB.trimEnd()}\r\n// ${shapedValue}\r\n`;
+    const repaired = `${comment}\r\n${FIXED.trimEnd()}\r\n`;
+    const repairChange = repair.modify(source, broken, repaired);
+    repair.answer("write", repair.patch([repair.modify(source, STUB, broken)]));
+    repair.answer("fix 1.1", repair.patch([repairChange]));
+    repair.answer("review 1", repair.review("approved"));
+    const fixed = await repair.flow(["--args", repair.args({ fixes: 1 })]);
+    t.eq([fixed.code, fixed.json?.approved, repair.steps()], [0, true, ["write", "fix 1.1", "review 1"]],
+      "the expert repairs a failed candidate with a withheld line before review");
+    const repairTurns = turns(repair);
+    t.ok(repairTurns[1].prompt.includes(`- ${source}  blob ${repairChange.baseBlob} (screened preview`)
+      && repairTurns[1].prompt.includes(`<attachment path="${source}">\n${comment}\r\n${STUB.trimEnd()}\r\n[private text removed]\n</attachment>`)
+      && repairTurns.every(turn => !turn.prompt.includes(shapedValue)),
+      "the fixing writer gets the exact base blob and visible lines without the withheld value");
+    t.eq(fs.readFileSync(path.join(repair.r, source), "utf8"), repaired, "the fix writes the replacement with its CRLF line endings");
+
     const f = flowWorld(t, "flow-agent-continue");
+    fs.appendFileSync(f.brief, `Workspace folders: ${f.r} and ${f.w.zhome}\n${vault}\nKeep the task-list example.\n`);
+    const binaryPath = "task-list.bin";
     const binary = [8, 0, 255];
     const fromOtherPackage = path.join(f.r, "src", "other.mjs");
     fs.writeFileSync(fromOtherPackage, "local work outside this package\n");
@@ -262,16 +633,16 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     t.ok(badPermission.code === 2 && /exact paths.*tests\/math\.mjs/.test(badPermission.json?.refused ?? ""),
       "the gate explains the protected path array");
     const summary = "The math change and binary output are in the private workspace.";
-    f.answer("write", { ...report("more", { "src/math.mjs": FIXED, "output.bin": { bytes: binary } }), summary });
+    f.answer("write", { ...report("more", { "src/math.mjs": FIXED, [binaryPath]: { bytes: binary } }), summary });
     f.answer("write continue 1", report("more", {}));
-    f.answer("write continue 2", report("more", {}));
-    f.answer("write continue 3", report("done", {}));
+    f.answer("write continue 2", report("more", { "src/math.mjs": "// Keep values in range.\n" + FIXED }));
+    f.answer("write continue 3", report("done", { "src/math.mjs": FIXED }));
     f.answer("review 1", f.review("approved"));
     const badContext = await f.flow(["--args", f.args({ mode: "agent", reviewContext: ["src/missing.mjs"] })]);
     t.ok(badContext.code === 2 && /review context file src\/missing\.mjs/.test(badContext.json?.refused ?? "") && !badContext.json?.runId,
       "an absent review context file is refused before a model turn");
     const first = await f.flow(["--args", f.args({
-      mode: "agent", continuations: 12, files: ["src/math.mjs", "output.bin"], reviewContext: ["src/other.mjs"],
+      mode: "agent", continuations: 12, files: ["src/math.mjs", binaryPath], reviewContext: ["src/other.mjs"],
     })], {
       ZODCHI_FLOW_CUT: "submit write continue 1",
     });
@@ -280,6 +651,8 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
     const result = await f.flow(["--resume", id]);
     t.eq([result.code, result.json?.approved, f.claim()?.status, f.commits().length], [0, true, "done", 1], "the original run applies and reviews once");
+    t.eq(result.json?.screening, { brief: "screened", files: "screened", agentWorkspace: "not screened" },
+      "the result discloses the workspace that the agent can read");
     const observed = turns(f);
     t.eq(observed.map(turn => turn.step), ["write", "write continue 1", "write continue 2", "write continue 3", "review 1"],
       "a declared limit beyond the default continues without another owner answer");
@@ -291,6 +664,11 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     t.eq(requestFor("write-continue-1").role.config, limits, "the resumed writer keeps the project window");
     t.ok(requestFor("review-1").role.config === undefined, "the expert review uses its model window");
     const reviewPrompt = requestFor("review-1").prompt;
+    for (const prompt of [requestFor("write").prompt, reviewPrompt]) {
+      t.ok(prompt.includes("Workspace folders: <repo> and <zodchi-home>") && !prompt.includes(f.w.zhome),
+        "machine path rewrites reach both prompts without refusing the brief");
+      t.ok(prompt.includes(`${vault}\nKeep the task-list example.`), "agent mode keeps the ordinary brief lines");
+    }
     t.ok(reviewPrompt.includes('<attachment path="src/other.mjs">')
       && reviewPrompt.includes("export const other = 1;") && !reviewPrompt.includes("local work outside this package"),
     "the reviewer sees pinned read-only context without the adjacent local edits");
@@ -300,10 +678,16 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
       Array.from({ length: 5 }, () => [true, null]), "each writer and review turn starts an ephemeral Codex thread");
     t.ok(observed[1].prompt.includes(summary), "the continuation sees the recorded writer summary");
     t.ok(samePath(observed[0].cwd, observed[1].cwd) && !samePath(f.r, observed[0].cwd), "the writer turns use the same isolated copy");
-    t.eq([...fs.readFileSync(path.join(f.r, "output.bin"))], binary, "the engine copies binary output without a text round trip");
+    t.eq([...fs.readFileSync(path.join(f.r, binaryPath))], binary, "the engine copies binary output without a text round trip");
     t.eq(fs.readFileSync(fromOtherPackage, "utf8"), "local work outside this package\n", "the other work in the checkout is preserved");
     const files = gitOut(f.r, ["diff", "--name-only", f.base, "HEAD"]).split("\n");
-    t.eq(files, ["output.bin", "src/math.mjs"], "only the scope is committed");
+    t.eq(files, ["src/math.mjs", binaryPath], "only the scope is committed");
+    t.ok(!Object.hasOwn(result.json, "credits") && !Object.hasOwn(result.json.rounds[0], "credits"),
+      "unused credits create no result fields");
+    const inspected = await zodchi(t, f.w, ["flow", "status", id], { cwd: f.r, env: f.w.env });
+    t.eq(inspected.code, 0, "the completed run can be inspected");
+    t.ok(!Object.hasOwn(inspected.json, "credits"), "unused credits create no status field");
+    await checkWriterProgress(t);
   });
 
   scenario("flow-agent-scope", "outside changes pause before application, and a reply continues in the same private workspace", async (t) => {
@@ -331,6 +715,7 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     t.ok(samePath(observed[0].cwd, observed[1].cwd), "the owner reply preserves the private workspace");
     t.ok(observed[1].prompt.includes(summary) && observed[1].prompt.includes("Drop the extra file"),
       "the new thread receives the prior summary and the owner's reply");
+    await checkSignIn(t);
   });
 
   scenario("flow-agent-timeout", "a timed-out ephemeral writer leaves its completed edits for the next turn", async (t) => {
@@ -368,5 +753,39 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     const result = await f.flow(["--resume", initial.json.runId]);
     t.eq([result.code, result.json?.claimAdded, f.steps()], [0, ["src/other.mjs"], ["write", "review 1"]],
       "the engine applies the recorded workspace changes and reviews them in the original run");
+
+    const advance = flowWorld(t, "flow-agent-scope-in-advance");
+    gitOut(advance.r, ["config", "core.autocrlf", "false"]);
+    const check = "test/math.test.mjs";
+    const other = "src/other.mjs";
+    const originalCheck = fs.readFileSync(path.join(advance.r, check), "utf8");
+    const amendedCheck = `${originalCheck}// Keep the existing range assertions.\n`;
+    advance.answer("write", report("question", {}, [{ text: `May I edit ${check} and ${other}?`, options: [] }]));
+    const waiting = await advance.flow(["--args", advance.args({ mode: "agent", isolated: true, rounds: 2 })]);
+    t.eq([waiting.code, waiting.json?.status, waiting.json?.outsideClaim], [2, "waiting", undefined],
+      "the writer asks before making the extra changes");
+    const id = waiting.json.runId;
+    const answer = path.join(advance.w.dir, "reply.txt");
+    fs.writeFileSync(answer, "Keep the test assertions and update the other module when closing the review.");
+    const scope = path.join(advance.w.dir, "approved.json");
+    fs.writeFileSync(scope, JSON.stringify([check, other]));
+    const owner = (...args) => zodchi(t, advance.w, ["flow", ...args], { cwd: advance.r, env: advance.w.env });
+    const approved = await owner("reply", id, "--file", answer, "--allow-files", scope);
+    t.eq([approved.code, approved.json?.allowFiles], [0, [check, other]], "one reply records the answer and the named paths");
+    const events = fs.readFileSync(path.join(waiting.json.journal, "events.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+    const approval = events.at(-1)?.scopeApproval;
+    t.eq([approval?.round, approval?.files, approval?.allowCheckChanges], [1, [check, other], [check, other]],
+      "the journal records the round's scope approval and its exact check allowances");
+    advance.answer("write", report("done", { "src/math.mjs": FIXED, [check]: amendedCheck }));
+    advance.answer("review 1", advance.review("changes_requested", [advance.finding("F1")]));
+    advance.answer("close 1", report("done", { [other]: "export const other = 2;\n" }));
+    advance.answer("review 2", advance.review("approved"));
+    const resumed = await advance.flow(["--resume", id]);
+    t.eq([resumed.code, resumed.json?.approved, resumed.json?.claimAdded, advance.steps()],
+      [0, true, [check, other], ["write", "write", "review 1", "close 1", "review 2"]],
+      "the write and later step of the round use only the pre-approved paths and run verification");
+    t.ok(turns(advance)[1].prompt.includes("Keep the test assertions"), "the restarted writer also sees the text reply");
+    t.eq((await owner("apply", id)).code, 0, "the exact protected path is authorized when applying the approved isolated candidate");
+    t.eq(fs.readFileSync(path.join(advance.r, check), "utf8"), amendedCheck, "the authorized test edit lands with its assertions intact");
   });
 }

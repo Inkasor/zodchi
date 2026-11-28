@@ -44,40 +44,6 @@ export default function ({ scenario, world, repo, prompt, zodchi, ZODCHI }) {
     t.eq(turns.length, 1, "repeat submit ran the model once");
   });
 
-  scenario("cli-queue-fifo", "three queued jobs claim a single available slot in submission order", async (t) => {
-    const w = world("cli-queue-fifo", { maxParallelJobs: 2 });
-    const cwd = repo(t, w);
-    const queued = ["z-first", "m-second", "a-third"];
-    const keys = ["busy-one", "busy-two", ...queued];
-    const entered = (key) => fs.existsSync(path.join(w.codex, `fake-entered-${key}`));
-    const release = (key) => fs.writeFileSync(path.join(w.codex, `fake-release-${key}`), "");
-    try {
-      for (const key of keys) {
-        const file = prompt(w, key, `HOLD:${key}`);
-        const sub = await zodchi(t, w, ["submit", "--role", "ask", "--key", key, "--prompt", file], { cwd });
-        t.eq(sub.code, 0, `accepted ${key}`);
-        if (!queued.includes(key)) {
-          await t.until(`${key} occupies a slot`, () => entered(key));
-        } else {
-          t.eq(sub.json.job.status, "queued", `${key} waits while both slots are occupied`);
-        }
-      }
-      release("busy-one");
-      for (const [i, key] of queued.entries()) {
-        const pending = queued.slice(i);
-        await t.until("a waiting job entered", () => pending.some(entered));
-        t.eq(pending.filter(entered), [key], `only ${key} takes the free slot`);
-        release(key);
-      }
-    } finally {
-      for (const key of keys) release(key);
-    }
-    for (const key of keys) {
-      const final = await zodchi(t, w, ["wait", "--key", key, "--wait-sec", "60"], { cwd });
-      t.eq(final.code, 0, `${key} succeeded`);
-    }
-  });
-
   scenario("cli-status", "poll running and finished keys together, and diagnose unknown keys and bad calls", async (t) => {
     const w = world("cli-status");
     const cwd = repo(t, w);

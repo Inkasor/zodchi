@@ -4,14 +4,16 @@
 mod release;
 
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
-use zodchi_core::config::Config;
+use zodchi_core::config::{agent_requested, Config};
 use zodchi_core::job::{self, compose_prompt, deliver, is_terminal, Request};
 use zodchi_core::role::{load_role, roles, Overrides};
 use zodchi_core::util::{fail, is_key, now_ms, parse_iso_ms, GatewayError, Result};
+use zodchi_flow::SignIn;
 
 const USAGE: &str = "Usage: zodchi <command> [options]
 Run it inside the repository the call is for: jobs are stored in its .agent-tmp/gateway/<key>/.
@@ -25,8 +27,8 @@ Run it inside the repository the call is for: jobs are stored in its .agent-tmp/
   flow     run a workflow as code: zodchi flow <workflow> --args <file.json>
            zodchi flow list shows the installed catalog
            zodchi flow cleanup previews reclaimable storage (docs/cleanup.md)
-           (docs/flow.md; exit 0 approved, 2 any other end, 1 a wrong call)
   release  build, install or register a Zodchi distribution
+  --usage  print the command, configuration and exit code reference as JSON
 
 Job options (run, submit):
   --role <name|file.json>  what the call is: kind, mode, model, effort, frame, schema, tools
@@ -52,11 +54,253 @@ Anywhere:
   --root <dir>             the repository, when the command is not run inside it
   --context <dir>          a non-Git project directory for local expert jobs, stored in the Zodchi home
 
-Exit code of run, wait --key and job: 0 succeeded, 2 another final status, 3 still running, 1 a wrong call.
+Exit codes:
+  0  success or approval
+  1  command failure or wrong call
+  2  not approved, another final status, or a bad status call
+  3  sign-in required in agent mode (stderr error.kind sign-in)
+  3  job still running (run, wait, job) or timed out waiting (flow wait)
 Batch wait exits 3 if the condition timed out, otherwise 0 if every finished job succeeded or 2 if any did not.
 A bad batch call or delivery error exits 1.
 submit exits 0 once the job is stored or already exists.
 status exits 0 when every key was read, 2 for an unknown key or a bad call.";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Command {
+    Run,
+    Submit,
+    Wait,
+    Job,
+    Status,
+    Work,
+    Roles,
+    Check,
+    Account,
+    Flow,
+    Release,
+    Help,
+}
+
+const COMMANDS: &[(&str, Command)] = &[
+    ("run", Command::Run),
+    ("submit", Command::Submit),
+    ("wait", Command::Wait),
+    ("job", Command::Job),
+    ("status", Command::Status),
+    ("work", Command::Work),
+    ("roles", Command::Roles),
+    ("check", Command::Check),
+    ("account", Command::Account),
+    ("flow", Command::Flow),
+    ("release", Command::Release),
+    ("help", Command::Help),
+];
+const HELP_ALIASES: [&str; 2] = ["--help", "-h"];
+
+type Flags = &'static [(&'static str, &'static str)];
+const CONFIG_FLAGS: Flags = &[("root", "directory"), ("context", "directory")];
+const ROLE_FLAGS: Flags = &[
+    ("role", "role-or-json-file"), ("model", "model"), ("effort", "effort"),
+    ("timeout-min", "number"), ("questions", "json-file"),
+];
+const JOB_FLAGS: Flags = &[
+    ("prompt", "file"), ("attach", "file"), ("image", "file"), ("provider", "provider"),
+    ("keep-thread", "boolean"), ("no-keep-thread", "boolean"), ("resume", "job-key"),
+    ("credits", "boolean"), ("paid", "boolean"),
+];
+const KEY_FLAG: Flags = &[("key", "job-key")];
+const RESULT_FLAGS: Flags = &[("out", "file"), ("wait-sec", "seconds")];
+const SUBMIT_FLAGS: Flags = &[("list", "json-file"), ("quiet", "boolean")];
+const WAIT_FLAGS: Flags = &[
+    ("all", "boolean"), ("any", "boolean"), ("list", "json-file"), ("keys", "job-key-list"),
+];
+const JSON_FLAG: &str = "json";
+const STATUS_FLAGS: Flags = &[(JSON_FLAG, "boolean")];
+const VERSION_FLAG: &str = "--version";
+const USAGE_FLAG: &str = "--usage";
+const COMMAND_FAILED: u8 = 1;
+const NOT_APPROVED: u8 = 2;
+const SIGN_IN_REQUIRED: u8 = 3;
+const STILL_RUNNING: u8 = 3;
+
+#[derive(Clone, Copy)]
+enum ErrorKind {
+    WrongCall,
+    SignIn(SignIn),
+    Limit,
+    Refused,
+    Infra,
+    NotFound,
+}
+
+impl ErrorKind {
+    fn details(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::WrongCall => ("wrong-call", "The command arguments are invalid.", "See zodchi --usage for the command and its flags."),
+            Self::SignIn(SignIn::Codex) => ("sign-in", "A Codex subscription sign-in is required.", "Run codex login with CODEX_HOME set for the account, then retry."),
+            Self::SignIn(SignIn::Claude) => ("sign-in", "A Claude subscription sign-in is required.", "Sign in through the Claude CLI, then retry."),
+            Self::SignIn(SignIn::Server) => ("sign-in", "A subscription sign-in on the Flow server is required.", "Sign in on the configured Flow server. See docs/flow-server.md."),
+            Self::SignIn(SignIn::ApiKey) => ("sign-in", "The API requires authentication.", "Check the OpenAI API key configured for this workflow."),
+            Self::SignIn(SignIn::YouTube) => ("sign-in", "YouTube consent requires a controlling terminal.", "Run zodchi flow youtube-publish connect from a terminal to open the Google consent page."),
+            Self::Limit => ("limit", "The usage limit was reached.", "Check the available limit before retrying."),
+            Self::Refused => ("refused", "Zodchi refused the operation.", "Check the command requirements and any result on stdout."),
+            Self::Infra => ("infra", "Zodchi could not complete the command.", "Run in a terminal with ZODCHI_AGENT unset to see the local diagnostic."),
+            Self::NotFound => ("not-found", "The requested resource was not found.", "Check the requested key, run ID or input file."),
+        }
+    }
+
+    fn gateway(error: &GatewayError) -> Self {
+        // Older gateway APIs carry only human diagnostics. Classify known diagnostics at this boundary.
+        let diagnostic = &error.0;
+        let starts_with = |prefixes: &[&str]| prefixes.iter().any(|prefix| diagnostic.starts_with(*prefix));
+        if starts_with(&["No job ", "No run ", "No live runs ", "No role ", "No Claude job "]) {
+            Self::NotFound
+        } else if starts_with(&[
+            "--", "Usage: ", "Unexpected ", "Repeated option", "Invalid or repeated option",
+            "Missing --", "Missing value for --", "No workflow ", "Not a run id:", "Invalid run ID.",
+            "Budget additions must", "Reply needs ", "The args differ ", "The args ",
+            "Run the gateway inside ", "wait needs ", "batch wait ", "Claude effort is ",
+            "Claude gateway jobs use ", "A local gateway context ", "A decisions call needs ",
+            "The prompt is empty ", "At most ", "The client list accepts ",
+        ]) || diagnostic.contains("\nUsage: zodchi flow ")
+        {
+            Self::WrongCall
+        } else if starts_with(&["limited: ", "The limit of every subscription ", "The package budget for new model calls "]) {
+            Self::Limit
+        } else if (starts_with(&["Key "]) && diagnostic.contains(" already belongs to a different request"))
+            || starts_with(&["The provider blocked ", "The flow server refused "])
+        {
+            Self::Refused
+        } else {
+            Self::Infra
+        }
+    }
+}
+
+struct Failure {
+    kind: ErrorKind,
+    code: u8,
+    diagnostic: Option<GatewayError>,
+}
+
+type CliResult<T> = std::result::Result<T, Failure>;
+
+impl Failure {
+    fn wrong_call(diagnostic: GatewayError, code: u8) -> Self {
+        Self { kind: ErrorKind::WrongCall, code, diagnostic: Some(diagnostic) }
+    }
+
+    fn sign_in(provider: SignIn) -> Self {
+        Self { kind: ErrorKind::SignIn(provider), code: SIGN_IN_REQUIRED, diagnostic: None }
+    }
+
+    fn with_code(self, code: u8) -> Self {
+        Self { code, ..self }
+    }
+
+    fn print(self, agent: bool) -> u8 {
+        if agent {
+            // Only these fixed strings enter the envelope. Errors and request arguments can contain private data.
+            let (kind, message, hint) = self.kind.details();
+            eprintln!("{}", json!({ "error": { "kind": kind, "message": message, "hint": hint, "exitCode": self.code } }));
+        } else if let Some(diagnostic) = self.diagnostic {
+            eprintln!("{diagnostic}");
+        }
+        self.code
+    }
+}
+
+impl From<GatewayError> for Failure {
+    fn from(diagnostic: GatewayError) -> Self {
+        Self { kind: ErrorKind::gateway(&diagnostic), code: COMMAND_FAILED, diagnostic: Some(diagnostic) }
+    }
+}
+
+impl Command {
+    fn named(name: &str) -> Option<Self> {
+        if HELP_ALIASES.contains(&name) {
+            return Some(Self::Help);
+        }
+        COMMANDS.iter().find(|(spelling, _)| *spelling == name).map(|(_, command)| *command)
+    }
+
+    fn flag_groups(self) -> &'static [Flags] {
+        match self {
+            Self::Run => &[CONFIG_FLAGS, ROLE_FLAGS, KEY_FLAG, JOB_FLAGS, RESULT_FLAGS],
+            Self::Submit => &[CONFIG_FLAGS, ROLE_FLAGS, KEY_FLAG, JOB_FLAGS, SUBMIT_FLAGS],
+            Self::Wait => &[CONFIG_FLAGS, KEY_FLAG, RESULT_FLAGS, WAIT_FLAGS],
+            Self::Job | Self::Work => &[CONFIG_FLAGS, KEY_FLAG],
+            Self::Check => &[CONFIG_FLAGS, ROLE_FLAGS],
+            Self::Status => &[CONFIG_FLAGS, STATUS_FLAGS],
+            Self::Roles | Self::Account => &[CONFIG_FLAGS],
+            Self::Flow | Self::Release | Self::Help => &[],
+        }
+    }
+
+    fn flag_kind(self, name: &str) -> Option<&'static str> {
+        self.flag_groups().iter().flat_map(|group| group.iter())
+            .find(|(flag, _)| *flag == name)
+            .map(|(_, kind)| *kind)
+    }
+}
+
+fn usage() -> Value {
+    let commands: Vec<_> = COMMANDS.iter().map(|&(name, command)| {
+        match command {
+            Command::Flow => zodchi_flow::usage(),
+            Command::Release => release::usage(),
+            _ => {
+                let flags: Vec<_> = command.flag_groups().iter().flat_map(|group| group.iter())
+                    .map(|&(name, kind)| json!({
+                        "name": format!("--{name}"), "valueKind": kind,
+                        "repeatable": matches!(name, "attach" | "image"),
+                    }))
+                    .collect();
+                let mut entry = json!({ "name": name, "flags": flags, "subcommands": [] });
+                if command == Command::Help {
+                    entry["aliases"] = json!(HELP_ALIASES);
+                }
+                if command == Command::Work {
+                    entry["internal"] = json!(true);
+                }
+                entry
+            }
+        }
+    }).collect();
+    let flags: Vec<_> = [VERSION_FLAG, USAGE_FLAG].into_iter().chain(HELP_ALIASES)
+        .map(|name| json!({ "name": name, "valueKind": "boolean" })).collect();
+    let environment: BTreeSet<_> = zodchi_flow::environment_keys().chain([
+        "ZODCHI_HOME", "ZODCHI_ROLES", "ZODCHI_CODEX_BIN", zodchi_core::claude::ENV_BIN,
+        "CODEX_HOME", "CLAUDE_CONFIG_DIR", "OPENAI_API_KEY", "SystemRoot",
+        "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY",
+        "https_proxy", "http_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE",
+    ]).collect();
+    json!({
+        "flags": flags,
+        "commands": commands,
+        "environment": environment,
+        "configFiles": [
+            { "path": "~/.zodchi/flow.json", "keys": ["server", "tokenFile", "claude", "claudeExperts", "credits"] },
+            { "path": "~/.zodchi/models.json", "keys": ["roles"] },
+            { "path": ".zodchi/models.json", "keys": ["roles"] },
+            { "path": "~/.zodchi/accounts.json", "keys": ["accounts", "accounts[].name", "accounts[].codexHome"] },
+            { "path": "~/.zodchi/config.json", "keys": ["maxParallelJobs"] },
+            { "path": "~/.zodchi/private-words.txt", "format": "one word or phrase per line" },
+            { "path": ".zodchi/allowed-words.txt", "format": "one word or phrase per line" },
+            { "path": ".zodchi/workflows.json", "keys": ["domains"] },
+            { "path": ".zodchi/verify.json", "keys": ["setup", "checks", "verify", "cache", "env", "writerEnv", "tools", "full"] },
+        ],
+        "exitCodes": {
+            "0": "success or approved",
+            "1": "command failure or wrong call",
+            "2": "not approved, another final status, or a bad status call",
+            "3": {
+                "sign-in": "sign-in required in agent mode (stderr error.kind sign-in)",
+                "pending": "job still running (run, wait, job) or timed out waiting (flow wait)",
+            },
+        },
+    })
+}
 
 #[derive(Clone, Default)]
 struct Options {
@@ -75,21 +319,20 @@ impl Options {
     }
 }
 
-fn parse(command: &str, args: &[String]) -> Result<Options> {
+fn parse(command: Option<Command>, args: &[String]) -> Result<Options> {
     let mut o = Options::default();
     let mut i = 0;
     while i < args.len() {
         let Some(name) = args[i].strip_prefix("--") else { return fail(format!("Unexpected argument: {}", args[i])) };
-        if command == "wait" && !matches!(name, "key" | "out" | "wait-sec" | "root" | "context" | "all" | "any" | "list" | "keys") {
+        let kind = command.and_then(|command| command.flag_kind(name));
+        if command == Some(Command::Wait) && kind.is_none() {
             return fail(format!("Unexpected wait option: --{name}"));
         }
-        if command == "wait" && matches!(name, "list" | "keys") && o.get(name).is_some() {
+        if command == Some(Command::Wait) && matches!(name, "list" | "keys") && o.get(name).is_some() {
             return fail(format!("Repeated option: --{name}"));
         }
-        if ["credits", "paid", "keep-thread", "no-keep-thread"].contains(&name)
-            || (name == "quiet" && command == "submit")
-            || (command == "wait" && matches!(name, "any" | "all"))
-        {
+        // Generic job commands historically accepted the job switches even when they had no effect.
+        if kind == Some("boolean") || JOB_FLAGS.contains(&(name, "boolean")) {
             o.switches.insert(name.to_string());
             i += 1;
             continue;
@@ -152,14 +395,6 @@ fn provider(options: &Options) -> Result<&str> {
         "claude" if options.get("model").is_some() => Ok("claude"),
         "claude" => fail("--provider claude needs an explicit --model."),
         _ => fail("--provider must be codex or claude."),
-    }
-}
-
-fn configuration(root: Option<&Path>, context: Option<&Path>) -> Result<Config> {
-    match (root, context) {
-        (Some(_), Some(_)) => fail("--root and --context exclude each other."),
-        (None, Some(path)) => Config::context(path),
-        _ => Config::new(root),
     }
 }
 
@@ -392,7 +627,7 @@ fn wait_batch(cfg: &Config, options: &Options) -> Result<u8> {
     }
     let timed_out = if all { !pending.is_empty() } else { done.is_empty() };
     print(&json!({ "mode": if all { "all" } else { "any" }, "jobs": jobs, "done": done, "pending": pending }));
-    Ok(if timed_out { 3 } else if failed { 2 } else { 0 })
+    Ok(if timed_out { STILL_RUNNING } else if failed { NOT_APPROVED } else { 0 })
 }
 
 fn print(value: &Value) {
@@ -409,12 +644,12 @@ fn report(current: &Value, extra: Value) -> u8 {
     print(&out);
     match current.get("status").and_then(Value::as_str).unwrap_or("") {
         "succeeded" => 0,
-        s if is_terminal(s) => 2,
-        _ => 3,
+        s if is_terminal(s) => NOT_APPROVED,
+        _ => STILL_RUNNING,
     }
 }
 
-fn wait_and_report(cfg: &Config, o: &Options, key: &str, mut extra: Value) -> Result<u8> {
+fn wait_and_report(cfg: &Config, o: &Options, key: &str, mut extra: Value, report_sign_in: bool) -> CliResult<u8> {
     let seconds: u64 = o.get("wait-sec").map(|s| s.parse().unwrap_or(540)).unwrap_or(540);
     let done = job::wait(cfg, key, Duration::from_secs(seconds))?;
     if let Some(out) = o.get("out") {
@@ -422,44 +657,66 @@ fn wait_and_report(cfg: &Config, o: &Options, key: &str, mut extra: Value) -> Re
             extra["written"] = json!(deliver(&done, Path::new(out))?);
         }
     }
-    Ok(report(&done, extra))
-}
-
-fn status(args: &[String]) -> Result<u8> {
-    let mut root = None;
-    let mut context = None;
-    let mut json_output = false;
-    let mut keys = Vec::new();
-    let mut args = args.iter();
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--json" if !json_output => json_output = true,
-            "--root" | "--context" if root.is_none() && context.is_none() => {
-                let Some(path) = args.next().filter(|p| !p.is_empty() && !p.starts_with("--")) else {
-                    return fail(format!("{arg} needs a directory"));
-                };
-                if arg == "--root" {
-                    root = Some(Path::new(path));
-                } else {
-                    context = Some(Path::new(path));
-                }
-            }
-            key if zodchi_core::util::is_key(key) => keys.push(key),
-            _ => return fail(format!("Unexpected status argument: {arg}")),
+    let code = report(&done, extra);
+    if report_sign_in {
+        if let Some(provider) = SignIn::for_job(&done) {
+            return Err(Failure::sign_in(provider));
         }
     }
-    if keys.is_empty() {
-        return fail("Usage: zodchi status <key> [<key>...] [--json]");
+    Ok(code)
+}
+
+#[derive(Default)]
+struct StatusOptions<'a> {
+    root: Option<&'a Path>,
+    context: Option<&'a Path>,
+    json_output: bool,
+    keys: Vec<&'a str>,
+}
+
+impl<'a> StatusOptions<'a> {
+    fn parse(args: &'a [String]) -> Result<Self> {
+        let mut options = Self::default();
+        let mut args = args.iter();
+        while let Some(arg) = args.next() {
+            let name = arg.strip_prefix("--");
+            match name.and_then(|name| Command::Status.flag_kind(name)) {
+                Some("boolean") if !options.json_output => options.json_output = true,
+                Some("directory") if options.root.is_none() && options.context.is_none() => {
+                    let Some(path) = args.next().filter(|p| !p.is_empty() && !p.starts_with("--")) else {
+                        return fail(format!("{arg} needs a directory"));
+                    };
+                    if name == Some("root") {
+                        options.root = Some(Path::new(path));
+                    } else {
+                        options.context = Some(Path::new(path));
+                    }
+                }
+                _ if is_key(arg) => options.keys.push(arg),
+                _ => return fail(format!("Unexpected status argument: {arg}")),
+            }
+        }
+        if options.keys.is_empty() {
+            return fail("Usage: zodchi status <key> [<key>...] [--json]");
+        }
+        Ok(options)
     }
-    let cfg = configuration(root, context)?;
+}
+
+fn status(args: &[String], agent: bool) -> CliResult<u8> {
+    let StatusOptions { root, context, json_output, keys } = StatusOptions::parse(args)
+        .map_err(|error| Failure::wrong_call(error, NOT_APPROVED))?;
+    let cfg = Config::for_cli(root, context, agent).map_err(|error| Failure::from(error).with_code(NOT_APPROVED))?;
     let mut rows = Vec::new();
-    let mut code = 0;
+    let mut failure = None;
     for key in keys {
         let current = match job::job(&cfg, key) {
             Ok(current) => current,
             Err(error) => {
-                eprintln!("{error}");
-                code = 2;
+                if !agent {
+                    eprintln!("{error}");
+                }
+                failure.get_or_insert_with(|| Failure::from(error).with_code(NOT_APPROVED));
                 continue;
             }
         };
@@ -476,46 +733,70 @@ fn status(args: &[String]) -> Result<u8> {
     if json_output {
         print(&Value::Array(rows));
     }
-    Ok(code)
+    match failure {
+        Some(failure) if agent => Err(failure),
+        Some(_) => Ok(NOT_APPROVED),
+        None => Ok(0),
+    }
 }
 
-fn main_inner(args: Vec<String>) -> Result<u8> {
-    if let Some(code) = release::route(&args)? {
+fn main_inner(args: &[String], agent: bool) -> CliResult<u8> {
+    if let Some(code) = release::route(args, agent)? {
         return Ok(code);
     }
-    let Some(command) = args.first().cloned() else {
+    let Some(name) = args.first() else {
         println!("{USAGE}");
         return Ok(0);
     };
-    if args == ["--version"] {
+    if matches!(args, [flag] if flag == VERSION_FLAG) {
         println!("zodchi {}", env!("CARGO_PKG_VERSION"));
         return Ok(0);
     }
-    if command == "release" {
-        print(&release::cli(&args[1..])?);
+    if matches!(args, [flag] if flag == USAGE_FLAG) {
+        print(&usage());
         return Ok(0);
     }
-    if command == "flow" {
-        let exit = zodchi_flow::cli(&args[1..])?;
+    let command = Command::named(name);
+    if command == Some(Command::Release) {
+        match release::cli(&args[1..])? {
+            release::Output::Json(value) => print(&value),
+            release::Output::Text(text) => println!("{text}"),
+        }
+        return Ok(0);
+    }
+    if command == Some(Command::Flow) {
+        let exit = zodchi_flow::cli(&args[1..]).map_err(|error| {
+            if agent {
+                if let Some(provider) = SignIn::for_gate(&error.0) {
+                    return Failure::sign_in(provider);
+                }
+            }
+            Failure::from(error)
+        })?;
         print(&exit.result);
+        if agent {
+            if let Some(provider) = zodchi_flow::sign_in_required(&args[1..], &exit) {
+                return Err(Failure::sign_in(provider));
+            }
+        }
         return Ok(exit.code);
     }
-    if command == "status" {
-        return status(&args[1..]).or_else(|error| {
-            eprintln!("{error}");
-            Ok(2)
-        });
+    if command == Some(Command::Status) {
+        return status(&args[1..], agent);
     }
-    let o = parse(&command, &args[1..])?;
-    let cfg = configuration(o.get("root").map(Path::new), o.get("context").map(Path::new))?;
-    match command.as_str() {
-        "run" => {
+    if agent && command.is_none() {
+        return Err(Failure::wrong_call(GatewayError(USAGE.into()), COMMAND_FAILED));
+    }
+    let o = parse(command, &args[1..]).map_err(|error| Failure::wrong_call(error, COMMAND_FAILED))?;
+    let cfg = Config::for_cli(o.get("root").map(Path::new), o.get("context").map(Path::new), agent)?;
+    match command {
+        Some(Command::Run) => {
             let req = request(&cfg, &o)?;
             let (_, created) = job::submit_for(&cfg, &req, true, provider(&o)?)?;
-            wait_and_report(&cfg, &o, &req.key, json!({ "created": created }))
+            wait_and_report(&cfg, &o, &req.key, json!({ "created": created }), agent)
         }
-        "submit" if o.get("list").is_some() => submit_list(&cfg, &o),
-        "submit" => {
+        Some(Command::Submit) if o.get("list").is_some() => Ok(submit_list(&cfg, &o)?),
+        Some(Command::Submit) => {
             let req = request(&cfg, &o)?;
             let (current, created) = job::submit_for(&cfg, &req, true, provider(&o)?)?;
             if o.has("quiet") {
@@ -525,43 +806,48 @@ fn main_inner(args: Vec<String>) -> Result<u8> {
             }
             Ok(0)
         }
-        "wait" if o.has("all") || o.has("any") || o.get("keys").is_some() || o.get("list").is_some() => wait_batch(&cfg, &o),
-        "wait" => wait_and_report(&cfg, &o, o.get("key").unwrap_or(""), json!({})),
-        "job" => Ok(report(&job::job(&cfg, o.get("key").unwrap_or(""))?, json!({}))),
-        "work" => {
+        Some(Command::Wait) if o.has("all") || o.has("any") || o.get("keys").is_some() || o.get("list").is_some() => Ok(wait_batch(&cfg, &o)?),
+        Some(Command::Wait) => wait_and_report(&cfg, &o, o.get("key").unwrap_or(""), json!({}), false),
+        Some(Command::Job) => Ok(report(&job::job(&cfg, o.get("key").unwrap_or(""))?, json!({}))),
+        Some(Command::Work) => {
             job::work(&cfg, o.get("key").unwrap_or(""))?;
             Ok(0)
         }
-        "roles" => {
+        Some(Command::Roles) => {
             print(&Value::Array(roles(&cfg)));
             Ok(0)
         }
-        "check" => {
+        Some(Command::Check) => {
             let result = job::check(&cfg, &role(&cfg, &o)?)?;
             print(&result);
             Ok(if result.get("ok") == Some(&json!(true)) { 0 } else { 2 })
         }
-        "account" => {
+        Some(Command::Account) => {
             print(&job::account(&cfg));
             Ok(0)
         }
-        "help" | "--help" | "-h" => {
+        Some(Command::Help) => {
             println!("{USAGE}");
             Ok(0)
         }
-        _ => {
+        None => {
             println!("{USAGE}");
-            Ok(1)
+            Ok(COMMAND_FAILED)
         }
+        Some(Command::Release | Command::Flow | Command::Status) => unreachable!("handled before job parsing"),
     }
 }
 
+fn requests_status_json(args: &[String]) -> bool {
+    args.first().is_some_and(|name| Command::named(name) == Some(Command::Status))
+        && args[1..].iter().any(|arg| arg.strip_prefix("--") == Some(JSON_FLAG))
+}
+
 fn main() -> ExitCode {
-    match main_inner(std::env::args().skip(1).collect()) {
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    let agent = agent_requested() || (!std::io::stdout().is_terminal() && requests_status_json(&args));
+    match main_inner(&args, agent) {
         Ok(code) => ExitCode::from(code),
-        Err(error) => {
-            eprintln!("{error}");
-            ExitCode::from(1)
-        }
+        Err(failure) => ExitCode::from(failure.print(agent)),
     }
 }

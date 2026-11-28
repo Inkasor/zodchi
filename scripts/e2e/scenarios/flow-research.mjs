@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 
 export default function register({ scenario, flowWorld, zodchi, FAKE_FLOW }) {
-  function fixture(t, name) {
+  function fixture(t, name, proposal = "Use a support at each edge.") {
     const f = flowWorld(t, name);
     const tmp = path.join(f.w.dir, "decisions");
     const file = name => path.join(f.w.dir, name);
@@ -18,7 +18,7 @@ export default function register({ scenario, flowWorld, zodchi, FAKE_FLOW }) {
       questions: [{ file: question, title: "Supports" }], attachments: [attachment] }));
     f.answer("constraints", { complete: true, constraints: [{ text: "Hold one small box.", status: "unconfirmed", decision: "" }] });
     f.answer("ask q1", {
-      items: [{ text: "Use a support at each edge.", group: "Supports", replaces: [] }],
+      items: [{ text: proposal, group: "Supports", replaces: [] }],
       assumptions: [],
       facts: [{ claim: "The drawing places a support at each edge.", source: "1-tools.txt:2" }],
     });
@@ -28,29 +28,12 @@ export default function register({ scenario, flowWorld, zodchi, FAKE_FLOW }) {
     });
     return { f, tmp, args, file, run };
   }
-  scenario("flow-research-ordinary-words", "keep ordinary credential vocabulary in an expert proposal", async t => {
-    const { f, tmp, args, file, run } = fixture(t, "flow-research-ordinary-words");
-    const text = "Keep the access token in an httpOnly cookie.";
-    f.answer("ask q1", {
-      items: [{ text, group: "Access", replaces: [] }],
-      assumptions: [],
-      facts: [],
-    });
-    const ready = await run(["research", "--args", args]);
-    t.eq([ready.code, ready.json?.status], [2, "waiting"], "the expert answer reaches the owner");
-    t.ok(fs.readFileSync(ready.json.list, "utf8").includes(text), "the owner sees the complete proposal");
-    const id = ready.json.runId;
-    const reply = file("owner.json");
-    fs.writeFileSync(reply, JSON.stringify([{ n: 1, verdict: "accept" }]));
-    t.eq((await run(["reply", id, "--file", reply])).code, 0, "the owner accepts the proposal");
-    const completed = await run(["research", "--resume", id]);
-    t.eq([completed.code, completed.json?.approved], [0, true], "the round finishes");
-    const ledger = JSON.parse(fs.readFileSync(path.join(tmp, "decisions.json"), "utf8"));
-    t.eq(ledger.entries[0].text, text, "the ledger keeps the proposal text");
-    t.eq(f.steps(), ["constraints", "ask q1"], "each required role ran once");
-  });
   scenario("flow-research-owner-resume", "call each role once and resume the exact list and owner decision", async t => {
-    const { f, tmp, args, file, run } = fixture(t, "flow-research-owner-resume");
+    const proposal = "Use a support at each edge. Keep the access token in an httpOnly cookie.";
+    const { f, tmp, args, file, run } = fixture(t, "flow-research-owner-resume", proposal);
+    const supported = { id: "F1.1", verdict: "supported", note: "Checked the second line." };
+    const extra = { id: "F1.2", verdict: "contradicted", note: "Outside the batch." };
+    f.answer("check f1", { verdicts: [extra, supported] });
     const first = await run(["research", "--args", args], { ZODCHI_FLOW_CUT: "submit ask q1" });
     t.eq(first.code, 75, "after the expert's submit the original CLI was cut");
     const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
@@ -58,17 +41,21 @@ export default function register({ scenario, flowWorld, zodchi, FAKE_FLOW }) {
     t.eq([ready.code, ready.json?.status], [2, "waiting"], "the resumed run waits for a list decision");
     t.eq(f.steps(), ["constraints", "ask q1", "check f1"], "the three roles ran once");
     t.ok(!fs.readFileSync(path.join(f.w.codex, "fake-turns.jsonl"), "utf8").includes("DENY-THIS-WORD-62"), "no private material reaches a model");
-    t.ok(fs.readFileSync(ready.json.list, "utf8").includes("Use a support at each edge"), "the owner can inspect the list");
+    t.ok(fs.readFileSync(ready.json.list, "utf8").includes(proposal), "the owner sees the complete proposal, including ordinary credential vocabulary");
+    const report = JSON.parse(fs.readFileSync(ready.json.facts, "utf8"));
+    t.eq([report.verdicts, report.extraIds], [[supported], [extra.id]], "an extra ID is reported and the complete batch is accepted");
     const response = file("owner.json");
     fs.writeFileSync(response, JSON.stringify([{ n: 1, verdict: "accept" }]));
     t.eq((await run(["reply", id, "--file", response])).code, 0, "record the exact owner choice");
     t.eq((await run(["research", "--resume", id], { ZODCHI_FLOW_CUT: "research decisions" })).code, 75, "cut after the atomic decision write");
     const completed = await run(["research", "--resume", id]);
-    t.eq([completed.code, completed.json?.runId], [0, id], "the last CLI closes the same round");
+    t.eq([completed.code, completed.json?.runId, completed.json?.approved], [0, id, true], "the last CLI approves and closes the same round");
     const ledger = JSON.parse(fs.readFileSync(path.join(tmp, "decisions.json"), "utf8"));
     t.eq([ledger.appliedRounds, ledger.entries.length, ledger.entries[0].state], [[1], 1, "accepted"], "exactly one accepted decision was applied");
+    t.eq(ledger.entries[0].text, proposal, "the ledger keeps the complete proposal");
     t.eq(f.steps(), ["constraints", "ask q1", "check f1"], "no model is called during the reply");
     await checkScrubbedReply(t);
+    await checkExpertLineLengths(t, f.steps());
   });
   async function checkScrubbedReply(t) {
     const { f, tmp, args, file, run } = fixture(t, "flow-research-scrubbed-reply");
@@ -81,8 +68,8 @@ export default function register({ scenario, flowWorld, zodchi, FAKE_FLOW }) {
     const full = "🪵".repeat(600);
     fs.writeFileSync(reply, JSON.stringify([{ n: 1, verdict: "fix", text: full + "x" }]));
     t.ok((await run(["reply", id, "--file", reply])).code !== 0, "reject a 601-character owner correction");
-    const raw = "DENY-THIS-WORD-62\n".repeat(30) + "Use oak.";
-    const expected = "[private text removed]\n".repeat(30) + "Use oak.";
+    const raw = "DENY-THIS-WORD-62\n".repeat(30) + "sk-x\n".repeat(10) + "Use oak.";
+    const expected = "[private text removed]\n".repeat(40) + "Use oak.";
     const fixes = items.map((_, i) => ({ n: i + 1, verdict: "fix", text: i ? full : raw }));
     fs.writeFileSync(reply, JSON.stringify(fixes));
     t.eq((await run(["reply", id, "--file", reply])).code, 0, "record every bounded correction");
@@ -92,43 +79,141 @@ export default function register({ scenario, flowWorld, zodchi, FAKE_FLOW }) {
     t.eq((await run(["research", "--resume", id])).code, 0, "resume applies the recorded reply");
     const ledger = JSON.parse(fs.readFileSync(path.join(tmp, "decisions.json"), "utf8"));
     t.eq(ledger.entries.map(e => e.text), recorded.map(a => a.text), "all thirty corrections are applied verbatim");
+    t.eq(f.steps(), ["constraints", "ask q1"], "a fact-free round only calls the constraint checker and expert once");
+  }
+  async function checkExpertLineLengths(t, normalSteps) {
+    const { f, args, file, run } = fixture(t, "flow-research-expert-line-lengths");
+    const limit = 600;
+    const marker = " […]";
+    const kept = limit - [...marker].length;
+    const tail = ' "хвост"\r\n  ';
+    const cyrillic = "я".repeat(2 * limit - [...tail].length) + tail;
+    const exact = "🪵".repeat(limit);
+    const oneOver = exact + "я";
+    const claim = "д".repeat(limit + 1);
+    const item = text => ({ text, group: "Supports", replaces: [] });
+    f.answer("ask q1", {
+      items: [cyrillic, exact, oneOver].map(item),
+      assumptions: [],
+      facts: [{ claim, source: "1-tools.txt:2" }],
+    });
+
+    const roleDir = file("roles");
+    fs.mkdirSync(roleDir, { recursive: true });
+    for (const role of ["research-constraints", "research-expert", "research-fact-check"]) {
+      for (const ext of [".json", ".md", ".schema.json"]) {
+        const name = role + ext;
+        fs.copyFileSync(path.join(f.w.env.ZODCHI_ROLES, name), path.join(roleDir, name));
+      }
+    }
+    f.w.env.ZODCHI_ROLES = roleDir;
+    const schemaFile = path.join(roleDir, "research-expert.schema.json");
+    const schema = fs.readFileSync(schemaFile, "utf8");
+    const legacy = JSON.parse(schema);
+    legacy.properties.items.items.properties.text.maxLength = limit;
+    legacy.properties.facts.items.properties.claim.maxLength = limit;
+    fs.writeFileSync(schemaFile, JSON.stringify(legacy));
+
+    const cut = await run(["research", "--args", args], { ZODCHI_FLOW_CUT: "submit check f1" });
+    t.eq(cut.code, 75, "the round collects the long lines and submits the fact check");
+    const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
+    const journal = path.join(f.w.zhome, "flows", id);
+    const events = () => fs.readFileSync(path.join(journal, "events.jsonl"), "utf8")
+      .trim().split("\n").map(line => JSON.parse(line));
+    const shortening = rows => rows.filter(e => e.kind === "expert line shortened");
+    const before = events();
+    const shortened = shortening(before);
+    t.eq(shortened.map(e => [e.question, e.section, e.line, e.originalChars, e.originalText]), [
+      [1, "items", 1, 2 * limit, cyrillic],
+      [1, "items", 3, limit + 1, oneOver],
+      [1, "facts", 1, limit + 1, claim],
+    ], "collect journals only shortened lines, with their positions, lengths and full originals");
+    const intent = before.find(e => e.kind === "intent" && e.step === "ask q1");
+    const sent = JSON.parse(fs.readFileSync(path.join(journal, intent.request), "utf8")).role.outputSchema.properties;
+    t.ok(!Object.hasOwn(sent.items.items.properties.text, "maxLength")
+      && !Object.hasOwn(sent.facts.items.properties.claim, "maxLength"),
+      "the executor receives a schema that permits the long lines");
+
+    fs.writeFileSync(schemaFile, schema);
+    const ready = await run(["research", "--resume", id]);
+    t.eq([ready.code, ready.json?.status], [2, "waiting"], "the resumed round reaches the owner list after the schema update");
+    const list = JSON.parse(fs.readFileSync(path.join(journal, "list.json"), "utf8"));
+    t.eq(list.lines.map(row => row.text), [
+      "я".repeat(kept) + marker, exact, "🪵".repeat(kept) + marker,
+    ], "collect keeps the 600-character line and shortens both longer lines to 600 characters");
+    t.eq(list.facts.facts[0].claim, "д".repeat(kept) + marker, "the fact report uses the bounded claim");
+    t.eq(shortening(events()), shortened, "resume preserves the original journal events without duplicating them");
+    t.eq(f.steps(), normalSteps, "shortening and resume use the same executor turns as a normal answer");
+
+    for (const [name, invalid] of [
+      ["blank", item(" ".repeat(limit + 1))],
+      ["wrong-type", item(42)],
+      ["missing-field", { text: cyrillic, replaces: [] }],
+    ]) {
+      const bad = fixture(t, "flow-research-expert-line-" + name);
+      bad.f.answer("ask q1", { items: [invalid], assumptions: [], facts: [] });
+      const stopped = await bad.run(["research", "--args", bad.args]);
+      t.eq([stopped.code, stopped.json?.stoppedAt, stopped.json?.reason],
+        [2, "collect", "Question 1 has an invalid items line."], name + " keeps the original collect error");
+    }
+
+    for (const [name, peerItems, reason, recordedQuestions] of [
+      ["peer-error", [{ ...item(oneOver), replaces: ["missing"] }],
+        "A proposal replaces an unavailable decision.", [1]],
+      ["line-budget", [item(oneOver), item("Add a bracket.")],
+        "The proposals and assumptions exceed the round line budget.", [1, 2]],
+    ]) {
+      const wave = fixture(t, "flow-research-expert-line-" + name);
+      const spec = JSON.parse(fs.readFileSync(wave.args, "utf8"));
+      spec.questions.push({ ...spec.questions[0], title: "Brackets" });
+      spec.maxLines = 2;
+      fs.writeFileSync(wave.args, JSON.stringify(spec));
+      wave.f.answer("ask q1", { items: [item(oneOver)], assumptions: [], facts: [] });
+      wave.f.answer("ask q2", { items: peerItems, assumptions: [], facts: [] });
+      const stopped = await wave.run(["research", "--args", wave.args]);
+      t.eq([stopped.code, stopped.json?.stoppedAt, stopped.json?.reason], [2, "collect", reason], name + " stops collection");
+      const events = fs.readFileSync(path.join(stopped.json.journal, "events.jsonl"), "utf8")
+        .trim().split("\n").map(line => JSON.parse(line));
+      const records = shortening(events);
+      t.eq(records.map(e => e.question), recordedQuestions, name + " retains the validated answers' shortening records");
+      const peer = events.find(e => e.kind === "done" && e.step === "ask q2");
+      t.ok(records[0]?.seq < peer?.seq, name + " records the first answer before collecting the peer");
+    }
   }
   scenario("flow-research-contradicted", "stop on a checked contradiction before presenting any list", async t => {
     const { f, args, run } = fixture(t, "flow-research-contradicted");
-    f.answer("check f1", { verdicts: [{ id: "F1.1", verdict: "contradicted", note: "A different line is needed." }] });
-    const stopped = await run(["research", "--args", args]);
-    t.eq([stopped.code, stopped.json?.stoppedAt], [2, "facts contradicted"], "a contradiction is a mechanical stop");
-    const journal = path.join(f.w.zhome, "flows", stopped.json.runId);
-    t.ok(!fs.existsSync(path.join(journal, "list.json")), "no decision list was built");
-    const resume = await run(["research", "--resume", stopped.json.runId]);
-    t.eq([resume.code, f.steps()], [2, ["constraints", "ask q1", "check f1"]], "no stopped model step is repeated");
-
-    const many = fixture(t, "flow-research-fact-wave");
-    const spec = JSON.parse(fs.readFileSync(many.args, "utf8"));
+    const spec = JSON.parse(fs.readFileSync(args, "utf8"));
     spec.questions = Array.from({ length: 3 }, (_, i) => ({ ...spec.questions[0], title: `Shelf ${i + 1}` }));
-    fs.writeFileSync(many.args, JSON.stringify(spec));
+    fs.writeFileSync(args, JSON.stringify(spec));
     const ids = [];
     for (let q = 1; q <= 3; q++) {
       const facts = Array.from({ length: 12 }, (_, i) => {
         ids.push(`F${q}.${i + 1}`);
         return { claim: "The drawing shows two supports.", source: "1-tools.txt:2" };
       });
-      many.f.answer(`ask q${q}`, { items: [{ text: "Use two supports.", group: "Supports", replaces: [] }], assumptions: [], facts });
+      f.answer(`ask q${q}`, { items: [{ text: "Use two supports.", group: "Supports", replaces: [] }], assumptions: [], facts });
     }
+    const checked = ids.slice(0, 30).map(id => ({
+      id, verdict: id === ids[0] ? "contradicted" : "supported", note: "Checked the cited line.",
+    }));
     for (let i = 0; i < 2; i++) {
-      many.f.answer(`check f${i + 1}`, { verdicts: ids.slice(i * 15, (i + 1) * 15).map(id => ({
-        id, verdict: id === ids[0] ? "contradicted" : "supported", note: "Checked the cited line.",
-      })) });
+      f.answer(`check f${i + 1}`, { verdicts: checked.slice(i * 15, (i + 1) * 15).reverse() });
     }
-    const wave = await many.run(["research", "--args", many.args]);
+    const wave = await run(["research", "--args", args]);
     t.eq([wave.code, wave.json?.stoppedAt], [2, "facts contradicted"], "a contradiction stops the next fact wave");
-    const events = fs.readFileSync(path.join(many.f.w.zhome, "flows", wave.json.runId, "events.jsonl"), "utf8")
+    const journal = path.join(f.w.zhome, "flows", wave.json.runId);
+    t.ok(!fs.existsSync(path.join(journal, "list.json")), "no decision list was built");
+    const events = fs.readFileSync(path.join(journal, "events.jsonl"), "utf8")
       .trim().split("\n").map(line => JSON.parse(line));
     t.eq(events.filter(e => e.step?.startsWith("check f") && ["submitted", "done"].includes(e.kind))
       .map(e => [e.kind, e.step]), [["submitted", "check f1"], ["submitted", "check f2"], ["done", "check f1"], ["done", "check f2"]],
       "both fact jobs are submitted before either result is collected");
     const verdicts = JSON.parse(fs.readFileSync(wave.json.facts, "utf8")).verdicts;
+    t.eq(verdicts.slice(0, 30), checked, "the report keeps the checked verdicts in fact order");
     t.eq(verdicts.filter(v => v.verdict === "unchecked").map(v => v.id), ids.slice(30), "only facts in the unstarted wave are unchecked");
+    const resume = await run(["research", "--resume", wave.json.runId]);
+    t.eq([resume.code, f.steps().sort()], [2, ["ask q1", "ask q2", "ask q3", "check f1", "check f2", "constraints"]],
+      "no stopped model step is repeated");
   });
   scenario("flow-research-unchecked", "keep a report when the fact checker omits a verdict", async t => {
     const { f, args, run } = fixture(t, "flow-research-unchecked");

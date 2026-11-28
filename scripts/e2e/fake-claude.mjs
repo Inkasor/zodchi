@@ -17,7 +17,7 @@
 // error result. answers/<step>.exit holds an exit code the program ends with after printing its answer. Every
 // invocation is logged to calls.jsonl in FAKE_CLAUDE_HOME: {pid, at, args, kind} with kind "version", "auth" (with
 // the orgId answered) or "call"; a call adds step, model, effort, apiKey (whether an ANTHROPIC_ variable reached
-// it), cwd and prompt.
+// it), cwd and prompt. With FAKE_CLAUDE_LOG_PROFILE=1, a call also logs its profile directory variables.
 import fs from "node:fs";
 import path from "node:path";
 
@@ -64,8 +64,13 @@ process.stdin.on("end", () => {
   const text = content.find((part) => part.type === "text")?.text ?? "";
   const images = content.filter((part) => part.type === "image").map((part) => [part.source.media_type, part.source.data]);
   const step = (text.match(/^Step: (.+?) \(/m) || [])[1] || "";
+  const profile = process.env.FAKE_CLAUDE_LOG_PROFILE === "1" ? {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+  } : undefined;
   log({ kind: "call", step, model: after("--model"), effort: after("--effort"),
-    apiKey: Object.keys(process.env).some((k) => k.toUpperCase().startsWith("ANTHROPIC_")), cwd: process.cwd(), prompt: text, images });
+    apiKey: Object.keys(process.env).some((k) => k.toUpperCase().startsWith("ANTHROPIC_")), cwd: process.cwd(), prompt: text, images, profile });
   // The flags of a call without tools, MCP servers, hooks or a kept session, and a JSON result.
   const tools = after("--tools");
   const required = ["--strict-mcp-config", "--safe-mode", "--no-session-persistence", "--disable-slash-commands"];

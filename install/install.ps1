@@ -11,4 +11,7 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $releaseArgs = @('release', 'build', '--source', $source, '--out', $Out)
 if ($Archive) { $releaseArgs += '--archive' }
 & (Join-Path $source 'rust/target/release/zodchi.exe') @releaseArgs
+if ($LASTEXITCODE -eq 0) {
+  [Console]::Error.WriteLine('other agents: zodchi release skill --print | --into <dir>')
+}
 exit $LASTEXITCODE

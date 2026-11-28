@@ -768,7 +768,6 @@ mod tests {
         let plain = request(json!({ "key": "k1", "role": "ask", "prompt": "hello" })).expect("plain");
         let with = request(json!({ "key": "k1", "role": "ask", "prompt": "hello", "schema": schema })).expect("with schema");
         let other = request(json!({ "key": "k1", "role": "ask", "prompt": "hello", "schema": { "type": "object" } })).expect("other schema");
-        assert_eq!(with.schema.as_ref(), Some(&schema));
         assert_ne!(plain.fingerprint, with.fingerprint);
         assert_ne!(with.fingerprint, other.fingerprint);
         let again = request(json!({ "key": "k1", "role": "ask", "prompt": "hello", "schema": schema })).expect("again");

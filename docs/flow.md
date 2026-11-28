@@ -42,8 +42,7 @@ zodchi flow code-package --args package.json
 }
 ```
 
-It prints the result JSON and exits 0 when the change is approved, 2 for any other end (refused, stopped, changes
-requested), 1 for a wrong call.
+It prints the result JSON. See [CLI output and exit codes](#cli-output-and-exit-codes) for the exit contract.
 
 The engine validates arguments before claiming files.
 
@@ -66,6 +65,9 @@ The engine validates arguments before claiming files.
 | `models` | role table entries for this run (`expertWriter` in expert mode, `writer` in agent mode, `reviewer` in either) |
 | `extendClaim` | `true`: legacy preauthorization in expert mode. The default waits for an explicit scope decision before application |
 | `checkTimeoutMin` | time limit in minutes of one setup or check command, default 60 |
+| `allowInputLines` | `["path:line", …]` lines at the base commit that the input check refuses but the owner has checked are not secrets (a test fixture, for example). The engine keeps their content digests, allows the same content at every gate of the run, and journals path, line and digest, never the text. Private words and key blocks cannot be allowed |
+| `wave` | `true` for a package in a parallel wave: the writer is told not to build, `verify` is skipped (checks still run), the reviewer knows the lead verifies after integration, and the result says `verifiedBy: "wave-integration"` |
+| `kind` | `"code"` (default) or `"analysis"`; analysis tasks take the `hardWriter` pick of the role table |
 | `tmp`, `commit: true` | accepted for compatibility; the journal replaces `tmp` |
 
 Refused in version 1, each with its reason: `hard`, `branch` (check out the
@@ -73,6 +75,36 @@ branch first), `fixIgnore` (commit `.agent-tmp/` in `.gitignore` first), `closeS
 `--rerun`), `commit: false`. A repository with a verify skill (`.claude/skills/verify/SKILL.md`) and no
 `args.verify` or committed project verification configuration is refused. Pass the skill's commands or declare
 the plan in `.zodchi/verify.json`.
+
+## CLI output and exit codes
+
+`zodchi --usage` prints one JSON document without writing files or calling a model. It describes commands and flags,
+including the installed flow catalog, along with recognized environment variable names, configuration paths and keys,
+and exit codes. Each flag has a `name` and a `valueKind`. A `boolean` flag takes no following value.
+
+Set `ZODCHI_AGENT=1` for machine-readable stderr in any workflow mode. `zodchi status --json` also enables this
+when stdout is redirected. Each stderr line is a JSON object. A warning has the shape
+`{"warning":{"kind":"config","message":"..."}}`. A command that reports a failure on stderr ends with a single
+error envelope containing `error.kind`, `error.message`, `error.hint` and `error.exitCode`. The error kinds are
+`wrong-call`, `sign-in`, `limit`, `refused`, `infra` and `not-found`.
+Messages and hints in the envelope omit local paths, credentials and provider diagnostics. Job and flow results
+continue to appear on stdout, including the existing `refused` field.
+
+`zodchi flow youtube-publish connect` sends the Google consent prompt and URL to the controlling terminal in
+agent mode. If it cannot open a terminal, it reports `sign-in` and exits 3 before starting consent.
+
+| Code | Meaning |
+|---|---|
+| 0 | Success or approval. `submit` returns 0 once the job is stored. |
+| 1 | Command failure or wrong call. The managed launcher checks the flow start syntax before taking the update lock. |
+| 2 | Refused, stopped, not approved or another terminal job status. `status` also returns 2 for a bad call or unknown job key. |
+| 3 | In agent mode, `run` or a flow start, resume or wait needs sign-in. Stderr has `error.kind: "sign-in"`. |
+| 3 | A job is still running in `run`, `wait` or `job`, or a `flow wait` timed out. Read the status on stdout. |
+
+For a stored job, `wait` and `job` report `auth_required` as a terminal job status with code 2. If the account for a
+resumed Codex thread is missing from `accounts.json`, `run` returns code 2 and the job result names the missing
+account. Outside CLI agent mode, sign-in failures keep their existing exit code and diagnostic. After signing
+in for a stopped flow, follow the result's `next` instructions.
 
 ## Browser input for an agent writer
 
@@ -91,6 +123,15 @@ sandbox cannot launch the browser, report the writer check as failed with the la
 candidate-acceptance check on the project's runner.
 
 ## Managing a run
+
+Before a run, `zodchi flow code-package --args <file> --dry-run` runs every gate of a real start (arguments, repository, claim conflicts, input check, verification plan, model table and routes) and prints what would happen: the claim, the models with their routes, the prompt sections with byte sizes, and the checks. It makes no model call, no claim and no journal, and refuses exactly as a real start would.
+
+To end a run without another model step, use `zodchi flow close <run-id> --reason <text>` for a waiting or stopped run, or `zodchi flow cancel <run-id> --reason <text>` for a live one. Both close the claim and write a `closed` result. If a model step was submitted and has no outcome, the result says `unknownOutcome` and nothing is retried. `zodchi flow runs --active` lists live runs, and `zodchi flow wait <run-id>` (or `--all`) blocks until a run finishes, stops or needs the owner.
+
+While a run waits on any owner question, `zodchi flow reply <run-id> --allow-files <file.json>` approves extra paths for the current round in advance. The apply step then goes on without a second stop, and an approved protected path counts as `allowCheckChanges` for this run. A `flow remark` sent while a model step runs reaches the next model step of the run; `flow status` lists pending remarks.
+
+Local Codex steps can spend ChatGPT credits once the subscription limit is used up, when `~/.zodchi/flow.json` has `"credits": true` (off by default; a flow server decides this for itself). Each step's balance before and after is copied into the journal, and `result.credits` and `flow status` show what the run spent.
+
 
 `zodchi flow list` lists available workflows. Add `--detach` to start a worker and receive a run ID immediately.
 `zodchi flow list --repo <directory>` applies the project's committed
@@ -161,10 +202,20 @@ folder with its own lock. If the local Codex version or platform ignores the wri
 there fail in the writer sandbox. Remove the variable that uses `{writerCache}` from the project configuration in
 that environment.
 
-Engine-run setup, checks and verify commands share one slot under the Zodchi home across repositories.
+Engine-run setup, checks and verify commands share one slot across repositories and `ZODCHI_HOME` values.
+On Windows every launch for an account takes the lock in `%LOCALAPPDATA%\zodchi\locks\` first and records its
+holder there. Launches that can write to `%ProgramData%\zodchi\locks\` then take the machine-wide lock and
+mirror the holder receipt there. This lets elevated and ordinary launches for one account share a slot.
+On Unix, all launches for a user share `/tmp/zodchi-<uid>/` with mode `0700`, whether or not they set
+`XDG_RUNTIME_DIR`.
+`ZODCHI_CHECK_SLOT_DIR` is a test and advanced override for the shared slot directory. Use the same override
+for runs and cleanup that share a slot.
+Flow also acquires the original lock in `<home>/locks/` and mirrors the holder receipt there so a run
+resuming with an older pinned engine still shares the slot with new runs in that home.
 `zodchi flow status <run-id>` shows `waiting for the check slot` in `event` and the holder's run ID in
-`step`. Each command's time limit starts after the wait. Writer and reviewer turns can proceed while
-another run holds the slot. Checks use `<home>/flow-checks/<repo-slug>/checkout`, with a repository path slug
+`step`. The wait event also records the holder's home. Each command's time limit starts after the wait.
+Writer and reviewer turns can proceed while another run holds the slot. Checks use
+`<home>/flow-checks/<repo-slug>/checkout`, with a repository path slug
 as in package claims and a digest to distinguish similar paths. A resumed run takes the slot again for any
 pending setup or check step. On Windows the shell starts inside a job object. Flow settles any processes it
 left running before recording the command result and releasing the slot.
@@ -280,6 +331,25 @@ the pinned tree and attaches it with `provenance: "coordinator"`. The result rec
 
 The Rust implementations of `branch-review` and `design-brief` can resume version 1 journals from
 the original shared CLI. They verify the original definition digest and reuse the recorded steps.
+
+### Verify a commit
+
+`zodchi flow verify <commit-or-ref> [--repo <dir>] [--args <file.json>] [--only checks|verify] [--detach]`
+runs the committed `.zodchi/verify.json` plan in the shared check checkout without a claim or model call.
+Use trusted commands in the committed configuration and args file.
+The repository defaults to the current Git checkout. An args JSON object can replace the matching project
+command lists with nonempty `setup`, `checks` and `verify` lists, replace `tools`, or override individual
+`env` entries. Setup runs before either
+selection. `--only checks` runs the cheap checks. `--only verify` runs the verify commands and any local
+`full.commands`. Without `--only`, verification follows successful cheap checks. Select at least one check
+or verify command. Setup and verification receive the verification environment (`env`) and use a
+60-minute limit per command.
+
+The result reports `commit`, `tree`, the journal path and `runId`, and `commands` with their source, exit
+code, elapsed milliseconds, screened `output` and full `log` path. A passing result exits 0, a failed run
+exits 2, and a wrong call exits 1. Use `status` or `wait` with the run ID returned by `--detach`. Pass a
+passing run's ID as `verificationRun` to a branch review of the same tree, or save the result's `receipt`
+object as the review's `verificationFile`.
 
 Discover the catalog with `zodchi flow list` (or `list --repo <directory>` for enabled domains), `zodchi flow --help`, and `zodchi flow <workflow> --help`. These commands return JSON without starting a run.
 
@@ -434,6 +504,7 @@ command and a REVIEW.md):
 | `flow-close-round` | a review with an important finding, the close round, a second commit and a second review that sees the first, approval |
 | `flow-round-exhaustion` | important findings in every review: `stop rule: 2 review rounds without approval`, the findings open, the claim `stopped` |
 | `flow-outside-claim` | unsupported options and a pass rule in words refused before any claim or model call; a patch naming an unclaimed file refused whole, nothing applied, committed or reviewed |
+| `flow-agent-scope` | an agent writer's extra path waits for an owner reply. Also checks unsigned Codex jobs, flow starts, expiry during a flow, account fallback after an auth RPC error, and pending jobs with exit 3 and empty stderr |
 | `flow-protected` | a patch editing an existing test: `protectedChanged`, stopped before review, the test unchanged |
 | `flow-failing-verify` | the cheap check passes, verify exits 1: no commit, no review, `verifiedBy: "none"` with both exit codes |
 | `flow-resume-cuts` | a cut right after the write submission and one right after the commit, each `--resume` going on: one model turn per step, one commit, one intent each |
@@ -447,6 +518,8 @@ command and a REVIEW.md):
 | `flow-index-reconcile-worktree` | resume restores the prepared index before deciding that the checked tree has changed |
 | `flow-edits-approve`, `flow-edits-refused` | exact substitutions preserve line endings and resume by recorded blobs. Missing, ambiguous, overlapping, stale and protected changes stop before any file is written |
 | `flow-private-checks` | commands with private text are redacted in the review evidence. The fixing writer gets the failed check's log with `<tmp>` for the export folder and a credential line left out |
+| `flow-check-slot-homes` | checks in different Zodchi homes serialize and record the holder's run ID and home. Windows exercises both the machine-wide lock and per-user contention with a ProgramData fallback. Unix sets `XDG_RUNTIME_DIR` only for the first run and uses `ZODCHI_TEST_CHECK_SLOT_TMP` to give the default selector a private temporary root during verification |
+| `flow-cleanup-interrupted` | the next cleanup reports and removes a retired journal and an unpublished export, then the interrupted package resumes |
 
 ## Known limits of version 1
 
@@ -498,7 +571,7 @@ to CI.
 |---|---|
 | `flow-entry-skills` | the two skills share one body; exactly the run, resume and rerun commands; a brief template with the review boundary; an args example the engine takes; nothing that backgrounds a run, edits the journal, resubmits or switches branches; no real host |
 | `flow-entry-install` | the installer puts the Codex skill in `$CODEX_HOME/skills` (else `~/.codex/skills`) and the Claude Code skill in the plugin it installs; it leaves a file it did not write or you changed, `--force` replaces it, `--no-codex-skill` skips it (on `--uninstall` too, whatever `$CODEX_HOME` is by then), `--uninstall` removes both |
-| `flow-entry-local` | the Codex skill's steps on the local gateway: brief, args, run from another folder, result read, finished run resumed, a refusal read |
+| `flow-entry-local` | the Codex skill's steps on the local gateway: brief, args, run from another folder, result read, finished run resumed, a refusal read. Also checks `--usage`, JSON errors and warnings, consent without a terminal, and when a flow start takes the release update lock. |
 | `flow-entry-cut` | the Claude Code skill's steps with the run cut after the write submission, and with the `result` cut after the result is saved: the run id found as the skill says, resumed, one model turn per step, no second run, the claim closed without a model call |
 | `flow-entry-failing-verify` | the Codex skill's steps with a verify command that fails: `verifiedBy` is `none` while `verification.evidence` holds the command's exit code, as the skill says to tell it from a run in which nothing ran |
 | `flow-entry-server` | the Codex skill's steps with the model steps on a zodchi-server; nothing runs on this machine's Codex, the token is in no result or commit |

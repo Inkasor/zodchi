@@ -170,12 +170,11 @@ server.listen(0, '127.0.0.1', () => console.log('baseUrl http://127.0.0.1:' + se
     const opening = plan.scenarios[0].steps[0];
     opening.expect = {selector:"#whitespace", text:" alpha\u00a0  beta "}; opening.maxSeconds = 1; write();
     t.eq((await invoke(["candidate-acceptance", "--args", args])).json?.verdict, "fail", "exact text keeps expectation whitespace unless normalization is enabled");
-    opening.expect.normalizeWhitespace = true; write();
-    t.eq((await invoke(["candidate-acceptance", "--args", args])).json?.verdict, "pass", "normalization is opt-in");
-    opening.expect = [{selector:"#missing", count:0}, {selector:"#whitespace", text:"alpha beta", normalizeWhitespace:true}]; delete opening.maxSeconds;
     const last = plan.scenarios[0].steps.at(-1);
+    opening.expect.normalizeWhitespace = true;
     last.click = {selector:"#button", popup:true}; write();
-    t.eq((await invoke(["candidate-acceptance", "--args", args])).json?.verdict, "pass", "same-origin popup is accepted");
+    t.eq((await invoke(["candidate-acceptance", "--args", args])).json?.verdict, "pass", "opt-in normalization and the same-origin popup pass");
+    opening.expect = [{selector:"#missing", count:0}, {selector:"#whitespace", text:"alpha beta", normalizeWhitespace:true}]; delete opening.maxSeconds;
     plan.scenarios[0].steps[0].open = "/external-popup"; write();
     const external = await invoke(["candidate-acceptance", "--args", args]);
     t.eq([external.json?.verdict, external.json?.scenarios?.[0]?.observed?.steps?.at(-1)?.id], ["fail", "click"], "external popup fails at its click step");
@@ -354,22 +353,16 @@ server.listen(0, '127.0.0.1', () => {
     t.eq([final.json?.status, final.json?.verdict, final.json?.scenarios], ["finished", "pass", [{ id: "first", status: "pass" }]], "the handoff carries the exact finished scenario");
   });
 
-  scenario("flow-release-acceptance-gate", "reject an undeclared action and skip UI actions on the wrong deployed SHA", async t => {
-    const { args, write, plan, calls, invoke } = fixture(t, "flow-release-acceptance-gate");
+  scenario("flow-release-acceptance-filters", "enforce release gates and compare a localized amount after applying filters", async t => {
+    const { f, args, write, plan, calls, controls, invoke } = fixture(t, "flow-release-acceptance-filters");
+    const stalePlan = JSON.stringify({ ...plan, health: { ...plan.health, path: "/stale" } });
     const step = plan.scenarios[0].steps[0];
     step.submit = "#save";
     write();
     const refused = await invoke(["release-acceptance", "--args", args]);
     t.eq([refused.code, refused.json?.status, fs.existsSync(calls)], [2, "refused", false], "unknown actions fail the gate before launch");
     delete step.submit;
-    plan.health.path = "/stale";
-    write();
-    const stale = await invoke(["release-acceptance", "--args", args]);
-    t.eq([stale.code, stale.json?.verdict, stale.json?.scenarios[0]?.observed.steps.length], [2, "fail", 0], "the SHA guard runs before opening the product page");
-  });
 
-  scenario("flow-release-acceptance-filters", "apply a desired checkbox state and read a localized amount with shared-domain cookies", async t => {
-    const { f, args, write, plan, calls, controls, invoke } = fixture(t, "flow-release-acceptance-filters");
     plan.baseUrl = "https://dashboard.example.test";
     plan.scenarios = [plan.scenarios[0]];
     const cookie = (name, domain) => ({ name, domain, value: "fixture", path: "/" });
@@ -401,6 +394,10 @@ server.listen(0, '127.0.0.1', () => {
       { cookies: ["parent", "host"], origins: [plan.baseUrl] },
       { selector: "#account", state: true }, { selector: "#account", state: false },
     ], "the adapter retains matching domain cookies and explicitly asks for each checkbox state");
+
+    fs.writeFileSync(args, stalePlan);
+    const stale = await invoke(["release-acceptance", "--args", args]);
+    t.eq([stale.code, stale.json?.verdict, stale.json?.scenarios[0]?.observed.steps.length], [2, "fail", 0], "the SHA guard runs before opening the product page");
   });
 
   scenario("flow-release-acceptance-evidence", "readiness guards placeholders and diagnostics describe visible evidence safely", async t => {

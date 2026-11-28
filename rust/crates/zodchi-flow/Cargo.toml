@@ -7,27 +7,28 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-base64.workspace = true
-form_urlencoded = "1"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 zodchi-core = { path = "../zodchi-core" }
+zodchi-flow-engine = { path = "../zodchi-flow-engine" }
+zodchi-flow-code-package = { path = "../zodchi-flow-code-package" }
+zodchi-flow-asset-round = { path = "../zodchi-flow-asset-round" }
+zodchi-flow-branch-review = { path = "../zodchi-flow-branch-review" }
+zodchi-flow-design-brief = { path = "../zodchi-flow-design-brief" }
+zodchi-flow-incident-triage = { path = "../zodchi-flow-incident-triage" }
+zodchi-flow-method-question = { path = "../zodchi-flow-method-question" }
+zodchi-flow-ops-script = { path = "../zodchi-flow-ops-script" }
+zodchi-flow-research = { path = "../zodchi-flow-research" }
+zodchi-flow-rubric-probe = { path = "../zodchi-flow-rubric-probe" }
+zodchi-flow-unity-check = { path = "../zodchi-flow-unity-check" }
+zodchi-flow-workspace-audit = { path = "../zodchi-flow-workspace-audit" }
+zodchi-flow-video = { path = "../zodchi-flow-video" }
+zodchi-flow-voiceover = { path = "../zodchi-flow-voiceover" }
+zodchi-flow-youtube-publish = { path = "../zodchi-flow-youtube-publish" }
+zodchi-flow-acceptance = { path = "../zodchi-flow-acceptance" }
 serde_json.workspace = true
 rand.workspace = true
-regex = "1"
-regress = { version = "0.12", features = ["utf16"] }
-sha2.workspace = true
 
-[target.'cfg(unix)'.dependencies]
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+
+[target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
-
-[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
-rustix = { version = "1", features = ["fs"] }
-
-[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
-ureq = { workspace = true, features = ["native-tls"] }
-
-[target.'cfg(not(any(windows, target_os = "macos")))'.dependencies]
-ureq = { workspace = true, features = ["rustls"] }
-
-[target.'cfg(any(windows, target_os = "macos", target_os = "linux"))'.dependencies]
-keyring = { version = "3.6.3", default-features = false, features = ["windows-native", "apple-native", "async-secret-service", "async-io", "crypto-rust"] }

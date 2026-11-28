@@ -218,9 +218,9 @@ export default function register({ scenario: registerScenario, world, zodchi, fl
     const remote = await invoke(t, f, ["ops-script", "--args", f.args]);
     t.ok(remote.code === 2 && remote.json?.refused && fs.readdirSync(f.tmp).length === 0, "remote root is refused without connecting");
     data.remote = ["operator", "example.invalid"].join("@");
-    fs.writeFileSync(f.args, JSON.stringify(data));
+    fs.writeFileSync(f.args, JSON.stringify({ ...data, script: "missing", tmp: "missing" }));
     const unsupported = await invoke(t, f, ["ops-script", "--args", f.args]);
-    t.ok(unsupported.code === 2 && unsupported.json?.refused?.includes("no remote action") && fs.readdirSync(f.tmp).length === 0, "a valid remote is explicitly refused before effects");
+    t.ok(unsupported.code === 2 && unsupported.json?.refused?.includes("no remote action") && fs.readdirSync(f.tmp).length === 0, "a valid remote is explicitly refused before path validation or effects");
     delete data.remote;
     data.check = ["{copy}", "--check"];
     data.sudo = ["sudo", "{script}"];
@@ -231,7 +231,7 @@ export default function register({ scenario: registerScenario, world, zodchi, fl
     t.ok(direct.code === 2 && direct.json?.refused && !direct.json?.runId && fs.readdirSync(f.tmp).length === 0, "unsupported direct invocation is refused before a snapshot or repair child");
   });
 
-  scenario("flow-ops-script-resume", "reuses the completed snapshot and never replays an interrupted dry run", async (t) => {
+  scenario("flow-ops-script-resume", "reuses completed effects, resumes after an owner reply and reports detached readiness", async (t) => {
     const f = fixture("flow-ops-script-resume");
     fs.writeFileSync(f.script, "print('checked')\n");
     const cut = await invoke(t, f, ["ops-script", "--args", f.args], { ZODCHI_FLOW_CUT: "ops-done snapshot 0" });
@@ -241,18 +241,14 @@ export default function register({ scenario: registerScenario, world, zodchi, fl
     const events = path.join(flows, id, "events.jsonl");
     const snapshot = JSON.parse(fs.readFileSync(events, "utf8").trim().split("\n").at(-1)).result.snapshot.dir;
     fs.writeFileSync(path.join(flows, id, "worker.json"), JSON.stringify({ pid: 4294967295, start: "dead" }));
-    const resumed = await invoke(t, f, ["ops-script", "--resume", id]);
-    t.eq([resumed.code, resumed.json?.snapshot?.dir], [0, snapshot], "resume uses the original snapshot");
+    const dryCut = await invoke(t, f, ["ops-script", "--resume", id], { ZODCHI_FLOW_CUT: "ops-done dry 0" });
+    t.eq(dryCut.code, 75, "cut after the successful dry-run receipt");
     fs.rmSync(f.script);
+    const resumed = await invoke(t, f, ["ops-script", "--resume", id], { PATH: "" });
+    t.eq([resumed.code, resumed.json?.ready, resumed.json?.snapshot?.dir, resumed.json?.dry?.stdout.trim()],
+      [0, true, snapshot, "checked"], "resume reuses the original snapshot and completed dry run without inputs or tools");
     const reused = await invoke(t, f, ["ops-script", "--resume", id], { PATH: "" });
     t.eq([reused.code, reused.json?.ready, reused.json?.snapshot?.dir], [0, true, snapshot], "completed receipt remains usable without the original or tools");
-    fs.writeFileSync(f.script, "print('checked')\n");
-    const second = await invoke(t, f, ["ops-script", "--args", f.args], { ZODCHI_FLOW_CUT: "ops-start dry 0" });
-    t.eq(second.code, 75, "cut after dry-run intent");
-    const all = fs.readdirSync(flows);
-    const other = all.find(value => value !== id);
-    const unresolved = await invoke(t, f, ["ops-script", "--resume", other]);
-    t.eq([unresolved.code, unresolved.json?.status, unresolved.json?.step], [2, "unresolved", "dry 0"], "an interrupted dry run is not replayed");
 
     const data = JSON.parse(fs.readFileSync(f.args, "utf8"));
     data.fixes = 1;
@@ -281,16 +277,7 @@ export default function register({ scenario: registerScenario, world, zodchi, fl
     t.eq(finished.json?.result?.ready, true, "status exposes the completed detached result");
   });
 
-  scenario("flow-ops-script-recovery", "preserves damaged check outcomes and never repeats an uncertain repair gate", async (t) => {
-    const completed = fixture("flow-ops-script-recovery-completed");
-    fs.writeFileSync(completed.script, "print('completed')\n");
-    const completedCut = await invoke(t, completed, ["ops-script", "--args", completed.args], { ZODCHI_FLOW_CUT: "ops-done dry 0" });
-    t.eq(completedCut.code, 75, "cut after the successful dry-run receipt");
-    const [completedId] = fs.readdirSync(path.join(completed.w.zhome, "flows"));
-    fs.rmSync(completed.script);
-    const completedResume = await invoke(t, completed, ["ops-script", "--resume", completedId], { PATH: "" });
-    t.eq([completedResume.code, completedResume.json?.ready, completedResume.json?.dry?.stdout.trim()], [0, true, "completed"], "completed receipts are reused without the original or tools");
-
+  scenario("flow-ops-script-recovery", "preserves failed and interrupted checks and never repeats an uncertain repair gate", async (t) => {
     const damaged = fixture("flow-ops-script-recovery-damaged");
     fs.writeFileSync(damaged.script, "with open(__file__, 'a') as f: f.write('# changed\\n')\n");
     const cut = await invoke(t, damaged, ["ops-script", "--args", damaged.args], { ZODCHI_FLOW_CUT: "ops-done dry 0" });
@@ -308,6 +295,8 @@ export default function register({ scenario: registerScenario, world, zodchi, fl
     t.eq(started.code, 75, "cut after dry-run intent");
     const interruptedFlows = path.join(interrupted.w.zhome, "flows");
     const [interruptedId] = fs.readdirSync(interruptedFlows);
+    const intact = await invoke(t, interrupted, ["ops-script", "--resume", interruptedId]);
+    t.eq([intact.code, intact.json?.status, intact.json?.step], [2, "unresolved", "dry 0"], "an interrupted dry run is not replayed");
     const events = fs.readFileSync(path.join(interruptedFlows, interruptedId, "events.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
     const snapshot = events.find(event => event.kind === "ops-done" && event.step === "snapshot 0").result.snapshot.dir;
     fs.appendFileSync(path.join(snapshot, path.basename(interrupted.script)), "# damaged\n");
@@ -405,7 +394,8 @@ export default function register({ scenario: registerScenario, world, zodchi, fl
     const tmp = path.join(f.w.dir, "snapshots");
     fs.mkdirSync(tmp);
     const args = path.join(f.w.dir, "args.json");
-    fs.writeFileSync(args, JSON.stringify({ script, tmp, repo: f.r, fixes: 1, check: [interpreter, "{copy}", "--check"], sudo: ["sudo", interpreter, "{script}"] }));
+    const settings = { script, tmp, repo: f.r, fixes: 1, check: [interpreter, "{copy}", "--check"], sudo: ["sudo", interpreter, "{script}"] };
+    fs.writeFileSync(args, JSON.stringify(settings));
 
     const flows = path.join(f.w.zhome, "flows");
     const readEvents = (id) => fs.readFileSync(path.join(flows, id, "events.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
@@ -452,12 +442,15 @@ export default function register({ scenario: registerScenario, world, zodchi, fl
 
     const earlier = new Set(fs.readdirSync(flows));
     fs.writeFileSync(script, "def broken(:\n");
+    const shadow = path.join(f.w.dir, "py_compile.py");
+    fs.writeFileSync(shadow, "raise SystemExit(0)\n");
+    fs.writeFileSync(args, JSON.stringify({ ...settings, files: [shadow] }));
     const syntax = await invoke(t, f, ["ops-script", "--args", args], { ZODCHI_FLOW_CUT: "ops-repair 0" });
     t.eq(syntax.code, 75, "a real syntax error reaches the repair gate");
     const [id] = fs.readdirSync(flows).filter(run => !earlier.has(run));
     const events = readEvents(id);
     const check = events.find(event => event.kind === "ops-done" && event.step === "static 0")?.result?.checks?.at(-1);
-    t.ok(check?.code === 1 && check.stderr.includes("SyntaxError"), "the real compiler recorded the syntax error");
+    t.ok(check?.code === 1 && check.stderr.includes("SyntaxError"), "the real compiler recorded the syntax error despite the snapshot's py_compile.py");
     t.eq(events.filter(event => event.kind === "ops-repair").length, 1, "the syntax error qualifies for a repair");
   });
 

@@ -100,6 +100,7 @@ if (mode === "fail") {
     t.eq([Buffer.byteLength(stdout.excerpt), Buffer.byteLength(stderr.stderrExcerpt)], [256, 2000], "both excerpts are clipped to their byte limits");
     t.eq(receipt("E6").outcome, "ok", "the read depending on both successes runs");
     const runDir = path.join(f.w.zhome, "flows", id);
+    t.ok(!fs.readFileSync(path.join(runDir, "material.json"), "utf8").includes(secret), "saved collection plan excludes the credential");
     const requestFiles = fs.readdirSync(path.join(runDir, "requests"));
     t.ok(requestFiles.length > 0, "classifier request was recorded");
     for (const file of requestFiles) t.ok(!fs.readFileSync(path.join(runDir, "requests", file), "utf8").includes(secret), "classifier request excludes the credential");
@@ -140,9 +141,26 @@ if (mode === "fail") {
     t.eq(receipt.code, 75, "the run stops between receipt publication and its completion event");
     const cut = await cli(["--resume", id], { ZODCHI_FLOW_CUT: "incident receipt synced E2" });
     t.eq(cut.code, 75, "the run stops after syncing the external read before publication");
+    const reads = path.join(f.w.zhome, "flows", id, "reads");
+    const pending = path.join(reads, "E2.pending");
+    const saved = JSON.parse(fs.readFileSync(pending, "utf8"));
+    // A first-attempt receipt from an older run has no attempt field.
+    delete saved.attempt;
+    fs.writeFileSync(pending, JSON.stringify(saved));
     fs.writeFileSync(statusFile, "changed status\n");
+    const collected = await cli(["--resume", id], { ZODCHI_FLOW_CUT: "collect incident evidence" });
+    t.eq(collected.code, 75, "the run stops after saving the evidence and before submitting the classifier");
+    const evidenceAtCut = path.join(tmp, "rev-1", "evidence.json");
+    const frozenEvidence = fs.readFileSync(evidenceAtCut, "utf8");
+    t.ok(frozenEvidence.includes("original status"), "the evidence cut saved the recovered read");
+    const entriesAtCut = fs.readFileSync(path.join(f.w.zhome, "flows", id, "events.jsonl"), "utf8")
+      .split("\n").filter(Boolean).map(line => JSON.parse(line));
+    t.ok(!entriesAtCut.some(e => e.kind === "intent" && e.step === "classify"),
+      "evidence was saved before the classifier intent");
+    t.eq(f.steps(), [], "no classifier turn before the evidence cut");
     const submit = await cli(["--resume", id], { ZODCHI_FLOW_CUT: "submit classify" });
     t.eq(submit.code, 75, "the run stops after submitting the classifier");
+    t.ok(!fs.existsSync(pending) && fs.existsSync(path.join(reads, "E2.json")), "resume publishes the legacy pending receipt");
     const published = await cli(["--resume", id], { ZODCHI_FLOW_CUT: "publish incident" });
     t.eq(published.code, 75, "the run stops after publishing the incident pointer");
     const release = await cli(["--resume", id], { ZODCHI_FLOW_CUT: "incident lock released" });
@@ -162,13 +180,16 @@ if (mode === "fail") {
     t.eq(result.code, 0, "the same run completes");
     t.eq(fs.readFileSync(path.join(foreignDir, "owner"), "utf8"), foreign, "resume preserves a later run's lock");
     const evidence = fs.readFileSync(result.json.files.evidence, "utf8");
+    t.eq(evidence, frozenEvidence, "the published evidence is the saved evidence from the cut");
+    t.eq(result.json.evidenceSha256, crypto.createHash("sha256").update(frozenEvidence).digest("hex"),
+      "the result identifies the evidence saved at the cut");
     t.ok(evidence.includes("original status") && !evidence.includes("changed status"), "the saved read is reused");
     const classification = JSON.parse(fs.readFileSync(result.json.files.classification, "utf8"));
     t.eq(classification.classifier.key, result.json.jobKey, "the classification retains the submitted key");
     t.eq(f.steps(), ["classify"], "the classifier is not called again");
   });
 
-  scenario("flow-incident-triage-unresolved-read", "only an explicit rerun repeats an interrupted read", async (t) => {
+  scenario("flow-incident-triage-unresolved-read", "resume refuses foreign locks and repeats interrupted reads only on explicit rerun", async (t) => {
     const f = flowWorld(t, "flow-incident-triage-unresolved-read");
     const fixture = path.join(ROOT, "scripts", "e2e", "fixtures", "incident-triage");
     const answer = JSON.parse(fs.readFileSync(path.join(fixture, "cases", "plain-wait", "classification.json"), "utf8"));
@@ -195,6 +216,15 @@ if (mode === "fail") {
     const saved = await cli(["--args", args], { ZODCHI_FLOW_CUT: "incident receipt E2" });
     t.eq(saved.code, 75, "the first external read has a receipt");
     const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
+    const owner = path.join(tmp, ".lock", "owner");
+    const originalOwner = fs.readFileSync(owner);
+    const foreign = JSON.stringify({ token: "0123456789abcdef0123456789abcdef" });
+    fs.writeFileSync(owner, foreign);
+    const blocked = await cli(["--resume", id]);
+    t.ok(blocked.code !== 0, "resume refuses the foreign lock");
+    t.eq(fs.readFileSync(owner, "utf8"), foreign, "foreign ownership is preserved");
+    t.eq(f.steps(), [], "no classifier was submitted");
+    fs.writeFileSync(owner, originalOwner);
     const runDir = path.join(f.w.zhome, "flows", id);
     const reads = path.join(runDir, "reads");
     const boundary = process.platform === "win32" ? "incident read contained" : "incident intent E3";
@@ -234,34 +264,6 @@ if (mode === "fail") {
     t.eq(events.filter(event => event.kind === "read intent").map(event => [event.step, event.attempt]),
       [["read E1", 1], ["read E2", 1], ["read E3", 1], ["read E3", 2]], "only the interrupted read gets a second intent");
     t.eq(f.steps(), ["classify"], "classification runs once after collection");
-  });
-
-  scenario("flow-incident-triage-foreign-lock", "a resumed run refuses a lock belonging to another run", async (t) => {
-    const f = flowWorld(t, "flow-incident-triage-foreign-lock");
-    const fixture = path.join(ROOT, "scripts", "e2e", "fixtures", "incident-triage");
-    const adapterDir = path.join(f.w.dir, "adapter");
-    fs.mkdirSync(path.join(adapterDir, "data"), { recursive: true });
-    fs.writeFileSync(path.join(adapterDir, "data", "status.txt"), "status\n");
-    const adapter = path.join(adapterDir, "adapter.json");
-    fs.writeFileSync(adapter, JSON.stringify({ adapterVersion: 1, product: "Catalog", owner: "owner", operations: {
-      status: { description: "read status", argv: [process.execPath, path.join(fixture, "product.mjs"), "status"] },
-    } }));
-    const tmp = path.join(f.w.dir, "incident");
-    const args = path.join(f.w.dir, "args.json");
-    fs.writeFileSync(args, JSON.stringify({ repo: f.r, incident: "case", adapter, tmp, report: "waiting", models: {
-      architect: { candidates: [{ provider: "codex", model: "fake-architect", effort: "high" }] },
-    } }));
-    const cli = (argv, extra = {}) => zodchi(t, f.w, ["flow", "incident-triage", ...argv], { cwd: f.w.dir, env: { ...f.w.env, ...extra } });
-    const cut = await cli(["--args", args], { ZODCHI_FLOW_CUT: "incident receipt E2" });
-    t.eq(cut.code, 75, "cut follows the status receipt");
-    const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
-    const owner = path.join(tmp, ".lock", "owner");
-    const foreign = JSON.stringify({ token: "0123456789abcdef0123456789abcdef" });
-    fs.writeFileSync(owner, foreign);
-    const resumed = await cli(["--resume", id]);
-    t.ok(resumed.code !== 0, "resume refuses the foreign lock");
-    t.eq(fs.readFileSync(owner, "utf8"), foreign, "foreign ownership is preserved");
-    t.eq(f.steps(), [], "no classifier was submitted");
   });
 
   scenario("flow-incident-triage-refusals", "unsafe adapters and unavailable classifier models stop before reads", async (t) => {
@@ -305,6 +307,7 @@ if (mode === "fail") {
     const env = { ...f.w.env, ZODCHI_CODEX_BIN: fake };
     const answer = JSON.parse(fs.readFileSync(path.join(fixture, "cases", "plain-wait", "classification.json"), "utf8"));
     answer.findings[0].evidence = ["E999"];
+    answer.gaps = [];
     f.answer("classify", answer);
     const adapterDir = path.join(f.w.dir, "adapter");
     fs.mkdirSync(path.join(adapterDir, "data"), { recursive: true });
@@ -321,12 +324,11 @@ if (mode === "fail") {
     const run = await zodchi(t, f.w, ["flow", "incident-triage", "--args", args], { cwd: f.w.dir, env });
     t.eq([run.code, run.json?.state, run.json?.accepted], [2, "failed", false], "the answer is refused and the revision is failed");
     const classification = JSON.parse(fs.readFileSync(path.join(tmp, "rev-1", "classification.json"), "utf8"));
-    t.ok(classification.refused.length > 0, "the refused classification records the reason");
+    t.ok(classification.refused.some(reason => reason.includes("finding 1 cites an unknown evidence ID")), "the refusal identifies the unknown evidence in the finding");
     t.eq(f.steps(), ["classify"], "the refusal starts no further model or workflow");
     t.ok(!fs.existsSync(path.join(tmp, ".lock")), "the failed final revision released its lock");
 
     answer.findings[0].evidence = ["E2"];
-    answer.gaps = [];
     answer.reply = "The log contains password=hunter2xyz.";
     f.answer("classify", answer);
     const secret = await zodchi(t, f.w, ["flow", "incident-triage", "--args", args], { cwd: f.w.dir, env });
@@ -346,7 +348,7 @@ if (mode === "fail") {
     const answer = JSON.parse(fs.readFileSync(path.join(fixture, "cases", "plain-wait", "classification.json"), "utf8"));
     answer.gaps = [];
     answer.facts = "The API token expired during a disk-full incident.";
-    answer.findings[0].summary = answer.facts;
+    answer.findings[0].summary = "The report says the API token expired while the disk was full.";
     answer.reply = "Run a basic check and never paste credentials.\r\n";
     f.answer("classify", answer);
     const adapterDir = path.join(f.w.dir, "adapter");
@@ -371,6 +373,11 @@ if (mode === "fail") {
     t.ok(!evidence.items[0].excerpt.includes("API token expired"), "the inbound report is still redacted");
     const saved = JSON.parse(fs.readFileSync(path.join(tmp, "rev-1", "classification.raw.json"), "utf8"));
     t.eq([saved.facts, saved.reply], [answer.facts, answer.reply], "classifier wording and trailing line ending are retained");
+    const draft = fs.readFileSync(run.json.files.draft, "utf8");
+    const [actionable, wording] = draft.split("## Model's wording", 2);
+    const modelText = [answer.facts, answer.reply.trim(), answer.leadLine, answer.next.reason, answer.findings[0].summary];
+    t.ok(modelText.every(text => !actionable.includes(text)), "the actionable draft excludes model wording");
+    t.ok(wording?.includes(answer.findings[0].summary), "the unchecked section retains the model summary");
     t.eq(f.steps(), ["classify"], "the classifier is called once");
     t.ok(!fs.existsSync(path.join(tmp, ".lock")), "completion releases the incident lock");
   });

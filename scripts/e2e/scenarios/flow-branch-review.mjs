@@ -45,6 +45,10 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, FIXED })
     t.eq(internal.json.screening.withheld.map(({ file, reason, scope }) => [file, reason, scope]),
       [[allow, "private-word", "line"], [currentPath, "private-word", "line"], [currentPath, "credential", "literal"]],
       "each omission identifies the file, reason and scope in the local result");
+    const diffLines = gitOut(f.r, ["diff", "--no-color", "--no-ext-diff", "--no-textconv", base, "HEAD"]).split(/\r?\n/);
+    t.eq(internal.json.screening.withheld.map(({ diffLine }) => diffLine),
+      [`+${otherWord}`, `+// ${otherWord}`, `+const token = "${marked}";`].map(line => diffLines.indexOf(line) + 1),
+      "the receipt keeps the original unified diff line numbers");
     const receipt = text.match(/<attachment path="verification\.json">\n([\s\S]*?)\n<\/attachment>/);
     t.ok(JSON.parse(receipt[1]).commands[0].output.includes(`${ownWord} check`), "the verification JSON preserves the same allowed wording");
     const handoff = await cli(["status", internal.json.runId, "--handoff"]);
@@ -143,9 +147,17 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, FIXED })
     f.answer("review", f.review("approved"));
     f.answer("architecture", f.review("approved"));
     const args = path.join(f.w.dir, "branch.json");
+    const claude = { provider: "claude", model: "opus", effort: "high" };
     fs.writeFileSync(args, JSON.stringify({
       label: "review", repo: f.r, base: f.base, author: ["codex/fake-writer"], architecture: true,
-      models: { architect: { candidates: [{ provider: "codex", model: "fake-architect", effort: "high" }] } },
+      models: {
+        reviewer: { candidates: [
+          claude,
+          { provider: "codex", model: "fake-writer", effort: "medium" },
+          { provider: "codex", model: "fake-reviewer", effort: "high" },
+        ] },
+        architect: { candidates: [claude, { provider: "codex", model: "fake-architect", effort: "high" }] },
+      },
       context: ["src/math.mjs"],
     }));
     const first = await flow(["branch-review", "--args", args], { ZODCHI_FLOW_CUT: "submit review" });
@@ -159,6 +171,12 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, FIXED })
       [0, id, "2", originalHead, ["src/math.mjs"], true], "the pinned range was reviewed under the original run ID");
     t.eq([done.json.models.reviewer.model, done.json.models.architect.model], ["fake-reviewer", "fake-architect"],
       "reviewer and architect are distinct from the authors and each other");
+    t.eq([done.json.models.reviewer.provider, done.json.models.architect.provider], ["codex", "codex"],
+      "both review roles use the Codex fallback when Claude is disabled");
+    for (const role of ["reviewer", "architect"]) {
+      t.ok(done.json.models.skipped.some(reason => reason.includes(`${role} claude/opus: Claude is not an executor of this run: not enabled`)),
+        `the pinned picks explain why the ${role} skipped Claude`);
+    }
     const status = await flow(["status", id]);
     t.eq([status.json?.workflow, status.json?.status, status.json?.result?.head],
       ["branch-review", "finished", originalHead], "any CLI reads the same result");
@@ -247,6 +265,8 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, FIXED })
     f.answer("review 1", f.review("changes_requested", [f.finding("F35")]));
     const original = await f.flow(["--args", f.args({ rounds: 1 })]);
     t.eq(original.json?.verdict ?? null, "changes_requested", "the original package finished without approval");
+    t.eq(original.json?.screening, { brief: "screened", files: "screened", agentWorkspace: null },
+      "the expert package records screening and has no agent workspace");
     const reviewOnly = (fields) => {
       const args = path.join(f.w.dir, "rereview.json");
       fs.writeFileSync(args, JSON.stringify({ label: "rereview", repo: f.r, sourceRun: original.json.runId, ...fields }));

@@ -23,10 +23,13 @@ for (const f of tracked.filter(f => !fs.existsSync(f))) problems.push(`${path.re
 tracked.splice(0, tracked.length, ...tracked.filter(f => fs.existsSync(f)));
 
 // 1. Keep the CLI and plugins free of JavaScript outside the Playwright adapter.
-const browserDriver = "rust/crates/zodchi-flow/src/acceptance/browser_driver.mjs";
+const browserDriver = "rust/crates/zodchi-flow-acceptance/src/acceptance/browser_driver.mjs";
 for (const file of tracked.filter(file => /\.[cm]?js$/i.test(file))) {
   const relative = path.relative(ROOT, file).replace(/\\/g, "/");
-  const test = relative.startsWith("scripts/e2e/") || ["scripts/check.mjs", "scripts/e2e.mjs", "scripts/e2e-release.mjs"].includes(relative);
+  const test = relative.startsWith("scripts/e2e/") || [
+    "scripts/check.mjs", "scripts/e2e.mjs", "scripts/e2e-release.mjs",
+    "scripts/ci-select.mjs", "scripts/ci-select.test.mjs",
+  ].includes(relative);
   if (relative !== browserDriver && !test) {
     bad(file, "JavaScript is limited to tests and the Playwright adapter");
   }

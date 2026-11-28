@@ -57,20 +57,33 @@ export default function register({ scenario, flowWorld, gitOut, ROOT, STUB }) {
   const allText = (dir) => fs.readdirSync(dir, { recursive: true }).map((rel) => path.join(dir, String(rel)))
     .filter((p) => fs.statSync(p).isFile()).map((p) => fs.readFileSync(p, "utf8")).join("\n");
 
-  scenario("flow-claude-writer", "Claude enabled: a Claude writer (preflight at the gate, one tool-free call without the API key) with the fake-Codex reviewer to approval; the call is journaled with its raw message", async (t) => {
+  scenario("flow-claude-writer", "resume a Claude writer from one tool-free call without the API key, then approve with the Codex reviewer", async (t) => {
     const c = claudeWorld(t, "flow-claude-writer");
     const { f } = c;
+    const claudeConfig = path.join(f.w.dir, "claude-config");
+    fs.mkdirSync(claudeConfig);
+    const profile = { HOME: f.w.home, USERPROFILE: f.w.home, CLAUDE_CONFIG_DIR: claudeConfig };
+    Object.assign(f.w.env, profile, { FAKE_CLAUDE_LOG_PROFILE: "1" });
     const models = { expertWriter: { candidates: [{ provider: "claude", model: "haiku" }] } };
     c.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
     f.answer("review 1", f.review("approved"));
-    const res = await f.flow(["--args", f.args({ models })]);
-    t.eq([res.code, res.json && res.json.verdict], [0, "approved"], "the run ends approved, exit 0");
+    const cut = await f.flow(["--args", f.args({ models })], { ZODCHI_FLOW_CUT: "submit write" });
+    t.eq(cut.code, 75, "the process ends right after the call, before its receipt");
+    const [id] = fs.readdirSync(path.join(f.w.zhome, "flows"));
+    const res = await f.flow(["--resume", id]);
+    t.eq([res.code, res.json?.verdict], [0, "approved"], "the resumed run goes on to approval, exit 0");
     const bound = res.json.models.expertWriter.account;
     t.ok(/^claude-[0-9a-f]{16}$/.test(bound || ""), "the Claude writer is bound to the account of its sign-in at the gate, as a digest");
     t.eq(res.json.models, { expertWriter: { provider: "claude", model: "haiku", effort: "high", account: bound }, reviewer: { provider: "codex", model: "fake-writer", effort: "medium" } }, "the pair uses the default Haiku effort and a distinct Codex reviewer");
-    t.eq(c.calls().map((x) => x.step), ["preflight", "write"], "Claude ran the preflight at the gate and the write step once");
+    const calls = c.calls();
+    t.eq(calls.map((x) => x.step), ["preflight", "write"], "Claude ran the preflight at the gate and the write step once");
     t.eq([c.calls("version").length, c.calls("auth").length], [1, 2], "the program was checked once; its sign-in at the gate and again right before the call");
-    const write = c.calls()[1];
+    for (const call of calls) {
+      t.ok(call.args.includes("-p") && call.args.includes("--no-session-persistence"),
+        `the ${call.step} call uses -p and --no-session-persistence`);
+      t.eq(call.profile, profile, `the ${call.step} call sees the temporary HOME, USERPROFILE and CLAUDE_CONFIG_DIR`);
+    }
+    const write = calls[1];
     t.eq([write.model, write.effort, write.apiKey], ["haiku", "high", false], "the call has the pinned model and effort, and no ANTHROPIC_ variable");
     t.eq(JSON.parse(fs.readFileSync(write.args[write.args.indexOf("--settings") + 1], "utf8")), { disableAllHooks: true },
       "the tool-free Haiku call lets Claude Code choose its default auto-compaction window");
@@ -78,9 +91,19 @@ export default function register({ scenario, flowWorld, gitOut, ROOT, STUB }) {
     t.ok(write.prompt.includes("Make clamp(x, lo, hi) keep x") && write.prompt.includes("A structured patch of one code package"), "the message carries the brief and the step's schema");
     t.eq(f.steps(), ["review 1"], "Codex ran the review only");
     t.eq([f.commits().length, fs.readFileSync(path.join(f.r, "src", "math.mjs"), "utf8")], [1, FIXED], "the patch of the Claude writer is committed");
-    const intent = c.events(res).find((e) => e.kind === "intent" && e.step === "write");
+    const events = c.events(res);
+    const claim = events.find((e) => e.kind === "done" && e.step === "claim").result.file;
+    const claimFile = path.relative(f.w.home, claim);
+    const homeEntries = fs.readdirSync(f.w.home, { recursive: true });
+    t.eq(homeEntries.filter((entry) => !entry.startsWith(`.zodchi${path.sep}`)).sort(), [".zodchi"],
+      "the temporary HOME and USERPROFILE contain only Flow's .zodchi directory and its contents");
+    t.ok(homeEntries.includes(claimFile), "the temporary home contains Flow's package claim");
+    t.eq(fs.readdirSync(claudeConfig), [], "the temporary CLAUDE_CONFIG_DIR stays empty");
+    const intents = events.filter((e) => e.kind === "intent" && e.step === "write");
+    t.eq(intents.length, 1, "one intent for the write step");
+    const [intent] = intents;
     t.eq([intent.executor, intent.model], ["claude", "haiku"], "the intent names the Claude executor before the call");
-    const done = c.events(res).find((e) => e.kind === "done" && e.step === "write");
+    const done = events.find((e) => e.kind === "done" && e.step === "write");
     t.ok(done && JSON.stringify(done).includes("Math.max(lo, x)"), "the validated answer is journaled as done");
     const job = path.join(res.json.journal, "claude", intent.key);
     const fin = JSON.parse(fs.readFileSync(path.join(job, "final.json"), "utf8"));
@@ -94,20 +117,7 @@ export default function register({ scenario, flowWorld, gitOut, ROOT, STUB }) {
     t.eq([again.code, c.calls().length, f.steps().length], [0, 2, 1], "resuming the finished run calls nothing");
   });
 
-  scenario("flow-claude-cut", "a cut right after the Claude call: resume reads the saved answer and never asks Claude again", async (t) => {
-    const c = claudeWorld(t, "flow-claude-cut");
-    const { f } = c;
-    c.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
-    f.answer("review 1", f.review("approved"));
-    const cut = await f.flow(["--args", f.args()], { ZODCHI_FLOW_CUT: "submit write" });
-    t.eq(cut.code, 75, "the process ends right after the call, before its receipt");
-    const flows = path.join(f.w.zhome, "flows");
-    const [id] = fs.readdirSync(flows);
-    const res = await f.flow(["--resume", id]);
-    t.eq([res.code, res.json.verdict], [0, "approved"], "the resumed run goes on to approval");
-    t.eq(c.calls().map((x) => x.step), ["preflight", "write"], "Claude was asked the write step once");
-    t.eq(c.events(res).filter((e) => e.kind === "intent" && e.step === "write").length, 1, "one intent for the write step");
-
+  scenario("flow-claude-cut", "resume under a new key after a cut before the reserved Claude call started", async (t) => {
     const r = claudeWorld(t, "flow-claude-reserved");
     r.answer("write", r.f.patch([r.f.modify("src/math.mjs", STUB, FIXED)]));
     r.f.answer("review 1", r.f.review("approved"));
@@ -124,11 +134,17 @@ export default function register({ scenario, flowWorld, gitOut, ROOT, STUB }) {
   scenario("flow-claude-disabled", "Claude not enabled: the Claude candidate is skipped with its reason and the pair is Codex-only; the Claude program is never run", async (t) => {
     const c = claudeWorld(t, "flow-claude-disabled", { enabled: false });
     const { f } = c;
+    const models = { expertWriter: { candidates: [
+      { provider: "claude", model: "opus", effort: "high" },
+      { provider: "codex", model: "fake-writer" },
+    ] } };
     f.answer("write", f.patch([f.modify("src/math.mjs", STUB, FIXED)]));
     f.answer("review 1", f.review("approved"));
-    const res = await f.flow(["--args", f.args()]);
+    const res = await f.flow(["--args", f.args({ models })]);
     t.eq([res.code, res.json.models.expertWriter.model, res.json.models.reviewer.model], [0, "fake-writer", "fake-reviewer"], "approved by the Codex-only pair");
-    t.ok(res.json.skipped.some((s) => /claude\/opus: Claude is not an executor of this run: not enabled/.test(s)), "the skipped Claude candidate names why");
+    t.eq(res.json.models.expertWriter, { provider: "codex", model: "fake-writer", effort: "medium" }, "the fallback uses the default effort and carries no account");
+    t.ok(res.json.skipped[0]?.startsWith("expertWriter claude/opus: Claude is not an executor of this run: not enabled"), "the first skipped candidate names why Claude was not used");
+    t.ok(res.json.skipped.some((s) => s.includes("reviewer codex/fake-writer: the same model as the writer")), "the reviewer of the same model is skipped");
     t.eq(readJsonl(path.join(c.home, "calls.jsonl")).length, 0, "the Claude program never ran");
   });
 

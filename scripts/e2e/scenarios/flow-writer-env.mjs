@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
-export default function register({ scenario, flowWorld, gitOut, FIXED, samePath }) {
-  scenario("flow-writer-env", "agent setup and writer turns use the pinned writer environment while checks and review stay isolated", async (t) => {
+export default function register({ scenario, flowWorld, gitOut, zodchi, FIXED, samePath }) {
+  scenario("flow-writer-env", "the writer environment stays pinned through resume and the workspace is reclaimed after approval", async (t) => {
     const f = flowWorld(t, "flow-writer-env");
     const config = path.join(f.r, ".zodchi", "verify.json");
     const writerEnv = { CARGO_TARGET_DIR: "{writerCache}/target", CARGO_BUILD_JOBS: "4" };
@@ -73,5 +73,17 @@ export default function register({ scenario, flowWorld, gitOut, FIXED, samePath 
       t.ok(!turn.prompt.toLowerCase().includes(privateWord), `${turn.step} omits the private prefix from the prompt`);
     }
     t.eq(turns[2].config, {}, "the review turn receives neither the writer variables nor the writable root");
+
+    const writers = path.join(f.w.zhome, "flow-writers", id);
+    const events = fs.readFileSync(path.join(result.json.journal, "events.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+    t.ok(events.some(event => event.kind === "writer prepared"), "a writer workspace was prepared");
+    t.ok(!fs.existsSync(writers), "the finished run has no writer workspace");
+    const cleanup = events.find(event => event.kind === "cleanup");
+    t.ok(cleanup?.bytesFreed > 0 && cleanup.items.some(item =>
+      item.kind === "writer-workspace" && item.removed && samePath(item.path, writers)),
+    "the journal records the workspace and its reclaimed bytes");
+    const handoff = await zodchi(t, f.w, ["flow", "status", id, "--handoff"], { cwd: f.r });
+    t.eq([handoff.code, handoff.json?.status, handoff.json?.verdict],
+      [0, "finished", "approved"], "handoff still reports the approved run");
   });
 }

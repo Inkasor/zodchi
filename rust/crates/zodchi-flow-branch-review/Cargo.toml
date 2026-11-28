@@ -1,0 +1,14 @@
+[package]
+name = "zodchi-flow-branch-review"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+zodchi-core = { path = "../zodchi-core" }
+zodchi-flow-engine = { path = "../zodchi-flow-engine" }
+
+[dev-dependencies]
+zodchi-flow-engine = { path = "../zodchi-flow-engine", features = ["test-support"] }
