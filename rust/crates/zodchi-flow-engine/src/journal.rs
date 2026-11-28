@@ -15,7 +15,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use zodchi_core::config::Config;
-use zodchi_core::process::{alive, process_start};
+use zodchi_core::process::{alive, process_start, reused_after_reboot};
 use zodchi_core::util::{fail, iso, pretty, read_stored, sha256_hex, write_json_atomic, GatewayError, Result};
 
 pub struct Journal {
@@ -252,6 +252,10 @@ pub fn status_outcome(
 pub fn live_pid(owner: &Value) -> Option<u32> {
     let pid = owner_pid(owner)?;
     if !alive(pid) {
+        return None;
+    }
+    // A reboot can give the pid to a protected system process (csrss), whose start this user cannot read.
+    if owner["start"].as_str().is_some_and(|start| reused_after_reboot(pid, start)) {
         return None;
     }
     // A detached process may have exited without being reaped yet. It can no longer hold the lock.
@@ -634,5 +638,34 @@ impl RunLock {
 impl Drop for RunLock {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+#[cfg(all(test, windows))]
+mod owner_tests {
+    use super::*;
+
+    /// The System process: this user is denied even a limited query unless the test runs elevated.
+    const SYSTEM: u32 = 4;
+
+    #[test]
+    fn a_system_pid_with_a_start_before_boot_is_no_worker() {
+        let own = std::process::id();
+        let start = process_start(own).unwrap();
+        assert_eq!(live_pid(&json!({"pid": own, "start": start})), Some(own));
+        // A readable process with another start is the existing proof of reuse.
+        assert_eq!(live_pid(&json!({"pid": own, "start": "132223104000000000"})), None);
+        if process_start(SYSTEM).is_some() {
+            eprintln!("skipping: the System process is readable (elevated test run)");
+            return;
+        }
+        assert!(alive(SYSTEM));
+        // 2020-01-01 as FILETIME: before any boot of a machine running these tests.
+        let before_boot = 132_223_104_000_000_000u64.to_string();
+        let legacy = (before_boot.parse::<u64>().unwrap() + 504_911_232_000_000_000).to_string();
+        assert_eq!(live_pid(&json!({"pid": SYSTEM, "start": before_boot})), None);
+        assert_eq!(live_pid(&json!({"pid": SYSTEM, "start": legacy})), None);
+        // A start in this boot, or none, keeps the conservative answer for an unreadable process.
+        assert_eq!(live_pid(&json!({"pid": SYSTEM, "start": start})), Some(SYSTEM));
+        assert_eq!(live_pid(&json!({"pid": SYSTEM})), Some(SYSTEM));
     }
 }

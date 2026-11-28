@@ -96,6 +96,8 @@ struct SecretPatterns {
     input_setting: Regex,
     input_reversed: Regex,
     input_operands: Regex,
+    input_raw_left: Regex,
+    input_after_raw_left: Regex,
 }
 
 fn matched_ranges<'a>(pattern: &'a Regex, text: &'a str) -> impl Iterator<Item = Range<usize>> + 'a {
@@ -152,7 +154,21 @@ fn mixed_prefixed_value(value: &str) -> bool {
             && bytes.iter().any(u8::is_ascii_lowercase)
             && bytes.iter().any(u8::is_ascii_uppercase)
             && bytes.iter().any(u8::is_ascii_digit)
+            // A short trailing digit suffix needs several case transitions to distinguish random tails from names.
+            && bytes.iter().position(u8::is_ascii_digit).is_some_and(|i| {
+                bytes.len() - i > 2 || (bytes.len() - i <= 2
+                    && bytes.windows(2).filter(|pair| pair[0].is_ascii_lowercase() && pair[1].is_ascii_uppercase()).count() >= 3)
+            })
     })
+}
+
+fn short_mixed_setting_value(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 12
+        && bytes.iter().all(u8::is_ascii_alphanumeric)
+        && bytes.iter().any(u8::is_ascii_lowercase)
+        && bytes.iter().any(u8::is_ascii_uppercase)
+        && bytes.iter().any(u8::is_ascii_digit)
 }
 
 fn looks_like_input_secret(value: &str, quoted: bool) -> bool {
@@ -480,8 +496,13 @@ impl Scrubber {
             )).expect("constant input comparison pattern");
             // An assignment or comparison can carry a prefixed token under an ordinary name.
             let input_operands = Regex::new(&format!(
-                r"(?m)(?:^|[ \t(])(?P<left>{IDENTIFIER})[ \t]*(?P<op>{operator}|=)[ \t]*(?P<right>{IDENTIFIER})(?:[ \t,;&|)\]}}]|:(?:[ \t]|\r?$)|\r?$)"
-            )).expect("constant bare input operands pattern");
+                r#"(?m)(?:^|[ \t(,;&|\[{{])(?P<left>{IDENTIFIER}(?:(?:\.{IDENTIFIER})|(?:\[[ \t]*(?:{IDENTIFIER}|[0-9]+|{quoted})[ \t]*\]))*|{quoted})[ \t]*(?P<op>{operator}|=>|=|:)[ \t]*(?:(?P<raw>(?i:b?r)#*")|(?P<right>{IDENTIFIER}|{quoted})(?:[ \t,;&|)\]}}]|:(?:[ \t]|\r?$)|\r?$))"#
+            )).expect("constant input operands pattern");
+            let input_raw_left = Regex::new(r#"(?m)(?:^|[ \t(,;&|\[{])(?P<left>(?i:b?r)#*")"#)
+                .expect("constant raw left operand pattern");
+            let input_after_raw_left = Regex::new(&format!(
+                r#"(?m)\A[ \t]*{operator}[ \t]*(?:(?i:b?r)#*"|(?:{IDENTIFIER}|{quoted})(?:[ \t,;&|)\]}}]|:(?:[ \t]|\r?$)|\r?$))"#
+            )).expect("constant raw left comparison suffix");
             // The header label identifies Bearer values that would look like prose without it.
             let bearer_header = format!(
                 r#"\b(?i:authorization["'`]?[ \t]*:[ \t]*["'`]?bearer)[ \t]+{AUTHORIZATION_VALUE}"#,
@@ -490,7 +511,7 @@ impl Scrubber {
             let input_shapes: Vec<_> = shapes.into_iter().chain([bearer_header.as_str(), stripe]).collect();
             SecretPatterns {
                 answer, option, raw_start, after_raw, input_shapes: alternatives(&input_shapes),
-                input_setting, input_reversed, input_operands,
+                input_setting, input_reversed, input_operands, input_raw_left, input_after_raw_left,
             }
         });
         &PATTERNS
@@ -565,17 +586,32 @@ impl Scrubber {
         let mut at = 0;
         let operands = std::iter::from_fn(move || {
             let capture = patterns.input_operands.captures_at(text, at)?;
-            // The delimiter after the right operand can start the next match.
-            at = capture.name("right").expect("right operand").end();
+            // Revisit both operands so quoted commands cannot hide nested assignments.
+            at = capture.name("left").expect("left operand").start() + 1;
             Some(capture)
         });
         // Scan shapes independently so a rejected name heuristic cannot mask a recognizable credential.
         matched_ranges(&patterns.input_shapes, text)
             .chain(Self::authorization_value_ranges(text))
-            .chain(operands.flat_map(|capture| {
-                let left = capture.name("left").filter(|_| &capture["op"] != "=");
-                left.into_iter().chain(capture.name("right")).filter_map(|operand| {
-                    mixed_prefixed_value(operand.as_str()).then(|| operand.range())
+            .chain(patterns.input_raw_left.captures_iter(text).filter_map(|capture| {
+                let left = capture.name("left")?;
+                let (value, _, length) = input_literal(&text[left.start()..])?;
+                (mixed_prefixed_value(value)
+                    && patterns.input_after_raw_left.is_match(&text[left.start() + length..]))
+                    .then_some(left.start()..left.start() + length)
+            }))
+            .chain(operands.flat_map(move |capture| {
+                let left = capture.name("left").filter(|_| matches!(&capture["op"], "==" | "===" | "!=" | "!=="));
+                let raw = capture.name("raw");
+                left.into_iter().chain(capture.name("right")).chain(raw).filter_map(move |operand| {
+                    let source = if raw.is_some_and(|raw| raw.start() == operand.start()) {
+                        &text[operand.start()..]
+                    } else {
+                        operand.as_str()
+                    };
+                    let (value, length) = input_literal(source)
+                        .map_or((source, operand.len()), |(literal, _, length)| (literal, length));
+                    mixed_prefixed_value(value).then(|| operand.start()..operand.start() + length)
                 })
             }))
             .chain(patterns.input_setting.find_iter(text).filter_map(|setting| {
@@ -583,7 +619,13 @@ impl Scrubber {
                 let literal = tail.trim_start();
                 let (value, quoted, length) = input_literal(literal)?;
                 let end = setting.end() + tail.len() - literal.len() + length;
-                looks_like_input_secret(value, quoted).then_some(setting.start()..end)
+                let op = setting.as_str().trim_end();
+                let assignment = !op.ends_with("==") && !op.ends_with("!=");
+                (looks_like_input_secret(value, quoted)
+                    || (assignment && !quoted && !literal[length..].trim_start().starts_with('(')
+                        && !literal[length..].trim_start().starts_with('[')
+                        && short_mixed_setting_value(value)))
+                    .then_some(setting.start()..end)
             }))
             .chain(patterns.input_reversed.captures_iter(text).filter_map(|capture| {
                 let secret = if let Some(quoted) = capture.name("quoted") {
@@ -799,6 +841,7 @@ mod tests {
         let shaped_value = format!("ghp_{}", "fixturevalue".repeat(3));
         let adjacent_keys = format!("{}\n{shaped_value}", concat!("AKIA", "0123456789ABCDEF"));
         let mixed_value = concat!("8b4e3a2c", "D7f9A120");
+        let short_mixed = concat!("aB3dE5fG", "7hJ9kL2m");
         let comparison = format!(concat!("if pass", r#"word == "{}" {{}}"#), mixed_value);
         let raw_comparison = format!(concat!(r##"if r#"{}"# == pass"##, "word {{}}"), mixed_value);
         let multiline = format!(concat!("Notes\r\nconst to", "ken =\r\n    \"{}\";\r\nFooter"), mixed_value);
@@ -842,6 +885,9 @@ mod tests {
             (&comparison, &[(1, "credential")]),
             (&raw_comparison, &[(1, "credential")]),
             (&bare_value, &[(1, "credential")]),
+            (&format!(concat!("API_", "TOKEN={}"), short_mixed), &[(1, "credential")]),
+            (&format!(concat!("to", "ken: {}"), short_mixed), &[(1, "credential")]),
+            (&format!(concat!("client_", "secret = {}"), short_mixed), &[(1, "credential")]),
             (&format!(concat!("to", "ken = {};"), long_mixed), &[(1, "credential")]),
             (&format!(concat!("if {} != pass", "word:"), long_mixed), &[(1, "credential")]),
             (&format!(concat!("if pass", "word == {}:"), lower_hex), &[(1, "credential")]),
@@ -896,6 +942,36 @@ mod tests {
             assert!(!identifier_comparison(&format!("password == {value}")), "{value:?}");
             assert!(!identifier_comparison(&format!("{value} == password")), "{value:?}");
         }
+        let value = format!("fixture_provider_{mixed_payload}");
+        for text in [
+            format!("item=\"{value}\""),
+            format!("let item = r#\"{value}\"#;"),
+            format!("let item = br##\"{value}\"##;"),
+            format!("r#\"{value}\"# == item"),
+            format!("br##\"{value}\"## != item"),
+            format!("command=\"env KEY={value} node app.js\""),
+            format!("if \"env KEY={value} node app.js\" == command:"),
+            format!("settings.item = \"{value}\""),
+            format!("settings[\"item\"] = \"{value}\""),
+            format!("settings[0] = \"{value}\""),
+            format!("settings[ \"item\" ] = \"{value}\""),
+            format!("item: {value}"),
+            format!("\"item\": \"{value}\""),
+            format!("item => '{value}'"),
+            format!("A=x;KEY={value}"),
+            format!("f(a,KEY={value})"),
+        ] {
+            assert_eq!(scrubber.input_withholdings(&text).count(), 1, "{text:?}");
+        }
+        let uppercase_tail = concat!("aBcDeFgH", "iJkLmN2", "OPQRST");
+        let value = format!("fixture_provider_{uppercase_tail}");
+        assert_eq!(scrubber.input_withholdings(&format!("item={value}")).count(), 1);
+        let penultimate_digit_tail = concat!("aBcDeFgH", "iJkLmNoP", "qRsT7T");
+        let value = format!("fixture_provider_{penultimate_digit_tail}");
+        assert_eq!(scrubber.input_withholdings(&format!("item={value}")).count(), 1);
+        let final_digit_tail = concat!("aBcDeFgH", "iJkLmNoP", "qRsTuV7");
+        let value = format!("fixture_provider_{final_digit_tail}");
+        assert_eq!(scrubber.input_withholdings(&format!("item={value}")).count(), 1);
     }
 
     #[test]
@@ -906,6 +982,15 @@ mod tests {
         let mixed_payload = concat!("A0b1C2d3", "E4f5G6h7", "J8k9");
         for text in [
             format!("token={camel_case}"),
+            concat!("to", "ken=ReadV2ApiToken()").into(),
+            concat!("to", "ken=ReadV2ApiTokens[0]").into(),
+            format!("item={}", concat!("m_Local", "PositionOffset2D")),
+            format!("item={}", concat!("k_Default", "SpawnRadius3D")),
+            format!("token={}", concat!("SomeVeryLong", "ConstantNameHere")),
+            "token=some_camelCaseName".into(),
+            "token=Settings::member".into(),
+            "token=$VAR".into(),
+            "token=${VAR}".into(),
             format!("if password == {camel_case}:"),
             format!("if {camel_case} == password:"),
             format!("token={letters_only_base64}"),
@@ -920,6 +1005,9 @@ mod tests {
             assert!(scrubber.input_withholdings(&text).next().is_none(), "{text:?}");
         }
         assert!(identifier_comparison("password == expected_password"));
+        let comparison = format!("password == {}", concat!("m_Local", "PositionOffset2D"));
+        assert!(identifier_comparison(&comparison));
+        assert_eq!(scrubber.repository_text(&comparison, &[]), comparison);
     }
 
     #[test]

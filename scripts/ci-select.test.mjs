@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { selectChanges, shardScenarios, versionOnlyChange } from "./ci-select.mjs";
+import { loadDurations, selectChanges, shardCount, shardPlan, shardScenarios, versionOnlyChange } from "./ci-select.mjs";
 
 const skip = { mode: "skip", scenarios: [] };
 const full = { mode: "full", scenarios: [] };
@@ -78,12 +78,57 @@ test("version-only recognition preserves all other manifest and lockfile changes
   assert.deepEqual(await selectChanges([...versions, "rust/crates/zodchi-core/src/lib.rs"], versions), full);
 });
 
-test("sharding is stable and covers every scenario once", () => {
-  const names = [...researchScenarios, "flow-workspace-audit-copies", "flow-unity-check-resume"];
-  const shards = shardScenarios(names, 2);
-  assert.equal(shards.length, 2);
-  assert.deepEqual(shards, shardScenarios([...names].reverse(), 2));
+test("duration sharding is deterministic, complete and balanced", () => {
+  const seconds = { a: 30, b: 20, c: 10, d: 10, e: 5, f: 2, g: 1 };
+  const names = Object.keys(seconds);
+  const shards = shardScenarios(names, 3, seconds);
+  assert.equal(shards.length, 3);
+  assert.deepEqual(shards, shardScenarios([...names].reverse(), 3, seconds));
   assert.deepEqual(shards.flat().sort(), [...names].sort());
-  const added = "flow-entry-local";
-  assert.deepEqual(shardScenarios([...names, added], 2).map(shard => shard.filter(name => name !== added)), shards);
+  const totals = shards.map(shard => shard.reduce((sum, name) => sum + seconds[name], 0));
+  assert.ok(Math.max(...totals) <= Math.min(...totals) + Math.max(...Object.values(seconds)));
+  assert.deepEqual(shardScenarios(["d", "c", "b", "a"], 2, { a: 1, b: 1, c: 1, d: 1 }), [["a", "c"], ["b", "d"]]);
+});
+
+test("committed durations provide the numeric map used by the CLI", () => {
+  const seconds = loadDurations();
+  assert.ok(seconds && typeof seconds === "object" && !Array.isArray(seconds));
+  const entries = Object.entries(seconds);
+  assert.ok(entries.length > 0);
+  for (const [name, value] of entries) {
+    assert.ok(name.length > 0 && Number.isFinite(value) && value >= 0, name);
+  }
+  const names = entries.map(([name]) => name);
+  assert.deepEqual(shardScenarios(names, 4, seconds).flat().sort(), names.sort());
+});
+
+test("missing scenario durations use the median of the whole file", () => {
+  assert.deepEqual(shardScenarios(["unknown", "known"], 2, { known: 6.5, low: 4, high: 10, extra: 10 }), [["unknown"], ["known"]]);
+  assert.deepEqual(shardScenarios(["unknown", "known"], 2, { known: 6.5, low: 4, high: 10 }), [["known"], ["unknown"]]);
+});
+
+test("selected plans shard only above eight scenarios", () => {
+  const names = ["a", "b", "c", "d", "e", "f", "g", "h", "i"];
+  const seconds = Object.fromEntries(names.map(name => [name, 1]));
+  assert.deepEqual(shardPlan("selected", names.slice(0, 8), 2, seconds), [names.slice(0, 8)]);
+  assert.deepEqual(shardPlan("selected", names, 2, seconds), [["a", "c", "e", "g", "i"], ["b", "d", "f", "h"]]);
+  assert.deepEqual(shardPlan("full", names.slice(0, 2), 2, seconds), [["a"], ["b"]]);
+});
+
+test("a repeated selected name runs once", () => {
+  const names = ["a", "b", "c", "d", "e", "f", "g", "h", "i"];
+  const seconds = { ...Object.fromEntries(names.map(name => [name, 1])), a: 50 };
+  const shards = shardPlan("selected", [...names, "a"], 2, seconds);
+  assert.deepEqual(shards.flat().sort(), names);
+  assert.deepEqual(shardPlan("selected", ["a", "a", "b"], 2, seconds), [["a", "b"]]);
+});
+
+test("shard count uses cores or validates the CI override", () => {
+  assert.equal(shardCount(undefined, 1), 2);
+  assert.equal(shardCount(undefined, 4), 3);
+  assert.equal(shardCount(undefined, 20), 4);
+  for (const value of ["1", "2", "8"]) assert.equal(shardCount(value, 4), Number(value));
+  for (const value of ["", "0", "9", "-1", "1.5", " 2", "2x"]) {
+    assert.throws(() => shardCount(value, 4), /CI_E2E_SHARDS/);
+  }
 });

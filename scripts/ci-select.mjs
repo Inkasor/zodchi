@@ -1,6 +1,5 @@
 // Select CI coverage from the checked-out PR merge and run the existing e2e driver.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -152,13 +151,41 @@ async function selectPullRequest() {
   }
 }
 
-export function shardScenarios(names, count) {
+function durationLookup(seconds) {
+  const values = Object.values(seconds).sort((a, b) => a - b);
+  const middle = Math.floor(values.length / 2);
+  const median = values.length ? (values.length % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2) : 0;
+  return name => Object.hasOwn(seconds, name) ? seconds[name] : median;
+}
+
+export function loadDurations() {
+  return JSON.parse(fs.readFileSync(path.join(root, "scripts/e2e/durations.json"), "utf8")).seconds;
+}
+
+export function shardCount(override, cores) {
+  if (override !== undefined) {
+    if (!/^[1-8]$/.test(override)) throw new Error("CI_E2E_SHARDS must be an integer from 1 to 8");
+    return Number(override);
+  }
+  return Math.max(2, Math.min(4, cores - 1));
+}
+
+export function shardScenarios(names, count, seconds) {
+  const duration = durationLookup(seconds);
   const shards = Array.from({ length: count }, () => []);
-  for (const name of [...names].sort()) {
-    const hash = createHash("sha256").update(name).digest().readUInt32BE(0);
-    shards[hash % count].push(name);
+  const totals = Array(count).fill(0);
+  for (const name of [...names].sort((a, b) => duration(b) - duration(a) || (a < b ? -1 : a > b ? 1 : 0))) {
+    const lightest = totals.indexOf(Math.min(...totals));
+    shards[lightest].push(name);
+    totals[lightest] += duration(name);
   }
   return shards.filter(shard => shard.length);
+}
+
+export function shardPlan(mode, names, count, seconds) {
+  // A repeated name ran once in one runner; in two shards it could run twice.
+  const unique = [...new Set(names)];
+  return mode === "selected" && unique.length <= 8 ? [unique] : shardScenarios(unique, count, seconds);
 }
 
 function listAllScenarios() {
@@ -185,7 +212,7 @@ function listAllScenarios() {
 function runShard(names, out) {
   const args = [runner, "--cargo-profile", "dev", "--no-build", "--out", out];
   if (process.platform === "win32") {
-    // --bin-dir gives each Windows runner process its own copy for detached workers.
+    // The driver treats --bin-dir as a source and copies binaries into its own scratch directory on Windows.
     const target = process.env.CARGO_TARGET_DIR || "rust/target";
     args.push("--bin-dir", path.resolve(root, target, "debug"));
   }
@@ -200,11 +227,20 @@ function runShard(names, out) {
 }
 
 async function runE2e(plan, out) {
+  const count = shardCount(process.env.CI_E2E_SHARDS, os.availableParallelism?.() ?? os.cpus().length);
+  const seconds = loadDurations();
+  const duration = durationLookup(seconds);
   const names = plan.mode === "selected" ? plan.scenarios : listAllScenarios();
-  const shards = plan.mode === "selected" ? [names] : shardScenarios(names, 2);
+  const shards = shardPlan(plan.mode, names, count, seconds);
   if (!shards.length) {
     console.warn("Scenario listing unavailable. Running the driver with its default full suite.");
     shards.push([]);
+  }
+  for (const [i, shard] of shards.entries()) {
+    const expected = shard.reduce((total, name) => total + duration(name), 0);
+    console.log(shard.length
+      ? `Shard ${i + 1}: ${shard.length} scenarios, expected ${Number(expected.toFixed(1))} seconds`
+      : `Shard ${i + 1}: scenario count and expected seconds unavailable (default full suite)`);
   }
   const results = await Promise.all(shards.map((shard, i) => runShard(shard, path.join(out, `shard-${i + 1}`))));
   return results.includes(1) ? 1 : Math.max(...results);

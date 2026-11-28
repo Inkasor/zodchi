@@ -2942,6 +2942,7 @@ impl Run {
                 if stored["role"]["mode"] == "work" {
                     stored["keepThread"] = json!(false);
                 }
+                gateway::allow_credits(exec.as_ref(), &self.cfg, &mut stored);
                 let file = format!("requests/{key}.json");
                 self.journal.write_value(&file, &stored).map_err(infra)?;
                 self.record_intent(step, round, "gateway job", &sha256_hex(stored.to_string()), json!({

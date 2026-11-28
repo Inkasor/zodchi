@@ -1618,6 +1618,14 @@ fn claim_lock_identity(meta: &Metadata) -> String {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
+        // macOS can change a fresh folder's ctime (an added extended attribute), so its birth time names the folder
+        // there. Older ctime receipts are intentionally unrecognised and use the ten-minute recovery rule. Without a
+        // birth time (Linux, or a file system that has none) the ctime form stays.
+        #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))]
+        if let Ok(created) = meta.created() {
+            let since = created.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+            return format!("{}:{}:born:{}:{}", meta.dev(), meta.ino(), since.as_secs(), since.subsec_nanos());
+        }
         format!(
             "{}:{}:{}:{}",
             meta.dev(),

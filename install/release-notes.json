@@ -1,6 +1,6 @@
 {
   "highlights": [
     "Discover workflows with zodchi flow list and zodchi flow <workflow> --help. Use candidate-acceptance for a candidate build and release-acceptance for a deployed release.",
-    "1.0.4: code-package screens its inputs before any model call; try --dry-run, flow runs/wait, close/cancel and verify; ZODCHI_AGENT=1 gives JSON errors."
+    "1.0.5: the input check refuses more real key forms and fewer ordinary names; a run whose pid a reboot gave to a system process can be closed; credits also cover the review after a gap reply; ops-script copes with a loaded machine."
   ]
 }

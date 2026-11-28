@@ -90,6 +90,8 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
 
   async function attachedEvidence(t) {
     const f = gapWorld(t, "flow-project-verify-gap-context");
+    // The owner allows credits: the review after a gap reply asks for them like every other step.
+    fs.writeFileSync(path.join(f.w.zhome, "flow.json"), JSON.stringify({ credits: true }));
     const first = gap("Owner sign-off", "The reviewer has no sign-off.");
     const second = gap("Boundary fixture coverage", "The reviewer needs another check receipt.", true);
     f.answer("review 1", blocked(f, [first, second]));
@@ -129,6 +131,9 @@ export default function register({ scenario, flowWorld, gitOut, zodchi, STUB, FI
     t.eq([again.code, gapStates(again.json.openGaps), again.json.budget.reviewerCalls, f.steps()],
       [2, [["g1-2", "open"]], 2, ["write", "review 1", "review 2"]],
       "the same unresolved gap survives the review and the accepted one stays waived");
+    const credited = readJsonl(file).filter((event) => event.kind === "intent" && event.step.startsWith("review "))
+      .map((event) => [event.step, JSON.parse(fs.readFileSync(path.join(again.json.journal, event.request), "utf8")).credits]);
+    t.eq(credited, [["review 1", true], ["review 2", true]], "the review after the gap reply asks for credits too");
     const { prompt } = readJsonl(path.join(f.w.codex, "fake-turns.jsonl")).find((turn) => turn.step === "review 2");
     const attachment = prompt.match(/<attachment path="owner-gap-reply\.json">\n([^\n]+)\n<\/attachment>/);
     t.ok(attachment, "the reviewer receives a dedicated attachment for the reply");

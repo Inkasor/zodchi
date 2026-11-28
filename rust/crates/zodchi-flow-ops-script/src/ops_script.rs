@@ -27,6 +27,9 @@ use zodchi_flow_engine::{
 
 pub const NAME: &str = "ops-script";
 const VERSION: &str = "1";
+// Reader threads may take time to be scheduled after the process tree ends under load.
+const OUTPUT_READER_TIMEOUT: Duration = Duration::from_secs(30);
+const TOOL_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct RepairHooks {
     pub start: fn(&Value, &str) -> zodchi_core::util::Result<Exit>,
@@ -94,7 +97,7 @@ mod windows_job {
     use std::io::Read;
     use std::path::Path;
     use std::time::Duration;
-    use super::CommandResult;
+    use super::{CommandResult, OUTPUT_READER_TIMEOUT};
 
     #[repr(C)]
     #[derive(Default)]
@@ -246,8 +249,8 @@ mod windows_job {
             return Err(format!("The check process failed to initialize (0x{code:08X})"));
         }
         Ok(CommandResult { check: None, input_index: None, code: Some(code as i32), timed_out,
-            stdout: stdout.recv_timeout(Duration::from_secs(2)).map_err(|_| "The process output did not close")?,
-            stderr: stderr.recv_timeout(Duration::from_secs(2)).map_err(|_| "The process error output did not close")? })
+            stdout: stdout.recv_timeout(OUTPUT_READER_TIMEOUT).map_err(|_| "The process output did not close")?,
+            stderr: stderr.recv_timeout(OUTPUT_READER_TIMEOUT).map_err(|_| "The process error output did not close")? })
     }
 }
 
@@ -381,8 +384,8 @@ fn run_unix_command(program: &Path, startup_executable: &Path, args: &[std::ffi:
     #[cfg(unix)]
     checks::end_group(pid)?;
     let status = status.map_err(|error| format!("Cannot wait for the check process: {error}"))?;
-    let stdout = stdout.recv_timeout(Duration::from_secs(2)).map_err(|_| "The process output did not close")?;
-    let stderr = stderr.recv_timeout(Duration::from_secs(2)).map_err(|_| "The process error output did not close")?;
+    let stdout = stdout.recv_timeout(OUTPUT_READER_TIMEOUT).map_err(|_| "The process output did not close")?;
+    let stderr = stderr.recv_timeout(OUTPUT_READER_TIMEOUT).map_err(|_| "The process error output did not close")?;
     #[cfg(target_os = "linux")]
     if let Some(diagnostic) = stderr.strip_suffix(&format!("\n{start_failure}\n")) {
         return Err(format!("Cannot start the check process: {}", diagnostic.trim()));
@@ -514,7 +517,7 @@ fn working_python(program: &Path, cwd: &Path) -> bool {
         // Use the same import isolation as the static check.
         let argv = ["-I".into(), "-B".into(), "-c".into(),
             "import py_compile, sys; print('Python', sys.version.split()[0])".into()];
-        *verified = run_command(program, &argv, cwd, &[], Duration::from_secs(60))
+        *verified = run_command(program, &argv, cwd, &[], TOOL_PROBE_TIMEOUT)
             .is_ok_and(|result| !result.timed_out && result.code == Some(0)
                 && result.stdout.lines().any(|line| line.starts_with("Python 3.")));
     }
@@ -547,7 +550,7 @@ fn preflight_tools(args: &Args) -> Result<Tools, String> {
     let programs = [(&bash, "GNU bash"), (&checksum, "sha256sum")].into_iter()
         .chain(shellcheck.iter().map(|path| (path, "ShellCheck")));
     for (program, expected) in programs {
-        let result = run_command(program, &["--version".into()], &args.tmp, &[], Duration::from_secs(10))?;
+        let result = run_command(program, &["--version".into()], &args.tmp, &[], TOOL_PROBE_TIMEOUT)?;
         if result.timed_out || result.code != Some(0) || !format!("{}{}", result.stdout, result.stderr).contains(expected) {
             return Err(format!("Required tool failed its version check: {}", program.display()));
         }
